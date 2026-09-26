@@ -73,6 +73,26 @@ EndFunction
 
 Function Fragment_Stage_0300_Item_00()
 	ShowObjective(300)
+	SFL02_MoveHeldItem(Alias_SignalBooster01, Alias_SignalBoosterContainer01)
+	SFL02_MoveHeldItem(Alias_SignalBooster03, Alias_SignalBoosterContainer03)
+EndFunction
+
+; The quest items are created in the region holding container (and the beacon at its
+; holding marker); FO76's server script then distributed them. Move each one from the
+; holding spot to the place the walkthrough finds it. Items already elsewhere are left alone.
+Function SFL02_MoveHeldItem(ReferenceAlias akItemAlias, ReferenceAlias akDestinationAlias)
+	ObjectReference itemRef = akItemAlias.GetReference()
+	ObjectReference destinationRef = akDestinationAlias.GetReference()
+	ObjectReference holdingRef = Alias_HoldingContainer.GetReference()
+	If itemRef == None || destinationRef == None
+		Return
+	EndIf
+	ObjectReference currentContainer = itemRef.GetContainer()
+	If currentContainer != None && currentContainer == holdingRef
+		holdingRef.RemoveItem(itemRef, 1, True, destinationRef)
+	ElseIf currentContainer == None && akItemAlias == Alias_RandyBeacon && !IsStageDone(900)
+		destinationRef.AddItem(itemRef, 1, True)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0350_Item_00()
@@ -117,6 +137,11 @@ Function Fragment_Stage_0800_Item_00()
 	If SFL02_Track_Radio_QuestStartKeyword != None && SFL02_Track_RadioQuest != None && !SFL02_Track_RadioQuest.IsRunning()
 		SFL02_Track_Radio_QuestStartKeyword.SendStoryEvent()
 	EndIf
+	SFL02_MoveHeldItem(Alias_RandyBeacon, Alias_Randy)
+	SFL02_MoveHeldItem(Alias_HolotapeRandy, Alias_Randy)
+	SFL02_MoveHeldItem(Alias_HolotapeNari, Alias_Nari)
+	SFL02_MoveHeldItem(Alias_NariIDCard, Alias_Nari)
+	SFL02_MoveHeldItem(Alias_NariHazmatSuit, Alias_NariBackpack)
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()
@@ -129,10 +154,16 @@ EndFunction
 
 Function Fragment_Stage_0910_Item_00()
 	ShowObjective(1000)
+	If !IsStageDone(1000)
+		SetStage(1000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0920_Item_00()
 	ShowObjective(1000)
+	If !IsStageDone(1000)
+		SetStage(1000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0930_Item_00()

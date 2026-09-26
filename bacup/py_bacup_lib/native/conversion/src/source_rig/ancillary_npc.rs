@@ -1726,255 +1726,277 @@ mod tests {
     }
 
     #[test]
-    fn ancillary_npc_batch_exactly_covers_reservations_and_dedupes_shared_parts() {
-        let (reservations, requests, ledger, closures) = fixture();
-        let first = build_creature_ancillary_npc_family_batch(
-            &reservations,
-            &requests,
-            &ledger,
-            closures.clone(),
-        )
-        .unwrap();
-        let second = build_creature_ancillary_npc_family_batch(
-            &reservations,
-            &requests,
-            &ledger,
-            closures.into_iter().rev().collect(),
-        )
-        .unwrap();
-        assert_eq!(first.family_id, CREATURE_ANCILLARY_NPC_FAMILY_ID);
-        assert_eq!(first.primary_mappings, second.primary_mappings);
-        assert_eq!(first.closures.len(), 2);
-        assert_eq!(
-            first
-                .closures
-                .iter()
-                .flat_map(|closure| &closure.projected_identities)
-                .filter(|identity| identity.signature == "HDPT")
-                .count(),
-            2
-        );
-        assert!(first.closures.iter().all(|closure| {
-            closure
-                .projected_identities
-                .iter()
-                .all(|identity| identity.signature != "EYES" && identity.signature != "HAIR")
-        }));
-    }
-
-    #[test]
-    fn ancillary_npc_commit_ledger_binds_projection_records_and_artifacts() {
-        let (reservations, _, ledger, _) = fixture();
-        let committed =
-            CreatureAncillaryNpcCommitLedger::new(ledger.clone(), record_receipt(&reservations))
-                .unwrap();
-        let json = committed.canonical_json().unwrap();
-        assert_eq!(
-            CreatureAncillaryNpcCommitLedger::from_json(&json).unwrap(),
-            committed
-        );
-
-        let mut wrong_mapping = committed.clone();
-        wrong_mapping.record_receipt.families[0].primary_mappings[0]
-            .target
-            .local += 1;
-        assert!(wrong_mapping.validate().is_err());
-
-        let mut wrong_artifact = committed;
-        wrong_artifact.target_artifacts[0].target_blake3 = "9".repeat(64);
-        assert!(wrong_artifact.validate().is_err());
-    }
-
-    #[test]
-    fn ancillary_npc_batch_rejects_missing_reservations_and_requests() {
-        let (mut reservations, requests, ledger, closures) = fixture();
-        reservations.pop();
-        assert!(
-            build_creature_ancillary_npc_family_batch(
+    fn ancillary_npc_batch_covers_reservations_and_binds_commit_ledger() {
+        {
+            let (reservations, requests, ledger, closures) = fixture();
+            let first = build_creature_ancillary_npc_family_batch(
                 &reservations,
                 &requests,
                 &ledger,
                 closures.clone(),
             )
-            .is_err()
-        );
-
-        let (reservations, mut requests, ledger, closures) = fixture();
-        requests.pop();
-        assert!(
-            build_creature_ancillary_npc_family_batch(&reservations, &requests, &ledger, closures,)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn ancillary_npc_batch_rejects_template_cycles_and_artifact_collisions() {
-        let (reservations, requests, mut ledger, closures) = fixture();
-        let owner = ledger.projections[0].reservation.source.clone();
-        ledger.projections[0].template.source_chain.push(owner);
-        assert!(
-            build_creature_ancillary_npc_family_batch(
+            .unwrap();
+            let second = build_creature_ancillary_npc_family_batch(
                 &reservations,
                 &requests,
                 &ledger,
-                closures.clone(),
+                closures.into_iter().rev().collect(),
             )
-            .is_err()
-        );
+            .unwrap();
+            assert_eq!(first.family_id, CREATURE_ANCILLARY_NPC_FAMILY_ID);
+            assert_eq!(first.primary_mappings, second.primary_mappings);
+            assert_eq!(first.closures.len(), 2);
+            assert_eq!(
+                first
+                    .closures
+                    .iter()
+                    .flat_map(|closure| &closure.projected_identities)
+                    .filter(|identity| identity.signature == "HDPT")
+                    .count(),
+                2
+            );
+            assert!(first.closures.iter().all(|closure| {
+                closure
+                    .projected_identities
+                    .iter()
+                    .all(|identity| identity.signature != "EYES" && identity.signature != "HAIR")
+            }));
+        }
+        {
+            let (reservations, _, ledger, _) = fixture();
+            let committed = CreatureAncillaryNpcCommitLedger::new(
+                ledger.clone(),
+                record_receipt(&reservations),
+            )
+            .unwrap();
+            let json = committed.canonical_json().unwrap();
+            assert_eq!(
+                CreatureAncillaryNpcCommitLedger::from_json(&json).unwrap(),
+                committed
+            );
 
-        let (reservations, requests, mut ledger, closures) = fixture();
-        ledger.projections[1]
-            .appearance
-            .eye
-            .as_mut()
-            .unwrap()
-            .artifacts[0]
-            .target_blake3 = "5".repeat(64);
-        assert!(
-            build_creature_ancillary_npc_family_batch(&reservations, &requests, &ledger, closures,)
-                .is_err()
-        );
+            let mut wrong_mapping = committed.clone();
+            wrong_mapping.record_receipt.families[0].primary_mappings[0]
+                .target
+                .local += 1;
+            assert!(wrong_mapping.validate().is_err());
+
+            let mut wrong_artifact = committed;
+            wrong_artifact.target_artifacts[0].target_blake3 = "9".repeat(64);
+            assert!(wrong_artifact.validate().is_err());
+        }
     }
 
     #[test]
-    fn ancillary_npc_batch_rejects_standalone_legacy_appearance_mapping() {
-        let (reservations, requests, ledger, mut closures) = fixture();
-        closures[0].projected_identities[0].signature = "EYES".to_string();
-        assert!(
-            build_creature_ancillary_npc_family_batch(&reservations, &requests, &ledger, closures,)
+    fn ancillary_npc_batch_rejects_missing_cycles_collisions_and_legacy_mappings() {
+        {
+            let (mut reservations, requests, ledger, closures) = fixture();
+            reservations.pop();
+            assert!(
+                build_creature_ancillary_npc_family_batch(
+                    &reservations,
+                    &requests,
+                    &ledger,
+                    closures.clone(),
+                )
                 .is_err()
-        );
+            );
+
+            let (reservations, mut requests, ledger, closures) = fixture();
+            requests.pop();
+            assert!(
+                build_creature_ancillary_npc_family_batch(
+                    &reservations,
+                    &requests,
+                    &ledger,
+                    closures,
+                )
+                .is_err()
+            );
+        }
+        {
+            let (reservations, requests, mut ledger, closures) = fixture();
+            let owner = ledger.projections[0].reservation.source.clone();
+            ledger.projections[0].template.source_chain.push(owner);
+            assert!(
+                build_creature_ancillary_npc_family_batch(
+                    &reservations,
+                    &requests,
+                    &ledger,
+                    closures.clone(),
+                )
+                .is_err()
+            );
+
+            let (reservations, requests, mut ledger, closures) = fixture();
+            ledger.projections[1]
+                .appearance
+                .eye
+                .as_mut()
+                .unwrap()
+                .artifacts[0]
+                .target_blake3 = "5".repeat(64);
+            assert!(
+                build_creature_ancillary_npc_family_batch(
+                    &reservations,
+                    &requests,
+                    &ledger,
+                    closures,
+                )
+                .is_err()
+            );
+        }
+        {
+            let (reservations, requests, ledger, mut closures) = fixture();
+            closures[0].projected_identities[0].signature = "EYES".to_string();
+            assert!(
+                build_creature_ancillary_npc_family_batch(
+                    &reservations,
+                    &requests,
+                    &ledger,
+                    closures,
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
-    fn ancillary_npc_facegen_requires_generated_artifacts_or_runtime_proof() {
-        let (reservations, requests, mut ledger, closures) = fixture();
-        let CreatureAncillaryNpcFacegenDisposition::ProvenFo4RuntimeAssetless {
-            proof_blake3, ..
-        } = &mut ledger.projections[0].appearance.facegen_disposition
-        else {
-            panic!("fixture must use the assetless proof path");
-        };
-        *proof_blake3 = "f".repeat(64);
-        assert!(
-            build_creature_ancillary_npc_family_batch(
-                &reservations,
-                &requests,
-                &ledger,
-                closures.clone(),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("runtime proof")
-        );
+    fn ancillary_npc_facegen_artifacts_are_proven_byte_bound_fo4_nifs() {
+        {
+            let (reservations, requests, mut ledger, closures) = fixture();
+            let CreatureAncillaryNpcFacegenDisposition::ProvenFo4RuntimeAssetless {
+                proof_blake3,
+                ..
+            } = &mut ledger.projections[0].appearance.facegen_disposition
+            else {
+                panic!("fixture must use the assetless proof path");
+            };
+            *proof_blake3 = "f".repeat(64);
+            assert!(
+                build_creature_ancillary_npc_family_batch(
+                    &reservations,
+                    &requests,
+                    &ledger,
+                    closures.clone(),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("runtime proof")
+            );
 
-        let (reservations, requests, mut ledger, closures) = fixture();
-        set_generated_facegen(&mut ledger.projections[0]);
-        assert!(
-            build_creature_ancillary_npc_family_batch(&reservations, &requests, &ledger, closures,)
+            let (reservations, requests, mut ledger, closures) = fixture();
+            set_generated_facegen(&mut ledger.projections[0]);
+            assert!(
+                build_creature_ancillary_npc_family_batch(
+                    &reservations,
+                    &requests,
+                    &ledger,
+                    closures,
+                )
                 .unwrap_err()
                 .to_string()
                 .contains("FaceGeom NIF")
-        );
-    }
-
-    #[test]
-    fn ancillary_npc_artifacts_are_byte_bound_and_target_nifs_are_fo4() {
-        let (reservations, requests, mut ledger, closures) = fixture();
-        let temp = tempfile::tempdir().unwrap();
-        let source_root = temp.path().join("source");
-        let staged_root = temp.path().join("staged");
-        let source_dds = [1u8, 2, 3, 4];
-        let target_dds = [5u8, 6, 7, 8];
-        let source_dds_path = source_root.join(path_from_runtime("textures\\eyes\\blue.dds"));
-        let target_dds_path =
-            staged_root.join(path_from_runtime("textures\\actors\\legacy\\blue.dds"));
-        fs::create_dir_all(source_dds_path.parent().unwrap()).unwrap();
-        fs::create_dir_all(target_dds_path.parent().unwrap()).unwrap();
-        fs::write(&source_dds_path, source_dds).unwrap();
-        fs::write(&target_dds_path, target_dds).unwrap();
-        let source_dds_hash = blake3::hash(&source_dds).to_hex().to_string();
-        let target_dds_hash = blake3::hash(&target_dds).to_hex().to_string();
-        for projection in &mut ledger.projections {
-            let artifact = &mut projection.appearance.eye.as_mut().unwrap().artifacts[0];
-            artifact.source_artifacts[0].blake3 = source_dds_hash.clone();
-            artifact.target_blake3 = target_dds_hash.clone();
+            );
         }
+        {
+            let (reservations, requests, mut ledger, closures) = fixture();
+            let temp = tempfile::tempdir().unwrap();
+            let source_root = temp.path().join("source");
+            let staged_root = temp.path().join("staged");
+            let source_dds = [1u8, 2, 3, 4];
+            let target_dds = [5u8, 6, 7, 8];
+            let source_dds_path = source_root.join(path_from_runtime("textures\\eyes\\blue.dds"));
+            let target_dds_path =
+                staged_root.join(path_from_runtime("textures\\actors\\legacy\\blue.dds"));
+            fs::create_dir_all(source_dds_path.parent().unwrap()).unwrap();
+            fs::create_dir_all(target_dds_path.parent().unwrap()).unwrap();
+            fs::write(&source_dds_path, source_dds).unwrap();
+            fs::write(&target_dds_path, target_dds).unwrap();
+            let source_dds_hash = blake3::hash(&source_dds).to_hex().to_string();
+            let target_dds_hash = blake3::hash(&target_dds).to_hex().to_string();
+            for projection in &mut ledger.projections {
+                let artifact = &mut projection.appearance.eye.as_mut().unwrap().artifacts[0];
+                artifact.source_artifacts[0].blake3 = source_dds_hash.clone();
+                artifact.target_blake3 = target_dds_hash.clone();
+            }
 
-        let source_nif = NifFile::new("fnv").to_bytes().unwrap();
-        let target_nif = NifFile::new("fo4").to_bytes().unwrap();
-        let source_nif_path = source_root.join(path_from_runtime("meshes\\legacy\\head.nif"));
-        let target_nif_path = staged_root.join(path_from_runtime(
-            "meshes\\actors\\character\\facegendata\\facegeom\\Output.esm\\00000100.nif",
-        ));
-        fs::create_dir_all(source_nif_path.parent().unwrap()).unwrap();
-        fs::create_dir_all(target_nif_path.parent().unwrap()).unwrap();
-        fs::write(&source_nif_path, &source_nif).unwrap();
-        fs::write(&target_nif_path, &target_nif).unwrap();
-        ledger.projections[0].appearance.facegen_artifacts.push(
-            CreatureAncillaryNpcArtifactReceipt {
-                kind: CreatureAncillaryNpcArtifactKind::Nif,
-                source_artifacts: vec![CreatureAncillaryNpcSourceArtifactReceipt {
-                    kind: CreatureAncillaryNpcSourceArtifactKind::Nif,
-                    source_game: "fnv".to_string(),
-                    source_data_path: "meshes\\legacy\\head.nif".to_string(),
-                    byte_len: source_nif.len() as u64,
-                    blake3: blake3::hash(&source_nif).to_hex().to_string(),
-                }],
-                target_data_path:
-                    "meshes\\actors\\character\\facegendata\\facegeom\\Output.esm\\00000100.nif"
-                        .to_string(),
-                target_byte_len: target_nif.len() as u64,
-                target_blake3: blake3::hash(&target_nif).to_hex().to_string(),
-            },
-        );
-        set_generated_facegen(&mut ledger.projections[0]);
-        let source_roots = BTreeMap::from([("fnv".to_string(), source_root)]);
-        validate_creature_ancillary_npc_artifacts(&ledger, &source_roots, &staged_root).unwrap();
-        let prepared = prepare_creature_ancillary_npc_batch(
-            &reservations,
-            &requests,
-            ledger.clone(),
-            closures,
-            &source_roots,
-            staged_root.clone(),
-        )
-        .unwrap();
-        assert_eq!(
-            prepared.projection_ledger().projections.len(),
-            reservations.len()
-        );
-
-        let mut mismatched_generation = ledger.clone();
-        let CreatureAncillaryNpcFacegenDisposition::Generated { generation } =
-            &mut mismatched_generation.projections[0]
-                .appearance
-                .facegen_disposition
-        else {
-            panic!("fixture must use generated FaceGen");
-        };
-        generation.morph_inputs_blake3 = "f".repeat(64);
-        assert!(
-            validate_creature_ancillary_npc_artifacts(
-                &mismatched_generation,
-                &source_roots,
-                &staged_root,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("morph-input hash")
-        );
-
-        fs::write(&target_nif_path, &source_nif).unwrap();
-        let artifact = &mut ledger.projections[0].appearance.facegen_artifacts[0];
-        artifact.target_byte_len = source_nif.len() as u64;
-        artifact.target_blake3 = blake3::hash(&source_nif).to_hex().to_string();
-        set_generated_facegen(&mut ledger.projections[0]);
-        assert!(
+            let source_nif = NifFile::new("fnv").to_bytes().unwrap();
+            let target_nif = NifFile::new("fo4").to_bytes().unwrap();
+            let source_nif_path = source_root.join(path_from_runtime("meshes\\legacy\\head.nif"));
+            let target_nif_path = staged_root.join(path_from_runtime(
+                "meshes\\actors\\character\\facegendata\\facegeom\\Output.esm\\00000100.nif",
+            ));
+            fs::create_dir_all(source_nif_path.parent().unwrap()).unwrap();
+            fs::create_dir_all(target_nif_path.parent().unwrap()).unwrap();
+            fs::write(&source_nif_path, &source_nif).unwrap();
+            fs::write(&target_nif_path, &target_nif).unwrap();
+            ledger.projections[0].appearance.facegen_artifacts.push(
+                CreatureAncillaryNpcArtifactReceipt {
+                    kind: CreatureAncillaryNpcArtifactKind::Nif,
+                    source_artifacts: vec![CreatureAncillaryNpcSourceArtifactReceipt {
+                        kind: CreatureAncillaryNpcSourceArtifactKind::Nif,
+                        source_game: "fnv".to_string(),
+                        source_data_path: "meshes\\legacy\\head.nif".to_string(),
+                        byte_len: source_nif.len() as u64,
+                        blake3: blake3::hash(&source_nif).to_hex().to_string(),
+                    }],
+                    target_data_path:
+                        "meshes\\actors\\character\\facegendata\\facegeom\\Output.esm\\00000100.nif"
+                            .to_string(),
+                    target_byte_len: target_nif.len() as u64,
+                    target_blake3: blake3::hash(&target_nif).to_hex().to_string(),
+                },
+            );
+            set_generated_facegen(&mut ledger.projections[0]);
+            let source_roots = BTreeMap::from([("fnv".to_string(), source_root)]);
             validate_creature_ancillary_npc_artifacts(&ledger, &source_roots, &staged_root)
+                .unwrap();
+            let prepared = prepare_creature_ancillary_npc_batch(
+                &reservations,
+                &requests,
+                ledger.clone(),
+                closures,
+                &source_roots,
+                staged_root.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                prepared.projection_ledger().projections.len(),
+                reservations.len()
+            );
+
+            let mut mismatched_generation = ledger.clone();
+            let CreatureAncillaryNpcFacegenDisposition::Generated { generation } =
+                &mut mismatched_generation.projections[0]
+                    .appearance
+                    .facegen_disposition
+            else {
+                panic!("fixture must use generated FaceGen");
+            };
+            generation.morph_inputs_blake3 = "f".repeat(64);
+            assert!(
+                validate_creature_ancillary_npc_artifacts(
+                    &mismatched_generation,
+                    &source_roots,
+                    &staged_root,
+                )
                 .unwrap_err()
                 .to_string()
-                .contains("is not Fallout 4")
-        );
+                .contains("morph-input hash")
+            );
+
+            fs::write(&target_nif_path, &source_nif).unwrap();
+            let artifact = &mut ledger.projections[0].appearance.facegen_artifacts[0];
+            artifact.target_byte_len = source_nif.len() as u64;
+            artifact.target_blake3 = blake3::hash(&source_nif).to_hex().to_string();
+            set_generated_facegen(&mut ledger.projections[0]);
+            assert!(
+                validate_creature_ancillary_npc_artifacts(&ledger, &source_roots, &staged_root)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("is not Fallout 4")
+            );
+        }
     }
 }

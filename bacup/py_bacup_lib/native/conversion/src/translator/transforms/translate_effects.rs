@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn translate_effects_drops_effect_with_null_base() {
+    fn translate_effects_drops_only_effects_without_a_live_base() {
         // BaseEffect starting with "000000:" → drop
         let mut interner = StringInterner::new();
         let eff = make_effect(&mut interner, Some("000000@SeventySix.esm"), None, None);
@@ -220,10 +220,7 @@ mod tests {
             get_list(&value).is_empty(),
             "null base effect should be dropped"
         );
-    }
 
-    #[test]
-    fn translate_effects_drops_effect_without_base() {
         // No BaseEffect at all → drop
         let mut interner = StringInterner::new();
         let eff = make_effect(&mut interner, None, Some(FieldValue::Float(1.0)), None);
@@ -235,10 +232,7 @@ mod tests {
         };
         t.apply(&mut ctx, &mut value, &config).unwrap();
         assert!(get_list(&value).is_empty());
-    }
 
-    #[test]
-    fn translate_effects_keeps_valid_effect() {
         let mut interner = StringInterner::new();
         let eff = make_effect(
             &mut interner,
@@ -254,10 +248,44 @@ mod tests {
         };
         t.apply(&mut ctx, &mut value, &config).unwrap();
         assert_eq!(get_list(&value).len(), 1);
+
+        // 2 effects: first valid, second null-base → only first survives
+        let mut interner = StringInterner::new();
+        let valid = make_effect(&mut interner, Some("AABB@SeventySix.esm"), None, None);
+        let null_base = make_effect(&mut interner, Some("000000@SeventySix.esm"), None, None);
+        let mut value = make_effect_list(vec![valid, null_base]);
+        let config = json!({ "source_esm": "SeventySix.esm", "target_esm": "Fallout4.esm" });
+        let t = TranslateEffectsTransform;
+        let mut ctx = TransformCtx {
+            interner: &mut interner,
+        };
+        t.apply(&mut ctx, &mut value, &config).unwrap();
+        assert_eq!(get_list(&value).len(), 1);
+
+        let mut interner = StringInterner::new();
+        let mut value = FieldValue::Int(99);
+        let config = json!({});
+        let t = TranslateEffectsTransform;
+        let mut ctx = TransformCtx {
+            interner: &mut interner,
+        };
+        t.apply(&mut ctx, &mut value, &config).unwrap();
+        assert_eq!(value, FieldValue::Int(99));
+
+        // A non-struct item in the list passes through (Python mirrors this).
+        let mut interner = StringInterner::new();
+        let mut value = FieldValue::List(vec![FieldValue::Int(42)]);
+        let config = json!({});
+        let t = TranslateEffectsTransform;
+        let mut ctx = TransformCtx {
+            interner: &mut interner,
+        };
+        t.apply(&mut ctx, &mut value, &config).unwrap();
+        assert_eq!(get_list(&value), &[FieldValue::Int(42)]);
     }
 
     #[test]
-    fn translate_effects_replaces_raw_hex_data_with_default() {
+    fn translate_effects_replaces_raw_hex_data_and_remaps_base_effect() {
         // Data is a raw hex String → replaced with default_data struct.
         let mut interner = StringInterner::new();
         let hex_str = interner.intern("0x0000000000000000");
@@ -287,10 +315,7 @@ mod tests {
                 "Data should be a Struct after replacement"
             );
         }
-    }
 
-    #[test]
-    fn translate_effects_remaps_esm_in_base_effect() {
         let mut interner = StringInterner::new();
         let eff = make_effect(&mut interner, Some("001122@SeventySix.esm"), None, None);
         let mut value = make_effect_list(vec![eff]);
@@ -309,48 +334,5 @@ mod tests {
                 assert!(s.contains("Fallout4.esm"), "Expected Fallout4.esm in: {s}");
             }
         }
-    }
-
-    #[test]
-    fn translate_effects_non_list_passes_through() {
-        let mut interner = StringInterner::new();
-        let mut value = FieldValue::Int(99);
-        let config = json!({});
-        let t = TranslateEffectsTransform;
-        let mut ctx = TransformCtx {
-            interner: &mut interner,
-        };
-        t.apply(&mut ctx, &mut value, &config).unwrap();
-        assert_eq!(value, FieldValue::Int(99));
-    }
-
-    #[test]
-    fn translate_effects_multiple_effects_partial_drop() {
-        // 2 effects: first valid, second null-base → only first survives
-        let mut interner = StringInterner::new();
-        let valid = make_effect(&mut interner, Some("AABB@SeventySix.esm"), None, None);
-        let null_base = make_effect(&mut interner, Some("000000@SeventySix.esm"), None, None);
-        let mut value = make_effect_list(vec![valid, null_base]);
-        let config = json!({ "source_esm": "SeventySix.esm", "target_esm": "Fallout4.esm" });
-        let t = TranslateEffectsTransform;
-        let mut ctx = TransformCtx {
-            interner: &mut interner,
-        };
-        t.apply(&mut ctx, &mut value, &config).unwrap();
-        assert_eq!(get_list(&value).len(), 1);
-    }
-
-    #[test]
-    fn translate_effects_non_struct_entry_passes_through() {
-        // A non-struct item in the list passes through (Python mirrors this).
-        let mut interner = StringInterner::new();
-        let mut value = FieldValue::List(vec![FieldValue::Int(42)]);
-        let config = json!({});
-        let t = TranslateEffectsTransform;
-        let mut ctx = TransformCtx {
-            interner: &mut interner,
-        };
-        t.apply(&mut ctx, &mut value, &config).unwrap();
-        assert_eq!(get_list(&value), &[FieldValue::Int(42)]);
     }
 }

@@ -22,21 +22,6 @@ pub const FO4_QUEST_DATA_LEN: usize = 6;
 
 const FO4_MAX_CONDITION_FUNCTION_ID: u16 = 817;
 
-const FNV_CTDA_PARAM1_FORMID_FUNCTIONS: &[u16] = &[
-    1, 27, 32, 42, 43, 44, 45, 47, 53, 56, 58, 59, 60, 66, 67, 68, 69, 71, 72, 73, 74, 76, 79, 84,
-    99, 122, 129, 130, 132, 136, 149, 161, 162, 163, 172, 180, 182, 193, 195, 197, 199, 214, 223,
-    228, 230, 246, 278, 280, 310, 370, 372, 382, 399, 409, 410, 411, 415, 420, 421, 427, 446, 449,
-    450, 451, 464, 478, 515, 518, 519, 520, 521, 525, 526, 527, 528, 546, 555, 573, 574, 575, 607,
-    610, 612, 614,
-];
-const FNV_CTDA_PARAM2_FORMID_FUNCTIONS: &[u16] = &[60, 230, 280, 411];
-const FO3_CTDA_PARAM1_FORMID_FUNCTIONS: &[u16] = &[
-    1, 27, 32, 42, 43, 44, 45, 47, 53, 56, 58, 59, 60, 66, 67, 68, 69, 71, 72, 73, 74, 76, 79, 84,
-    99, 122, 129, 130, 132, 136, 149, 161, 162, 163, 172, 180, 182, 193, 195, 197, 199, 214, 223,
-    228, 230, 246, 278, 280, 310, 370, 372, 382, 399, 409, 410, 411, 415, 427, 446, 449, 450, 451,
-    464, 478, 515, 518, 519, 520, 521, 525, 526, 527, 528, 546, 555,
-];
-const FO3_CTDA_PARAM2_FORMID_FUNCTIONS: &[u16] = &[60, 230, 280, 411];
 const DROPPED_LEGACY_CONDITION_FUNCTIONS: &[u16] = &[
     36, 53, 76, 81, 98, 116, 117, 128, 129, 130, 131, 132, 160, 180, 219, 226, 258, 259, 264, 274,
     313, 323, 339, 382, 403, 430, 435, 436, 460, 462, 500, 503, 573, 574, 575, 586, 601, 607, 610,
@@ -139,6 +124,7 @@ pub struct EntryPointTarget {
     pub condition_tabs: u8,
 }
 
+#[cfg(test)]
 /// Rebuild one FNV/FO3 PERK into FO4-compatible ordered scopes.
 ///
 /// This is a single-pass legacy-source transform. PRKE and entry-point DATA are three bytes in
@@ -897,19 +883,6 @@ fn condition_shape(value: &FieldValue, mapper: &FormKeyMapper<'_>) -> RowShape {
     }
 }
 
-fn condition_formid_functions(family: LegacyPerkFamily) -> (&'static [u16], &'static [u16]) {
-    match family {
-        LegacyPerkFamily::Fnv => (
-            FNV_CTDA_PARAM1_FORMID_FUNCTIONS,
-            FNV_CTDA_PARAM2_FORMID_FUNCTIONS,
-        ),
-        LegacyPerkFamily::Fo3 => (
-            FO3_CTDA_PARAM1_FORMID_FUNCTIONS,
-            FO3_CTDA_PARAM2_FORMID_FUNCTIONS,
-        ),
-    }
-}
-
 pub const fn translate_condition_function(family: LegacyPerkFamily, source: u16) -> Option<u16> {
     if contains_u16(DROPPED_LEGACY_CONDITION_FUNCTIONS, source)
         || matches!(family, LegacyPerkFamily::Fnv) && matches!(source, 420 | 421)
@@ -1339,6 +1312,7 @@ fn set_named_number_u32(
     Some(())
 }
 
+#[cfg(test)]
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
 }
@@ -1443,7 +1417,7 @@ mod tests {
     #[test]
     fn splash_damage_golden_maps_entry_semantics_and_ctda_width() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+        let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fnv, &[]);
         let mut perk = record(&interner);
         let mut condition = legacy_ctda(495);
         condition[0] = 0x60;
@@ -1476,9 +1450,9 @@ mod tests {
     }
 
     #[test]
-    fn power_armor_training_058fdf_externalizes_exact_native_quest_stage_entry() {
+    fn power_armor_training_058fdf_externalizes_only_the_exact_native_quest_stage_entry() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+        let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fnv, &[]);
         let mut perk = record(&interner);
         perk.eid = Some(interner.intern("PowerArmorTraining"));
         perk.fields.extend([
@@ -1508,10 +1482,7 @@ mod tests {
                 reason: PerkAdaptReason::NativePowerArmorUse,
             }]
         );
-    }
 
-    #[test]
-    fn power_armor_training_adaptation_near_misses_fail_closed() {
         let cases: [(&str, &str, u32, u32, bool); 5] = [
             ("Other.esm", "PowerArmorTraining", 0x0038B2, 80, false),
             ("FalloutNV.esm", "OtherPerk", 0x0038B2, 80, false),
@@ -1521,7 +1492,7 @@ mod tests {
         ];
         for (plugin, eid, quest, stage, with_condition) in cases {
             let interner = StringInterner::new();
-            let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+            let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fnv, &[]);
             let mut perk = record(&interner);
             perk.eid = Some(interner.intern(eid));
             let mut quest_data = quest.to_le_bytes().to_vec();
@@ -1557,7 +1528,7 @@ mod tests {
     #[test]
     fn quest_ability_and_leveled_item_references_are_mapped_without_raw_leaks() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(
+        let mut mapper = self::mapper(
             &interner,
             LegacyPerkFamily::Fo3,
             &[(0x100, 0x200), (0x101, 0x201), (0x102, 0x202)],
@@ -1593,9 +1564,9 @@ mod tests {
     }
 
     #[test]
-    fn unmapped_required_reference_drops_the_whole_entry() {
+    fn unsupported_entries_are_dropped_with_every_companion() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+        let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fnv, &[]);
         let mut perk = record(&interner);
         perk.fields.extend([
             field(b"PRKE", vec![1, 0, 0]),
@@ -1612,53 +1583,9 @@ mod tests {
             report.references[0].outcome,
             PerkReferenceOutcome::UnmappedRaw { source_raw: 0x1234 }
         ));
-    }
 
-    #[test]
-    fn unmapped_condition_drops_ctda_and_cis_companions_but_keeps_entry() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
-        let mut perk = record(&interner);
-        let mut condition = legacy_ctda(42);
-        condition[12..16].copy_from_slice(&0x440_u32.to_le_bytes());
-        perk.fields.extend([
-            field(b"PRKE", vec![2, 0, 0]),
-            field(b"DATA", vec![0, 3, 3]),
-            field(b"PRKC", vec![0]),
-            field(b"CTDA", condition),
-            field(b"CIS1", b"name\0".to_vec()),
-            field(b"EPFT", vec![1]),
-            field(b"EPFD", 0.75_f32.to_le_bytes().to_vec()),
-            empty(b"PRKF"),
-        ]);
-
-        let report = normalize_legacy_perk(&mut perk, LegacyPerkFamily::Fnv, &mut mapper);
-
-        assert_eq!(sigs(&perk), vec!["PRKE", "DATA", "EPFT", "EPFD", "PRKF"]);
-        assert_eq!(report.converted_entries, 1);
-        assert_eq!(report.dropped_conditions, 1);
-        assert_eq!(report.orphan_companions_dropped, 1);
-    }
-
-    #[test]
-    fn target_sized_condition_is_preserved_byte_for_byte() {
-        let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
-        let mut perk = record(&interner);
-        let target = vec![0xA5; FO4_CTDA_LEN];
-        perk.fields.push(field(b"CTDA", target.clone()));
-
-        let report = normalize_legacy_perk(&mut perk, LegacyPerkFamily::Fnv, &mut mapper);
-
-        assert_eq!(raw(&perk, b"CTDA")[0], target);
-        assert_eq!(report.preserved_target_conditions, 1);
-        assert_eq!(report.converted_conditions, 0);
-    }
-
-    #[test]
-    fn script_parameter_entry_is_dropped_with_every_companion() {
-        let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, LegacyPerkFamily::Fo3, &[]);
+        let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fo3, &[]);
         let mut perk = record(&interner);
         perk.fields.extend([
             field(b"PRKE", vec![2, 0, 0]),
@@ -1683,7 +1610,45 @@ mod tests {
     }
 
     #[test]
-    fn fnv_and_fo3_entry_and_condition_domains_diverge_explicitly() {
+    fn unmapped_condition_drops_with_companions_and_target_sized_condition_is_kept() {
+        let interner = StringInterner::new();
+        let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+        let mut perk = record(&interner);
+        let mut condition = legacy_ctda(42);
+        condition[12..16].copy_from_slice(&0x440_u32.to_le_bytes());
+        perk.fields.extend([
+            field(b"PRKE", vec![2, 0, 0]),
+            field(b"DATA", vec![0, 3, 3]),
+            field(b"PRKC", vec![0]),
+            field(b"CTDA", condition),
+            field(b"CIS1", b"name\0".to_vec()),
+            field(b"EPFT", vec![1]),
+            field(b"EPFD", 0.75_f32.to_le_bytes().to_vec()),
+            empty(b"PRKF"),
+        ]);
+
+        let report = normalize_legacy_perk(&mut perk, LegacyPerkFamily::Fnv, &mut mapper);
+
+        assert_eq!(sigs(&perk), vec!["PRKE", "DATA", "EPFT", "EPFD", "PRKF"]);
+        assert_eq!(report.converted_entries, 1);
+        assert_eq!(report.dropped_conditions, 1);
+        assert_eq!(report.orphan_companions_dropped, 1);
+
+        let interner = StringInterner::new();
+        let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+        let mut perk = record(&interner);
+        let target = vec![0xA5; FO4_CTDA_LEN];
+        perk.fields.push(field(b"CTDA", target.clone()));
+
+        let report = normalize_legacy_perk(&mut perk, LegacyPerkFamily::Fnv, &mut mapper);
+
+        assert_eq!(raw(&perk, b"CTDA")[0], target);
+        assert_eq!(report.preserved_target_conditions, 1);
+        assert_eq!(report.converted_conditions, 0);
+    }
+
+    #[test]
+    fn legacy_entry_and_condition_domains_are_target_valid_and_diverge_by_game() {
         let fnv = map_legacy_entry_point(LegacyPerkFamily::Fnv, 72).unwrap();
         assert_eq!((fnv.value, fnv.condition_tabs), (100, 1));
         assert!(map_legacy_entry_point(LegacyPerkFamily::Fo3, 72).is_none());
@@ -1695,10 +1660,7 @@ mod tests {
             translate_condition_function(LegacyPerkFamily::Fo3, 5993),
             None
         );
-    }
 
-    #[test]
-    fn mapped_entry_domain_is_target_valid_and_corpus_values_are_accounted_for() {
         let fnv_corpus = [
             0, 1, 2, 4, 6, 8, 9, 10, 11, 12, 20, 23, 25, 27, 28, 29, 31, 32, 33, 34, 35, 36, 37,
             38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 64,
@@ -1732,7 +1694,7 @@ mod tests {
     #[test]
     fn malformed_entry_does_not_consume_the_following_valid_entry() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, LegacyPerkFamily::Fnv, &[]);
+        let mut mapper = self::mapper(&interner, LegacyPerkFamily::Fnv, &[]);
         let mut perk = record(&interner);
         perk.fields.extend([
             field(b"PRKE", vec![2, 0, 0]),

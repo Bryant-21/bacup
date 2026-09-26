@@ -35,33 +35,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_colon_key() {
-        let (oid, plugin) = split_form_key("001234:MyMod.esm");
-        assert_eq!(oid, "001234");
-        assert_eq!(plugin, "MyMod.esm");
-    }
-
-    #[test]
-    fn split_no_colon() {
-        let (oid, plugin) = split_form_key("ABCDEF");
-        assert_eq!(oid, "ABCDEF");
-        assert_eq!(plugin, "");
-    }
-
-    #[test]
-    fn object_id_uppercased() {
+    fn split_and_extract_form_key_parts() {
+        for (key, oid, plugin) in [
+            ("001234:MyMod.esm", "001234", "MyMod.esm"),
+            ("ABCDEF", "ABCDEF", ""),
+            ("", "", ""),
+        ] {
+            assert_eq!(split_form_key(key), (oid, plugin), "{key:?}");
+        }
         assert_eq!(object_id_from_form_key("abcdef:Plugin.esm"), "ABCDEF");
-    }
-
-    #[test]
-    fn plugin_name_extracted() {
         assert_eq!(plugin_name_from_form_key("001234:FNV.esm"), "FNV.esm");
-    }
-
-    #[test]
-    fn empty_form_key() {
-        let (oid, plugin) = split_form_key("");
-        assert_eq!(oid, "");
-        assert_eq!(plugin, "");
     }
 }

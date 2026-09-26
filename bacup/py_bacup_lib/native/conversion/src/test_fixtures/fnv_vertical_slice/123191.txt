@@ -1,0 +1,83 @@
+scn TecMineHostage
+
+Short 	Freed
+Short 	Button
+Short	DoOnce
+Short HostageFreedTotal	;Total Hostages freed
+ref		hostage
+
+BEGIN OnLoad
+	if ( Freed == 1 )
+		disable
+	else (  Freed == 0 )
+		IgnoreCrime 1
+		setRestrained 1
+		set DoOnce to 0
+		setRestrained 0
+	endif
+
+	set hostage to GetSelf
+
+END
+
+
+BEGIN OnActivate
+	if ( GetDead == 0 )
+		if ( freed == 0 )
+			if ( IsActionRef player == 1 )
+				if ( Player.IsInCombat == 0 )
+						ShowMessage TecMineHostageMSG
+					endif
+				else
+					ShowMessage FFSupermutantCaptiveNoActivateMessage
+				endif
+			endif
+		endif	
+	elseIf ( GetDead == 1 )
+		Activate
+	endif
+END
+
+BEGIN OnDeath
+	setStage VTechatticup 110
+	set VTechatticup.HostagesDead to 1
+END
+
+Begin OnDeath player
+
+	if freed == 0	
+		AddReputation RepNVNCR 0 3
+	endif
+
+END
+
+BEGIN GameMode
+
+; Added conditional code to reduce the cost of running the script on every frame - unclear if these NPCs will run low-level processing. Part of a game-wide revision of scripts - Jorge 03/14/10
+
+If GetInSameCell Player != 1
+	Return
+Else
+	if ( DoOnce == 0 )
+		if ( GetSitting == 3 )
+			set DoOnce to 1
+			setRestrained 1
+		endif
+	endif
+	if ( freed == 0 )
+		set button to GetButtonPressed
+		if ( button == 1 )
+			SetRestrained 0
+			SayTo player GREETING
+			set Freed to 1
+			ignoreCrime 0
+			AddToFaction NCRFactionNV 0
+			AddScriptPackage TecMineHostageEscape
+			set VTechatticup.NumHostages to VTechatticup.NumHostages + 1
+			SendAssaultAlarm Player CaesarsLegionTechMineFaction
+
+		endif
+	endif
+Endif
+
+END

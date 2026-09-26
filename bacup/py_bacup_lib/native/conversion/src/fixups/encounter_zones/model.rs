@@ -359,13 +359,9 @@ mod tests {
         assert_eq!(info.location_type, 9);
         assert_eq!(info.parent.map(|p| p.local), Some(0x01558C));
         assert_eq!(info.keyword_locals, vec![KW_WORKSHOP]);
-    }
 
-    #[test]
-    fn decode_zero_band_is_none() {
-        let i = StringInterner::new();
-        let r = lctn(&i, 1, Some((0, 9, 0)), None, &[]);
-        assert_eq!(decode_lctn_info(&r, &i).own_band, None);
+        let zero = lctn(&i, 1, Some((0, 9, 0)), None, &[]);
+        assert_eq!(decode_lctn_info(&zero, &i).own_band, None, "zero band");
     }
 
     /// Raw-Bytes DATA (the `struct:I,B,B,B,B` codec rawified by the source
@@ -374,44 +370,25 @@ mod tests {
     #[test]
     fn decode_raw_bytes_data_reads_band_and_type() {
         let i = StringInterner::new();
-        let mut r = Record::new(
-            SigCode::from_str("LCTN").unwrap(),
-            FormKey {
-                local: 0x0989F5,
-                plugin: i.intern("SeventySix.esm"),
-            },
-        );
-        // [0..4] unknown_int, [4] unknown_byte, [5] min=20, [6] type=9, [7] max=99
-        let bytes: smallvec::SmallVec<[u8; 32]> =
-            smallvec::SmallVec::from_slice(&[0, 0, 0, 0, 0, 20, 9, 99]);
-        r.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("DATA").unwrap(),
-            value: FieldValue::Bytes(bytes),
-        });
-        let info = decode_lctn_info(&r, &i);
-        assert_eq!(info.own_band, Some((20, 99)));
-        assert_eq!(info.location_type, 9);
-    }
-
-    #[test]
-    fn decode_raw_bytes_data_zero_band_is_none() {
-        let i = StringInterner::new();
-        let mut r = Record::new(
-            SigCode::from_str("LCTN").unwrap(),
-            FormKey {
-                local: 1,
-                plugin: i.intern("SeventySix.esm"),
-            },
-        );
-        let bytes: smallvec::SmallVec<[u8; 32]> =
-            smallvec::SmallVec::from_slice(&[0, 0, 0, 0, 0, 0, 9, 0]);
-        r.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("DATA").unwrap(),
-            value: FieldValue::Bytes(bytes),
-        });
-        let info = decode_lctn_info(&r, &i);
-        assert_eq!(info.own_band, None);
-        assert_eq!(info.location_type, 9);
+        for (min, max, expected_band) in [(20, 99, Some((20, 99))), (0, 0, None)] {
+            let mut r = Record::new(
+                SigCode::from_str("LCTN").unwrap(),
+                FormKey {
+                    local: 0x0989F5,
+                    plugin: i.intern("SeventySix.esm"),
+                },
+            );
+            // [0..4] unknown_int, [4] unknown_byte, [5] min, [6] type=9, [7] max
+            let bytes: smallvec::SmallVec<[u8; 32]> =
+                smallvec::SmallVec::from_slice(&[0, 0, 0, 0, 0, min, 9, max]);
+            r.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("DATA").unwrap(),
+                value: FieldValue::Bytes(bytes),
+            });
+            let info = decode_lctn_info(&r, &i);
+            assert_eq!(info.own_band, expected_band, "{min}..{max}");
+            assert_eq!(info.location_type, 9, "{min}..{max}");
+        }
     }
 
     /// Raw-Bytes LCEC (the `struct:I` + `row_array h,h` codec rawified by the
@@ -447,30 +424,14 @@ mod tests {
             plugin: i.intern("Appalachia.esm"),
         };
         assert_eq!(footprint, vec![(world, -2, -16), (world, -4, -15)]);
-    }
 
-    /// A world whose master-index high byte is the LCTN's own-plugin index
-    /// resolves to the source plugin name.
-    #[test]
-    fn decode_raw_bytes_lcec_own_plugin_world() {
-        let i = StringInterner::new();
-        // one master → own index is 1 (0x01 high byte).
-        let mut data: Vec<u8> = Vec::new();
-        data.extend_from_slice(&0x0125DA15u32.to_le_bytes());
-        data.extend_from_slice(&0i16.to_le_bytes());
-        data.extend_from_slice(&0i16.to_le_bytes());
-        let mut r = Record::new(
-            SigCode::from_str("LCTN").unwrap(),
-            FormKey {
-                local: 1,
-                plugin: i.intern("SeventySix.esm"),
-            },
-        );
-        r.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("LCEC").unwrap(),
-            value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&data)),
-        });
-        let masters = vec!["Fallout4.esm".to_string()];
+        // A world whose master-index high byte is the LCTN's own-plugin index
+        // resolves to the source plugin name.
+        let mut own: Vec<u8> = Vec::new();
+        own.extend_from_slice(&0x0125DA15u32.to_le_bytes());
+        own.extend_from_slice(&0i16.to_le_bytes());
+        own.extend_from_slice(&0i16.to_le_bytes());
+        r.fields[0].value = FieldValue::Bytes(smallvec::SmallVec::from_slice(&own));
         let footprint = decode_lcec_footprint(&r, &i, &masters, "SeventySix.esm");
         assert_eq!(footprint.len(), 1);
         assert_eq!(footprint[0].0.local, 0x25DA15);
@@ -541,6 +502,16 @@ mod tests {
             WorkshopClass::Settlement
         );
         assert_eq!(classify(0, &[KW_CLEARABLE], ""), WorkshopClass::NonWorkshop);
+
+        assert_eq!(eczn_flags(WorkshopClass::Settlement), 9);
+        assert_eq!(eczn_flags(WorkshopClass::Shelter), 9);
+        assert_eq!(eczn_flags(WorkshopClass::NonWorkshop), 0);
+        assert_eq!(
+            eczn_editor_id("LocWhitespring"),
+            "LocWhitespringEncounterZone"
+        );
+        assert_eq!(clamp_level(200), 127);
+        assert_eq!(clamp_level(50), 50);
     }
 
     #[test]
@@ -560,18 +531,5 @@ mod tests {
         let mut pa2: HashMap<u32, Option<u32>> = HashMap::new();
         pa2.insert(9, None);
         assert_eq!(resolve_band(9, &b2, &pa2), None);
-    }
-
-    #[test]
-    fn flags_and_eid() {
-        assert_eq!(eczn_flags(WorkshopClass::Settlement), 9);
-        assert_eq!(eczn_flags(WorkshopClass::Shelter), 9);
-        assert_eq!(eczn_flags(WorkshopClass::NonWorkshop), 0);
-        assert_eq!(
-            eczn_editor_id("LocWhitespring"),
-            "LocWhitespringEncounterZone"
-        );
-        assert_eq!(clamp_level(200), 127);
-        assert_eq!(clamp_level(50), 50);
     }
 }

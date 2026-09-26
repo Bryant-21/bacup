@@ -26,11 +26,8 @@ FORBIDDEN = (
 )
 
 
-def test_cutover_deleted_legacy_files_are_absent():
+def test_cutover_legacy_entrypoints_are_gone():
     assert [path.as_posix() for path in DELETED_FILES if (ROOT / path).exists()] == []
-
-
-def test_cutover_does_not_reference_deleted_legacy_entrypoints():
     offenders: list[str] = []
     current = Path(__file__).resolve()
     for root_name in SCAN_ROOTS:

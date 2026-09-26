@@ -1445,9 +1445,90 @@ mod tests {
     use crate::record::FieldEntry;
 
     #[test]
-    fn creature_dependency_input_includes_inventory_items() {
-        for signature in ["BOOK", "INGR", "KEYM", "SLGM"] {
-            assert!(required_skyrim_creature_dependency_signatures().contains(&signature));
+    fn dependency_ledger_joins_inventory_raw_ids_and_package_edges() {
+        {
+            for signature in ["BOOK", "INGR", "KEYM", "SLGM"] {
+                assert!(required_skyrim_creature_dependency_signatures().contains(&signature));
+            }
+        }
+        {
+            let interner = StringInterner::new();
+            let (records, catalog) = fixture(&interner);
+            let ledger =
+                build_skyrim_creature_dependency_ledger(&records, &catalog, &interner).unwrap();
+            assert_eq!(ledger.accounting.candidate_races, 1);
+            assert_eq!(ledger.accounting.npc_records, 1);
+            assert_eq!(
+                ledger.candidates[0].npc_sources,
+                vec![key(&interner, 0x101)]
+            );
+            assert!(
+                ledger.candidates[0]
+                    .closure
+                    .contains(&key(&interner, 0x102))
+            );
+            assert!(ledger.records.iter().any(|record| {
+                record.source.form_key == key(&interner, 0x101)
+                    && record.references.iter().any(|reference| {
+                        reference.field_path == "PKID[1]"
+                            && reference.target == key(&interner, 0x102)
+                    })
+            }));
+        }
+        {
+            let interner = StringInterner::new();
+            let mut npc = record(&interner, "NPC_", 0x101);
+            let mut cnto = vec![0_u8; 8];
+            cnto[..4].copy_from_slice(&0x102_u32.to_le_bytes());
+            cnto[4..].copy_from_slice(&1_i32.to_le_bytes());
+            npc.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("CNTO").unwrap(),
+                value: FieldValue::Bytes(smallvec::SmallVec::from_vec(cnto)),
+            });
+            let mut lvln = record(&interner, "LVLN", 0x103);
+            let mut lvlo = vec![0_u8; 12];
+            lvlo[4..8].copy_from_slice(&0x101_u32.to_le_bytes());
+            lvln.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("LVLO").unwrap(),
+                value: FieldValue::Bytes(smallvec::SmallVec::from_vec(lvlo)),
+            });
+            let item = record(&interner, "MISC", 0x102);
+            let records = [&npc, &item, &lvln]
+                .into_iter()
+                .map(|record| (record.form_key, record))
+                .collect::<HashMap<_, _>>();
+
+            let npc_references = record_references(&npc, &records, &interner);
+            assert!(npc_references.iter().any(|reference| {
+                reference.field_path == "CNTO[0].item" && reference.target == item.form_key
+            }));
+            let lvln_references = record_references(&lvln, &records, &interner);
+            assert!(lvln_references.iter().any(|reference| {
+                reference.field_path == "LVLO[0].reference" && reference.target == npc.form_key
+            }));
+
+            assert_eq!(
+                embedded_form_ids(&FieldValue::FormKey(item.form_key), 0, 0),
+                [item.form_key.local]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let (mut records, catalog) = fixture(&interner);
+            push_form(&mut records[1], "INAM", key(&interner, 0x200));
+
+            let ledger =
+                build_skyrim_creature_dependency_ledger(&records, &catalog, &interner).unwrap();
+
+            assert!(
+                !ledger.candidates[0]
+                    .closure
+                    .contains(&key(&interner, 0x200))
+            );
+            assert!(matches!(
+                ledger.candidates[0].disposition,
+                SkyrimCreatureDependencyCandidateDisposition::Ready
+            ));
         }
     }
 
@@ -1540,90 +1621,6 @@ mod tests {
         };
         race.eid = Some(interner.intern("FixtureRace"));
         (vec![race, npc, package], catalog)
-    }
-
-    #[test]
-    fn dependency_ledger_closes_npc_package_edges_without_dropping_the_npc() {
-        let interner = StringInterner::new();
-        let (records, catalog) = fixture(&interner);
-        let ledger =
-            build_skyrim_creature_dependency_ledger(&records, &catalog, &interner).unwrap();
-        assert_eq!(ledger.accounting.candidate_races, 1);
-        assert_eq!(ledger.accounting.npc_records, 1);
-        assert_eq!(
-            ledger.candidates[0].npc_sources,
-            vec![key(&interner, 0x101)]
-        );
-        assert!(
-            ledger.candidates[0]
-                .closure
-                .contains(&key(&interner, 0x102))
-        );
-        assert!(ledger.records.iter().any(|record| {
-            record.source.form_key == key(&interner, 0x101)
-                && record.references.iter().any(|reference| {
-                    reference.field_path == "PKID[1]" && reference.target == key(&interner, 0x102)
-                })
-        }));
-    }
-
-    #[test]
-    fn raw_cnto_and_lvlo_form_ids_join_the_dependency_graph() {
-        let interner = StringInterner::new();
-        let mut npc = record(&interner, "NPC_", 0x101);
-        let mut cnto = vec![0_u8; 8];
-        cnto[..4].copy_from_slice(&0x102_u32.to_le_bytes());
-        cnto[4..].copy_from_slice(&1_i32.to_le_bytes());
-        npc.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("CNTO").unwrap(),
-            value: FieldValue::Bytes(smallvec::SmallVec::from_vec(cnto)),
-        });
-        let mut lvln = record(&interner, "LVLN", 0x103);
-        let mut lvlo = vec![0_u8; 12];
-        lvlo[4..8].copy_from_slice(&0x101_u32.to_le_bytes());
-        lvln.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("LVLO").unwrap(),
-            value: FieldValue::Bytes(smallvec::SmallVec::from_vec(lvlo)),
-        });
-        let item = record(&interner, "MISC", 0x102);
-        let records = [&npc, &item, &lvln]
-            .into_iter()
-            .map(|record| (record.form_key, record))
-            .collect::<HashMap<_, _>>();
-
-        let npc_references = record_references(&npc, &records, &interner);
-        assert!(npc_references.iter().any(|reference| {
-            reference.field_path == "CNTO[0].item" && reference.target == item.form_key
-        }));
-        let lvln_references = record_references(&lvln, &records, &interner);
-        assert!(lvln_references.iter().any(|reference| {
-            reference.field_path == "LVLO[0].reference" && reference.target == npc.form_key
-        }));
-
-        assert_eq!(
-            embedded_form_ids(&FieldValue::FormKey(item.form_key), 0, 0),
-            [item.form_key.local]
-        );
-    }
-
-    #[test]
-    fn dependency_ledger_does_not_block_on_references_outside_the_selected_record_set() {
-        let interner = StringInterner::new();
-        let (mut records, catalog) = fixture(&interner);
-        push_form(&mut records[1], "INAM", key(&interner, 0x200));
-
-        let ledger =
-            build_skyrim_creature_dependency_ledger(&records, &catalog, &interner).unwrap();
-
-        assert!(
-            !ledger.candidates[0]
-                .closure
-                .contains(&key(&interner, 0x200))
-        );
-        assert!(matches!(
-            ledger.candidates[0].disposition,
-            SkyrimCreatureDependencyCandidateDisposition::Ready
-        ));
     }
 
     #[test]

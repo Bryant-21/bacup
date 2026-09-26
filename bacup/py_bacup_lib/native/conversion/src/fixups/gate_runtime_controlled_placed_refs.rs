@@ -8,7 +8,9 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{SmallVec, smallvec};
 
-use esp_authoring_core::plugin_runtime::{ParsedItem, ParsedRecord, WriteEffect};
+#[cfg(test)]
+use esp_authoring_core::plugin_runtime::ParsedItem;
+use esp_authoring_core::plugin_runtime::{ParsedRecord, WriteEffect};
 
 use crate::fixups::rewrite_raw_object_template_formids::encode_target_form_id;
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
@@ -16,15 +18,18 @@ use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::SigCode;
 use crate::session::{HandleRawScan, PluginSession};
 
+#[cfg(test)]
 const RECORD_FLAG_PERSISTENT: u32 = 0x0000_0400;
 const RECORD_FLAG_INITIALLY_DISABLED: u32 = 0x0000_0800;
 
 const PLACED_SIGS: &[&str] = &["REFR", "ACHR", "PGRE", "PHZD", "PGRD"];
+// No "storm": FO76 prefixes all Skyline Valley content `Storm_`, so that token
+// disabled every alias-filled ref (event doors, markers, spawn furniture) of
+// ~50 live quests while matching no runtime-enabled weather visual.
 const QUEST_RUNTIME_GATE_TOKENS: &[&str] = &[
     "nuke",
     "nuked",
     "blast",
-    "storm",
     "distantcloud",
     "weathercloud",
     "76trailer",
@@ -314,6 +319,7 @@ impl GateSourceIndex {
         Ok(index)
     }
 
+    #[cfg(test)]
     fn from_source_items(items: &[ParsedItem]) -> Self {
         let mut index = Self::default();
         collect_lctn_gates(items, &mut index);
@@ -374,6 +380,7 @@ impl GateSourceIndex {
     }
 }
 
+#[cfg(test)]
 fn collect_lctn_gates(items: &[ParsedItem], index: &mut GateSourceIndex) {
     for item in items {
         match item {
@@ -427,12 +434,14 @@ struct SourceMetadata {
     layer_locals: FxHashSet<u32>,
 }
 
+#[cfg(test)]
 fn collect_source_metadata(items: &[ParsedItem]) -> SourceMetadata {
     let mut metadata = SourceMetadata::default();
     collect_source_metadata_in_items(items, &mut metadata);
     metadata
 }
 
+#[cfg(test)]
 fn collect_source_metadata_in_items(items: &[ParsedItem], metadata: &mut SourceMetadata) {
     for item in items {
         match item {
@@ -451,6 +460,7 @@ fn collect_source_metadata_in_items(items: &[ParsedItem], metadata: &mut SourceM
     }
 }
 
+#[cfg(test)]
 fn collect_placed_metadata_gates(
     items: &[ParsedItem],
     source_metadata: &SourceMetadata,
@@ -472,6 +482,7 @@ fn collect_placed_metadata_gates(
     collect_placed_metadata_gates_in_items(items, source_metadata, &runtime_layers, index);
 }
 
+#[cfg(test)]
 fn collect_placed_metadata_gates_in_items(
     items: &[ParsedItem],
     source_metadata: &SourceMetadata,
@@ -502,6 +513,7 @@ fn collect_placed_metadata_gates_in_items(
     }
 }
 
+#[cfg(test)]
 fn collect_placed_record_metadata_gates(
     record: &ParsedRecord,
     source_metadata: &SourceMetadata,
@@ -569,6 +581,7 @@ fn placed_record_gate_evidence(
     evidence
 }
 
+#[cfg(test)]
 fn collect_quest_gates(items: &[ParsedItem], index: &mut GateSourceIndex) {
     for item in items {
         match item {
@@ -581,6 +594,7 @@ fn collect_quest_gates(items: &[ParsedItem], index: &mut GateSourceIndex) {
     }
 }
 
+#[cfg(test)]
 fn collect_quest_record_gates(record: &ParsedRecord, index: &mut GateSourceIndex) {
     let quest = parse_quest_aliases(record);
     collect_parsed_quest_gates(&quest, index);
@@ -856,6 +870,7 @@ fn decode_zstring(bytes: &[u8]) -> Option<String> {
     std::str::from_utf8(&bytes[..end]).ok().map(str::to_owned)
 }
 
+#[cfg(test)]
 fn raw_record_edid(record: &ParsedRecord) -> Option<String> {
     record
         .subrecords
@@ -1013,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_master_initially_disabled_refs_are_gated() {
+    fn explicit_and_manual_ref_gates() {
         let lctn = record(
             "LCTN",
             0x000A0078,
@@ -1026,10 +1041,7 @@ mod tests {
         assert!(index.gated_refs.contains(&0x85647F));
         assert_eq!(index.explicit_disabled_refs, 1);
         assert_eq!(index.quest_gated_refs, 0);
-    }
 
-    #[test]
-    fn manual_disabled_refs_are_gated() {
         let index = GateSourceIndex::from_source_items(&[]);
 
         assert!(index.gated_refs.contains(&0x79B387));
@@ -1041,10 +1053,7 @@ mod tests {
         assert!(index.manual_enabled_ref_locals.contains(&0x85AD03));
         assert_eq!(index.manual_disabled_refs, 5);
         assert_eq!(index.manual_enabled_refs, 1);
-    }
 
-    #[test]
-    fn manual_enabled_refs_override_source_gates() {
         let lctn = record(
             "LCTN",
             0x000A0078,
@@ -1060,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn scripted_nuke_quest_alias_gates_matching_lctn_special_ref() {
+    fn quest_alias_gates_lctn_special_ref_only_with_runtime_token() {
         let lctn = record(
             "LCTN",
             0x000A0078,
@@ -1089,10 +1098,7 @@ mod tests {
         assert!(index.gated_refs.contains(&0x85647F));
         assert_eq!(index.explicit_disabled_refs, 0);
         assert_eq!(index.quest_gated_refs, 1);
-    }
 
-    #[test]
-    fn unrelated_special_refs_stay_enabled_without_runtime_token() {
         let lctn = record(
             "LCTN",
             0x000A0078,
@@ -1120,10 +1126,38 @@ mod tests {
 
         assert!(!index.gated_refs.contains(&0x85647F));
         assert_eq!(index.quest_gated_refs, 0);
+
+        let lctn = record(
+            "LCTN",
+            0x006B9683,
+            0,
+            vec![sub("LCSR", lcsr_row(0x007319C3, 0x00731A04, 0x0025DA15))],
+        );
+        let qust = record(
+            "QUST",
+            0x006AD506,
+            0,
+            vec![
+                sub("EDID", z("Storm_RegionBoss")),
+                sub("VMAD", vec![1, 2, 3]),
+                sub("ALLS", 2_u32.to_le_bytes().to_vec()),
+                sub("ALID", z("EventLocation")),
+                sub("ALFL", 0x006B9683_u32.to_le_bytes().to_vec()),
+                sub("ALST", 22_u32.to_le_bytes().to_vec()),
+                sub("ALID", z("EntranceDoor")),
+                sub("ALFA", 2_u32.to_le_bytes().to_vec()),
+                sub("ALRT", 0x007319C3_u32.to_le_bytes().to_vec()),
+            ],
+        );
+
+        let index = GateSourceIndex::from_source_items(&[item(lctn), item(qust)]);
+
+        assert!(!index.gated_refs.contains(&0x731A04));
+        assert_eq!(index.quest_gated_refs, 0);
     }
 
     #[test]
-    fn placed_ref_on_runtime_trailer_layer_is_gated() {
+    fn runtime_layers_gate_placed_refs_ordinary_layers_do_not() {
         let layer = record(
             "LAYR",
             0x004DFF93,
@@ -1143,10 +1177,7 @@ mod tests {
         assert_eq!(index.layers_scanned, 1);
         assert_eq!(index.runtime_layers, 1);
         assert_eq!(index.layer_gated_refs, 1);
-    }
 
-    #[test]
-    fn placed_ref_on_babylon_layer_is_gated() {
         let layer = record("LAYR", 0x004DFF94, 0, vec![sub("EDID", z("Babylon"))]);
         let placed = record(
             "REFR",
@@ -1161,10 +1192,7 @@ mod tests {
         assert_eq!(index.layers_scanned, 1);
         assert_eq!(index.runtime_layers, 1);
         assert_eq!(index.layer_gated_refs, 1);
-    }
 
-    #[test]
-    fn ordinary_world_trailer_layer_stays_enabled() {
         let layer = record(
             "LAYR",
             0x00369D11,
@@ -1184,27 +1212,6 @@ mod tests {
         assert_eq!(index.layers_scanned, 1);
         assert_eq!(index.runtime_layers, 0);
         assert_eq!(index.layer_gated_refs, 0);
-    }
-
-    #[test]
-    fn placed_ref_with_test_server_base_is_gated() {
-        let base = record(
-            "ACTI",
-            0x0010D467,
-            0,
-            vec![sub("EDID", z("test_MPScriptTestServertEventKeywordButton"))],
-        );
-        let placed = record(
-            "REFR",
-            0x00856481,
-            0,
-            vec![sub("NAME", 0x0010D467_u32.to_le_bytes().to_vec())],
-        );
-
-        let index = GateSourceIndex::from_source_items(&[item(base), item(placed)]);
-
-        assert!(index.gated_refs.contains(&0x856481));
-        assert_eq!(index.editor_only_base_gated_refs, 1);
     }
 
     #[test]
@@ -1254,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn placed_refs_with_always_gated_bases_are_gated_in_any_cell() {
+    fn always_gated_and_test_server_bases_gate_placed_refs() {
         let cases: [(u32, &str, u32); 3] = [
             (
                 0x0038_1E2D,
@@ -1297,10 +1304,28 @@ mod tests {
             assert!(index.gated_refs.contains(&placed_form_id));
         }
         assert_eq!(index.always_gated_base_refs, 3);
+
+        let base = record(
+            "ACTI",
+            0x0010D467,
+            0,
+            vec![sub("EDID", z("test_MPScriptTestServertEventKeywordButton"))],
+        );
+        let placed = record(
+            "REFR",
+            0x00856481,
+            0,
+            vec![sub("NAME", 0x0010D467_u32.to_le_bytes().to_vec())],
+        );
+
+        let index = GateSourceIndex::from_source_items(&[item(base), item(placed)]);
+
+        assert!(index.gated_refs.contains(&0x856481));
+        assert_eq!(index.editor_only_base_gated_refs, 1);
     }
 
     #[test]
-    fn chalkletter_refs_in_configured_cell_are_gated() {
+    fn chalkletter_refs_gated_only_in_configured_cell() {
         let base = record(
             "STAT",
             0x003A24DB,
@@ -1321,10 +1346,7 @@ mod tests {
 
         assert!(index.gated_refs.contains(&0x42BEEF));
         assert_eq!(index.chalkletter_cell_gated_refs, 1);
-    }
 
-    #[test]
-    fn chalkletter_refs_outside_configured_cell_stay_enabled() {
         let base = record(
             "STAT",
             0x003A24DB,
@@ -1345,10 +1367,7 @@ mod tests {
 
         assert!(!index.gated_refs.contains(&0x42BEEF));
         assert_eq!(index.chalkletter_cell_gated_refs, 0);
-    }
 
-    #[test]
-    fn atx_chalkletterkit_refs_do_not_match_chalkletter_prefix_rule() {
         let base = record(
             "STAT",
             0x006653D4,
@@ -1372,17 +1391,14 @@ mod tests {
     }
 
     #[test]
-    fn marking_temporary_target_record_is_idempotent_without_making_it_persistent() {
+    fn initially_disabled_flag_set_and_clear_preserve_persistence() {
         let mut placed = record("REFR", 0x0785647F, 0, Vec::new());
 
         assert!(mark_record_initially_disabled(&mut placed));
         assert_eq!(placed.flags, RECORD_FLAG_INITIALLY_DISABLED);
         assert!(!mark_record_initially_disabled(&mut placed));
         assert_eq!(placed.flags, RECORD_FLAG_INITIALLY_DISABLED);
-    }
 
-    #[test]
-    fn marking_persistent_target_record_preserves_its_persistence() {
         let mut placed = record("REFR", 0x0785647F, RECORD_FLAG_PERSISTENT, Vec::new());
 
         assert!(mark_record_initially_disabled(&mut placed));
@@ -1390,10 +1406,7 @@ mod tests {
             placed.flags,
             RECORD_FLAG_PERSISTENT | RECORD_FLAG_INITIALLY_DISABLED
         );
-    }
 
-    #[test]
-    fn manual_enabled_ref_clears_initially_disabled_flag_only() {
         let mut placed = record(
             "REFR",
             0x0785AD03,
@@ -1427,10 +1440,7 @@ mod tests {
             resolve_target_raw_for_source_local(0x856481, &mapped, &own, 7),
             None
         );
-    }
 
-    #[test]
-    fn target_resolution_skips_master_mappings() {
         let mut mapped = FxHashMap::default();
         mapped.insert(0x85647F, 0x00012345);
         let own = FxHashSet::default();

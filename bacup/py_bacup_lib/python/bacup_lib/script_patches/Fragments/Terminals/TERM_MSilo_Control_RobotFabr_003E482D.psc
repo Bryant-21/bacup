@@ -1,9 +1,9 @@
 Function Fragment_Terminal_01(ObjectReference akTerminalRef)
-    (MSilo as MSiloQuestScript_Control).ReplaceLaunchChief(0)
+    (MSilo as MSiloQuestScript_Control).ReplaceLaunchChief(1)
 EndFunction
 
 Function Fragment_Terminal_02(ObjectReference akTerminalRef)
-    (MSilo as MSiloQuestScript_Control).ReplaceLaunchChief(1)
+    (MSilo as MSiloQuestScript_Control).ReplaceLaunchChief(0)
 EndFunction
 
 Function Fragment_Terminal_03(ObjectReference akTerminalRef)

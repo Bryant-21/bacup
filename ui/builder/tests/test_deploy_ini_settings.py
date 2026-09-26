@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from ui.builder.mod_builder_app import ModBuilderApp
 
 
@@ -55,3 +57,51 @@ def test_builder_all_deploy_actions_forward_captured_ini_setting(tmp_path):
             target(lambda message: None)
     assert len(calls) == 4
     assert all(call["preserve_xse_inis"] is True for call in calls)
+
+
+@pytest.mark.parametrize("action", ["_on_xse_deploy", "_on_deploy"])
+@pytest.mark.parametrize("skip_compile", [False, True])
+def test_builder_deploys_xse_scripts_to_selected_target(tmp_path, action, skip_compile):
+    mod = tmp_path / "mods" / "B21_FullScreenMap"
+    for relative, content in {
+        "F4SE/Plugins/B21_FullScreenMap.dll": b"dll",
+        "F4SE/Plugins/B21_TalesFromAppalachia_en.txt": b"updated translations",
+        "data/Scripts/B21_FullScreenMap.pex": b"shipped interface",
+    }.items():
+        path = mod / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    game_data = tmp_path / "Game" / "Data"
+    target = tmp_path / "MO2" / mod.name
+    old_table = target / "F4SE/Plugins/B21_TalesFromAppalachia_en.txt"
+    old_table.parent.mkdir(parents=True)
+    old_table.write_bytes(b"stale translations")
+    with patch.object(ModBuilderApp, "_refresh_mods", lambda self: None):
+        app = ModBuilderApp()
+    app._selected_mod = lambda: mod.name
+    app._get_mod_game = lambda: "fo4"
+    app._selected_mod_kind = lambda: "xse"
+    app._resolve_game_data_path = lambda game: game_data
+    app._resolve_deploy_data_path = lambda game: target
+    app._skip_papyrus_compile = skip_compile
+    queued = []
+    app._run_fn = lambda fn, **kwargs: queued.append(fn)
+
+    def compile_scripts(mod_dir, game, imports, **kwargs):
+        assert (mod_dir, game, imports) == (mod, "fo4", game_data)
+        (mod / "data/Scripts/B21_FullScreenMap.pex").write_bytes(b"compiled interface")
+        return 1
+
+    with patch("app.paths.get_app_root", return_value=tmp_path), patch(
+        "app.paths.get_resource_dir", return_value=tmp_path / "resource"
+    ), patch("creation_lib.build.deployer.compile_papyrus", side_effect=compile_scripts) as compiler:
+        getattr(app, action)()
+        app._skip_papyrus_compile = not skip_compile
+        assert len(queued) == 1
+        queued[0](lambda message: None)
+    assert compiler.call_count == (0 if skip_compile else 1)
+    expected = b"shipped interface" if skip_compile else b"compiled interface"
+    assert (target / "Scripts/B21_FullScreenMap.pex").read_bytes() == expected
+    assert (target / "F4SE/Plugins/B21_FullScreenMap.dll").is_file()
+    assert old_table.read_bytes() == b"updated translations"
+    assert not game_data.exists()

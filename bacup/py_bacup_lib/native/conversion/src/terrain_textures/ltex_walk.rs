@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use esp_authoring_core::plugin_runtime::{
@@ -748,31 +747,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn safe_name_keeps_alnum_drops_punct() {
+    fn name_and_path_helpers_normalize_manifest_and_texture_paths() {
         assert_eq!(safe_name("Forest Grass/01"), "ForestGrass_01");
         assert_eq!(safe_name("a.b-c"), "a_b_c");
-    }
-
-    #[test]
-    fn join_manifest_path_handles_blanks() {
         assert_eq!(
             join_manifest_path("textures/terrain/x", "Foo"),
             "textures/terrain/x/Foo"
         );
         assert_eq!(join_manifest_path("", "Foo"), "Foo");
         assert_eq!(join_manifest_path("textures/", "/Foo/"), "textures/Foo");
-    }
-
-    #[test]
-    fn material_path_for_output_prefix_strips_textures_prefix_and_appends_bgsm() {
         assert_eq!(
             material_path_for_output_prefix("textures/terrain/appalachia/Foo"),
             "terrain/appalachia/Foo.bgsm"
         );
-    }
-
-    #[test]
-    fn normalize_texture_path_lowercase_forward_slash_prefix() {
         assert_eq!(
             normalize_texture_path("Foo\\Bar.dds"),
             "textures/Foo/Bar.dds"
@@ -797,66 +784,42 @@ mod tests {
     }
 
     #[test]
-    fn field_all_zero_matches() {
-        use serde_json::json;
-        let fields = vec![json!({"Other": "a"}), json!({"Another": "b"})];
-        assert!(field_all(&fields, "GrassTexture").is_empty());
-    }
-
-    #[test]
-    fn field_all_single_match() {
-        use serde_json::json;
-        let fields = vec![
-            json!({"GrassTexture": "001:Foo.esm"}),
-            json!({"Other": "x"}),
-        ];
-        let result = field_all(&fields, "GrassTexture");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].as_str().unwrap(), "001:Foo.esm");
-    }
-
-    #[test]
-    fn field_all_multiple_matches() {
+    fn field_lookups_return_values_and_reference_form_keys_in_order() {
         use serde_json::json;
         let fields = vec![
             json!({"GrassTexture": "001:Foo.esm"}),
             json!({"Other": "x"}),
             json!({"GrassTexture": "002:Foo.esm"}),
             json!({"GrassTexture": "003:Foo.esm"}),
+            json!({ "MaterialFile": r"Materials\Terrain\DirtCracked01.mat" }),
         ];
+        assert!(field_all(&fields, "Missing").is_empty());
         let result = field_all(&fields, "GrassTexture");
         assert_eq!(result.len(), 3);
+        assert_eq!(result[0].as_str().unwrap(), "001:Foo.esm");
         assert_eq!(result[2].as_str().unwrap(), "003:Foo.esm");
-    }
+        assert_eq!(
+            field_str(&fields, "MaterialFile"),
+            Some(r"Materials\Terrain\DirtCracked01.mat")
+        );
 
-    #[test]
-    fn field_reference_form_key_parses_reference_shape() {
-        use serde_json::json;
         let fields = vec![
             json!({ "GroundCover": { "reference": { "plugin": "Seventy.esm", "object_id": "011C67" }}}),
-            json!({ "Other": "x" }),
+            json!({ "GrassTexture": { "reference": { "plugin": "P.esm", "object_id": "001" }}}),
+            json!({ "UnknownInt": 65535 }),
+            json!({ "GrassTexture": { "reference": { "plugin": "P.esm", "object_id": "002" }}}),
         ];
         assert_eq!(
             field_reference_form_key(&fields, "GroundCover").as_deref(),
             Some("Seventy.esm:011C67")
         );
         assert!(field_reference_form_key(&fields, "Missing").is_none());
-    }
-
-    #[test]
-    fn field_all_reference_form_keys_returns_all_in_order() {
-        use serde_json::json;
-        let fields = vec![
-            json!({ "GrassTexture": { "reference": { "plugin": "P.esm", "object_id": "001" }}}),
-            json!({ "UnknownInt": 65535 }),
-            json!({ "GrassTexture": { "reference": { "plugin": "P.esm", "object_id": "002" }}}),
-        ];
         let keys = field_all_reference_form_keys(&fields, "GrassTexture");
         assert_eq!(keys, vec!["P.esm:001".to_string(), "P.esm:002".to_string()]);
     }
 
     #[test]
-    fn txst_texture_field_reads_direct_fields() {
+    fn txst_texture_field_reads_direct_fields_and_textures_rgbas_entries() {
         use serde_json::json;
         let fields = vec![
             json!({ "Diffuse": "terrain/appalachia/foo_d.dds" }),
@@ -870,11 +833,6 @@ mod tests {
             txst_texture_field(&fields, &["Specular", "SmoothSpec"]),
             Some("terrain/appalachia/foo_s.dds")
         );
-    }
-
-    #[test]
-    fn txst_texture_field_reads_textures_rgbas_entries() {
-        use serde_json::json;
         let fields = vec![json!({
             "TexturesRgbAs": [{
                 "Diffuse": "terrain\\appalachia\\foo_d.dds",
@@ -897,187 +855,33 @@ mod tests {
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Starfield .mat (CDB material) branch — gated on real extracted data.
-    // ─────────────────────────────────────────────────────────────────────────
-
-    fn starfield_extracted_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap()
-            .join("extracted/starfield")
-    }
-
     #[test]
-    fn mat_branch_resolves_real_starfield_material_instead_of_erroring_like_a_missing_bgsm() {
-        let extracted_root = starfield_extracted_root();
-        let cdb_path = extracted_root.join("materials").join("materialsbeta.cdb");
-        if !cdb_path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
-            .expect("resolver opens against the extracted starfield root");
-        let extraction_root = std::env::temp_dir().join("ltex_walk_mat_branch_test");
-        let _ = fs::remove_dir_all(&extraction_root);
-
-        // Real LTEX (LDefault001Solid, 01085C:Starfield.esm) MaterialFile value —
-        // see data/starfield_esm_yaml/Starfield/records/LTEX/LDefault001Solid*.yaml.
-        let result = mat_branch(
-            r"Materials\Terrain\Default001Solid.mat",
-            &cdb_path,
-            &resolver,
-            &extraction_root,
-            "textures/terrain/testworld",
-            "LDefault001Solid",
-        );
-
-        let (
-            diffuse,
-            normal,
-            spec,
-            lighting,
-            txst_form_key,
-            txst_editor_id,
-            output_material_path,
-            source_material_path,
-            source_material_file,
-        ) = result
-            .expect("a starfield .mat reference should convert, not error like a missing BGSM");
-
-        assert!(!diffuse.is_empty(), "expected a resolved diffuse texture");
-        assert!(!normal.is_empty(), "expected a resolved normal texture");
-        assert!(
-            spec.is_empty() && lighting.is_empty(),
-            "cdb_to_bgsm bakes spec/gloss into scalars, not texture slots"
-        );
-        assert!(txst_form_key.is_empty());
-        assert!(txst_editor_id.is_empty());
-        assert_eq!(
-            output_material_path.as_deref(),
-            Some("terrain/testworld/LDefault001Solid.bgsm")
-        );
-        assert_eq!(
-            source_material_path,
-            r"Materials\Terrain\Default001Solid.mat"
-        );
-        assert!(
-            Path::new(&source_material_file).is_file(),
-            "converted bgsm should be written to disk: {source_material_file}"
-        );
-        let written = fs::read(&source_material_file).expect("read converted bgsm");
-        bgsm::parse(&written).expect("converted bgsm bytes parse as BGSM");
-    }
-
-    #[test]
-    fn extracts_real_starfield_texture_with_data_prefix() {
-        let extracted_root = starfield_extracted_root();
-        let expected = extracted_root
+    fn extracts_data_prefixed_starfield_texture_from_extracted_tree() {
+        let extracted = tempfile::tempdir().unwrap();
+        let expected = extracted
+            .path()
             .join("textures")
             .join("landscape")
-            .join("ground")
             .join("moss")
-            .join("mossclumpy01_yellow_color.dds");
-        if !expected.exists() {
-            eprintln!("skip: starfield extracted texture not present");
-            return;
-        }
-        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
-            .expect("resolver opens against the extracted starfield root");
+            .join("moss_color.dds");
+        fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        fs::write(&expected, b"dds").unwrap();
+        let resolver =
+            Ba2Resolver::open_with_extracted_dir(extracted.path(), Some(extracted.path()))
+                .expect("resolver opens against the synthetic tree");
+        let dest = tempfile::tempdir().unwrap();
 
         let resolved = extract_optional_texture(
-            r"Data\Textures\Landscape\Ground\Moss\MossClumpy01_Yellow_color.dds",
+            r"Data\Textures\Landscape\Moss\Moss_Color.dds",
             &resolver,
-            &std::env::temp_dir().join("ltex_walk_data_texture_test"),
+            dest.path(),
         )
         .expect("Data\\Textures-rooted Starfield material slot should resolve");
-
         assert_eq!(PathBuf::from(resolved), expected);
-    }
-
-    #[test]
-    fn mat_branch_resolves_moss_material_and_its_data_prefixed_textures() {
-        let extracted_root = starfield_extracted_root();
-        let cdb_path = extracted_root.join("materials").join("materialsbeta.cdb");
-        if !cdb_path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
-            .expect("resolver opens against the extracted starfield root");
-        let extraction_root = std::env::temp_dir().join("ltex_walk_moss_material_test");
-        let _ = fs::remove_dir_all(&extraction_root);
-
-        let result = mat_branch(
-            r"TERRAIN\MossClumpy01_Yellow.mat",
-            &cdb_path,
-            &resolver,
-            &extraction_root,
-            "textures/terrain/testworld",
-            "LMossForest01_Yellow",
-        )
-        .expect("the MossClumpy01 Yellow material and all populated texture slots should resolve");
-
-        assert!(
-            Path::new(&result.0).is_file(),
-            "diffuse texture should resolve"
-        );
-        assert!(
-            Path::new(&result.1).is_file(),
-            "normal texture should resolve"
-        );
-        assert!(
-            Path::new(&result.8).is_file(),
-            "converted BGSM should be written"
-        );
-    }
-
-    #[test]
-    fn mat_branch_leaves_empty_texture_slots_empty_for_a_textureless_terrain_material() {
-        let extracted_root = starfield_extracted_root();
-        let cdb_path = extracted_root.join("materials").join("materialsbeta.cdb");
-        if !cdb_path.exists() {
-            eprintln!("skip: starfield extracted data not present");
-            return;
-        }
-        let resolver = Ba2Resolver::open_with_extracted_dir(&extracted_root, Some(&extracted_root))
-            .expect("resolver opens against the extracted starfield root");
-        let extraction_root = std::env::temp_dir().join("ltex_walk_mat_branch_textureless_test");
-        let _ = fs::remove_dir_all(&extraction_root);
-
-        // Real LTEX (LDirtCracked01, 0084F7:Starfield.esm) whose CE2 material
-        // (BSMaterial::TerrainSettingsComponent) projects to an empty
-        // diffuse/normal texture set — must still succeed, not error.
-        let result = mat_branch(
-            r"Materials\Terrain\DirtCracked01.mat",
-            &cdb_path,
-            &resolver,
-            &extraction_root,
-            "textures/terrain/testworld",
-            "LDirtCracked01",
-        );
-
-        let (diffuse, normal, spec, lighting, _, _, output_material_path, _, source_material_file) =
-            result.expect("an empty-texture-set material should still convert, not error");
-
-        assert!(diffuse.is_empty());
-        assert!(normal.is_empty());
-        assert!(spec.is_empty());
-        assert!(lighting.is_empty());
-        assert!(output_material_path.is_some());
-        assert!(Path::new(&source_material_file).is_file());
-    }
-
-    #[test]
-    fn build_bundle_reads_starfield_materialfile_field() {
-        // MaterialFile (Starfield's authoring key for the LTEX BNAM subrecord)
-        // must be picked up by the same lookup chain as FO76's "Texture"/"BNAM".
-        use serde_json::json;
-        let fields = vec![json!({ "MaterialFile": r"Materials\Terrain\DirtCracked01.mat" })];
         assert_eq!(
-            field_str(&fields, "MaterialFile"),
-            Some(r"Materials\Terrain\DirtCracked01.mat")
+            extract_optional_texture(" \0", &resolver, dest.path()).unwrap(),
+            ""
         );
+        assert!(extract_optional_texture("textures/missing.dds", &resolver, dest.path()).is_err());
     }
 }

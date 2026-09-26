@@ -261,11 +261,7 @@ mod tests {
         }
     }
 
-    fn make_cobj_with_fk(
-        self_fk: FormKey,
-        referenced_fk: FormKey,
-        interner: &StringInterner,
-    ) -> Record {
+    fn make_cobj_with_fk(self_fk: FormKey, referenced_fk: FormKey) -> Record {
         let sig = SigCode::from_str("COBJ").unwrap();
         let cnam_sig = SubrecordSig::from_str("CNAM").unwrap();
         Record {
@@ -281,242 +277,81 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn cobj_references_omod_direct_match() {
-        let mut interner = make_interner();
-        let omod_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let self_fk = make_fk(0x005678, "SeventySix.esm", &mut interner);
+    fn cobj_references_omod_in_direct_and_struct_fields() {
+        let interner = make_interner();
+        let omod_fk = make_fk(0x001234, "SeventySix.esm", &interner);
+        let other_fk = make_fk(0x009999, "SeventySix.esm", &interner);
+        let self_fk = make_fk(0x005678, "SeventySix.esm", &interner);
+        let mut empty = make_cobj_with_fk(self_fk, omod_fk);
+        empty.fields.clear();
+        let mut in_struct = make_cobj_with_fk(self_fk, omod_fk);
+        in_struct.fields[0].value = FieldValue::Struct(vec![(
+            interner.intern("created_object"),
+            FieldValue::FormKey(omod_fk),
+        )]);
+        let omods = FxHashSet::from_iter([omod_fk]);
+        let no_omods = FxHashSet::default();
 
-        let record = make_cobj_with_fk(self_fk, omod_fk, &mut interner);
-
-        let mut omod_set: FxHashSet<FormKey> = FxHashSet::default();
-        omod_set.insert(omod_fk);
-
-        assert!(cobj_references_omod(&record, &omod_set));
+        for (name, record, omod_set, expected) in [
+            (
+                "direct match",
+                make_cobj_with_fk(self_fk, omod_fk),
+                &omods,
+                true,
+            ),
+            (
+                "other form",
+                make_cobj_with_fk(self_fk, other_fk),
+                &omods,
+                false,
+            ),
+            ("no fields", empty, &omods, false),
+            ("inside struct", in_struct, &omods, true),
+            (
+                "empty omod set",
+                make_cobj_with_fk(self_fk, omod_fk),
+                &no_omods,
+                false,
+            ),
+        ] {
+            assert_eq!(cobj_references_omod(&record, omod_set), expected, "{name}");
+        }
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn cobj_references_omod_no_match() {
-        let mut interner = make_interner();
-        let omod_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let other_fk = make_fk(0x009999, "SeventySix.esm", &mut interner);
-        let self_fk = make_fk(0x005678, "SeventySix.esm", &mut interner);
-
-        let record = make_cobj_with_fk(self_fk, other_fk, &mut interner);
-
-        let mut omod_set: FxHashSet<FormKey> = FxHashSet::default();
-        omod_set.insert(omod_fk);
-
-        assert!(!cobj_references_omod(&record, &omod_set));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn cobj_references_omod_empty_fields() {
-        let mut interner = make_interner();
-        let omod_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let self_fk = make_fk(0x005678, "SeventySix.esm", &mut interner);
-
-        let sig = SigCode::from_str("COBJ").unwrap();
-        let record = Record {
-            sig,
-            form_key: self_fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec::SmallVec::new(),
-            warnings: smallvec::SmallVec::new(),
-        };
-
-        let mut omod_set: FxHashSet<FormKey> = FxHashSet::default();
-        omod_set.insert(omod_fk);
-
-        assert!(!cobj_references_omod(&record, &omod_set));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn cobj_references_omod_inside_struct() {
-        let mut interner = make_interner();
-        let omod_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let self_fk = make_fk(0x005678, "SeventySix.esm", &mut interner);
-
-        let field_sym = interner.intern("created_object");
-        let sig = SigCode::from_str("COBJ").unwrap();
-        let cnam_sig = SubrecordSig::from_str("CNAM").unwrap();
-
-        let record = Record {
-            sig,
-            form_key: self_fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: cnam_sig,
-                value: FieldValue::Struct(vec![(field_sym, FieldValue::FormKey(omod_fk))]),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-
-        let mut omod_set: FxHashSet<FormKey> = FxHashSet::default();
-        omod_set.insert(omod_fk);
-
-        assert!(cobj_references_omod(&record, &omod_set));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn cobj_references_omod_empty_omod_set() {
-        let mut interner = make_interner();
-        let omod_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let self_fk = make_fk(0x005678, "SeventySix.esm", &mut interner);
-
-        let record = make_cobj_with_fk(self_fk, omod_fk, &mut interner);
-        let omod_set: FxHashSet<FormKey> = FxHashSet::default();
-
-        assert!(!cobj_references_omod(&record, &omod_set));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_creature_root_is_false() {
+    fn applies_only_to_non_creature_roots_with_a_source() {
         use crate::fixups::{FixupConfig, FixupContext};
         use crate::schema::AuthoringSchema;
-        use crate::sym::StringInterner;
         use std::sync::Arc;
 
-        let mut interner = StringInterner::new();
         let schema = Arc::new(AuthoringSchema::for_game("fo4").expect("fo4 schema"));
-        let root_sig = SigCode::from_str("NPC_").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(root_sig),
-            ..Default::default()
-        };
-
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        assert!(!InjectCobjsForOmodsFixup.applies_to(&ctx));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_lvln_root_is_false() {
-        use crate::fixups::{FixupConfig, FixupContext};
-        use crate::schema::AuthoringSchema;
-        use crate::sym::StringInterner;
-        use std::sync::Arc;
-
-        let mut interner = StringInterner::new();
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").expect("fo4 schema"));
-        let root_sig = SigCode::from_str("LVLN").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(root_sig),
-            ..Default::default()
-        };
-
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        assert!(!InjectCobjsForOmodsFixup.applies_to(&ctx));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_weap_root_with_source_is_true() {
-        use crate::fixups::{FixupConfig, FixupContext};
-        use crate::schema::AuthoringSchema;
-        use crate::sym::StringInterner;
-        use std::sync::Arc;
-
-        let mut interner = StringInterner::new();
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").expect("fo4 schema"));
-        let root_sig = SigCode::from_str("WEAP").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(root_sig),
-            ..Default::default()
-        };
-
-        let ctx = FixupContext {
-            // Non-zero source handle — fixup should apply.
-            source_handle_id: 42,
-            target_handle_id: 43,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        assert!(InjectCobjsForOmodsFixup.applies_to(&ctx));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_no_source_is_false() {
-        use crate::fixups::{FixupConfig, FixupContext};
-        use crate::schema::AuthoringSchema;
-        use crate::sym::StringInterner;
-        use std::sync::Arc;
-
-        let mut interner = StringInterner::new();
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").expect("fo4 schema"));
-        let root_sig = SigCode::from_str("WEAP").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(root_sig),
-            ..Default::default()
-        };
-
-        let ctx = FixupContext {
-            source_handle_id: 0,
-            target_handle_id: 43,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        assert!(!InjectCobjsForOmodsFixup.applies_to(&ctx));
+        for (name, root, source_handle_id, expected) in [
+            ("creature root", "NPC_", 1, false),
+            ("leveled npc root", "LVLN", 1, false),
+            ("weapon root with source", "WEAP", 42, true),
+            ("no source", "WEAP", 0, false),
+        ] {
+            let config = FixupConfig {
+                root_sig: Some(SigCode::from_str(root).unwrap()),
+                ..Default::default()
+            };
+            let ctx = FixupContext {
+                source_handle_id,
+                target_handle_id: 43,
+                schema_target: &schema,
+                schema_source: &schema,
+                skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
+                mod_path: None,
+                source_extracted_dir: None,
+                target_master_handle_ids: &[],
+                config: &config,
+            };
+            assert_eq!(
+                InjectCobjsForOmodsFixup.applies_to(&ctx),
+                expected,
+                "{name}"
+            );
+        }
     }
 }

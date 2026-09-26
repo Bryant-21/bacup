@@ -9,8 +9,6 @@ pub mod gpu_service;
 pub mod materials;
 pub mod triage;
 
-#[cfg(test)]
-mod corpus_tests;
 mod cubemaps;
 mod executors;
 
@@ -925,62 +923,112 @@ mod tests {
     }
 
     #[test]
-    fn convert_all_enumerates_and_counts_classes() {
-        let tmp = std::env::temp_dir().join("engine_convert_all");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_tex(&source, "Textures/A/rock_d.dds", 16, 16, "BC7_UNORM", true); // PassThrough
-        write_tex(&source, "Textures/A/rock_n.dds", 16, 16, "BC7_UNORM", true); // PerTexel
-        write_tex(&source, "Textures/B/kit_d.dds", 16, 16, "BC7_UNORM", true); // Bundle (d+r+l)
-        write_tex(&source, "Textures/B/kit_r.dds", 16, 16, "BC7_UNORM", true);
-        write_tex(&source, "Textures/B/kit_l.dds", 16, 16, "BC7_UNORM", true);
-        write_tex(&source, "Textures/C/loose.dds", 16, 16, "BC7_UNORM", true); // bare FO76 diffuse
+    fn convert_all_enumerates_classes_and_separates_bare_diffuse() {
+        {
+            let tmp = std::env::temp_dir().join("engine_convert_all");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_tex(&source, "Textures/A/rock_d.dds", 16, 16, "BC7_UNORM", true); // PassThrough
+            write_tex(&source, "Textures/A/rock_n.dds", 16, 16, "BC7_UNORM", true); // PerTexel
+            write_tex(&source, "Textures/B/kit_d.dds", 16, 16, "BC7_UNORM", true); // Bundle (d+r+l)
+            write_tex(&source, "Textures/B/kit_r.dds", 16, 16, "BC7_UNORM", true);
+            write_tex(&source, "Textures/B/kit_l.dds", 16, 16, "BC7_UNORM", true);
+            write_tex(&source, "Textures/C/loose.dds", 16, 16, "BC7_UNORM", true); // bare FO76 diffuse
 
-        let mut params = base_params(&source, &tmp.join("mod").join("data"));
-        params.convert_all = true;
-        let report = run(&params);
+            let mut params = base_params(&source, &tmp.join("mod").join("data"));
+            params.convert_all = true;
+            let report = run(&params);
 
-        assert_eq!(report.class.pass_through, 2);
-        assert_eq!(report.class.per_texel, 1);
-        assert_eq!(report.class.bundle, 1);
-        assert_eq!(report.no_request_groups, 0);
-        assert_eq!(report.failed, 0);
-        assert!(report.timings.read_ns > 0);
-        assert!(report.timings.decode_ns > 0);
-        assert!(report.timings.material_ns > 0);
-        assert!(report.timings.mips_ns > 0);
-        assert!(report.timings.encode_ns > 0);
-        assert!(report.timings.write_ns > 0);
-        assert!(report.timings.directory_cache_hits > 0);
-        assert!(report.timings.open_ns > 0);
-        assert!(report.timings.file_write_ns > 0);
-        assert!(report.timings.close_ns > 0);
-        assert!(report.timings.write_bytes > 0);
-        assert!(report.timings.copy_ns > 0);
-        assert_eq!(report.timings.gpu_wait_ns, 0);
-        // PassThrough(_d) + PerTexel(_n) + bundle d/s/g... glow only when _l has
-        // an alpha-emitting output — count written files on disk instead:
-        assert!(
-            tmp.join("mod/data/Textures/A/rock_d.dds".replace('/', std::path::MAIN_SEPARATOR_STR))
+            assert_eq!(report.class.pass_through, 2);
+            assert_eq!(report.class.per_texel, 1);
+            assert_eq!(report.class.bundle, 1);
+            assert_eq!(report.no_request_groups, 0);
+            assert_eq!(report.failed, 0);
+            assert!(report.timings.read_ns > 0);
+            assert!(report.timings.decode_ns > 0);
+            assert!(report.timings.material_ns > 0);
+            assert!(report.timings.mips_ns > 0);
+            assert!(report.timings.encode_ns > 0);
+            assert!(report.timings.write_ns > 0);
+            assert!(report.timings.directory_cache_hits > 0);
+            assert!(report.timings.open_ns > 0);
+            assert!(report.timings.file_write_ns > 0);
+            assert!(report.timings.close_ns > 0);
+            assert!(report.timings.write_bytes > 0);
+            assert!(report.timings.copy_ns > 0);
+            assert_eq!(report.timings.gpu_wait_ns, 0);
+            // PassThrough(_d) + PerTexel(_n) + bundle d/s/g... glow only when _l has
+            // an alpha-emitting output — count written files on disk instead:
+            assert!(
+                tmp.join(
+                    "mod/data/Textures/A/rock_d.dds".replace('/', std::path::MAIN_SEPARATOR_STR)
+                )
                 .is_file()
-        );
-        assert!(
-            tmp.join("mod/data/Textures/A/rock_n.dds".replace('/', std::path::MAIN_SEPARATOR_STR))
+            );
+            assert!(
+                tmp.join(
+                    "mod/data/Textures/A/rock_n.dds".replace('/', std::path::MAIN_SEPARATOR_STR)
+                )
                 .is_file()
-        );
-        assert!(
-            tmp.join("mod/data/Textures/B/kit_d.dds".replace('/', std::path::MAIN_SEPARATOR_STR))
+            );
+            assert!(
+                tmp.join(
+                    "mod/data/Textures/B/kit_d.dds".replace('/', std::path::MAIN_SEPARATOR_STR)
+                )
                 .is_file()
-        );
-        assert!(
-            tmp.join("mod/data/Textures/B/kit_s.dds".replace('/', std::path::MAIN_SEPARATOR_STR))
+            );
+            assert!(
+                tmp.join(
+                    "mod/data/Textures/B/kit_s.dds".replace('/', std::path::MAIN_SEPARATOR_STR)
+                )
                 .is_file()
-        );
-        assert!(
-            tmp.join("mod/data/Textures/C/loose.dds".replace('/', std::path::MAIN_SEPARATOR_STR))
+            );
+            assert!(
+                tmp.join(
+                    "mod/data/Textures/C/loose.dds".replace('/', std::path::MAIN_SEPARATOR_STR)
+                )
                 .is_file()
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("engine_bare_and_suffixed_diffuse");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            for name in ["mist.dds", "mist_d.dds", "mist_n.dds"] {
+                write_tex(
+                    &source,
+                    &format!("Textures/Effects/{name}"),
+                    16,
+                    16,
+                    "BC7_UNORM",
+                    true,
+                );
+            }
+            let target = tmp.join("fo4");
+            write_tex(
+                &target,
+                "Textures/Effects/mist.dds",
+                4,
+                4,
+                "BC1_UNORM",
+                true,
+            );
+
+            let data_root = tmp.join("mod").join("data");
+            let mut params = base_params(&source, &data_root);
+            params.convert_all = true;
+            params.target_dirs = vec![target];
+            let report = run(&params);
+
+            assert_eq!(report.skipped_base_owned_groups, 1);
+            assert_eq!(report.skipped_base_owned_outputs, 1);
+            assert_eq!(report.outputs_written, 2);
+            assert!(!data_root.join("Textures/Effects/mist.dds").exists());
+            assert!(data_root.join("Textures/Effects/mist_d.dds").is_file());
+            assert!(data_root.join("Textures/Effects/mist_n.dds").is_file());
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
@@ -1031,297 +1079,297 @@ mod tests {
     }
 
     #[test]
-    fn engine_preserves_named_glow_color_from_lighting_rgb() {
-        let tmp = std::env::temp_dir().join("engine_named_glow_rgb");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_uniform_tex(
-            &source,
-            "Textures/Actors/Wendigo/wendigo_glow_d.dds",
-            [128, 128, 128, 255],
-        );
-        write_uniform_tex(
-            &source,
-            "Textures/Actors/Wendigo/wendigo_glow_r.dds",
-            [0, 0, 0, 255],
-        );
-        write_uniform_tex(
-            &source,
-            "Textures/Actors/Wendigo/wendigo_glow_l.dds",
-            [64, 255, 0, 128],
-        );
-
-        let mut params = base_params(&source, &tmp.join("mod").join("data"));
-        params.convert_all = true;
-        let report = run(&params);
-
-        assert_eq!(report.failed, 0);
-        let output = tmp.join(
-            "mod/data/Textures/Actors/Wendigo/wendigo_glow_g.dds"
-                .replace('/', std::path::MAIN_SEPARATOR_STR),
-        );
-        let image = directxtex_native::read_dds_float_rgba_image(&output).unwrap();
-        let expected = [(64.0 / 255.0) * (128.0 / 255.0), 128.0 / 255.0, 0.0];
-        for (actual, expected) in image.rgba[..3].iter().zip(expected) {
-            assert!(
-                (actual - expected).abs() < 0.01,
-                "expected {expected}, got {actual}"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn engine_applies_per_group_rockcliff76_gloss_cap() {
-        let tmp = std::env::temp_dir().join("engine_rockcliff76_gloss_cap");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_uniform_tex(
-            &source,
-            "Textures/Landscape/Rocks/RockCliff76_d.dds",
-            [128, 128, 128, 255],
-        );
-        write_uniform_tex(
-            &source,
-            "Textures/Landscape/Rocks/RockCliff76_r.dds",
-            [0, 0, 0, 255],
-        );
-        write_uniform_tex(
-            &source,
-            "Textures/Landscape/Rocks/RockCliff76_l.dds",
-            [255, 255, 0, 255],
-        );
-
-        let mut params = base_params(&source, &tmp.join("mod").join("data"));
-        params.convert_all = true;
-        let report = run(&params);
-
-        assert_eq!(report.failed, 0);
-        let output = tmp.join(
-            "mod/data/Textures/Landscape/Rocks/RockCliff76_s.dds"
-                .replace('/', std::path::MAIN_SEPARATOR_STR),
-        );
-        let image = directxtex_native::read_dds_float_rgba_image(&output).unwrap();
-        assert!(
-            (image.rgba[1] - crate::phase::textures::MATTE_FO76_GLOSS_MULTIPLIER).abs() < 0.02,
-            "expected capped gloss, got {}",
-            image.rgba[1]
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn terrain_jobs_preserve_relocated_generic_outputs() {
-        let tmp = std::env::temp_dir().join("engine_terrain_jobs");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        for suffix in ["d", "n", "r", "l"] {
-            write_tex(
+    fn engine_preserves_named_glow_and_applies_group_gloss_cap() {
+        {
+            let tmp = std::env::temp_dir().join("engine_named_glow_rgb");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_uniform_tex(
                 &source,
-                &format!("Textures/Land/soil_{suffix}.dds"),
-                16,
-                16,
-                "R8G8B8A8_UNORM",
-                true,
+                "Textures/Actors/Wendigo/wendigo_glow_d.dds",
+                [128, 128, 128, 255],
             );
-        }
-        let input = |suffix: &str| {
-            source
-                .join("Textures")
-                .join("Land")
-                .join(format!("soil_{suffix}.dds"))
-                .to_string_lossy()
-                .into_owned()
-        };
-        let data_root = tmp.join("mod").join("data");
-        let mut params = base_params(&source, &data_root);
-        params.convert_all = true;
-        params.namespace = "FO76".to_owned();
-        for suffix in ["d", "n", "r", "l"] {
-            params
-                .relocation_members
-                .insert(format!("textures/land/soil_{suffix}.dds"));
-        }
-        params.terrain_jobs = vec![TerrainTextureJob {
-            diffuse_path: input("d"),
-            normal_path: input("n"),
-            reflectivity_path: input("r"),
-            lighting_path: input("l"),
-            output_prefix: "textures/terrain/appalachia/Soil".to_owned(),
-        }];
+            write_uniform_tex(
+                &source,
+                "Textures/Actors/Wendigo/wendigo_glow_r.dds",
+                [0, 0, 0, 255],
+            );
+            write_uniform_tex(
+                &source,
+                "Textures/Actors/Wendigo/wendigo_glow_l.dds",
+                [64, 255, 0, 128],
+            );
 
-        let report = run(&params);
+            let mut params = base_params(&source, &tmp.join("mod").join("data"));
+            params.convert_all = true;
+            let report = run(&params);
 
-        assert_eq!(report.groups, 2);
-        assert_eq!(report.skipped_terrain_groups, 0);
-        assert_eq!(report.class.bundle, 2);
-        assert_eq!(report.failed, 0, "{:?}", report.errors);
-        assert_eq!(report.outputs_written, 8);
-        for suffix in ["d", "n", "s", "g"] {
+            assert_eq!(report.failed, 0);
+            let output = tmp.join(
+                "mod/data/Textures/Actors/Wendigo/wendigo_glow_g.dds"
+                    .replace('/', std::path::MAIN_SEPARATOR_STR),
+            );
+            let image = directxtex_native::read_dds_float_rgba_image(&output).unwrap();
+            let expected = [(64.0 / 255.0) * (128.0 / 255.0), 128.0 / 255.0, 0.0];
+            for (actual, expected) in image.rgba[..3].iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() < 0.01,
+                    "expected {expected}, got {actual}"
+                );
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("engine_rockcliff76_gloss_cap");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_uniform_tex(
+                &source,
+                "Textures/Landscape/Rocks/RockCliff76_d.dds",
+                [128, 128, 128, 255],
+            );
+            write_uniform_tex(
+                &source,
+                "Textures/Landscape/Rocks/RockCliff76_r.dds",
+                [0, 0, 0, 255],
+            );
+            write_uniform_tex(
+                &source,
+                "Textures/Landscape/Rocks/RockCliff76_l.dds",
+                [255, 255, 0, 255],
+            );
+
+            let mut params = base_params(&source, &tmp.join("mod").join("data"));
+            params.convert_all = true;
+            let report = run(&params);
+
+            assert_eq!(report.failed, 0);
+            let output = tmp.join(
+                "mod/data/Textures/Landscape/Rocks/RockCliff76_s.dds"
+                    .replace('/', std::path::MAIN_SEPARATOR_STR),
+            );
+            let image = directxtex_native::read_dds_float_rgba_image(&output).unwrap();
             assert!(
-                data_root
+                (image.rgba[1] - crate::phase::textures::MATTE_FO76_GLOSS_MULTIPLIER).abs() < 0.02,
+                "expected capped gloss, got {}",
+                image.rgba[1]
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+
+    #[test]
+    fn terrain_jobs_preserve_relocated_outputs_and_synthesize_starfield_maps() {
+        {
+            let tmp = std::env::temp_dir().join("engine_terrain_jobs");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            for suffix in ["d", "n", "r", "l"] {
+                write_tex(
+                    &source,
+                    &format!("Textures/Land/soil_{suffix}.dds"),
+                    16,
+                    16,
+                    "R8G8B8A8_UNORM",
+                    true,
+                );
+            }
+            let input = |suffix: &str| {
+                source
                     .join("Textures")
-                    .join("FO76")
                     .join("Land")
                     .join(format!("soil_{suffix}.dds"))
-                    .is_file()
-            );
-            assert!(
-                data_root
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            let data_root = tmp.join("mod").join("data");
+            let mut params = base_params(&source, &data_root);
+            params.convert_all = true;
+            params.namespace = "FO76".to_owned();
+            for suffix in ["d", "n", "r", "l"] {
+                params
+                    .relocation_members
+                    .insert(format!("textures/land/soil_{suffix}.dds"));
+            }
+            params.terrain_jobs = vec![TerrainTextureJob {
+                diffuse_path: input("d"),
+                normal_path: input("n"),
+                reflectivity_path: input("r"),
+                lighting_path: input("l"),
+                output_prefix: "textures/terrain/appalachia/Soil".to_owned(),
+            }];
+
+            let report = run(&params);
+
+            assert_eq!(report.groups, 2);
+            assert_eq!(report.skipped_terrain_groups, 0);
+            assert_eq!(report.class.bundle, 2);
+            assert_eq!(report.failed, 0, "{:?}", report.errors);
+            assert_eq!(report.outputs_written, 8);
+            for suffix in ["d", "n", "s", "g"] {
+                assert!(
+                    data_root
+                        .join("Textures")
+                        .join("FO76")
+                        .join("Land")
+                        .join(format!("soil_{suffix}.dds"))
+                        .is_file()
+                );
+                assert!(
+                    data_root
+                        .join("textures")
+                        .join("terrain")
+                        .join("appalachia")
+                        .join(format!("Soil_{suffix}.dds"))
+                        .is_file()
+                );
+            }
+            let diffuse = directxtex_native::read_dds_rgba_image(
+                &data_root
                     .join("textures")
                     .join("terrain")
                     .join("appalachia")
-                    .join(format!("Soil_{suffix}.dds"))
-                    .is_file()
-            );
-        }
-        let diffuse = directxtex_native::read_dds_rgba_image(
-            &data_root
-                .join("textures")
-                .join("terrain")
-                .join("appalachia")
-                .join("Soil_d.dds"),
-        )
-        .unwrap();
-        assert!(diffuse.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn starfield_terrain_jobs_synthesize_missing_normal_and_reflectivity() {
-        let tmp = std::env::temp_dir().join("engine_starfield_terrain_fallbacks");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        for suffix in ["d", "l"] {
-            write_tex(
-                &source,
-                &format!("Textures/Land/soil_{suffix}.dds"),
-                16,
-                16,
-                "R8G8B8A8_UNORM",
-                true,
-            );
-        }
-        let input = |suffix: &str| {
-            source
-                .join("Textures")
-                .join("Land")
-                .join(format!("soil_{suffix}.dds"))
-                .to_string_lossy()
-                .into_owned()
-        };
-        let data_root = tmp.join("mod").join("data");
-        let mut params = base_params(&source, &data_root);
-        params.source_game = "starfield".to_owned();
-        params.terrain_jobs = vec![TerrainTextureJob {
-            diffuse_path: input("d"),
-            normal_path: String::new(),
-            reflectivity_path: String::new(),
-            lighting_path: input("l"),
-            output_prefix: "textures/terrain/new_atlantis/Soil".to_owned(),
-        }];
-
-        let report = run(&params);
-
-        assert_eq!(report.failed, 0, "{:?}", report.errors);
-        assert_eq!(report.outputs_written, 4);
-        for suffix in ["d", "n", "s", "g"] {
-            assert!(
-                data_root
-                    .join("textures/terrain/new_atlantis")
-                    .join(format!("Soil_{suffix}.dds"))
-                    .is_file()
-            );
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn landscape_mip_flooding_only_rewrites_landscape_diffuse() {
-        let tmp = std::env::temp_dir().join("engine_landscape_mip_flooding");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        let mut rgba = vec![0u8; 4 * 4 * 4];
-        let seed = (2 * 4 + 2) * 4;
-        rgba[seed..seed + 4].copy_from_slice(&[220, 40, 10, 128]);
-        for rel in [
-            "Textures/Landscape/Grass/grass_d.dds",
-            "Textures/Effects/grass_d.dds",
-        ] {
-            let path = source.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            directxtex_native::write_dds_rgba_image(&path, 4, 4, &rgba, "R8G8B8A8_UNORM", true)
-                .unwrap();
-        }
-
-        let data_root = tmp.join("mod").join("data");
-        let mut params = base_params(&source, &data_root);
-        params.convert_all = true;
-        params.landscape_mip_flooding = true;
-        let report = run(&params);
-
-        assert_eq!(report.failed, 0);
-        assert_eq!(report.mip_flooded_outputs, 1);
-        let landscape = directxtex_native::read_dds_mips_rgba8(
-            &data_root.join("Textures/Landscape/Grass/grass_d.dds"),
-        )
-        .unwrap();
-        assert!(
-            landscape.mips[0]
-                .2
-                .chunks_exact(4)
-                .all(|pixel| pixel[..3] == [220, 40, 10])
-        );
-        assert_eq!(landscape.mips[0].2[seed + 3], 128);
-        assert_eq!(landscape.mips[0].2[3], 0);
-        assert!(
-            landscape.mips[1]
-                .2
-                .chunks_exact(4)
-                .any(|pixel| pixel[..3] == [220, 40, 10])
-        );
-
-        let effects =
-            directxtex_native::read_dds_mips_rgba8(&data_root.join("Textures/Effects/grass_d.dds"))
-                .unwrap();
-        assert_eq!(effects.mips[0].2, rgba);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn landscape_mip_flooding_promotes_bc1_cutout_to_bc3() {
-        let tmp = std::env::temp_dir().join("engine_landscape_mip_flooding_bc1");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        let path = source.join(
-            "Textures/Landscape/Grass/grass_d.dds".replace('/', std::path::MAIN_SEPARATOR_STR),
-        );
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut rgba = vec![0u8; 8 * 8 * 4];
-        rgba[..4].copy_from_slice(&[40, 180, 70, 255]);
-        directxtex_native::write_dds_rgba_image(&path, 8, 8, &rgba, "BC1_UNORM_SRGB", true)
+                    .join("Soil_d.dds"),
+            )
             .unwrap();
+            assert!(diffuse.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("engine_starfield_terrain_fallbacks");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            for suffix in ["d", "l"] {
+                write_tex(
+                    &source,
+                    &format!("Textures/Land/soil_{suffix}.dds"),
+                    16,
+                    16,
+                    "R8G8B8A8_UNORM",
+                    true,
+                );
+            }
+            let input = |suffix: &str| {
+                source
+                    .join("Textures")
+                    .join("Land")
+                    .join(format!("soil_{suffix}.dds"))
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            let data_root = tmp.join("mod").join("data");
+            let mut params = base_params(&source, &data_root);
+            params.source_game = "starfield".to_owned();
+            params.terrain_jobs = vec![TerrainTextureJob {
+                diffuse_path: input("d"),
+                normal_path: String::new(),
+                reflectivity_path: String::new(),
+                lighting_path: input("l"),
+                output_prefix: "textures/terrain/new_atlantis/Soil".to_owned(),
+            }];
 
-        let data_root = tmp.join("mod").join("data");
-        let mut params = base_params(&source, &data_root);
-        params.convert_all = true;
-        params.landscape_mip_flooding = true;
-        let report = run(&params);
+            let report = run(&params);
 
-        assert_eq!(report.failed, 0);
-        assert_eq!(report.mip_flooded_outputs, 1);
-        let output = directxtex_native::read_dds_mips_rgba8(
-            &data_root.join("Textures/Landscape/Grass/grass_d.dds"),
-        )
-        .unwrap();
-        assert_eq!(output.dxgi_format, 78);
-        assert!(
-            output.mips[0]
-                .2
-                .chunks_exact(4)
-                .any(|pixel| { pixel[3] == 0 && pixel[..3].iter().any(|channel| *channel != 0) })
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
+            assert_eq!(report.failed, 0, "{:?}", report.errors);
+            assert_eq!(report.outputs_written, 4);
+            for suffix in ["d", "n", "s", "g"] {
+                assert!(
+                    data_root
+                        .join("textures/terrain/new_atlantis")
+                        .join(format!("Soil_{suffix}.dds"))
+                        .is_file()
+                );
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+
+    #[test]
+    fn landscape_mip_flooding_rewrites_only_landscape_diffuse_and_promotes_cutouts() {
+        {
+            let tmp = std::env::temp_dir().join("engine_landscape_mip_flooding");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            let mut rgba = vec![0u8; 4 * 4 * 4];
+            let seed = (2 * 4 + 2) * 4;
+            rgba[seed..seed + 4].copy_from_slice(&[220, 40, 10, 128]);
+            for rel in [
+                "Textures/Landscape/Grass/grass_d.dds",
+                "Textures/Effects/grass_d.dds",
+            ] {
+                let path = source.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                directxtex_native::write_dds_rgba_image(&path, 4, 4, &rgba, "R8G8B8A8_UNORM", true)
+                    .unwrap();
+            }
+
+            let data_root = tmp.join("mod").join("data");
+            let mut params = base_params(&source, &data_root);
+            params.convert_all = true;
+            params.landscape_mip_flooding = true;
+            let report = run(&params);
+
+            assert_eq!(report.failed, 0);
+            assert_eq!(report.mip_flooded_outputs, 1);
+            let landscape = directxtex_native::read_dds_mips_rgba8(
+                &data_root.join("Textures/Landscape/Grass/grass_d.dds"),
+            )
+            .unwrap();
+            assert!(
+                landscape.mips[0]
+                    .2
+                    .chunks_exact(4)
+                    .all(|pixel| pixel[..3] == [220, 40, 10])
+            );
+            assert_eq!(landscape.mips[0].2[seed + 3], 128);
+            assert_eq!(landscape.mips[0].2[3], 0);
+            assert!(
+                landscape.mips[1]
+                    .2
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[..3] == [220, 40, 10])
+            );
+
+            let effects = directxtex_native::read_dds_mips_rgba8(
+                &data_root.join("Textures/Effects/grass_d.dds"),
+            )
+            .unwrap();
+            assert_eq!(effects.mips[0].2, rgba);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("engine_landscape_mip_flooding_bc1");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            let path = source.join(
+                "Textures/Landscape/Grass/grass_d.dds".replace('/', std::path::MAIN_SEPARATOR_STR),
+            );
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut rgba = vec![0u8; 8 * 8 * 4];
+            rgba[..4].copy_from_slice(&[40, 180, 70, 255]);
+            directxtex_native::write_dds_rgba_image(&path, 8, 8, &rgba, "BC1_UNORM_SRGB", true)
+                .unwrap();
+
+            let data_root = tmp.join("mod").join("data");
+            let mut params = base_params(&source, &data_root);
+            params.convert_all = true;
+            params.landscape_mip_flooding = true;
+            let report = run(&params);
+
+            assert_eq!(report.failed, 0);
+            assert_eq!(report.mip_flooded_outputs, 1);
+            let output = directxtex_native::read_dds_mips_rgba8(
+                &data_root.join("Textures/Landscape/Grass/grass_d.dds"),
+            )
+            .unwrap();
+            assert_eq!(output.dxgi_format, 78);
+            assert!(
+                output.mips[0].2.chunks_exact(4).any(|pixel| {
+                    pixel[3] == 0 && pixel[..3].iter().any(|channel| *channel != 0)
+                })
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
@@ -1375,119 +1423,79 @@ mod tests {
     }
 
     #[test]
-    fn base_owned_skip_is_diffuse_keyed() {
-        // Production fix carry: diffuse exists in target -> whole group skipped,
-        // even though the synthesized _g/_s outputs do NOT exist in target.
-        let tmp = std::env::temp_dir().join("engine_base_owned");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        for n in ["kit_d.dds", "kit_r.dds", "kit_l.dds"] {
+    fn base_owned_skip_is_diffuse_keyed_and_recovers_missing_normal() {
+        {
+            // Production fix carry: diffuse exists in target -> whole group skipped,
+            // even though the synthesized _g/_s outputs do NOT exist in target.
+            let tmp = std::env::temp_dir().join("engine_base_owned");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            for n in ["kit_d.dds", "kit_r.dds", "kit_l.dds"] {
+                write_tex(
+                    &source,
+                    &format!("Textures/Kit/{n}"),
+                    16,
+                    16,
+                    "BC7_UNORM",
+                    true,
+                );
+            }
+            let target = tmp.join("fo4");
+            write_tex(&target, "Textures/Kit/kit_d.dds", 4, 4, "BC1_UNORM", true);
+
+            let mut params = base_params(&source, &tmp.join("mod").join("data"));
+            params.convert_all = true;
+            params.target_dirs = vec![target.clone()];
+            let report = run(&params);
+
+            assert_eq!(report.skipped_base_owned_groups, 1);
+            assert_eq!(report.outputs_written, 0);
+            assert!(
+                !tmp.join(
+                    "mod/data/Textures/Kit/kit_s.dds".replace('/', std::path::MAIN_SEPARATOR_STR)
+                )
+                .exists(),
+                "no synthesized output may clobber-adjacent a base-owned diffuse"
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("engine_base_owned_missing_normal");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            for name in ["leaves_d.dds", "leaves_n.dds"] {
+                write_tex(
+                    &source,
+                    &format!("Textures/Effects/{name}"),
+                    16,
+                    16,
+                    "BC7_UNORM",
+                    true,
+                );
+            }
+            let target = tmp.join("fo4");
             write_tex(
-                &source,
-                &format!("Textures/Kit/{n}"),
-                16,
-                16,
-                "BC7_UNORM",
+                &target,
+                "Textures/Effects/leaves_d.dds",
+                4,
+                4,
+                "BC1_UNORM",
                 true,
             );
+
+            let data_root = tmp.join("mod").join("data");
+            let mut params = base_params(&source, &data_root);
+            params.convert_all = true;
+            params.target_dirs = vec![target];
+            let report = run(&params);
+
+            assert_eq!(report.skipped_base_owned_groups, 1);
+            assert_eq!(report.skipped_base_owned_outputs, 1);
+            assert_eq!(report.outputs_written, 1);
+            assert!(!data_root.join("Textures/Effects/leaves_d.dds").exists());
+            assert!(data_root.join("Textures/Effects/leaves_n.dds").is_file());
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let target = tmp.join("fo4");
-        write_tex(&target, "Textures/Kit/kit_d.dds", 4, 4, "BC1_UNORM", true);
-
-        let mut params = base_params(&source, &tmp.join("mod").join("data"));
-        params.convert_all = true;
-        params.target_dirs = vec![target.clone()];
-        let report = run(&params);
-
-        assert_eq!(report.skipped_base_owned_groups, 1);
-        assert_eq!(report.outputs_written, 0);
-        assert!(
-            !tmp.join(
-                "mod/data/Textures/Kit/kit_s.dds".replace('/', std::path::MAIN_SEPARATOR_STR)
-            )
-            .exists(),
-            "no synthesized output may clobber-adjacent a base-owned diffuse"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn base_owned_group_recovers_missing_identity_normal() {
-        let tmp = std::env::temp_dir().join("engine_base_owned_missing_normal");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        for name in ["leaves_d.dds", "leaves_n.dds"] {
-            write_tex(
-                &source,
-                &format!("Textures/Effects/{name}"),
-                16,
-                16,
-                "BC7_UNORM",
-                true,
-            );
-        }
-        let target = tmp.join("fo4");
-        write_tex(
-            &target,
-            "Textures/Effects/leaves_d.dds",
-            4,
-            4,
-            "BC1_UNORM",
-            true,
-        );
-
-        let data_root = tmp.join("mod").join("data");
-        let mut params = base_params(&source, &data_root);
-        params.convert_all = true;
-        params.target_dirs = vec![target];
-        let report = run(&params);
-
-        assert_eq!(report.skipped_base_owned_groups, 1);
-        assert_eq!(report.skipped_base_owned_outputs, 1);
-        assert_eq!(report.outputs_written, 1);
-        assert!(!data_root.join("Textures/Effects/leaves_d.dds").exists());
-        assert!(data_root.join("Textures/Effects/leaves_n.dds").is_file());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn convert_all_separates_bare_diffuse_from_suffixed_bundle() {
-        let tmp = std::env::temp_dir().join("engine_bare_and_suffixed_diffuse");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        for name in ["mist.dds", "mist_d.dds", "mist_n.dds"] {
-            write_tex(
-                &source,
-                &format!("Textures/Effects/{name}"),
-                16,
-                16,
-                "BC7_UNORM",
-                true,
-            );
-        }
-        let target = tmp.join("fo4");
-        write_tex(
-            &target,
-            "Textures/Effects/mist.dds",
-            4,
-            4,
-            "BC1_UNORM",
-            true,
-        );
-
-        let data_root = tmp.join("mod").join("data");
-        let mut params = base_params(&source, &data_root);
-        params.convert_all = true;
-        params.target_dirs = vec![target];
-        let report = run(&params);
-
-        assert_eq!(report.skipped_base_owned_groups, 1);
-        assert_eq!(report.skipped_base_owned_outputs, 1);
-        assert_eq!(report.outputs_written, 2);
-        assert!(!data_root.join("Textures/Effects/mist.dds").exists());
-        assert!(data_root.join("Textures/Effects/mist_d.dds").is_file());
-        assert!(data_root.join("Textures/Effects/mist_n.dds").is_file());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1539,140 +1547,165 @@ mod tests {
     }
 
     #[test]
-    fn pbr_carry_preserves_diffuse_keyed_base_owned_skip() {
-        let tmp = std::env::temp_dir().join("engine_pbr_base_owned");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        for name in ["kit_d.dds", "kit_r.dds", "kit_l.dds"] {
+    fn skip_existing_and_pbr_carry_count_outputs_and_sidecars() {
+        {
+            let tmp = std::env::temp_dir().join("engine_skip_existing");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
             write_tex(
                 &source,
-                &format!("Textures/Kit/{name}"),
-                16,
-                16,
-                "BC7_UNORM",
-                true,
+                "Textures/A/rock_d.dds",
+                8,
+                8,
+                "R8G8B8A8_UNORM",
+                false,
             );
+            let data_root = tmp.join("mod").join("data");
+            write_tex(
+                &data_root,
+                "Textures/A/rock_d.dds",
+                4,
+                4,
+                "R8G8B8A8_UNORM",
+                false,
+            ); // pre-existing
+
+            let mut params = base_params(&source, &data_root);
+            params.convert_all = true;
+            params.skip_existing = true;
+            let report = run(&params);
+
+            // Legacy semantics: existing outputs count as written AND as
+            // skipped_existing.
+            assert_eq!(report.skipped_existing, 1);
+            assert_eq!(report.outputs_written, 1);
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let target = tmp.join("fo4");
-        write_tex(&target, "Textures/Kit/kit_d.dds", 4, 4, "BC1_UNORM", true);
+        {
+            let tmp = std::env::temp_dir().join("engine_pbr_base_owned");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            for name in ["kit_d.dds", "kit_r.dds", "kit_l.dds"] {
+                write_tex(
+                    &source,
+                    &format!("Textures/Kit/{name}"),
+                    16,
+                    16,
+                    "BC7_UNORM",
+                    true,
+                );
+            }
+            let target = tmp.join("fo4");
+            write_tex(&target, "Textures/Kit/kit_d.dds", 4, 4, "BC1_UNORM", true);
 
-        let data_root = tmp.join("mod").join("data");
-        let mut params = base_params(&source, &data_root);
-        params.convert_all = true;
-        params.pbr_carry = true;
-        params.target_dirs = vec![target];
-        let report = run(&params);
+            let data_root = tmp.join("mod").join("data");
+            let mut params = base_params(&source, &data_root);
+            params.convert_all = true;
+            params.pbr_carry = true;
+            params.target_dirs = vec![target];
+            let report = run(&params);
 
-        assert_eq!(report.skipped_base_owned_groups, 1);
-        assert_eq!(report.skipped_base_owned_outputs, 3);
-        assert_eq!(report.outputs_written, 0);
-        for suffix in ["d", "s", "g", "r", "l"] {
+            assert_eq!(report.skipped_base_owned_groups, 1);
+            assert_eq!(report.skipped_base_owned_outputs, 3);
+            assert_eq!(report.outputs_written, 0);
+            for suffix in ["d", "s", "g", "r", "l"] {
+                assert!(
+                    !data_root
+                        .join("Textures")
+                        .join("Kit")
+                        .join(format!("kit_{suffix}.dds"))
+                        .exists(),
+                    "base-owned diffuse must suppress every adjacent output"
+                );
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("engine_pbr_skip_existing");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            for name in ["kit_d.dds", "kit_r.dds", "kit_l.dds"] {
+                write_tex(
+                    &source,
+                    &format!("Textures/Kit/{name}"),
+                    16,
+                    16,
+                    "BC7_UNORM",
+                    true,
+                );
+            }
+            let data_root = tmp.join("mod").join("data");
+
+            let mut legacy_params = base_params(&source, &data_root);
+            legacy_params.convert_all = true;
+            let legacy_report = run(&legacy_params);
+            assert_eq!(legacy_report.outputs_written, 3);
+
+            let mut pbr_params = base_params(&source, &data_root);
+            pbr_params.convert_all = true;
+            pbr_params.pbr_carry = true;
+            pbr_params.skip_existing = true;
+            let carry_report = run(&pbr_params);
+            assert_eq!(carry_report.skipped_existing, 0);
+            assert_eq!(carry_report.outputs_written, 5);
+
+            let reused_report = run(&pbr_params);
+            assert_eq!(reused_report.skipped_existing, 5);
+            assert_eq!(reused_report.outputs_written, 5);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+
+    #[test]
+    fn invalid_records_panics_and_cancellation_surface_errors() {
+        {
+            let tmp = std::env::temp_dir().join("engine_invalid_texture_error");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            let bad = source.join("Textures").join("Bad").join("bad_d.dds");
+            std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
+            std::fs::write(&bad, b"not a dds").unwrap();
+
+            let mut params = base_params(&source, &tmp.join("mod").join("data"));
+            params.convert_all = true;
+            let report = run(&params);
+
+            assert_eq!(report.outputs_written, 0);
+            assert_eq!(report.failed, 1);
             assert!(
-                !data_root
-                    .join("Textures")
-                    .join("Kit")
-                    .join(format!("kit_{suffix}.dds"))
-                    .exists(),
-                "base-owned diffuse must suppress every adjacent output"
+                report.errors.iter().any(|message| {
+                    message.contains("texture task failed") && message.contains("bad_d.dds")
+                }),
+                "expected bad texture path in errors: {:?}",
+                report.errors
             );
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn skip_existing_counts_outputs_as_written() {
-        let tmp = std::env::temp_dir().join("engine_skip_existing");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_tex(
-            &source,
-            "Textures/A/rock_d.dds",
-            8,
-            8,
-            "R8G8B8A8_UNORM",
-            false,
-        );
-        let data_root = tmp.join("mod").join("data");
-        write_tex(
-            &data_root,
-            "Textures/A/rock_d.dds",
-            4,
-            4,
-            "R8G8B8A8_UNORM",
-            false,
-        ); // pre-existing
-
-        let mut params = base_params(&source, &data_root);
-        params.convert_all = true;
-        params.skip_existing = true;
-        let report = run(&params);
-
-        // Legacy semantics: existing outputs count as written AND as
-        // skipped_existing.
-        assert_eq!(report.skipped_existing, 1);
-        assert_eq!(report.outputs_written, 1);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn pbr_carry_skip_existing_requires_and_counts_sidecars() {
-        let tmp = std::env::temp_dir().join("engine_pbr_skip_existing");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        for name in ["kit_d.dds", "kit_r.dds", "kit_l.dds"] {
+        {
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| panic!("bad texture")));
+            let payload = result.unwrap_err();
+            assert_eq!(panic_payload_to_string(&*payload), "bad texture");
+        }
+        {
+            let tmp = std::env::temp_dir().join("engine_cancel");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
             write_tex(
                 &source,
-                &format!("Textures/Kit/{name}"),
-                16,
-                16,
-                "BC7_UNORM",
-                true,
+                "Textures/A/rock_d.dds",
+                8,
+                8,
+                "R8G8B8A8_UNORM",
+                false,
             );
+            let mut params = base_params(&source, &tmp.join("mod").join("data"));
+            params.convert_all = true;
+            let cancel = AtomicBool::new(true);
+            let err = run_texture_engine(&params, &cancel, None).unwrap_err();
+            assert!(err.contains("cancel"));
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let data_root = tmp.join("mod").join("data");
-
-        let mut legacy_params = base_params(&source, &data_root);
-        legacy_params.convert_all = true;
-        let legacy_report = run(&legacy_params);
-        assert_eq!(legacy_report.outputs_written, 3);
-
-        let mut pbr_params = base_params(&source, &data_root);
-        pbr_params.convert_all = true;
-        pbr_params.pbr_carry = true;
-        pbr_params.skip_existing = true;
-        let carry_report = run(&pbr_params);
-        assert_eq!(carry_report.skipped_existing, 0);
-        assert_eq!(carry_report.outputs_written, 5);
-
-        let reused_report = run(&pbr_params);
-        assert_eq!(reused_report.skipped_existing, 5);
-        assert_eq!(reused_report.outputs_written, 5);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn invalid_texture_records_error_message() {
-        let tmp = std::env::temp_dir().join("engine_invalid_texture_error");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        let bad = source.join("Textures").join("Bad").join("bad_d.dds");
-        std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
-        std::fs::write(&bad, b"not a dds").unwrap();
-
-        let mut params = base_params(&source, &tmp.join("mod").join("data"));
-        params.convert_all = true;
-        let report = run(&params);
-
-        assert_eq!(report.outputs_written, 0);
-        assert_eq!(report.failed, 1);
-        assert!(
-            report.errors.iter().any(|message| {
-                message.contains("texture task failed") && message.contains("bad_d.dds")
-            }),
-            "expected bad texture path in errors: {:?}",
-            report.errors
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1697,35 +1730,6 @@ mod tests {
             enumerate_source_textures_with_inventory(&source, Some(&inventory)),
             enumerate_source_textures(&source),
         );
-    }
-
-    #[test]
-    fn panic_payload_to_string_extracts_message() {
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| panic!("bad texture")));
-        let payload = result.unwrap_err();
-        assert_eq!(panic_payload_to_string(&*payload), "bad texture");
-    }
-
-    #[test]
-    fn cancel_aborts_with_error() {
-        let tmp = std::env::temp_dir().join("engine_cancel");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_tex(
-            &source,
-            "Textures/A/rock_d.dds",
-            8,
-            8,
-            "R8G8B8A8_UNORM",
-            false,
-        );
-        let mut params = base_params(&source, &tmp.join("mod").join("data"));
-        params.convert_all = true;
-        let cancel = AtomicBool::new(true);
-        let err = run_texture_engine(&params, &cancel, None).unwrap_err();
-        assert!(err.contains("cancel"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
 

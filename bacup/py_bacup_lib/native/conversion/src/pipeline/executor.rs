@@ -512,31 +512,57 @@ mod tests {
     }
 
     #[test]
-    fn waw_serializes_in_declaration_order() {
-        // w2 is instant, w1 sleeps: without the WAW edge w2 would log
-        // first. The edge forces w1 -> w2.
-        let data = TestData::default();
-        let (tx, _rx) = unbounded();
-        let cancel = AtomicBool::new(false);
-        let spec = PipelineSpec {
-            stages: vec![
-                Stage {
-                    name: "w1",
-                    reads: &[],
-                    writes: &[ResourceId::Synthetic(0)],
-                    run: slow_writer_one,
-                },
-                Stage {
-                    name: "w2",
-                    reads: &[],
-                    writes: &[ResourceId::Synthetic(0)],
-                    run: fast_writer_two,
-                },
-            ],
-            initial: vec![],
-        };
-        run_pipeline(&spec, &data, &tx, &cancel, &PipelineOptions::default()).unwrap();
-        assert_eq!(*data.log.lock().unwrap(), vec!["w1", "w2"]);
+    fn waw_and_war_hazards_serialize_stages() {
+        {
+            // w2 is instant, w1 sleeps: without the WAW edge w2 would log
+            // first. The edge forces w1 -> w2.
+            let data = TestData::default();
+            let (tx, _rx) = unbounded();
+            let cancel = AtomicBool::new(false);
+            let spec = PipelineSpec {
+                stages: vec![
+                    Stage {
+                        name: "w1",
+                        reads: &[],
+                        writes: &[ResourceId::Synthetic(0)],
+                        run: slow_writer_one,
+                    },
+                    Stage {
+                        name: "w2",
+                        reads: &[],
+                        writes: &[ResourceId::Synthetic(0)],
+                        run: fast_writer_two,
+                    },
+                ],
+                initial: vec![],
+            };
+            run_pipeline(&spec, &data, &tx, &cancel, &PipelineOptions::default()).unwrap();
+            assert_eq!(*data.log.lock().unwrap(), vec!["w1", "w2"]);
+        }
+        {
+            let data = TestData::default(); // value starts at 1
+            let (tx, _rx) = unbounded();
+            let cancel = AtomicBool::new(false);
+            let spec = PipelineSpec {
+                stages: vec![
+                    Stage {
+                        name: "reader",
+                        reads: &[ResourceId::Synthetic(7)],
+                        writes: &[],
+                        run: slow_reader,
+                    },
+                    Stage {
+                        name: "writer",
+                        reads: &[],
+                        writes: &[ResourceId::Synthetic(7)],
+                        run: late_writer,
+                    },
+                ],
+                initial: vec![ResourceId::Synthetic(7)],
+            };
+            run_pipeline(&spec, &data, &tx, &cancel, &PipelineOptions::default()).unwrap();
+            assert_eq!(data.value.load(Ordering::SeqCst), 2);
+        }
     }
 
     fn slow_reader(ctx: &mut StageCtx<'_, TestData>) -> Result<StageReport, StageError> {
@@ -553,32 +579,6 @@ mod tests {
     fn late_writer(ctx: &mut StageCtx<'_, TestData>) -> Result<StageReport, StageError> {
         ctx.data.value.store(2, Ordering::SeqCst);
         Ok(StageReport::default())
-    }
-
-    #[test]
-    fn war_makes_writer_wait_for_reader() {
-        let data = TestData::default(); // value starts at 1
-        let (tx, _rx) = unbounded();
-        let cancel = AtomicBool::new(false);
-        let spec = PipelineSpec {
-            stages: vec![
-                Stage {
-                    name: "reader",
-                    reads: &[ResourceId::Synthetic(7)],
-                    writes: &[],
-                    run: slow_reader,
-                },
-                Stage {
-                    name: "writer",
-                    reads: &[],
-                    writes: &[ResourceId::Synthetic(7)],
-                    run: late_writer,
-                },
-            ],
-            initial: vec![ResourceId::Synthetic(7)],
-        };
-        run_pipeline(&spec, &data, &tx, &cancel, &PipelineOptions::default()).unwrap();
-        assert_eq!(data.value.load(Ordering::SeqCst), 2);
     }
 
     fn rayon_sum_stage(ctx: &mut StageCtx<'_, TestData>) -> Result<StageReport, StageError> {
@@ -628,97 +628,97 @@ mod tests {
     }
 
     #[test]
-    fn failure_cancels_running_and_skips_pending() {
-        let dir = tempfile::tempdir().unwrap();
-        let state_path = dir.path().join("run_state.json");
-        let data = TestData::default();
-        let (tx, rx) = unbounded();
-        let cancel = AtomicBool::new(false);
-        let spec = PipelineSpec {
-            stages: vec![
-                Stage {
-                    name: "boom",
+    fn failure_and_external_cancel_stop_pending_stages() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let state_path = dir.path().join("run_state.json");
+            let data = TestData::default();
+            let (tx, rx) = unbounded();
+            let cancel = AtomicBool::new(false);
+            let spec = PipelineSpec {
+                stages: vec![
+                    Stage {
+                        name: "boom",
+                        reads: &[],
+                        writes: &[ResourceId::Synthetic(1)],
+                        run: boom_stage,
+                    },
+                    Stage {
+                        name: "slowpoke",
+                        reads: &[],
+                        writes: &[ResourceId::Synthetic(2)],
+                        run: slowpoke_stage,
+                    },
+                    Stage {
+                        name: "after_boom",
+                        reads: &[ResourceId::Synthetic(1)],
+                        writes: &[],
+                        run: never_runs_stage,
+                    },
+                ],
+                initial: vec![],
+            };
+            let opts = PipelineOptions {
+                run_state_path: Some(state_path.clone()),
+                ..Default::default()
+            };
+
+            let err = run_pipeline(&spec, &data, &tx, &cancel, &opts).unwrap_err();
+
+            assert!(
+                matches!(err, PipelineError::StageFailed { stage: "boom", ref message } if message == "kaboom")
+            );
+            assert!(
+                cancel.load(Ordering::SeqCst),
+                "failure must set the cancel token"
+            );
+            assert!(
+                data.log.lock().unwrap().is_empty(),
+                "after_boom must never start"
+            );
+            let tags = drain_tags(&rx);
+            assert!(tags.contains(&"fail:boom".to_string()));
+            assert!(tags.contains(&"start:slowpoke".to_string()));
+            assert!(!tags.iter().any(|t| t == "start:after_boom"));
+
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+            assert_eq!(v["status"], "failed");
+            assert_eq!(v["stage"], "boom");
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let state_path = dir.path().join("run_state.json");
+            let data = TestData::default();
+            let (tx, rx) = unbounded();
+            let cancel = AtomicBool::new(true); // pre-set, e.g. Ctrl-C between runs
+            let spec = PipelineSpec {
+                stages: vec![Stage {
+                    name: "init",
                     reads: &[],
-                    writes: &[ResourceId::Synthetic(1)],
-                    run: boom_stage,
-                },
-                Stage {
-                    name: "slowpoke",
-                    reads: &[],
-                    writes: &[ResourceId::Synthetic(2)],
-                    run: slowpoke_stage,
-                },
-                Stage {
-                    name: "after_boom",
-                    reads: &[ResourceId::Synthetic(1)],
                     writes: &[],
-                    run: never_runs_stage,
-                },
-            ],
-            initial: vec![],
-        };
-        let opts = PipelineOptions {
-            run_state_path: Some(state_path.clone()),
-            ..Default::default()
-        };
+                    run: init_stage,
+                }],
+                initial: vec![],
+            };
+            let opts = PipelineOptions {
+                run_state_path: Some(state_path.clone()),
+                ..Default::default()
+            };
 
-        let err = run_pipeline(&spec, &data, &tx, &cancel, &opts).unwrap_err();
+            let err = run_pipeline(&spec, &data, &tx, &cancel, &opts).unwrap_err();
 
-        assert!(
-            matches!(err, PipelineError::StageFailed { stage: "boom", ref message } if message == "kaboom")
-        );
-        assert!(
-            cancel.load(Ordering::SeqCst),
-            "failure must set the cancel token"
-        );
-        assert!(
-            data.log.lock().unwrap().is_empty(),
-            "after_boom must never start"
-        );
-        let tags = drain_tags(&rx);
-        assert!(tags.contains(&"fail:boom".to_string()));
-        assert!(tags.contains(&"start:slowpoke".to_string()));
-        assert!(!tags.iter().any(|t| t == "start:after_boom"));
-
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
-        assert_eq!(v["status"], "failed");
-        assert_eq!(v["stage"], "boom");
-    }
-
-    #[test]
-    fn external_cancel_before_start_runs_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let state_path = dir.path().join("run_state.json");
-        let data = TestData::default();
-        let (tx, rx) = unbounded();
-        let cancel = AtomicBool::new(true); // pre-set, e.g. Ctrl-C between runs
-        let spec = PipelineSpec {
-            stages: vec![Stage {
-                name: "init",
-                reads: &[],
-                writes: &[],
-                run: init_stage,
-            }],
-            initial: vec![],
-        };
-        let opts = PipelineOptions {
-            run_state_path: Some(state_path.clone()),
-            ..Default::default()
-        };
-
-        let err = run_pipeline(&spec, &data, &tx, &cancel, &opts).unwrap_err();
-
-        assert!(matches!(err, PipelineError::Cancelled));
-        assert!(data.log.lock().unwrap().is_empty());
-        assert!(
-            drain_tags(&rx).is_empty(),
-            "no stage events on pre-cancelled run"
-        );
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
-        assert_eq!(v["status"], "failed");
-        assert_eq!(v["stage"], "(cancelled)");
+            assert!(matches!(err, PipelineError::Cancelled));
+            assert!(data.log.lock().unwrap().is_empty());
+            assert!(
+                drain_tags(&rx).is_empty(),
+                "no stage events on pre-cancelled run"
+            );
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+            assert_eq!(v["status"], "failed");
+            assert_eq!(v["stage"], "(cancelled)");
+        }
     }
 
     fn panicker_stage(_ctx: &mut StageCtx<'_, TestData>) -> Result<StageReport, StageError> {

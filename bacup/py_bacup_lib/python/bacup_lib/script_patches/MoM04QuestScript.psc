@@ -80,11 +80,9 @@ Function PopulateBattleSiteCorpses()
         If password != None && password.GetContainer() != shannon
             shannon.AddItem(password, 1, True)
         EndIf
-    EndIf
-
-    ObjectReference olivia = OliviaRivers.GetReference()
-    ObjectReference eyeOfRa = MoMEyeOfRa.GetReference()
-    If olivia != None && eyeOfRa != None && eyeOfRa.GetContainer() != olivia
-        olivia.AddItem(eyeOfRa, 1, True)
+        ObjectReference eyeOfRa = MoMEyeOfRa.GetReference()
+        If eyeOfRa != None && eyeOfRa.GetContainer() != shannon
+            shannon.AddItem(eyeOfRa, 1, True)
+        EndIf
     EndIf
 EndFunction

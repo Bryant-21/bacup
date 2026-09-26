@@ -80,6 +80,7 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
                         entry.value = raw_value(vec![0_u8; pnam_rows * 32]);
                     }
                 } else {
+                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                     copy_structured_fields(
                         &mut entry.value,
                         &[
@@ -136,7 +137,6 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
                         ],
                         interner,
                     );
-                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                 }
             }
             sig if sig == *b"JNAM" => {
@@ -148,6 +148,7 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
                         entry.value = raw_value(vec![0_u8; pnam_rows * 32]);
                     }
                 } else {
+                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                     copy_structured_fields(
                         &mut entry.value,
                         &[
@@ -168,7 +169,6 @@ pub(crate) fn normalize_skyrim_weather(record: &mut Record, interner: &StringInt
                         ],
                         interner,
                     );
-                    resize_structured_row_array(&mut entry.value, DEFAULT_CLOUD_ROWS);
                 }
             }
             sig if sig == *b"NAM0" => rebuild_nam0(&mut entry.value),
@@ -883,7 +883,7 @@ mod tests {
             (*b"VNAM", 4),
             (*b"WNAM", 4),
         ] {
-            assert_eq!(bytes(record, &sig).len(), len);
+            assert_eq!(self::bytes(record, &sig).len(), len);
             assert_eq!(
                 record
                     .fields
@@ -906,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_hnam_expands_to_one_fo4_wgdr_with_exact_period_mapping() {
+    fn skyrim_hnam_expands_to_one_fo4_wgdr_or_uses_fallback() {
         let mut interner = StringInterner::new();
         let mut record = weather(&mut interner);
         let source = [0x0102_0304_u32, 0x1112_1314, 0x2122_2324, 0x3132_3334];
@@ -942,10 +942,7 @@ mod tests {
         let once = record.fields.clone();
         normalize_skyrim_weather(&mut record, &interner);
         assert_eq!(record.fields, once);
-    }
 
-    #[test]
-    fn valid_wgdr_wins_and_malformed_or_missing_source_uses_none_fallback() {
         let mut interner = StringInterner::new();
         let mut record = weather(&mut interner);
         let valid = (0_u32..8)
@@ -1030,7 +1027,7 @@ mod tests {
             source_periods[2],
         ];
         for sig in [*b"PNAM", *b"JNAM"] {
-            let actual = bytes(&record, &sig)
+            let actual = self::bytes(&record, &sig)
                 .chunks_exact(4)
                 .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
                 .collect::<Vec<_>>();
@@ -1042,9 +1039,12 @@ mod tests {
             );
             assert!(actual[8..].iter().all(|value| *value == 0));
         }
-        assert_eq!(period_values(bytes(&record, b"IMSP")), expected_periods);
+        assert_eq!(
+            period_values(self::bytes(&record, b"IMSP")),
+            expected_periods
+        );
         for row in 0..17 {
-            let actual = bytes(&record, b"NAM0")[row * 32..row * 32 + 32]
+            let actual = self::bytes(&record, b"NAM0")[row * 32..row * 32 + 32]
                 .chunks_exact(4)
                 .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
                 .collect::<Vec<_>>();
@@ -1059,7 +1059,11 @@ mod tests {
                 ]
             );
         }
-        assert!(bytes(&record, b"NAM0")[576..].iter().all(|byte| *byte == 0));
+        assert!(
+            self::bytes(&record, b"NAM0")[576..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
         let dalc = record
             .fields
             .iter()
@@ -1069,16 +1073,20 @@ mod tests {
         for (actual, source_index) in dalc.iter().zip(SKYRIM_TO_FO4_WEATHER_PERIODS) {
             assert_eq!(*actual, source_dalc[source_index]);
         }
-        assert_eq!(&bytes(&record, b"DATA")[..19], &[0x10; 19]);
-        assert_eq!(bytes(&record, b"DATA")[19], 0);
-        assert_eq!(&bytes(&record, b"FNAM")[..32], &[0x40; 32]);
-        assert!(bytes(&record, b"FNAM")[32..].iter().all(|byte| *byte == 0));
+        assert_eq!(&self::bytes(&record, b"DATA")[..19], &[0x10; 19]);
+        assert_eq!(self::bytes(&record, b"DATA")[19], 0);
+        assert_eq!(&self::bytes(&record, b"FNAM")[..32], &[0x40; 32]);
+        assert!(
+            self::bytes(&record, b"FNAM")[32..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
         assert_eq!(
-            f32::from_le_bytes(bytes(&record, b"VNAM").try_into().unwrap()),
+            f32::from_le_bytes(self::bytes(&record, b"VNAM").try_into().unwrap()),
             1.0
         );
         assert_eq!(
-            f32::from_le_bytes(bytes(&record, b"WNAM").try_into().unwrap()),
+            f32::from_le_bytes(self::bytes(&record, b"WNAM").try_into().unwrap()),
             1.0
         );
 
@@ -1270,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn shorter_skyrim_nam0_variants_preserve_every_source_lighting_row() {
+    fn short_or_malformed_skyrim_weather_fields_keep_rows_and_safe_defaults() {
         for source_len in [208_usize, 224] {
             let mut interner = StringInterner::new();
             let mut record = weather(&mut interner);
@@ -1288,7 +1296,7 @@ mod tests {
             assert_required_contract(&record, DEFAULT_CLOUD_ROWS);
             let source_rows = source_len / 16;
             for row in 0..source_rows {
-                let actual = period_values(&bytes(&record, b"NAM0")[row * 32..row * 32 + 32]);
+                let actual = period_values(&self::bytes(&record, b"NAM0")[row * 32..row * 32 + 32]);
                 let source = (0..4)
                     .map(|period| ((row as u32 + 1) << 8) | period)
                     .collect::<Vec<_>>();
@@ -1301,15 +1309,12 @@ mod tests {
                 );
             }
             assert!(
-                bytes(&record, b"NAM0")[source_rows * 32..]
+                self::bytes(&record, b"NAM0")[source_rows * 32..]
                     .iter()
                     .all(|byte| *byte == 0)
             );
         }
-    }
 
-    #[test]
-    fn malformed_skyrim_weather_fields_use_complete_safe_defaults() {
         let mut interner = StringInterner::new();
         let mut record = weather(&mut interner);
         for sig in [
@@ -1332,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_donor_profiles_include_cloudy_and_target_exact_fo4_ids() {
+    fn skyrim_donor_and_voli_mappings_target_exact_fo4_ids() {
         for (editor_id, expected) in [
             ("SkyrimClearSunrise", 0x0021_6A93),
             ("SkyrimFogDay", 0x0021_8FA4),
@@ -1345,10 +1350,7 @@ mod tests {
         ] {
             assert_eq!(god_ray_donor(editor_id), expected, "{editor_id}");
         }
-    }
 
-    #[test]
-    fn skyrim_voli_mappings_target_fallout4_gdry_donors_only() {
         let mut interner = StringInterner::new();
         let source = FormKey::parse("000800@Skyrim.esm", &mut interner).unwrap();
         let entries = vec![

@@ -1,0 +1,30 @@
+{{{{for|the program|Verified Creator Program}}}}
+{{{{Infobox mod
+|games        ={product_wiki_footer}
+|type         =creation
+|image        ={cover_image_filename}
+|author       =[[Mod:{author}|{author}]]
+|release      ={release_date}
+|size         ={size}
+|version      ={version}
+|link           =[ {details_url} Link ]
+|platforms    ={platform_wiki}
+|cost         ={price_credits}
+|keyword      ={categories}
+|abstract     ={summary}
+}}}}
+
+{{{{quotation|{summary}}}}}
+
+'''{{{{Pagename nd}}}}''' is a [[Creation]] for ''[[{product_wiki}]]'' that adds {summary}. It was authored by [[Mod:{author}|{author}]] and can be purchased for {price_credits}.
+
+==Content==
+* {title_plain}
+
+==Description==
+{description_wiki}
+
+{{{{Mod Footer|creation}}}}
+{{{{Mod Footer|{product_wiki_footer}}}}}
+
+[[Category:{author}]]

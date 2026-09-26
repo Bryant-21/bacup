@@ -50,14 +50,23 @@ EndFunction
 
 Function Fragment_Stage_3100_Item_00()
 	Controller().EquipActor(Alias_Actor_Character, Clothes_Casual)
+	If !IsStageDone(3000)
+		SetStage(3000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_3200_Item_00()
 	Controller().EquipActor(Alias_Actor_Character, Clothes_Formal)
+	If !IsStageDone(3000)
+		SetStage(3000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_3300_Item_00()
 	Controller().EquipActor(Alias_Actor_Character, Clothes_Silly)
+	If !IsStageDone(3000)
+		SetStage(3000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_4000_Item_00()
@@ -70,6 +79,9 @@ Function Fragment_Stage_4100_Item_00()
 	If subject != None
 		subject.EvaluatePackage()
 	EndIf
+	If !IsStageDone(4000)
+		SetStage(4000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_4200_Item_00()
@@ -77,12 +89,18 @@ Function Fragment_Stage_4200_Item_00()
 	If subject != None && SeriousIdle != None
 		subject.PlayIdle(SeriousIdle)
 	EndIf
+	If !IsStageDone(4000)
+		SetStage(4000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_4300_Item_00()
 	Actor subject = Alias_Actor_Character.GetActorReference()
 	If subject != None
 		subject.EvaluatePackage()
+	EndIf
+	If !IsStageDone(4000)
+		SetStage(4000)
 	EndIf
 EndFunction
 
@@ -92,14 +110,23 @@ Function Fragment_Stage_5000_Item_00()
 EndFunction
 
 Function Fragment_Stage_5100_Item_00()
+	If !IsStageDone(5000)
+		SetStage(5000)
+	EndIf
 	MoveToPhotoLocation()
 EndFunction
 
 Function Fragment_Stage_5200_Item_00()
+	If !IsStageDone(5000)
+		SetStage(5000)
+	EndIf
 	MoveToPhotoLocation()
 EndFunction
 
 Function Fragment_Stage_5300_Item_00()
+	If !IsStageDone(5000)
+		SetStage(5000)
+	EndIf
 	MoveToPhotoLocation()
 EndFunction
 

@@ -2292,6 +2292,7 @@ SPEL:
     Data: Data
     BaseEffect: BaseEffect
     EFIT: EFIT
+    CTDA: CTDA
   transforms:
     Name:
       type: trim_languages
@@ -2329,7 +2330,6 @@ SPEL:
       target_esm: Fallout4.esm
   drop:
   - ActorValue
-  - CTDA
   - CooldownDuration
   - CurveTable
   - EffectFlags
@@ -2372,6 +2372,7 @@ PERK:
     EPFT: EPFT
     PerkEntryIDUnique: PerkEntryIDUnique
     EPFB: EPFB
+    EPFD: EPFD
     ButtonLabel: ButtonLabel
     EPF2: EPF2
     ScriptFlags: ScriptFlags
@@ -2414,7 +2415,6 @@ PERK:
       default_data:
         Magnitude: 0.0
   drop:
-  - EPFD
   - SWFSpriteName
   - Sound
   - UnknownSpellValue
@@ -2501,7 +2501,14 @@ MESG:
   fields:
     Description: Description
     DisplayTime: DisplayTime
+    CTDA: CTDA
+    CIS1: CIS1
+    CIS2: CIS2
   transforms:
+    CTDA:
+      type: translate_conditions
+      source_esm: SeventySix.esm
+      target_esm: Fallout4.esm
     Description:
       type: trim_languages
       keep:
@@ -2519,7 +2526,6 @@ MESG:
   - ButtonText
   - Name
   - SWF
-  - CTDA
   - NoResponse
   - OwnerQuest
   - ShortTitle

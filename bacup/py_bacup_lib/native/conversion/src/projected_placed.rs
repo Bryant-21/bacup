@@ -150,9 +150,47 @@ fn lookup_form_key_map(run_id: u64, sources: &[String]) -> PyResult<BTreeMap<Str
                 out.insert(cell_slice_form_key_map_key(plugin, local), target_key);
             }
         }
+        let output_plugin = run.interner.intern(&state.options.output_plugin_name);
+        add_target_master_remaps(
+            &mut out,
+            &state.source_to_target,
+            output_plugin,
+            &run.interner,
+        );
         Ok(out)
     })
     .map_err(|err| PyValueError::new_err(format!("projected placed: form key map failed: {err:?}")))
+}
+
+/// The seed collector does not read placed-ref VMAD objects. Without an entry,
+/// the copy kernel files an object under the output plugin even when the mapper
+/// redirected that source record to a target master. Nothing exists there, so
+/// the post-copy VMAD sweep nulls it. That nulled 126 Appalachia
+/// `RETriggerScript.TriggerKeywords` bound to Fallout 4's
+/// `RETriggerProhibitBuried`/`LargeCreatures`, while interior copies, which go
+/// through the mapper, kept theirs.
+fn add_target_master_remaps(
+    out: &mut BTreeMap<String, String>,
+    source_to_target: &rustc_hash::FxHashMap<FormKey, FormKey>,
+    output_plugin: crate::sym::Sym,
+    interner: &crate::sym::StringInterner,
+) {
+    for (source_fk, target_fk) in source_to_target {
+        if target_fk.plugin == output_plugin || target_fk.local == 0 {
+            continue;
+        }
+        let (Some(source_plugin), target_key) = (
+            interner.resolve(source_fk.plugin),
+            form_key_to_read_str(target_fk, interner),
+        ) else {
+            continue;
+        };
+        if target_key.is_empty() {
+            continue;
+        }
+        out.entry(cell_slice_form_key_map_key(source_plugin, source_fk.local))
+            .or_insert(target_key);
+    }
 }
 
 pub fn copy_projected_placed_children(
@@ -401,6 +439,40 @@ mod tests {
                 "A:000003".to_string(),
                 "A:000004".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn target_master_remaps_reach_unseeded_vmad_objects_without_overriding_seeds() {
+        let interner = crate::sym::StringInterner::new();
+        let source = interner.intern("SeventySix.esm");
+        let output = interner.intern("SeventySix.esm");
+        let fallout4 = interner.intern("Fallout4.esm");
+        let fk = |plugin, local| FormKey { local, plugin };
+        let mut source_to_target = rustc_hash::FxHashMap::default();
+        // RETriggerProhibitBuried: inherited from Fallout 4, remapped onto it.
+        source_to_target.insert(fk(source, 0x2458B1), fk(fallout4, 0x2458B1));
+        // RETriggerProhibitFlying: FO76-only, emitted into the output.
+        source_to_target.insert(fk(source, 0x0AEB8C), fk(output, 0x0AEB8C));
+        source_to_target.insert(fk(source, 0x000123), fk(fallout4, 0x000000));
+        source_to_target.insert(fk(source, 0x02DFEE), fk(fallout4, 0x02DFEE));
+
+        let mut out = BTreeMap::new();
+        out.insert(
+            cell_slice_form_key_map_key("SeventySix.esm", 0x02DFEE),
+            "SeventySix.esm:02DFEE".to_string(),
+        );
+        add_target_master_remaps(&mut out, &source_to_target, output, &interner);
+
+        assert_eq!(
+            out.get(&cell_slice_form_key_map_key("SeventySix.esm", 0x2458B1)),
+            Some(&"Fallout4.esm:2458B1".to_string())
+        );
+        assert!(!out.contains_key(&cell_slice_form_key_map_key("SeventySix.esm", 0x0AEB8C)));
+        assert!(!out.contains_key(&cell_slice_form_key_map_key("SeventySix.esm", 0x000123)));
+        assert_eq!(
+            out.get(&cell_slice_form_key_map_key("SeventySix.esm", 0x02DFEE)),
+            Some(&"SeventySix.esm:02DFEE".to_string())
         );
     }
 

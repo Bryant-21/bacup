@@ -33,12 +33,6 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
         CompleteExam()
     ElseIf auiStageID == iModuleInsertedStage
         BeginModuleSequence()
-    ElseIf auiStageID == 317
-        EnableAliasRef(PowerUpMarker)
-        StartTimer(0.5, iModuleSceneTimeID)
-    ElseIf auiStageID == 318
-        DisableAliasRef(ActiveSparks)
-        StartTimer(0.5, iModuleSceneTimeID)
     ElseIf auiStageID == iModuleCompleteStage
         StartTimer(iModuleSceneTimerLength as Float, iModuleSceneTimeID)
     ElseIf auiStageID == 340
@@ -46,10 +40,22 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
     ElseIf auiStageID == 350
         iOrbitalDropFailSafeCount = 0
         StartTimer(1.0, iBroadcastFailsafeID)
-    ElseIf auiStageID == 358 || auiStageID == 359
-        CheckOrbitalRewards()
     EndIf
 EndEvent
+
+Function EN02_HandleModuleStep(Int aiStage)
+    If !IsRunning() || IsCompleted()
+        Return
+    EndIf
+    If aiStage == 317
+        EnableAliasRef(PowerUpMarker)
+    ElseIf aiStage == 318
+        DisableAliasRef(ActiveSparks)
+    Else
+        Return
+    EndIf
+    StartTimer(0.5, iModuleSceneTimeID)
+EndFunction
 
 Event OnTimer(Int aiTimerID)
     If aiTimerID == 3
@@ -67,6 +73,10 @@ Function InitializePlayer()
     Actor playerRef = Game.GetPlayer()
     If playerRef != None && currentPlayer.GetRef() != playerRef
         currentPlayer.ForceRefTo(playerRef)
+    EndIf
+    ENB_BunkerMasterScript bunker = ENB_BunkerMasterQuest as ENB_BunkerMasterScript
+    If bunker != None
+        bunker.InitializeDeconController()
     EndIf
 EndFunction
 
@@ -93,6 +103,7 @@ EndFunction
 Function ResetExam()
     iCorrectAnswers = 0
     iPerceptionPuzzlesFound = 0
+    ResetStoredExam("EN02")
     Actor playerRef = Game.GetPlayer()
     EN02_ExamPlayerScript playerScript = playerRef as EN02_ExamPlayerScript
     If playerScript != None
@@ -105,13 +116,12 @@ Function ResetExam()
 EndFunction
 
 Function CompleteExam()
+    If !IsRunning() || IsCompleted() || IsStageDone(170)
+        Return
+    EndIf
     InitializePlayer()
     Actor playerRef = Game.GetPlayer()
-    EN02_ExamPlayerScript playerScript = playerRef as EN02_ExamPlayerScript
-    If playerScript != None
-        playerScript.RecountCorrectAnswers()
-        iCorrectAnswers = playerScript.iPlayerCorrectAnswers
-    EndIf
+    iCorrectAnswers = GetStoredExamScore("EN02")
     If playerRef != None
         If EN02_ExamScoreValue != None
             playerRef.SetValue(EN02_ExamScoreValue, iCorrectAnswers as Float)
@@ -126,11 +136,68 @@ Function CompleteExam()
         EndIf
         If iCorrectAnswers as Float >= successThreshold
             ForcePlayerIntoAlias(PlayerAcedExam)
+        ElseIf PlayerAcedExam != None
+            PlayerAcedExam.Clear()
         EndIf
     EndIf
     If iExamCompleteStage > 0 && !IsStageDone(iExamCompleteStage)
         SetStage(iExamCompleteStage)
     EndIf
+EndFunction
+
+Function ResetStoredExam(String asChannel)
+    If B21ExamAnswers == None
+        B21ExamAnswers = new EN02_ExamPlayerScript:TerminalDatum[0]
+        Return
+    EndIf
+    Int index = 0
+    While index < B21ExamAnswers.Length
+        EN02_ExamQuestionScript question = B21ExamAnswers[index].TargetTerminal as EN02_ExamQuestionScript
+        If question != None && question.DejaChannel == asChannel
+            B21ExamAnswers.Remove(index)
+        Else
+            index += 1
+        EndIf
+    EndWhile
+EndFunction
+
+Function RecordStoredExamAnswer(Terminal akQuestionTerminal, Int aiResponseValue)
+    If akQuestionTerminal == None
+        Return
+    EndIf
+    If B21ExamAnswers == None
+        B21ExamAnswers = new EN02_ExamPlayerScript:TerminalDatum[0]
+    EndIf
+    Int index = 0
+    While index < B21ExamAnswers.Length
+        If B21ExamAnswers[index].TargetTerminal == akQuestionTerminal
+            EN02_ExamPlayerScript:TerminalDatum answer = B21ExamAnswers[index]
+            answer.iResponseValue = aiResponseValue
+            B21ExamAnswers[index] = answer
+            Return
+        EndIf
+        index += 1
+    EndWhile
+    EN02_ExamPlayerScript:TerminalDatum newAnswer = new EN02_ExamPlayerScript:TerminalDatum
+    newAnswer.TargetTerminal = akQuestionTerminal
+    newAnswer.iResponseValue = aiResponseValue
+    B21ExamAnswers.Add(newAnswer)
+EndFunction
+
+Int Function GetStoredExamScore(String asChannel)
+    Int score = 0
+    If B21ExamAnswers != None
+        Int index = 0
+        While index < B21ExamAnswers.Length
+            EN02_ExamPlayerScript:TerminalDatum answer = B21ExamAnswers[index]
+            EN02_ExamQuestionScript question = answer.TargetTerminal as EN02_ExamQuestionScript
+            If question != None && question.DejaChannel == asChannel && answer.iResponseValue > 0
+                score += answer.iResponseValue
+            EndIf
+            index += 1
+        EndWhile
+    EndIf
+    Return score
 EndFunction
 
 Function BeginModuleSequence()
@@ -199,6 +266,9 @@ Function SpawnOrbitalDrop()
 EndFunction
 
 Function CheckOrbitalRewards()
+    If !IsRunning() || IsCompleted() || !IsStageDone(350) || IsStageDone(360)
+        Return
+    EndIf
     Actor playerRef = Game.GetPlayer()
     Form scanGrenadeBase = Game.GetFormFromFile(0x00052213, "SeventySix.esm")
     Form strikeGrenadeBase = Game.GetFormFromFile(0x0029CC0F, "SeventySix.esm")
@@ -214,14 +284,11 @@ Function CheckOrbitalRewards()
         EndIf
         Return
     EndIf
-    iOrbitalDropFailSafeCount = iOrbitalDropFailSafeCount + 1
-    If iOrbitalDropFailSafeCount < 300
-        Float delay = iBroadcastFailsafeLength as Float
-        If delay <= 0.0
-            delay = 1.0
-        EndIf
-        StartTimer(delay, iBroadcastFailsafeID)
+    Float delay = iBroadcastFailsafeLength as Float
+    If delay <= 0.0
+        delay = 1.0
     EndIf
+    StartTimer(delay, iBroadcastFailsafeID)
 EndFunction
 
 Function UpdateCheckpoint(Int aiStage)

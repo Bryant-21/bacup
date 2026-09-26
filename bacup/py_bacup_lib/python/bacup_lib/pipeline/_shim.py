@@ -73,6 +73,7 @@ def build_orchestrator_shim(records: list["RecordNode"], ctx: "ConversionContext
         target_asset_index=getattr(ctx, "target_asset_index", None),
         target_data_dir=str(ctx.target_data_dir or ""),
         source_data_dir=str(getattr(ctx, "source_data_dir", "") or ""),
+        source_archive_dirs=getattr(ctx, "source_archive_dirs", ()),
         diagnostics_root=str(diagnostics_root),
         _diagnostics_dir=_diagnostics_dir,
         _diagnostics_path=_diagnostics_path,

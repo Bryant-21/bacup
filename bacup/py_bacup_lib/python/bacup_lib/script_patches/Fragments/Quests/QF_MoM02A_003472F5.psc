@@ -76,6 +76,12 @@ Function Fragment_Stage_0050_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef != None
+        playerRef.RemoveItem(StealthBoy, 1, True)
+        playerRef.RemoveItem(HalluciGenGasCanister, 1, True)
+    EndIf
+    CompleteQuest()
     SetObjectiveCompleted(50)
 
     MoMMasterQuestScript masterScript = MoMMaster as MoMMasterQuestScript

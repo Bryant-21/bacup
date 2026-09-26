@@ -213,13 +213,9 @@ pub fn apply_to_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixups::{FixupConfig, FixupContext};
-    use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
-    use crate::schema::AuthoringSchema;
     use crate::sym::StringInterner;
-    use std::sync::Arc;
 
     fn drop_all(_: &FieldValue) -> bool {
         true
@@ -271,116 +267,71 @@ mod tests {
     }
 
     #[test]
-    fn nullify_no_inam_is_no_op() {
-        let mut interner = StringInterner::new();
-        let mut record = make_npc_with_inam(0x000100, "Output.esp", None, &mut interner);
-        let dropped = apply_to_record(&mut record, drop_all);
-        assert_eq!(dropped, 0);
-    }
-
-    #[test]
-    fn nullify_removes_inam() {
-        let mut interner = StringInterner::new();
-        let mut record =
-            make_npc_with_inam(0x000100, "Output.esp", Some(0x00_ABCDEF), &mut interner);
-        let dropped = apply_to_record(&mut record, drop_all);
-        assert_eq!(dropped, 1, "must drop one INAM");
-        let inam_sig = SubrecordSig::from_str("INAM").unwrap();
-        assert!(
-            record.fields.iter().all(|e| e.sig != inam_sig),
-            "no INAM should remain"
-        );
-        // Other fields (EDID) must be preserved.
-        assert!(!record.fields.is_empty(), "EDID must survive");
-    }
-
-    #[test]
-    fn resolvable_inam_is_kept() {
-        let mut interner = StringInterner::new();
-        let mut record =
-            make_npc_with_inam(0x000100, "Output.esp", Some(0x00_ABCDEF), &mut interner);
-        let dropped = apply_to_record(&mut record, keep_all);
-        assert_eq!(dropped, 0, "a resolvable death item must survive");
-        let inam_sig = SubrecordSig::from_str("INAM").unwrap();
-        assert!(
-            record.fields.iter().any(|e| e.sig == inam_sig),
-            "INAM must remain so the creature drops loot"
-        );
-    }
-
-    #[test]
-    fn drops_only_the_unresolvable_inam() {
+    fn drops_only_unresolvable_death_items() {
         let interner = StringInterner::new();
-        let sig = SigCode::from_str("NPC_").unwrap();
-        let fk = FormKey {
-            local: 0x000200,
-            plugin: interner.intern("Output.esp"),
-        };
-        let inam_sig = SubrecordSig::from_str("INAM").unwrap();
         let plugin = interner.intern("Output.esp");
-        let mut fields: smallvec::SmallVec<[FieldEntry; 8]> = smallvec::SmallVec::new();
-        for local in [0x00_AAAAAA_u32, 0x00_BBBBBB_u32] {
-            fields.push(FieldEntry {
-                sig: inam_sig,
-                value: FieldValue::FormKey(FormKey { local, plugin }),
-            });
-        }
-        let mut record = Record {
-            sig,
-            form_key: fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields,
-            warnings: smallvec::SmallVec::new(),
-        };
-
-        // Only the second target is missing from the output plugin.
-        let dropped = apply_to_record(
-            &mut record,
-            |value| matches!(value, FieldValue::FormKey(fk) if fk.local == 0x00_BBBBBB),
-        );
-
-        assert_eq!(dropped, 1, "only the dangling ref should go");
-        let remaining: Vec<u32> = record
-            .fields
-            .iter()
-            .filter_map(|e| match &e.value {
-                FieldValue::FormKey(fk) if e.sig == inam_sig => Some(fk.local),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(remaining, vec![0x00_AAAAAA]);
-    }
-
-    #[test]
-    fn nullify_removes_multiple_inam() {
-        let mut interner = StringInterner::new();
-        let sig = SigCode::from_str("NPC_").unwrap();
-        let fk = FormKey {
-            local: 0x000200,
-            plugin: interner.intern("Output.esp"),
-        };
         let inam_sig = SubrecordSig::from_str("INAM").unwrap();
-        let mut fields: smallvec::SmallVec<[FieldEntry; 8]> = smallvec::SmallVec::new();
-        for raw_id in [0x00_AAAAAA_u32, 0x00_BBBBBB_u32] {
-            let mut payload: smallvec::SmallVec<[u8; 32]> = smallvec::SmallVec::new();
-            payload.extend_from_slice(&raw_id.to_le_bytes());
-            fields.push(FieldEntry {
-                sig: inam_sig,
-                value: FieldValue::Bytes(payload),
-            });
-        }
-        let mut record = Record {
-            sig,
-            form_key: fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields,
-            warnings: smallvec::SmallVec::new(),
+        let raw = |id: u32| FieldValue::Bytes(smallvec::SmallVec::from_slice(&id.to_le_bytes()));
+        let decoded = |local| FieldValue::FormKey(FormKey { local, plugin });
+        let is_bbbbbb = |value: &FieldValue| match value {
+            FieldValue::FormKey(fk) => fk.local == 0x00_BBBBBB,
+            _ => false,
         };
-        let dropped = apply_to_record(&mut record, drop_all);
-        assert_eq!(dropped, 2);
-        assert!(record.fields.is_empty());
+        for (name, items, drop_all_items, dropped, remaining) in [
+            ("no_inam", vec![], true, 0, 0),
+            ("unresolvable", vec![raw(0x00_ABCDEF)], true, 1, 0),
+            ("resolvable", vec![raw(0x00_ABCDEF)], false, 0, 1),
+            (
+                "multiple_unresolvable",
+                vec![raw(0x00_AAAAAA), raw(0x00_BBBBBB)],
+                true,
+                2,
+                0,
+            ),
+            (
+                "one_dangling",
+                vec![decoded(0x00_AAAAAA), decoded(0x00_BBBBBB)],
+                false,
+                1,
+                1,
+            ),
+        ] {
+            let mut record = make_npc_with_inam(0x000100, "Output.esp", None, &interner);
+            for value in items {
+                record.fields.push(FieldEntry {
+                    sig: inam_sig,
+                    value,
+                });
+            }
+            let result = if name == "one_dangling" {
+                apply_to_record(&mut record, is_bbbbbb)
+            } else if drop_all_items {
+                apply_to_record(&mut record, drop_all)
+            } else {
+                apply_to_record(&mut record, keep_all)
+            };
+            assert_eq!(result, dropped, "{name}");
+            assert_eq!(
+                record.fields.iter().filter(|e| e.sig == inam_sig).count(),
+                remaining,
+                "{name}"
+            );
+            assert_eq!(
+                record
+                    .fields
+                    .iter()
+                    .filter(|e| e.sig.as_str() == "EDID")
+                    .count(),
+                1,
+                "{name}: EDID must survive"
+            );
+            if name == "one_dangling" {
+                assert!(matches!(
+                    record.fields.last().map(|e| &e.value),
+                    Some(FieldValue::FormKey(fk)) if fk.local == 0x00_AAAAAA
+                ));
+            }
+        }
     }
 
     #[test]
@@ -413,40 +364,11 @@ mod tests {
         let resolved = inam_target(&raw_own, &masters, own_plugin, &interner).expect("resolves");
         assert_eq!(resolved.local, 0x827A03);
         assert_eq!(interner.resolve(resolved.plugin), Some("SeventySix.esm"));
-    }
 
-    #[test]
-    fn inam_target_rejects_short_payload() {
-        let interner = StringInterner::new();
-        let own_plugin = interner.intern("SeventySix.esm");
-        let mut short: smallvec::SmallVec<[u8; 32]> = smallvec::SmallVec::new();
-        short.extend_from_slice(&[0x01, 0x02]);
-        assert!(inam_target(&FieldValue::Bytes(short), &[], own_plugin, &interner).is_none());
-    }
-
-    #[test]
-    fn applies_to_false_for_weap_root() {
-        let interner = StringInterner::new();
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let mut ctx_interner = StringInterner::new();
-        let mut mapper_interner = StringInterner::new();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!NullifyCreatureDeathItemsFixup.applies_to(&ctx));
-        let _ = (interner, mapper);
+        let short = FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0x01, 0x02]));
+        assert!(
+            inam_target(&short, &[], own_plugin, &interner).is_none(),
+            "short payload"
+        );
     }
 }

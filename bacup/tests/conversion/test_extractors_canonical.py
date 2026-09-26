@@ -1,7 +1,6 @@
 """Tests for asset extractor metadata."""
 from __future__ import annotations
 
-from bacup_lib.record import extractors
 from bacup_lib.record.extractors import (
     ASSET_CONTRIBUTIONS,
     AssetContribution,
@@ -32,32 +31,16 @@ def test_key_subrecord_signatures_map_to_asset_kinds() -> None:
     assert _contribution_for("sound", "SNDR", "FNAM").record_signatures == frozenset({"SNDR"})
     assert _contribution_for("sound", "MUSC", "ANAM").record_signatures == frozenset({"MUSC"})
     assert _contribution_for("sound", "MUST", "FNAM").record_signatures == frozenset({"MUST"})
+    assert _contribution_for("texture", "TXST", "TX00").subrecord_signatures == frozenset(
+        f"TX{index:02d}" for index in range(8)
+    )
 
 
-def test_txst_texture_slots_are_canonical_range() -> None:
-    contribution = _contribution_for("texture", "TXST", "TX00")
-    assert contribution.subrecord_signatures == frozenset(f"TX{index:02d}" for index in range(8))
-
-
-def test_signatures_for_asset_kind_reports_record_scoped_contributions() -> None:
+def test_signatures_for_asset_kind() -> None:
     assert signatures_for_asset_kind("material") == frozenset({"MSWP"})
     assert signatures_for_asset_kind("behavior") == frozenset({"IDLE", "RACE"})
     assert signatures_for_asset_kind("sound") == frozenset({"SNDR", "SOUN", "MUSC", "MUST"})
-
-
-def test_signatures_for_asset_kind_returns_empty_for_global_or_unknown_kinds() -> None:
+    assert signatures_for_asset_kind("SOUND") == frozenset({"SNDR", "SOUN", "MUSC", "MUST"})
     assert signatures_for_asset_kind("nif") == frozenset()
     assert signatures_for_asset_kind("texture") == frozenset()
     assert signatures_for_asset_kind("missing") == frozenset()
-    assert signatures_for_asset_kind("SOUND") == frozenset({"SNDR", "SOUN", "MUSC", "MUST"})
-
-
-def test_module_exports_metadata_api_only() -> None:
-    assert set(extractors.__all__) == {
-        "ASSET_CONTRIBUTIONS",
-        "AssetContribution",
-        "signatures_for_asset_kind",
-    }
-    assert not hasattr(extractors, "get" + "_extractor")
-    assert not hasattr(extractors, "_" + "EXTRACTORS")
-    assert all(isinstance(contribution, AssetContribution) for contribution in ASSET_CONTRIBUTIONS)

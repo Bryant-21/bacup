@@ -20,8 +20,11 @@ Function MTNS01_MoveQuestItem(ReferenceAlias akItemAlias, ReferenceAlias akDesti
         Return
     EndIf
 
+    If itemRef.GetContainer() == MTNS01_GetPlayer() || itemRef.GetContainer() == destinationRef
+        Return
+    EndIf
     MoveQuestItemSpinLock = True
-    itemRef.MoveTo(destinationRef)
+    destinationRef.AddItem(itemRef, 1, True)
     MoveQuestItemSpinLock = False
 EndFunction
 

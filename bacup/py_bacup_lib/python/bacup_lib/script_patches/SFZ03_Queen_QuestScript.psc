@@ -4,7 +4,27 @@ EndEvent
 
 Event OnQuestShutdown()
 	UnregisterRuntimeEvents()
+	CancelTimer(3)
 	ResetHuntState()
+EndEvent
+
+; Stages 410 and 500 were authored as phases of SFZ03_Queen_AnalyzerScene. The converted
+; scene cannot drive them, so depositing the sample runs the analyzer itself: the machine
+; starts at once and the result lands after a readable wait.
+Event OnStageSet(Int auiStageID, Int auiItemID)
+	If auiStageID != 400
+		Return
+	EndIf
+	If !IsStageDone(410)
+		SetStage(410)
+	EndIf
+	StartTimer(10.0, 3)
+EndEvent
+
+Event OnTimer(Int aiTimerID)
+	If aiTimerID == 3 && IsRunning() && IsStageDone(400) && !IsStageDone(500)
+		SetStage(500)
+	EndIf
 EndEvent
 
 Function RegisterRuntimeEvents()

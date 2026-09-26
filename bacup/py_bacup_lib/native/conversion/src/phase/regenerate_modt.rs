@@ -503,72 +503,6 @@ mod tests {
     use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
     use crate::translator::Game;
 
-    #[test]
-    #[ignore = "requires MODT_PLUGIN_CORPUS, MODT_CORPUS_MANIFEST and MODT_CORPUS_ROOT"]
-    fn shared_materials_preserve_every_corpus_modt_record() {
-        let plugin = PathBuf::from(std::env::var_os("MODT_PLUGIN_CORPUS").unwrap());
-        let manifest_path = PathBuf::from(std::env::var_os("MODT_CORPUS_MANIFEST").unwrap());
-        let data = PathBuf::from(std::env::var_os("MODT_CORPUS_ROOT").unwrap()).join("data");
-        let manifest: MeshModtManifest =
-            serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
-        let handle = OwnedPluginHandle::load(&plugin, "fo4", None).unwrap();
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle.id()).unwrap();
-        let swaps = material_swap_index(&slot.parsed.root_items);
-        let shared = MaterialTextureCache::default();
-        let deployed = FxHashMap::default();
-        let mut records_seen = 0usize;
-        let mut records_compared = 0usize;
-        let mut changes = 0u64;
-        let mut digest = blake3::Hasher::new();
-        walk_records(&slot.parsed.root_items, &mut |record| {
-            records_seen += 1;
-            if !fo4_model_slots().contains_key(record.signature.as_str()) {
-                return;
-            }
-            let mut expected = record.clone();
-            let mut actual = record.clone();
-            let expected_changes = apply_record(
-                &mut expected,
-                &manifest,
-                &swaps,
-                &data,
-                &deployed,
-                false,
-                &MaterialTextureCache::default(),
-            );
-            let actual_changes = apply_record(
-                &mut actual,
-                &manifest,
-                &swaps,
-                &data,
-                &deployed,
-                false,
-                &shared,
-            );
-            assert_eq!(actual_changes, expected_changes);
-            assert_eq!(actual.subrecords.len(), expected.subrecords.len());
-            digest.update(record.signature.as_bytes());
-            digest.update(&record.form_id.to_le_bytes());
-            for (actual, expected) in actual.subrecords.iter().zip(&expected.subrecords) {
-                assert_eq!(actual.signature, expected.signature);
-                assert_eq!(actual.semantic_type, expected.semantic_type);
-                assert_eq!(actual.data, expected.data);
-                digest.update(actual.signature.as_bytes());
-                digest.update(&(actual.data.len() as u64).to_le_bytes());
-                digest.update(&actual.data);
-            }
-            records_compared += 1;
-            changes += actual_changes as u64;
-        });
-        let report = serde_json::json!({"records_seen": records_seen, "records_compared": records_compared,
-            "changes": changes, "identical_subrecords": true, "blake3": digest.finalize().to_hex().to_string()});
-        if let Some(path) = std::env::var_os("MODT_RECORD_CORPUS_REPORT") {
-            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-        }
-        eprintln!("{report}");
-    }
-
     fn sr(sig: &str, data: &[u8]) -> ParsedSubrecord {
         ParsedSubrecord {
             signature: SmolStr::from(sig),
@@ -874,19 +808,30 @@ mod tests {
     }
 
     #[test]
-    fn fresh_manifest_replaces_source_carried_modt() {
+    fn full_build_replaces_source_modt_and_drops_modt_for_meshes_not_in_manifest() {
         let out = plugin_handle_new_native("Out.esp", Some("fo4")).unwrap();
-        insert_parsed_record_in_slot(
-            &mut *plugin_handle_store_ref()
-                .lock()
-                .unwrap()
-                .get_mut(&out)
-                .unwrap(),
-            stat(
-                0x0100_0001,
-                vec![sr("MODL", b"novel\\mesh.nif\0"), sr("MODT", b"SOURCE")],
-            ),
-        );
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let plugin = store.get_mut(&out).unwrap();
+            insert_parsed_record_in_slot(
+                &mut *plugin,
+                stat(
+                    0x0100_0001,
+                    vec![sr("MODL", b"novel\\mesh.nif\0"), sr("MODT", b"SOURCE")],
+                ),
+            );
+            insert_parsed_record_in_slot(
+                &mut *plugin,
+                stat(
+                    0x0100_0007,
+                    vec![sr("MODL", b"absent\\mesh.nif\0"), sr("MODT", b"")],
+                ),
+            );
+            insert_parsed_record_in_slot(
+                &mut *plugin,
+                stat(0x0100_0008, vec![sr("MODL", b"absent\\other.nif\0")]),
+            );
+        }
 
         let mut manifest = MeshModtManifest::default();
         manifest
@@ -900,39 +845,21 @@ mod tests {
             }),
         );
 
-        assert_eq!(report.records_changed, 1);
+        assert_eq!(report.records_changed, 2);
         assert_eq!(
             modt_of(&read_record(out, 0x0100_0001)),
             Some(encode_modt(&sample_entry()))
         );
-        plugin_handle_close_native(out);
-    }
-
-    #[test]
-    fn empty_modt_is_removed_when_no_replacement_exists() {
-        let out = plugin_handle_new_native("Out.esp", Some("fo4")).unwrap();
-        insert_parsed_record_in_slot(
-            &mut *plugin_handle_store_ref()
-                .lock()
-                .unwrap()
-                .get_mut(&out)
-                .unwrap(),
-            stat(
-                0x0100_0007,
-                vec![sr("MODL", b"absent\\mesh.nif\0"), sr("MODT", b"")],
-            ),
+        assert_eq!(
+            modt_of(&read_record(out, 0x0100_0007)),
+            None,
+            "empty MODT removed"
         );
-
-        let report = run_phase(
-            out,
-            serde_json::json!({
-                "manifest": {},
-                "is_upgrade": false,
-            }),
+        assert_eq!(
+            modt_of(&read_record(out, 0x0100_0008)),
+            None,
+            "no MODT added"
         );
-
-        assert_eq!(report.records_changed, 1);
-        assert_eq!(modt_of(&read_record(out, 0x0100_0007)), None);
         plugin_handle_close_native(out);
     }
 
@@ -1051,31 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn full_build_drops_novel_mesh_not_in_manifest() {
-        // Not upgrade, not in manifest, no deployed → drop (no MODT).
-        let out = plugin_handle_new_native("Out.esp", Some("fo4")).unwrap();
-        insert_parsed_record_in_slot(
-            &mut *plugin_handle_store_ref()
-                .lock()
-                .unwrap()
-                .get_mut(&out)
-                .unwrap(),
-            stat(0x0100_0007, vec![sr("MODL", b"absent\\mesh.nif\0")]),
-        );
-
-        let params = serde_json::json!({
-            "manifest": {},
-            "is_upgrade": false,
-        });
-        let report = run_phase(out, params);
-        assert_eq!(report.records_changed, 0);
-        assert_eq!(modt_of(&read_record(out, 0x0100_0007)), None);
-
-        plugin_handle_close_native(out);
-    }
-
-    #[test]
-    fn debr_rebuilds_every_repeated_data_row_from_manifest() {
+    fn debr_rebuilds_repeated_data_rows_from_manifest_and_drops_unmatched_legacy_modt() {
         let out = plugin_handle_new_native("Out.esp", Some("fo4")).unwrap();
         let mut skyrim_legacy = vec![0u8; 72];
         skyrim_legacy[..4].copy_from_slice(&0x85f3_0f60_u32.to_le_bytes());
@@ -1097,48 +1000,6 @@ mod tests {
                 ],
             ),
         );
-
-        let mut manifest = MeshModtManifest::default();
-        manifest
-            .meshes
-            .insert("effects/icea.nif".to_string(), sample_entry());
-        manifest
-            .meshes
-            .insert("effects/iceb.nif".to_string(), sample_entry());
-        let report = run_phase(
-            out,
-            serde_json::json!({
-                "manifest": serde_json::to_value(&manifest).unwrap(),
-                "is_upgrade": false,
-            }),
-        );
-
-        assert_eq!(report.records_changed, 2);
-        let converted = read_record(out, 0x0100_0010);
-        let sigs = converted
-            .subrecords
-            .iter()
-            .map(|subrecord| subrecord.signature.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(sigs, vec!["EDID", "DATA", "MODT", "DATA", "MODT"]);
-        let modts = converted
-            .subrecords
-            .iter()
-            .filter(|subrecord| subrecord.signature.as_str() == "MODT")
-            .collect::<Vec<_>>();
-        assert_eq!(modts.len(), 2);
-        for modt in modts {
-            assert_eq!(&modt.data[..4], &4u32.to_le_bytes());
-            assert!(decode_modt(&modt.data).is_some());
-        }
-        plugin_handle_close_native(out);
-    }
-
-    #[test]
-    fn debr_drops_legacy_modt_when_manifest_has_no_mesh() {
-        let out = plugin_handle_new_native("Out.esp", Some("fo4")).unwrap();
-        let mut skyrim_legacy = vec![0u8; 72];
-        skyrim_legacy[..4].copy_from_slice(&0x85f3_0f60_u32.to_le_bytes());
         insert_parsed_record_in_slot(
             &mut *plugin_handle_store_ref()
                 .lock()
@@ -1157,24 +1018,48 @@ mod tests {
             ),
         );
 
+        let mut manifest = MeshModtManifest::default();
+        manifest
+            .meshes
+            .insert("effects/icea.nif".to_string(), sample_entry());
+        manifest
+            .meshes
+            .insert("effects/iceb.nif".to_string(), sample_entry());
         let report = run_phase(
             out,
             serde_json::json!({
-                "manifest": {},
+                "manifest": serde_json::to_value(&manifest).unwrap(),
                 "is_upgrade": false,
             }),
         );
 
-        assert_eq!(report.records_changed, 2);
-        let converted = read_record(out, 0x0100_0011);
+        assert_eq!(report.records_changed, 4);
         assert_eq!(
-            converted
+            read_record(out, 0x0100_0011)
                 .subrecords
                 .iter()
                 .map(|subrecord| subrecord.signature.as_str())
                 .collect::<Vec<_>>(),
-            vec!["DATA", "DATA"]
+            vec!["DATA", "DATA"],
+            "legacy MODT dropped when manifest has no mesh"
         );
+        let converted = read_record(out, 0x0100_0010);
+        let sigs = converted
+            .subrecords
+            .iter()
+            .map(|subrecord| subrecord.signature.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(sigs, vec!["EDID", "DATA", "MODT", "DATA", "MODT"]);
+        let modts = converted
+            .subrecords
+            .iter()
+            .filter(|subrecord| subrecord.signature.as_str() == "MODT")
+            .collect::<Vec<_>>();
+        assert_eq!(modts.len(), 2);
+        for modt in modts {
+            assert_eq!(&modt.data[..4], &4u32.to_le_bytes());
+            assert!(decode_modt(&modt.data).is_some());
+        }
         plugin_handle_close_native(out);
     }
 

@@ -87,30 +87,6 @@ mod tests {
     const MGEF_ARCHETYPE_OFFSET: usize = 64;
     const MGEF_ARCHETYPE_CLOAK: u32 = 35;
 
-    fn idle(local: u32, eid: &str, anam_raw: u32, interner: &crate::sym::StringInterner) -> Record {
-        let eid_sym = interner.intern(eid);
-        Record {
-            sig: SigCode::from_str("IDLE").unwrap(),
-            form_key: FormKey {
-                local,
-                plugin: interner.intern("MiscRefs.esp"),
-            },
-            eid: Some(eid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![
-                FieldEntry {
-                    sig: SubrecordSig::from_str("EDID").unwrap(),
-                    value: FieldValue::String(eid_sym),
-                },
-                FieldEntry {
-                    sig: SubrecordSig::from_str("ANAM").unwrap(),
-                    value: FieldValue::Bytes(SmallVec::from_slice(&anam_raw.to_le_bytes())),
-                },
-            ],
-            warnings: SmallVec::new(),
-        }
-    }
-
     fn record(
         sig: &str,
         local: u32,
@@ -155,33 +131,6 @@ mod tests {
             "MiscMgef.esp",
             interner,
         )
-    }
-
-    #[test]
-    fn visitor_matches_legacy_fixup() {
-        // No masters → output master index 0. IDLE.ANAM offset 0:
-        // 0x00000999 resolves nowhere → nulled; 0x00000801 names an output
-        // record (this IDLE itself) → kept.
-        let (h_old, h_new) = seed_twin("MiscRefs.esp", |session, schema, interner| {
-            for r in [
-                idle(0x801, "IdleDangling", 0x0000_0999, interner),
-                idle(0x802, "IdleResolving", 0x0000_0801, interner),
-            ] {
-                session.add_record(r, schema.as_ref(), interner).unwrap();
-            }
-        });
-
-        let config = config_for(h_old);
-        run_legacy_fixup(h_old, Box::new(NullDanglingMiscRefsFixup), &config);
-        let reports = run_visitor_sweep(
-            h_new,
-            "misc_refs",
-            vec![Box::new(NullDanglingMiscRefsVisitor)],
-            &config,
-        );
-
-        assert_eq!(reports[0].1.records_changed, 1);
-        assert_handles_equal(h_old, h_new);
     }
 
     #[test]

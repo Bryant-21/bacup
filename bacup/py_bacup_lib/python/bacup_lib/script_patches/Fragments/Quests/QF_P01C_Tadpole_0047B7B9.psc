@@ -1,5 +1,15 @@
+Function Fragment_Stage_0100_Item_00()
+    Location startedAt = QuestStartedAt.GetLocation()
+    Location campLewis = StartingLocation.GetLocation()
+    If startedAt != None && campLewis != None && (startedAt == campLewis || startedAt.IsChild(campLewis))
+        SetStage(300)
+    Else
+        SetStage(200)
+    EndIf
+EndFunction
+
 Function Fragment_Stage_0500_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self
     owningQuest.SetObjectiveCompleted(30)
     owningQuest.SetObjectiveDisplayed(40)
     owningQuest.SetObjectiveDisplayed(50)

@@ -1,5 +1,7 @@
 import struct
 
+import pytest
+
 from bacup_lib.version_stamp import read_plugin_snam_header
 
 
@@ -20,17 +22,16 @@ def test_reads_snam_from_header(tmp_path):
     assert read_plugin_snam_header(esm) == "alpha2"
 
 
-def test_no_snam_returns_none(tmp_path):
-    esm = tmp_path / "nosnam.esm"
-    esm.write_bytes(_tes4(_subrecord(b"HEDR", b"\x00" * 12)))
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(_tes4(_subrecord(b"HEDR", b"\x00" * 12)), id="no_snam"),
+        pytest.param(b"GRUP" + b"\x00" * 40, id="not_tes4"),
+        pytest.param(None, id="missing_file"),
+    ],
+)
+def test_unstamped_or_unreadable_plugin_returns_none(tmp_path, payload):
+    esm = tmp_path / "plugin.esm"
+    if payload is not None:
+        esm.write_bytes(payload)
     assert read_plugin_snam_header(esm) is None
-
-
-def test_non_tes4_returns_none(tmp_path):
-    esm = tmp_path / "notplugin.esm"
-    esm.write_bytes(b"GRUP" + b"\x00" * 40)
-    assert read_plugin_snam_header(esm) is None
-
-
-def test_missing_file_returns_none(tmp_path):
-    assert read_plugin_snam_header(tmp_path / "nope.esm") is None

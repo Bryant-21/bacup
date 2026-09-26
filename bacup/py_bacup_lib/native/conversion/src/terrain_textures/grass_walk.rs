@@ -159,6 +159,7 @@ fn gcvr_grass_form_keys(fields: &[JsonValue]) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn gcvr_grass_refs(fields: &[JsonValue]) -> Vec<GcvrGrassRef> {
     let mut refs = Vec::new();
     for entry in fields {
@@ -287,6 +288,7 @@ fn grass_entries_for_gcvr_refs(
     Ok(entries)
 }
 
+#[cfg(test)]
 fn entry_from_grass(grass: &JsonValue, form_key: &str, asset_prefix: &str) -> GrassEntry {
     entry_from_grass_with_policy_and_raw(grass, form_key, asset_prefix, None, None)
 }
@@ -300,6 +302,7 @@ fn entry_from_grass_for_handle(
     entry_from_grass_with_policy_for_handle(handle_id, grass, form_key, asset_prefix, None)
 }
 
+#[cfg(test)]
 fn entry_from_grass_with_policy(
     grass: &JsonValue,
     form_key: &str,
@@ -433,6 +436,8 @@ fn entry_from_grass_with_policy_and_raw(
             .or_else(|| starfield_data.as_ref().map(|data| data.flags.clone()))
             .unwrap_or_default(),
         position_range_normalized,
+        source_gcvr_form_keys: Vec::new(),
+        target_form_key: None,
         assets: Vec::new(),
     }
 }
@@ -721,131 +726,129 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn object_bounds_from_value_parses_keys() {
-        let v = json!({
-            "ObjectBoundsX1": -8, "ObjectBoundsY1": -30, "ObjectBoundsZ1": -20,
-            "ObjectBoundsX2": 7,  "ObjectBoundsY2": 30,  "ObjectBoundsZ2": 20,
-        });
-        let b = object_bounds_from_value(&v).unwrap();
-        assert_eq!(b.object_bounds_x1, -8);
-        assert_eq!(b.object_bounds_z2, 20);
+    fn grass_entries_parse_bounds_flags_and_numeric_strings() {
+        {
+            let v = json!({
+                "ObjectBoundsX1": -8, "ObjectBoundsY1": -30, "ObjectBoundsZ1": -20,
+                "ObjectBoundsX2": 7,  "ObjectBoundsY2": 30,  "ObjectBoundsZ2": 20,
+            });
+            let b = object_bounds_from_value(&v).unwrap();
+            assert_eq!(b.object_bounds_x1, -8);
+            assert_eq!(b.object_bounds_z2, 20);
+        }
+        {
+            let v = json!({
+                "eid": "TestGrass",
+                "fields": [
+                    { "ModelFileName": "meshes/test.nif" },
+                    { "ModelInformation": "" },
+                    { "DATA": {
+                        "Density": 5, "MaxSlope": 30,
+                        "PositionRange": 1.5, "HeightRange": 0.2,
+                        "ColorRange": 0.1, "WavePeriod": 8.0,
+                        "Flags": ["VertexLighting", "SomeUnknownFlag", "UniformScaling"],
+                    }},
+                ],
+            });
+            let e = entry_from_grass(&v, "000900:Test.esm", "fnv");
+            assert_eq!(e.source_form_key, "000900:Test.esm");
+            assert_eq!(e.model_file_name, "test.nif");
+            assert_eq!(e.density, 5);
+            assert_eq!(e.position_range, 1.5);
+            assert_eq!(
+                e.flags,
+                vec!["VertexLighting".to_string(), "UniformScaling".to_string()]
+            );
+            assert!(e.assets.is_empty());
+        }
+        {
+            let v = json!({
+                "eid": "G",
+                "fields": [{ "DATA": { "Density": "7", "PositionRange": "2.5" }}]
+            });
+            let e = entry_from_grass(&v, "000900:Test.esm", "fnv");
+            assert_eq!(e.density, 7);
+            assert_eq!(e.position_range, 2.5);
+            assert!(!e.position_range_normalized);
+        }
     }
 
     #[test]
-    fn entry_from_grass_pulls_flags_filtered_to_fo4_subset() {
-        let v = json!({
-            "eid": "TestGrass",
-            "fields": [
-                { "ModelFileName": "meshes/test.nif" },
-                { "ModelInformation": "" },
-                { "DATA": {
-                    "Density": 5, "MaxSlope": 30,
-                    "PositionRange": 1.5, "HeightRange": 0.2,
-                    "ColorRange": 0.1, "WavePeriod": 8.0,
-                    "Flags": ["VertexLighting", "SomeUnknownFlag", "UniformScaling"],
-                }},
-            ],
-        });
-        let e = entry_from_grass(&v, "000900:Test.esm", "fnv");
-        assert_eq!(e.source_form_key, "000900:Test.esm");
-        assert_eq!(e.model_file_name, "test.nif");
-        assert_eq!(e.density, 5);
-        assert_eq!(e.position_range, 1.5);
-        assert_eq!(
-            e.flags,
-            vec!["VertexLighting".to_string(), "UniformScaling".to_string()]
-        );
-        assert!(e.assets.is_empty());
+    fn starfield_grass_maps_dnam_bounds_and_fo4_flag_bits() {
+        {
+            let value = json!({
+                "eid": "LichenStalkGrass01",
+                "fields": [
+                    { "ObjectBounds": {
+                        "raw_hex": "00A072BE00405BBE00A003BD00005E3E0020773E00409B3E"
+                    }},
+                    { "ModelFileName": "Landscape\\Grass\\LichenStalkGrass01.nif" },
+                    { "DNAM": {
+                        "raw_hex": "0000AC427B142E3FC3F5A83E0000000000002041FFFF7F7FFFFF7F7F5300320E0000D8417F7F"
+                    }}
+                ]
+            });
+
+            let entry = entry_from_grass(&value, "Starfield.esm:069538", "starfield");
+
+            assert_eq!(
+                entry.model_file_name,
+                "Landscape/Grass/LichenStalkGrass01.nif"
+            );
+            assert_eq!(entry.density, 83);
+            assert_eq!(entry.max_slope, 50);
+            assert_eq!(entry.position_range, 27.0);
+            assert!((entry.height_range - 0.33).abs() < 0.001);
+            assert_eq!(entry.color_range, 0.0);
+            assert_eq!(entry.wave_period, 10.0);
+            assert_eq!(
+                entry.flags,
+                vec!["UniformScaling".to_owned(), "FitToSlope".to_owned()]
+            );
+            assert_eq!(entry.object_bounds.object_bounds_x1, -17);
+            assert_eq!(entry.object_bounds.object_bounds_z2, 21);
+        }
+        {
+            let value = json!({
+                "raw_hex": "000020419A99993E9A99993ECDCC4C3E00002041FFFF7F7FCDCCCC3D620032080000BE427F7F"
+            });
+
+            let data = starfield_grass_data_from_value(&value).unwrap();
+
+            assert_eq!(data.density, 98);
+            assert_eq!(data.max_slope, 50);
+            assert_eq!(data.position_range, 95.0);
+            assert!((data.height_range - 0.3).abs() < 0.001);
+            assert!((data.color_range - 0.2).abs() < 0.001);
+            assert_eq!(data.wave_period, 10.0);
+            assert!(data.flags.is_empty());
+        }
     }
 
     #[test]
-    fn entry_from_grass_accepts_numeric_string_values() {
-        let v = json!({
-            "eid": "G",
-            "fields": [{ "DATA": { "Density": "7", "PositionRange": "2.5" }}]
-        });
-        let e = entry_from_grass(&v, "000900:Test.esm", "fnv");
-        assert_eq!(e.density, 7);
-        assert_eq!(e.position_range, 2.5);
-        assert!(!e.position_range_normalized);
-    }
+    fn grass_position_range_is_clamped_only_for_fo76() {
+        {
+            let v = json!({
+                "eid": "G",
+                "fields": [{ "DATA": { "PositionRange": 1.0 }}]
+            });
 
-    #[test]
-    fn entry_from_starfield_grass_maps_dnam_and_metric_bounds_to_fo4() {
-        let value = json!({
-            "eid": "LichenStalkGrass01",
-            "fields": [
-                { "ObjectBounds": {
-                    "raw_hex": "00A072BE00405BBE00A003BD00005E3E0020773E00409B3E"
-                }},
-                { "ModelFileName": "Landscape\\Grass\\LichenStalkGrass01.nif" },
-                { "DNAM": {
-                    "raw_hex": "0000AC427B142E3FC3F5A83E0000000000002041FFFF7F7FFFFF7F7F5300320E0000D8417F7F"
-                }}
-            ]
-        });
+            let e = entry_from_grass(&v, "000900:SeventySix.esm", "fo76");
 
-        let entry = entry_from_grass(&value, "Starfield.esm:069538", "starfield");
+            assert_eq!(e.position_range, 12.0);
+            assert!(e.position_range_normalized);
+        }
+        {
+            let v = json!({
+                "eid": "G",
+                "fields": [{ "DATA": { "PositionRange": 1.0 }}]
+            });
 
-        assert_eq!(
-            entry.model_file_name,
-            "Landscape/Grass/LichenStalkGrass01.nif"
-        );
-        assert_eq!(entry.density, 83);
-        assert_eq!(entry.max_slope, 50);
-        assert_eq!(entry.position_range, 27.0);
-        assert!((entry.height_range - 0.33).abs() < 0.001);
-        assert_eq!(entry.color_range, 0.0);
-        assert_eq!(entry.wave_period, 10.0);
-        assert_eq!(
-            entry.flags,
-            vec!["UniformScaling".to_owned(), "FitToSlope".to_owned()]
-        );
-        assert_eq!(entry.object_bounds.object_bounds_x1, -17);
-        assert_eq!(entry.object_bounds.object_bounds_z2, 21);
-    }
+            let e = entry_from_grass(&v, "000900:Test.esm", "fo4");
 
-    #[test]
-    fn starfield_grass_dnam_ignores_non_fo4_flag_bits() {
-        let value = json!({
-            "raw_hex": "000020419A99993E9A99993ECDCC4C3E00002041FFFF7F7FCDCCCC3D620032080000BE427F7F"
-        });
-
-        let data = starfield_grass_data_from_value(&value).unwrap();
-
-        assert_eq!(data.density, 98);
-        assert_eq!(data.max_slope, 50);
-        assert_eq!(data.position_range, 95.0);
-        assert!((data.height_range - 0.3).abs() < 0.001);
-        assert!((data.color_range - 0.2).abs() < 0.001);
-        assert_eq!(data.wave_period, 10.0);
-        assert!(data.flags.is_empty());
-    }
-
-    #[test]
-    fn entry_from_grass_clamps_fo76_position_range_for_fo4_spacing() {
-        let v = json!({
-            "eid": "G",
-            "fields": [{ "DATA": { "PositionRange": 1.0 }}]
-        });
-
-        let e = entry_from_grass(&v, "000900:SeventySix.esm", "fo76");
-
-        assert_eq!(e.position_range, 12.0);
-        assert!(e.position_range_normalized);
-    }
-
-    #[test]
-    fn entry_from_grass_preserves_non_fo76_position_range() {
-        let v = json!({
-            "eid": "G",
-            "fields": [{ "DATA": { "PositionRange": 1.0 }}]
-        });
-
-        let e = entry_from_grass(&v, "000900:Test.esm", "fo4");
-
-        assert_eq!(e.position_range, 1.0);
-        assert!(!e.position_range_normalized);
+            assert_eq!(e.position_range, 1.0);
+            assert!(!e.position_range_normalized);
+        }
     }
 
     #[test]
@@ -881,168 +884,160 @@ mod tests {
     }
 
     #[test]
-    fn fo76_gcvr_policy_uses_gras_unknown_as_vegetation_dominance() {
-        let v = json!({
-            "eid": "Forest76GrassObj03A",
-            "fields": [{ "DATA": { "Unknown": 97.0, "Density": 94, "PositionRange": 0.1 }}]
-        });
+    fn gcvr_density_policy_is_fo76_specific() {
+        {
+            let v = json!({
+                "eid": "Forest76GrassObj03A",
+                "fields": [{ "DATA": { "Unknown": 97.0, "Density": 94, "PositionRange": 0.1 }}]
+            });
 
-        let e = entry_from_grass_with_policy(
-            &v,
-            "3900A5:SeventySix.esm",
-            "fo76",
-            Some(GcvrDensityPolicy {
-                cover_scalar: 0.4,
-                entry_weight_fraction: 0.2,
-            }),
-        );
+            let e = entry_from_grass_with_policy(
+                &v,
+                "3900A5:SeventySix.esm",
+                "fo76",
+                Some(GcvrDensityPolicy {
+                    cover_scalar: 0.4,
+                    entry_weight_fraction: 0.2,
+                }),
+            );
 
-        assert_eq!(e.density, 55);
-        assert_eq!(e.position_range, 32.0);
-        assert!(e.position_range_normalized);
-    }
+            assert_eq!(e.density, 55);
+            assert_eq!(e.position_range, 32.0);
+            assert!(e.position_range_normalized);
+        }
+        {
+            let v = json!({
+                "eid": "Forest76WeedObj01",
+                "fields": [{ "DATA": { "Unknown": 32.0, "Density": 98, "PositionRange": 0.1 }}]
+            });
 
-    #[test]
-    fn fo76_gcvr_policy_keeps_secondary_weeds_below_main_grass() {
-        let v = json!({
-            "eid": "Forest76WeedObj01",
-            "fields": [{ "DATA": { "Unknown": 32.0, "Density": 98, "PositionRange": 0.1 }}]
-        });
+            let e = entry_from_grass_with_policy(
+                &v,
+                "3B396F:SeventySix.esm",
+                "fo76",
+                Some(GcvrDensityPolicy {
+                    cover_scalar: 0.4,
+                    entry_weight_fraction: 0.2,
+                }),
+            );
 
-        let e = entry_from_grass_with_policy(
-            &v,
-            "3B396F:SeventySix.esm",
-            "fo76",
-            Some(GcvrDensityPolicy {
-                cover_scalar: 0.4,
-                entry_weight_fraction: 0.2,
-            }),
-        );
-
-        assert_eq!(e.density, 6);
-        assert_eq!(e.position_range, 32.0);
-    }
-
-    #[test]
-    fn fo76_gcvr_default_cover_scalar_tames_rock_density() {
-        let v = json!({
-            "eid": "Forest76Rocks_OBJ01",
-            "fields": [{ "DATA": { "Unknown": 68.0, "Density": 55, "PositionRange": 1.0 }}]
-        });
-        let grass_ref = GcvrGrassRef {
-            form_key: "SeventySix.esm:00DAFA".to_string(),
-            weight: Some(65535),
-        };
-        let total_weight = gcvr_total_weight(&[
-            grass_ref.clone(),
-            GcvrGrassRef {
-                form_key: "SeventySix.esm:00DAFB".to_string(),
+            assert_eq!(e.density, 6);
+            assert_eq!(e.position_range, 32.0);
+        }
+        {
+            let v = json!({
+                "eid": "Forest76Rocks_OBJ01",
+                "fields": [{ "DATA": { "Unknown": 68.0, "Density": 55, "PositionRange": 1.0 }}]
+            });
+            let grass_ref = GcvrGrassRef {
+                form_key: "SeventySix.esm:00DAFA".to_string(),
                 weight: Some(65535),
-            },
-        ]);
+            };
+            let total_weight = gcvr_total_weight(&[
+                grass_ref.clone(),
+                GcvrGrassRef {
+                    form_key: "SeventySix.esm:00DAFB".to_string(),
+                    weight: Some(65535),
+                },
+            ]);
 
-        let e = entry_from_grass_with_policy(
-            &v,
-            &grass_ref.form_key,
-            "fo76",
-            Some(GcvrDensityPolicy {
-                cover_scalar: FO76_GCVR_DEFAULT_COVER_SCALAR,
-                entry_weight_fraction: gcvr_entry_weight_fraction(&grass_ref, total_weight, 2),
-            }),
-        );
+            let e = entry_from_grass_with_policy(
+                &v,
+                &grass_ref.form_key,
+                "fo76",
+                Some(GcvrDensityPolicy {
+                    cover_scalar: FO76_GCVR_DEFAULT_COVER_SCALAR,
+                    entry_weight_fraction: gcvr_entry_weight_fraction(&grass_ref, total_weight, 2),
+                }),
+            );
 
-        assert_eq!(e.density, 3);
-        assert_eq!(e.position_range, 48.0);
+            assert_eq!(e.density, 3);
+            assert_eq!(e.position_range, 48.0);
+        }
+        {
+            let v = json!({
+                "eid": "ForestLeavesTwigsObj01",
+                "fields": [
+                    { "ModelFileName": "Landscape\\Grass\\ForestGrassObj01.nif" },
+                    { "DATA": { "Unknown": 62.0, "Density": 60, "PositionRange": 0.25 }}
+                ]
+            });
+
+            let e = entry_from_grass_with_policy(
+                &v,
+                "0878FF:SeventySix.esm",
+                "fo76",
+                Some(GcvrDensityPolicy {
+                    cover_scalar: 0.29,
+                    entry_weight_fraction: 0.5,
+                }),
+            );
+
+            assert_eq!(e.density, 16);
+            assert_eq!(e.position_range, 32.0);
+        }
+        {
+            let v = json!({
+                "eid": "ForestGrassObj01",
+                "fields": [{ "DATA": { "Density": 9, "PositionRange": 32.0 }}]
+            });
+
+            let e = entry_from_grass(&v, "0878FF:Fallout4.esm", "fo4");
+
+            assert_eq!(e.density, 9);
+            assert_eq!(e.position_range, 32.0);
+            assert!(!e.position_range_normalized);
+        }
     }
 
     #[test]
-    fn fo76_gcvr_leaf_twig_grass_model_uses_primary_grass_policy() {
-        let v = json!({
-            "eid": "ForestLeavesTwigsObj01",
-            "fields": [
-                { "ModelFileName": "Landscape\\Grass\\ForestGrassObj01.nif" },
-                { "DATA": { "Unknown": 62.0, "Density": 60, "PositionRange": 0.25 }}
-            ]
-        });
+    fn grass_and_land_texture_form_keys_read_named_and_raw_refs() {
+        {
+            let fields = vec![
+                json!({ "GNAM": { "reference": { "plugin": "SeventySix.esm", "object_id": "8E0B62" }}}),
+                json!({ "GNAM": { "reference": { "plugin": "SeventySix.esm", "object_id": "8E0B63" }}}),
+            ];
 
-        let e = entry_from_grass_with_policy(
-            &v,
-            "0878FF:SeventySix.esm",
-            "fo76",
-            Some(GcvrDensityPolicy {
-                cover_scalar: 0.29,
-                entry_weight_fraction: 0.5,
-            }),
-        );
+            assert_eq!(
+                direct_grass_form_keys(&fields),
+                vec![
+                    "SeventySix.esm:8E0B62".to_string(),
+                    "SeventySix.esm:8E0B63".to_string(),
+                ]
+            );
+        }
+        {
+            let fields = vec![json!({
+                "GrassTexture": { "reference": { "plugin": "SeventySix.esm", "object_id": "011C68" }}
+            })];
 
-        assert_eq!(e.density, 16);
-        assert_eq!(e.position_range, 32.0);
-    }
+            assert_eq!(
+                gcvr_grass_form_keys(&fields),
+                vec!["SeventySix.esm:011C68".to_string()]
+            );
+        }
+        {
+            let fields = vec![
+                json!({
+                    "LandscapeTexture": {
+                        "reference": { "plugin": "SeventySix.esm", "object_id": "00D677" }
+                    }
+                }),
+                json!({
+                    "LNAM": {
+                        "reference": { "plugin": "SeventySix.esm", "object_id": "00E559" }
+                    }
+                }),
+            ];
 
-    #[test]
-    fn non_fo76_policy_preserves_density_and_position_range() {
-        let v = json!({
-            "eid": "ForestGrassObj01",
-            "fields": [{ "DATA": { "Density": 9, "PositionRange": 32.0 }}]
-        });
-
-        let e = entry_from_grass(&v, "0878FF:Fallout4.esm", "fo4");
-
-        assert_eq!(e.density, 9);
-        assert_eq!(e.position_range, 32.0);
-        assert!(!e.position_range_normalized);
-    }
-
-    #[test]
-    fn direct_grass_form_keys_reads_raw_gnam_refs() {
-        let fields = vec![
-            json!({ "GNAM": { "reference": { "plugin": "SeventySix.esm", "object_id": "8E0B62" }}}),
-            json!({ "GNAM": { "reference": { "plugin": "SeventySix.esm", "object_id": "8E0B63" }}}),
-        ];
-
-        assert_eq!(
-            direct_grass_form_keys(&fields),
-            vec![
-                "SeventySix.esm:8E0B62".to_string(),
-                "SeventySix.esm:8E0B63".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn gcvr_grass_form_keys_keeps_legacy_grass_texture_refs() {
-        let fields = vec![json!({
-            "GrassTexture": { "reference": { "plugin": "SeventySix.esm", "object_id": "011C68" }}
-        })];
-
-        assert_eq!(
-            gcvr_grass_form_keys(&fields),
-            vec!["SeventySix.esm:011C68".to_string()]
-        );
-    }
-
-    #[test]
-    fn gcvr_land_texture_form_keys_reads_named_and_raw_lnam_refs() {
-        let fields = vec![
-            json!({
-                "LandscapeTexture": {
-                    "reference": { "plugin": "SeventySix.esm", "object_id": "00D677" }
-                }
-            }),
-            json!({
-                "LNAM": {
-                    "reference": { "plugin": "SeventySix.esm", "object_id": "00E559" }
-                }
-            }),
-        ];
-
-        assert_eq!(
-            gcvr_land_texture_form_keys_from_fields(&fields),
-            vec![
-                "SeventySix.esm:00D677".to_string(),
-                "SeventySix.esm:00E559".to_string(),
-            ]
-        );
+            assert_eq!(
+                gcvr_land_texture_form_keys_from_fields(&fields),
+                vec![
+                    "SeventySix.esm:00D677".to_string(),
+                    "SeventySix.esm:00E559".to_string(),
+                ]
+            );
+        }
     }
 
     #[test]

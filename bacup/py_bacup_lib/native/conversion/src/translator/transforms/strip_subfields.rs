@@ -151,6 +151,49 @@ mod tests {
 
         let names = field_names(&interner, &value);
         assert_eq!(names, vec!["MODL"]);
+
+        // When all subfields are removed the value becomes None (signals field drop).
+        let mut interner = StringInterner::new();
+        let mut value = make_struct(
+            &mut interner,
+            &[("XFLG", FieldValue::Int(1)), ("ENLT", FieldValue::Int(2))],
+        );
+        let config = serde_json::json!({ "remove": ["XFLG", "ENLT"] });
+
+        let mut ctx = make_ctx(&mut interner);
+        StripSubfieldsTransform
+            .apply(&mut ctx, &mut value, &config)
+            .unwrap();
+
+        assert_eq!(value, FieldValue::None);
+
+        // Non-Struct values are passed through unchanged.
+        let mut interner = StringInterner::new();
+        let mut value = FieldValue::Int(42);
+        let config = serde_json::json!({ "remove": ["XFLG"] });
+
+        let mut ctx = make_ctx(&mut interner);
+        StripSubfieldsTransform
+            .apply(&mut ctx, &mut value, &config)
+            .unwrap();
+
+        assert_eq!(value, FieldValue::Int(42));
+
+        // Empty config (no keep, no remove) leaves the struct intact.
+        let mut interner = StringInterner::new();
+        let mut value = make_struct(
+            &mut interner,
+            &[("MODL", FieldValue::Int(1)), ("XFLG", FieldValue::Int(2))],
+        );
+        let config = serde_json::json!({});
+
+        let mut ctx = make_ctx(&mut interner);
+        StripSubfieldsTransform
+            .apply(&mut ctx, &mut value, &config)
+            .unwrap();
+
+        let names = field_names(&interner, &value);
+        assert_eq!(names, vec!["MODL", "XFLG"]);
     }
 
     /// Usage 2: `keep` list (fo4_to_skyrimse.yaml line 104).
@@ -179,57 +222,5 @@ mod tests {
 
         let names = field_names(&interner, &value);
         assert_eq!(names, vec!["value", "weight"]);
-    }
-
-    /// When all subfields are removed the value becomes None (signals field drop).
-    #[test]
-    fn all_removed_yields_none() {
-        let mut interner = StringInterner::new();
-        let mut value = make_struct(
-            &mut interner,
-            &[("XFLG", FieldValue::Int(1)), ("ENLT", FieldValue::Int(2))],
-        );
-        let config = serde_json::json!({ "remove": ["XFLG", "ENLT"] });
-
-        let mut ctx = make_ctx(&mut interner);
-        StripSubfieldsTransform
-            .apply(&mut ctx, &mut value, &config)
-            .unwrap();
-
-        assert_eq!(value, FieldValue::None);
-    }
-
-    /// Non-Struct values are passed through unchanged.
-    #[test]
-    fn non_struct_passes_through() {
-        let mut interner = StringInterner::new();
-        let mut value = FieldValue::Int(42);
-        let config = serde_json::json!({ "remove": ["XFLG"] });
-
-        let mut ctx = make_ctx(&mut interner);
-        StripSubfieldsTransform
-            .apply(&mut ctx, &mut value, &config)
-            .unwrap();
-
-        assert_eq!(value, FieldValue::Int(42));
-    }
-
-    /// Empty config (no keep, no remove) leaves the struct intact.
-    #[test]
-    fn empty_config_is_passthrough() {
-        let mut interner = StringInterner::new();
-        let mut value = make_struct(
-            &mut interner,
-            &[("MODL", FieldValue::Int(1)), ("XFLG", FieldValue::Int(2))],
-        );
-        let config = serde_json::json!({});
-
-        let mut ctx = make_ctx(&mut interner);
-        StripSubfieldsTransform
-            .apply(&mut ctx, &mut value, &config)
-            .unwrap();
-
-        let names = field_names(&interner, &value);
-        assert_eq!(names, vec!["MODL", "XFLG"]);
     }
 }

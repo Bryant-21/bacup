@@ -35,6 +35,7 @@
 //! NPCs), and RACE `NoKnockdowns` / `ActorTypeAnimal` (needs RACE `DATA` flag
 //! bits).
 
+use crate::fixups::creature::normalize_creature_lvln_template_chains::leveled_list_has_chance_none;
 use crate::fixups::creature::{
     creature_internal_fixup_applies, npc_internal_fixup_applies_to_record,
 };
@@ -295,6 +296,7 @@ struct LvlnTemplateResolution {
     lvln_entries: FxHashMap<FormKey, Vec<LvlnTemplateEntry>>,
     npc_infos: FxHashMap<FormKey, NpcTemplateInfo>,
     location_conditioned_lvlns: FxHashSet<FormKey>,
+    chance_none_lvlns: FxHashSet<FormKey>,
 }
 
 #[derive(Clone, Copy)]
@@ -352,7 +354,28 @@ fn build_lvln_template_resolution(
             continue;
         };
         let entries = lvln_template_entries(&record, target_masters, &target_plugin_name, interner);
+        if leveled_list_has_chance_none(&record, interner) {
+            resolution.chance_none_lvlns.insert(fk);
+        }
         resolution.lvln_entries.insert(fk, entries);
+    }
+
+    loop {
+        let parents: Vec<_> = resolution
+            .lvln_entries
+            .iter()
+            .filter_map(|(fk, entries)| {
+                (!resolution.chance_none_lvlns.contains(fk)
+                    && entries
+                        .iter()
+                        .any(|entry| resolution.chance_none_lvlns.contains(&entry.target)))
+                .then_some(*fk)
+            })
+            .collect();
+        if parents.is_empty() {
+            break;
+        }
+        resolution.chance_none_lvlns.extend(parents);
     }
 
     let npc_fks = session
@@ -675,6 +698,10 @@ fn select_lvln_template_replacement(
     desired_race: Option<FormKey>,
     resolution: &LvlnTemplateResolution,
 ) -> Option<FormKey> {
+    // A concrete donor cannot represent the empty outcome of a spawn list.
+    if resolution.chance_none_lvlns.contains(&lvln_fk) {
+        return None;
+    }
     let mut visiting = FxHashSet::default();
     select_lvln_template_replacement_inner(lvln_fk, desired_race, resolution, &mut visiting)
 }
@@ -1413,7 +1440,7 @@ const _: () = assert!(PRKR_SIZE == 5);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixups::{FixupConfig, FixupContext, FixupRegistry};
+    use crate::fixups::{FixupConfig, FixupContext};
     use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
@@ -1421,7 +1448,6 @@ mod tests {
     use crate::session::open_session;
     use crate::sym::StringInterner;
     use esp_authoring_core::plugin_runtime::plugin_handle_new_native;
-    use std::sync::Arc;
 
     // -----------------------------------------------------------------------
     // Test record builders
@@ -1536,29 +1562,17 @@ mod tests {
     }
 
     #[test]
-    fn preserves_acbs_auto_calc_stats_when_set() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000100, "Out.esp", &mut interner);
-        // Flags = AutoCalcStats | Unique
-        push_bytes(&mut r, "ACBS", make_acbs(0x10 | 0x20));
-        let changed = apply_to_record(&mut r);
-        assert!(changed);
-        let data = first_bytes(&r, "ACBS").unwrap();
-        let new = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        assert_eq!(new & 0x10, 0x10, "AutoCalcStats bit must be preserved");
-        assert_eq!(new & 0x20, 0x20, "Unique must remain");
-    }
-
-    #[test]
-    fn does_not_synthesize_acbs_auto_calc_stats_when_absent() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000101, "Out.esp", &mut interner);
-        push_bytes(&mut r, "ACBS", make_acbs(0x20));
-        let changed = apply_to_record(&mut r);
-        assert!(changed);
-        let data = first_bytes(&r, "ACBS").unwrap();
-        let new = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        assert_eq!(new & 0x10, 0, "AutoCalcStats bit must remain absent");
+    fn acbs_auto_calc_stats_is_preserved_but_never_synthesized() {
+        for (flags, expected_auto_calc) in [(0x10 | 0x20, 0x10), (0x20, 0)] {
+            let interner = StringInterner::new();
+            let mut r = npc(0x000100, "Out.esp", &interner);
+            push_bytes(&mut r, "ACBS", make_acbs(flags));
+            assert!(apply_to_record(&mut r));
+            let data = first_bytes(&r, "ACBS").unwrap();
+            let new = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            assert_eq!(new & 0x10, expected_auto_calc, "flags {flags:#X}");
+            assert_eq!(new & 0x20, 0x20, "Unique must remain for {flags:#X}");
+        }
     }
 
     #[test]
@@ -1625,13 +1639,9 @@ mod tests {
             TEMPLATE_BASE_DATA,
             "only ModelAnimation should be cleared"
         );
-    }
 
-    #[test]
-    fn keeps_non_lvln_model_animation_template() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x00010C, "Out.esp", &mut interner);
         let model_animation_npc = 0x0712_3456;
+        let mut r = npc(0x00010C, "Out.esp", &interner);
         push_bytes(
             &mut r,
             "ACBS",
@@ -1640,14 +1650,14 @@ mod tests {
         let mut slots = [0u32; 13];
         slots[TPTA_MODEL_ANIMATION_SLOT_INDEX] = model_animation_npc;
         push_bytes(&mut r, "TPTA", make_tpta(slots));
-
-        let lvln_templates = LvlnTemplateResolution::default();
-        let changed = apply_to_record_with_lvln_templates(&mut r, &lvln_templates);
-
-        assert!(changed);
+        assert!(apply_to_record_with_lvln_templates(
+            &mut r,
+            &LvlnTemplateResolution::default()
+        ));
         assert_eq!(
             first_tpta_slot(&r, TPTA_MODEL_ANIMATION_SLOT_INDEX),
-            model_animation_npc
+            model_animation_npc,
+            "a non-LVLN ModelAnimation template is kept"
         );
         assert_eq!(acbs_template_flags(&r), TEMPLATE_MODEL_ANIMATION);
     }
@@ -1658,7 +1668,6 @@ mod tests {
         let plugin = "Out.esp";
         let liberator_race = fk(0x002ECF, plugin, &interner);
         let dummy_race = fk(0x797814, plugin, &interner);
-        let dummy_template = fk(0x85A3CF, plugin, &interner);
         let liberator_race_raw: u32 = 0x0100_2ECF;
         let dummy_template_raw: u32 = 0x0185_A3CF;
         let mut record = npc(0x85B676, plugin, &interner);
@@ -1771,137 +1780,78 @@ mod tests {
     }
 
     #[test]
-    fn mixed_race_lvln_template_is_not_guessed_without_same_race_candidate() {
-        let mut interner = StringInterner::new();
-        let plugin = "Out.esp";
-        let wanted_race = fk(0x000300, plugin, &mut interner);
-        let race_a = fk(0x000100, plugin, &mut interner);
-        let race_b = fk(0x000200, plugin, &mut interner);
-        let lvln_fk = fk(0x000900, plugin, &mut interner);
-        let npc_a = fk(0x000901, plugin, &mut interner);
-        let npc_b = fk(0x000902, plugin, &mut interner);
-        let lvln_raw = 0x0100_0900;
-
-        let mut resolution = LvlnTemplateResolution::default();
-        resolution.all_lvln_raw.insert(lvln_raw);
-        resolution.raw_to_lvln_fk.insert(lvln_raw, lvln_fk);
-        resolution.raw_by_fk.insert(lvln_fk, lvln_raw);
-        resolution.raw_by_fk.insert(npc_a, 0x0100_0901);
-        resolution.raw_by_fk.insert(npc_b, 0x0100_0902);
-        resolution.raw_by_fk.insert(wanted_race, 0x0100_0300);
-        resolution.lvln_entries.insert(
-            lvln_fk,
-            vec![
-                LvlnTemplateEntry {
-                    level: 1,
-                    target: npc_a,
-                },
-                LvlnTemplateEntry {
-                    level: 1,
-                    target: npc_b,
-                },
-            ],
-        );
-        resolution.npc_infos.insert(
-            npc_a,
-            NpcTemplateInfo {
-                race: Some(race_a),
-                has_tpta: false,
-                editor_id_template_hint: true,
-            },
-        );
-        resolution.npc_infos.insert(
-            npc_b,
-            NpcTemplateInfo {
-                race: Some(race_b),
-                has_tpta: false,
-                editor_id_template_hint: true,
-            },
-        );
-
-        let mut r = npc(0x000A00, plugin, &mut interner);
-        push_bytes(
-            &mut r,
-            "ACBS",
-            make_acbs_with_template_flags(0, TEMPLATE_TRAITS),
-        );
-        push_formkey(&mut r, "RNAM", wanted_race);
-        push_bytes(&mut r, "TPLT", lvln_raw.to_le_bytes().to_vec());
-        let mut slots = [0u32; 13];
-        slots[0] = lvln_raw;
-        push_bytes(&mut r, "TPTA", make_tpta(slots));
-
-        let _ = apply_to_record_with_lvln_templates(&mut r, &resolution);
-
-        assert_eq!(first_raw(&r, "TPLT"), lvln_raw);
-        assert_eq!(first_tpta_slot(&r, 0), lvln_raw);
-    }
-
-    #[test]
-    fn mixed_race_lvln_template_uses_matching_race_even_when_not_first() {
-        let mut interner = StringInterner::new();
-        let plugin = "Out.esp";
-        let race_a = fk(0x000100, plugin, &mut interner);
-        let race_b = fk(0x000200, plugin, &mut interner);
-        let lvln_fk = fk(0x000900, plugin, &mut interner);
-        let npc_a = fk(0x000901, plugin, &mut interner);
-        let npc_b = fk(0x000902, plugin, &mut interner);
+    fn mixed_race_lvln_template_uses_matching_race_or_is_left_alone() {
         let lvln_raw = 0x0100_0900;
         let npc_b_raw = 0x0100_0902;
+        for (name, wanted_race_local, npc_b_is_child, expected) in [
+            ("matching_race_not_first", 0x000200, true, npc_b_raw),
+            ("no_same_race_candidate", 0x000300, false, lvln_raw),
+        ] {
+            let interner = StringInterner::new();
+            let plugin = "Out.esp";
+            let wanted_race = fk(wanted_race_local, plugin, &interner);
+            let race_a = fk(0x000100, plugin, &interner);
+            let race_b = fk(0x000200, plugin, &interner);
+            let lvln_fk = fk(0x000900, plugin, &interner);
+            let npc_a = fk(0x000901, plugin, &interner);
+            let npc_b = fk(0x000902, plugin, &interner);
 
-        let mut resolution = LvlnTemplateResolution::default();
-        resolution.all_lvln_raw.insert(lvln_raw);
-        resolution.raw_to_lvln_fk.insert(lvln_raw, lvln_fk);
-        resolution.raw_by_fk.insert(lvln_fk, lvln_raw);
-        resolution.raw_by_fk.insert(npc_a, 0x0100_0901);
-        resolution.raw_by_fk.insert(npc_b, npc_b_raw);
-        resolution.raw_by_fk.insert(race_b, 0x0100_0200);
-        resolution.lvln_entries.insert(
-            lvln_fk,
-            vec![
-                LvlnTemplateEntry {
-                    level: 1,
-                    target: npc_a,
+            let mut resolution = LvlnTemplateResolution::default();
+            resolution.all_lvln_raw.insert(lvln_raw);
+            resolution.raw_to_lvln_fk.insert(lvln_raw, lvln_fk);
+            resolution.raw_by_fk.insert(lvln_fk, lvln_raw);
+            resolution.raw_by_fk.insert(npc_a, 0x0100_0901);
+            resolution.raw_by_fk.insert(npc_b, npc_b_raw);
+            resolution
+                .raw_by_fk
+                .insert(wanted_race, 0x0100_0000 | wanted_race_local);
+            resolution.lvln_entries.insert(
+                lvln_fk,
+                vec![
+                    LvlnTemplateEntry {
+                        level: 1,
+                        target: npc_a,
+                    },
+                    LvlnTemplateEntry {
+                        level: 1,
+                        target: npc_b,
+                    },
+                ],
+            );
+            resolution.npc_infos.insert(
+                npc_a,
+                NpcTemplateInfo {
+                    race: Some(race_a),
+                    has_tpta: false,
+                    editor_id_template_hint: true,
                 },
-                LvlnTemplateEntry {
-                    level: 1,
-                    target: npc_b,
+            );
+            resolution.npc_infos.insert(
+                npc_b,
+                NpcTemplateInfo {
+                    race: Some(race_b),
+                    has_tpta: npc_b_is_child,
+                    editor_id_template_hint: !npc_b_is_child,
                 },
-            ],
-        );
-        resolution.npc_infos.insert(
-            npc_a,
-            NpcTemplateInfo {
-                race: Some(race_a),
-                has_tpta: false,
-                editor_id_template_hint: true,
-            },
-        );
-        resolution.npc_infos.insert(
-            npc_b,
-            NpcTemplateInfo {
-                race: Some(race_b),
-                has_tpta: true,
-                editor_id_template_hint: false,
-            },
-        );
+            );
 
-        let mut r = npc(0x000A00, plugin, &mut interner);
-        push_bytes(
-            &mut r,
-            "ACBS",
-            make_acbs_with_template_flags(0, TEMPLATE_TRAITS),
-        );
-        push_formkey(&mut r, "RNAM", race_b);
-        push_bytes(&mut r, "TPLT", lvln_raw.to_le_bytes().to_vec());
-        let mut slots = [0u32; 13];
-        slots[0] = lvln_raw;
-        push_bytes(&mut r, "TPTA", make_tpta(slots));
+            let mut r = npc(0x000A00, plugin, &interner);
+            push_bytes(
+                &mut r,
+                "ACBS",
+                make_acbs_with_template_flags(0, TEMPLATE_TRAITS),
+            );
+            push_formkey(&mut r, "RNAM", wanted_race);
+            push_bytes(&mut r, "TPLT", lvln_raw.to_le_bytes().to_vec());
+            let mut slots = [0u32; 13];
+            slots[0] = lvln_raw;
+            push_bytes(&mut r, "TPTA", make_tpta(slots));
 
-        let _ = apply_to_record_with_lvln_templates(&mut r, &resolution);
+            let _ = apply_to_record_with_lvln_templates(&mut r, &resolution);
 
-        assert_eq!(first_raw(&r, "TPLT"), npc_b_raw);
-        assert_eq!(first_tpta_slot(&r, 0), npc_b_raw);
+            assert_eq!(first_raw(&r, "TPLT"), expected, "{name}");
+            assert_eq!(first_tpta_slot(&r, 0), expected, "{name}");
+        }
     }
 
     #[test]
@@ -1953,83 +1903,54 @@ mod tests {
 
         assert_eq!(first_raw(&record, "TPLT"), main_all_raw);
         assert_eq!(first_tpta_slot(&record, 0), main_all_raw);
-    }
 
-    #[test]
-    fn detects_ess_location_condition_from_raw_ctda() {
-        let mut interner = StringInterner::new();
-        let mut record = npc(0x51C55B, "SeventySix.esm", &mut interner);
-        record.sig = SigCode::from_str("LVLN").expect("LVLN sig");
+        let mut lvln = npc(0x51C55B, "SeventySix.esm", &interner);
+        lvln.sig = SigCode::from_str("LVLN").expect("LVLN sig");
         let mut ctda = vec![0u8; 32];
         ctda[8..10].copy_from_slice(&579u16.to_le_bytes());
-        push_bytes(&mut record, "CTDA", ctda);
-
-        assert!(record_has_ess_location_condition(&record, &interner));
-    }
-
-    #[test]
-    fn aidt_defaults_filled_on_zero_assistance() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000102, "Out.esp", &mut interner);
-        push_bytes(&mut r, "AIDT", make_aidt_zeroed());
-        let changed = apply_aidt_defaults(&mut r);
-        assert!(changed);
-        let data = first_bytes(&r, "AIDT").unwrap();
-        assert_eq!(data[5], AIDT_ASSISTANCE_HELPS_ALLIES);
-        assert_eq!(
-            data[6], 0,
-            "aggro_aggro_radius_behavior must not be forced on"
+        push_bytes(&mut lvln, "CTDA", ctda);
+        assert!(
+            record_has_ess_location_condition(&lvln, &interner),
+            "ESS location condition is detected from a raw CTDA"
         );
-        assert_eq!(
-            &data[8..20],
-            &[0u8; 12],
-            "aggro distances must stay untouched"
-        );
-        assert_eq!(data[20], 0, "no_slow_approach must not be set");
     }
 
     /// Authored aggro data is FO4-legal and must survive: RadHog's 1024/512/256
-    /// is the same triple `EncMutantHound02Legendary` ships.
+    /// is the same triple `EncMutantHound02Legendary` ships. A synthesised or
+    /// zero-assistance AIDT gets Assistance only — no fabricated aggro block.
     #[test]
-    fn aidt_preserves_authored_aggro_block() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000102, "Out.esp", &mut interner);
+    fn aidt_defaults_only_fill_assistance() {
+        let interner = StringInterner::new();
+        let mut missing = npc(0x000102, "Out.esp", &interner);
+        let mut zeroed = npc(0x000103, "Out.esp", &interner);
+        push_bytes(&mut zeroed, "AIDT", make_aidt_zeroed());
+        for (name, r) in [("missing", &mut missing), ("zeroed", &mut zeroed)] {
+            assert!(apply_aidt_defaults(r), "{name}");
+            let data = first_bytes(r, "AIDT").unwrap();
+            assert_eq!(data.len(), AIDT_SIZE, "{name}");
+            assert_eq!(data[5], AIDT_ASSISTANCE_HELPS_ALLIES, "{name}");
+            assert_eq!(&data[6..21], &[0u8; 15], "{name}: no aggro block forced on");
+        }
+
+        let mut authored = npc(0x000104, "Out.esp", &interner);
         let mut aidt = make_aidt_zeroed();
         aidt[5] = AIDT_ASSISTANCE_HELPS_ALLIES;
         aidt[8..12].copy_from_slice(&1024u32.to_le_bytes());
         aidt[12..16].copy_from_slice(&512u32.to_le_bytes());
         aidt[16..20].copy_from_slice(&256u32.to_le_bytes());
-        push_bytes(&mut r, "AIDT", aidt);
-
-        assert!(!apply_aidt_defaults(&mut r), "nothing left to default");
-
-        let data = first_bytes(&r, "AIDT").unwrap();
-        assert_eq!(data[6], 0);
-        assert_eq!(
-            u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
-            1024
+        push_bytes(&mut authored, "AIDT", aidt.clone());
+        assert!(
+            !apply_aidt_defaults(&mut authored),
+            "nothing left to default"
         );
-        assert_eq!(
-            u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
-            512
-        );
-        assert_eq!(
-            u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
-            256
-        );
-        assert_eq!(data[20], 0);
-    }
+        assert_eq!(first_bytes(&authored, "AIDT").unwrap(), aidt.as_slice());
 
-    /// A synthesised AIDT gets Assistance only — no fabricated aggro block.
-    #[test]
-    fn aidt_synthesised_when_missing_leaves_aggro_zeroed() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000102, "Out.esp", &mut interner);
-        assert!(apply_aidt_defaults(&mut r));
-        let data = first_bytes(&r, "AIDT").unwrap();
-        assert_eq!(data.len(), AIDT_SIZE);
-        assert_eq!(data[5], AIDT_ASSISTANCE_HELPS_ALLIES);
-        assert_eq!(&data[6..21], &[0u8; 15]);
+        let mut configured = npc(0x000105, "Out.esp", &interner);
+        let mut aidt = make_aidt_zeroed();
+        aidt[5] = 2;
+        aidt[6] = 1;
+        push_bytes(&mut configured, "AIDT", aidt);
+        assert!(!apply_aidt_defaults(&mut configured), "already configured");
     }
 
     #[test]
@@ -2066,6 +1987,23 @@ mod tests {
             panic!("expected preserved ATKT string");
         };
         assert_eq!(interner.resolve(text), Some("supported attack"));
+
+        let mut race = npc(0x000103, "Out.esp", &interner);
+        push_string(
+            &mut race,
+            "SGNM",
+            "Actors/Character/Behaviors/MeleeBehavior.hkx",
+            &interner,
+        );
+        assert!(race_uses_canonical_melee_behavior(&race, &interner));
+        race.fields.clear();
+        push_string(
+            &mut race,
+            "SGNM",
+            "Actors\\MoleMiner\\Behaviors\\MeleeBehavior.hkx",
+            &interner,
+        );
+        assert!(!race_uses_canonical_melee_behavior(&race, &interner));
     }
 
     #[test]
@@ -2141,52 +2079,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_melee_race_detection_is_path_normalized() {
-        let interner = StringInterner::new();
-        let mut record = npc(0x000103, "Out.esp", &interner);
-        push_string(
-            &mut record,
-            "SGNM",
-            "Actors/Character/Behaviors/MeleeBehavior.hkx",
-            &interner,
-        );
-        assert!(race_uses_canonical_melee_behavior(&record, &interner));
-
-        record.fields.clear();
-        push_string(
-            &mut record,
-            "SGNM",
-            "Actors\\MoleMiner\\Behaviors\\MeleeBehavior.hkx",
-            &interner,
-        );
-        assert!(!race_uses_canonical_melee_behavior(&record, &interner));
-    }
-
-    #[test]
-    fn aidt_synthesised_when_missing() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000103, "Out.esp", &mut interner);
-        let changed = apply_aidt_defaults(&mut r);
-        assert!(changed);
-        let data = first_bytes(&r, "AIDT").unwrap();
-        assert_eq!(data.len(), AIDT_SIZE);
-        assert_eq!(data[5], AIDT_ASSISTANCE_HELPS_ALLIES);
-    }
-
-    #[test]
-    fn aidt_untouched_when_already_configured() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000104, "Out.esp", &mut interner);
-        let mut buf = make_aidt_zeroed();
-        buf[5] = 2; // HelpsFriendsAndAllies
-        buf[6] = 1; // aggro behaviour true
-        push_bytes(&mut r, "AIDT", buf);
-        let changed = apply_aidt_defaults(&mut r);
-        assert!(!changed);
-    }
-
-    #[test]
-    fn template_npc_gains_actor_type_creature_keyword() {
+    fn only_template_npcs_gain_one_actor_type_creature_keyword() {
         let mut interner = StringInterner::new();
         let mut r = npc(0x000105, "Out.esp", &mut interner);
         let changed = apply_to_record(&mut r);
@@ -2199,33 +2092,19 @@ mod tests {
         let ksiz = first_bytes(&r, "KSIZ").expect("KSIZ must be present");
         let count = u32::from_le_bytes([ksiz[0], ksiz[1], ksiz[2], ksiz[3]]);
         assert_eq!(count, 1);
-    }
 
-    #[test]
-    fn child_npc_with_tpta_skips_keyword_inject() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000106, "Out.esp", &mut interner);
+        assert!(
+            !append_actor_type_creature_keyword(&mut r),
+            "not duplicated"
+        );
+        assert_eq!(first_bytes(&r, "KWDA").unwrap().len(), 4);
+
         // Empty TPTA — its mere presence marks the record as a child NPC.
-        push_bytes(&mut r, "TPTA", vec![0u8; 13 * 4]);
-        let _ = apply_to_record(&mut r);
-        assert_eq!(count_fields(&r, "KWDA"), 0);
-        assert_eq!(count_fields(&r, "KSIZ"), 0);
-    }
-
-    #[test]
-    fn existing_actor_type_creature_keyword_not_duplicated() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000107, "Out.esp", &mut interner);
-        let mut kwda = Vec::new();
-        kwda.extend_from_slice(&ACTOR_TYPE_CREATURE_FORM_ID.to_le_bytes());
-        push_bytes(&mut r, "KWDA", kwda);
-        push_bytes(&mut r, "KSIZ", 1u32.to_le_bytes().to_vec());
-
-        let changed = append_actor_type_creature_keyword(&mut r);
-        assert!(!changed);
-
-        let kwda_after = first_bytes(&r, "KWDA").unwrap();
-        assert_eq!(kwda_after.len(), 4, "must not duplicate FormID");
+        let mut child = npc(0x000106, "Out.esp", &interner);
+        push_bytes(&mut child, "TPTA", vec![0u8; 13 * 4]);
+        let _ = apply_to_record(&mut child);
+        assert_eq!(count_fields(&child, "KWDA"), 0);
+        assert_eq!(count_fields(&child, "KSIZ"), 0);
     }
 
     #[test]
@@ -2249,152 +2128,153 @@ mod tests {
         let prkz = first_bytes(&r, "PRKZ").expect("PRKZ must be present");
         let n = u32::from_le_bytes([prkz[0], prkz[1], prkz[2], prkz[3]]);
         assert_eq!(n as usize, CREATURE_PERKS.len());
-    }
 
-    #[test]
-    fn existing_creature_perk_not_duplicated() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x000109, "Out.esp", &mut interner);
-        // Add crCreatureMeleeDamage with rank 2 already.
+        let prkr_sig = SubrecordSig::from_str("PRKR").unwrap();
+        let mut existing = npc(0x000109, "Out.esp", &interner);
         let mut payload = Vec::new();
         payload.extend_from_slice(&CREATURE_PERKS[0].to_le_bytes());
         payload.push(2);
-        push_bytes(&mut r, "PRKR", payload);
+        push_bytes(&mut existing, "PRKR", payload);
+        assert!(append_creature_combat_perks(&mut existing));
+        assert_eq!(count_fields(&existing, "PRKR"), CREATURE_PERKS.len());
+        let first = existing.fields.iter().find(|e| e.sig == prkr_sig).unwrap();
+        let FieldValue::Bytes(data) = &first.value else {
+            panic!("PRKR bytes");
+        };
+        assert_eq!(data[4], 2, "existing perk rank must be preserved");
 
-        let changed = append_creature_combat_perks(&mut r);
-        assert!(changed); // The other two perks are added.
-        assert_eq!(count_fields(&r, "PRKR"), CREATURE_PERKS.len());
-
-        // First entry's rank must still be 2 (not overwritten).
-        let prkr_sig = SubrecordSig::from_str("PRKR").unwrap();
-        let first = r.fields.iter().find(|e| e.sig == prkr_sig).unwrap();
-        if let FieldValue::Bytes(data) = &first.value {
-            assert_eq!(data[4], 2, "existing perk rank must be preserved");
-        }
-    }
-
-    #[test]
-    fn backfill_perk_ranks_promotes_zero_to_one() {
-        let mut interner = StringInterner::new();
-        let mut r = npc(0x00010A, "Out.esp", &mut interner);
+        let mut zero_rank = npc(0x00010A, "Out.esp", &interner);
         let mut payload = Vec::new();
         payload.extend_from_slice(&0x00_001234u32.to_le_bytes());
         payload.push(0);
-        push_bytes(&mut r, "PRKR", payload);
+        push_bytes(&mut zero_rank, "PRKR", payload);
+        assert!(backfill_perk_ranks(&mut zero_rank));
+        let entry = zero_rank.fields.iter().find(|e| e.sig == prkr_sig).unwrap();
+        let FieldValue::Bytes(data) = &entry.value else {
+            panic!("PRKR bytes");
+        };
+        assert_eq!(data[4], 1, "zero rank is promoted to one");
+    }
 
-        let changed = backfill_perk_ranks(&mut r);
-        assert!(changed);
-        let prkr_sig = SubrecordSig::from_str("PRKR").unwrap();
-        let entry = r.fields.iter().find(|e| e.sig == prkr_sig).unwrap();
-        if let FieldValue::Bytes(data) = &entry.value {
-            assert_eq!(data[4], 1);
+    #[test]
+    fn applies_only_to_creature_roots() {
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        for (root, expected) in [
+            (Some("NPC_"), true),
+            (Some("LVLN"), true),
+            (Some("WEAP"), false),
+            (None, false),
+        ] {
+            let config = FixupConfig {
+                root_sig: root.map(|sig| SigCode::from_str(sig).unwrap()),
+                ..Default::default()
+            };
+            let ctx = FixupContext {
+                source_handle_id: 1,
+                target_handle_id: 2,
+                schema_target: &schema,
+                schema_source: &schema,
+                skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
+                mod_path: None,
+                source_extracted_dir: None,
+                target_master_handle_ids: &[],
+                config: &config,
+            };
+            assert_eq!(
+                FixCreatureNpcRecordsFixup.applies_to(&ctx),
+                expected,
+                "{root:?}"
+            );
         }
     }
 
     #[test]
-    fn applies_to_npc_root() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("NPC_").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(FixCreatureNpcRecordsFixup.applies_to(&ctx));
-    }
-
-    #[test]
-    fn applies_to_lvln_root() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("LVLN").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(FixCreatureNpcRecordsFixup.applies_to(&ctx));
-    }
-
-    #[test]
-    fn does_not_apply_to_weap_root() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!FixCreatureNpcRecordsFixup.applies_to(&ctx));
-    }
-
-    #[test]
-    fn does_not_apply_when_no_root_sig() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig::default();
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!FixCreatureNpcRecordsFixup.applies_to(&ctx));
-    }
-
-    #[test]
-    fn registry_runs_with_no_npc_records_as_no_op() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let target_handle = plugin_handle_new_native("FixCreatureNpcRecordsTest.esp", Some("fo4"))
-            .expect("test plugin handle");
+    fn rare_encounter_keeps_runtime_template_and_clears_model_animation() {
+        let interner = StringInterner::new();
+        let plugin = "RareEncounterTest.esp";
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let handle = plugin_handle_new_native(plugin, Some("fo4")).unwrap();
+        let mut session = open_session(handle, None).unwrap();
+        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &interner);
+        let root = fk(0x4FB1BB, plugin, &interner);
+        let selector = fk(0x4FB1BA, plugin, &interner);
+        let mut records = Vec::new();
+        let mut actor = npc(root.local, plugin, &interner);
+        push_bytes(&mut actor, "ACBS", make_acbs_with_template_flags(0, 0x1FFF));
+        push_formkey(&mut actor, "RNAM", fk(0x00D233, plugin, &interner));
+        push_formkey(&mut actor, "TPLT", selector);
+        push_bytes(&mut actor, "TPTA", make_tpta([selector.local; 13]));
+        records.push(actor);
+        let mut outer = Record::new(SigCode::from_str("LVLN").unwrap(), selector);
+        for (branch, leaf, race) in [
+            (0x523CF7_u32, 0x00DAE1_u32, 0x00D233),
+            (0x4FB1BE, 0x524C6B, 0x456789),
+        ] {
+            let mut lvlo = vec![1, 0, 0, 0];
+            lvlo.extend_from_slice(&branch.to_le_bytes());
+            lvlo.extend_from_slice(&[1, 0, 0, 0]);
+            push_bytes(&mut outer, "LVLO", lvlo);
+            let mut inner = Record::new(
+                SigCode::from_str("LVLN").unwrap(),
+                fk(branch, plugin, &interner),
+            );
+            let mut lvlo = vec![1, 0, 0, 0];
+            lvlo.extend_from_slice(&leaf.to_le_bytes());
+            lvlo.extend_from_slice(&[1, 0, 95, 0]);
+            push_bytes(&mut inner, "LVLO", lvlo);
+            records.push(inner);
+            let mut leaf = npc(leaf, plugin, &interner);
+            push_formkey(&mut leaf, "RNAM", fk(race, plugin, &interner));
+            records.push(leaf);
+        }
+        records.push(outer);
+        session.add_records(records, &schema, &interner).unwrap();
         let config = FixupConfig {
             root_sig: Some(SigCode::from_str("NPC_").unwrap()),
             target_schema: Some(schema.clone()),
             ..Default::default()
         };
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(FixCreatureNpcRecordsFixup));
-        let reports = registry
-            .run_all_in_session(&mut session, &mut mapper, &config)
-            .expect("run_all_in_session");
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0].1.is_no_op());
-
-        // Suppress unused-import warning for Arc.
-        let _: Option<Arc<AuthoringSchema>> = None;
+        FixCreatureNpcRecordsFixup
+            .run_with_session(&mut session, &mut mapper, &config)
+            .unwrap();
+        let resolution = build_lvln_template_resolution(
+            &mut session,
+            &schema,
+            &mapper,
+            &[],
+            SigCode::from_str("LVLN").unwrap(),
+            SigCode::from_str("NPC_").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            select_lvln_template_replacement(
+                selector,
+                Some(fk(0x00D233, plugin, &interner)),
+                &resolution
+            ),
+            None
+        );
+        let output = session.record_decoded(&root, &schema, &interner).unwrap();
+        let mut expected = output.clone();
+        assert!(!resolve_lvln_template_slots(&mut expected, &resolution));
+        assert_eq!(
+            acbs_template_flags(&output),
+            0x1FFF & !TEMPLATE_MODEL_ANIMATION
+        );
+        for slot in 0..13 {
+            let expected = if slot == TPTA_MODEL_ANIMATION_SLOT_INDEX {
+                0
+            } else {
+                selector.local
+            };
+            assert_eq!(first_tpta_slot(&output, slot), expected);
+        }
+        assert!(
+            output
+                .fields
+                .iter()
+                .any(|field| field.sig.as_str() == "TPLT"
+                    && field.value == FieldValue::FormKey(selector))
+        );
     }
 }

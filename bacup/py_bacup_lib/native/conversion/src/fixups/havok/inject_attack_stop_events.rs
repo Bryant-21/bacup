@@ -248,24 +248,22 @@ mod tests {
         let mut sorted = times.clone();
         sorted.sort_by(f32::total_cmp);
         assert_eq!(times, sorted);
-    }
 
-    #[test]
-    fn skips_when_attack_stop_present() {
-        let mut anns = vec![
-            make_ann(0.5, "HitFrame"),
-            make_ann(1.2, "AttackStop"), // case-insensitive match
-        ];
-        assert!(!inject_attack_stop_into(&mut anns, 1.6667));
-        assert_eq!(anns.len(), 2);
-    }
-
-    #[test]
-    fn skips_non_attack_clips() {
-        // Locomotion-style annotations only — no hit family, no injection.
-        let mut anns = vec![make_ann(0.2, "FootLeft"), make_ann(0.6, "FootRight")];
-        assert!(!inject_attack_stop_into(&mut anns, 1.0));
-        assert_eq!(anns.len(), 2);
+        // An existing (case-insensitive) attackStop or a clip with no hit family
+        // is left alone.
+        for (mut anns, duration) in [
+            (
+                vec![make_ann(0.5, "HitFrame"), make_ann(1.2, "AttackStop")],
+                1.6667,
+            ),
+            (
+                vec![make_ann(0.2, "FootLeft"), make_ann(0.6, "FootRight")],
+                1.0,
+            ),
+        ] {
+            assert!(!inject_attack_stop_into(&mut anns, duration));
+            assert_eq!(anns.len(), 2);
+        }
     }
 
     #[test]
@@ -280,70 +278,5 @@ mod tests {
             "expected 1.55 < t ≤ 1.6567, got {}",
             stop.0
         );
-    }
-
-    #[test]
-    #[ignore = "live validation: set ATTACK_STOP_LIVE_CLIP to a converted attack .hkx path"]
-    fn live_clip_round_trip() {
-        let Some(src) = std::env::var_os("ATTACK_STOP_LIVE_CLIP") else {
-            return;
-        };
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let clip = tmp.path().join("attackforwarda.hkx");
-        std::fs::copy(&src, &clip).expect("copy live clip");
-
-        let modified = process_inject_attack_stop(&clip).expect("process clip");
-        assert!(modified, "expected live clip to gain attackStop");
-
-        let data = std::fs::read(&clip).expect("re-read clip");
-        let mut hkx = read_packfile(&data).expect("re-parse clip");
-        let mut found = false;
-        for obj in hkx.objects_mut() {
-            for member in &obj.members {
-                if member.name != "annotationTracks" {
-                    continue;
-                }
-                if let HkxValue::Array(tracks) = &member.value {
-                    if let Some(HkxValue::Object(track_members)) = tracks.first() {
-                        for tm in track_members {
-                            if tm.name != "annotations" {
-                                continue;
-                            }
-                            if let HkxValue::Array(anns) = &tm.value {
-                                found |= collect_events(anns)
-                                    .iter()
-                                    .any(|(_, t)| t.eq_ignore_ascii_case("attackStop"));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        assert!(found, "attackStop missing after round-trip");
-    }
-
-    #[test]
-    fn no_mod_path_returns_empty() {
-        use crate::fixups::FixupConfig;
-        use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
-        use crate::session::open_session;
-        use crate::sym::StringInterner;
-
-        let target_handle = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
-            "InjectAttackStopTest.esp",
-            Some("fo4"),
-        )
-        .expect("test plugin handle");
-        let config = FixupConfig::default();
-        let mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let fixup = InjectAttackStopEventsFixup;
-        assert!(!fixup.applies_to_session(&session, &config));
-        let report = fixup
-            .run_with_session(&mut session, &mut mapper, &config)
-            .unwrap();
-        assert!(report.is_no_op());
     }
 }

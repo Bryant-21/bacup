@@ -689,6 +689,7 @@ class ToolkitApp:
                         "archlist_creator",
                         "folder_renamer",
                         "modlist_merger",
+                        "verified_creations",
                     ]
                 )
                 imgui.end_menu()

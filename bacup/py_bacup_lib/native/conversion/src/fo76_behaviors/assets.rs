@@ -3,13 +3,20 @@ use crate::fixups::havok::normalize_weapon_behavior_contracts::merge_behavior_co
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+thread_local! {
+    static SERIALIZED_CONVERSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn convert(path: &Path) -> Result<HkxFile, String> {
-    let report = havok_native::api::havok_convert_bytes_report(
-        &std::fs::read(path).map_err(|e| e.to_string())?,
-        VERSION,
-    )
-    .map_err(|e| format!("{}: {e}", path.display()))?;
-    HkxFile::read(&report.bytes).map_err(|e| e.to_string())
+    #[cfg(test)]
+    if SERIALIZED_CONVERSION.get() {
+        let report = havok_native::api::havok_convert_bytes_report(&source_bytes(path)?, VERSION)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        return HkxFile::read(&report.bytes).map_err(|e| e.to_string());
+    }
+    havok_native::api::havok_convert_for_editing(&source_bytes(path)?, VERSION)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 fn write(root: &Path, relative: &str, file: &HkxFile) -> Result<(), String> {
     let path = root.join(relative.replace('\\', "/"));
@@ -32,6 +39,7 @@ pub struct BehaviorGenerationReport {
 #[derive(Default)]
 struct ParsedInputs {
     reuse_shared_inputs: bool,
+    cache_animation_inputs: bool,
     route_converted: HashMap<String, HkxFile>,
     shared_converted: HashMap<String, HkxFile>,
     parsed: BTreeMap<PathBuf, HkxFile>,
@@ -44,9 +52,10 @@ struct ParsedInputs {
 }
 
 impl ParsedInputs {
-    fn new(reuse_shared_inputs: bool) -> Self {
+    fn new(reuse_shared_inputs: bool, cache_animation_inputs: bool) -> Self {
         Self {
             reuse_shared_inputs,
+            cache_animation_inputs,
             ..Self::default()
         }
     }
@@ -66,6 +75,14 @@ impl ParsedInputs {
             self.shared_converted
                 .insert(relative.to_owned(), file.clone());
         }
+        Ok(file)
+    }
+
+    fn convert_transient(&mut self, source: &Path, relative: &str) -> Result<HkxFile, String> {
+        let started = Instant::now();
+        let file = convert(&source.join(relative))?;
+        self.parsing += started.elapsed();
+        self.parsed_inputs += 1;
         Ok(file)
     }
 
@@ -100,6 +117,30 @@ impl ParsedInputs {
             self.parsed.insert(path.to_owned(), file.clone());
         }
         Ok(file)
+    }
+
+    fn read_transient(&mut self, path: &Path) -> Result<HkxFile, String> {
+        let started = Instant::now();
+        let file = read(path)?;
+        self.parsing += started.elapsed();
+        self.parsed_inputs += 1;
+        Ok(file)
+    }
+
+    fn convert_animation(&mut self, source: &Path, relative: &str) -> Result<HkxFile, String> {
+        if self.cache_animation_inputs {
+            self.convert(source, relative)
+        } else {
+            self.convert_transient(source, relative)
+        }
+    }
+
+    fn read_animation(&mut self, path: &Path) -> Result<HkxFile, String> {
+        if self.cache_animation_inputs {
+            self.read(path)
+        } else {
+            self.read_transient(path)
+        }
     }
 
     fn bone_order(
@@ -236,7 +277,7 @@ fn skeleton_bones(file: &HkxFile) -> Vec<String> {
         })
         .unwrap_or_default()
 }
-fn project_rig(root: &Path, dir: &str) -> Result<HkxFile, String> {
+pub(super) fn project_rig(root: &Path, dir: &str) -> Result<HkxFile, String> {
     let conventional = root.join(format!("{dir}/characterassets/skeleton.hkx"));
     if conventional.try_exists().map_err(|e| e.to_string())? {
         return read(&conventional);
@@ -314,6 +355,30 @@ fn remap_masks(file: &mut HkxFile, order: &[Option<usize>]) {
     }
 }
 
+fn property_bone_weights(
+    file: &HkxFile,
+    info: &HkxValue,
+    word: &HkxValue,
+    variants: &[HkxValue],
+) -> Option<Vec<HkxValue>> {
+    let member_number = |value: &HkxValue, name: &str| {
+        value
+            .as_object_members()?
+            .iter()
+            .find(|m| m.name == name)
+            .and_then(|m| number(&m.value))
+    };
+    if member_number(info, "type") != Some(5.0) {
+        return None;
+    }
+    let slot = member_number(word, "value")? as usize;
+    let HkxValue::Pointer(Some(index)) = variants.get(slot)? else {
+        return None;
+    };
+    let object = file.objects().get(*index)?;
+    (object.class_name == "hkbBoneWeightArray").then(|| array(object, "boneWeights"))
+}
+
 fn append_property_values(
     target: &mut HkxFile,
     source: &HkxFile,
@@ -352,12 +417,25 @@ fn append_property_values(
         return Err("misaligned source character properties".into());
     }
     for (i, name) in names.iter().enumerate() {
-        if target_names.iter().any(|n| {
+        let existing = target_names.iter().position(|n| {
             text(n)
                 .zip(text(name))
                 .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
-        }) {
-            continue;
+        });
+        if let Some(index) = existing {
+            let target_mask = property_bone_weights(
+                target,
+                &target_infos[index],
+                &target_words[index],
+                &target_variants,
+            );
+            let source_mask = property_bone_weights(source, &infos[i], &words[i], &variants);
+            if !target_mask
+                .zip(source_mask)
+                .is_some_and(|(target, source)| target.is_empty() && !source.is_empty())
+            {
+                continue;
+            }
         }
         let mut word = words[i].clone();
         // FO76's AimSource bone is absent on the FO4 rig; its numeric index is Neck there.
@@ -417,9 +495,14 @@ fn append_property_values(
             value.value = HkxValue::I32(target_variants.len() as i32);
             target_variants.push(HkxValue::Pointer(Some(copied)));
         }
-        target_names.push(name.clone());
-        target_infos.push(infos[i].clone());
-        target_words.push(word);
+        if let Some(index) = existing {
+            // FO4's empty placeholders (including the camera reload mask) can share a variant.
+            target_words[index] = word;
+        } else {
+            target_names.push(name.clone());
+            target_infos.push(infos[i].clone());
+            target_words.push(word);
+        }
     }
     set(
         &mut target.objects_mut()[target_strings],
@@ -497,13 +580,51 @@ fn copy_animation(
         return Ok(());
     }
     let mut animation = if project.vanilla {
-        inputs.convert(source, origin)?
+        inputs.convert_animation(source, origin)?
     } else {
-        inputs.read(&source.join(origin))?
+        inputs.read_animation(&source.join(origin))?
     };
     animation.set_contents_version(VERSION);
     remove_shredder_swing_events(&mut animation, origin);
     inputs.write(output, &destination, &animation)
+}
+
+pub(super) fn project_roots(root: &Path, project: &str) -> Result<BTreeSet<String>, String> {
+    let mut roots = BTreeSet::new();
+    for entry in
+        std::fs::read_dir(root.join(project).join("characters")).map_err(|e| e.to_string())?
+    {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path
+            .extension()
+            .is_none_or(|e| !e.eq_ignore_ascii_case("hkx"))
+        {
+            continue;
+        }
+        let character = read(&path)?;
+        for object in character.objects() {
+            if object.class_name == "hkbCharacterStringData" {
+                let behavior = string(object, "behaviorFilename");
+                if !behavior.is_empty() {
+                    roots.insert(relative_asset(project, &behavior));
+                }
+            }
+        }
+    }
+    for entry in
+        std::fs::read_dir(root.join(project).join("behaviors")).map_err(|e| e.to_string())?
+    {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let name = path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        if name.contains("root") && name.ends_with(".hkx") {
+            roots.insert(format!("{project}/behaviors/{name}"));
+        }
+    }
+    Ok(roots)
 }
 
 pub fn build(mod_path: &Path, source_root: &Path, target_root: &Path) -> Result<u32, String> {
@@ -515,7 +636,7 @@ pub fn build_profiled(
     source_root: &Path,
     target_root: &Path,
 ) -> Result<BehaviorGenerationReport, String> {
-    build_with_profile(mod_path, source_root, target_root, true)
+    build_with_profile(mod_path, source_root, target_root, true, false)
 }
 
 fn build_with_profile(
@@ -523,6 +644,7 @@ fn build_with_profile(
     source_root: &Path,
     target_root: &Path,
     reuse_shared_inputs: bool,
+    cache_animation_inputs: bool,
 ) -> Result<BehaviorGenerationReport, String> {
     let started = Instant::now();
     let plan_path = mod_path.join(PLAN_PATH);
@@ -538,14 +660,41 @@ fn build_with_profile(
     let target = meshes(target_root);
     let output = mod_path.join("data/Meshes");
     let discovery = started.elapsed();
-    let mut inputs = ParsedInputs::new(reuse_shared_inputs);
+    let mut inputs = ParsedInputs::new(reuse_shared_inputs, cache_animation_inputs);
     let vanilla_blends =
         inputs.read(&target.join("actors/character/behaviors/weaponbehavior.hkx"))?;
     let mut written = BTreeSet::new();
     let mut contracts: BTreeMap<String, Vec<HkxFile>> = BTreeMap::new();
     for route in &plan.routes {
         let project = &plan.projects[&route.project];
-        let order = if project.vanilla && !project.source.contains("_1stperson") {
+        let bow_retarget = if project.vanilla && super::bow::power_armor_route(route) {
+            Some(super::bow_power_armor::Retargeter::load(
+                &source,
+                &target,
+                &project.source,
+            )?)
+        } else {
+            None
+        };
+        let animation_destination = |origin: &str| {
+            format!(
+                "actors/B21_FO76/Source/{}/{}",
+                super::bow::animation_namespace(project, route),
+                clean(origin)
+            )
+        };
+        let order = if bow_retarget.as_ref().is_some_and(|rig| !rig.is_identity()) {
+            let source_rig =
+                project_rig(&source, &project.source.replace("powerarmor", "character"))?;
+            let target_rig = project_rig(&target, &project.source)?;
+            let source_bones = skeleton_bones(&source_rig);
+            Some(
+                skeleton_bones(&target_rig)
+                    .iter()
+                    .map(|name| source_bones.iter().position(|source| source == name))
+                    .collect(),
+            )
+        } else if project.vanilla && !project.source.contains("_1stperson") {
             Some(inputs.bone_order(&source, &target, &project.source)?)
         } else {
             None
@@ -553,6 +702,7 @@ fn build_with_profile(
         let mut graphs = BTreeMap::new();
         for (origin, destination) in &route.dependencies {
             let mut graph = inputs.route_convert(&source, origin)?;
+            super::boss::repair(&mut graph, &source, origin, &route.project)?;
             super::locomotion::repair(
                 &mut graph,
                 &source,
@@ -561,6 +711,7 @@ fn build_with_profile(
                 &vanilla_blends,
             )?;
             super::bow::repair_player_locomotion(&mut graph, route);
+            super::bow::suppress_power_armor_first_person_fidgets(&mut graph, route);
             if let Some(order) = &order {
                 remap_masks(&mut graph, order);
             }
@@ -600,13 +751,15 @@ fn build_with_profile(
                         set_string(
                             object,
                             "animationName",
-                            &relative_path(&project.destination, &animation_path(project, &origin)),
+                            &relative_path(&project.destination, &animation_destination(&origin)),
                         );
                     }
                     _ => {}
                 }
             }
             super::furniture::repair_gas_pump_exit(&mut graph, origin, &target)?;
+            super::draw::repair(&mut graph, origin)?;
+            super::sneak::repair(&mut graph)?;
             if let Some(event) = &route.draw_event {
                 namespace_draw(&mut graph, event);
             }
@@ -622,7 +775,11 @@ fn build_with_profile(
             inputs.write(&output, path, graph)?;
             written.insert(path.clone());
         }
-        if !project.vanilla || !furniture_graph(&route.source) {
+        // Fishing is driven by native events and variables absent from FO4's root.
+        if !project.vanilla
+            || !furniture_graph(&route.source)
+            || clean(&route.source) == "actors/character/behaviors/furniturefishingbehavior.hkx"
+        {
             contracts.entry(route.project.clone()).or_default().push(
                 graphs
                     .remove(&route.destination)
@@ -630,7 +787,24 @@ fn build_with_profile(
             );
         }
         for origin in route.animations.values() {
-            copy_animation(&source, &output, project, origin, &mut written, &mut inputs)?;
+            if let Some(retarget) = &bow_retarget {
+                let destination = animation_destination(origin);
+                if written.insert(destination.clone()) {
+                    let mut animation = if retarget.is_identity() {
+                        inputs.convert_animation(&source, origin)?
+                    } else {
+                        let mut animation = inputs.read_animation(&source.join(origin))?;
+                        retarget
+                            .apply(&mut animation)
+                            .map_err(|e| format!("{origin}: {e}"))?;
+                        animation
+                    };
+                    animation.set_contents_version(VERSION);
+                    inputs.write(&output, &destination, &animation)?;
+                }
+            } else {
+                copy_animation(&source, &output, project, origin, &mut written, &mut inputs)?;
+            }
         }
     }
     for (key, project) in &plan.projects {
@@ -644,20 +818,13 @@ fn build_with_profile(
             } else {
                 None
             };
-            let behavior_dir = target.join(&project.source).join("behaviors");
-            for entry in std::fs::read_dir(behavior_dir).map_err(|e| e.to_string())? {
-                let path = entry.map_err(|e| e.to_string())?.path();
-                let name = path.file_name().unwrap().to_string_lossy().to_string();
-                if !name.to_ascii_lowercase().contains("root")
-                    || !name.to_ascii_lowercase().ends_with(".hkx")
-                {
-                    continue;
-                }
+            for relative in project_roots(&target, &project.source)? {
+                let path = target.join(&relative);
                 let mut root = inputs.read(&path)?;
                 for graph in graphs {
                     merge_behavior_contracts(&mut root, graph)?;
                 }
-                let destination = format!("{}/behaviors/{name}", project.destination);
+                let destination = relative.replacen(&project.source, &project.destination, 1);
                 inputs.write(&output, &destination, &root)?;
                 written.insert(destination);
             }
@@ -828,154 +995,96 @@ fn build_with_profile(
 mod tests {
     use super::*;
 
-    fn output_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
-        fn collect(root: &Path, dir: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
-            for entry in std::fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    collect(root, &path, files);
-                } else {
-                    files.insert(
-                        path.strip_prefix(root)
-                            .unwrap()
-                            .to_string_lossy()
-                            .replace('\\', "/"),
-                        std::fs::read(path).unwrap(),
-                    );
-                }
-            }
-        }
-
-        let mut files = BTreeMap::new();
-        collect(root, &root.join("data/Meshes"), &mut files);
-        files.insert(
-            "debug/fo76_behaviors/assets.json".into(),
-            std::fs::read(root.join("debug/fo76_behaviors/assets.json")).unwrap(),
-        );
-        files
-    }
-
-    #[test]
-    #[ignore = "requires fixed scratch trees, a behavior plan, and extracted FO76/FO4 assets"]
-    fn benchmark_shared_behavior_inputs_preserve_outputs() {
-        let source = PathBuf::from(std::env::var("B21_FO76_BEHAVIOR_BENCH_SOURCE").unwrap());
-        let target = PathBuf::from(std::env::var("B21_FO76_BEHAVIOR_BENCH_TARGET").unwrap());
-        let plan = PathBuf::from(std::env::var("B21_FO76_BEHAVIOR_BENCH_PLAN").unwrap());
-        let baseline = PathBuf::from(std::env::var("B21_FO76_BEHAVIOR_BENCH_BASELINE").unwrap());
-        let optimized = PathBuf::from(std::env::var("B21_FO76_BEHAVIOR_BENCH_OPTIMIZED").unwrap());
-        let reverse_order = std::env::var_os("B21_FO76_BEHAVIOR_BENCH_REVERSE").is_some();
-        for root in [&baseline, &optimized] {
-            assert!(
-                !root.join("data").exists(),
-                "benchmark scratch must not already contain generated data: {}",
-                root.display()
-            );
-            std::fs::create_dir_all(root.join("debug/fo76_behaviors")).unwrap();
-            std::fs::copy(&plan, root.join(PLAN_PATH)).unwrap();
-        }
-
-        let (baseline_report, optimized_report) = if reverse_order {
-            let optimized_report = build_profiled(&optimized, &source, &target).unwrap();
-            let baseline_report = build_with_profile(&baseline, &source, &target, false).unwrap();
-            (baseline_report, optimized_report)
-        } else {
-            let baseline_report = build_with_profile(&baseline, &source, &target, false).unwrap();
-            let optimized_report = build_profiled(&optimized, &source, &target).unwrap();
-            (baseline_report, optimized_report)
-        };
-        let baseline_bytes = output_bytes(&baseline);
-        let optimized_bytes = output_bytes(&optimized);
-        println!(
-            "[fo76_behavior_generation_benchmark] reverse_order={} baseline_ms={} optimized_ms={} baseline_parse_ms={} optimized_parse_ms={} baseline_route_ms={} optimized_route_ms={} baseline_write_ms={} optimized_write_ms={} optimized_parsed_inputs={} optimized_shared_input_cache_hits={} optimized_bone_order_cache_hits={} files={}",
-            reverse_order,
-            baseline_report.discovery.as_millis()
-                + baseline_report.parsing.as_millis()
-                + baseline_report.route_construction.as_millis()
-                + baseline_report.writes.as_millis(),
-            optimized_report.discovery.as_millis()
-                + optimized_report.parsing.as_millis()
-                + optimized_report.route_construction.as_millis()
-                + optimized_report.writes.as_millis(),
-            baseline_report.parsing.as_millis(),
-            optimized_report.parsing.as_millis(),
-            baseline_report.route_construction.as_millis(),
-            optimized_report.route_construction.as_millis(),
-            baseline_report.writes.as_millis(),
-            optimized_report.writes.as_millis(),
-            optimized_report.parsed_inputs,
-            optimized_report.shared_input_cache_hits,
-            optimized_report.bone_order_cache_hits,
-            optimized_bytes.len(),
-        );
-        assert_eq!(baseline_report.shared_input_cache_hits, 0);
-        assert_eq!(baseline_report.bone_order_cache_hits, 0);
-        assert!(optimized_report.shared_input_cache_hits > 0);
-        assert!(optimized_report.bone_order_cache_hits > 0);
-        assert_eq!(baseline_bytes, optimized_bytes);
-        assert_eq!(
-            baseline_report.assets_written,
-            optimized_report.assets_written
-        );
-    }
-
-    #[test]
-    #[ignore = "requires the extracted FO76 animation fixtures"]
-    fn live_shredder_swing_events_preserve_damage_and_motion() {
+    fn converted_fixture(root: &Path) -> (PathBuf, String) {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        for name in ["wpnmeleeshredder.hkx", "wpnmeleeshredder_additive.hkx"] {
-            let origin = format!("actors/character/animations/weapon/chainsaw/{name}");
-            let original = convert(&repo.join("extracted/fo76/meshes").join(&origin)).unwrap();
-            let mut patched = original.clone();
-            remove_shredder_swing_events(&mut patched, &origin);
-            let events = |file: &HkxFile| {
-                file.objects()
-                    .iter()
-                    .flat_map(|object| array(object, "annotationTracks"))
-                    .filter_map(|track| track.as_object_members().map(|fields| fields.to_vec()))
-                    .flat_map(|fields| {
-                        fields
-                            .into_iter()
-                            .filter_map(|field| {
-                                if field.name == "annotations" {
-                                    if let HkxValue::Array(events) = field.value {
-                                        return Some(events);
-                                    }
-                                }
-                                None
-                            })
-                            .flatten()
-                    })
-                    .collect::<Vec<_>>()
+        let relative = "actors/test/characterassets/ragdoll.hkx".to_string();
+        let source = root.join("source");
+        let path = source.join(&relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::copy(
+            repo.join("py_creation_lib/native/havok/tests/fixtures/fo76_antiairturret_ragdoll.hkx"),
+            &path,
+        )
+        .unwrap();
+        (source, relative)
+    }
+
+    #[test]
+    fn animation_inputs_stay_out_of_shared_caches_unless_reused() {
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let (source, origin) = converted_fixture(temp.path());
+            let output = temp.path().join("output");
+            let mut inputs = ParsedInputs::new(true, false);
+            let mut written = BTreeSet::new();
+            let vanilla = Project {
+                source: "actors/test".into(),
+                destination: "actors/test".into(),
+                vanilla: true,
             };
-            let mut expected = events(&original);
-            expected.retain(|event| {
-                !event
-                    .as_object_members()
-                    .unwrap()
-                    .iter()
-                    .any(|field| field.name == "text" && text(&field.value) == Some("weaponSwing"))
-            });
-            assert_eq!(events(&original).len(), expected.len() + 1);
-            let roundtrip = HkxFile::read(&patched.save()).unwrap();
-            assert_eq!(events(&roundtrip), expected);
-            let stripped = |mut file: HkxFile| {
-                for object in file.objects_mut() {
-                    object
-                        .members
-                        .retain(|member| member.name != "annotationTracks");
-                }
-                file.save()
+            let custom = Project {
+                source: "actors/test".into(),
+                destination: "actors/test".into(),
+                vanilla: false,
             };
-            assert_eq!(stripped(original.clone()), stripped(roundtrip));
-            let once = patched.save();
-            remove_shredder_swing_events(&mut patched, &origin);
-            assert_eq!(once, patched.save());
-            let mut unrelated = original.clone();
-            remove_shredder_swing_events(&mut unrelated, "actors/character/animations/attack.hkx");
-            assert_eq!(original.save(), unrelated.save());
-            let destination = repo.join("tmp/autoaxe-voice/native").join(name);
-            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
-            std::fs::write(destination, patched.save()).unwrap();
+
+            copy_animation(
+                &source,
+                &output,
+                &vanilla,
+                &origin,
+                &mut written,
+                &mut inputs,
+            )
+            .unwrap();
+            copy_animation(
+                &source,
+                &output,
+                &custom,
+                &origin,
+                &mut written,
+                &mut inputs,
+            )
+            .unwrap();
+
+            assert_eq!(written.len(), 2);
+            assert!(inputs.shared_converted.is_empty());
+            assert!(inputs.parsed.is_empty());
+            assert_eq!(inputs.shared_input_cache_hits, 0);
+
+            let parsed_inputs = inputs.parsed_inputs;
+            copy_animation(
+                &source,
+                &output,
+                &vanilla,
+                &origin,
+                &mut written,
+                &mut inputs,
+            )
+            .unwrap();
+            copy_animation(
+                &source,
+                &output,
+                &custom,
+                &origin,
+                &mut written,
+                &mut inputs,
+            )
+            .unwrap();
+            assert_eq!(inputs.parsed_inputs, parsed_inputs);
+            assert_eq!(written.len(), 2);
+        }
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let (source, origin) = converted_fixture(temp.path());
+            let mut inputs = ParsedInputs::new(true, false);
+
+            let first = inputs.convert(&source, &origin).unwrap();
+            let second = inputs.convert(&source, &origin).unwrap();
+
+            assert_eq!(first.save(), second.save());
+            assert_eq!(inputs.shared_converted.len(), 1);
+            assert_eq!(inputs.shared_input_cache_hits, 1);
         }
     }
 
@@ -1043,130 +1152,216 @@ mod tests {
                     .collect(),
             ),
         );
+        set(
+            &mut objects[2],
+            "variantVariableValues",
+            HkxValue::Array(vec![]),
+        );
         HkxFile::from_tagxml(11, VERSION, objects)
     }
 
     #[test]
-    fn imported_aim_source_uses_target_weapon_bone_and_preserves_properties() {
-        let source = character_properties(&[
-            ("DirectAtWeaponBoneIndex", 99),
-            ("AimSource", 12),
-            ("Other", 7),
-        ]);
-        for weapon_bone in [28, 41] {
-            let mut target =
-                character_properties(&[("DirectAtWeaponBoneIndex", weapon_bone), ("Existing", 4)]);
-            let expected = character_properties(&[
-                ("DirectAtWeaponBoneIndex", weapon_bone),
-                ("Existing", 4),
-                ("AimSource", weapon_bone),
+    fn aim_sources_and_mirrored_grips_use_target_weapon_bone() {
+        {
+            let source = character_properties(&[
+                ("DirectAtWeaponBoneIndex", 99),
+                ("AimSource", 12),
                 ("Other", 7),
             ]);
-            for _ in 0..2 {
-                append_property_values(&mut target, &source, None).unwrap();
-                for (index, member) in [
-                    (0, "characterPropertyInfos"),
-                    (1, "characterPropertyNames"),
-                    (2, "wordVariableValues"),
-                ] {
-                    assert_eq!(
-                        array(&target.objects()[index], member),
-                        array(&expected.objects()[index], member)
-                    );
+            for weapon_bone in [28, 41] {
+                let mut target = character_properties(&[
+                    ("DirectAtWeaponBoneIndex", weapon_bone),
+                    ("Existing", 4),
+                ]);
+                let expected = character_properties(&[
+                    ("DirectAtWeaponBoneIndex", weapon_bone),
+                    ("Existing", 4),
+                    ("AimSource", weapon_bone),
+                    ("Other", 7),
+                ]);
+                for _ in 0..2 {
+                    append_property_values(&mut target, &source, None).unwrap();
+                    for (index, member) in [
+                        (0, "characterPropertyInfos"),
+                        (1, "characterPropertyNames"),
+                        (2, "wordVariableValues"),
+                    ] {
+                        assert_eq!(
+                            array(&target.objects()[index], member),
+                            array(&expected.objects()[index], member)
+                        );
+                    }
                 }
             }
         }
-    }
-
-    #[test]
-    fn existing_aim_source_and_characters_without_target_weapon_bone_are_preserved() {
-        let source = character_properties(&[("AimSource", 12)]);
-        for properties in [
-            vec![("AimSource", 15), ("DirectAtWeaponBoneIndex", 28)],
-            vec![("AimSource", 12)],
-        ] {
-            let mut target = character_properties(&properties);
-            let before = array(&target.objects()[2], "wordVariableValues");
+        {
+            let source = character_properties(&[("AimSource", 12)]);
+            for properties in [
+                vec![("AimSource", 15), ("DirectAtWeaponBoneIndex", 28)],
+                vec![("AimSource", 12)],
+            ] {
+                let mut target = character_properties(&properties);
+                let before = array(&target.objects()[2], "wordVariableValues");
+                append_property_values(&mut target, &source, None).unwrap();
+                assert_eq!(array(&target.objects()[2], "wordVariableValues"), before);
+            }
+            let mut target = character_properties(&[]);
             append_property_values(&mut target, &source, None).unwrap();
-            assert_eq!(array(&target.objects()[2], "wordVariableValues"), before);
-        }
-        let mut target = character_properties(&[]);
-        append_property_values(&mut target, &source, None).unwrap();
-        assert_eq!(
-            array(&target.objects()[2], "wordVariableValues"),
-            array(&source.objects()[2], "wordVariableValues")
-        );
+            assert_eq!(
+                array(&target.objects()[2], "wordVariableValues"),
+                array(&source.objects()[2], "wordVariableValues")
+            );
 
-        let mut creature = character_properties(&[("AimSource", 28)]);
-        restore_character_values(&source, &mut creature);
-        assert_eq!(
-            array(&creature.objects()[2], "wordVariableValues"),
-            array(&source.objects()[2], "wordVariableValues")
-        );
+            let mut creature = character_properties(&[("AimSource", 28)]);
+            restore_character_values(&source, &mut creature);
+            assert_eq!(
+                array(&creature.objects()[2], "wordVariableValues"),
+                array(&source.objects()[2], "wordVariableValues")
+            );
+        }
+        {
+            let source = character_properties(&[
+                ("DirectAtWeaponBoneIndex", 29),
+                ("WeaponGripMirroredBoneIndex", 32),
+                ("Other", 32),
+            ]);
+            let mut order = vec![None; 95];
+            order[28] = Some(29);
+            order[84] = Some(32);
+            for existing in [
+                vec![("DirectAtWeaponBoneIndex", 28)],
+                vec![
+                    ("DirectAtWeaponBoneIndex", 28),
+                    ("WeaponGripMirroredBoneIndex", 85),
+                ],
+            ] {
+                let expected_grip = if existing.len() == 1 { 84 } else { 85 };
+                let mut target = character_properties(&existing);
+                for _ in 0..2 {
+                    append_property_values(&mut target, &source, Some(&order)).unwrap();
+                    let expected = character_properties(&[
+                        ("DirectAtWeaponBoneIndex", 28),
+                        ("WeaponGripMirroredBoneIndex", expected_grip),
+                        ("Other", 32),
+                    ]);
+                    assert_eq!(
+                        array(&target.objects()[2], "wordVariableValues"),
+                        array(&expected.objects()[2], "wordVariableValues")
+                    );
+                }
+            }
+            let mut unchanged = character_properties(&[]);
+            append_property_values(&mut unchanged, &source, None).unwrap();
+            assert_eq!(
+                array(&unchanged.objects()[2], "wordVariableValues"),
+                array(&source.objects()[2], "wordVariableValues")
+            );
+        }
     }
 
     #[test]
-    fn imported_mirrored_grip_uses_target_bone_order() {
-        let source = character_properties(&[
-            ("DirectAtWeaponBoneIndex", 29),
-            ("WeaponGripMirroredBoneIndex", 32),
-            ("Other", 32),
-        ]);
-        let mut order = vec![None; 95];
-        order[28] = Some(29);
-        order[84] = Some(32);
-        for existing in [
-            vec![("DirectAtWeaponBoneIndex", 28)],
-            vec![
-                ("DirectAtWeaponBoneIndex", 28),
-                ("WeaponGripMirroredBoneIndex", 85),
-            ],
-        ] {
-            let expected_grip = if existing.len() == 1 { 84 } else { 85 };
-            let mut target = character_properties(&existing);
-            for _ in 0..2 {
-                append_property_values(&mut target, &source, Some(&order)).unwrap();
-                let expected = character_properties(&[
-                    ("DirectAtWeaponBoneIndex", 28),
-                    ("WeaponGripMirroredBoneIndex", expected_grip),
-                    ("Other", 32),
-                ]);
-                assert_eq!(
-                    array(&target.objects()[2], "wordVariableValues"),
-                    array(&expected.objects()[2], "wordVariableValues")
+    fn character_masks_import_remapped_weights_and_keep_target_values() {
+        {
+            let mut object = HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: "hkbBoneWeightArray".into(),
+                members: vec![],
+            };
+            set(
+                &mut object,
+                "boneWeights",
+                HkxValue::Array(vec![HkxValue::F32(0.25), HkxValue::F32(1.0)]),
+            );
+            let mut file = HkxFile::from_tagxml(11, VERSION, vec![object]);
+            remap_masks(&mut file, &[Some(1), None, Some(0)]);
+            let packed = HkxFile::read(&file.save()).unwrap();
+            let weights: Vec<_> = array(&packed.objects()[0], "boneWeights")
+                .iter()
+                .filter_map(number)
+                .collect();
+            assert_eq!(weights, [1.0, 0.0, 0.25]);
+        }
+        {
+            let mut source = masked_character(vec![0.25, 1.0]);
+            let mut target = masked_character(vec![]);
+            // Only the first property is supplied by this source, but both target properties share a mask.
+            for (index, member) in [
+                (0, "characterPropertyInfos"),
+                (1, "characterPropertyNames"),
+                (2, "wordVariableValues"),
+            ] {
+                let values = array(&source.objects()[index], member);
+                set(
+                    &mut source.objects_mut()[index],
+                    member,
+                    HkxValue::Array(values[..1].to_vec()),
                 );
             }
+            remap_masks(&mut source, &[Some(1), None, Some(0)]);
+            append_property_values(&mut target, &source, None).unwrap();
+            assert_eq!(target.objects().len(), 5);
+            assert_eq!(
+                array(&target.objects()[4], "boneWeights"),
+                vec![HkxValue::F32(1.0), HkxValue::F32(0.0), HkxValue::F32(0.25)]
+            );
+            assert!(array(&target.objects()[3], "boneWeights").is_empty());
+            let expected =
+                character_properties(&[("UpperBodyFeatheredSpine00", 1), ("OtherMask", 0)]);
+            assert_eq!(
+                array(&target.objects()[2], "wordVariableValues"),
+                array(&expected.objects()[2], "wordVariableValues")
+            );
+            let once = target.save();
+            append_property_values(&mut target, &source, None).unwrap();
+            assert_eq!(target.save(), once);
         }
-        let mut unchanged = character_properties(&[]);
-        append_property_values(&mut unchanged, &source, None).unwrap();
-        assert_eq!(
-            array(&unchanged.objects()[2], "wordVariableValues"),
-            array(&source.objects()[2], "wordVariableValues")
-        );
+        {
+            let source = masked_character(vec![1.0, 0.5]);
+            for mut target in [
+                masked_character(vec![0.0, 0.0]),
+                character_properties(&[("UpperBodyFeatheredSpine00", 0), ("OtherMask", 0)]),
+            ] {
+                let before = target.save();
+                append_property_values(&mut target, &source, None).unwrap();
+                assert_eq!(target.save(), before);
+            }
+            let mut target = masked_character(vec![]);
+            let before = target.save();
+            append_property_values(&mut target, &masked_character(vec![]), None).unwrap();
+            assert_eq!(target.save(), before);
+        }
     }
 
-    #[test]
-    fn remapped_human_masks_survive_packfile_round_trip() {
-        let mut object = HkxObject {
+    fn masked_character(weights: Vec<f32>) -> HkxFile {
+        let mut file = character_properties(&[("UpperBodyFeatheredSpine00", 0), ("OtherMask", 0)]);
+        let mut infos = array(&file.objects()[0], "characterPropertyInfos");
+        for info in &mut infos {
+            info.as_object_members_mut().unwrap()[0].value = HkxValue::I8(5);
+        }
+        set(
+            &mut file.objects_mut()[0],
+            "characterPropertyInfos",
+            HkxValue::Array(infos),
+        );
+        let mask = HkxObject {
             name: None,
             offset: 0,
             signature: 0,
             class_name: "hkbBoneWeightArray".into(),
-            members: vec![],
+            members: vec![HkxMember {
+                name: "boneWeights".into(),
+                value: HkxValue::F32List(weights),
+            }],
         };
+        let index = add(&mut file, mask);
         set(
-            &mut object,
-            "boneWeights",
-            HkxValue::Array(vec![HkxValue::F32(0.25), HkxValue::F32(1.0)]),
+            &mut file.objects_mut()[2],
+            "variantVariableValues",
+            HkxValue::Array(vec![HkxValue::Pointer(Some(index))]),
         );
-        let mut file = HkxFile::from_tagxml(11, VERSION, vec![object]);
-        remap_masks(&mut file, &[Some(1), None, Some(0)]);
-        let packed = HkxFile::read(&file.save()).unwrap();
-        let weights: Vec<_> = array(&packed.objects()[0], "boneWeights")
-            .iter()
-            .filter_map(number)
-            .collect();
-        assert_eq!(weights, [1.0, 0.0, 0.25]);
+        file
     }
 
     #[test]
@@ -1201,280 +1396,5 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["idle", "B21_route_weapEquip", "WeaponFire"]
         );
-    }
-
-    #[test]
-    #[ignore = "requires extracted FO76/FO4 assets and the runtime fixture inventory"]
-    fn build_converted_fo76_fixture_routes() {
-        use crate::fixups::face::build_additive_race_record::SubgraphBlock;
-        use crate::sym::StringInterner;
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap();
-        let source = repo.join("extracted/fo76/meshes");
-        let inventory: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(
-                repo.join("mods/B21_FO76HumanoidBehaviors/testing/generated/asset-plan.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let interner = StringInterner::new();
-        let mut plan = Plan::default();
-        let mut cache = BTreeMap::new();
-        for race in ["moleminer", "scorched"] {
-            let project = Project {
-                source: format!("actors/{race}/{race}project.hkx"),
-                destination: format!("actors/B21_FO76/{race}"),
-                vanilla: false,
-            };
-            for route in inventory[race]["routes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|r| combat_graph(r["graph"].as_str().unwrap()))
-            {
-                let block = SubgraphBlock {
-                    behaviour_graph: interner.intern(route["graph"].as_str().unwrap()),
-                    paths: route["paths"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|s| interner.intern(s.as_str().unwrap()))
-                        .collect(),
-                    subgraph_keywords: vec![],
-                    target_keywords: vec![],
-                    flags_bytes: None,
-                };
-                plan.routes.push(
-                    super::super::records::make_route(
-                        &source,
-                        route["graph"].as_str().unwrap(),
-                        &block,
-                        &project,
-                        &interner,
-                        &mut cache,
-                    )
-                    .unwrap(),
-                );
-            }
-            plan.projects.insert(project.destination.clone(), project);
-        }
-        let human_paths: serde_json::Value =
-            serde_json::from_slice(
-                &std::fs::read(repo.join(
-                    "mods/B21_FO76BinocularsTest/testing/generated/source-animation-paths.json",
-                ))
-                .unwrap(),
-            )
-            .unwrap();
-        for (perspective, dir, graph) in [
-            ("3P", "actors/character", "binocularbehavior.hkx"),
-            ("1P", "actors/character/_1stperson", "gunbehavior.hkx"),
-        ] {
-            let project = Project {
-                source: dir.into(),
-                destination: dir.into(),
-                vanilla: true,
-            };
-            let source_graph = format!("{dir}/behaviors/{graph}");
-            let block = SubgraphBlock {
-                behaviour_graph: interner.intern(&source_graph),
-                paths: human_paths[perspective]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|s| interner.intern(s.as_str().unwrap()))
-                    .collect(),
-                subgraph_keywords: vec![],
-                target_keywords: vec![],
-                flags_bytes: None,
-            };
-            plan.routes.push(
-                super::super::records::make_route(
-                    &source,
-                    &source_graph,
-                    &block,
-                    &project,
-                    &interner,
-                    &mut cache,
-                )
-                .unwrap(),
-            );
-            plan.projects.insert(project.destination.clone(), project);
-        }
-        let floater_project = "actors/B21_FO76/floater";
-        plan.projects.insert(
-            floater_project.into(),
-            Project {
-                source: "actors/floater/floaterproject.hkx".into(),
-                destination: floater_project.into(),
-                vanilla: false,
-            },
-        );
-        let temporary = tempfile::Builder::new()
-            .prefix("fo76_behavior_pipeline_")
-            .tempdir_in(repo.join("tmp"))
-            .unwrap();
-        let output = temporary.path();
-        std::fs::create_dir_all(output.join("debug/fo76_behaviors")).unwrap();
-        std::fs::write(
-            output.join(PLAN_PATH),
-            serde_json::to_vec_pretty(&plan).unwrap(),
-        )
-        .unwrap();
-        use crate::phase::{DispatchParams, run_phase};
-        use crate::run::{RunConfig, RunParams, create_run, drop_run};
-        use crate::translator::Game;
-        let id = create_run(RunParams {
-            source: Game::Fo76,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-        let postprocess = || {
-            run_phase(
-                id,
-                "postprocess_havok_assets",
-                DispatchParams {
-                    mod_path: output.to_path_buf(),
-                    source_extracted_dir: repo.join("extracted/fo76"),
-                    target_extracted_dir: Some(repo.join("extracted/fo4")),
-                    target_data_dir: None,
-                    params: serde_json::json!({}),
-                },
-            )
-            .unwrap()
-        };
-        assert!(postprocess().assets_written > 100);
-        let receipt: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(output.join("debug/fo76_behaviors/assets.json")).unwrap(),
-        )
-        .unwrap();
-        let files: Vec<_> = receipt["files"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|file| file.as_str().unwrap().to_owned())
-            .collect();
-        assert!(
-            files
-                .iter()
-                .any(|file| file == "actors/B21_FO76/floater/characters/floatercharacter.hkx")
-        );
-        assert!(!files.iter().any(|file| file.ends_with(" .hkx")));
-        let hashes = || {
-            files
-                .iter()
-                .map(|file| {
-                    use std::hash::{Hash, Hasher};
-                    let bytes = std::fs::read(output.join("data/Meshes").join(file)).unwrap();
-                    HkxFile::read(&bytes).unwrap();
-                    let mut hash = std::collections::hash_map::DefaultHasher::new();
-                    bytes.hash(&mut hash);
-                    (file.clone(), hash.finish())
-                })
-                .collect::<BTreeMap<_, _>>()
-        };
-        let first_hashes = hashes();
-        use crate::fixups::havok::{
-            inject_attack_stop_events, inject_hitframe_events, sanitize_ragdoll_contact_bones,
-        };
-        assert!(
-            inject_hitframe_events::inject_hitframe_events_in_mod_path(output)
-                .unwrap()
-                .is_no_op()
-        );
-        assert!(
-            inject_attack_stop_events::inject_attack_stop_events_in_mod_path(output)
-                .unwrap()
-                .is_no_op()
-        );
-        assert!(
-            sanitize_ragdoll_contact_bones::sanitize_ragdoll_contact_bones_in_mod_path(output)
-                .unwrap()
-                .is_no_op()
-        );
-        for route in &plan.routes {
-            let graph = read(&output.join("data/Meshes").join(&route.destination)).unwrap();
-            assert!(
-                graph
-                    .objects()
-                    .iter()
-                    .all(|o| o.class_name != "BSAssignBoneWeightsModifier"
-                        && o.class_name != "BSLocomotionBlendGenerator")
-            );
-            let graph_name = graph
-                .objects()
-                .iter()
-                .find(|o| o.class_name == "hkbBehaviorGraph")
-                .map(|o| string(o, "name"))
-                .unwrap();
-            assert_eq!(
-                graph_name,
-                format!(
-                    "{}.hkb",
-                    Path::new(&route.destination)
-                        .file_stem()
-                        .unwrap()
-                        .to_string_lossy()
-                )
-            );
-            if let Some(event) = &route.draw_event {
-                assert!(
-                    graph
-                        .objects()
-                        .iter()
-                        .filter(|o| o.class_name == "hkbBehaviorGraphStringData")
-                        .any(|o| array(o, "eventNames")
-                            .iter()
-                            .any(|s| text(s) == Some(event)))
-                );
-            }
-        }
-        let mesh_root = output.join("data/Meshes");
-        let inputs = ck_native::anim_text_data::emit::AnimTextDataInputs {
-            target_plugin_name: "B21_FO76BehaviorPipelineTest.esp".into(),
-            subgraphs: plan
-                .routes
-                .iter()
-                .map(|r| ck_native::anim_text_data::emit::SubgraphInput {
-                    core_behavior: r.destination.clone(),
-                    sapt_chain: vec![],
-                    race_dir: Some(r.project.clone()),
-                })
-                .collect(),
-            ..Default::default()
-        };
-        let metadata = ck_native::anim_text_data::emit::generate_anim_text_data(
-            &inputs,
-            &mesh_root,
-            &mesh_root,
-            Some(&repo.join("extracted/fo4/meshes")),
-            Some("B21"),
-        )
-        .unwrap();
-        assert!(metadata.written > 0);
-        assert!(metadata.stance_builder_error.is_none());
-        std::fs::write(
-            output.join("data/Meshes").join(&plan.routes[0].destination),
-            b"stale output",
-        )
-        .unwrap();
-        assert!(postprocess().assets_written > 100);
-        assert_eq!(first_hashes, hashes());
-        let second_receipt: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(output.join("debug/fo76_behaviors/assets.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(receipt, second_receipt);
-        drop_run(id).unwrap();
     }
 }

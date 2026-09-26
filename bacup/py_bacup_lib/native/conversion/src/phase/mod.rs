@@ -18,6 +18,7 @@ pub mod apply_registry_mappings;
 pub mod audio_rewire;
 pub mod btos;
 pub mod build_esp;
+pub mod challenges;
 pub mod copy_materialized_facegen;
 pub mod copy_textures;
 pub mod creature_corpus;
@@ -25,11 +26,14 @@ pub mod creatures;
 pub mod drivers;
 pub mod emit_modt_manifest;
 pub mod equipment;
+pub mod equipment_condition;
 pub mod face;
 pub mod final_plugin;
+pub mod fishing_catalog;
 pub mod fixups_v2;
 pub mod fnv_legacy;
 pub mod gamebryo_nifs;
+pub mod gold_bullion;
 pub mod graft_terrain;
 pub mod havok;
 pub mod havok_postprocess;
@@ -43,7 +47,9 @@ pub mod mswp_material_paths;
 pub mod mvp_creatures;
 pub mod mvp_melee;
 pub mod nifs;
-pub mod precombines;
+pub mod objective_areas;
+pub mod perk_cards;
+pub mod pipboy2000_nifs;
 pub mod progress;
 pub mod projected_navi;
 pub mod projected_navmeshes;
@@ -261,6 +267,27 @@ fn build_registry() -> PhaseRegistry {
     inner.insert("translate", Box::new(translate::TranslatePhase));
     inner.insert("translate_v2", Box::new(translate_v2::TranslateV2Phase));
     inner.insert(
+        "emit_fishing_catalog",
+        Box::new(fishing_catalog::FishingCatalogPhase),
+    );
+    inner.insert(
+        "emit_challenge_catalog",
+        Box::new(challenges::ChallengesPhase),
+    );
+    inner.insert(
+        "emit_equipment_condition",
+        Box::new(equipment_condition::EquipmentConditionPhase),
+    );
+    inner.insert("emit_perk_cards", Box::new(perk_cards::PerkCardsPhase));
+    inner.insert(
+        "emit_gold_bullion",
+        Box::new(gold_bullion::GoldBullionPhase),
+    );
+    inner.insert(
+        "emit_objective_areas",
+        Box::new(objective_areas::ObjectiveAreasPhase),
+    );
+    inner.insert(
         "emit_story_manager_subset",
         Box::new(story_manager::EmitStoryManagerSubsetPhase),
     );
@@ -448,13 +475,6 @@ fn build_registry() -> PhaseRegistry {
     inner.insert(
         "emit_modt_manifest",
         source_free(emit_modt_manifest::EmitModtManifestPhase),
-    );
-
-    // CK-free precombine generation. Source-free: reads/writes
-    // only the open target handle. Belongs beside the post-asset MODT phases.
-    inner.insert(
-        "generate_precombines",
-        source_free(precombines::GeneratePrecombinesPhase),
     );
 
     // WRLD OFST/CLSZ cell seek tables. The tables encode the serialized file
@@ -709,14 +729,7 @@ pub(crate) mod dispatcher_tests {
     }
 
     #[test]
-    fn legacy_fixups_phase_is_not_registered() {
-        let names = registry().names();
-        assert!(!names.contains(&"fixups"));
-        assert!(names.contains(&"fixups_v2"));
-    }
-
-    #[test]
-    fn fo4_starfield_phases_are_registered() {
+    fn phase_registry_registers_fo4_starfield_phases_and_marks_source_requirements() {
         let names = registry().names();
         for name in [
             "terrain_btd_write",
@@ -751,10 +764,11 @@ pub(crate) mod dispatcher_tests {
                 "{name} is an asset-track phase and must be source-free"
             );
         }
-    }
 
-    #[test]
-    fn registry_marks_source_required_and_source_free_phases() {
+        let names = registry().names();
+        assert!(!names.contains(&"fixups"));
+        assert!(names.contains(&"fixups_v2"));
+
         for name in ["translate_v2", "walk", "convert_terrain"] {
             assert!(
                 registry().get(name).unwrap().requires_source_plugin(),
@@ -770,7 +784,7 @@ pub(crate) mod dispatcher_tests {
     }
 
     #[test]
-    fn creature_mvp_phases_have_their_required_dispatch_modes() {
+    fn creature_and_melee_mvp_phases_have_their_required_dispatch_modes() {
         assert!(
             registry()
                 .get("emit_mvp_creature")
@@ -787,20 +801,14 @@ pub(crate) mod dispatcher_tests {
                 "{name}"
             );
         }
-    }
 
-    #[test]
-    fn melee_mvp_phase_requires_source_plugin() {
         assert!(
             registry()
                 .get("mvp_melee")
                 .unwrap()
                 .requires_source_plugin()
         );
-    }
 
-    #[test]
-    fn creature_corpus_phases_have_their_required_dispatch_modes() {
         assert!(
             registry()
                 .get("discover_creature_corpus")

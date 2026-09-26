@@ -53,7 +53,7 @@ def _seed_output_dir(output_root: Path) -> None:
         (output_root / f"SeventySix - {label}.ba2").write_bytes(f"new-{label}".encode())
 
 
-def test_archives_for_labels_meshes_prefix_excludes_meshes_extra():
+def test_archives_for_labels_matches_exact_families():
     names = [
         "SeventySix - Meshes.ba2",
         "SeventySix - Meshes1.ba2",
@@ -76,18 +76,14 @@ def test_archives_for_labels_meshes_prefix_excludes_meshes_extra():
         "SeventySix - MeshesExtra.ba2",
         "SeventySix - MeshesExtra1.ba2",
     ]
-
-
-def test_archives_for_labels_matches_lod_general_and_texture_archives():
-    names = [
+    lod_names = [
         "SeventySix - LOD.ba2",
         "SeventySix - LOD2.ba2",
         "SeventySix - LODTextures.ba2",
         "SeventySix - LODTextures2.ba2",
         "SeventySix - TerrainTextures.ba2",
     ]
-
-    assert regen_pipeline._archives_for_labels(names, ("LOD", "LODTextures")) == names[:4]
+    assert regen_pipeline._archives_for_labels(lod_names, ("LOD", "LODTextures")) == lod_names[:4]
 
 
 def test_swap_deploy_archives_deletes_and_copies_only_matching_families(

@@ -129,6 +129,9 @@ pub struct Report {
     pub records_imported: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub btd4_output_path: Option<String>,
+    /// Streaming verification report written beside the terrain diagnostics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub btd4_verify_path: Option<String>,
     #[serde(default)]
     pub layers_recovered: u32,
     pub warnings: Vec<String>,
@@ -169,70 +172,26 @@ mod tests {
     }
 
     #[test]
-    fn record_output_mode_defaults_to_authoring_dir() {
+    fn options_defaults_and_overrides() {
         let opts: Options = serde_json::from_value(minimal_options_json()).unwrap();
-
         assert_eq!(opts.record_output_mode, RecordOutputMode::AuthoringDir);
-    }
+        assert!(opts.populate_grass_assets);
+        assert!(opts.convert_grass_assets);
+        assert!(opts.write_materials);
 
-    #[test]
-    fn record_output_mode_is_not_a_public_option() {
         let mut value = minimal_options_json();
         value["record_output_mode"] = json!("target_handle");
-
-        let opts: Options = serde_json::from_value(value).unwrap();
-
-        assert_eq!(opts.record_output_mode, RecordOutputMode::AuthoringDir);
-    }
-
-    #[test]
-    fn populate_grass_assets_defaults_to_true() {
-        let opts: Options = serde_json::from_value(minimal_options_json()).unwrap();
-
-        assert!(opts.populate_grass_assets);
-    }
-
-    #[test]
-    fn populate_grass_assets_accepts_false() {
-        let mut value = minimal_options_json();
         value["populate_grass_assets"] = json!(false);
-
-        let opts: Options = serde_json::from_value(value).unwrap();
-
-        assert!(!opts.populate_grass_assets);
-    }
-
-    #[test]
-    fn convert_grass_assets_defaults_to_true() {
-        let opts: Options = serde_json::from_value(minimal_options_json()).unwrap();
-
-        assert!(opts.convert_grass_assets);
-    }
-
-    #[test]
-    fn convert_grass_assets_accepts_false() {
-        let mut value = minimal_options_json();
         value["convert_grass_assets"] = json!(false);
-
-        let opts: Options = serde_json::from_value(value).unwrap();
-
-        assert!(!opts.convert_grass_assets);
-    }
-
-    #[test]
-    fn write_materials_defaults_to_true() {
-        let opts: Options = serde_json::from_value(minimal_options_json()).unwrap();
-
-        assert!(opts.write_materials);
-    }
-
-    #[test]
-    fn write_materials_accepts_false() {
-        let mut value = minimal_options_json();
         value["write_materials"] = json!(false);
-
         let opts: Options = serde_json::from_value(value).unwrap();
-
+        assert_eq!(
+            opts.record_output_mode,
+            RecordOutputMode::AuthoringDir,
+            "record_output_mode is not a public option"
+        );
+        assert!(!opts.populate_grass_assets);
+        assert!(!opts.convert_grass_assets);
         assert!(!opts.write_materials);
     }
 }

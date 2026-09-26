@@ -23,8 +23,24 @@ EndFunction
 
 Event OnItemEquipped(Form akBaseObject, ObjectReference akReference)
     EN05Basic_UpdateOutfitObjective(akBaseObject, True)
+    EN05Basic_ReconcilePlayer()
 EndEvent
 
 Event OnItemUnequipped(Form akBaseObject, ObjectReference akReference)
     EN05Basic_UpdateOutfitObjective(akBaseObject, False)
+    EN05Basic_ReconcilePlayer()
+EndEvent
+
+Function EN05Basic_ReconcilePlayer()
+    EN05_QuestScript basic = GetOwningQuest() as EN05_QuestScript
+    If basic != None
+        basic.EN05Basic_ReconcileUniform()
+    EndIf
+EndFunction
+
+Event OnPlayerLoadGame()
+    EN05_QuestScript basic = GetOwningQuest() as EN05_QuestScript
+    If basic != None
+        basic.EN05Basic_ReconcileOnLoad()
+    EndIf
 EndEvent

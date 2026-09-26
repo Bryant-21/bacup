@@ -677,72 +677,72 @@ mod tests {
     }
 
     #[test]
-    fn removing_last_xapr_removes_xapd() {
-        let schema = compiled_schema_for_game_str("fnv").unwrap();
-        let mut refr = rec("REFR", 0x9000, "Reference");
-        refr.subrecords.push(subrecord("XAPD", vec![1]));
-        let mut xapr = 0xBEEF_u32.to_le_bytes().to_vec();
-        xapr.extend_from_slice(&0.0_f32.to_le_bytes());
-        refr.subrecords.push(subrecord("XAPR", xapr));
-        let pending = vec![dangling(&refr, "XAPR", 0xBEEF)];
-        let mut items = vec![ParsedItem::Record(refr)];
-        let stats = sanitize_dangling_references(
-            &mut items,
-            pending,
-            Some(&schema),
-            Some(&schema),
-            &HashSet::new(),
-        );
-        assert_eq!(stats.occurrences, 1);
-        let refr = first_record(&items, 0x9000).unwrap();
-        assert!(
+    fn removing_xapr_or_xlkr_removes_only_its_companion() {
+        {
+            let schema = compiled_schema_for_game_str("fnv").unwrap();
+            let mut refr = rec("REFR", 0x9000, "Reference");
+            refr.subrecords.push(subrecord("XAPD", vec![1]));
+            let mut xapr = 0xBEEF_u32.to_le_bytes().to_vec();
+            xapr.extend_from_slice(&0.0_f32.to_le_bytes());
+            refr.subrecords.push(subrecord("XAPR", xapr));
+            let pending = vec![dangling(&refr, "XAPR", 0xBEEF)];
+            let mut items = vec![ParsedItem::Record(refr)];
+            let stats = sanitize_dangling_references(
+                &mut items,
+                pending,
+                Some(&schema),
+                Some(&schema),
+                &HashSet::new(),
+            );
+            assert_eq!(stats.occurrences, 1);
+            let refr = first_record(&items, 0x9000).unwrap();
+            assert!(
+                refr.subrecords
+                    .iter()
+                    .all(|subrecord| !matches!(subrecord.signature.as_str(), "XAPR" | "XAPD"))
+            );
+        }
+        {
+            let schema = compiled_schema_for_game_str("fnv").unwrap();
+            let mut refr = rec("REFR", 0x9000, "Reference");
+            let removed_color = vec![1, 2, 3, 4, 5, 6, 7, 8];
+            let preserved_color = vec![11, 12, 13, 14, 15, 16, 17, 18];
             refr.subrecords
+                .push(subrecord("XLKR", 0xBEEF_u32.to_le_bytes().to_vec()));
+            refr.subrecords
+                .push(subrecord("XCLP", removed_color.clone()));
+            refr.subrecords
+                .push(subrecord("XLKR", 0xA000_u32.to_le_bytes().to_vec()));
+            refr.subrecords
+                .push(subrecord("XCLP", preserved_color.clone()));
+            let pending = vec![dangling(&refr, "XLKR", 0xBEEF)];
+            let mut items = vec![ParsedItem::Record(refr)];
+
+            let stats = sanitize_dangling_references(
+                &mut items,
+                pending,
+                Some(&schema),
+                Some(&schema),
+                &HashSet::new(),
+            );
+
+            assert_eq!(stats.occurrences, 1);
+            let refr = first_record(&items, 0x9000).unwrap();
+            let linked = refr
+                .subrecords
                 .iter()
-                .all(|subrecord| !matches!(subrecord.signature.as_str(), "XAPR" | "XAPD"))
-        );
-    }
-
-    #[test]
-    fn removing_xlkr_removes_only_its_adjacent_xclp_companion() {
-        let schema = compiled_schema_for_game_str("fnv").unwrap();
-        let mut refr = rec("REFR", 0x9000, "Reference");
-        let removed_color = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let preserved_color = vec![11, 12, 13, 14, 15, 16, 17, 18];
-        refr.subrecords
-            .push(subrecord("XLKR", 0xBEEF_u32.to_le_bytes().to_vec()));
-        refr.subrecords
-            .push(subrecord("XCLP", removed_color.clone()));
-        refr.subrecords
-            .push(subrecord("XLKR", 0xA000_u32.to_le_bytes().to_vec()));
-        refr.subrecords
-            .push(subrecord("XCLP", preserved_color.clone()));
-        let pending = vec![dangling(&refr, "XLKR", 0xBEEF)];
-        let mut items = vec![ParsedItem::Record(refr)];
-
-        let stats = sanitize_dangling_references(
-            &mut items,
-            pending,
-            Some(&schema),
-            Some(&schema),
-            &HashSet::new(),
-        );
-
-        assert_eq!(stats.occurrences, 1);
-        let refr = first_record(&items, 0x9000).unwrap();
-        let linked = refr
-            .subrecords
-            .iter()
-            .filter(|subrecord| matches!(subrecord.signature.as_str(), "XLKR" | "XCLP"))
-            .collect::<Vec<_>>();
-        assert_eq!(linked.len(), 2);
-        assert_eq!(linked[0].signature.as_str(), "XLKR");
-        assert_eq!(
-            linked[0].data,
-            Bytes::copy_from_slice(&0xA000_u32.to_le_bytes())
-        );
-        assert_eq!(linked[1].signature.as_str(), "XCLP");
-        assert_eq!(linked[1].data, Bytes::from(preserved_color));
-        assert_ne!(linked[1].data, Bytes::from(removed_color));
+                .filter(|subrecord| matches!(subrecord.signature.as_str(), "XLKR" | "XCLP"))
+                .collect::<Vec<_>>();
+            assert_eq!(linked.len(), 2);
+            assert_eq!(linked[0].signature.as_str(), "XLKR");
+            assert_eq!(
+                linked[0].data,
+                Bytes::copy_from_slice(&0xA000_u32.to_le_bytes())
+            );
+            assert_eq!(linked[1].signature.as_str(), "XCLP");
+            assert_eq!(linked[1].data, Bytes::from(preserved_color));
+            assert_ne!(linked[1].data, Bytes::from(removed_color));
+        }
     }
 
     fn condition(function: u16, run_on: u32, reference: u32) -> ParsedSubrecord {
@@ -758,36 +758,65 @@ mod tests {
     }
 
     #[test]
-    fn dangling_condition_reference_is_zeroed_only_in_formid_slots() {
-        const GET_DISABLED: u16 = 0x23;
-        let primary_schema = compiled_schema_for_game_str("fnv").unwrap();
-        let grafted_schema = compiled_schema_for_game_str("fo3").unwrap();
-        let mut pack = rec("PACK", 0x9000, "Package");
-        pack.subrecords.push(condition(GET_DISABLED, 2, 0xBEEF));
-        pack.subrecords.push(condition(GET_DISABLED, 0, 0xBEEF));
-        let unused_reference = pack.subrecords[2].data.clone();
-        let pending = vec![dangling(&pack, "CTDA", 0xBEEF)];
-        let mut items = vec![ParsedItem::Record(pack)];
+    fn condition_zeroing_and_raw_payload_invalidation_are_targeted() {
+        {
+            const GET_DISABLED: u16 = 0x23;
+            let primary_schema = compiled_schema_for_game_str("fnv").unwrap();
+            let grafted_schema = compiled_schema_for_game_str("fo3").unwrap();
+            let mut pack = rec("PACK", 0x9000, "Package");
+            pack.subrecords.push(condition(GET_DISABLED, 2, 0xBEEF));
+            pack.subrecords.push(condition(GET_DISABLED, 0, 0xBEEF));
+            let unused_reference = pack.subrecords[2].data.clone();
+            let pending = vec![dangling(&pack, "CTDA", 0xBEEF)];
+            let mut items = vec![ParsedItem::Record(pack)];
 
-        let stats = sanitize_dangling_references(
-            &mut items,
-            pending,
-            Some(&primary_schema),
-            Some(&grafted_schema),
-            &HashSet::from([0x9000]),
-        );
+            let stats = sanitize_dangling_references(
+                &mut items,
+                pending,
+                Some(&primary_schema),
+                Some(&grafted_schema),
+                &HashSet::from([0x9000]),
+            );
 
-        assert!(stats.dangling.is_empty());
-        assert_eq!(stats.occurrences, 1);
-        assert_eq!(stats.by_context["PACK.CTDA"], 1);
-        assert_eq!(stats.by_action["zero_formid"], 1);
-        let pack = first_record(&items, 0x9000).unwrap();
-        assert_eq!(pack.subrecords[1].data[24..], [0, 0, 0, 0]);
-        assert_eq!(
-            pack.subrecords[1].data[..24],
-            condition(GET_DISABLED, 2, 0xBEEF).data[..24]
-        );
-        assert_eq!(pack.subrecords[2].data, unused_reference);
+            assert!(stats.dangling.is_empty());
+            assert_eq!(stats.occurrences, 1);
+            assert_eq!(stats.by_context["PACK.CTDA"], 1);
+            assert_eq!(stats.by_action["zero_formid"], 1);
+            let pack = first_record(&items, 0x9000).unwrap();
+            assert_eq!(pack.subrecords[1].data[24..], [0, 0, 0, 0]);
+            assert_eq!(
+                pack.subrecords[1].data[..24],
+                condition(GET_DISABLED, 2, 0xBEEF).data[..24]
+            );
+            assert_eq!(pack.subrecords[2].data, unused_reference);
+        }
+        {
+            let schema = compiled_schema_for_game_str("fnv").unwrap();
+            let mut cell = rec("CELL", 0x9000, "Cell");
+            cell.raw_payload = Some(Bytes::from_static(b"stale-cell-payload"));
+            cell.subrecords
+                .push(subrecord("XCLR", 0xBEEF_u32.to_le_bytes().to_vec()));
+            let pending = vec![dangling(&cell, "XCLR", 0xBEEF)];
+            let mut untouched = rec("ACTI", 0x9001, "Untouched");
+            let untouched_payload = Bytes::from_static(b"untouched-payload");
+            untouched.raw_payload = Some(untouched_payload.clone());
+            let mut items = vec![ParsedItem::Record(cell), ParsedItem::Record(untouched)];
+
+            let stats = sanitize_dangling_references(
+                &mut items,
+                pending,
+                Some(&schema),
+                Some(&schema),
+                &HashSet::new(),
+            );
+
+            assert_eq!(stats.occurrences, 1);
+            assert!(first_record(&items, 0x9000).unwrap().raw_payload.is_none());
+            assert_eq!(
+                first_record(&items, 0x9001).unwrap().raw_payload.as_ref(),
+                Some(&untouched_payload)
+            );
+        }
     }
 
     #[test]
@@ -855,115 +884,86 @@ mod tests {
     }
 
     #[test]
-    fn later_round_unsupported_context_hard_fails_without_partial_round_mutation() {
-        let primary_schema = compiled_schema_for_game_str("fnv").unwrap();
-        let grafted_schema = compiled_schema_for_game_str("fo3").unwrap();
-        let mut acre = rec("ACRE", 0x9000, "Actor");
-        let mut xesp = 0xBEEF_u32.to_le_bytes().to_vec();
-        xesp.extend_from_slice(&[0, 0, 0, 0]);
-        acre.subrecords.push(subrecord("XESP", xesp));
-        let mut activator = rec("ACTI", 0x9001, "Activator");
-        activator.subrecords.push(ParsedSubrecord {
-            signature: "SCRI".into(),
-            data: Bytes::copy_from_slice(&0x9000_u32.to_le_bytes()),
-            semantic_type: Some("formid".to_string()),
-        });
-        let mut cell = rec("CELL", 0x9002, "Cell");
-        cell.subrecords
-            .push(subrecord("XCLR", 0x9000_u32.to_le_bytes().to_vec()));
-        let pending = vec![dangling(&acre, "XESP", 0xBEEF)];
-        let mut items = vec![
-            ParsedItem::Record(acre),
-            ParsedItem::Record(activator),
-            ParsedItem::Record(cell),
-        ];
+    fn unsupported_context_hard_fails_without_partial_mutation() {
+        {
+            let primary_schema = compiled_schema_for_game_str("fnv").unwrap();
+            let grafted_schema = compiled_schema_for_game_str("fo3").unwrap();
+            let mut acre = rec("ACRE", 0x9000, "Actor");
+            let mut xesp = 0xBEEF_u32.to_le_bytes().to_vec();
+            xesp.extend_from_slice(&[0, 0, 0, 0]);
+            acre.subrecords.push(subrecord("XESP", xesp));
+            let mut activator = rec("ACTI", 0x9001, "Activator");
+            activator.subrecords.push(ParsedSubrecord {
+                signature: "SCRI".into(),
+                data: Bytes::copy_from_slice(&0x9000_u32.to_le_bytes()),
+                semantic_type: Some("formid".to_string()),
+            });
+            let mut cell = rec("CELL", 0x9002, "Cell");
+            cell.subrecords
+                .push(subrecord("XCLR", 0x9000_u32.to_le_bytes().to_vec()));
+            let pending = vec![dangling(&acre, "XESP", 0xBEEF)];
+            let mut items = vec![
+                ParsedItem::Record(acre),
+                ParsedItem::Record(activator),
+                ParsedItem::Record(cell),
+            ];
 
-        let stats = sanitize_dangling_references(
-            &mut items,
-            pending,
-            Some(&primary_schema),
-            Some(&grafted_schema),
-            &HashSet::from([0x9000]),
-        );
+            let stats = sanitize_dangling_references(
+                &mut items,
+                pending,
+                Some(&primary_schema),
+                Some(&grafted_schema),
+                &HashSet::from([0x9000]),
+            );
 
-        assert_eq!(stats.occurrences, 1);
-        assert_eq!(stats.dropped_owners["ACRE"], 1);
-        assert_eq!(
-            stats.dangling,
-            ["ACTI:00009001:SCRI:00009000", "CELL:00009002:XCLR:00009000"]
-        );
-        assert!(first_record(&items, 0x9000).is_none());
-        assert_eq!(
-            first_record(&items, 0x9001).unwrap().subrecords[1].data,
-            Bytes::copy_from_slice(&0x9000_u32.to_le_bytes())
-        );
-        assert_eq!(
-            first_record(&items, 0x9002).unwrap().subrecords[1].data,
-            Bytes::copy_from_slice(&0x9000_u32.to_le_bytes())
-        );
-    }
-
-    #[test]
-    fn unsupported_context_hard_fails_without_touching_supported_context() {
-        let schema = compiled_schema_for_game_str("fnv").unwrap();
-        let mut activator = rec("ACTI", 0x9000, "Activator");
-        activator.subrecords.push(ParsedSubrecord {
-            signature: "SCRI".into(),
-            data: Bytes::copy_from_slice(&0xBEEF_u32.to_le_bytes()),
-            semantic_type: Some("formid".to_string()),
-        });
-        let mut cell = rec("CELL", 0x9001, "Cell");
-        cell.subrecords
-            .push(subrecord("XCLR", 0xBEEF_u32.to_le_bytes().to_vec()));
-        let pending = vec![
-            dangling(&activator, "SCRI", 0xBEEF),
-            dangling(&cell, "XCLR", 0xBEEF),
-        ];
-        let mut items = vec![ParsedItem::Record(activator), ParsedItem::Record(cell)];
-        let stats = sanitize_dangling_references(
-            &mut items,
-            pending,
-            Some(&schema),
-            Some(&schema),
-            &HashSet::new(),
-        );
-        assert_eq!(stats.occurrences, 0);
-        assert_eq!(
-            stats.dangling,
-            ["ACTI:00009000:SCRI:0000BEEF", "CELL:00009001:XCLR:0000BEEF"]
-        );
-        assert_eq!(
-            first_record(&items, 0x9001).unwrap().subrecords[1].data,
-            Bytes::copy_from_slice(&0xBEEF_u32.to_le_bytes())
-        );
-    }
-
-    #[test]
-    fn raw_payload_is_invalidated_only_for_mutated_compressed_records() {
-        let schema = compiled_schema_for_game_str("fnv").unwrap();
-        let mut cell = rec("CELL", 0x9000, "Cell");
-        cell.raw_payload = Some(Bytes::from_static(b"stale-cell-payload"));
-        cell.subrecords
-            .push(subrecord("XCLR", 0xBEEF_u32.to_le_bytes().to_vec()));
-        let pending = vec![dangling(&cell, "XCLR", 0xBEEF)];
-        let mut untouched = rec("ACTI", 0x9001, "Untouched");
-        let untouched_payload = Bytes::from_static(b"untouched-payload");
-        untouched.raw_payload = Some(untouched_payload.clone());
-        let mut items = vec![ParsedItem::Record(cell), ParsedItem::Record(untouched)];
-
-        let stats = sanitize_dangling_references(
-            &mut items,
-            pending,
-            Some(&schema),
-            Some(&schema),
-            &HashSet::new(),
-        );
-
-        assert_eq!(stats.occurrences, 1);
-        assert!(first_record(&items, 0x9000).unwrap().raw_payload.is_none());
-        assert_eq!(
-            first_record(&items, 0x9001).unwrap().raw_payload.as_ref(),
-            Some(&untouched_payload)
-        );
+            assert_eq!(stats.occurrences, 1);
+            assert_eq!(stats.dropped_owners["ACRE"], 1);
+            assert_eq!(
+                stats.dangling,
+                ["ACTI:00009001:SCRI:00009000", "CELL:00009002:XCLR:00009000"]
+            );
+            assert!(first_record(&items, 0x9000).is_none());
+            assert_eq!(
+                first_record(&items, 0x9001).unwrap().subrecords[1].data,
+                Bytes::copy_from_slice(&0x9000_u32.to_le_bytes())
+            );
+            assert_eq!(
+                first_record(&items, 0x9002).unwrap().subrecords[1].data,
+                Bytes::copy_from_slice(&0x9000_u32.to_le_bytes())
+            );
+        }
+        {
+            let schema = compiled_schema_for_game_str("fnv").unwrap();
+            let mut activator = rec("ACTI", 0x9000, "Activator");
+            activator.subrecords.push(ParsedSubrecord {
+                signature: "SCRI".into(),
+                data: Bytes::copy_from_slice(&0xBEEF_u32.to_le_bytes()),
+                semantic_type: Some("formid".to_string()),
+            });
+            let mut cell = rec("CELL", 0x9001, "Cell");
+            cell.subrecords
+                .push(subrecord("XCLR", 0xBEEF_u32.to_le_bytes().to_vec()));
+            let pending = vec![
+                dangling(&activator, "SCRI", 0xBEEF),
+                dangling(&cell, "XCLR", 0xBEEF),
+            ];
+            let mut items = vec![ParsedItem::Record(activator), ParsedItem::Record(cell)];
+            let stats = sanitize_dangling_references(
+                &mut items,
+                pending,
+                Some(&schema),
+                Some(&schema),
+                &HashSet::new(),
+            );
+            assert_eq!(stats.occurrences, 0);
+            assert_eq!(
+                stats.dangling,
+                ["ACTI:00009000:SCRI:0000BEEF", "CELL:00009001:XCLR:0000BEEF"]
+            );
+            assert_eq!(
+                first_record(&items, 0x9001).unwrap().subrecords[1].data,
+                Bytes::copy_from_slice(&0xBEEF_u32.to_le_bytes())
+            );
+        }
     }
 }

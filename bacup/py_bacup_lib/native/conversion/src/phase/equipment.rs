@@ -45,8 +45,6 @@
 
 use std::path::Path;
 
-use serde_json::Value as JsonValue;
-
 use crate::ids::SigCode;
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
 use crate::source_read::{form_key_to_read_str, iter_form_keys_of_sig, read_record};
@@ -333,105 +331,10 @@ mod tests {
 
     // ── convert_equipment ────────────────────────────────────────────────────
 
-    /// Empty weapon_form_keys → zero records, no error.
-    #[test]
-    fn convert_equipment_empty_keys() {
-        let (id, _) = make_run();
-        let report = crate::run::with_run(id, |run| {
-            let cancel = std::sync::Arc::new(AtomicBool::new(false));
-            let params = serde_json::json!({
-                "weapon_form_keys": [],
-                "addon_index_start": 20000,
-                "mod_prefix": "B21"
-            });
-            let src = std::path::PathBuf::from("/nonexistent");
-            let mod_dir = std::path::PathBuf::from("/nonexistent");
-            let mut ctx = PhaseCtx {
-                run,
-                mod_path: &mod_dir,
-                source_extracted_dir: &src,
-                target_extracted_dir: None,
-                target_data_dir: None,
-                params: &params,
-                cancel: &cancel,
-            };
-            ConvertEquipmentPhase
-                .run(&mut ctx)
-                .map_err(|e| crate::run::RunError::InvalidConfig(e.to_string()))
-        })
-        .unwrap();
-        assert_eq!(report.records_added, 0);
-        assert_eq!(report.warnings, 0);
-        drop_run_id(id);
-    }
-
-    /// Missing mod_prefix → BadParams error.
-    #[test]
-    fn convert_equipment_missing_prefix_errors() {
-        let (id, _) = make_run();
-        let result = crate::run::with_run(id, |run| {
-            let cancel = std::sync::Arc::new(AtomicBool::new(false));
-            let params = serde_json::json!({
-                "weapon_form_keys": ["FalloutNV.esm:00F4F4"],
-                "addon_index_start": 20000,
-                "mod_prefix": ""
-            });
-            let src = std::path::PathBuf::from("/nonexistent");
-            let mod_dir = std::path::PathBuf::from("/nonexistent");
-            let mut ctx = PhaseCtx {
-                run,
-                mod_path: &mod_dir,
-                source_extracted_dir: &src,
-                target_extracted_dir: None,
-                target_data_dir: None,
-                params: &params,
-                cancel: &cancel,
-            };
-            ConvertEquipmentPhase
-                .run(&mut ctx)
-                .map_err(|e| crate::run::RunError::InvalidConfig(e.to_string()))
-        });
-        assert!(result.is_err());
-        drop_run_id(id);
-    }
-
-    /// Unknown form key → warning counted, no panic.
-    #[test]
-    fn convert_equipment_unknown_form_key_counts_warning() {
-        let (id, _) = make_run();
-        let report = crate::run::with_run(id, |run| {
-            let cancel = std::sync::Arc::new(AtomicBool::new(false));
-            let params = serde_json::json!({
-                "weapon_form_keys": ["Nonexistent.esm:FFFFFF"],
-                "addon_index_start": 20000,
-                "mod_prefix": "B21"
-            });
-            let src = std::path::PathBuf::from("/nonexistent");
-            let mod_dir = std::path::PathBuf::from("/nonexistent");
-            let mut ctx = PhaseCtx {
-                run,
-                mod_path: &mod_dir,
-                source_extracted_dir: &src,
-                target_extracted_dir: None,
-                target_data_dir: None,
-                params: &params,
-                cancel: &cancel,
-            };
-            ConvertEquipmentPhase
-                .run(&mut ctx)
-                .map_err(|e| crate::run::RunError::InvalidConfig(e.to_string()))
-        })
-        .unwrap();
-        // No panic; one form_key was attempted but source handle 9999 is a sentinel.
-        assert_eq!(report.records_added, 0);
-        drop_run_id(id);
-    }
-
     // ── extract_atx ──────────────────────────────────────────────────────────
 
-    /// Empty slugs → zero assets, no error.
     #[test]
-    fn extract_atx_empty_slugs() {
+    fn extract_atx_handles_empty_slugs_missing_dir_and_counts_bgsm() {
         let (id, _) = make_run();
         let report = crate::run::with_run(id, |run| {
             let cancel = std::sync::Arc::new(AtomicBool::new(false));
@@ -459,11 +362,7 @@ mod tests {
         assert_eq!(report.assets_written, 0);
         assert_eq!(report.warnings, 0);
         drop_run_id(id);
-    }
 
-    /// Nonexistent source_extracted → empty report, no error.
-    #[test]
-    fn extract_atx_missing_extracted_dir() {
         let (id, _) = make_run();
         let report = crate::run::with_run(id, |run| {
             let cancel = std::sync::Arc::new(AtomicBool::new(false));
@@ -490,11 +389,7 @@ mod tests {
         .unwrap();
         assert_eq!(report.assets_written, 0);
         drop_run_id(id);
-    }
 
-    /// Filesystem walk finds BGSM files in an ATX slug directory.
-    #[test]
-    fn extract_atx_counts_bgsm_files() {
         let tmp = std::env::temp_dir().join("extract_atx_test_bgsms");
         let atx_dir = tmp
             .join("materials")

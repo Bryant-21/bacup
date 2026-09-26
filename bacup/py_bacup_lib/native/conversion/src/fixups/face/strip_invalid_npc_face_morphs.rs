@@ -634,118 +634,46 @@ mod tests {
             .collect()
     }
 
+    /// FO4 vanilla RACE FMRI tables carry indices up to 921646279 (0x36EF34C7),
+    /// so a high magnitude is NOT proof of an invalid morph: only membership in
+    /// the resolved race's table decides, and FMRS goes with its FMRI.
     #[test]
-    fn drops_invalid_fmri_and_paired_fmrs() {
-        let interner = StringInterner::new();
-        let mut record = make_record("NPC_", &interner);
-        push(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("TestNpc")),
-        );
-        // valid index 2
-        push(&mut record, "FMRI", FieldValue::Uint(2));
-        push(&mut record, "FMRS", fmrs_bytes());
-        // invalid index 0x36EF34BA (FO76-only)
-        push(&mut record, "FMRI", FieldValue::Uint(0x36EF_34BA));
-        push(&mut record, "FMRS", fmrs_bytes());
-        // valid index 4
-        push(&mut record, "FMRI", FieldValue::Uint(4));
-        push(&mut record, "FMRS", fmrs_bytes());
+    fn drops_fmri_missing_from_the_race_table_with_paired_fmrs() {
+        for (name, indices, valid, removed) in [
+            ("fo76_only_index", vec![2u32, 0x36EF_34BA, 4], vec![2, 4], 1),
+            (
+                "high_valid_indices",
+                vec![58, 100005, 921646277],
+                vec![58, 100005, 921646277],
+                0,
+            ),
+            ("all_valid", vec![0, 1], vec![0, 1], 0),
+            ("empty_valid_set", vec![0, 2], vec![], 2),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_record("NPC_", &interner);
+            push(
+                &mut record,
+                "EDID",
+                FieldValue::String(interner.intern("TestNpc")),
+            );
+            for index in &indices {
+                push(&mut record, "FMRI", FieldValue::Uint(u64::from(*index)));
+                push(&mut record, "FMRS", fmrs_bytes());
+            }
+            push(&mut record, "FMIN", FieldValue::Float(1.0));
 
-        let mut valid = FxHashSet::default();
-        valid.insert(2u32);
-        valid.insert(4u32);
-
-        let removed = drop_invalid_face_morphs(&mut record, &valid);
-        assert_eq!(removed, 1);
-        assert_eq!(count_sig(&record, "FMRI"), 2);
-        assert_eq!(
-            count_sig(&record, "FMRS"),
-            2,
-            "paired FMRS dropped with FMRI"
-        );
-        assert_eq!(
-            count_sig(&record, "EDID"),
-            1,
-            "non-morph subrecords preserved"
-        );
-    }
-
-    #[test]
-    fn keeps_high_indices_that_are_valid_in_the_resolved_race() {
-        // FO4 vanilla RACE FMRI tables carry indices up to 921646279
-        // (0x36EF34C7); a high magnitude is NOT proof of an invalid morph. When
-        // the resolved race's table contains them, high indices must be KEPT.
-        let interner = StringInterner::new();
-        let mut record = make_record("NPC_", &interner);
-        push(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("DoctorJain")),
-        );
-        push(&mut record, "FMRI", FieldValue::Uint(58));
-        push(&mut record, "FMRS", fmrs_bytes());
-        push(&mut record, "FMRI", FieldValue::Uint(100005));
-        push(&mut record, "FMRS", fmrs_bytes());
-        push(&mut record, "FMRI", FieldValue::Uint(921646277));
-        push(&mut record, "FMRS", fmrs_bytes());
-
-        // The HumanRace table contains all three.
-        let mut valid = FxHashSet::default();
-        valid.insert(58u32);
-        valid.insert(100005u32);
-        valid.insert(921646277u32);
-
-        let removed = drop_invalid_face_morphs(&mut record, &valid);
-        assert_eq!(removed, 0, "every index is valid in the race table");
-        assert_eq!(count_sig(&record, "FMRI"), 3, "high valid indices survive");
-        assert_eq!(count_sig(&record, "FMRS"), 3);
-        assert_eq!(count_sig(&record, "EDID"), 1);
-    }
-
-    #[test]
-    fn keeps_all_when_every_index_valid() {
-        let interner = StringInterner::new();
-        let mut record = make_record("NPC_", &interner);
-        push(&mut record, "FMRI", FieldValue::Uint(0));
-        push(&mut record, "FMRS", fmrs_bytes());
-        push(&mut record, "FMRI", FieldValue::Uint(1));
-        push(&mut record, "FMRS", fmrs_bytes());
-
-        let mut valid = FxHashSet::default();
-        valid.insert(0u32);
-        valid.insert(1u32);
-
-        let removed = drop_invalid_face_morphs(&mut record, &valid);
-        assert_eq!(removed, 0);
-        assert_eq!(count_sig(&record, "FMRI"), 2);
-        assert_eq!(count_sig(&record, "FMRS"), 2);
-    }
-
-    #[test]
-    fn empty_valid_set_drops_all_morphs_but_keeps_other_fields() {
-        let interner = StringInterner::new();
-        let mut record = make_record("NPC_", &interner);
-        push(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("TestNpc")),
-        );
-        push(&mut record, "FMRI", FieldValue::Uint(0));
-        push(&mut record, "FMRS", fmrs_bytes());
-        push(&mut record, "FMRI", FieldValue::Uint(2));
-        push(&mut record, "FMRS", fmrs_bytes());
-        // a trailing non-morph subrecord
-        push(&mut record, "FMIN", FieldValue::Float(1.0));
-
-        let valid = FxHashSet::default();
-        let removed = drop_invalid_face_morphs(&mut record, &valid);
-        assert_eq!(removed, 2);
-        assert_eq!(count_sig(&record, "FMRI"), 0);
-        assert_eq!(count_sig(&record, "FMRS"), 0);
-        assert_eq!(count_sig(&record, "EDID"), 1);
-        assert_eq!(count_sig(&record, "FMIN"), 1);
+            assert_eq!(
+                drop_invalid_face_morphs(&mut record, &set(&valid)),
+                removed,
+                "{name}"
+            );
+            let kept = indices.len() - removed as usize;
+            assert_eq!(count_sig(&record, "FMRI"), kept, "{name}");
+            assert_eq!(count_sig(&record, "FMRS"), kept, "{name}: paired FMRS");
+            assert_eq!(count_sig(&record, "EDID"), 1, "{name}");
+            assert_eq!(count_sig(&record, "FMIN"), 1, "{name}");
+        }
     }
 
     fn msdk_bytes(keys: &[u32]) -> FieldValue {
@@ -788,120 +716,46 @@ mod tests {
     }
 
     #[test]
-    fn female_human_npc_uses_female_fmri_block() {
-        let interner = StringInterner::new();
-        let race_fk = FormKey {
-            plugin: interner.intern(BASE_MASTER),
-            local: HUMAN_RACE_LOCAL,
-        };
+    fn human_npcs_use_their_sex_fmri_block_and_other_races_keep_all() {
         let sets = RaceMorphSets {
             fmri_all: set(&[0, 1, 100000, 100001]),
             fmri_male: set(&[0, 1]),
             fmri_female: set(&[100000, 100001]),
             morph_keys: FxHashSet::default(),
         };
-        let mut npc = make_record("NPC_", &interner);
-        push(&mut npc, "ACBS", acbs(NPC_ACBS_FEMALE_FLAG));
-        push(&mut npc, "FMRI", FieldValue::Uint(0));
-        push(&mut npc, "FMRS", fmrs_bytes());
-        push(&mut npc, "FMRI", FieldValue::Uint(100000));
-        push(&mut npc, "FMRS", fmrs_bytes());
+        for (name, human, acbs_flags, expected) in [
+            ("female_human", true, NPC_ACBS_FEMALE_FLAG, vec![100000]),
+            ("male_human", true, 0, vec![0]),
+            ("non_human", false, NPC_ACBS_FEMALE_FLAG, vec![0, 100000]),
+        ] {
+            let interner = StringInterner::new();
+            let race_fk = if human {
+                FormKey {
+                    plugin: interner.intern(BASE_MASTER),
+                    local: HUMAN_RACE_LOCAL,
+                }
+            } else {
+                FormKey {
+                    plugin: interner.intern("Output.esp"),
+                    local: 0x010000,
+                }
+            };
+            let mut npc = make_record("NPC_", &interner);
+            push(&mut npc, "ACBS", acbs(acbs_flags));
+            for index in [0, 100000] {
+                push(&mut npc, "FMRI", FieldValue::Uint(index));
+                push(&mut npc, "FMRS", fmrs_bytes());
+            }
 
-        let valid = sets.fmri_for_npc(&npc, &race_fk, &interner);
-        assert_eq!(drop_invalid_face_morphs(&mut npc, valid), 1);
-        assert_eq!(fmri_values(&npc), vec![100000]);
-        assert_eq!(count_sig(&npc, "FMRS"), 1);
-    }
-
-    #[test]
-    fn male_human_npc_uses_male_fmri_block() {
-        let interner = StringInterner::new();
-        let race_fk = FormKey {
-            plugin: interner.intern(BASE_MASTER),
-            local: HUMAN_RACE_LOCAL,
-        };
-        let sets = RaceMorphSets {
-            fmri_all: set(&[0, 1, 100000, 100001]),
-            fmri_male: set(&[0, 1]),
-            fmri_female: set(&[100000, 100001]),
-            morph_keys: FxHashSet::default(),
-        };
-        let mut npc = make_record("NPC_", &interner);
-        push(&mut npc, "ACBS", acbs(0));
-        push(&mut npc, "FMRI", FieldValue::Uint(0));
-        push(&mut npc, "FMRS", fmrs_bytes());
-        push(&mut npc, "FMRI", FieldValue::Uint(100000));
-        push(&mut npc, "FMRS", fmrs_bytes());
-
-        let valid = sets.fmri_for_npc(&npc, &race_fk, &interner);
-        assert_eq!(drop_invalid_face_morphs(&mut npc, valid), 1);
-        assert_eq!(fmri_values(&npc), vec![0]);
-        assert_eq!(count_sig(&npc, "FMRS"), 1);
-    }
-
-    #[test]
-    fn non_human_race_keeps_all_fmri_values() {
-        let interner = StringInterner::new();
-        let race_fk = FormKey {
-            plugin: interner.intern("Output.esp"),
-            local: 0x010000,
-        };
-        let sets = RaceMorphSets {
-            fmri_all: set(&[0, 1, 100000, 100001]),
-            fmri_male: set(&[0, 1]),
-            fmri_female: set(&[100000, 100001]),
-            morph_keys: FxHashSet::default(),
-        };
-        let mut npc = make_record("NPC_", &interner);
-        push(&mut npc, "ACBS", acbs(NPC_ACBS_FEMALE_FLAG));
-        push(&mut npc, "FMRI", FieldValue::Uint(0));
-        push(&mut npc, "FMRS", fmrs_bytes());
-        push(&mut npc, "FMRI", FieldValue::Uint(100000));
-        push(&mut npc, "FMRS", fmrs_bytes());
-
-        let valid = sets.fmri_for_npc(&npc, &race_fk, &interner);
-        assert_eq!(drop_invalid_face_morphs(&mut npc, valid), 0);
-        assert_eq!(fmri_values(&npc), vec![0, 100000]);
-        assert_eq!(count_sig(&npc, "FMRS"), 2);
-    }
-
-    #[test]
-    fn filter_invalid_morph_keys_drops_unknown_keys_in_place() {
-        let interner = StringInterner::new();
-        let mut npc = make_record("NPC_", &interner);
-        // keys 100 (valid), 999 (invalid), 200 (valid), 0x12345678 (invalid)
-        push(&mut npc, "MSDK", msdk_bytes(&[100, 999, 200, 0x1234_5678]));
-
-        let mut valid = FxHashSet::default();
-        valid.insert(100u32);
-        valid.insert(200u32);
-
-        let removed = filter_invalid_morph_keys(&mut npc, &valid);
-        assert_eq!(removed, 2);
-        let msdk_sig = SubrecordSig::from_str("MSDK").unwrap();
-        let entry = npc.fields.iter().find(|e| e.sig == msdk_sig).unwrap();
-        let FieldValue::Bytes(raw) = &entry.value else {
-            panic!("expected MSDK bytes");
-        };
-        assert_eq!(raw.len(), 8, "two 4-byte keys survive");
-        assert_eq!(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]), 100);
-        assert_eq!(u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]), 200);
-    }
-
-    #[test]
-    fn empty_morph_key_set_strips_all_msdk_keys() {
-        let interner = StringInterner::new();
-        let mut npc = make_record("NPC_", &interner);
-        push(&mut npc, "MSDK", msdk_bytes(&[1, 2, 3]));
-        let valid = FxHashSet::default();
-        let removed = filter_invalid_morph_keys(&mut npc, &valid);
-        assert_eq!(removed, 3);
-        let msdk_sig = SubrecordSig::from_str("MSDK").unwrap();
-        let entry = npc.fields.iter().find(|e| e.sig == msdk_sig).unwrap();
-        let FieldValue::Bytes(raw) = &entry.value else {
-            panic!("expected MSDK bytes");
-        };
-        assert!(raw.is_empty());
+            let valid = sets.fmri_for_npc(&npc, &race_fk, &interner);
+            assert_eq!(
+                drop_invalid_face_morphs(&mut npc, valid) as usize,
+                2 - expected.len(),
+                "{name}"
+            );
+            assert_eq!(fmri_values(&npc), expected, "{name}");
+            assert_eq!(count_sig(&npc, "FMRS"), expected.len(), "{name}");
+        }
     }
 
     fn msdv_bytes(values: &[f32]) -> FieldValue {
@@ -933,24 +787,26 @@ mod tests {
         // value i dropped.
         let interner = StringInterner::new();
         let mut npc = make_record("NPC_", &interner);
-        // keys: 100 (valid), 999 (invalid), 200 (valid) — value at index 1 must drop.
-        push(&mut npc, "MSDK", msdk_bytes(&[100, 999, 200]));
-        push(&mut npc, "MSDV", msdv_bytes(&[1.0, 2.0, 3.0]));
+        push(&mut npc, "MSDK", msdk_bytes(&[100, 999, 200, 0x1234_5678]));
+        push(&mut npc, "MSDV", msdv_bytes(&[1.0, 2.0, 3.0, 4.0]));
 
-        let mut valid = FxHashSet::default();
-        valid.insert(100u32);
-        valid.insert(200u32);
-
-        let removed = filter_invalid_morph_keys(&mut npc, &valid);
-        assert_eq!(removed, 1);
+        let removed = filter_invalid_morph_keys(&mut npc, &set(&[100, 200]));
+        assert_eq!(removed, 2);
         let msdk_sig = SubrecordSig::from_str("MSDK").unwrap();
         let FieldValue::Bytes(keys) = &npc.fields.iter().find(|e| e.sig == msdk_sig).unwrap().value
         else {
             panic!("MSDK bytes")
         };
-        assert_eq!(keys.len() / 4, 2, "two keys survive");
+        assert_eq!(keys.len(), 8, "two 4-byte keys survive");
+        assert_eq!(
+            u32::from_le_bytes([keys[0], keys[1], keys[2], keys[3]]),
+            100
+        );
+        assert_eq!(
+            u32::from_le_bytes([keys[4], keys[5], keys[6], keys[7]]),
+            200
+        );
         assert_eq!(msdv_value_count(&npc), 2, "MSDV count tracks MSDK count");
-        // surviving values are the ones at kept positions 0 and 2 (1.0, 3.0).
         let msdv_sig = SubrecordSig::from_str("MSDV").unwrap();
         let FieldValue::Bytes(vals) = &npc.fields.iter().find(|e| e.sig == msdv_sig).unwrap().value
         else {
@@ -997,10 +853,18 @@ mod tests {
             0,
             "MSDV emptied in lockstep (was 5) — no crash"
         );
+
+        let mut keys_only = make_record("NPC_", &interner);
+        push(&mut keys_only, "MSDK", msdk_bytes(&[1, 2, 3]));
+        assert_eq!(filter_invalid_morph_keys(&mut keys_only, &valid), 3);
+        let FieldValue::Bytes(keys) = &keys_only.fields[0].value else {
+            panic!("MSDK bytes")
+        };
+        assert!(keys.is_empty(), "MSDK without MSDV empties too");
     }
 
     #[test]
-    fn record_has_morph_data_detects_fmri_or_msdk() {
+    fn morph_data_and_npc_race_detection() {
         let interner = StringInterner::new();
         let mut a = make_record("NPC_", &interner);
         push(&mut a, "FMRI", FieldValue::Uint(0));
@@ -1013,25 +877,14 @@ mod tests {
         let mut c = make_record("NPC_", &interner);
         push(&mut c, "EDID", FieldValue::String(interner.intern("X")));
         assert!(!record_has_morph_data(&c));
-    }
+        assert!(resolve_npc_race(&c).is_none());
 
-    #[test]
-    fn resolve_npc_race_returns_rnam_formkey() {
-        let interner = StringInterner::new();
-        let mut npc = make_record("NPC_", &interner);
         let race_fk = FormKey {
             local: 0x013746,
             plugin: interner.intern("Fallout4.esm"),
         };
-        push(&mut npc, "RNAM", FieldValue::FormKey(race_fk));
-        assert_eq!(resolve_npc_race(&npc), Some(race_fk));
-    }
-
-    #[test]
-    fn resolve_npc_race_none_when_missing() {
-        let interner = StringInterner::new();
-        let npc = make_record("NPC_", &interner);
-        assert!(resolve_npc_race(&npc).is_none());
+        push(&mut c, "RNAM", FieldValue::FormKey(race_fk));
+        assert_eq!(resolve_npc_race(&c), Some(race_fk));
     }
 
     #[test]
@@ -1165,107 +1018,5 @@ mod tests {
         );
         assert!(plugin_handle_close_native(target));
         assert!(plugin_handle_close_native(sequential_target));
-    }
-
-    #[test]
-    #[ignore = "representative cold phase benchmark"]
-    fn benchmark_batched_face_morph_repair_against_sequential() {
-        const SAMPLES: usize = 6;
-        for sample in 0..SAMPLES {
-            let mut pair = Vec::new();
-            for sequential in if sample % 2 == 0 {
-                [true, false]
-            } else {
-                [false, true]
-            } {
-                let interner = StringInterner::new();
-                let output = interner.intern("Output.esp");
-                let race_key = FormKey {
-                    local: 0x200,
-                    plugin: output,
-                };
-                let mut records = Vec::with_capacity(50_101);
-                let mut race = make_record("RACE", &interner);
-                race.form_key = race_key;
-                push(&mut race, "FMRI", FieldValue::Uint(1));
-                push(
-                    &mut race,
-                    "FMRN",
-                    FieldValue::String(interner.intern("Valid")),
-                );
-                records.push(race);
-                for index in 0..100u32 {
-                    let mut npc = make_record("NPC_", &interner);
-                    npc.form_key.local = 0x1000 + index;
-                    if index % 3 == 0 {
-                        npc.flags = RecordFlags::COMPRESSED;
-                    }
-                    push(&mut npc, "RNAM", FieldValue::FormKey(race_key));
-                    push(&mut npc, "FMRI", FieldValue::Uint(1));
-                    push(&mut npc, "FMRS", fmrs_bytes());
-                    push(&mut npc, "FMRI", FieldValue::Uint(2));
-                    push(&mut npc, "FMRS", fmrs_bytes());
-                    records.push(npc);
-                }
-                for index in 0..50_000u32 {
-                    let mut npc = make_record("NPC_", &interner);
-                    npc.form_key.local = 0x20_000 + index;
-                    push(
-                        &mut npc,
-                        "EDID",
-                        FieldValue::String(interner.intern(&format!("Background{index}"))),
-                    );
-                    records.push(npc);
-                }
-                let target = plugin_handle_new_native("Output.esp", Some("fo4")).unwrap();
-                let schema = {
-                    let mut session = open_session(target, None).unwrap();
-                    let schema = session.schema().unwrap();
-                    session
-                        .add_records(records, schema.as_ref(), &interner)
-                        .unwrap();
-                    schema
-                };
-                let mut mapper_state = MapperState::new(
-                    [],
-                    MapperOptions {
-                        output_plugin_name: "Output.esp".into(),
-                        preserve_source_ids: true,
-                        ..Default::default()
-                    },
-                );
-                let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &interner);
-                let config = FixupConfig {
-                    target_schema: Some(schema),
-                    ..Default::default()
-                };
-                let started = std::time::Instant::now();
-                let mut session = open_session(target, None).unwrap();
-                let report = if sequential {
-                    run_sequential_for_test(&mut session, &mut mapper, &config).unwrap()
-                } else {
-                    StripInvalidNpcFaceMorphsFixup
-                        .run_with_session(&mut session, &mut mapper, &config)
-                        .unwrap()
-                };
-                session.flush_pending_effects();
-                drop(session);
-                let elapsed = started.elapsed().as_secs_f64();
-                let temp = tempfile::tempdir().unwrap();
-                let output_path = temp.path().join("output.esp");
-                plugin_handle_save_no_py(target, output_path.to_str().unwrap()).unwrap();
-                let bytes = std::fs::read(output_path).unwrap();
-                eprintln!(
-                    "npc_face_morph sample={} mode={} elapsed_ms={:.3} bytes={} report={report:?}",
-                    sample + 1,
-                    if sequential { "sequential" } else { "batched" },
-                    elapsed * 1000.0,
-                    bytes.len(),
-                );
-                pair.push((format!("{report:?}"), bytes));
-                assert!(plugin_handle_close_native(target));
-            }
-            assert_eq!(pair[0], pair[1]);
-        }
     }
 }

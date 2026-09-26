@@ -79,8 +79,11 @@ Function BeginJohnnyRobbery()
             johnnyRef.EvaluatePackage()
         EndIf
     EndIf
-    If !IsStageDone(5101)
-        SetStage(5101)
+    ; Stage 5050 starts W05_MQA_206P_Johnny_001_Gold (conditioned on 5100), whose
+    ; last action starts the Johnny_002_Standoff confrontation; that scene sets
+    ; 5200 on start and 5101 (robbery package) on completion. Nothing else set 5050.
+    If !IsStageDone(5050)
+        SetStage(5050)
     EndIf
 EndFunction
 

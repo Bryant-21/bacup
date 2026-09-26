@@ -1,0 +1,128 @@
+$B21_TFA_Collections	КОЛЛЕКЦИИ
+$B21_TFA_Caps	Капс
+$B21_TFA_ActiveEffects	ПОСЛЕДСТВИЯ
+$B21_TFA_Holo	ГОЛОС
+$B21_TFA_Notes	ЗАМЕТКИ
+$B21_TFA_Armor	БРОНЯ
+$B21_TFA_FoodDrink	ЕДА/ПИТЬ
+$B21_TFA_New	НОВЫЙ
+$B21_TFA_PerkCoins	Монеты Perk
+$B21_TFA_Capacity	ВМЕСТИМОСТЬ
+$B21_TFA_Unlimited	НЕОГРАНИЧЕННЫЙ
+$B21_TFA_Legendary	легендарный
+$B21_TFA_SemiAutomatic	Полуавтоматический
+$B21_TFA_VATSAccuracy	Точность V.A.T.S.
+$B21_TFA_WeaponType_Melee	Мели
+$B21_TFA_WeaponType_OneHanded	Одноручный
+$B21_TFA_WeaponType_TwoHanded	двуручный
+$B21_TFA_WeaponType_Unarmed	безоружный
+$B21_TFA_WeaponType_Explosive	взрывной
+$B21_TFA_WeaponType_Energy	Энергетика
+$B21_TFA_WeaponType_Ballistic	баллист
+$B21_TFA_WeaponType_BigGun	Большой пистолет
+$B21_TFA_WeaponType_Shotgun	Стрелок
+$B21_TFA_WeaponType_Rifle	винтовка
+$B21_TFA_WeaponType_Pistol	Пистолет
+$B21_TFA_WeaponType_Bow	лук
+$B21_TFA_WeaponType_Thrown	выброшенный
+$B21_TFA_Repair	РЕМОНТ
+$B21_TFA_BasicRepairKit	Базовый ремонтный комплект
+$B21_TFA_ImprovedRepairKit	Улучшенный ремонтный комплект
+$B21_TFA_WorkbenchRepair	Ремонт рабочего стола
+$B21_TFA_RepairUnavailable	Ремонт недоступен
+$B21_TFA_ConfirmRepair	ПОДТВЕРДИТЬ РЕМОНТ
+$B21_TFA_RepairFailed	Ремонт не удалось завершить
+$B21_TFA_RepairStale	Пункт изменился. Выберите его снова.
+$B21_TFA_RepairComplete	Пункт отремонтирован
+$B21_TFA_RepairNoKit	Ремонтные комплекты отсутствуют
+$B21_TFA_SwitchToCraft	ПЕРЕКЛЮЧАТЬСЯ НА КРАФТ
+$B21_TFA_SwitchToModify	ПЕРЕКЛЮЧИТЕСЬ НА ИЗМЕНЕНИЕ
+$B21_TFA_NothingToModify	Вам нечего менять на этом рабочем столе.
+$B21_TFA_RepairNoImprovement	Состояние уже на уровне или выше этого уровня ремонта.
+$B21_TFA_RepairMissingMaterials	Недостающие ремонтные материалы
+$B21_TFA_RepairControls	Выберите: UP/DOWN   ПОДТВЕРЖДЕНО: ENTER/A   НАЗАД: TAB/B
+$B21_TFA_RepairHintKeyboard	РЕМОНТ [K]
+$B21_TFA_RepairHintController	РЕМОНТ [LS]
+$B21_TFA_RepairCancel	ОТМЕНИТЬ
+$B21_TFA_PerkCards_FilterAll	ФИЛЬТР (ВСЕ)
+$B21_TFA_PerkCardPacks	ПАКЕТЫ КАРТ PERK
+$B21_TFA_AssignPermanentSPECIAL	НАЗНАЧЕНИЕ ПОСТОЯННОГО SPECIAL
+$B21_TFA_AssignSPECIAL	УВЕЛИЧИТЬ SPECIAL
+$B21_TFA_MoveSPECIAL	ПЕРЕМЕСТИТЬ ТОЧКУ SPECIAL
+$B21_TFA_AddLoadout	ДОБАВИТЬ ЗАГРУЗКУ
+$B21_PM_Salute	Приветствие (требуется время)
+$B21_PM_FO4Poses	Fallout 4
+$B21_PM_Warm	теплый
+$B21_PM_Cool	Круто
+$B21_PM_Vintage	винтажный
+$B21_PM_Keepsake	Хранить
+$B21_PM_PhotoFrames	Фотографии
+$B21_PM_FreezeTime	Время заморозки
+$B21_PM_Menu	ФОТОРЕЖИМ
+$B21_PM_Saturated	насыщенный
+$B21_PM_BlackAndWhite	Черный и белый
+$B21_PM_Sepia	Сепия
+$B21_PM_PhotoFlash	Флэш фото
+$B21_PM_Dandy	Дэнди
+$B21_PM_Daytripper	Дейтриппер
+$B21_PM_Enhance	Улучшить
+$B21_PM_Gamma	гамма
+$B21_PM_Nuke	ядерное оружие
+$B21_PM_Tintype	тип
+$B21_PM_Acid	кислота
+$B21_PM_Electric	электрический
+$B21_PM_Jet	реактивный
+$B21_PM_3dViz	3D Viz
+$B21_PM_OnlyRed	Только красный
+$B21_PM_Feral	железистый
+$B21_PM_SugarBomb	Сахарная бомба
+$B21_PM_VaultBlue	Синий свод
+$B21_StatusHUD_Condition	ХЕНД
+$B21_StatusHUD_Broken	РАЗБИТЫЙ
+$B21_StatusHUD_Feral	ЖЕЛЕЗИСТЫЙ
+$B21_TFA_QuestMain	ГЛАВНЫЙ
+$B21_TFA_QuestSide	СТОРОНА
+$B21_TFA_QuestMisc	МИСК
+$B21_TFA_QuestLeads	СВИНЕЦ
+$B21_TFA_QuestEvents	СОБЫТИЯ
+$B21_RespawnTitle	Возрождение
+$B21_RespawnBagNotice	Ваш брошенный мусор остается на месте смерти.
+$B21_RespawnNearestSafe	Используйте ближайшее безопасное место
+$B21_RespawnUnavailable	Это место больше не доступно. Выбери другое.
+$B21_RespawnMaximum	Максимальная репутация
+$B21_RespawnNextTier	следующий уровень
+$B21_TFA_SurvivalTent	ПАЛАТКА ДЛЯ ВЫЖИВАНИЯ
+$B21_TFA_LegendaryPerks	ЛЕГЕНДАРНЫЕ ПЕРКИ
+$B21_TFA_PromptSelect	ВЫБРАТЬ
+$B21_TFA_PromptConfirm	ПОДТВЕРДИТЕ
+$B21_TFA_CharacterName	ИМЯ ПЕРСОНАЖА
+$B21_TFA_CharacterNameAccept	ПОДТВЕРДИТЕ
+$B21_TFA_CharacterNameCancel	НАЗАД
+$B21_TFA_Perks_OpenPackPrompt	У вас есть неоткрытый пакет перков! Хотите открыть его?
+$B21_TFA_Perks_NoPrompt	Нет (не спрашивайте снова)
+$B21_TFA_QB_ArmView	PIP-BOY
+$B21_TFA_QB_QuickView	QUICK-BOY
+$B21_TFA_EmoteExpand	РАСШИРЯТЬ
+$B21_TFA_EmoteCollapse	КРАХ
+$B21_TFA_EmoteSay	СКАЖИ
+$B21_TFA_EmoteBack	НАЗАД
+$B21_TFA_EmoteClose	ЗАКРЫТЬ
+$B21_TFA_EmoteTab	ЭМОТ
+$B21_TFA_EmoteScroll	СВИТОК
+$B21_Settings_WorldFOV	Поле зрения
+$B21_Settings_FirstPersonFOV	Поле зрения первого лица
+$B21_Settings_DepthOfField	Глубина поля
+$B21_Settings_MotionBlur	Движения Blur
+$B21_Settings_LensFlare	Ленс Флэр
+$B21_Settings_ShadowDistance	Расстояние теней
+$B21_Settings_ShadowQuality	Теневое качество (Restart)
+$B21_Settings_TextureQuality	Качество текстуры (Restart)
+$B21_Settings_WindowMode	Режим окна (Restart)
+$B21_Settings_VSync	V-Sync (перезапуск)
+$B21_Settings_Low	низкий
+$B21_Settings_Medium	средний
+$B21_Settings_High	высокий
+$B21_Settings_Ultra	Урал
+$B21_Settings_Fullscreen	Полный экран
+$B21_Settings_Borderless	без границ
+$B21_Settings_Windowed	оконный

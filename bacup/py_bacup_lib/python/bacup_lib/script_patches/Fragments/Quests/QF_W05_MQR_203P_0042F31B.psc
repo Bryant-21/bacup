@@ -124,7 +124,14 @@ Function Fragment_Stage_0800_Item_01()
 EndFunction
 
 Function Fragment_Stage_0810_Item_00()
+    If IsStageDone(9001) || IsStageDone(8000) || IsStageDone(8100)
+        Return
+    EndIf
     SetObjectiveDisplayed(850)
+    ; Round-win XP/caps (B21:QuestRewards 821/1221/1701) were granted server side in FO76.
+    If !IsStageDone(821)
+        SetStage(821)
+    EndIf
     If W05_MQR_203P_SargentoPA_004B_Round01End != None
         W05_MQR_203P_SargentoPA_004B_Round01End.Start()
     EndIf
@@ -257,10 +264,16 @@ Function Fragment_Stage_1205_Item_00()
 EndFunction
 
 Function Fragment_Stage_1210_Item_00()
+    If IsStageDone(9001) || IsStageDone(8000) || IsStageDone(8100)
+        Return
+    EndIf
     Actor allyTurretActor
     Int turretIndex = 0
     ObjectReference allyTurret
     SetObjectiveDisplayed(1250)
+    If !IsStageDone(1221)
+        SetStage(1221)
+    EndIf
     While turretIndex < Alias_AllyTurrets.GetCount()
         allyTurret = Alias_AllyTurrets.GetAt(turretIndex)
         allyTurretActor = allyTurret as Actor
@@ -424,6 +437,9 @@ Function Fragment_Stage_1605_Item_00()
 EndFunction
 
 Function Fragment_Stage_1610_Item_00()
+    If IsStageDone(9001) || IsStageDone(8000) || IsStageDone(8100)
+        Return
+    EndIf
     Actor allyTurretActor
     Int turretIndex = 0
     ObjectReference allyTurret
@@ -442,6 +458,9 @@ EndFunction
 
 Function Fragment_Stage_1700_Item_00()
     SetObjectiveDisplayed(1700)
+    If !IsStageDone(1701)
+        SetStage(1701)
+    EndIf
     If W05_MQR_203P_SargentoPA_009A_Winner != None
         W05_MQR_203P_SargentoPA_009A_Winner.Start()
     EndIf
@@ -608,6 +627,9 @@ Function Fragment_Stage_5100_Item_00()
 EndFunction
 
 Function Fragment_Stage_5200_Item_00()
+    If IsStageDone(5300)
+        Return
+    EndIf
     SetObjectiveCompleted(5100)
     If IsStageDone(1300)
         If !IsStageDone(1310)
@@ -619,6 +641,9 @@ Function Fragment_Stage_5200_Item_00()
 EndFunction
 
 Function Fragment_Stage_5300_Item_00()
+    If IsStageDone(5200)
+        Return
+    EndIf
     SetObjectiveFailed(5100)
     If IsStageDone(1300)
         If !IsStageDone(1310)
@@ -786,11 +811,6 @@ Function Fragment_Stage_9001_Item_00()
     EndIf
     If W05_MQR_203P_SargentoPA_009B_Loser != None
         W05_MQR_203P_SargentoPA_009B_Loser.Start()
-    EndIf
-    ; FO4 lost the mid-scene INFO fragment that starts Plan B; preserve scene order locally.
-    Utility.Wait(2.0)
-    If !IsStageDone(8000)
-        SetStage(8000)
     EndIf
 EndFunction
 

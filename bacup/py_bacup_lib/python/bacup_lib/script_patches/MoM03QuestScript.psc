@@ -70,3 +70,20 @@ Event ObjectReference.OnTriggerEnter(ObjectReference akSender, ObjectReference a
         SetStage(CONST_MoM03_EnteredRoomTrigger)
     EndIf
 EndEvent
+Function ReconcileTerminalState()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef == None || MoM03TerminalValue == None
+        Return
+    EndIf
+    If IsStageDone(100)
+        playerRef.SetValue(MoM03TerminalValue, CONST_MoM03Value_DispensedHolotape)
+    ElseIf IsStageDone(91)
+        playerRef.SetValue(MoM03TerminalValue, CONST_MoM03Value_ViewedReadme)
+    ElseIf IsStageDone(90)
+        playerRef.SetValue(MoM03TerminalValue, CONST_MoM03Value_MountedHolotapeDrive)
+    ElseIf IsStageDone(40)
+        playerRef.SetValue(MoM03TerminalValue, CONST_MoM03Value_ReadyForPleasantValley)
+    ElseIf IsStageDone(30)
+        playerRef.SetValue(MoM03TerminalValue, CONST_MoM03Value_ReadyForMission)
+    EndIf
+EndFunction

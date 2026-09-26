@@ -1,13 +1,14 @@
 Event OnActivate(ObjectReference akActionRef)
-	If akActionRef != Game.GetPlayer() || !isFirstPress || GetOwningQuest().GetStage() != 160
+	If akActionRef != Game.GetPlayer()
 		Return
 	EndIf
-	isFirstPress = False
-	ObjectReference buttonRef = GetReference()
-	If buttonRef != None
-		buttonRef.PlayAnimation("TurnOn01")
+	Quest owningQuest = GetOwningQuest()
+	E09B_Script wheelScript = owningQuest as E09B_Script
+	; The game show spins five times, so each prompt re-arms the press through E09B_Script.canSpin.
+	If wheelScript == None || !wheelScript.TryBeginSpin()
+		Return
 	EndIf
-	GetOwningQuest().SetStage(170)
+	owningQuest.SetStage(170)
 EndEvent
 
 Event OnAliasShutdown()

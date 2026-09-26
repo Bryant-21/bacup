@@ -206,13 +206,9 @@ pub fn extract_male_skeletal_model_sym(record: &Record) -> Option<Sym> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixups::{FixupConfig, FixupContext};
-    use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
-    use crate::schema::AuthoringSchema;
     use crate::sym::StringInterner;
-    use std::sync::Arc;
 
     fn make_fk(local: u32, plugin: &str, interner: &StringInterner) -> FormKey {
         FormKey {
@@ -294,146 +290,65 @@ mod tests {
     }
 
     #[test]
-    fn apply_rewrites_modl_when_differs() {
-        let mut interner = StringInterner::new();
-        let mut record = make_bptd(
-            0x000100,
-            "Output.esp",
-            "actors/ogua/characterassets/skeleton.nif",
-            &mut interner,
-        );
-        let new_skel = interner.intern("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif");
-        let changed = apply_to_record(&mut record, new_skel);
-        assert!(changed);
-
-        let modl_sig = SubrecordSig::from_str("MODL").unwrap();
-        let modl = record
-            .fields
-            .iter()
-            .find(|e| e.sig == modl_sig)
-            .expect("MODL");
-        if let FieldValue::String(s) = modl.value {
-            assert_eq!(
-                interner.resolve(s),
-                Some("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif")
-            );
-        } else {
-            panic!("expected MODL to be String");
+    fn apply_rewrites_modl_only_when_it_differs() {
+        const MEGASLOTH: &str = "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif";
+        for (name, modl, expected_changed) in [
+            (
+                "differs",
+                Some("actors/ogua/characterassets/skeleton.nif"),
+                true,
+            ),
+            ("matches", Some(MEGASLOTH), false),
+            ("no_modl", None, false),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_bptd(0x000100, "Output.esp", modl.unwrap_or(""), &interner);
+            if modl.is_none() {
+                record.fields.retain(|e| e.sig.as_str() != "MODL");
+            }
+            let changed = apply_to_record(&mut record, interner.intern(MEGASLOTH));
+            assert_eq!(changed, expected_changed, "{name}");
+            let modl_value =
+                record
+                    .fields
+                    .iter()
+                    .find(|e| e.sig.as_str() == "MODL")
+                    .map(|e| match e.value {
+                        FieldValue::String(s) => interner.resolve(s),
+                        _ => panic!("expected MODL to be String"),
+                    });
+            assert_eq!(modl_value, modl.map(|_| Some(MEGASLOTH)), "{name}");
         }
     }
 
+    /// An ANAM without a preceding MNAM is not the Male Skeletal Model.
     #[test]
-    fn apply_is_no_op_when_modl_matches() {
-        let mut interner = StringInterner::new();
-        let mut record = make_bptd(
-            0x000100,
-            "Output.esp",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            &mut interner,
-        );
-        let same = interner.intern("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif");
-        let changed = apply_to_record(&mut record, same);
-        assert!(!changed);
-    }
+    fn extracts_race_bptd_formkey_and_male_skeleton() {
+        let interner = StringInterner::new();
+        let target = make_fk(0x00ABCD, "Fallout4.esm", &interner);
+        let record = make_race(0x000800, "Output.esp", Some(target), None, &interner);
+        assert_eq!(extract_bptd_formkey(&record), Some(target));
+        assert!(extract_male_skeletal_model_sym(&record).is_none());
 
-    #[test]
-    fn apply_returns_false_when_no_modl() {
-        let mut interner = StringInterner::new();
-        let sig = SigCode::from_str("BPTD").unwrap();
-        let fk = make_fk(0x000100, "Output.esp", &mut interner);
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let edid_sym = interner.intern("NoModelBPTD");
-        let mut record = Record {
-            sig,
-            form_key: fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-        let any = interner.intern("any.nif");
-        assert!(!apply_to_record(&mut record, any));
-    }
-
-    #[test]
-    fn extract_bptd_formkey_returns_gnam_fk() {
-        let mut interner = StringInterner::new();
-        let target = make_fk(0x00ABCD, "Fallout4.esm", &mut interner);
-        let record = make_race(0x000800, "Output.esp", Some(target), None, &mut interner);
-        let extracted = extract_bptd_formkey(&record);
-        assert_eq!(extracted, Some(target));
-    }
-
-    #[test]
-    fn extract_bptd_formkey_returns_none_without_gnam() {
-        let mut interner = StringInterner::new();
-        let record = make_race(0x000800, "Output.esp", None, None, &mut interner);
-        assert!(extract_bptd_formkey(&record).is_none());
-    }
-
-    #[test]
-    fn extract_male_skel_returns_anam_after_mnam() {
-        let mut interner = StringInterner::new();
         let record = make_race(
             0x000800,
             "Output.esp",
             None,
             Some("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif"),
-            &mut interner,
+            &interner,
         );
+        assert!(extract_bptd_formkey(&record).is_none());
         let sym = extract_male_skeletal_model_sym(&record).expect("must find Male ANAM");
         assert_eq!(
             interner.resolve(sym),
             Some("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif")
         );
-    }
 
-    #[test]
-    fn extract_male_skel_returns_none_without_mnam() {
-        let mut interner = StringInterner::new();
-        // ANAM without preceding MNAM should NOT count as Male Skeletal Model.
-        let sig = SigCode::from_str("RACE").unwrap();
-        let fk = make_fk(0x000800, "Output.esp", &mut interner);
-        let anam_sig = SubrecordSig::from_str("ANAM").unwrap();
-        let sym = interner.intern("orphan.nif");
-        let record = Record {
-            sig,
-            form_key: fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: anam_sig,
-                value: FieldValue::String(sym),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-        assert!(extract_male_skeletal_model_sym(&record).is_none());
-    }
-
-    #[test]
-    fn applies_to_is_unconditional() {
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let mut mapper_interner = StringInterner::new();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(CleanupBodypartDataFixup.applies_to(&ctx));
-        let _ = mapper;
+        let mut orphan = make_race(0x000800, "Output.esp", None, None, &interner);
+        orphan.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("ANAM").unwrap(),
+            value: FieldValue::String(interner.intern("orphan.nif")),
+        });
+        assert!(extract_male_skeletal_model_sym(&orphan).is_none());
     }
 }

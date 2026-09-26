@@ -323,117 +323,95 @@ mod tests {
     }
 
     #[test]
-    fn repairs_master_byte_truncated_play_sound_to_output_sndr() {
-        // 003EB652 addresses master 0 (Fallout4.esm) but is absent there; the
-        // converted SNDR exists in the output (master index 1) → repair to
-        // 013EB652.
-        let r = resolver(&[0x3EB652], &[], 1);
-        let mut buf = le(0x003EB652);
-        assert!(r.repair_htid_bytes(&mut buf));
-        assert_eq!(buf, le(0x013EB652));
+    fn htid_repairs_truncated_output_sndr_refs_only() {
+        let wrong_type = {
+            let mut r = resolver(&[0x0900], &[], 1);
+            r.output_objids.insert(0x84401F);
+            r
+        };
+        for (name, r, input, expected) in [
+            (
+                "master byte truncated output SNDR",
+                resolver(&[0x3EB652], &[], 1),
+                le(0x003EB652),
+                Some(le(0x013EB652)),
+            ),
+            (
+                "vanilla SNDR resolving in master",
+                resolver(&[0x22B6D7], &[0x22B6D7], 1),
+                le(0x0022B6D7),
+                None,
+            ),
+            (
+                "4-byte headtracking actor id",
+                resolver(&[0x3EB652], &[], 1),
+                le(0x00000003),
+                None,
+            ),
+            ("null", resolver(&[0x3EB652], &[], 1), le(0), None),
+            (
+                "already output",
+                resolver(&[0x3EB652], &[], 1),
+                le(0x013EB652),
+                None,
+            ),
+            (
+                "multi-actor int array",
+                resolver(&[0x3EB652], &[], 1),
+                vec![3u8, 0, 0, 0, 4, 0, 0, 0],
+                None,
+            ),
+            (
+                "already output wrong type is nulled",
+                wrong_type,
+                le(0x0184401F),
+                Some(le(0)),
+            ),
+        ] {
+            let mut buf = input.clone();
+            assert_eq!(r.repair_htid_bytes(&mut buf), expected.is_some(), "{name}");
+            assert_eq!(buf, expected.unwrap_or(input), "{name}");
+        }
+
+        assert_eq!(
+            resolver(&[0xABCDEF], &[], 3).repair_raw(0x00ABCDEF),
+            Some(0x03ABCDEF),
+            "repaired high byte is the output master index, not a hardcoded 07"
+        );
     }
 
     #[test]
-    fn keeps_play_sound_that_resolves_in_master() {
-        // A real Fallout4.esm SNDR (object-id present in master 0) is vanilla-
-        // inherited — keep it byte-identical.
-        let r = resolver(&[0x22B6D7], &[0x22B6D7], 1);
-        let mut buf = le(0x0022B6D7);
-        assert!(!r.repair_htid_bytes(&mut buf));
-        assert_eq!(buf, le(0x0022B6D7));
-    }
+    fn dmax_repairs_truncated_output_sopm_refs_and_never_touches_floats() {
+        let misses_gate = {
+            let mut r = sopm_resolver(&[0x43570F], 1);
+            r.output_objids.insert(0x84401F);
+            r
+        };
+        for (name, r, input, expected) in [
+            (
+                "master byte truncated output SOPM",
+                sopm_resolver(&[0x43570F], 1),
+                le(0x0043570F),
+                Some(le(0x0143570F)),
+            ),
+            (
+                "10.0 headtracking angle",
+                sopm_resolver(&[0x200000], 1),
+                le(0x41200000),
+                None,
+            ),
+            ("misses the SOPM gate", misses_gate, le(0x0184401F), None),
+        ] {
+            let mut buf = input.clone();
+            assert_eq!(r.repair_dmax_bytes(&mut buf), expected.is_some(), "{name}");
+            assert_eq!(buf, expected.unwrap_or(input), "{name}");
+        }
 
-    #[test]
-    fn leaves_headtracking_actor_id_untouched() {
-        // A small actor-id whose object-id names NO output SNDR is never touched
-        // (this is what keeps a 4-byte Player-Headtracking HTID safe).
-        let r = resolver(&[0x3EB652], &[], 1);
-        let mut buf = le(0x00000003);
-        assert!(!r.repair_htid_bytes(&mut buf));
-        assert_eq!(buf, le(0x00000003));
-    }
-
-    #[test]
-    fn leaves_null_and_already_output_play_sound() {
-        let r = resolver(&[0x3EB652], &[], 1);
-        // null object-id
-        let mut z = le(0x00000000);
-        assert!(!r.repair_htid_bytes(&mut z));
-        // already addresses the output plugin (master index 1)
-        let mut out = le(0x013EB652);
-        assert!(!r.repair_htid_bytes(&mut out));
-        assert_eq!(out, le(0x013EB652));
-    }
-
-    #[test]
-    fn skips_non_four_byte_htid_array_variant() {
-        // The Player-Headtracking HTID with >1 actor is an N*4-byte int array —
-        // not a single FormID; the byte-length guard skips it.
-        let r = resolver(&[0x3EB652], &[], 1);
-        let mut multi = vec![3u8, 0, 0, 0, 4, 0, 0, 0]; // two actor ids
-        assert!(!r.repair_htid_bytes(&mut multi));
-        assert_eq!(multi, vec![3u8, 0, 0, 0, 4, 0, 0, 0]);
-    }
-
-    #[test]
-    fn repair_raw_high_byte_targets_output_index_not_hardcoded_07() {
-        // The repaired high byte must equal output_master_index, not a hardcoded
-        // 7 — a plugin with a different master count repairs to its own index.
-        let r = resolver(&[0xABCDEF], &[], 3);
-        assert_eq!(r.repair_raw(0x00ABCDEF), Some(0x03ABCDEF));
-    }
-
-    #[test]
-    fn repairs_master_byte_truncated_dmax_sound_output_model() {
-        // Storm_MQ01_Breadcrumb_Radio_Message's Radio action: DMAX = 0043570F
-        // (SOMDialogue_FX_RADIOEBSMessage) kept the FO76 00 master byte, so in FO4
-        // it addressed Fallout4.esm and the broadcast had no audio routing.
-        let r = sopm_resolver(&[0x43570F], 1);
-        let mut buf = le(0x0043570F);
-        assert!(r.repair_dmax_bytes(&mut buf));
-        assert_eq!(buf, le(0x0143570F));
-    }
-
-    #[test]
-    fn leaves_dmax_headtracking_angle_float_untouched() {
-        // 10.0 is the DMAX value in the overwhelming majority of vanilla actions.
-        // Its bit pattern is 0x41200000, whose object-id must never be repaired
-        // even when an output SOPM happens to carry that object-id.
-        let r = sopm_resolver(&[0x200000], 1);
-        let mut buf = le(0x41200000);
-        assert!(!r.repair_dmax_bytes(&mut buf));
-        assert_eq!(buf, le(0x41200000));
-    }
-
-    #[test]
-    fn never_nulls_a_dmax_that_misses_the_sopm_gate() {
-        // Unlike HTID, a DMAX that names no output SOPM is a float, not a
-        // mistyped reference — nulling it would destroy the angle.
-        let mut r = sopm_resolver(&[0x43570F], 1);
-        r.output_objids.insert(0x84401F);
-        let mut buf = le(0x0184401F);
-        assert!(!r.repair_dmax_bytes(&mut buf));
-        assert_eq!(buf, le(0x0184401F));
-    }
-
-    #[test]
-    fn dmax_and_htid_gates_do_not_bleed_into_each_other() {
-        // An output SNDR object-id must not be repaired through the DMAX slot,
-        // and an output SOPM object-id must not be repaired through HTID.
         let mut r = resolver(&[0x3EB652], &[], 1);
         r.output_sopm_objids = [0x43570F].into_iter().collect();
         let mut dmax_with_sndr_objid = le(0x003EB652);
         assert!(!r.repair_dmax_bytes(&mut dmax_with_sndr_objid));
         let mut htid_with_sopm_objid = le(0x0043570F);
         assert!(!r.repair_htid_bytes(&mut htid_with_sopm_objid));
-    }
-
-    #[test]
-    fn nulls_already_output_wrong_type_htid() {
-        let mut r = resolver(&[0x0900], &[], 1);
-        r.output_objids.insert(0x84401F);
-        let mut buf = le(0x0184401F);
-        assert!(r.repair_htid_bytes(&mut buf));
-        assert_eq!(buf, le(0));
     }
 }

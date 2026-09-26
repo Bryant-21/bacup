@@ -3146,7 +3146,7 @@ mod tests {
             LegacyPackSourceFamily::Fo3 => ("Fallout3.esm", 0x200000),
             _ => ("target.esm", 0x300000),
         };
-        let mut record = record(
+        let mut record = self::record(
             interner,
             local + u32::from(package_type.code()),
             plugin,
@@ -3157,24 +3157,7 @@ mod tests {
     }
 
     #[test]
-    fn fnv_pack_generated_enum_gap_12_through_16_is_explicitly_classified() {
-        let cases = [
-            (12, LegacyPackType::Sandbox, "\"sandbox\""),
-            (13, LegacyPackType::Patrol, "\"patrol\""),
-            (14, LegacyPackType::Guard, "\"guard\""),
-            (15, LegacyPackType::Dialogue, "\"dialogue\""),
-            (16, LegacyPackType::UseWeapon, "\"use_weapon\""),
-        ];
-        for (code, expected, serialized) in cases {
-            assert_eq!(LegacyPackType::from_code(code), Some(expected));
-            assert_eq!(expected.code(), code);
-            assert_eq!(serde_json::to_string(&expected).unwrap(), serialized);
-        }
-        assert_eq!(LegacyPackType::from_code(17), None);
-    }
-
-    #[test]
-    fn fnv_pack_families_classify_travel_patrol_follow_sandbox_and_use_weapon_goldens() {
+    fn fnv_pack_families_enum_codes_and_census_summary() {
         let interner = StringInterner::new();
         let types = [
             LegacyPackType::Travel,
@@ -3228,10 +3211,49 @@ mod tests {
                 assert!(!json.contains("raw_hex"));
             }
         }
+
+        let cases = [
+            (12, LegacyPackType::Sandbox, "\"sandbox\""),
+            (13, LegacyPackType::Patrol, "\"patrol\""),
+            (14, LegacyPackType::Guard, "\"guard\""),
+            (15, LegacyPackType::Dialogue, "\"dialogue\""),
+            (16, LegacyPackType::UseWeapon, "\"use_weapon\""),
+        ];
+        for (code, expected, serialized) in cases {
+            assert_eq!(LegacyPackType::from_code(code), Some(expected));
+            assert_eq!(expected.code(), code);
+            assert_eq!(serde_json::to_string(&expected).unwrap(), serialized);
+        }
+        assert_eq!(LegacyPackType::from_code(17), None);
+
+        let interner = StringInterner::new();
+        let fnv_record = base_pack(
+            &interner,
+            LegacyPackSourceFamily::Fnv,
+            LegacyPackType::Travel,
+        );
+        let fo3_record = base_pack(
+            &interner,
+            LegacyPackSourceFamily::Fo3,
+            LegacyPackType::Patrol,
+        );
+        let fnv = classify_legacy_pack(&fnv_record, LegacyPackSourceFamily::Fnv, &interner);
+        let fo3 = classify_legacy_pack(&fo3_record, LegacyPackSourceFamily::Fo3, &interner);
+        let mut reports = Vec::with_capacity(AUDITED_LEGACY_PACK_COUNT);
+        reports.extend(std::iter::repeat_n(fnv, AUDITED_FNV_PACK_COUNT));
+        reports.extend(std::iter::repeat_n(fo3, AUDITED_FO3_PACK_COUNT));
+
+        let summary = summarize_legacy_pack_reports(&reports);
+        assert_eq!(summary.fnv_records, 4_888);
+        assert_eq!(summary.fo3_records, 4_567);
+        assert_eq!(summary.total_records, 9_455);
+        assert_eq!(summary.accepted_records + summary.rejected_records, 9_455);
+        assert!(summary.exact_audited_coverage);
+        assert_eq!(9_455 - 9_152, 33 + 270, "group-index undercount");
     }
 
     #[test]
-    fn fnv_pack_script_inventory_accounts_for_payloads_locals_and_references() {
+    fn fnv_pack_script_and_type_specific_inventory_cover_audited_shapes() {
         let interner = StringInterner::new();
         let mut record = base_pack(
             &interner,
@@ -3273,10 +3295,7 @@ mod tests {
         assert!(script.compiled_size_matches);
         assert!(script.reference_count_matches);
         assert!(script.variable_count_matches);
-    }
 
-    #[test]
-    fn fnv_pack_type_specific_inventory_covers_audited_legacy_shapes() {
         let interner = StringInterner::new();
         let mut record = base_pack(
             &interner,
@@ -3342,7 +3361,7 @@ mod tests {
     }
 
     #[test]
-    fn fnv_pack_malformed_and_unknown_records_are_rejected_without_raw_leaks() {
+    fn fnv_pack_invalid_records_are_rejected_and_non_legacy_sources_are_noops() {
         let interner = StringInterner::new();
         let mut malformed = base_pack(
             &interner,
@@ -3375,10 +3394,7 @@ mod tests {
             reason,
             LegacyPackRejectionReason::UnknownPackageType { value: 17 }
         )));
-    }
 
-    #[test]
-    fn fnv_pack_unresolved_record_identity_is_rejected_without_panicking() {
         let record_interner = StringInterner::new();
         let report_interner = StringInterner::new();
         let mut record = Record::new(
@@ -3397,10 +3413,7 @@ mod tests {
             LegacyPackRejectionReason::UnresolvedRecordIdentity { field }
                 if field == "form_key_plugin"
         )));
-    }
 
-    #[test]
-    fn fnv_pack_orphan_condition_companion_is_rejected() {
         let interner = StringInterner::new();
         let mut record = base_pack(
             &interner,
@@ -3418,10 +3431,7 @@ mod tests {
             reason,
             LegacyPackRejectionReason::OrphanConditionCompanion { .. }
         )));
-    }
 
-    #[test]
-    fn fnv_pack_fo4_and_fo76_are_true_noops() {
         let interner = StringInterner::new();
         let record = base_pack(
             &interner,
@@ -3442,7 +3452,7 @@ mod tests {
         let interner = StringInterner::new();
         let merged = "FalloutNV.esm";
 
-        let mut hostage_travel = record(&interner, 0x1231B7, merged, "TecMineHostagePackage");
+        let mut hostage_travel = self::record(&interner, 0x1231B7, merged, "TecMineHostagePackage");
         hostage_travel.fields.extend([
             exact_pkdt(LegacyPackType::Travel, 0x0400_1206, 0x20, 55, 0, 877),
             location(b"PLDT", 6, 0, 0),
@@ -3450,7 +3460,7 @@ mod tests {
         ]);
         push_empty_legacy_events(&mut hostage_travel);
 
-        let mut renolds_patrol = record(
+        let mut renolds_patrol = self::record(
             &interner,
             0x133F3E,
             merged,
@@ -3464,7 +3474,7 @@ mod tests {
         ]);
         push_empty_legacy_events(&mut renolds_patrol);
 
-        let mut hostage_escape = record(&interner, 0x1231B6, merged, "TecMineHostageEscape");
+        let mut hostage_escape = self::record(&interner, 0x1231B6, merged, "TecMineHostageEscape");
         hostage_escape.fields.extend([
             exact_pkdt(LegacyPackType::Patrol, 0x0408_3206, 0x20, 0, 103, 21_572),
             location(b"PLDT", 0, 0x0E70CA, 0),
@@ -3493,7 +3503,7 @@ mod tests {
         ]);
         hostage_escape.fields.extend(empty_script(b"POCA"));
 
-        let mut renolds_dialogue = record(
+        let mut renolds_dialogue = self::record(
             &interner,
             0x13289E,
             merged,
@@ -3509,10 +3519,10 @@ mod tests {
         push_empty_legacy_events(&mut renolds_dialogue);
 
         let inventories = [
-            inventory(&hostage_travel, &interner),
-            inventory(&renolds_patrol, &interner),
-            inventory(&hostage_escape, &interner),
-            inventory(&renolds_dialogue, &interner),
+            self::inventory(&hostage_travel, &interner),
+            self::inventory(&renolds_patrol, &interner),
+            self::inventory(&hostage_escape, &interner),
+            self::inventory(&renolds_dialogue, &interner),
         ];
         assert!(inventories[0].support.lowering_supported);
         assert!(inventories[1].support.lowering_supported);
@@ -3544,9 +3554,9 @@ mod tests {
                 .all(|inventory| inventory.schedule.date == 0)
         );
         let mut wrong_plugin_record = hostage_travel.clone();
-        wrong_plugin_record.form_key.plugin = interner.intern("FalloutNV.esm");
+        wrong_plugin_record.form_key.plugin = interner.intern("FalloutNV_Wrong.esm");
         assert!(
-            !inventory(&wrong_plugin_record, &interner)
+            !self::inventory(&wrong_plugin_record, &interner)
                 .support
                 .lowering_supported
         );
@@ -3774,7 +3784,7 @@ mod tests {
         ));
 
         let mut wrong_plugin = inventories[0].clone();
-        wrong_plugin.form_key = "1231B7@FalloutNV.esm".to_string();
+        wrong_plugin.form_key = "1231B7@FalloutNV_Wrong.esm".to_string();
         assert!(matches!(
             lowerer.lower_supported_legacy_pack(&wrong_plugin),
             Err(LegacyPackLoweringError::UnsupportedPackageShape { .. })
@@ -3787,7 +3797,7 @@ mod tests {
             .find(|field| field.sig.0 == *b"PLDT")
             .expect("raw PLDT")
             .value = location(b"PLDT", 0, 0x0113_3F3D, 0).value;
-        let ambiguous_reference = inventory(&ambiguous_reference_record, &interner);
+        let ambiguous_reference = self::inventory(&ambiguous_reference_record, &interner);
         assert!(matches!(
             &ambiguous_reference.unions[0].payload,
             LegacyPackUnionPayload::Reference {
@@ -3805,7 +3815,7 @@ mod tests {
     fn renolds_dialogue_clones_verified_force_greet_and_normalizes_getstage() {
         let interner = StringInterner::new();
         let merged = "FalloutNV.esm";
-        let mut source = record(
+        let mut source = self::record(
             &interner,
             RENOLDS_DIALOGUE_PACK_LOCAL,
             merged,
@@ -3826,7 +3836,7 @@ mod tests {
             .find(|field| field.sig.0 == *b"PTDT")
             .expect("raw PTDT")
             .value = target(b"PTDT", 0, 0x0100_0014, 128).value;
-        let ambiguous_source = inventory(&ambiguous_source, &interner);
+        let ambiguous_source = self::inventory(&ambiguous_source, &interner);
         assert!(matches!(
             &ambiguous_source.unions[0].payload,
             LegacyPackUnionPayload::Reference {
@@ -3835,7 +3845,7 @@ mod tests {
             }
         ));
         assert!(validate_audited_renolds_dialogue(&ambiguous_source).is_err());
-        let source = inventory(&source, &interner);
+        let source = self::inventory(&source, &interner);
         assert!(matches!(
             &source.unions[0].payload,
             LegacyPackUnionPayload::Reference {
@@ -3844,7 +3854,7 @@ mod tests {
             } if player == "000014@FalloutNV.esm"
         ));
 
-        let mut donor = record(
+        let mut donor = self::record(
             &interner,
             FO4_FORCE_GREET_DONOR_LOCAL,
             "Fallout4.esm",
@@ -3985,33 +3995,5 @@ mod tests {
             ),
             Err(LegacyPackLoweringError::InvalidForceGreetDonor { .. })
         ));
-    }
-
-    #[test]
-    fn fnv_pack_corpus_report_reproduces_the_authoritative_9455_upper_census() {
-        let interner = StringInterner::new();
-        let fnv_record = base_pack(
-            &interner,
-            LegacyPackSourceFamily::Fnv,
-            LegacyPackType::Travel,
-        );
-        let fo3_record = base_pack(
-            &interner,
-            LegacyPackSourceFamily::Fo3,
-            LegacyPackType::Patrol,
-        );
-        let fnv = classify_legacy_pack(&fnv_record, LegacyPackSourceFamily::Fnv, &interner);
-        let fo3 = classify_legacy_pack(&fo3_record, LegacyPackSourceFamily::Fo3, &interner);
-        let mut reports = Vec::with_capacity(AUDITED_LEGACY_PACK_COUNT);
-        reports.extend(std::iter::repeat_n(fnv, AUDITED_FNV_PACK_COUNT));
-        reports.extend(std::iter::repeat_n(fo3, AUDITED_FO3_PACK_COUNT));
-
-        let summary = summarize_legacy_pack_reports(&reports);
-        assert_eq!(summary.fnv_records, 4_888);
-        assert_eq!(summary.fo3_records, 4_567);
-        assert_eq!(summary.total_records, 9_455);
-        assert_eq!(summary.accepted_records + summary.rejected_records, 9_455);
-        assert!(summary.exact_audited_coverage);
-        assert_eq!(9_455 - 9_152, 33 + 270, "group-index undercount");
     }
 }

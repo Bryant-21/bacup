@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -705,147 +707,146 @@ mod tests {
     }
 
     #[test]
-    fn reward_fixture_lowers_as_a_generic_closed_component() {
-        let interner = StringInterner::new();
-        let source = source_records(&interner);
-        let plan = supported_plan(&source, &interner);
-        let output_plugin = interner.intern("Skyrim.esm");
-        let mappings = target_mappings(&source, output_plugin);
+    fn music_lowering_namespaces_records_assets_and_preserves_semantics() {
+        {
+            let interner = StringInterner::new();
+            let source = source_records(&interner);
+            let plan = supported_plan(&source, &interner);
+            let output_plugin = interner.intern("Skyrim.esm");
+            let mappings = target_mappings(&source, output_plugin);
 
-        let (records, receipt) =
-            lower_supported_music_component(&plan, &mappings, output_plugin, &interner).unwrap();
+            let (records, receipt) =
+                lower_supported_music_component(&plan, &mappings, output_plugin, &interner)
+                    .unwrap();
 
-        assert_eq!(records.len(), 5);
-        assert_eq!(receipt.record_edges.len(), 5);
-        assert_eq!(receipt.track_edges.len(), 4);
-        assert_eq!(receipt.assets.len(), 4);
-        assert_eq!(records[0].sig.as_str(), "MUSC");
-        assert!(
-            records[1..]
+            assert_eq!(records.len(), 5);
+            assert_eq!(receipt.record_edges.len(), 5);
+            assert_eq!(receipt.track_edges.len(), 4);
+            assert_eq!(receipt.assets.len(), 4);
+            assert_eq!(records[0].sig.as_str(), "MUSC");
+            assert!(
+                records[1..]
+                    .iter()
+                    .all(|record| record.sig.as_str() == "MUST")
+            );
+            let target_tracks: Vec<_> = receipt
+                .track_edges
                 .iter()
-                .all(|record| record.sig.as_str() == "MUST")
-        );
-        let target_tracks: Vec<_> = receipt
-            .track_edges
-            .iter()
-            .map(|edge| FieldValue::FormKey(edge.target_track))
-            .collect();
-        assert!(records[0].fields.iter().any(|field| {
-            field.sig.0 == *b"TNAM" && field.value == FieldValue::List(target_tracks.clone())
-        }));
+                .map(|edge| FieldValue::FormKey(edge.target_track))
+                .collect();
+            assert!(records[0].fields.iter().any(|field| {
+                field.sig.0 == *b"TNAM" && field.value == FieldValue::List(target_tracks.clone())
+            }));
+        }
+        {
+            let interner = StringInterner::new();
+            let source = source_records(&interner);
+            let plan = supported_plan(&source, &interner);
+            let output_plugin = interner.intern("Skyrim.esm");
+            let mappings = target_mappings(&source, output_plugin);
+
+            let (records, receipt) =
+                lower_supported_music_component(&plan, &mappings, output_plugin, &interner)
+                    .unwrap();
+
+            assert_eq!(
+                interner.resolve(records[0].eid.unwrap()),
+                Some("Skyrim_MUSReward")
+            );
+            assert!(receipt.assets.iter().all(|asset| {
+                asset.target_record_path.starts_with(r"Data\Music\Skyrim\")
+                    && asset.target_record_path.ends_with(".wav")
+                    && asset.target_asset_path.starts_with(r"Music\Skyrim\")
+                    && asset.target_asset_path.ends_with(".xwm")
+            }));
+            assert_eq!(
+                receipt.assets[0].source_asset_path,
+                r"Music\Reward\MUS_Reward_01.xwm"
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let mut source = source_records(&interner);
+            source[0].flags = RecordFlags::PERSISTENT;
+            source[1].warnings.push(interner.intern("fixture-warning"));
+            let plan = supported_plan(&source, &interner);
+            let output_plugin = interner.intern("Skyrim.esm");
+            let mappings = target_mappings(&source, output_plugin);
+
+            let (records, _) =
+                lower_supported_music_component(&plan, &mappings, output_plugin, &interner)
+                    .unwrap();
+
+            assert_eq!(records[0].flags, RecordFlags::PERSISTENT);
+            assert_eq!(records[1].warnings, source[1].warnings);
+            assert!(
+                records[0]
+                    .fields
+                    .iter()
+                    .any(|field| field.sig.0 == *b"FNAM" && field.value == FieldValue::Uint(33))
+            );
+        }
     }
 
     #[test]
-    fn lowering_namespaces_records_and_physical_xwm_assets() {
-        let interner = StringInterner::new();
-        let source = source_records(&interner);
-        let plan = supported_plan(&source, &interner);
-        let output_plugin = interner.intern("Skyrim.esm");
-        let mappings = target_mappings(&source, output_plugin);
+    fn music_classification_and_lowering_fail_closed() {
+        {
+            let interner = StringInterner::new();
+            let mut missing = source_records(&interner);
+            let removed = missing.pop().unwrap();
+            assert!(matches!(
+                classify_music_component(&missing, &interner),
+                MusicSupport::Unsupported(MusicContractError::MissingTrack(key))
+                    if key == removed.form_key
+            ));
 
-        let (records, receipt) =
-            lower_supported_music_component(&plan, &mappings, output_plugin, &interner).unwrap();
+            let mut extra = source_records(&interner);
+            let plugin = extra[0].form_key.plugin;
+            let mut track = Record::new(
+                SigCode::from_str("MUST").unwrap(),
+                FormKey {
+                    local: 0x123456,
+                    plugin,
+                },
+            );
+            let path = interner.intern(r"Data\Music\Unused\Track.wav");
+            track.fields.push(field("ANAM", FieldValue::String(path)));
+            extra.push(track);
+            assert!(matches!(
+                classify_music_component(&extra, &interner),
+                MusicSupport::Unsupported(MusicContractError::UnreferencedTrack(_))
+            ));
+        }
+        {
+            let interner = StringInterner::new();
+            let source = source_records(&interner);
+            let plan = supported_plan(&source, &interner);
+            let output_plugin = interner.intern("Skyrim.esm");
+            let mut mappings = target_mappings(&source, output_plugin);
+            mappings.insert(source[4].form_key, mappings[&source[1].form_key]);
+            assert!(matches!(
+                lower_supported_music_component(&plan, &mappings, output_plugin, &interner),
+                Err(MusicContractError::DuplicateTarget(_))
+            ));
 
-        assert_eq!(
-            interner.resolve(records[0].eid.unwrap()),
-            Some("Skyrim_MUSReward")
-        );
-        assert!(receipt.assets.iter().all(|asset| {
-            asset.target_record_path.starts_with(r"Data\Music\Skyrim\")
-                && asset.target_record_path.ends_with(".wav")
-                && asset.target_asset_path.starts_with(r"Music\Skyrim\")
-                && asset.target_asset_path.ends_with(".xwm")
-        }));
-        assert_eq!(
-            receipt.assets[0].source_asset_path,
-            r"Music\Reward\MUS_Reward_01.xwm"
-        );
-    }
-
-    #[test]
-    fn classification_fails_closed_for_missing_or_extra_tracks() {
-        let interner = StringInterner::new();
-        let mut missing = source_records(&interner);
-        let removed = missing.pop().unwrap();
-        assert!(matches!(
-            classify_music_component(&missing, &interner),
-            MusicSupport::Unsupported(MusicContractError::MissingTrack(key))
-                if key == removed.form_key
-        ));
-
-        let mut extra = source_records(&interner);
-        let plugin = extra[0].form_key.plugin;
-        let mut track = Record::new(
-            SigCode::from_str("MUST").unwrap(),
-            FormKey {
-                local: 0x123456,
-                plugin,
-            },
-        );
-        let path = interner.intern(r"Data\Music\Unused\Track.wav");
-        track.fields.push(field("ANAM", FieldValue::String(path)));
-        extra.push(track);
-        assert!(matches!(
-            classify_music_component(&extra, &interner),
-            MusicSupport::Unsupported(MusicContractError::UnreferencedTrack(_))
-        ));
-    }
-
-    #[test]
-    fn lowering_rejects_colliding_or_non_owned_targets() {
-        let interner = StringInterner::new();
-        let source = source_records(&interner);
-        let plan = supported_plan(&source, &interner);
-        let output_plugin = interner.intern("Skyrim.esm");
-        let mut mappings = target_mappings(&source, output_plugin);
-        mappings.insert(source[4].form_key, mappings[&source[1].form_key]);
-        assert!(matches!(
-            lower_supported_music_component(&plan, &mappings, output_plugin, &interner),
-            Err(MusicContractError::DuplicateTarget(_))
-        ));
-
-        let mut mappings = target_mappings(&source, output_plugin);
-        mappings.get_mut(&source[4].form_key).unwrap().plugin = interner.intern("Fallout4.esm");
-        assert!(matches!(
-            lower_supported_music_component(&plan, &mappings, output_plugin, &interner),
-            Err(MusicContractError::InvalidTargetPlugin(_))
-        ));
-    }
-
-    #[test]
-    fn source_semantics_survive_identity_and_path_lowering() {
-        let interner = StringInterner::new();
-        let mut source = source_records(&interner);
-        source[0].flags = RecordFlags::PERSISTENT;
-        source[1].warnings.push(interner.intern("fixture-warning"));
-        let plan = supported_plan(&source, &interner);
-        let output_plugin = interner.intern("Skyrim.esm");
-        let mappings = target_mappings(&source, output_plugin);
-
-        let (records, _) =
-            lower_supported_music_component(&plan, &mappings, output_plugin, &interner).unwrap();
-
-        assert_eq!(records[0].flags, RecordFlags::PERSISTENT);
-        assert_eq!(records[1].warnings, source[1].warnings);
-        assert!(
-            records[0]
-                .fields
-                .iter()
-                .any(|field| field.sig.0 == *b"FNAM" && field.value == FieldValue::Uint(33))
-        );
-    }
-
-    #[test]
-    fn non_music_records_are_not_claimed() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let record = Record::new(
-            SigCode::from_str("QUST").unwrap(),
-            FormKey { local: 1, plugin },
-        );
-        assert!(matches!(
-            classify_music_component(&[record], &interner),
-            MusicSupport::NotMusic
-        ));
+            let mut mappings = target_mappings(&source, output_plugin);
+            mappings.get_mut(&source[4].form_key).unwrap().plugin = interner.intern("Fallout4.esm");
+            assert!(matches!(
+                lower_supported_music_component(&plan, &mappings, output_plugin, &interner),
+                Err(MusicContractError::InvalidTargetPlugin(_))
+            ));
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let record = Record::new(
+                SigCode::from_str("QUST").unwrap(),
+                FormKey { local: 1, plugin },
+            );
+            assert!(matches!(
+                classify_music_component(&[record], &interner),
+                MusicSupport::NotMusic
+            ));
+        }
     }
 }

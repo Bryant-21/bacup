@@ -88,12 +88,13 @@ impl Fo76Fo4Hook {
         for entry in &mut record.fields {
             match entry.sig.0 {
                 sig if sig == *b"PRKE" => {
+                    entry_data_pending = matches!(&entry.value,
+                        FieldValue::Bytes(bytes) if bytes.first() == Some(&2));
                     if let FieldValue::Bytes(bytes) = &mut entry.value
                         && bytes.len() == 2
                     {
                         bytes.push(0);
                     }
-                    entry_data_pending = true;
                 }
                 sig if sig == *b"DATA" && entry_data_pending => {
                     if let FieldValue::Bytes(bytes) = &mut entry.value
@@ -156,4 +157,82 @@ impl Fo76Fo4Hook {
             _ => None,
         }
     }
+
+    /// The FO76 lunchbox applies its reward MGEF twice: to self and as a 500-unit
+    /// team area. FO4 lands both on the player, rolling two party favors, so
+    /// only the self copy is kept.
+    pub(super) fn drop_lunchbox_reward_area_effect(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"ALCH"
+            || !interner
+                .resolve(record.form_key.plugin)
+                .is_some_and(|name| name.eq_ignore_ascii_case(FO76_MASTER_NAME))
+        {
+            return;
+        }
+        let is_reward = |entry: &FieldEntry| {
+            entry.sig.0 == *b"EFID"
+                && match &entry.value {
+                    FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+                        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & 0x00FF_FFFF
+                            == LUNCHBOX_REWARD_MGEF_ID
+                    }
+                    FieldValue::FormKey(key) => {
+                        key.local == LUNCHBOX_REWARD_MGEF_ID
+                            && interner
+                                .resolve(key.plugin)
+                                .is_some_and(|name| name.eq_ignore_ascii_case(FO76_MASTER_NAME))
+                    }
+                    _ => false,
+                }
+        };
+        let group_end = |fields: &[FieldEntry], start: usize| {
+            fields[start + 1..]
+                .iter()
+                .position(|entry| !EFFECT_GROUP_CHILD_SIGS.contains(&entry.sig.0))
+                .map_or(fields.len(), |offset| start + 1 + offset)
+        };
+        let has_area = |group: &[FieldEntry]| {
+            group.iter().any(|entry| {
+                entry.sig.0 == *b"EFIT"
+                    && matches!(&entry.value, FieldValue::Bytes(bytes)
+                if efit_area(bytes).is_some_and(|area| area > 0))
+            })
+        };
+
+        let reward_groups: Vec<(usize, usize, bool)> = (0..record.fields.len())
+            .filter(|&index| is_reward(&record.fields[index]))
+            .map(|index| {
+                let end = group_end(&record.fields, index);
+                (index, end, has_area(&record.fields[index..end]))
+            })
+            .collect();
+        if !reward_groups.iter().any(|&(_, _, area)| !area) {
+            return;
+        }
+        for &(start, end, area) in reward_groups.iter().rev() {
+            if area {
+                record.fields.drain(start..end);
+            }
+        }
+    }
+}
+
+const LUNCHBOX_REWARD_MGEF_ID: u32 = 0x3DF248;
+const EFFECT_GROUP_CHILD_SIGS: [[u8; 4]; 8] = [
+    *b"EFIT", *b"CTDA", *b"CIS1", *b"CIS2", *b"MAGF", *b"DURG", *b"MAGG", *b"CODV",
+];
+
+/// FO76 EFIT is `range, magnitude, area, duration`; FO4's drops the leading word.
+fn efit_area(bytes: &[u8]) -> Option<u32> {
+    let offset = match bytes.len() {
+        16 => 8,
+        12 => 4,
+        _ => return None,
+    };
+    Some(u32::from_le_bytes(
+        bytes[offset..offset + 4].try_into().ok()?,
+    ))
 }

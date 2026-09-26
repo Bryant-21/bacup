@@ -686,140 +686,136 @@ mod tests {
     }
 
     #[test]
-    fn runtime_model_closure_validates_exact_row_and_staged_nif() {
-        let fixture = runtime_model_fixture(&["fnv"]);
+    fn runtime_model_closure_validates_rows_provenance_and_rejects_forgery() {
+        {
+            let fixture = runtime_model_fixture(&["fnv"]);
 
-        validate_source_rig_runtime_model_closure(
-            &fixture.expected,
-            &fixture.receipt,
-            &fixture.source_roots,
-            &fixture.staged_root,
-        )
-        .expect("runtime-model closure");
-        assert_eq!(
-            fixture.receipt.stable_hash_blake3().unwrap(),
-            fixture.receipt.stable_hash_blake3().unwrap()
-        );
-    }
+            validate_source_rig_runtime_model_closure(
+                &fixture.expected,
+                &fixture.receipt,
+                &fixture.source_roots,
+                &fixture.staged_root,
+            )
+            .expect("runtime-model closure");
+            assert_eq!(
+                fixture.receipt.stable_hash_blake3().unwrap(),
+                fixture.receipt.stable_hash_blake3().unwrap()
+            );
+        }
+        {
+            let fixture = runtime_model_fixture(&["fnv", "fo3"]);
 
-    #[test]
-    fn runtime_model_closure_keeps_same_runtime_path_provenance_distinct() {
-        let fixture = runtime_model_fixture(&["fnv", "fo3"]);
+            validate_source_rig_runtime_model_closure(
+                &fixture.expected,
+                &fixture.receipt,
+                &fixture.source_roots,
+                &fixture.staged_root,
+            )
+            .expect("byte-identical target dedup");
+            assert_eq!(fixture.receipt.rows.len(), 2);
+            assert_ne!(
+                fixture.receipt.rows[0].key.source_record,
+                fixture.receipt.rows[1].key.source_record
+            );
 
-        validate_source_rig_runtime_model_closure(
-            &fixture.expected,
-            &fixture.receipt,
-            &fixture.source_roots,
-            &fixture.staged_root,
-        )
-        .expect("byte-identical target dedup");
-        assert_eq!(fixture.receipt.rows.len(), 2);
-        assert_ne!(
-            fixture.receipt.rows[0].key.source_record,
-            fixture.receipt.rows[1].key.source_record
-        );
-
-        let mut conflicting = fixture.receipt.clone();
-        let conflicting_hash = blake3::hash(b"conflicting target").to_hex().to_string();
-        conflicting.rows[1].target_blake3 = conflicting_hash.clone();
-        conflicting.rows[1].artifacts[0].blake3 = conflicting_hash;
-        assert!(
-            conflicting
-                .validate_structure()
+            let mut conflicting = fixture.receipt.clone();
+            let conflicting_hash = blake3::hash(b"conflicting target").to_hex().to_string();
+            conflicting.rows[1].target_blake3 = conflicting_hash.clone();
+            conflicting.rows[1].artifacts[0].blake3 = conflicting_hash;
+            assert!(
+                conflicting
+                    .validate_structure()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("conflicting byte commitments")
+            );
+        }
+        {
+            let mut fixture = runtime_model_fixture(&["fnv", "fo3"]);
+            fixture.receipt.rows.pop();
+            assert!(
+                validate_source_rig_runtime_model_closure(
+                    &fixture.expected,
+                    &fixture.receipt,
+                    &fixture.source_roots,
+                    &fixture.staged_root,
+                )
                 .unwrap_err()
                 .to_string()
-                .contains("conflicting byte commitments")
-        );
-    }
+                .contains("missing 1 expected row")
+            );
 
-    #[test]
-    fn runtime_model_closure_rejects_missing_row_and_forged_bytes() {
-        let mut fixture = runtime_model_fixture(&["fnv", "fo3"]);
-        fixture.receipt.rows.pop();
-        assert!(
-            validate_source_rig_runtime_model_closure(
-                &fixture.expected,
-                &fixture.receipt,
-                &fixture.source_roots,
-                &fixture.staged_root,
+            let fixture = runtime_model_fixture(&["fnv"]);
+            fs::write(
+                fixture
+                    .staged_root
+                    .join(path_from_runtime(&fixture.receipt.rows[0].target_data_path)),
+                b"forged",
             )
-            .unwrap_err()
-            .to_string()
-            .contains("missing 1 expected row")
-        );
+            .unwrap();
+            assert!(
+                validate_source_rig_runtime_model_closure(
+                    &fixture.expected,
+                    &fixture.receipt,
+                    &fixture.source_roots,
+                    &fixture.staged_root,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("target model")
+            );
+        }
+        {
+            let mut fixture = runtime_model_fixture(&["fnv"]);
+            fixture.expected[0].has_collision = true;
+            fixture.receipt.rows[0].has_collision = true;
+            assert!(
+                validate_source_rig_runtime_model_closure(
+                    &fixture.expected,
+                    &fixture.receipt,
+                    &fixture.source_roots,
+                    &fixture.staged_root,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("lost target NIF collision")
+            );
 
-        let fixture = runtime_model_fixture(&["fnv"]);
-        fs::write(
-            fixture
+            let mut fixture = runtime_model_fixture(&["fnv"]);
+            let extra_path = fixture
                 .staged_root
-                .join(path_from_runtime(&fixture.receipt.rows[0].target_data_path)),
-            b"forged",
-        )
-        .unwrap();
-        assert!(
-            validate_source_rig_runtime_model_closure(
-                &fixture.expected,
-                &fixture.receipt,
-                &fixture.source_roots,
-                &fixture.staged_root,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("target model")
-        );
-    }
-
-    #[test]
-    fn runtime_model_closure_rejects_lost_collision_and_extra_artifact() {
-        let mut fixture = runtime_model_fixture(&["fnv"]);
-        fixture.expected[0].has_collision = true;
-        fixture.receipt.rows[0].has_collision = true;
-        assert!(
-            validate_source_rig_runtime_model_closure(
-                &fixture.expected,
-                &fixture.receipt,
-                &fixture.source_roots,
-                &fixture.staged_root,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("lost target NIF collision")
-        );
-
-        let mut fixture = runtime_model_fixture(&["fnv"]);
-        let extra_path = fixture
-            .staged_root
-            .join("textures")
-            .join("unreferenced.dds");
-        fs::create_dir_all(extra_path.parent().unwrap()).unwrap();
-        fs::write(&extra_path, b"dds").unwrap();
-        fixture.receipt.rows[0]
-            .artifacts
-            .push(SourceRigRuntimeModelArtifactReceipt {
-                kind: SourceRigRuntimeModelArtifactKind::Dds,
-                source_paths: vec!["textures\\unreferenced.dds".to_string()],
-                target_data_path: "textures\\unreferenced.dds".to_string(),
-                byte_len: 3,
-                blake3: blake3::hash(b"dds").to_hex().to_string(),
+                .join("textures")
+                .join("unreferenced.dds");
+            fs::create_dir_all(extra_path.parent().unwrap()).unwrap();
+            fs::write(&extra_path, b"dds").unwrap();
+            fixture.receipt.rows[0]
+                .artifacts
+                .push(SourceRigRuntimeModelArtifactReceipt {
+                    kind: SourceRigRuntimeModelArtifactKind::Dds,
+                    source_paths: vec!["textures\\unreferenced.dds".to_string()],
+                    target_data_path: "textures\\unreferenced.dds".to_string(),
+                    byte_len: 3,
+                    blake3: blake3::hash(b"dds").to_hex().to_string(),
+                });
+            fixture.receipt.rows[0].artifacts.sort_by_key(|artifact| {
+                (
+                    runtime_key(&artifact.target_data_path),
+                    artifact.kind,
+                    artifact.source_paths.clone(),
+                )
             });
-        fixture.receipt.rows[0].artifacts.sort_by_key(|artifact| {
-            (
-                runtime_key(&artifact.target_data_path),
-                artifact.kind,
-                artifact.source_paths.clone(),
-            )
-        });
-        assert!(
-            validate_source_rig_runtime_model_closure(
-                &fixture.expected,
-                &fixture.receipt,
-                &fixture.source_roots,
-                &fixture.staged_root,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("artifact closure differs")
-        );
+            assert!(
+                validate_source_rig_runtime_model_closure(
+                    &fixture.expected,
+                    &fixture.receipt,
+                    &fixture.source_roots,
+                    &fixture.staged_root,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("artifact closure differs")
+            );
+        }
     }
 
     fn runtime_model_fixture(games: &[&str]) -> Fixture {

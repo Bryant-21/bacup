@@ -485,58 +485,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_function_map_has_get_actor_value() {
-        let ctx = FnvScriptContext::load().expect("load should succeed");
-        let entry = ctx.function_map.get("getactorvalue");
-        assert!(entry.is_some(), "GetActorValue should be in function map");
-        let entry = entry.unwrap();
-        assert!(
-            entry.papyrus.as_deref().unwrap_or("").contains("GetValue"),
-            "papyrus template should contain GetValue"
-        );
-        assert_eq!(
-            entry.arg_kinds.first().map(String::as_str),
-            Some("actor_value")
-        );
-    }
-
-    #[test]
-    fn load_function_map_has_get_player() {
-        let ctx = FnvScriptContext::load().expect("load should succeed");
-        let entry = ctx.function_map.get("getplayer");
-        assert!(entry.is_some(), "GetPlayer should be in function map");
-        let papyrus = entry.unwrap().papyrus.as_deref().unwrap_or("");
-        assert!(papyrus.contains("Game.GetPlayer()"));
-    }
-
-    #[test]
-    fn load_function_map_drop_with_warning() {
-        let ctx = FnvScriptContext::load().expect("load should succeed");
-        let entry = ctx.function_map.get("rewardkarma");
-        assert!(entry.is_some(), "RewardKarma should be in function map");
-        assert_eq!(entry.unwrap().rewrite.as_deref(), Some("drop_with_warning"));
-    }
-
-    #[test]
-    fn load_actor_value_map_strength() {
-        let ctx = FnvScriptContext::load().expect("load should succeed");
-        let mapped = ctx.actor_value_map.get("strength");
-        assert_eq!(mapped.map(String::as_str), Some("Strength"));
-    }
-
-    #[test]
-    fn load_actor_value_map_null_entries_skipped() {
-        let ctx = FnvScriptContext::load().expect("load should succeed");
-        // Karma is null in the YAML — must not appear in the map.
-        assert!(!ctx.actor_value_map.contains_key("karma"));
-    }
-
-    #[test]
-    fn function_map_lookup_is_case_insensitive() {
-        let ctx = FnvScriptContext::load().expect("load should succeed");
-        // All keys are stored lower-case; callers must lower before lookup.
-        assert!(ctx.function_map.contains_key("getisid"));
-        assert!(ctx.function_map.contains_key("activate"));
+    fn function_and_actor_value_maps_load_and_lookup() {
+        {
+            let ctx = FnvScriptContext::load().expect("load should succeed");
+            let entry = ctx.function_map.get("getactorvalue");
+            assert!(entry.is_some(), "GetActorValue should be in function map");
+            let entry = entry.unwrap();
+            assert!(
+                entry.papyrus.as_deref().unwrap_or("").contains("GetValue"),
+                "papyrus template should contain GetValue"
+            );
+            assert_eq!(
+                entry.arg_kinds.first().map(String::as_str),
+                Some("actor_value")
+            );
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load should succeed");
+            let entry = ctx.function_map.get("getplayer");
+            assert!(entry.is_some(), "GetPlayer should be in function map");
+            let papyrus = entry.unwrap().papyrus.as_deref().unwrap_or("");
+            assert!(papyrus.contains("Game.GetPlayer()"));
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load should succeed");
+            let entry = ctx.function_map.get("rewardkarma");
+            assert!(entry.is_some(), "RewardKarma should be in function map");
+            assert_eq!(entry.unwrap().rewrite.as_deref(), Some("drop_with_warning"));
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load should succeed");
+            let mapped = ctx.actor_value_map.get("strength");
+            assert_eq!(mapped.map(String::as_str), Some("Strength"));
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load should succeed");
+            // Karma is null in the YAML — must not appear in the map.
+            assert!(!ctx.actor_value_map.contains_key("karma"));
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load should succeed");
+            // All keys are stored lower-case; callers must lower before lookup.
+            assert!(ctx.function_map.contains_key("getisid"));
+            assert!(ctx.function_map.contains_key("activate"));
+        }
     }
 
     #[test]
@@ -656,7 +648,7 @@ mod tests {
         );
         let vtechatticup_wrong_plugin = FnvScriptContext::load_for_exact_slice_record(
             "VTechatticup",
-            "11F935:FalloutNV.esm",
+            "11F935:FNV_FO3_Merged.esm",
             "FNV_FO3",
         )
         .unwrap();

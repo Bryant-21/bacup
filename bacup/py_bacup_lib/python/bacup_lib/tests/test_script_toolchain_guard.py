@@ -19,11 +19,13 @@ def _res(name: str, status: str, message: str = "") -> _ScriptResolution:
     return _ScriptResolution(script_name=name, status=status, message=message)
 
 
-def test_compiler_unavailable_aborts_before_anything_is_stripped():
+def test_broken_toolchain_aborts_before_anything_is_stripped():
     resolutions = [
         _res("A", "compiler_unavailable", "target script source dir not configured"),
         _res("B", "compiler_unavailable", "target script source dir not configured"),
     ]
+    assert resolutions[0].is_infrastructure_failure is True
+    assert _res("A", "compile_failed").is_infrastructure_failure is False
 
     with pytest.raises(RuntimeError) as excinfo:
         _assert_script_toolchain_healthy(resolutions)
@@ -33,48 +35,26 @@ def test_compiler_unavailable_aborts_before_anything_is_stripped():
     assert "target script source dir not configured" in message
     assert "2 script(s)" in message
 
-
-def test_zero_compiled_at_scale_aborts_without_an_infrastructure_status():
-    """The backstop, for systemic causes no status marks as systemic."""
-    resolutions = [_res(f"S{i}", "compile_failed") for i in range(50)]
-
+    # Backstop for systemic causes no status marks as systemic.
     with pytest.raises(RuntimeError, match="0 of 50 script"):
-        _assert_script_toolchain_healthy(resolutions)
+        _assert_script_toolchain_healthy([_res(f"S{i}", "compile_failed") for i in range(50)])
 
 
-def test_a_lone_failing_script_still_strips_its_own_binding():
-    """Scale bound: one genuine failure is ordinary and must pass through.
-
-    Stripping that record's VMAD is the correct outcome here, so the backstop
-    must not hijack it.
-    """
-    _assert_script_toolchain_healthy([_res("OnlyOne", "addition_missing")])
-
-
-def test_ordinary_per_script_failures_are_allowed_through():
-    """A healthy run carries real failures; those must still reach stripping."""
-    resolutions = [
-        _res("Good", "compiled"),
-        _res("Bad", "compile_failed", "17:2: cannot assign None to Bool"),
-        _res("Gone", "source_missing"),
-    ]
-
+@pytest.mark.parametrize(
+    "resolutions",
+    [
+        pytest.param([_res("OnlyOne", "addition_missing")], id="lone_failure"),
+        pytest.param(
+            [
+                _res("Good", "compiled"),
+                _res("Bad", "compile_failed", "17:2: cannot assign None to Bool"),
+                _res("Gone", "source_missing"),
+            ],
+            id="ordinary_failures",
+        ),
+        pytest.param([_res(f"T{i}", "target") for i in range(3)], id="all_target"),
+        pytest.param([], id="empty"),
+    ],
+)
+def test_per_script_failures_pass_through_to_stripping(resolutions):
     _assert_script_toolchain_healthy(resolutions)
-
-
-def test_all_target_scripts_is_not_a_zero_compiled_failure():
-    """`target` scripts defer to the base game's PEX and never compile."""
-    resolutions = [_res(f"T{i}", "target") for i in range(3)]
-
-    _assert_script_toolchain_healthy(resolutions)
-
-
-def test_empty_run_is_not_a_failure():
-    _assert_script_toolchain_healthy([])
-
-
-def test_infrastructure_failures_are_not_treated_as_script_failures():
-    assert _res("A", "compiler_unavailable").is_infrastructure_failure is True
-    assert _res("A", "compile_failed").is_infrastructure_failure is False
-    assert _res("A", "source_missing").is_infrastructure_failure is False
-    assert _res("A", "compiled").is_infrastructure_failure is False

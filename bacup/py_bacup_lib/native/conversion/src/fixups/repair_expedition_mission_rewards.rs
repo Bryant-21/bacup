@@ -64,6 +64,13 @@ const MISSION_REWARD_SPECS: &[MissionRewardSpec] = &[
         xp_globals: [0x6D21E1, 0x6D21E2, 0x6D21E3, 0x6D21E4],
         stamp_counts: [2, 3, 6, 9],
     },
+    MissionRewardSpec {
+        source_quest: 0x6DBABB,
+        source_quest_eid: "XPD_AC03_Mission_Human",
+        optional_stages: [860, 870, 750],
+        xp_globals: [0x6EF765, 0x6EF766, 0x6EF767, 0x6F8B35],
+        stamp_counts: [3, 5, 10, 15],
+    },
 ];
 
 pub struct RepairExpeditionMissionRewardsFixup;
@@ -544,8 +551,8 @@ mod tests {
     }
 
     #[test]
-    fn exact_mission_contracts_cover_only_the_four_audited_quests() {
-        assert_eq!(MISSION_REWARD_SPECS.len(), 4);
+    fn exact_mission_contracts_cover_only_the_five_audited_quests() {
+        assert_eq!(MISSION_REWARD_SPECS.len(), 5);
         assert_eq!(
             MISSION_REWARD_SPECS
                 .iter()
@@ -580,6 +587,12 @@ mod tests {
                     [1810, 7300, 5100],
                     [0x6D21E1, 0x6D21E2, 0x6D21E3, 0x6D21E4],
                     [2, 3, 6, 9]
+                ),
+                (
+                    0x6DBABB,
+                    [860, 870, 750],
+                    [0x6EF765, 0x6EF766, 0x6EF767, 0x6F8B35],
+                    [3, 5, 10, 15]
                 ),
             ]
         );

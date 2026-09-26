@@ -1,0 +1,128 @@
+$B21_TFA_Collections	收藏
+$B21_TFA_Caps	帽子
+$B21_TFA_ActiveEffects	效果
+$B21_TFA_Holo	你好
+$B21_TFA_Notes	注
+$B21_TFA_Armor	裝甲
+$B21_TFA_FoodDrink	食物/饮料
+$B21_TFA_New	新建
+$B21_TFA_PerkCoins	硬幣
+$B21_TFA_Capacity	能力
+$B21_TFA_Unlimited	無限制
+$B21_TFA_Legendary	傳奇
+$B21_TFA_SemiAutomatic	半自动
+$B21_TFA_VATSAccuracy	V.A.T.S. 精确度
+$B21_TFA_WeaponType_Melee	梅莉
+$B21_TFA_WeaponType_OneHanded	單手
+$B21_TFA_WeaponType_TwoHanded	雙手
+$B21_TFA_WeaponType_Unarmed	沒有武器
+$B21_TFA_WeaponType_Explosive	爆炸
+$B21_TFA_WeaponType_Energy	能源
+$B21_TFA_WeaponType_Ballistic	彈道
+$B21_TFA_WeaponType_BigGun	大炮
+$B21_TFA_WeaponType_Shotgun	霰彈槍
+$B21_TFA_WeaponType_Rifle	步枪
+$B21_TFA_WeaponType_Pistol	手枪
+$B21_TFA_WeaponType_Bow	鞠躬
+$B21_TFA_WeaponType_Thrown	丟棄
+$B21_TFA_Repair	修復
+$B21_TFA_BasicRepairKit	基本修理套件
+$B21_TFA_ImprovedRepairKit	改进的修理套件
+$B21_TFA_WorkbenchRepair	工作台修理
+$B21_TFA_RepairUnavailable	無法修复
+$B21_TFA_ConfirmRepair	确认修复
+$B21_TFA_RepairFailed	無法完成修复
+$B21_TFA_RepairStale	項目變了 。 再選一次
+$B21_TFA_RepairComplete	項目已修复
+$B21_TFA_RepairNoKit	沒有可用的修理包
+$B21_TFA_SwitchToCraft	切換到手術
+$B21_TFA_SwitchToModify	切換到變更
+$B21_TFA_NothingToModify	你在這工作室沒什麼好修改的
+$B21_TFA_RepairNoImprovement	條件已經在此修復階段以上 。
+$B21_TFA_RepairMissingMaterials	失修材料
+$B21_TFA_RepairControls	選擇: UP/DOWN   确认: ENTER/A   返回: TAB/B
+$B21_TFA_RepairHintKeyboard	[K] 修复
+$B21_TFA_RepairHintController	[LS] 修复
+$B21_TFA_RepairCancel	取消
+$B21_TFA_PerkCards_FilterAll	过滤器( 所有)
+$B21_TFA_PerkCardPacks	PERK 牌包
+$B21_TFA_AssignPermanentSPECIAL	指定永久 SPECIAL
+$B21_TFA_AssignSPECIAL	增加 SPECIAL
+$B21_TFA_MoveSPECIAL	移動 SPECIAL 點
+$B21_TFA_AddLoadout	新增載出
+$B21_PM_Salute	敬禮( 需要直播 )
+$B21_PM_FO4Poses	倒塌 4
+$B21_PM_Warm	溫度
+$B21_PM_Cool	酷
+$B21_PM_Vintage	溫度
+$B21_PM_Keepsake	保留
+$B21_PM_PhotoFrames	照片
+$B21_PM_FreezeTime	站住
+$B21_PM_Menu	照片模式
+$B21_PM_Saturated	饱和
+$B21_PM_BlackAndWhite	黑白
+$B21_PM_Sepia	塞皮亞
+$B21_PM_PhotoFlash	照片快照
+$B21_PM_Dandy	丹迪
+$B21_PM_Daytripper	天亮
+$B21_PM_Enhance	增強
+$B21_PM_Gamma	伽瑪
+$B21_PM_Nuke	努克
+$B21_PM_Tintype	锡型
+$B21_PM_Acid	酸
+$B21_PM_Electric	電
+$B21_PM_Jet	杰特
+$B21_PM_3dViz	3D 維茲
+$B21_PM_OnlyRed	只有紅色
+$B21_PM_Feral	費拉爾
+$B21_PM_SugarBomb	糖炸彈
+$B21_PM_VaultBlue	圖片藍
+$B21_StatusHUD_Condition	已
+$B21_StatusHUD_Broken	破碎
+$B21_StatusHUD_Feral	費拉爾
+$B21_TFA_QuestMain	主要
+$B21_TFA_QuestSide	邊
+$B21_TFA_QuestMisc	其它
+$B21_TFA_QuestLeads	铅
+$B21_TFA_QuestEvents	事件
+$B21_RespawnTitle	重生
+$B21_RespawnBagNotice	你的垃圾留在死亡地點
+$B21_RespawnNearestSafe	使用最近的安全位置
+$B21_RespawnUnavailable	這個位置已經不可用了 選擇另一個
+$B21_RespawnMaximum	最大聲譽
+$B21_RespawnNextTier	到下層
+$B21_TFA_SurvivalTent	生存帳篷
+$B21_TFA_LegendaryPerks	傳奇特惠
+$B21_TFA_PromptSelect	選擇
+$B21_TFA_PromptConfirm	确认
+$B21_TFA_CharacterName	字元名稱
+$B21_TFA_CharacterNameAccept	确认
+$B21_TFA_CharacterNameCancel	返回
+$B21_TFA_Perks_OpenPackPrompt	你有一個未打開的套裝! 你想打開它嗎?
+$B21_TFA_Perks_NoPrompt	不( 不要再問 )
+$B21_TFA_QB_ArmView	PIP-BOY
+$B21_TFA_QB_QuickView	QUICK-BOY
+$B21_TFA_EmoteExpand	展開
+$B21_TFA_EmoteCollapse	折叠
+$B21_TFA_EmoteSay	說
+$B21_TFA_EmoteBack	返回
+$B21_TFA_EmoteClose	關閉
+$B21_TFA_EmoteTab	模具
+$B21_TFA_EmoteScroll	卷
+$B21_Settings_WorldFOV	檢視區域
+$B21_Settings_FirstPersonFOV	第一人称檢視域
+$B21_Settings_DepthOfField	字段深度
+$B21_Settings_MotionBlur	移動模糊
+$B21_Settings_LensFlare	亮光
+$B21_Settings_ShadowDistance	陰影距離
+$B21_Settings_ShadowQuality	陰影質量( 重新啟動 )
+$B21_Settings_TextureQuality	纹理質量( 重新啟動 )
+$B21_Settings_WindowMode	視窗模式( 重新啟動 )
+$B21_Settings_VSync	V 同步( 重新啟動)
+$B21_Settings_Low	低
+$B21_Settings_Medium	中
+$B21_Settings_High	高
+$B21_Settings_Ultra	超級
+$B21_Settings_Fullscreen	全屏
+$B21_Settings_Borderless	無邊界
+$B21_Settings_Windowed	窗口

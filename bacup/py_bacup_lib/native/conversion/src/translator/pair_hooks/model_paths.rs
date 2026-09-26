@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn post_translate_strips_source_prefixed_model_paths() {
+    fn post_translate_strips_fo76_source_and_meshes_prefixes() {
         let mut interner = StringInterner::new();
         let mut record = make_record("STAT", &mut interner);
         push_field(
@@ -138,10 +138,7 @@ mod tests {
             interner.resolve(sym),
             Some("Landscape\\Plants\\MtnTopCreosote03.nif")
         );
-    }
 
-    #[test]
-    fn post_translate_strips_meshes_and_source_prefix_from_model_paths() {
         let mut interner = StringInterner::new();
         let mut record = make_record("STAT", &mut interner);
         push_field(
@@ -170,7 +167,7 @@ mod tests {
         }
 
         #[test]
-        fn post_translate_leaves_unprefixed_model_paths_unprefixed() {
+        fn post_translate_normalizes_fnv_model_paths() {
             let mut interner = StringInterner::new();
             let mut record = make_record("STAT", &mut interner);
             push_field(
@@ -190,10 +187,27 @@ mod tests {
                 interner.resolve(sym),
                 Some("Landscape\\Grass\\WastelandGrass01.nif")
             );
-        }
 
-        #[test]
-        fn post_translate_strips_source_prefixed_model_paths() {
+            let interner = StringInterner::new();
+            let mut record = make_record("ACTI", &interner);
+            push_field(
+                &mut record,
+                "MODL",
+                FieldValue::String(interner.intern("DLC05/Effects/ DLC05MZRmGenerator01_d.NIF")),
+            );
+
+            FnvFo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+
+            let FieldValue::String(sym) = record.fields[0].value else {
+                panic!("expected model path string");
+            };
+            assert_eq!(
+                interner.resolve(sym),
+                Some("DLC05\\Effects\\DLC05MZRmGenerator01_d.NIF")
+            );
+
             let mut interner = StringInterner::new();
             let mut record = make_record("STAT", &mut interner);
             push_field(
@@ -213,10 +227,7 @@ mod tests {
                 interner.resolve(sym),
                 Some("Landscape\\Grass\\WastelandGrass01.nif")
             );
-        }
 
-        #[test]
-        fn post_translate_strips_meshes_and_source_prefix_from_model_paths() {
             let mut interner = StringInterner::new();
             let mut record = make_record("STAT", &mut interner);
             push_field(
@@ -237,29 +248,6 @@ mod tests {
             assert_eq!(
                 interner.resolve(sym),
                 Some("Landscape\\Grass\\WastelandGrass01.nif")
-            );
-        }
-
-        #[test]
-        fn post_translate_trims_model_path_component_whitespace() {
-            let interner = StringInterner::new();
-            let mut record = make_record("ACTI", &interner);
-            push_field(
-                &mut record,
-                "MODL",
-                FieldValue::String(interner.intern("DLC05/Effects/ DLC05MZRmGenerator01_d.NIF")),
-            );
-
-            FnvFo4Hook
-                .post_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            let FieldValue::String(sym) = record.fields[0].value else {
-                panic!("expected model path string");
-            };
-            assert_eq!(
-                interner.resolve(sym),
-                Some("DLC05\\Effects\\DLC05MZRmGenerator01_d.NIF")
             );
         }
     }

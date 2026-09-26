@@ -60,7 +60,8 @@ mod tests {
     use crate::record::{FieldEntry, FieldValue};
     use crate::sym::StringInterner;
 
-    const STRENGTH_TO_LUCK_AND_HEALTH: [u32; 8] = [0x2C2, 0x2C3, 0x2C4, 0x2C5, 0x2C6, 0x2C7, 0x2C8, 0x2D4];
+    const STRENGTH_TO_LUCK_AND_HEALTH: [u32; 8] =
+        [0x2C2, 0x2C3, 0x2C4, 0x2C5, 0x2C6, 0x2C7, 0x2C8, 0x2D4];
 
     fn form_key(interner: &StringInterner, plugin: &str, local: u32) -> FormKey {
         FormKey {
@@ -114,7 +115,7 @@ mod tests {
     #[test]
     fn class_special_rows_take_the_fo4_eight_byte_layout() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         // Shipped `Starfield.esm` CLAS 01326B `Citizen`.
         let mut record = record_with_prps(
             &interner,
@@ -131,26 +132,22 @@ mod tests {
             hex::decode("c802000000008040c702000000008040c602000000008040c502000000008040c402000000008040c302000000008040c202000000008040d402000000000000").unwrap()
         );
         assert_eq!(report.converted_rows, 1);
-    }
 
-    #[test]
-    fn starfield_only_actor_values_leave_no_property_list() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
-        // Shipped `Starfield.esm` FLOR 0242F8 `FloraBloodStoneTall`: HandScannerPlantReproduction,
-        // whose object id is FO4's MrHandyArmDest02 art object.
-        let mut record = record_with_prps(&interner, b"FLOR", 0x2_42F8, "05e923000000a04000000000");
+        let mut mapper = self::mapper(&interner);
+        let mut record = record_with_prps(&interner, b"STAT", 0x21, "d40200000000c842");
         let mut report = MgefNormalizeReport::default();
 
         normalize(&mut record, &mut mapper, &mut report);
 
         assert_eq!(prps(&record), None);
+        assert_eq!(report.unsupported_rows, 1);
     }
 
     #[test]
     fn only_rows_whose_actor_value_maps_survive() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         // Stim_Resist_Flame (Starfield-only), then `CollisionMarker`'s Health 100.
         let mut record = record_with_prps(
             &interner,
@@ -162,19 +159,20 @@ mod tests {
 
         normalize(&mut record, &mut mapper, &mut report);
 
-        assert_eq!(prps(&record).unwrap(), hex::decode("d40200000000c842").unwrap());
-    }
+        assert_eq!(
+            prps(&record).unwrap(),
+            hex::decode("d40200000000c842").unwrap()
+        );
 
-    #[test]
-    fn a_payload_off_the_starfield_row_stride_is_dropped() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
-        let mut record = record_with_prps(&interner, b"STAT", 0x21, "d40200000000c842");
+        let mut mapper = self::mapper(&interner);
+        // Shipped `Starfield.esm` FLOR 0242F8 `FloraBloodStoneTall`: HandScannerPlantReproduction,
+        // whose object id is FO4's MrHandyArmDest02 art object.
+        let mut record = record_with_prps(&interner, b"FLOR", 0x2_42F8, "05e923000000a04000000000");
         let mut report = MgefNormalizeReport::default();
 
         normalize(&mut record, &mut mapper, &mut report);
 
         assert_eq!(prps(&record), None);
-        assert_eq!(report.unsupported_rows, 1);
     }
 }

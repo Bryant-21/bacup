@@ -2,6 +2,13 @@ Event OnStageSet(int auiStageID, int auiItemID)
     If auiStageID == 1260
         BeginRadicalWalkOut()
         StartTimer(Utility.RandomFloat(WaitMin, WaitMax), iEVPPrepTimerID)
+    ElseIf auiStageID == 115
+        ; Nothing in the converted records sets 111 ("Player started scene with Crane"), so the
+        ; Wake Crane objective never closed. The CraneAwakens phase (115) is that moment; the
+        ; 0399a confrontation also sets 115 after Crane is already dead, hence the guards.
+        If !IsStageDone(111) && !IsStageDone(300) && !IsStageDone(301) && !IsStageDone(399) && !IsStageDone(700)
+            SetStage(111)
+        EndIf
     EndIf
 EndEvent
 
@@ -9,9 +16,7 @@ Event OnTimer(int aiTimerID)
     If aiTimerID == iWalkOutTimerID
         BeginRadicalWalkOut()
     ElseIf aiTimerID == iEVPPrepTimerID
-        If iEVPStage > 0 && !IsStageDone(iEVPStage)
-            SetStage(iEVPStage)
-        EndIf
+        EvaluateRadicalWalkOut()
     EndIf
 EndEvent
 
@@ -20,7 +25,7 @@ EndEvent
 ; RadicalsTravelToExit collection rather than a counter so a reload cannot
 ; restart or double-advance the sequence.
 Function BeginRadicalWalkOut()
-    If Radicals == None || RadicalsTravelToExit == None
+    If !IsRunning() || !IsStageDone(1260) || Radicals == None || RadicalsTravelToExit == None
         Return
     EndIf
 
@@ -42,3 +47,27 @@ Function BeginRadicalWalkOut()
         radicalIndex += 1
     EndWhile
 EndFunction
+
+Function EvaluateRadicalWalkOut()
+    If !IsRunning() || !IsStageDone(1260)
+        Return
+    EndIf
+    If iEVPStage > 0 && !IsStageDone(iEVPStage)
+        SetStage(iEVPStage)
+    EndIf
+    If Roper != None
+        Actor roperRef = Roper.GetActorReference()
+        If roperRef != None
+            roperRef.EvaluatePackage()
+        EndIf
+    EndIf
+    If Radicals != None
+        Radicals.EvaluateAll()
+    EndIf
+    BeginRadicalWalkOut()
+EndFunction
+
+Event OnQuestShutdown()
+    CancelTimer(iEVPPrepTimerID)
+    CancelTimer(iWalkOutTimerID)
+EndEvent

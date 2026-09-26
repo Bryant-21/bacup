@@ -77,6 +77,7 @@ _WORKSPACE_SPECS = (
     ("archlist_creator", "ui.toolkit.workspaces.mod_tools", "ArchlistCreatorWorkspace"),
     ("folder_renamer", "ui.toolkit.workspaces.mod_tools", "FolderRenamerWorkspace"),
     ("modlist_merger", "ui.toolkit.workspaces.mod_tools", "ModlistMergerWorkspace"),
+    ("verified_creations", "ui.toolkit.workspaces.mod_tools", "VerifiedCreationsWorkspace"),
 )
 
 

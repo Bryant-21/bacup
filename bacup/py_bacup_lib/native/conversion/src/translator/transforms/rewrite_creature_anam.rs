@@ -118,96 +118,47 @@ mod tests {
         (interner, value)
     }
 
-    // -------------------------------------------------------------------------
-    // Happy-path rewrites
-    // -------------------------------------------------------------------------
-
     #[test]
-    fn rewrites_creatures_path_with_backslashes() {
-        let (interner, value) = apply(r"Creatures\Bloatfly\BloatflyProject.hkx");
-        if let FieldValue::String(sym) = value {
-            assert_eq!(
-                interner.resolve(sym),
-                Some(r"Actors\Bloatfly\BloatflyProject.hkx")
-            );
-        } else {
-            panic!("expected FieldValue::String");
+    fn rewrites_creature_behavior_paths_to_fo4_actor_projects() {
+        for (input, expected) in [
+            (
+                r"Creatures\Bloatfly\BloatflyProject.hkx",
+                r"Actors\Bloatfly\BloatflyProject.hkx",
+            ),
+            (
+                r"Actors\Radscorpion\RadscorpionProject.hkx",
+                r"Actors\Radscorpion\RadscorpionProject.hkx",
+            ),
+            (
+                "Creatures/DeathClaw/DeathClawProject.hkx",
+                r"Actors\DeathClaw\DeathClawProject.hkx",
+            ),
+            (
+                r"Creatures\GeckoPowder\something.hkx",
+                r"Actors\GeckoPowder\GeckoPowderProject.hkx",
+            ),
+            (
+                r"Meshes\Weapons\Gun\GunProject.hkx",
+                r"Meshes\Weapons\Gun\GunProject.hkx",
+            ),
+            ("", ""),
+        ] {
+            let (interner, value) = apply(input);
+            let FieldValue::String(sym) = value else {
+                panic!("expected FieldValue::String for {input:?}");
+            };
+            assert_eq!(interner.resolve(sym), Some(expected), "{input:?}");
         }
-    }
 
-    #[test]
-    fn rewrites_actors_path_with_backslashes() {
-        let (interner, value) = apply(r"Actors\Radscorpion\RadscorpionProject.hkx");
-        if let FieldValue::String(sym) = value {
-            assert_eq!(
-                interner.resolve(sym),
-                Some(r"Actors\Radscorpion\RadscorpionProject.hkx")
-            );
-        } else {
-            panic!("expected FieldValue::String");
-        }
-    }
-
-    #[test]
-    fn rewrites_creatures_path_with_forward_slashes() {
-        let (interner, value) = apply("Creatures/DeathClaw/DeathClawProject.hkx");
-        if let FieldValue::String(sym) = value {
-            assert_eq!(
-                interner.resolve(sym),
-                Some(r"Actors\DeathClaw\DeathClawProject.hkx")
-            );
-        } else {
-            panic!("expected FieldValue::String");
-        }
-    }
-
-    #[test]
-    fn uses_dir_component_as_creature_name() {
-        let (interner, value) = apply(r"Creatures\GeckoPowder\something.hkx");
-        if let FieldValue::String(sym) = value {
-            let result = interner.resolve(sym).unwrap();
-            assert_eq!(result, r"Actors\GeckoPowder\GeckoPowderProject.hkx");
-        } else {
-            panic!("expected FieldValue::String");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Pass-through cases
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn passthrough_non_string_value() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let mut value = FieldValue::Int(42);
-        let mut ctx = make_ctx(&mut interner);
         RewriteCreatureAnamTransform
-            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
+            .apply(
+                &mut make_ctx(&interner),
+                &mut value,
+                &serde_json::Value::Null,
+            )
             .unwrap();
         assert_eq!(value, FieldValue::Int(42));
-    }
-
-    #[test]
-    fn passthrough_path_with_no_actors_or_creatures_component() {
-        // A path that does not contain actors/ or creatures/ should pass through.
-        let (interner, value) = apply(r"Meshes\Weapons\Gun\GunProject.hkx");
-        if let FieldValue::String(sym) = value {
-            assert_eq!(
-                interner.resolve(sym),
-                Some(r"Meshes\Weapons\Gun\GunProject.hkx")
-            );
-        } else {
-            panic!("expected FieldValue::String");
-        }
-    }
-
-    #[test]
-    fn passthrough_empty_string() {
-        let (interner, value) = apply("");
-        if let FieldValue::String(sym) = value {
-            assert_eq!(interner.resolve(sym), Some(""));
-        } else {
-            panic!("expected FieldValue::String");
-        }
     }
 }

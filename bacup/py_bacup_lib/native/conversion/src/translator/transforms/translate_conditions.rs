@@ -266,9 +266,8 @@ mod tests {
         interner.resolve(sym).unwrap_or("<unknown>")
     }
 
-    // --- CTDA shape 1: named function, no CompareOperator needed ---
     #[test]
-    fn translate_conditions_named_fn_passes_through() {
+    fn translate_conditions_keeps_named_and_drops_unmapped_numeric_functions() {
         let mut interner = StringInterner::new();
         let cond = make_cond_with_named_fn(&mut interner, "GetIsID", None, None, None);
         let mut value = make_cond_list(vec![cond]);
@@ -279,11 +278,7 @@ mod tests {
         };
         t.apply(&mut ctx, &mut value, &config).unwrap();
         assert_eq!(get_list_len(&value), 1, "Named-fn condition should survive");
-    }
 
-    // --- CTDA shape 2: numeric function code NOT in table → drop ---
-    #[test]
-    fn translate_conditions_unknown_numeric_fn_drops_condition() {
         let mut interner = StringInterner::new();
         // Code 875 is explicitly NOT in the table (per the YAML comments).
         let cond = make_cond_with_numeric_fn(&mut interner, 875);
@@ -299,9 +294,39 @@ mod tests {
             0,
             "Unknown numeric code should be dropped"
         );
+
+        let mut interner = StringInterner::new();
+        let named = make_cond_with_named_fn(&mut interner, "GetIsID", None, None, None);
+        let unknown_numeric = make_cond_with_numeric_fn(&mut interner, 9999);
+        let mut value = make_cond_list(vec![named, unknown_numeric]);
+        let config = json!({});
+        let t = TranslateConditionsTransform;
+        let mut ctx = TransformCtx {
+            interner: &mut interner,
+        };
+        t.apply(&mut ctx, &mut value, &config).unwrap();
+        assert_eq!(
+            get_list_len(&value),
+            1,
+            "Only named condition should survive"
+        );
+
+        let mut interner = StringInterner::new();
+        let cond = make_cond_with_numeric_fn(&mut interner, -1);
+        let mut value = make_cond_list(vec![cond]);
+        let config = json!({});
+        let t = TranslateConditionsTransform;
+        let mut ctx = TransformCtx {
+            interner: &mut interner,
+        };
+        t.apply(&mut ctx, &mut value, &config).unwrap();
+        assert_eq!(
+            get_list_len(&value),
+            0,
+            "Negative code is out-of-range u16, should drop"
+        );
     }
 
-    // --- CTDA shape 3: numeric code that IS in the table → rewrite to name ---
     // (We inject a synthetic table lookup by building the map inline — the actual
     //  fo76 file is empty, but we test the remap_numeric_function helper directly.)
     #[test]
@@ -309,7 +334,7 @@ mod tests {
         let mut interner = StringInterner::new();
         let data_key = interner.intern("Data");
         let fn_key = interner.intern("Function");
-        let mut data_pairs = vec![(fn_key, FieldValue::Int(100))];
+        let data_pairs = vec![(fn_key, FieldValue::Int(100))];
         let mut pairs = vec![(data_key, FieldValue::Struct(data_pairs.clone()))];
 
         let mut fn_table: rustc_hash::FxHashMap<u16, String> = rustc_hash::FxHashMap::default();
@@ -329,8 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_known_numeric_function_uses_verified_name() {
-        let mut interner = StringInterner::new();
+    fn skyrim_numeric_functions_use_verified_names_or_drop() {
+        let interner = StringInterner::new();
         let cond = make_cond_with_numeric_fn(&interner, 72);
         let mut value = make_cond_list(vec![cond]);
         let config = json!({ "source_game": "skyrimse" });
@@ -363,11 +388,8 @@ mod tests {
             panic!("expected named function");
         };
         assert_eq!(interner.resolve(*function), Some("GetIsID"));
-    }
 
-    #[test]
-    fn skyrim_unknown_numeric_function_reports_and_drops() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let cond = make_cond_with_numeric_fn(&interner, 875);
         let mut value = make_cond_list(vec![cond]);
         let config = json!({ "source_game": "skyrimse" });
@@ -385,9 +407,8 @@ mod tests {
         );
     }
 
-    // --- CTDA shape 4: ComparisonValue present, CompareOperator absent → default EqualTo ---
     #[test]
-    fn translate_conditions_defaults_compare_operator_to_equal_to() {
+    fn translate_conditions_defaults_only_a_missing_compare_operator() {
         let mut interner = StringInterner::new();
         let cond = make_cond_with_named_fn(
             &mut interner,
@@ -415,11 +436,7 @@ mod tests {
                 panic!("CompareOperator should be set to EqualTo, got: {co:?}");
             }
         }
-    }
 
-    // --- CTDA shape 5: CompareOperator already present → not overridden ---
-    #[test]
-    fn translate_conditions_does_not_override_existing_compare_operator() {
         let mut interner = StringInterner::new();
         let cond = make_cond_with_named_fn(
             &mut interner,
@@ -446,7 +463,6 @@ mod tests {
         }
     }
 
-    // --- CTDA shape 6: FormKey in ParameterOneRecord is remapped ---
     #[test]
     fn translate_conditions_remaps_esm_in_param_formkey() {
         let mut interner = StringInterner::new();
@@ -485,9 +501,8 @@ mod tests {
         }
     }
 
-    // --- CTDA shape 7: non-list value passes through unchanged ---
     #[test]
-    fn translate_conditions_non_list_passes_through() {
+    fn translate_conditions_non_condition_shapes_pass_through() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::Int(99);
         let config = json!({});
@@ -497,11 +512,7 @@ mod tests {
         };
         t.apply(&mut ctx, &mut value, &config).unwrap();
         assert_eq!(value, FieldValue::Int(99));
-    }
 
-    // --- CTDA shape 8: non-struct entry in list passes through ---
-    #[test]
-    fn translate_conditions_non_struct_entry_passes_through() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::List(vec![FieldValue::Int(42)]);
         let config = json!({});
@@ -511,11 +522,7 @@ mod tests {
         };
         t.apply(&mut ctx, &mut value, &config).unwrap();
         assert_eq!(get_list(&value), &[FieldValue::Int(42)]);
-    }
 
-    // --- CTDA shape 9: empty list stays empty ---
-    #[test]
-    fn translate_conditions_empty_list_stays_empty() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::List(vec![]);
         let config = json!({ "source_esm": "SeventySix.esm", "target_esm": "Fallout4.esm" });
@@ -525,44 +532,5 @@ mod tests {
         };
         t.apply(&mut ctx, &mut value, &config).unwrap();
         assert_eq!(get_list_len(&value), 0);
-    }
-
-    // --- CTDA shape 10: multiple conditions, mix of known-named and unknown-numeric ---
-    #[test]
-    fn translate_conditions_mixed_list_drops_unknown_keeps_named() {
-        let mut interner = StringInterner::new();
-        let named = make_cond_with_named_fn(&mut interner, "GetIsID", None, None, None);
-        let unknown_numeric = make_cond_with_numeric_fn(&mut interner, 9999);
-        let mut value = make_cond_list(vec![named, unknown_numeric]);
-        let config = json!({});
-        let t = TranslateConditionsTransform;
-        let mut ctx = TransformCtx {
-            interner: &mut interner,
-        };
-        t.apply(&mut ctx, &mut value, &config).unwrap();
-        assert_eq!(
-            get_list_len(&value),
-            1,
-            "Only named condition should survive"
-        );
-    }
-
-    // --- CTDA shape 11: out-of-range negative numeric code → drop ---
-    #[test]
-    fn translate_conditions_negative_numeric_fn_drops_condition() {
-        let mut interner = StringInterner::new();
-        let cond = make_cond_with_numeric_fn(&mut interner, -1);
-        let mut value = make_cond_list(vec![cond]);
-        let config = json!({});
-        let t = TranslateConditionsTransform;
-        let mut ctx = TransformCtx {
-            interner: &mut interner,
-        };
-        t.apply(&mut ctx, &mut value, &config).unwrap();
-        assert_eq!(
-            get_list_len(&value),
-            0,
-            "Negative code is out-of-range u16, should drop"
-        );
     }
 }

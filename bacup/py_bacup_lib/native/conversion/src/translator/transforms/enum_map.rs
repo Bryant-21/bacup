@@ -153,7 +153,7 @@ mod tests {
     /// `UserDefinedDefault` → `unknown_13`, `DamageIsPositive` → `damage_is_positive`,
     /// other values pass through (`fallback: __passthrough__`).
     #[test]
-    fn maps_known_string_to_string() {
+    fn maps_known_strings_and_passes_unknown_through() {
         let mut interner = StringInterner::new();
         let sym = interner.intern("UserDefinedDefault");
         let mut value = FieldValue::String(sym);
@@ -175,11 +175,8 @@ mod tests {
         } else {
             panic!("expected FieldValue::String");
         }
-    }
 
-    /// YAML usage: AVIF.Flags passthrough for unknown values.
-    #[test]
-    fn passthrough_unknown_value_unchanged() {
+        // YAML usage: AVIF.Flags passthrough for unknown values.
         let mut interner = StringInterner::new();
         let sym = interner.intern("SomeUnknownFlag");
         let mut value = FieldValue::String(sym);
@@ -200,55 +197,8 @@ mod tests {
         } else {
             panic!("expected FieldValue::String (passthrough)");
         }
-    }
 
-    /// YAML usage: fnv_to_fo4.yaml PROJ.SoundLevel (lines 240-246).
-    /// String → integer mapping with a scalar fallback.
-    #[test]
-    fn maps_string_to_integer() {
-        let mut interner = StringInterner::new();
-        let sym = interner.intern("VeryLoud");
-        let mut value = FieldValue::String(sym);
-
-        let cfg = serde_json::json!({
-            "map": {
-                "Normal": 0,
-                "Silent": 0,
-                "Loud": 1,
-                "VeryLoud": 2
-            },
-            "fallback": 0
-        });
-
-        let transform = EnumMapTransform;
-        let mut ctx = make_ctx(&mut interner);
-        transform.apply(&mut ctx, &mut value, &cfg).unwrap();
-
-        assert_eq!(value, FieldValue::Int(2));
-    }
-
-    /// Scalar fallback is used when value is not in map.
-    #[test]
-    fn uses_scalar_fallback_for_unmapped_value() {
-        let mut interner = StringInterner::new();
-        let sym = interner.intern("Unknown");
-        let mut value = FieldValue::String(sym);
-
-        let cfg = serde_json::json!({
-            "map": { "Normal": 0 },
-            "fallback": 0
-        });
-
-        let transform = EnumMapTransform;
-        let mut ctx = make_ctx(&mut interner);
-        transform.apply(&mut ctx, &mut value, &cfg).unwrap();
-
-        assert_eq!(value, FieldValue::Int(0));
-    }
-
-    /// List of values: mapped and unmapped entries with passthrough.
-    #[test]
-    fn maps_list_with_passthrough() {
+        // List of values: mapped and unmapped entries with passthrough.
         let mut interner = StringInterner::new();
         let s1 = interner.intern("DamageIsPositive");
         let s2 = interner.intern("OtherFlag");
@@ -278,5 +228,46 @@ mod tests {
         } else {
             panic!("expected List");
         }
+    }
+
+    /// YAML usage: fnv_to_fo4.yaml PROJ.SoundLevel (lines 240-246).
+    /// String → integer mapping with a scalar fallback.
+    #[test]
+    fn maps_string_to_integer_with_scalar_fallback() {
+        let mut interner = StringInterner::new();
+        let sym = interner.intern("VeryLoud");
+        let mut value = FieldValue::String(sym);
+
+        let cfg = serde_json::json!({
+            "map": {
+                "Normal": 0,
+                "Silent": 0,
+                "Loud": 1,
+                "VeryLoud": 2
+            },
+            "fallback": 0
+        });
+
+        let transform = EnumMapTransform;
+        let mut ctx = make_ctx(&mut interner);
+        transform.apply(&mut ctx, &mut value, &cfg).unwrap();
+
+        assert_eq!(value, FieldValue::Int(2));
+
+        // Scalar fallback is used when value is not in map.
+        let mut interner = StringInterner::new();
+        let sym = interner.intern("Unknown");
+        let mut value = FieldValue::String(sym);
+
+        let cfg = serde_json::json!({
+            "map": { "Normal": 0 },
+            "fallback": 0
+        });
+
+        let transform = EnumMapTransform;
+        let mut ctx = make_ctx(&mut interner);
+        transform.apply(&mut ctx, &mut value, &cfg).unwrap();
+
+        assert_eq!(value, FieldValue::Int(0));
     }
 }

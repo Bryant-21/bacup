@@ -55,9 +55,11 @@ def test_git_buttons_call_lib_functions():
         app._on_utils_git_commit()
         app._on_utils_git_pull()
         app._on_utils_git_checkout()
+        app._on_utils_git_prune_lfs()
 
     assert fn_calls == [
         "Git commit B21_TestMod",
         "Git pull B21_TestMod",
         "Git checkout B21_TestMod",
+        "Git LFS prune B21_TestMod",
     ]

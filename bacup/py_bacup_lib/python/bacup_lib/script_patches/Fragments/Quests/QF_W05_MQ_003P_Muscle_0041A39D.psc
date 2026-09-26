@@ -232,6 +232,10 @@ Function Fragment_Stage_0415_Item_00()
 EndFunction
 
 Function Fragment_Stage_0450_Item_00()
+    ; Stage 410 (release Sol from CaptiveFaction) had no remaining setter.
+    If !IsStageDone(410)
+        SetStage(410)
+    EndIf
     Actor solRef = Alias_Sol.GetActorReference()
     If solRef
         solRef.ChangeAnimArchetype(AnimArchetypeDepressed)
@@ -391,6 +395,12 @@ Function Fragment_Stage_1225_Item_00()
 EndFunction
 
 Function Fragment_Stage_1226_Item_00()
+    Actor playerRef = Alias_owningPlayer.GetActorReference()
+    If playerRef != None && W05_MQ_003P_Muscle_ProtectronRoomAccessCard != None
+        If playerRef.GetItemCount(W05_MQ_003P_Muscle_ProtectronRoomAccessCard) == 0
+            playerRef.AddItem(W05_MQ_003P_Muscle_ProtectronRoomAccessCard, 1, False)
+        EndIf
+    EndIf
     Actor skinnerRef = Alias_Skinner.GetActorReference()
     If skinnerRef
         skinnerRef.EvaluatePackage()

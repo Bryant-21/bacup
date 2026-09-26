@@ -2214,202 +2214,194 @@ mod tests {
     }
 
     #[test]
-    fn admits_raw_070224_scene_through_ir_projection_and_receipt() {
-        let fixture = fixture();
-        let interner = StringInterner::new();
-        let (record, evidence) = raw_scene_record(&fixture, &interner);
-        let admission =
-            admit_scene_record(&fixture.component, &record, &evidence, &interner).unwrap();
-        assert_eq!(admission.source, fixture.source);
+    fn raw_070224_scene_admission_and_fail_closed_guards() {
+        {
+            let fixture = fixture();
+            let interner = StringInterner::new();
+            let (record, evidence) = raw_scene_record(&fixture, &interner);
+            let admission =
+                admit_scene_record(&fixture.component, &record, &evidence, &interner).unwrap();
+            assert_eq!(admission.source, fixture.source);
 
-        let closure = Documented070224SceneClosure {
-            quest_node: key("SMQN", 0x070221, "Synthetic070224.esm"),
-            branch: key("SMBN", 0x070222, "Synthetic070224.esm"),
-            quest: key("QUST", 0x070223, "Synthetic070224.esm"),
-            scene: admission.source.clone(),
-            externally_supplied_dependencies: BTreeSet::new(),
-        };
-        closure.validate_documented_shape().unwrap();
+            let closure = Documented070224SceneClosure {
+                quest_node: key("SMQN", 0x070221, "Synthetic070224.esm"),
+                branch: key("SMBN", 0x070222, "Synthetic070224.esm"),
+                quest: key("QUST", 0x070223, "Synthetic070224.esm"),
+                scene: admission.source.clone(),
+                externally_supplied_dependencies: BTreeSet::new(),
+            };
+            closure.validate_documented_shape().unwrap();
 
-        let projection = project_scene(&admission.plan, &interner).unwrap();
-        assert_eq!(projection.record.sig.0, *b"SCEN");
-        assert_eq!(projection.parent_quest, fixture.target_quest);
-        assert_eq!(
-            projection
-                .record
-                .fields
-                .iter()
-                .filter(|field| field.sig.0 == *b"NEXT")
-                .count(),
-            fixture.source.phases.len() * 2
-        );
-        projection
-            .receipt
-            .validate_materialized(
-                &projection.record,
-                &projection.parent_quest,
-                projection.group_type,
-                &projection.pending_vmad,
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn raw_scene_unknown_subrecord_rejects_stably() {
-        let fixture = fixture();
-        let interner = StringInterner::new();
-        let (mut record, evidence) = raw_scene_record(&fixture, &interner);
-        record.fields.insert(
-            3,
-            FieldEntry {
-                sig: SubrecordSig(*b"ZZZZ"),
-                value: raw_bytes(vec![1]),
-            },
-        );
-        let error =
-            classify_scene_record(&fixture.component, &record, &evidence, &interner).unwrap_err();
-        assert_eq!(error.code, SkyrimSceneRejectionCode::UnsupportedSourceField);
-        assert_eq!(error.code.stable_name(), "unsupported_source_field");
-    }
-
-    #[test]
-    fn raw_scene_unsupported_action_rejects_the_whole_scene() {
-        let fixture = fixture();
-        let interner = StringInterner::new();
-        let (mut record, evidence) = raw_scene_record(&fixture, &interner);
-        let action_type = record
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.0 == *b"ANAM" && !is_empty_marker(&field.value))
-            .unwrap();
-        action_type.value = FieldValue::Uint(3);
-        let error =
-            classify_scene_record(&fixture.component, &record, &evidence, &interner).unwrap_err();
-        assert_eq!(error.code, SkyrimSceneRejectionCode::UnsupportedAction);
-    }
-
-    #[test]
-    fn raw_scene_vmad_and_condition_evidence_fail_closed() {
-        let fixture = fixture();
-        let interner = StringInterner::new();
-        let (mut record, evidence) = raw_scene_record(&fixture, &interner);
-        let vmad = record
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.0 == *b"VMAD")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &mut vmad.value else {
-            unreachable!()
-        };
-        bytes.push(0x7f);
-        let error =
-            classify_scene_record(&fixture.component, &record, &evidence, &interner).unwrap_err();
-        assert_eq!(
-            error.code,
-            SkyrimSceneRejectionCode::UnsupportedFragmentBinding
-        );
-
-        let (record, mut evidence) = raw_scene_record(&fixture, &interner);
-        evidence.conditions.remove(0);
-        let error =
-            classify_scene_record(&fixture.component, &record, &evidence, &interner).unwrap_err();
-        assert_eq!(error.code, SkyrimSceneRejectionCode::MissingSourceEvidence);
-    }
-
-    #[test]
-    fn projects_shared_scene_shapes_and_freezes_receipt() {
-        let fixture = fixture();
-        let issues = fixture.component.validation_issues();
-        assert!(issues.is_empty(), "{issues:#?}");
-        let plan = SkyrimScenePlan::derive(&fixture.component, fixture.source);
-        assert_eq!(plan.rejection(), None);
-        let interner = StringInterner::new();
-        let projection = project_scene(&plan, &interner).unwrap();
-        assert_eq!(projection.group_type, 10);
-        assert_eq!(projection.parent_quest, fixture.target_quest);
-        assert_eq!(projection.record.sig.0, *b"SCEN");
-        assert_eq!(projection.pending_vmad.len(), 1);
-        assert_eq!(
-            projection
-                .record
-                .fields
-                .iter()
-                .filter(|field| field.sig.0 == *b"ANAM")
-                .filter_map(|field| match &field.value {
-                    FieldValue::Uint(value) => Some(*value),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-            [0, 1, 2]
-        );
-        projection
-            .receipt
-            .validate_materialized(
-                &projection.record,
-                &projection.parent_quest,
-                projection.group_type,
-                &projection.pending_vmad,
-            )
-            .unwrap();
-
-        let mut damaged = projection.record.clone();
-        damaged.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"NNAM"),
-            value: FieldValue::String(interner.intern("late mutation")),
-        });
-        assert!(
+            let projection = project_scene(&admission.plan, &interner).unwrap();
+            assert_eq!(projection.record.sig.0, *b"SCEN");
+            assert_eq!(projection.parent_quest, fixture.target_quest);
+            assert_eq!(
+                projection
+                    .record
+                    .fields
+                    .iter()
+                    .filter(|field| field.sig.0 == *b"NEXT")
+                    .count(),
+                fixture.source.phases.len() * 2
+            );
             projection
                 .receipt
                 .validate_materialized(
-                    &damaged,
+                    &projection.record,
                     &projection.parent_quest,
                     projection.group_type,
                     &projection.pending_vmad,
                 )
-                .unwrap_err()
-                .contains("changed after projection")
-        );
+                .unwrap();
+        }
+        {
+            let fixture = fixture();
+            let interner = StringInterner::new();
+            let (mut record, evidence) = raw_scene_record(&fixture, &interner);
+            record.fields.insert(
+                3,
+                FieldEntry {
+                    sig: SubrecordSig(*b"ZZZZ"),
+                    value: raw_bytes(vec![1]),
+                },
+            );
+            let error = classify_scene_record(&fixture.component, &record, &evidence, &interner)
+                .unwrap_err();
+            assert_eq!(error.code, SkyrimSceneRejectionCode::UnsupportedSourceField);
+            assert_eq!(error.code.stable_name(), "unsupported_source_field");
+        }
+        {
+            let fixture = fixture();
+            let interner = StringInterner::new();
+            let (mut record, evidence) = raw_scene_record(&fixture, &interner);
+            let action_type = record
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.0 == *b"ANAM" && !is_empty_marker(&field.value))
+                .unwrap();
+            action_type.value = FieldValue::Uint(3);
+            let error = classify_scene_record(&fixture.component, &record, &evidence, &interner)
+                .unwrap_err();
+            assert_eq!(error.code, SkyrimSceneRejectionCode::UnsupportedAction);
+        }
+        {
+            let fixture = fixture();
+            let interner = StringInterner::new();
+            let (mut record, evidence) = raw_scene_record(&fixture, &interner);
+            let vmad = record
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.0 == *b"VMAD")
+                .unwrap();
+            let FieldValue::Bytes(bytes) = &mut vmad.value else {
+                unreachable!()
+            };
+            bytes.push(0x7f);
+            let error = classify_scene_record(&fixture.component, &record, &evidence, &interner)
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                SkyrimSceneRejectionCode::UnsupportedFragmentBinding
+            );
+
+            let (record, mut evidence) = raw_scene_record(&fixture, &interner);
+            evidence.conditions.remove(0);
+            let error = classify_scene_record(&fixture.component, &record, &evidence, &interner)
+                .unwrap_err();
+            assert_eq!(error.code, SkyrimSceneRejectionCode::MissingSourceEvidence);
+        }
     }
 
     #[test]
-    fn unsupported_required_action_rejects_the_whole_scene() {
-        let mut fixture = fixture();
-        fixture.source.actions[0].flags = 0x8000;
-        let plan = SkyrimScenePlan::derive(&fixture.component, fixture.source);
-        assert_eq!(
-            plan.rejection().map(|reason| reason.code),
-            Some(SkyrimSceneRejectionCode::InvalidActionLayout)
-        );
-        assert!(
-            project_scene(&plan, &StringInterner::new())
-                .unwrap_err()
-                .starts_with("skyrim_scene.invalid_action_layout:")
-        );
-    }
+    fn shared_scene_projection_and_whole_scene_rejections() {
+        {
+            let fixture = fixture();
+            let issues = fixture.component.validation_issues();
+            assert!(issues.is_empty(), "{issues:#?}");
+            let plan = SkyrimScenePlan::derive(&fixture.component, fixture.source);
+            assert_eq!(plan.rejection(), None);
+            let interner = StringInterner::new();
+            let projection = project_scene(&plan, &interner).unwrap();
+            assert_eq!(projection.group_type, 10);
+            assert_eq!(projection.parent_quest, fixture.target_quest);
+            assert_eq!(projection.record.sig.0, *b"SCEN");
+            assert_eq!(projection.pending_vmad.len(), 1);
+            assert_eq!(
+                projection
+                    .record
+                    .fields
+                    .iter()
+                    .filter(|field| field.sig.0 == *b"ANAM")
+                    .filter_map(|field| match &field.value {
+                        FieldValue::Uint(value) => Some(*value),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                [0, 1, 2]
+            );
+            projection
+                .receipt
+                .validate_materialized(
+                    &projection.record,
+                    &projection.parent_quest,
+                    projection.group_type,
+                    &projection.pending_vmad,
+                )
+                .unwrap();
 
-    #[test]
-    fn missing_action_dependency_rejects_the_whole_scene() {
-        let mut fixture = fixture();
-        fixture.component.dependencies.direct.clear();
-        fixture.component.mappings.truncate(2);
-        let plan = SkyrimScenePlan::derive(&fixture.component, fixture.source);
-        assert_eq!(
-            plan.rejection().map(|reason| reason.code),
-            Some(SkyrimSceneRejectionCode::MissingTargetMapping)
-        );
-    }
-
-    #[test]
-    fn documented_070224_interface_does_not_invent_external_dependencies() {
-        let fixture = fixture();
-        let closure = Documented070224SceneClosure {
-            quest_node: key("SMQN", 0x070221, "Synthetic070224.esm"),
-            branch: key("SMBN", 0x070222, "Synthetic070224.esm"),
-            quest: key("QUST", 0x070223, "Synthetic070224.esm"),
-            scene: fixture.source,
-            externally_supplied_dependencies: BTreeSet::new(),
-        };
-        closure.validate_documented_shape().unwrap();
-        assert!(closure.externally_supplied_dependencies.is_empty());
+            let mut damaged = projection.record.clone();
+            damaged.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"NNAM"),
+                value: FieldValue::String(interner.intern("late mutation")),
+            });
+            assert!(
+                projection
+                    .receipt
+                    .validate_materialized(
+                        &damaged,
+                        &projection.parent_quest,
+                        projection.group_type,
+                        &projection.pending_vmad,
+                    )
+                    .unwrap_err()
+                    .contains("changed after projection")
+            );
+        }
+        {
+            let mut fixture = fixture();
+            fixture.source.actions[0].flags = 0x8000;
+            let plan = SkyrimScenePlan::derive(&fixture.component, fixture.source);
+            assert_eq!(
+                plan.rejection().map(|reason| reason.code),
+                Some(SkyrimSceneRejectionCode::InvalidActionLayout)
+            );
+            assert!(
+                project_scene(&plan, &StringInterner::new())
+                    .unwrap_err()
+                    .starts_with("skyrim_scene.invalid_action_layout:")
+            );
+        }
+        {
+            let mut fixture = fixture();
+            fixture.component.dependencies.direct.clear();
+            fixture.component.mappings.truncate(2);
+            let plan = SkyrimScenePlan::derive(&fixture.component, fixture.source);
+            assert_eq!(
+                plan.rejection().map(|reason| reason.code),
+                Some(SkyrimSceneRejectionCode::MissingTargetMapping)
+            );
+        }
+        {
+            let fixture = fixture();
+            let closure = Documented070224SceneClosure {
+                quest_node: key("SMQN", 0x070221, "Synthetic070224.esm"),
+                branch: key("SMBN", 0x070222, "Synthetic070224.esm"),
+                quest: key("QUST", 0x070223, "Synthetic070224.esm"),
+                scene: fixture.source,
+                externally_supplied_dependencies: BTreeSet::new(),
+            };
+            closure.validate_documented_shape().unwrap();
+            assert!(closure.externally_supplied_dependencies.is_empty());
+        }
     }
 }

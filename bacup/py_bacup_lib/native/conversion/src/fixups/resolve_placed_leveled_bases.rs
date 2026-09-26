@@ -1049,10 +1049,7 @@ mod tests {
             assert_eq!(a, b, "same seed → same index");
             assert!(a < len, "index {a} out of range for len {len}");
         }
-    }
 
-    #[test]
-    fn stable_index_differs_for_different_seeds() {
         // Two distinct seeds should usually pick different slots in a wide list.
         let a = stable_leveled_entry_index(1, 64);
         let b = stable_leveled_entry_index(2, 64);
@@ -1071,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_distinguishes_lvli_validbase_and_skip() {
+    fn classify_base_under_refr_and_achr_leaf_rules() {
         let interner = StringInterner::new();
         let own_sym = interner.intern(OWN);
         let lvli = fk("000A01", OWN, &interner);
@@ -1098,12 +1095,7 @@ mod tests {
         // a master object-id we don't index is assumed a valid concrete base.
         assert_eq!(c(&master_item), BaseKind::ValidBase);
         assert_eq!(c(&null), BaseKind::Skip);
-    }
 
-    #[test]
-    fn classify_known_master_lvli_recurses_not_validbase() {
-        let interner = StringInterner::new();
-        let own_sym = interner.intern(OWN);
         let master_lvli = fk("1957A7", "Fallout4.esm", &interner);
 
         let mut map: FxHashMap<(u32, Sym), SigCode> = FxHashMap::default();
@@ -1114,12 +1106,7 @@ mod tests {
 
         let c = |f: &FormKey| classify_base(f, &map, own_sym, "LVLI", &non_lvli);
         assert_eq!(c(&master_lvli), BaseKind::Leveled);
-    }
 
-    #[test]
-    fn classify_lvln_rule_accepts_npc_recurses_lvln_skips_other() {
-        let interner = StringInterner::new();
-        let own_sym = interner.intern(OWN);
         let lvln = fk("000B01", OWN, &interner);
         let npc = fk("000B02", OWN, &interner);
         let stat = fk("000B03", OWN, &interner);
@@ -1146,9 +1133,109 @@ mod tests {
         );
     }
 
+    // -- collect_leveled_leaf_bases ----------------------------------------
+
     #[test]
-    fn collect_flattens_lvln_to_npc_leaves() {
+    fn collect_leaf_bases_flattens_dedups_and_survives_cycles() {
         let interner = StringInterner::new();
+        let base = fk("000100", OWN, &interner);
+        let nested = fk("000101", OWN, &interner);
+        let item_a = fk("000200", OWN, &interner);
+        let item_b = fk("000201", OWN, &interner);
+
+        let entries = move |f: &FormKey| -> Vec<FormKey> {
+            if *f == base {
+                vec![item_a, nested]
+            } else if *f == nested {
+                vec![item_b]
+            } else {
+                vec![]
+            }
+        };
+        let classify = move |f: &FormKey| -> BaseKind {
+            if *f == nested {
+                BaseKind::Leveled
+            } else {
+                BaseKind::ValidBase
+            }
+        };
+
+        let leaves = collect_leveled_leaf_bases(&base, &entries, &classify);
+        assert_eq!(
+            leaves,
+            vec![item_a, item_b],
+            "LVLI not a leaf; nested flattened"
+        );
+
+        let a = fk("000100", OWN, &interner);
+        let b = fk("000101", OWN, &interner);
+        let item = fk("000200", OWN, &interner);
+
+        let entries = move |f: &FormKey| -> Vec<FormKey> {
+            if *f == a {
+                vec![b]
+            } else if *f == b {
+                vec![a, item] // cycle back to a
+            } else {
+                vec![]
+            }
+        };
+        let classify = move |f: &FormKey| -> BaseKind {
+            if *f == a || *f == b {
+                BaseKind::Leveled
+            } else {
+                BaseKind::ValidBase
+            }
+        };
+
+        let leaves = collect_leveled_leaf_bases(&a, &entries, &classify);
+        assert_eq!(
+            leaves,
+            vec![item],
+            "cycle does not loop; single leaf collected"
+        );
+
+        let entries = move |f: &FormKey| -> Vec<FormKey> {
+            if *f == base {
+                vec![item, nested]
+            } else if *f == nested {
+                vec![item] // same item again
+            } else {
+                vec![]
+            }
+        };
+        let classify = move |f: &FormKey| {
+            if *f == nested {
+                BaseKind::Leveled
+            } else {
+                BaseKind::ValidBase
+            }
+        };
+
+        let leaves = collect_leveled_leaf_bases(&base, &entries, &classify);
+        assert_eq!(leaves, vec![item], "duplicate leaf collapsed");
+
+        let good = fk("000200", OWN, &interner);
+        let dropped = fk("000201", OWN, &interner);
+
+        let entries = move |f: &FormKey| {
+            if *f == base {
+                vec![good, dropped]
+            } else {
+                vec![]
+            }
+        };
+        let classify = move |f: &FormKey| {
+            if *f == dropped {
+                BaseKind::Skip
+            } else {
+                BaseKind::ValidBase
+            }
+        };
+
+        let leaves = collect_leveled_leaf_bases(&base, &entries, &classify);
+        assert_eq!(leaves, vec![good], "Skip entries excluded");
+
         let own_sym = interner.intern(OWN);
         let lvln = fk("000B01", OWN, &interner);
         let nested = fk("000B02", OWN, &interner);
@@ -1197,152 +1284,6 @@ mod tests {
         );
     }
 
-    // -- collect_leveled_leaf_bases ----------------------------------------
-
-    #[test]
-    fn collect_drops_lvli_and_recurses_into_nested() {
-        let interner = StringInterner::new();
-        let base = fk("000100", OWN, &interner);
-        let nested = fk("000101", OWN, &interner);
-        let item_a = fk("000200", OWN, &interner);
-        let item_b = fk("000201", OWN, &interner);
-
-        let entries = move |f: &FormKey| -> Vec<FormKey> {
-            if *f == base {
-                vec![item_a, nested]
-            } else if *f == nested {
-                vec![item_b]
-            } else {
-                vec![]
-            }
-        };
-        let classify = move |f: &FormKey| -> BaseKind {
-            if *f == nested {
-                BaseKind::Leveled
-            } else {
-                BaseKind::ValidBase
-            }
-        };
-
-        let leaves = collect_leveled_leaf_bases(&base, &entries, &classify);
-        assert_eq!(
-            leaves,
-            vec![item_a, item_b],
-            "LVLI not a leaf; nested flattened"
-        );
-    }
-
-    #[test]
-    fn collect_is_cycle_safe() {
-        let interner = StringInterner::new();
-        let a = fk("000100", OWN, &interner);
-        let b = fk("000101", OWN, &interner);
-        let item = fk("000200", OWN, &interner);
-
-        let entries = move |f: &FormKey| -> Vec<FormKey> {
-            if *f == a {
-                vec![b]
-            } else if *f == b {
-                vec![a, item] // cycle back to a
-            } else {
-                vec![]
-            }
-        };
-        let classify = move |f: &FormKey| -> BaseKind {
-            if *f == a || *f == b {
-                BaseKind::Leveled
-            } else {
-                BaseKind::ValidBase
-            }
-        };
-
-        let leaves = collect_leveled_leaf_bases(&a, &entries, &classify);
-        assert_eq!(
-            leaves,
-            vec![item],
-            "cycle does not loop; single leaf collected"
-        );
-    }
-
-    #[test]
-    fn collect_dedups_repeated_leaf() {
-        let interner = StringInterner::new();
-        let base = fk("000100", OWN, &interner);
-        let nested = fk("000101", OWN, &interner);
-        let item = fk("000200", OWN, &interner);
-
-        let entries = move |f: &FormKey| -> Vec<FormKey> {
-            if *f == base {
-                vec![item, nested]
-            } else if *f == nested {
-                vec![item] // same item again
-            } else {
-                vec![]
-            }
-        };
-        let classify = move |f: &FormKey| {
-            if *f == nested {
-                BaseKind::Leveled
-            } else {
-                BaseKind::ValidBase
-            }
-        };
-
-        let leaves = collect_leveled_leaf_bases(&base, &entries, &classify);
-        assert_eq!(leaves, vec![item], "duplicate leaf collapsed");
-    }
-
-    #[test]
-    fn collect_skips_unresolvable_entries() {
-        let interner = StringInterner::new();
-        let base = fk("000100", OWN, &interner);
-        let good = fk("000200", OWN, &interner);
-        let dropped = fk("000201", OWN, &interner);
-
-        let entries = move |f: &FormKey| {
-            if *f == base {
-                vec![good, dropped]
-            } else {
-                vec![]
-            }
-        };
-        let classify = move |f: &FormKey| {
-            if *f == dropped {
-                BaseKind::Skip
-            } else {
-                BaseKind::ValidBase
-            }
-        };
-
-        let leaves = collect_leveled_leaf_bases(&base, &entries, &classify);
-        assert_eq!(leaves, vec![good], "Skip entries excluded");
-    }
-
-    #[test]
-    fn nuked_leaf_edids_are_recognized_case_insensitively() {
-        assert!(is_nuked_leaf_edid("FloraRadRhododendron01"));
-        assert!(is_nuked_leaf_edid("UseLPI_florarADThistle01"));
-        assert!(!is_nuked_leaf_edid("UseLPI_FloraRhododendron"));
-        assert!(!is_nuked_leaf_edid("FloraThistle01"));
-    }
-
-    #[test]
-    fn source_key_falls_back_to_same_local_for_output_owned_lvli() {
-        let interner = StringInterner::new();
-        let source_own = interner.intern("Source.esm");
-        let target_own = interner.intern("Target.esp");
-        let target_lvli = fk("001000", "Target.esp", &interner);
-        let target_to_source = FxHashMap::default();
-
-        assert_eq!(
-            source_key_for_target_leveled(target_lvli, &target_to_source, target_own, source_own),
-            Some(FormKey {
-                local: 0x001000,
-                plugin: source_own,
-            })
-        );
-    }
-
     #[test]
     fn source_collect_flattens_nested_lvli_to_target_leaves() {
         let interner = StringInterner::new();
@@ -1381,10 +1322,23 @@ mod tests {
         );
 
         assert_eq!(leaves, vec![target_item_b, target_item_a]);
+
+        let source_own = interner.intern("Source.esm");
+        let target_own = interner.intern("Target.esp");
+        let target_lvli = fk("001000", "Target.esp", &interner);
+        let target_to_source = FxHashMap::default();
+
+        assert_eq!(
+            source_key_for_target_leveled(target_lvli, &target_to_source, target_own, source_own),
+            Some(FormKey {
+                local: 0x001000,
+                plugin: source_own,
+            })
+        );
     }
 
     #[test]
-    fn placed_base_action_drops_empty_leveled_list() {
+    fn placed_base_action_drop_replace_and_preferred_leaf() {
         let interner = StringInterner::new();
         let base = fk("067396", OWN, &interner);
         let mut leaves_map = FxHashMap::default();
@@ -1394,11 +1348,7 @@ mod tests {
             placed_base_action(&base, &leaves_map, 0x0782_3E98_0706_7396, None),
             PlacedBaseAction::Drop
         );
-    }
 
-    #[test]
-    fn placed_base_action_replaces_nested_leveled_list_leaf() {
-        let interner = StringInterner::new();
         let base = fk("2151AB", OWN, &interner);
         let leaf = fk("0366BF", OWN, &interner);
         let mut leaves_map = FxHashMap::default();
@@ -1408,12 +1358,7 @@ mod tests {
             placed_base_action(&base, &leaves_map, 0x0782_3E9B_0721_51AB, None),
             PlacedBaseAction::Replace(leaf)
         );
-    }
 
-    #[test]
-    fn placed_base_action_prefers_supplied_leaf_over_stable_pick() {
-        let interner = StringInterner::new();
-        let base = fk("2151AB", OWN, &interner);
         let a = fk("0366BF", OWN, &interner);
         let b = fk("155D76", OWN, &interner);
         let mut leaves_map = FxHashMap::default();
@@ -1462,6 +1407,11 @@ mod tests {
             prefer_default_leaf_index("LPI_FloraSootFlower01", &no_default),
             None
         );
+
+        assert!(is_nuked_leaf_edid("FloraRadRhododendron01"));
+        assert!(is_nuked_leaf_edid("UseLPI_florarADThistle01"));
+        assert!(!is_nuked_leaf_edid("UseLPI_FloraRhododendron"));
+        assert!(!is_nuked_leaf_edid("FloraThistle01"));
     }
 
     #[test]
@@ -1503,12 +1453,7 @@ mod tests {
             let raw = encode_form_id(&f, &masters, OWN, &interner).unwrap();
             assert_eq!(decode_form_id(raw, &masters, OWN, &interner), Some(f));
         }
-    }
 
-    #[test]
-    fn decode_rejects_unknown_load_index() {
-        let interner = StringInterner::new();
-        let masters = masters();
         // load index 5 names no master and isn't the output (own = index 2).
         assert_eq!(decode_form_id(0x0500_0001, &masters, OWN, &interner), None);
     }
@@ -1527,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn lvli_entries_reads_struct_reference_field() {
+    fn leveled_entry_form_keys_reads_struct_and_raw_lvlo_only() {
         let interner = StringInterner::new();
         let item = fk("000200", OWN, &interner);
         let ref_sym = interner.intern("Reference");
@@ -1540,11 +1485,7 @@ mod tests {
             leveled_entry_form_keys(&rec, &masters(), OWN, &interner),
             vec![item]
         );
-    }
 
-    #[test]
-    fn lvli_entries_reads_raw_lvlo_bytes() {
-        let interner = StringInterner::new();
         let masters = masters();
         let item = fk("000200", OWN, &interner);
         let raw = encode_form_id(&item, &masters, OWN, &interner).unwrap();
@@ -1559,17 +1500,13 @@ mod tests {
             leveled_entry_form_keys(&rec, &masters, OWN, &interner),
             vec![item]
         );
-    }
 
-    #[test]
-    fn lvli_entries_ignores_non_entry_subrecords() {
-        let interner = StringInterner::new();
         let llct = FieldEntry {
             sig: SubrecordSig::from_str("LLCT").unwrap(),
             value: FieldValue::Uint(1),
         };
         let rec = lvli_record(vec![llct], &interner);
-        assert!(leveled_entry_form_keys(&rec, &masters(), OWN, &interner).is_empty());
+        assert!(leveled_entry_form_keys(&rec, &masters, OWN, &interner).is_empty());
     }
 
     #[test]

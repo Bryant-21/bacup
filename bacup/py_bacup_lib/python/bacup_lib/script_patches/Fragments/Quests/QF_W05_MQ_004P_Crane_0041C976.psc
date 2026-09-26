@@ -136,16 +136,35 @@ EndFunction
 Function Fragment_Stage_0200_Item_00()
     SetObjectiveCompleted(111)
     SetObjectiveDisplayed(500)
+    ; Map and keycard are created at W05_MQ_004P_MapSpawnMarker in 76HoldingCellWayward; Duchess sends the player into Crane's pockets for them.
+    ObjectReference playerRef = Alias_owningPlayer.GetReference()
+    ObjectReference itemHolder = Alias_Crane.GetReference()
+    If itemHolder == None
+        itemHolder = playerRef
+    EndIf
+    ObjectReference mapRef = Alias_Map.GetReference()
+    ObjectReference keycardRef = Alias_Keycard.GetReference()
+    If itemHolder != None && mapRef != None && mapRef.GetContainer() != itemHolder && mapRef.GetContainer() != playerRef
+        mapRef.Enable()
+        itemHolder.AddItem(mapRef, 1, True)
+    EndIf
+    If itemHolder != None && keycardRef != None && keycardRef.GetContainer() != itemHolder && keycardRef.GetContainer() != playerRef
+        keycardRef.Enable()
+        itemHolder.AddItem(keycardRef, 1, True)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0210_Item_00()
+    Actor playerRef = Alias_owningPlayer.GetActorReference()
     ObjectReference mapRef = Alias_Map.GetReference()
     ObjectReference keycardRef = Alias_Keycard.GetReference()
-    If mapRef
+    If playerRef != None && mapRef != None && mapRef.GetContainer() != playerRef
         mapRef.Enable()
+        playerRef.AddItem(mapRef, 1, False)
     EndIf
-    If keycardRef
+    If playerRef != None && keycardRef != None && keycardRef.GetContainer() != playerRef
         keycardRef.Enable()
+        playerRef.AddItem(keycardRef, 1, False)
     EndIf
 EndFunction
 
@@ -170,15 +189,42 @@ Function Fragment_Stage_0310_Item_00()
 EndFunction
 
 Function Fragment_Stage_0399_Item_00()
+    If IsStageDone(700) || IsStageDone(300) || IsStageDone(301)
+        Return
+    EndIf
+    If !IsStageDone(398)
+        SetStage(398)
+    EndIf
     SetObjectiveCompleted(300)
     SetObjectiveDisplayed(399)
+    If W05_MQ_004P_Crane_0100a_StartScene != None && W05_MQ_004P_Crane_0100a_StartScene.IsPlaying()
+        W05_MQ_004P_Crane_0100a_StartScene.Stop()
+    EndIf
+    If W05_MQ_004P_Crane_0399_PlayerKilledCraneEarly == None
+        W05_MQ_004P_Crane_0399_PlayerKilledCraneEarly = Game.GetFormFromFile(0x0055ADEA, "SeventySix.esm") as Scene
+    EndIf
     If W05_MQ_004P_Crane_0399_PlayerKilledCraneEarly && !W05_MQ_004P_Crane_0399_PlayerKilledCraneEarly.IsPlaying()
         W05_MQ_004P_Crane_0399_PlayerKilledCraneEarly.Start()
     EndIf
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()
+    If IsStageDone(700) || IsStageDone(398)
+        Return
+    EndIf
+    If !IsStageDone(300) && !IsStageDone(301)
+        If !IsStageDone(399)
+            SetStage(399)
+        EndIf
+        Return
+    EndIf
+    If !IsStageDone(145)
+        Return
+    EndIf
     SetObjectiveCompleted(300)
+    If W05_MQ_004P_Crane_0100a_StartScene != None && W05_MQ_004P_Crane_0100a_StartScene.IsPlaying()
+        W05_MQ_004P_Crane_0100a_StartScene.Stop()
+    EndIf
     If W05_MQ_004P_Crane_0400_MomentOfSilenceScene && !W05_MQ_004P_Crane_0400_MomentOfSilenceScene.IsPlaying()
         W05_MQ_004P_Crane_0400_MomentOfSilenceScene.Start()
     EndIf
@@ -207,6 +253,22 @@ Function Fragment_Stage_0500_Item_00()
     SetObjectiveCompleted(300)
     SetObjectiveCompleted(399)
     SetObjectiveDisplayed(500)
+    ; Map and keycard are created at W05_MQ_004P_MapSpawnMarker in 76HoldingCellWayward; Duchess sends the player into Crane's pockets for them.
+    ObjectReference playerRef = Alias_owningPlayer.GetReference()
+    ObjectReference itemHolder = Alias_Crane.GetReference()
+    If itemHolder == None
+        itemHolder = playerRef
+    EndIf
+    ObjectReference mapRef = Alias_Map.GetReference()
+    ObjectReference keycardRef = Alias_Keycard.GetReference()
+    If itemHolder != None && mapRef != None && mapRef.GetContainer() != itemHolder && mapRef.GetContainer() != playerRef
+        mapRef.Enable()
+        itemHolder.AddItem(mapRef, 1, True)
+    EndIf
+    If itemHolder != None && keycardRef != None && keycardRef.GetContainer() != itemHolder && keycardRef.GetContainer() != playerRef
+        keycardRef.Enable()
+        itemHolder.AddItem(keycardRef, 1, True)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0600_Item_00()
@@ -283,14 +345,6 @@ EndFunction
 Function Fragment_Stage_0765_Item_00()
     SetObjectiveCompleted(750)
     SetObjectiveCompleted(760)
-    ObjectReference cacheDoor = Alias_CacheDoor.GetReference()
-    If cacheDoor
-        cacheDoor.Unlock()
-        cacheDoor.SetOpen(True)
-    EndIf
-    If !IsStageDone(1000)
-        SetStage(1000)
-    EndIf
 EndFunction
 
 Function Fragment_Stage_0775_Item_00()
@@ -304,10 +358,6 @@ EndFunction
 
 Function Fragment_Stage_0820_Item_00()
     SetObjectiveDisplayed(800)
-    ObjectReference cacheDoor = Alias_CacheDoor.GetReference()
-    If cacheDoor
-        cacheDoor.Unlock()
-    EndIf
 EndFunction
 
 Function Fragment_Stage_0830_Item_00()
@@ -350,10 +400,24 @@ Function Fragment_Stage_1105_Item_00()
 EndFunction
 
 Function Fragment_Stage_1150_Item_00()
-    Actor roperRef = Alias_Roper.GetActorReference()
-    If roperRef && !roperRef.IsDead()
-        roperRef.Enable()
-        roperRef.EvaluatePackage()
+    Actor playerRef = Alias_owningPlayer.GetActorReference()
+    If playerRef == None || W05_MQ_002P_Radical_RoperSceneIndex == None || W05_MQ_002P_Radical_PlayerKilledRoper == None
+        Return
+    EndIf
+    If playerRef.GetValue(W05_MQ_002P_Radical_RoperSceneIndex) == 3.0 && playerRef.GetValue(W05_MQ_002P_Radical_PlayerKilledRoper) < 1.0
+        If !IsStageDone(1155) && !SetStage(1155)
+            Return
+        EndIf
+        If W05_RadicalsEnableMarker != None
+            W05_RadicalsEnableMarker.Enable()
+        EndIf
+        Actor roperRef = Alias_Roper.GetActorReference()
+        If roperRef != None
+            roperRef.EvaluatePackage()
+        EndIf
+        If Alias_Radicals != None
+            Alias_Radicals.EvaluateAll()
+        EndIf
     ElseIf !IsStageDone(1300)
         SetStage(1300)
     EndIf
@@ -382,19 +446,23 @@ EndFunction
 Function Fragment_Stage_1220_Item_00()
     Actor playerRef = Alias_owningPlayer.GetActorReference()
     If playerRef
-        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 1.0)
+        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 5.0)
     EndIf
 EndFunction
 
 Function Fragment_Stage_1221_Item_00()
-    SetObjectiveCompleted(1200)
-    SetObjectiveDisplayed(1230)
+    If IsStageDone(1155) && !IsStageDone(1250) && !IsStageDone(1230)
+        SetStage(1230)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1230_Item_00()
     SetObjectiveCompleted(1200)
     SetObjectiveDisplayed(1230)
     Actor playerRef = Alias_owningPlayer.GetActorReference()
+    If playerRef != None && W05_MQ_004P_Crane_RoperResolutionIndex != None
+        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 5.0)
+    EndIf
     Int radicalIndex = 0
     While playerRef && radicalIndex < Alias_Radicals.GetCount()
         Actor radicalRef = Alias_Radicals.GetAt(radicalIndex) as Actor
@@ -406,40 +474,59 @@ Function Fragment_Stage_1230_Item_00()
 EndFunction
 
 Function Fragment_Stage_1235_Item_00()
-    SetObjectiveDisplayed(1230)
-    Actor playerRef = Alias_owningPlayer.GetActorReference()
-    Actor roperRef = Alias_Roper.GetActorReference()
-    If playerRef && roperRef && !roperRef.IsDead()
-        roperRef.StartCombat(playerRef)
+    If IsStageDone(1155) && !IsStageDone(1230) && !IsStageDone(1250)
+        SetStage(1230)
     EndIf
 EndFunction
 
 Function Fragment_Stage_1240_Item_00()
     SetObjectiveCompleted(1200)
-    If !IsStageDone(1300)
-        SetStage(1300)
+    Actor playerRef = Alias_owningPlayer.GetActorReference()
+    ObjectReference keycardRef = Alias_Keycard.GetReference()
+    ObjectReference roperRef = Alias_Roper.GetReference()
+    If playerRef != None
+        If keycardRef != None && roperRef != None && keycardRef.GetContainer() == playerRef
+            playerRef.RemoveItem(keycardRef, 1, False, roperRef)
+        EndIf
+        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 3.0)
+    EndIf
+    If !IsStageDone(1260)
+        SetStage(1260)
     EndIf
 EndFunction
 
 Function Fragment_Stage_1242_Item_00()
     Actor playerRef = Alias_owningPlayer.GetActorReference()
     If playerRef
-        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 2.0)
+        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 4.0)
+    EndIf
+    If !IsStageDone(1260)
+        SetStage(1260)
     EndIf
 EndFunction
 
 Function Fragment_Stage_1243_Item_00()
-    ObjectReference playerRef = Alias_owningPlayer.GetReference()
+    Actor playerRef = Alias_owningPlayer.GetActorReference()
     ObjectReference rewardRef = Alias_RewardWeapon.GetReference()
-    If playerRef && rewardRef
-        playerRef.RemoveItem(rewardRef.GetBaseObject(), 1, False, Alias_Roper.GetReference())
+    ObjectReference roperRef = Alias_Roper.GetReference()
+    If playerRef != None
+        If rewardRef != None && roperRef != None && rewardRef.GetContainer() == playerRef
+            playerRef.RemoveItem(rewardRef, 1, False, roperRef)
+        EndIf
+        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 1.0)
+    EndIf
+    If !IsStageDone(1260)
+        SetStage(1260)
     EndIf
 EndFunction
 
 Function Fragment_Stage_1244_Item_00()
     Actor playerRef = Alias_owningPlayer.GetActorReference()
     If playerRef
-        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 4.0)
+        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 6.0)
+    EndIf
+    If !IsStageDone(1260)
+        SetStage(1260)
     EndIf
 EndFunction
 
@@ -447,7 +534,10 @@ Function Fragment_Stage_1245_Item_00()
     Actor playerRef = Alias_owningPlayer.GetActorReference()
     If playerRef
         playerRef.RemoveItem(Caps001, 100, False)
-        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 5.0)
+        playerRef.SetValue(W05_MQ_004P_Crane_RoperResolutionIndex, 2.0)
+    EndIf
+    If !IsStageDone(1260)
+        SetStage(1260)
     EndIf
 EndFunction
 
@@ -487,8 +577,10 @@ EndFunction
 Function Fragment_Stage_1265_Item_00()
     Actor playerRef = Alias_owningPlayer.GetActorReference()
     If playerRef
-        playerRef.AddItem(Headwear_Radicals, 1, False)
-        playerRef.SetValue(W05_MQ_004P_Crane_PlayerReceivedRadicalsGear, 1.0)
+        If W05_MQ_004P_Crane_PlayerReceivedRadicalsGear != None && Headwear_Radicals != None && playerRef.GetValue(W05_MQ_004P_Crane_PlayerReceivedRadicalsGear) < 1.0
+            playerRef.SetValue(W05_MQ_004P_Crane_PlayerReceivedRadicalsGear, 1.0)
+            playerRef.AddItem(Headwear_Radicals, 1, False)
+        EndIf
         playerRef.SetValue(W05_MQ_004P_Crane_PlayerJoinedRadicals, 1.0)
     EndIf
 EndFunction
@@ -506,13 +598,27 @@ Function Fragment_Stage_8999_Item_00()
     SetObjectiveCompleted(1100)
     SetObjectiveCompleted(1200)
     SetObjectiveCompleted(1230)
+    Actor playerRef = Alias_owningPlayer.GetActorReference()
+    If playerRef != None && W05_MQ_004P_Crane_BadEnding != None && playerRef.GetValue(W05_MQ_004P_Crane_BadEnding) <= 0.0
+        playerRef.SetValue(W05_MQ_004P_Crane_BadEnding, B21_WaywardState.GameMinutes())
+    EndIf
+    If !IsStageDone(9000)
+        SetStage(9000)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
     SetObjectiveCompleted(1100)
     SetObjectiveCompleted(1200)
     SetObjectiveCompleted(1230)
-    ObjectReference playerRef = Alias_owningPlayer.GetReference()
+    Actor playerRef = Alias_owningPlayer.GetActorReference()
+    If playerRef != None && W05_MQ_004P_Crane_WaywardDiscountPerk != None
+        If !B21_WaywardState.BadEndingActive(playerRef, W05_MQ_004P_Crane_BadEnding, W05_MQ_004P_Crane_DuchessCooldown)
+            If !playerRef.HasPerk(W05_MQ_004P_Crane_WaywardDiscountPerk)
+                playerRef.AddPerk(W05_MQ_004P_Crane_WaywardDiscountPerk)
+            EndIf
+        EndIf
+    EndIf
     If W05_MQ_101P && !W05_MQ_101P.IsRunning() && !W05_MQ_101P.IsCompleted()
         W05_MQ_101P_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
     EndIf

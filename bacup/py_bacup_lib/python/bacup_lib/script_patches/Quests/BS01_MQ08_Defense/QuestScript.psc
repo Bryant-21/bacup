@@ -135,7 +135,7 @@ Function SetBombPlaced(ReferenceAlias bombAlias)
     If playerRef != None && playerRef.GetItemCount(BS01_MQ08_Defense_Bomb_MiscItem) > 0
         playerRef.RemoveItem(BS01_MQ08_Defense_Bomb_MiscItem, 1, True)
     EndIf
-    If IsStageDone(510) && IsStageDone(520) && IsStageDone(530) && IsStageDone(540) && !IsStageDone(AllBombsPlantedStage)
+    If (bombAlias == Alias_Static_BombA || IsStageDone(510)) && (bombAlias == Alias_Static_BombB || IsStageDone(520)) && (bombAlias == Alias_Static_BombC || IsStageDone(530)) && (bombAlias == Alias_Static_BombD || IsStageDone(540)) && !IsStageDone(AllBombsPlantedStage)
         SetStage(AllBombsPlantedStage)
     EndIf
 EndFunction

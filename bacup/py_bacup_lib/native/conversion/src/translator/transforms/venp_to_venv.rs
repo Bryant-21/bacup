@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn relayouts_live_venp_to_fo4_venv() {
+    fn relayouts_venp_to_fo4_venv_and_leaves_unusable_values() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::Bytes(SmallVec::from_vec(venp_4124aa()));
         let mut ctx = make_ctx(&mut interner);
@@ -144,10 +144,40 @@ mod tests {
             0, // unknown
         ];
         assert_eq!(out.as_slice(), &expected);
+
+        // An 11-byte VENP (no bytes_6) must still relayout.
+        let mut v = Vec::new();
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes());
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&[1, 1, 0]);
+        let out = relayout_venp_bytes(&v).expect("11-byte VENP relayouts");
+        assert_eq!(out.len(), FO4_VENV_LEN);
+        assert_eq!(u16::from_le_bytes([out[0], out[1]]), 1);
+        assert_eq!(u16::from_le_bytes([out[2], out[3]]), 2);
+        assert_eq!(u16::from_le_bytes([out[4], out[5]]), 3);
+        assert_eq!(&out[8..11], &[1, 1, 0]);
+
+        let mut interner = StringInterner::new();
+        let original = SmallVec::<[u8; 32]>::from_slice(&[0, 1, 2, 3]);
+        let mut value = FieldValue::Bytes(original.clone());
+        let mut ctx = make_ctx(&mut interner);
+        VenpToVenvTransform
+            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(value, FieldValue::Bytes(original));
+
+        let mut interner = StringInterner::new();
+        let mut value = FieldValue::Uint(7);
+        let mut ctx = make_ctx(&mut interner);
+        VenpToVenvTransform
+            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(value, FieldValue::Uint(7));
     }
 
     #[test]
-    fn radius_narrows_within_u16() {
+    fn radius_narrows_to_u16_and_saturates() {
         // radius=500 (second source record 844090) fits u16.
         let mut interner = StringInterner::new();
         let mut src = Vec::new();
@@ -166,10 +196,7 @@ mod tests {
         };
         assert_eq!(u16::from_le_bytes([out[4], out[5]]), 500);
         assert_eq!(&out[8..11], &[1, 0, 1]);
-    }
 
-    #[test]
-    fn radius_over_u16_saturates() {
         let out = relayout_venp_bytes(&{
             let mut v = Vec::new();
             v.extend_from_slice(&0u16.to_le_bytes());
@@ -180,44 +207,5 @@ mod tests {
         })
         .unwrap();
         assert_eq!(u16::from_le_bytes([out[4], out[5]]), u16::MAX);
-    }
-
-    #[test]
-    fn accepts_venp_without_trailing_byte() {
-        // An 11-byte VENP (no bytes_6) must still relayout.
-        let mut v = Vec::new();
-        v.extend_from_slice(&1u16.to_le_bytes());
-        v.extend_from_slice(&2u16.to_le_bytes());
-        v.extend_from_slice(&3u32.to_le_bytes());
-        v.extend_from_slice(&[1, 1, 0]);
-        let out = relayout_venp_bytes(&v).expect("11-byte VENP relayouts");
-        assert_eq!(out.len(), FO4_VENV_LEN);
-        assert_eq!(u16::from_le_bytes([out[0], out[1]]), 1);
-        assert_eq!(u16::from_le_bytes([out[2], out[3]]), 2);
-        assert_eq!(u16::from_le_bytes([out[4], out[5]]), 3);
-        assert_eq!(&out[8..11], &[1, 1, 0]);
-    }
-
-    #[test]
-    fn too_short_input_left_untouched() {
-        let mut interner = StringInterner::new();
-        let original = SmallVec::<[u8; 32]>::from_slice(&[0, 1, 2, 3]);
-        let mut value = FieldValue::Bytes(original.clone());
-        let mut ctx = make_ctx(&mut interner);
-        VenpToVenvTransform
-            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
-            .unwrap();
-        assert_eq!(value, FieldValue::Bytes(original));
-    }
-
-    #[test]
-    fn non_bytes_value_is_a_no_op() {
-        let mut interner = StringInterner::new();
-        let mut value = FieldValue::Uint(7);
-        let mut ctx = make_ctx(&mut interner);
-        VenpToVenvTransform
-            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
-            .unwrap();
-        assert_eq!(value, FieldValue::Uint(7));
     }
 }

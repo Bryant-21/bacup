@@ -8,6 +8,16 @@
 //! The registry maps monotonic `u64` run IDs to per-run lock slots (see
 //! "Registry" below).
 
+#[cfg(test)]
+#[path = "run/container_tests.rs"]
+mod container_tests;
+#[cfg(test)]
+#[path = "run/perk_identity_tests.rs"]
+mod perk_identity_tests;
+#[cfg(test)]
+#[path = "run/quest_namesake_tests.rs"]
+mod quest_namesake_tests;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -31,7 +41,7 @@ use crate::fnv_legacy_scripting::{
 use crate::formkey_mapper::{
     FIRST_ALLOCATION_ID, FormKeyMapper, MapperOptions, MapperState, ResolutionMode,
     allows_editor_id_vanilla_remap, is_static_marker_editor_id,
-    mapper_allows_editor_id_vanilla_remap,
+    mapper_allows_editor_id_vanilla_remap, requires_shared_dna_for_remap,
 };
 use crate::full_plugin::{AssetPhaseFlags, FullPluginRunState, WarningPolicy, intern_plugin_names};
 use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -1254,14 +1264,14 @@ pub struct ConversionRun {
     /// the NIF phase leaves their material/texture slots un-namespaced.
     pub relocation_mesh_only_members: std::collections::HashSet<String>,
     pub nif_dependencies: Arc<crate::relocation::NifDependencyCache>,
-    pub(crate) relocation_preparation: Option<Arc<crate::relocation::RelocationPreparation>>,
+    // Keep the weakly cached preparation alive for other runs to reuse.
+    _relocation_preparation: Option<Arc<crate::relocation::RelocationPreparation>>,
     pub output_nif_dependencies: Arc<crate::modt_manifest::OutputNifDependencies>,
     /// Warnings emitted while building `relocation_members` (e.g. FO4 extracted
     /// dir missing). Surfaced into a phase report so Python logs them.
     pub relocation_warnings: Vec<String>,
     pub target_assets: Option<std::sync::Arc<crate::target_assets::TargetAssetStore>>,
-    pub(crate) source_asset_inventory:
-        Option<Arc<crate::source_inventory::SourceAssetInventory>>,
+    pub(crate) source_asset_inventory: Option<Arc<crate::source_inventory::SourceAssetInventory>>,
     /// Output sinks (loose + BA2 spill streaming). None = legacy
     /// behavior everywhere; attached via `sinks_attach_run`.
     pub output_sink: Option<std::sync::Arc<crate::sinks::SinkSet>>,
@@ -1328,6 +1338,7 @@ pub(crate) enum SkyrimCreatureAncillaryRecordKind {
     ArmorAddonVariant,
     BodyPartDataVariant,
     Weapon,
+    #[cfg(test)]
     Projectile,
 }
 
@@ -2269,12 +2280,34 @@ fn target_editor_id_has_same_signature(
     })
 }
 
-pub(crate) fn target_collision_donor_form_key(
+fn target_editor_id_has_same_object_id(
     target_eid_index: &FxHashMap<Sym, Vec<(FormKey, crate::ids::SigCode)>>,
     interner: &StringInterner,
     editor_id: &str,
     sig: crate::ids::SigCode,
+    local: u32,
+) -> bool {
+    let normalized = interner.intern(&normalized_editor_id(editor_id));
+    target_eid_index.get(&normalized).is_some_and(|matches| {
+        matches.iter().any(|(form_key, candidate_sig)| {
+            *candidate_sig == sig && form_key.local & 0x00FF_FFFF == local & 0x00FF_FFFF
+        })
+    })
+}
+
+/// The target namesake a renamed collision inherits flags and VMAD from. A
+/// shared-DNA signature is renamed only because its namesake is a different
+/// record, so it has no donor.
+pub(crate) fn target_collision_donor_form_key(
+    target_eid_index: &FxHashMap<Sym, Vec<(FormKey, crate::ids::SigCode)>>,
+    shared_dna_remap_signatures: &[String],
+    interner: &StringInterner,
+    editor_id: &str,
+    sig: crate::ids::SigCode,
 ) -> Option<FormKey> {
+    if sig.as_str() == "PERK" || requires_shared_dna_for_remap(shared_dna_remap_signatures, sig) {
+        return None;
+    }
     let normalized = interner.intern(&normalized_editor_id(editor_id));
     target_eid_index.get(&normalized).and_then(|matches| {
         matches
@@ -2306,6 +2339,7 @@ pub(crate) fn rename_fo76_target_editor_id_collision(
     record: &mut Record,
     target_eid_index: &FxHashMap<Sym, Vec<(FormKey, crate::ids::SigCode)>>,
     vanilla_remap_blocked_source_form_keys: &FxHashSet<FormKey>,
+    shared_dna_remap_signatures: &[String],
     interner: &StringInterner,
     force_same_signature_rename: bool,
 ) -> Option<(String, String)> {
@@ -2317,6 +2351,8 @@ pub(crate) fn rename_fo76_target_editor_id_collision(
     let same_signature =
         target_editor_id_has_same_signature(target_eid_index, interner, &original, record.sig);
     let static_marker = is_static_marker_editor_id(record.sig, &original);
+    let container_marker = record.sig.as_str() == "CONT"
+        && crate::formkey_mapper::is_placement_marker_editor_id(record.sig, &original);
     let decal_texture_set = is_fo76_decal_texture_set(record.sig, &original);
     let source_record_blocked = vanilla_remap_blocked_source_form_keys.contains(&record.form_key);
     let should_rename =
@@ -2324,8 +2360,18 @@ pub(crate) fn rename_fo76_target_editor_id_collision(
             false
         } else if source_record_blocked {
             true
-        } else if same_signature && static_marker {
+        } else if same_signature && (static_marker || container_marker) {
             false
+        } else if same_signature
+            && requires_shared_dna_for_remap(shared_dna_remap_signatures, record.sig)
+        {
+            !target_editor_id_has_same_object_id(
+                target_eid_index,
+                interner,
+                &original,
+                record.sig,
+                record.form_key.local,
+            )
         } else if force_same_signature_rename
             || decal_texture_set
             || record.sig.as_str() == "CELL"
@@ -2369,7 +2415,10 @@ fn is_fo76_decal_texture_set(sig: crate::ids::SigCode, editor_id: &str) -> bool 
 /// `dn_VaultSuit` while their rulesets describe entirely different content
 /// (FO76's `dn_PowerArmor` carries 357 rules to FO4's 120, keyed on FO76
 /// keywords). Remapping onto the FO4 record leaves FO76 gear unnamed.
-const FO76_FO4_VANILLA_REMAP_BLOCKED_SIGS: &[&str] = &["STAT", "SCOL", "MSTT", "INNR"];
+// Shared container names retain different inventories: FO4's Vault_Locker_01
+// has perk rolls and rare vault gear instead of FO76's ordinary locker loot.
+const FO76_FO4_VANILLA_REMAP_BLOCKED_SIGS: &[&str] =
+    &["STAT", "SCOL", "MSTT", "INNR", "CONT", "PERK"];
 
 /// Records that define placed world objects must retain their source record and
 /// converted assets. ALCH and AMMO are intentionally absent: those are gameplay
@@ -2418,14 +2467,70 @@ const FO76_FO4_VANILLA_REMAP_BLOCKED_FORM_IDS: &[u32] = &[
     // has no relation to RobotFaction; FO76's is a RobotFaction member. Remapped, every
     // converted robobrain attacks every other robot on sight.
     0x0035_3D54, // DLC01EncRoboBrain01Template
+    // The random-encounter family below keeps Appalachia's encounters in their own
+    // Story Manager namespace. FO76 inherited Fallout 4's whole RE skeleton at identical
+    // object ids, so the EditorID index would otherwise fuse the two games' encounter
+    // pools: FO76's `REMainBranch` would nest Appalachia's branches under Fallout 4's,
+    // and a trigger placed in Appalachia would send the very keyword Fallout 4's own
+    // Commonwealth nodes answer. Kept source-owned, each game routes only its own
+    // encounters; `separate_fo76_random_encounters` then gates the FO76 branch on
+    // Appalachia so a Commonwealth trigger cannot reach it either.
+    0x0002_7DE0, // REMainBranch
+    // Encounter-type keywords: the trigger sends these, the quest nodes answer them.
+    0x0002_E4FF, // REEncounterTypeObject
+    0x0002_E500, // REEncounterTypeChokepoint
+    0x0002_E501, // REEncounterTypeAssault
+    0x0002_E502, // REEncounterTypeCamp
+    0x0004_A600, // REEncounterTypeScene
+    0x000A_C4EE, // REEncounterTypeCheckpoint
+    0x0010_27A6, // REEncounterTypeTravel
 ];
+
+/// Trigger bases, remap-blocked with the list above. Each binds its own encounter-type
+/// keyword and `RE_Parent` quest, so a remapped base would hand Appalachia's placed
+/// triggers Fallout 4's wiring. The collision donor would too: it replaced their VMAD
+/// with Fallout 4's, pointing `REParent` at `02DFEE`. No converted encounter registers
+/// on that quest for cleanup. The donor also dropped the 0.25-day `DaysUntilReset`.
+const FO76_FO4_RE_TRIGGER_BASE_FORM_IDS: &[u32] = &[
+    0x0002_DFE5, // RETriggerScene
+    0x0002_E503, // RETriggerTravel
+    0x0002_E504, // RETriggerCamp
+    0x0002_E505, // RETriggerObject
+    0x0002_E507, // RETriggerAssault
+    0x0002_E51B, // RETriggerSecondary
+];
+
+// HumanRace RPRM/RPRF use inherited IDs, but FO76's face morphs differ from FO4's.
+const FO76_CHARACTER_PRESET_FORM_IDS: &[u32] = &[
+    0x18B5F8, 0x18B5F9, 0x18B5FB, 0x0576D1, 0x05A7A1,
+    0x05A79F, 0x05A795, 0x05A793, 0x05A791, 0x05A772,
+    0x1E73F4, 0x23228B, 0x23228C, 0x23228D, 0x23228E,
+    0x18B5F7, 0x18B5F6, 0x18B5F5, 0x18B5F4, 0x18B5F3,
+    0x225B6A, 0x225B69, 0x225B68, 0x225B67, 0x231346,
+    0x231348, 0x231349, 0x23134A, 0x23134B, 0x23134C,
+];
+
+pub(crate) fn fo76_fo4_collision_keeps_source_vmad(
+    source: Game,
+    target: Game,
+    source_fk: FormKey,
+    interner: &StringInterner,
+) -> bool {
+    source == Game::Fo76
+        && target == Game::Fo4
+        && interner
+            .resolve(source_fk.plugin)
+            .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO76_MASTER_PLUGIN_NAME))
+        && FO76_FO4_RE_TRIGGER_BASE_FORM_IDS.contains(&(source_fk.local & 0x00FF_FFFF))
+}
 
 /// Signatures that should receive a `fo76` EDID suffix when they are emitted
 /// despite a same-signature target-master collision. ARMO/ARMA are not globally
 /// remap-blocked because wearable armor should still reuse FO4 records, but
 /// protected creature skin records that are emitted still need unique EDIDs.
-const FO76_FO4_FORCE_COLLISION_RENAME_SIGS: &[&str] =
-    &["STAT", "SCOL", "MSTT", "ARMO", "ARMA", "INNR"];
+const FO76_FO4_FORCE_COLLISION_RENAME_SIGS: &[&str] = &[
+    "STAT", "SCOL", "MSTT", "ARMO", "ARMA", "INNR", "CONT", "PERK",
+];
 
 fn editor_id_vanilla_remap_blocked_sigs(source: Game, target: Game) -> Vec<String> {
     let mut blocked = Vec::new();
@@ -2452,6 +2557,22 @@ fn editor_id_vanilla_remap_blocked_sigs(source: Game, target: Game) -> Vec<Strin
     blocked
 }
 
+/// FO76 shares Fallout 4's object-id space, so for these signatures an EditorID
+/// match is the inherited record only at the same object id. FO76's public event
+/// `BoSr01` (311433) and Fallout 4's radiant `BoSR01` (064EC7) are unrelated
+/// namesakes; remapping by name dropped the event.
+const FO76_FO4_SHARED_DNA_REMAP_SIGS: &[&str] = &["QUST"];
+
+fn editor_id_shared_dna_remap_sigs(source: Game, target: Game) -> Vec<String> {
+    if source != Game::Fo76 || target != Game::Fo4 {
+        return Vec::new();
+    }
+    FO76_FO4_SHARED_DNA_REMAP_SIGS
+        .iter()
+        .map(|sig| (*sig).to_owned())
+        .collect()
+}
+
 fn editor_id_vanilla_remap_blocked_source_form_keys(
     source: Game,
     target: Game,
@@ -2463,6 +2584,8 @@ fn editor_id_vanilla_remap_blocked_source_form_keys(
     let source_plugin = interner.intern(FO76_MASTER_PLUGIN_NAME);
     FO76_FO4_VANILLA_REMAP_BLOCKED_FORM_IDS
         .iter()
+        .chain(FO76_FO4_RE_TRIGGER_BASE_FORM_IDS)
+        .chain(FO76_CHARACTER_PRESET_FORM_IDS)
         .map(|&local| FormKey {
             local,
             plugin: source_plugin,
@@ -2964,6 +3087,7 @@ const FNV_FO3_FO4_HUMANOID_RACE_SUBSTITUTIONS: &[(&str, u32)] = &[
     ("AfricanAmericanTribal", FO4_HUMAN_RACE_LOCAL),
 ];
 
+#[cfg(test)]
 /// Skyrim humanoids use target-native FO4 race records. Human and child heads
 /// are projected onto the corresponding FO4 topology; beast and Dremora heads
 /// keep their baked source topology inside a converted FO4 FaceGeom asset.
@@ -3177,6 +3301,7 @@ fn fo76_fo4_forced_substitution_mappings(
         .collect()
 }
 
+#[cfg(test)]
 fn source_target_mappings_from_preflight(
     source_entries: impl IntoIterator<Item = (Sym, FormKey, crate::ids::SigCode)>,
     target_entries: &[(Sym, FormKey, crate::ids::SigCode)],
@@ -3221,6 +3346,7 @@ fn source_target_mappings_from_preflight_with_skips(
 
     let pair_blocked_source_form_keys =
         editor_id_vanilla_remap_blocked_source_form_keys(source, target, interner);
+    let shared_dna_remap_signatures = editor_id_shared_dna_remap_sigs(source, target);
     let mut mappings = Vec::new();
     for (source_editor_id, source_form_key, source_signature) in source_entries {
         if blocked_source_form_keys.contains(&source_form_key)
@@ -3240,7 +3366,11 @@ fn source_target_mappings_from_preflight_with_skips(
         let normalized_editor_id = normalized_eid_sym(source_editor_id, interner);
         if let Some(&target_form_key) = target_by_key.get(&(normalized_editor_id, source_signature))
         {
-            mappings.push((source_form_key, target_form_key));
+            if !requires_shared_dna_for_remap(&shared_dna_remap_signatures, source_signature)
+                || target_form_key.local & 0x00FF_FFFF == source_form_key.local & 0x00FF_FFFF
+            {
+                mappings.push((source_form_key, target_form_key));
+            }
             continue;
         }
         if source == Game::Fo76 && target == Game::Fo4 {
@@ -3926,7 +4056,7 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         relocation_members: relocation.members,
         relocation_mesh_only_members: relocation.mesh_only_members,
         nif_dependencies: relocation.nif_dependencies,
-        relocation_preparation: relocation.preparation,
+        _relocation_preparation: relocation.preparation,
         output_nif_dependencies: Arc::default(),
         relocation_warnings: relocation.warnings,
         target_assets,
@@ -4074,10 +4204,6 @@ impl ConversionRun {
         )
         .map_err(RunError::InvalidConfig)?;
         Ok(())
-    }
-
-    pub(crate) fn creature_primary_npc_reservations(&self) -> &[CreaturePrimaryNpcReservation] {
-        &self.creature_primary_npc_reservations
     }
 
     pub(crate) fn creature_ancillary_npc_reservations(&self) -> &[CreatureAncillaryNpcReservation] {
@@ -8064,12 +8190,13 @@ impl ConversionRun {
     }
 
     pub fn translate_all(&mut self) -> Result<TranslateStats, RunError> {
+        #[cfg(test)]
+        let _catalog_guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         self.require_source_handle()?;
         let translate_all_started = std::time::Instant::now();
         self.preflight_legacy_packs_from_handle()?;
         self.emit_status("translate_all: building mapper state…");
         self.prepare_mapper_state_for_translation()?;
-        self.index_fo76_condition_forms();
         self.index_fo76_inherited_object_templates();
         self.emit_status(&format!(
             "translate_all: mapper state ready in {:.1}s; enumerating source records…",
@@ -8162,6 +8289,8 @@ impl ConversionRun {
         &mut self,
         source_path: &std::path::Path,
     ) -> Result<TranslateStats, RunError> {
+        #[cfg(test)]
+        let _catalog_guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         self.require_source_handle()?;
         crate::store2::translate_v2::translate_all_v2(self, source_path)
     }
@@ -9283,6 +9412,10 @@ impl ConversionRun {
                 &mut translated_cell,
                 &self.interner,
             );
+            crate::fixups::allow_interior_fast_travel::allow_fast_travel_from_interior(
+                &mut translated_cell,
+                &self.interner,
+            );
             cell_formkey_by_obj.insert(cell_obj, translated_cell.form_key);
             translated_cells.push((cell_obj, translated_cell));
         }
@@ -9577,6 +9710,7 @@ impl ConversionRun {
                 &mut translated,
                 &state.target_eid_index,
                 &state.options.vanilla_remap_blocked_source_form_keys,
+                &state.options.shared_dna_remap_signatures,
                 &self.interner,
                 is_editor_id_collision_rename_forced(self.source, self.target, translated_sig),
             )
@@ -9830,7 +9964,6 @@ impl ConversionRun {
             .mapper_state
             .as_ref()
             .expect("mapper_state initialized before projected NAVM emit");
-        let event_tx = self.event_tx.clone();
         let interner = &self.interner;
         let schema_source = &*self.schema_source;
         let schema_target = &*self.schema_target;
@@ -10095,6 +10228,7 @@ impl ConversionRun {
             &mut translated,
             &mapper_base.target_eid_index,
             &mapper_base.options.vanilla_remap_blocked_source_form_keys,
+            &mapper_base.options.shared_dna_remap_signatures,
             interner,
             false,
         ) {
@@ -10410,7 +10544,7 @@ impl ConversionRun {
                 }
                 _ => None,
             };
-            if crate::translator::pair_hooks::fo76_fo4::is_combined_player_dialogue_root(
+            if crate::translator::pair_hooks::fo76_fo4::is_combined_player_dialogue_choice(
                 &info,
                 dial_prompt.is_some(),
             ) {
@@ -10592,14 +10726,14 @@ impl ConversionRun {
 
     pub(crate) fn prepare_mapper_state_for_translation(&mut self) -> Result<(), RunError> {
         if !self.creature_dependency_plan_installed {
-            return self.init_mapper_state();
-        }
-        if self.mapper_state.is_none() {
+            self.init_mapper_state()?;
+        } else if self.mapper_state.is_none() {
             return Err(RunError::InvalidConfig(
                 "mapper state was released after creature dependency reservations were installed"
                     .to_string(),
             ));
         }
+        self.index_fo76_condition_forms();
         Ok(())
     }
 
@@ -10647,6 +10781,7 @@ impl ConversionRun {
                     self.target,
                     &self.interner,
                 ),
+            shared_dna_remap_signatures: editor_id_shared_dna_remap_sigs(self.source, self.target),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -11473,6 +11608,7 @@ impl ConversionRun {
                             &mut translated,
                             &state.target_eid_index,
                             &state.options.vanilla_remap_blocked_source_form_keys,
+                            &state.options.shared_dna_remap_signatures,
                             &self.interner,
                             is_editor_id_collision_rename_forced(
                                 self.source,
@@ -11488,6 +11624,7 @@ impl ConversionRun {
                     self.mapper_state.as_ref().and_then(|state| {
                         target_collision_donor_form_key(
                             &state.target_eid_index,
+                            &state.options.shared_dna_remap_signatures,
                             &self.interner,
                             old,
                             translated.sig,
@@ -11715,6 +11852,9 @@ impl ConversionRun {
                             player_form_key,
                             xdi_plan
                                 .and_then(|plan| plan.combined_info_prompt_fallbacks.get(&fk.local)),
+                            xdi_plan.is_some_and(|plan| {
+                                plan.conditional_npc_response_infos.contains(&fk.local)
+                            }),
                             &self.interner,
                         )
                         .map_err(|error| {
@@ -12252,6 +12392,7 @@ impl ConversionRun {
                 self.target,
             ),
             vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
+            shared_dna_remap_signatures: editor_id_shared_dna_remap_sigs(self.source, self.target),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -12536,6 +12677,7 @@ impl ConversionRun {
                 self.target,
             ),
             vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
+            shared_dna_remap_signatures: editor_id_shared_dna_remap_sigs(self.source, self.target),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -13024,6 +13166,7 @@ impl ConversionRun {
                 self.target,
             ),
             vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
+            shared_dna_remap_signatures: editor_id_shared_dna_remap_sigs(self.source, self.target),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -13117,6 +13260,7 @@ impl ConversionRun {
                 self.target,
             ),
             vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
+            shared_dna_remap_signatures: editor_id_shared_dna_remap_sigs(self.source, self.target),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -13188,6 +13332,7 @@ impl ConversionRun {
                 self.target,
             ),
             vanilla_remap_blocked_source_form_keys: FxHashSet::default(),
+            shared_dna_remap_signatures: editor_id_shared_dna_remap_sigs(self.source, self.target),
             preserve_source_ids: self.config.preserve_source_ids,
             generated_object_id_floor: self.config.generated_object_id_floor,
             resolution_mode: if self.config.strict_mapper {
@@ -16543,61 +16688,6 @@ mod tests {
     }
 
     #[test]
-    fn optional_installed_fallout4_hack_root_matches_runtime_contract() {
-        use esp_authoring_core::plugin_runtime::{
-            plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_load_no_py,
-            plugin_handle_new_native,
-        };
-
-        let Some(data_dir) = std::env::var_os("FO4_QUEST_CORPUS_DATA_DIR").map(PathBuf::from)
-        else {
-            return;
-        };
-        let fallout4_path = data_dir.join("Fallout4.esm");
-        if !fallout4_path.is_file() {
-            return;
-        }
-        let source = plugin_handle_new_native("Dawnguard.esm", Some("skyrimse")).unwrap();
-        let target = plugin_handle_new_native("SkyrimStoryPort.esp", Some("fo4")).unwrap();
-        let fallout4 = plugin_handle_load_no_py(
-            fallout4_path.to_str().unwrap(),
-            Some("fo4"),
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        plugin_handle_add_master_native(target, "Fallout4.esm", None).unwrap();
-        let run_id = create_run(RunParams {
-            source: Game::SkyrimSe,
-            target: Game::Fo4,
-            source_handle_id: source,
-            target_handle_id: target,
-            master_handle_ids: vec![fallout4],
-            config: RunConfig {
-                output_plugin_name: "SkyrimStoryPort.esp".to_string(),
-                target_master_names: vec!["Fallout4.esm".to_string()],
-                ..Default::default()
-            },
-        })
-        .unwrap();
-        with_run(run_id, |run| {
-            let event =
-                crate::skyrimse_fo4_runtime::story_manager::SkyrimFo4StoryEvent::HackComputer;
-            let target_root = FormKey {
-                local: 0x1244D0,
-                plugin: run.interner.intern("Fallout4.esm"),
-            };
-            run.validate_skyrim_story_manager_target_event_root(event, target_root)
-        })
-        .unwrap();
-        drop_run(run_id).unwrap();
-        plugin_handle_close_native(source);
-        plugin_handle_close_native(target);
-        plugin_handle_close_native(fallout4);
-    }
-
-    #[test]
     fn fo76_kill_story_manager_fails_before_allocation_and_reopens_without_sm_records() {
         use esp_authoring_core::plugin_runtime::{
             plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_load_no_py,
@@ -16724,242 +16814,242 @@ mod tests {
     }
 
     #[test]
-    fn creature_dependency_plan_preserves_reserved_mapper_for_translation() {
-        let id = create_run(RunParams {
-            source: Game::Fnv,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esm".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
+    fn creature_dependency_plans_reserve_mappings_and_mark_batch_ownership() {
+        {
+            let id = create_run(RunParams {
+                source: Game::Fnv,
+                target: Game::Fo4,
+                source_handle_id: 9999,
+                target_handle_id: 9998,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Output.esm".into(),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
 
-        with_run(id, |run| {
-            run.prepare_mapper_state_for_creature_dependency_plan()?;
-            let source = FormKey {
-                local: 0x100,
-                plugin: run.interner.intern("FalloutNV.esm"),
-            };
-            run.install_legacy_creature_dependency_plan(Vec::new(), &[source], &[], 1)?;
-            let reserved_target = run
-                .mapper_state
-                .as_ref()
-                .and_then(|state| state.source_to_target.get(&source))
-                .copied()
-                .expect("creature reservation mapping");
-
-            run.prepare_mapper_state_for_translation()?;
-            assert_eq!(
-                run.mapper_state
+            with_run(id, |run| {
+                run.prepare_mapper_state_for_creature_dependency_plan()?;
+                let source = FormKey {
+                    local: 0x100,
+                    plugin: run.interner.intern("FalloutNV.esm"),
+                };
+                run.install_legacy_creature_dependency_plan(Vec::new(), &[source], &[], 1)?;
+                let reserved_target = run
+                    .mapper_state
                     .as_ref()
                     .and_then(|state| state.source_to_target.get(&source))
-                    .copied(),
-                Some(reserved_target)
+                    .copied()
+                    .expect("creature reservation mapping");
+
+                run.prepare_mapper_state_for_translation()?;
+                assert_eq!(
+                    run.mapper_state
+                        .as_ref()
+                        .and_then(|state| state.source_to_target.get(&source))
+                        .copied(),
+                    Some(reserved_target)
+                );
+
+                run.release_remap_state();
+                let error = run.prepare_mapper_state_for_translation().unwrap_err();
+                assert!(error.to_string().contains(
+                    "mapper state was released after creature dependency reservations were installed"
+                ));
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
+
+            drop_run(id).unwrap();
+        }
+        {
+            let id = create_run(RunParams {
+                source: Game::SkyrimSe,
+                target: Game::Fo4,
+                source_handle_id: 9999,
+                target_handle_id: 9998,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Output.esm".into(),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+
+            with_run(id, |run| {
+                run.prepare_mapper_state_for_creature_dependency_plan()?;
+                let source_plugin = run.interner.intern("Skyrim.esm");
+                let race = FormKey {
+                    local: 0x100,
+                    plugin: source_plugin,
+                };
+                let npc = FormKey {
+                    local: 0x101,
+                    plugin: source_plugin,
+                };
+                let armor = FormKey {
+                    local: 0x102,
+                    plugin: source_plugin,
+                };
+                let owner = SkyrimCreatureReservationOwner {
+                    source_race: race,
+                    motion_family_id: "wolf".to_string(),
+                    normalized_project_path: "wolf/wolfbehavior.hkx".to_string(),
+                };
+                run.install_skyrim_creature_dependency_plan(
+                    Vec::new(),
+                    vec![
+                        SkyrimCreatureReservationSource {
+                            source: race,
+                            kind: SkyrimCreatureReservedRecordKind::Race,
+                            owners: vec![owner.clone()],
+                        },
+                        SkyrimCreatureReservationSource {
+                            source: npc,
+                            kind: SkyrimCreatureReservedRecordKind::Npc,
+                            owners: vec![owner.clone()],
+                        },
+                        SkyrimCreatureReservationSource {
+                            source: armor,
+                            kind: SkyrimCreatureReservedRecordKind::Armor,
+                            owners: vec![owner],
+                        },
+                    ],
+                    1,
+                )?;
+
+                assert!(run.is_skyrim_creature_batch_owned(race));
+                assert!(run.is_skyrim_creature_batch_owned(npc));
+                assert!(!run.is_skyrim_creature_batch_owned(armor));
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
+
+            drop_run(id).unwrap();
+        }
+    }
+
+    #[test]
+    fn legacy_creature_npc_reservations_are_canonical_exact_and_atomic() {
+        {
+            let interner = StringInterner::new();
+            let source_plugin = interner.intern("FalloutNV.esm");
+            let primary_creature_sources = [0x101u32, 0x100]
+                .into_iter()
+                .map(|local| FormKey {
+                    local,
+                    plugin: source_plugin,
+                })
+                .collect::<Vec<_>>();
+            let mut state = MapperState::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "Output.esm".to_string(),
+                    ..Default::default()
+                },
             );
 
-            run.release_remap_state();
-            let error = run.prepare_mapper_state_for_translation().unwrap_err();
-            assert!(error.to_string().contains(
-                "mapper state was released after creature dependency reservations were installed"
-            ));
-            Ok::<_, RunError>(())
-        })
-        .unwrap();
-
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn skyrim_creature_dependency_plan_marks_source_rig_records_as_batch_owned() {
-        let id = create_run(RunParams {
-            source: Game::SkyrimSe,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esm".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        with_run(id, |run| {
-            run.prepare_mapper_state_for_creature_dependency_plan()?;
-            let source_plugin = run.interner.intern("Skyrim.esm");
-            let race = FormKey {
-                local: 0x100,
-                plugin: source_plugin,
-            };
-            let npc = FormKey {
-                local: 0x101,
-                plugin: source_plugin,
-            };
-            let armor = FormKey {
-                local: 0x102,
-                plugin: source_plugin,
-            };
-            let owner = SkyrimCreatureReservationOwner {
-                source_race: race,
-                motion_family_id: "wolf".to_string(),
-                normalized_project_path: "wolf/wolfbehavior.hkx".to_string(),
-            };
-            run.install_skyrim_creature_dependency_plan(
-                Vec::new(),
-                vec![
-                    SkyrimCreatureReservationSource {
-                        source: race,
-                        kind: SkyrimCreatureReservedRecordKind::Race,
-                        owners: vec![owner.clone()],
-                    },
-                    SkyrimCreatureReservationSource {
-                        source: npc,
-                        kind: SkyrimCreatureReservedRecordKind::Npc,
-                        owners: vec![owner.clone()],
-                    },
-                    SkyrimCreatureReservationSource {
-                        source: armor,
-                        kind: SkyrimCreatureReservedRecordKind::Armor,
-                        owners: vec![owner],
-                    },
-                ],
-                1,
-            )?;
-
-            assert!(run.is_skyrim_creature_batch_owned(race));
-            assert!(run.is_skyrim_creature_batch_owned(npc));
-            assert!(!run.is_skyrim_creature_batch_owned(armor));
-            Ok::<_, RunError>(())
-        })
-        .unwrap();
-
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn creature_primary_npc_reservations_are_sorted_exact_and_atomic() {
-        let interner = StringInterner::new();
-        let source_plugin = interner.intern("FalloutNV.esm");
-        let primary_creature_sources = [0x101u32, 0x100]
-            .into_iter()
-            .map(|local| FormKey {
-                local,
-                plugin: source_plugin,
-            })
-            .collect::<Vec<_>>();
-        let mut state = MapperState::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esm".to_string(),
-                ..Default::default()
-            },
-        );
-
-        let reservations = allocate_creature_primary_npc_reservations(
-            &mut state,
-            &interner,
-            &primary_creature_sources,
-            2,
-        )
-        .expect("reservations");
-
-        assert_eq!(
-            reservations
-                .iter()
-                .map(|reservation| reservation.source.local)
-                .collect::<Vec<_>>(),
-            vec![0x100, 0x101]
-        );
-        assert!(reservations.iter().all(|reservation| {
-            interner.resolve(reservation.target.plugin) == Some("Output.esm")
-                && state.source_to_target[&reservation.source] == reservation.target
-                && state.leased_object_ids.contains(&reservation.target.local)
-                && !state.used_object_ids.contains(&reservation.target.local)
-        }));
-
-        let leased_local = reservations[0].target.local;
-        let unrelated_source = FormKey {
-            local: leased_local,
-            plugin: interner.intern("Other.esm"),
-        };
-        let unrelated_target = FormKeyMapper::from_state(&mut state, &interner)
-            .allocate_or_resolve(unrelated_source, None, SigCode::from_str("CELL").unwrap());
-        assert_ne!(unrelated_target.local, leased_local);
-
-        let before = state.source_to_target.clone();
-        assert!(
-            allocate_creature_primary_npc_reservations(
+            let reservations = allocate_creature_primary_npc_reservations(
                 &mut state,
                 &interner,
                 &primary_creature_sources,
                 2,
             )
-            .is_err()
-        );
-        assert_eq!(state.source_to_target, before);
-    }
+            .expect("reservations");
 
-    #[test]
-    fn legacy_ancillary_npc_reservations_are_canonical_mapped_and_atomic() {
-        let interner = StringInterner::new();
-        let fnv = interner.intern("FalloutNV.esm");
-        let fo3 = interner.intern("Fallout3.esm");
-        let source = |plugin, local| FormKey { plugin, local };
-        let mut state = MapperState::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esm".to_string(),
-                ..Default::default()
-            },
-        );
-        let sources = vec![
-            source(fnv, 0x300),
-            source(fo3, 0x200),
-            source(fnv, 0x100),
-            source(fnv, 0x300),
-        ];
+            assert_eq!(
+                reservations
+                    .iter()
+                    .map(|reservation| reservation.source.local)
+                    .collect::<Vec<_>>(),
+                vec![0x100, 0x101]
+            );
+            assert!(reservations.iter().all(|reservation| {
+                interner.resolve(reservation.target.plugin) == Some("Output.esm")
+                    && state.source_to_target[&reservation.source] == reservation.target
+                    && state.leased_object_ids.contains(&reservation.target.local)
+                    && !state.used_object_ids.contains(&reservation.target.local)
+            }));
 
-        let reservations =
-            allocate_creature_ancillary_npc_reservations(&mut state, &interner, &sources)
-                .expect("ancillary NPC reservations");
+            let leased_local = reservations[0].target.local;
+            let unrelated_source = FormKey {
+                local: leased_local,
+                plugin: interner.intern("Other.esm"),
+            };
+            let unrelated_target = FormKeyMapper::from_state(&mut state, &interner)
+                .allocate_or_resolve(unrelated_source, None, SigCode::from_str("CELL").unwrap());
+            assert_ne!(unrelated_target.local, leased_local);
 
-        assert_eq!(reservations.len(), 3);
-        assert_eq!(
-            reservations
-                .iter()
-                .map(|reservation| {
-                    (
-                        interner.resolve(reservation.source.plugin).unwrap(),
-                        reservation.source.local,
-                    )
-                })
-                .collect::<Vec<_>>(),
-            vec![
-                ("Fallout3.esm", 0x200),
-                ("FalloutNV.esm", 0x100),
-                ("FalloutNV.esm", 0x300),
-            ]
-        );
-        assert!(reservations.iter().all(|reservation| {
-            reservation.target.local != 0
-                && state.source_to_target[&reservation.source] == reservation.target
-        }));
+            let before = state.source_to_target.clone();
+            assert!(
+                allocate_creature_primary_npc_reservations(
+                    &mut state,
+                    &interner,
+                    &primary_creature_sources,
+                    2,
+                )
+                .is_err()
+            );
+            assert_eq!(state.source_to_target, before);
+        }
+        {
+            let interner = StringInterner::new();
+            let fnv = interner.intern("FalloutNV.esm");
+            let fo3 = interner.intern("Fallout3.esm");
+            let source = |plugin, local| FormKey { plugin, local };
+            let mut state = MapperState::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "Output.esm".to_string(),
+                    ..Default::default()
+                },
+            );
+            let sources = vec![
+                source(fnv, 0x300),
+                source(fo3, 0x200),
+                source(fnv, 0x100),
+                source(fnv, 0x300),
+            ];
 
-        let before = state.clone();
-        let error = allocate_creature_ancillary_npc_reservations(
-            &mut state,
-            &interner,
-            &[source(fnv, 0x400), source(fo3, 0x200)],
-        )
-        .expect_err("pre-mapped ancillary NPC must roll back");
-        assert!(error.contains("already has a mapping"));
-        assert_eq!(state.source_to_target, before.source_to_target);
-        assert_eq!(state.next_object_id, before.next_object_id);
-        assert_eq!(state.used_object_ids, before.used_object_ids);
+            let reservations =
+                allocate_creature_ancillary_npc_reservations(&mut state, &interner, &sources)
+                    .expect("ancillary NPC reservations");
+
+            assert_eq!(reservations.len(), 3);
+            assert_eq!(
+                reservations
+                    .iter()
+                    .map(|reservation| {
+                        (
+                            interner.resolve(reservation.source.plugin).unwrap(),
+                            reservation.source.local,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("Fallout3.esm", 0x200),
+                    ("FalloutNV.esm", 0x100),
+                    ("FalloutNV.esm", 0x300),
+                ]
+            );
+            assert!(reservations.iter().all(|reservation| {
+                reservation.target.local != 0
+                    && state.source_to_target[&reservation.source] == reservation.target
+            }));
+
+            let before = state.clone();
+            let error = allocate_creature_ancillary_npc_reservations(
+                &mut state,
+                &interner,
+                &[source(fnv, 0x400), source(fo3, 0x200)],
+            )
+            .expect_err("pre-mapped ancillary NPC must roll back");
+            assert!(error.contains("already has a mapping"));
+            assert_eq!(state.source_to_target, before.source_to_target);
+            assert_eq!(state.next_object_id, before.next_object_id);
+            assert_eq!(state.used_object_ids, before.used_object_ids);
+        }
     }
 
     #[test]
@@ -17166,7 +17256,7 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_creature_ancillary_duplicate_rolls_back_allocator_state() {
+    fn skyrim_creature_ancillary_invalid_requests_roll_back_allocator_state() {
         let interner = StringInterner::new();
         let source_plugin = interner.intern("Skyrim.esm");
         let output_plugin = interner.intern("Output.esm");
@@ -17217,10 +17307,7 @@ mod tests {
         assert_eq!(state.source_to_target, before.source_to_target);
         assert_eq!(state.next_object_id, before.next_object_id);
         assert_eq!(state.used_object_ids, before.used_object_ids);
-    }
 
-    #[test]
-    fn skyrim_creature_ancillary_unreserved_race_rolls_back_allocator_state() {
         let interner = StringInterner::new();
         let source_plugin = interner.intern("Skyrim.esm");
         let mut state = MapperState::new(
@@ -17366,27 +17453,12 @@ mod tests {
     }
 
     fn vertical_slice_script_source(local: u32) -> String {
-        let fixture =
-            include_str!("../../../python/bacup_lib/tests/test_fnv_quest_vertical_slice.py");
-        let marker = format!("    0x{local:06X}: \"\"\"");
-        let start = fixture.find(&marker).unwrap() + marker.len();
-        let end = fixture[start..].find("\"\"\",").unwrap() + start;
-        fixture[start..end]
-            .replace("\r\n", "\n")
-            .replace("\\t", "\t")
-    }
-
-    #[test]
-    fn strict_slice_surfaces_scpt_failure_before_dynamic_alias_cardinality() {
-        let error = ensure_no_deferred_translation_failures(&[(
-            "SCPT".to_string(),
-            "TecMineHostage".to_string(),
-            "parse failed at else(condition)".to_string(),
-        )])
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("SCPT TecMineHostage: parse failed at else(condition)"));
-        assert!(!error.contains("dynamic package data aliases"));
+        match local {
+            0x123191 => include_str!("test_fixtures/fnv_vertical_slice/123191.txt"),
+            0x134491 => include_str!("test_fixtures/fnv_vertical_slice/134491.txt"),
+            _ => panic!("no vertical-slice script fixture for {local:06X}"),
+        }
+        .replace("\r\n", "\n")
     }
 
     #[test]
@@ -17431,6 +17503,16 @@ mod tests {
                 .to_string()
                 .contains("unexpectedly carries a Papyrus fragment")
         );
+
+        let error = ensure_no_deferred_translation_failures(&[(
+            "SCPT".to_string(),
+            "TecMineHostage".to_string(),
+            "parse failed at else(condition)".to_string(),
+        )])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("SCPT TecMineHostage: parse failed at else(condition)"));
+        assert!(!error.contains("dynamic package data aliases"));
     }
 
     #[test]
@@ -18566,7 +18648,7 @@ mod tests {
             .is_err()
         );
         let mut wrong_dependency = receipt.clone();
-        wrong_dependency.source_dependency_form_key = "10E908:FalloutNV.esm".to_string();
+        wrong_dependency.source_dependency_form_key = "10E909:FalloutNV.esm".to_string();
         assert!(
             account_fnv_quest_fragment_adaptations(
                 "11F935:FalloutNV.esm",
@@ -18719,10 +18801,7 @@ mod tests {
             },
             &interner,
         ));
-    }
 
-    #[test]
-    fn legacy_actor_placement_reads_achr_base_formkey() {
         let interner = StringInterner::new();
         let base = FormKey {
             local: 0x0012_3456,
@@ -18861,10 +18940,7 @@ mod tests {
             messages.last().unwrap(),
             "[fixups_v2] diagnostic encounter_zones iter=1 truncated=2 total=34"
         );
-    }
 
-    #[test]
-    fn post_copy_fixup_report_emits_summary_warning_and_diagnostic_events() {
         let interner = StringInterner::new();
         let mut report = FixupReport::empty();
         report.records_changed = 3;
@@ -18962,28 +19038,8 @@ mod tests {
     }
 
     #[test]
-    fn source_worldspace_topology_rebuild_includes_skyrimse_to_fo4() {
-        assert!(supports_source_worldspace_topology_rebuild(
-            Game::SkyrimSe,
-            Game::Fo4
-        ));
-        assert!(supports_source_worldspace_topology_rebuild(
-            Game::Fnv,
-            Game::Fo4
-        ));
-        assert!(!supports_source_worldspace_topology_rebuild(
-            Game::Fo76,
-            Game::Fo4
-        ));
-        assert!(!supports_source_worldspace_topology_rebuild(
-            Game::SkyrimSe,
-            Game::SkyrimSe
-        ));
-    }
-
-    #[test]
     fn form_key_to_legacy_str_formats_python_legacy_shape() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let plugin = interner.intern("Output.esp");
         let fk = FormKey {
             local: 0x1234,
@@ -19023,7 +19079,7 @@ mod tests {
             grid: NvnmGrid::default(),
         };
 
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let mut record = Record::new(
             SigCode::from_str("NAVM").unwrap(),
             FormKey {
@@ -19057,7 +19113,7 @@ mod tests {
     }
 
     #[test]
-    fn config_preflight_rows_seed_mapper_state() {
+    fn config_preflight_rows_seed_mapper_state_with_case_insensitive_keys() {
         let interner = StringInterner::new();
         let cfg = RunConfig {
             output_plugin_name: "Output.esm".into(),
@@ -19070,33 +19126,17 @@ mod tests {
             target_master_names: vec!["Fallout4.esm".into()],
             ..Default::default()
         };
-        let mut entries = mapper_entries_from_preflight(&cfg, &interner);
+        let entries = mapper_entries_from_preflight(&cfg, &interner);
         assert_eq!(entries.len(), 1);
 
-        let (eid, fk, sig) = entries.remove(0);
+        let (eid, fk, sig) = entries[0];
         assert_eq!(interner.resolve(eid), Some("ammo10mm"));
         assert_eq!(interner.resolve(fk.plugin), Some("Fallout4.esm"));
         assert_eq!(fk.local, 0x01F276);
         assert_eq!(sig.as_str(), "AMMO");
-    }
 
-    #[test]
-    fn mixed_case_editor_ids_use_same_preflight_mapper_key() {
-        let interner = StringInterner::new();
-        let cfg = RunConfig {
-            output_plugin_name: "Output.esm".into(),
-            use_base_game_assets: true,
-            target_record_preflight: vec![TargetRecordPreflightRow {
-                editor_id: "Ammo10mm".into(),
-                signature: "AMMO".into(),
-                form_key: "01F276:Fallout4.esm".into(),
-            }],
-            ..Default::default()
-        };
-        let entries = mapper_entries_from_preflight(&cfg, &interner);
         let source_eid = interner.intern("ammo10MM");
         let normalized_source_eid = normalized_eid_sym(source_eid, &interner);
-        let sig = crate::ids::SigCode::from_str("AMMO").unwrap();
         let source_fk = FormKey {
             local: 0x800,
             plugin: interner.intern("SeventySix.esm"),
@@ -19171,123 +19211,158 @@ mod tests {
     }
 
     #[test]
-    fn fo76_fo4_weap_preflight_maps_cr_prefixed_editor_ids() {
-        let mut interner = StringInterner::new();
-        let weap_sig = SigCode::from_str("WEAP").unwrap();
-        let source_weap = FormKey::parse("0DF259@SeventySix.esm", &mut interner).unwrap();
-        let target_weap = FormKey::parse("0DF259@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("crAssaultronRightClaw");
-        let target_eid = interner.intern("assaultronrightclaw");
+    fn fo76_fo4_preflight_editor_id_remap_policy_by_signature() {
+        for (name, signature, source_key, target_key, source_editor_id, target_editor_id, mapped) in [
+            (
+                "weap_cr_prefix",
+                "WEAP",
+                "0DF259",
+                "0DF259@Fallout4.esm",
+                "crAssaultronRightClaw",
+                "assaultronrightclaw",
+                true,
+            ),
+            (
+                "weap_zzz_prefix",
+                "WEAP",
+                "0AB6AE",
+                "0AB6AE@Fallout4.esm",
+                "zzz_TutorialDummy10mm",
+                "tutorialdummy10mm",
+                true,
+            ),
+            (
+                "weap_cr_prefix_same_local_id",
+                "WEAP",
+                "09F24D",
+                "09F24D@Fallout4.esm",
+                "crMirelurkHunterSpitWeapon",
+                "weapmirelurkhunter01",
+                true,
+            ),
+            (
+                "custom_projectile_collision_layer",
+                "COLL",
+                "5B74D0",
+                "088768@Fallout4.esm",
+                "L_PROJ_NO_COLLIDE_PROJ",
+                "l_spell",
+                true,
+            ),
+            (
+                "same_local_id_without_weap_alias_prefix",
+                "WEAP",
+                "123456",
+                "123456@Fallout4.esm",
+                "SomeDifferentWeapon",
+                "otherweapon",
+                false,
+            ),
+            (
+                "package",
+                "PACK",
+                "407F9F",
+                "02A105@Fallout4.esm",
+                "followplayer",
+                "followplayer",
+                false,
+            ),
+            (
+                "unrelated_omod",
+                "OMOD",
+                "04F21D",
+                "04F21D@Fallout4.esm",
+                "mod_Null_Muzzle",
+                "mod_null_muzzle",
+                true,
+            ),
+            (
+                "static",
+                "STAT",
+                "012345",
+                "012345@Fallout4.esm",
+                "TerrainShelfRocks01",
+                "TerrainShelfRocks01",
+                false,
+            ),
+            (
+                "static_marker",
+                "STAT",
+                "00003B",
+                "00003B@Fallout4.esm",
+                "XMarker",
+                "xmarker",
+                true,
+            ),
+            (
+                "movable_static",
+                "MSTT",
+                "196D46",
+                "196D46@Fallout4.esm",
+                "Vehicle_ShuttleBus01",
+                "Vehicle_ShuttleBus01",
+                false,
+            ),
+            (
+                "wearable_armor",
+                "ARMO",
+                "210000",
+                "220000@Fallout4.esm",
+                "Armor_Raider_Chest",
+                "armor_raider_chest",
+                true,
+            ),
+            (
+                "wearable_armor_addon",
+                "ARMA",
+                "210001",
+                "220001@Fallout4.esm",
+                "Armor_Raider_Chest_AA",
+                "armor_raider_chest_aa",
+                true,
+            ),
+            (
+                "reused_cell_editor_id",
+                "CELL",
+                "261548",
+                "00DFF7@Fallout4.esm",
+                "RelayTower04Ext",
+                "relaytower04ext",
+                false,
+            ),
+            (
+                "info_defers_to_topic_parent",
+                "INFO",
+                "046CFE",
+                "046CFE@Fallout4.esm",
+                "PlayerCantPickMasterContainer",
+                "playercantpickmastercontainer",
+                false,
+            ),
+        ] {
+            let mut interner = StringInterner::new();
+            let sig = SigCode::from_str(signature).unwrap();
+            let source =
+                FormKey::parse(&format!("{source_key}@SeventySix.esm"), &mut interner).unwrap();
+            let target = FormKey::parse(target_key, &mut interner).unwrap();
+            let source_eid = interner.intern(source_editor_id);
+            let target_eid = interner.intern(target_editor_id);
 
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_weap, weap_sig)],
-            &[(target_eid, target_weap, weap_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
+            let mappings = source_target_mappings_from_preflight(
+                [(source_eid, source, sig)],
+                &[(target_eid, target, sig)],
+                &interner,
+                Game::Fo76,
+                Game::Fo4,
+            );
 
-        assert_eq!(mappings, vec![(source_weap, target_weap)]);
-    }
-
-    #[test]
-    fn fo76_fo4_weap_preflight_maps_zzz_prefixed_editor_ids() {
-        let mut interner = StringInterner::new();
-        let weap_sig = SigCode::from_str("WEAP").unwrap();
-        let source_weap = FormKey::parse("0AB6AE@SeventySix.esm", &mut interner).unwrap();
-        let target_weap = FormKey::parse("0AB6AE@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("zzz_TutorialDummy10mm");
-        let target_eid = interner.intern("tutorialdummy10mm");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_weap, weap_sig)],
-            &[(target_eid, target_weap, weap_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(mappings, vec![(source_weap, target_weap)]);
-    }
-
-    #[test]
-    fn fo76_fo4_weap_preflight_maps_cr_prefixed_same_local_id() {
-        let mut interner = StringInterner::new();
-        let weap_sig = SigCode::from_str("WEAP").unwrap();
-        let source_weap = FormKey::parse("09F24D@SeventySix.esm", &mut interner).unwrap();
-        let target_weap = FormKey::parse("09F24D@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("crMirelurkHunterSpitWeapon");
-        let target_eid = interner.intern("weapmirelurkhunter01");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_weap, weap_sig)],
-            &[(target_eid, target_weap, weap_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(mappings, vec![(source_weap, target_weap)]);
-    }
-
-    #[test]
-    fn fo76_fo4_preflight_maps_custom_projectile_collision_layer() {
-        let mut interner = StringInterner::new();
-        let coll_sig = SigCode::from_str("COLL").unwrap();
-        let source_layer = FormKey::parse("5B74D0@SeventySix.esm", &mut interner).unwrap();
-        let target_layer = FormKey::parse("088768@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("L_PROJ_NO_COLLIDE_PROJ");
-        let target_eid = interner.intern("l_spell");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_layer, coll_sig)],
-            &[(target_eid, target_layer, coll_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(mappings, vec![(source_layer, target_layer)]);
-    }
-
-    #[test]
-    fn fo76_fo4_preflight_same_local_id_remap_requires_weap_alias_prefix() {
-        let mut interner = StringInterner::new();
-        let weap_sig = SigCode::from_str("WEAP").unwrap();
-        let source_weap = FormKey::parse("123456@SeventySix.esm", &mut interner).unwrap();
-        let target_weap = FormKey::parse("123456@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("SomeDifferentWeapon");
-        let target_eid = interner.intern("otherweapon");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_weap, weap_sig)],
-            &[(target_eid, target_weap, weap_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert!(mappings.is_empty());
-    }
-
-    #[test]
-    fn preflight_source_mappings_do_not_remap_packages_by_editor_id() {
-        let mut interner = StringInterner::new();
-        let pack_sig = SigCode::from_str("PACK").unwrap();
-        let source_pack = FormKey::parse("407F9F@SeventySix.esm", &mut interner).unwrap();
-        let target_pack = FormKey::parse("02A105@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("followplayer");
-        let target_eid = interner.intern("followplayer");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_pack, pack_sig)],
-            &[(target_eid, target_pack, pack_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert!(mappings.is_empty());
+            let expected = if mapped {
+                vec![(source, target)]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(mappings, expected, "{name}");
+        }
     }
 
     #[test]
@@ -19363,6 +19438,30 @@ mod tests {
     }
 
     #[test]
+    fn fo76_character_presets_keep_source_faces_despite_matching_editor_ids() {
+        let interner = StringInterner::new();
+        let sig = SigCode::from_str("NPC_").unwrap();
+        for &local in FO76_CHARACTER_PRESET_FORM_IDS {
+            let source = FormKey { plugin: interner.intern("SeventySix.esm"), local };
+            let target = FormKey { plugin: interner.intern("Fallout4.esm"), local };
+            let eid = interner.intern(&format!("Preset{local:X}"));
+            let targets = [(eid, target, sig)];
+            assert!(source_target_mappings_from_preflight(
+                [(eid, source, sig)], &targets, &interner, Game::Fo76, Game::Fo4,
+            ).is_empty());
+            let mut mapper = FormKeyMapper::new(targets, MapperOptions {
+                output_plugin_name: "SeventySix.esm".into(),
+                use_base_game_assets: true,
+                preserve_source_ids: true,
+                vanilla_remap_blocked_source_form_keys:
+                    editor_id_vanilla_remap_blocked_source_form_keys(Game::Fo76, Game::Fo4, &interner),
+                ..Default::default()
+            }, &interner);
+            assert_eq!(mapper.allocate_or_resolve(source, Some(eid), sig), source);
+        }
+    }
+
+    #[test]
     fn fo76_fo4_newspaper_collision_stays_source_owned_and_namespaced() {
         let mut interner = StringInterner::new();
         let misc_sig = SigCode::from_str("MISC").unwrap();
@@ -19400,6 +19499,7 @@ mod tests {
                 &mut record,
                 &target_eid_index,
                 &blocked,
+                &[],
                 &interner,
                 false,
             ),
@@ -19510,92 +19610,14 @@ mod tests {
     }
 
     #[test]
-    fn fo76_fo4_range_offset_fix_keeps_unrelated_omod_remaps() {
-        let mut interner = StringInterner::new();
-        let source = FormKey::parse("04F21D@SeventySix.esm", &mut interner).unwrap();
-        let target = FormKey::parse("04F21D@Fallout4.esm", &mut interner).unwrap();
-        let eid = interner.intern("mod_Null_Muzzle");
-        let sig = SigCode::from_str("OMOD").unwrap();
-        assert_eq!(
-            source_target_mappings_from_preflight(
-                [(eid, source, sig)],
-                &[(interner.intern("mod_null_muzzle"), target, sig)],
-                &interner,
-                Game::Fo76,
-                Game::Fo4,
-            ),
-            vec![(source, target)]
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_static_preflight_mappings_do_not_remap_by_editor_id() {
-        let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_stat = FormKey::parse("012345@SeventySix.esm", &mut interner).unwrap();
-        let target_stat = FormKey::parse("012345@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("TerrainShelfRocks01");
-        let target_eid = interner.intern("TerrainShelfRocks01");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_stat, stat_sig)],
-            &[(target_eid, target_stat, stat_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert!(mappings.is_empty());
-    }
-
-    #[test]
-    fn fo76_fo4_static_marker_preflight_mappings_remap_by_editor_id() {
-        let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_marker = FormKey::parse("00003B@SeventySix.esm", &mut interner).unwrap();
-        let target_marker = FormKey::parse("00003B@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("XMarker");
-        let target_eid = interner.intern("xmarker");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_marker, stat_sig)],
-            &[(target_eid, target_marker, stat_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert_eq!(mappings, vec![(source_marker, target_marker)]);
-    }
-
-    #[test]
-    fn fo76_fo4_movable_static_preflight_mappings_do_not_remap_by_editor_id() {
-        let mut interner = StringInterner::new();
-        let mstt_sig = SigCode::from_str("MSTT").unwrap();
-        let source_mstt = FormKey::parse("196D46@SeventySix.esm", &mut interner).unwrap();
-        let target_mstt = FormKey::parse("196D46@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("Vehicle_ShuttleBus01");
-        let target_eid = interner.intern("Vehicle_ShuttleBus01");
-
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_mstt, mstt_sig)],
-            &[(target_eid, target_mstt, mstt_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert!(mappings.is_empty());
-    }
-
-    #[test]
-    fn fnv_fo3_fo4_world_object_preflight_mappings_stay_source_owned() {
+    fn fnv_fo3_fo4_preflight_keeps_world_objects_source_owned_and_reuses_consumables() {
         for source_game in [Game::Fnv, Game::Fo3] {
-            let mut interner = StringInterner::new();
-            for (index, signature) in CROSS_GAME_FO4_WORLD_OBJECT_VANILLA_REMAP_BLOCKED_SIGS
+            let interner = StringInterner::new();
+            let cases = CROSS_GAME_FO4_WORLD_OBJECT_VANILLA_REMAP_BLOCKED_SIGS
                 .iter()
-                .enumerate()
-            {
+                .map(|signature| (*signature, false))
+                .chain([("ALCH", true), ("AMMO", true)]);
+            for (index, (signature, reuses_fo4)) in cases.enumerate() {
                 let sig = SigCode::from_str(signature).unwrap();
                 let source = FormKey {
                     local: 0x0010_0000 + index as u32,
@@ -19621,104 +19643,84 @@ mod tests {
                     Game::Fo4,
                 );
 
-                assert!(mappings.is_empty(), "{source_game:?} {signature}");
+                let expected = if reuses_fo4 {
+                    vec![(source, target)]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(mappings, expected, "{source_game:?} {signature}");
             }
         }
     }
 
     #[test]
-    fn fnv_fo3_fo4_consumable_preflight_mappings_still_reuse_fo4() {
-        for source_game in [Game::Fnv, Game::Fo3] {
+    fn legacy_fo4_mapper_reuses_markers_but_keeps_visible_world_records_source_owned() {
+        for (name, signature, source_key, target_key, editor_id, reuses_fo4) in [
+            (
+                "static_marker",
+                "STAT",
+                "00003B@FalloutNV.esm",
+                "00003B@Fallout4.esm",
+                "xmarker",
+                true,
+            ),
+            (
+                "visible_static",
+                "STAT",
+                "0C387F@Fallout3.esm",
+                "0C387F@Fallout4.esm",
+                "JunkWall01",
+                false,
+            ),
+            (
+                "wilderness_cell",
+                "CELL",
+                "0DDCAB@FalloutNV.esm",
+                "000D8A@DLCCoast.esm",
+                "wilderness",
+                false,
+            ),
+        ] {
             let mut interner = StringInterner::new();
-            for (index, signature) in ["ALCH", "AMMO"].into_iter().enumerate() {
-                let sig = SigCode::from_str(signature).unwrap();
-                let source = FormKey {
-                    local: 0x0010_0000 + index as u32,
-                    plugin: interner.intern(match source_game {
-                        Game::Fnv => "FalloutNV.esm",
-                        Game::Fo3 => "Fallout3.esm",
-                        _ => unreachable!(),
-                    }),
-                };
-                let target = FormKey {
-                    local: 0x0020_0000 + index as u32,
-                    plugin: interner.intern("Fallout4.esm"),
-                };
-                let editor_id = format!("Shared{signature}Item");
-                let source_editor_id = interner.intern(&editor_id);
-                let target_editor_id = interner.intern(&editor_id.to_ascii_lowercase());
+            let sig = SigCode::from_str(signature).unwrap();
+            let source = FormKey::parse(source_key, &mut interner).unwrap();
+            let target = FormKey::parse(target_key, &mut interner).unwrap();
+            let editor_id = interner.intern(editor_id);
+            let mut mapper = FormKeyMapper::new(
+                [(editor_id, target, sig)],
+                MapperOptions {
+                    output_plugin_name: "FalloutNV.esm".into(),
+                    use_base_game_assets: true,
+                    preserve_source_ids: true,
+                    vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
+                        Game::Fnv,
+                        Game::Fo4,
+                    ),
+                    ..Default::default()
+                },
+                &interner,
+            );
 
-                let mappings = source_target_mappings_from_preflight(
-                    [(source_editor_id, source, sig)],
-                    &[(target_editor_id, target, sig)],
-                    &interner,
-                    source_game,
-                    Game::Fo4,
-                );
+            let mapped = mapper.allocate_or_resolve(source, Some(editor_id), sig);
 
+            if reuses_fo4 {
+                assert_eq!(mapped, target, "{name}");
+            } else {
+                assert_eq!(mapped.local, source.local, "{name}");
                 assert_eq!(
-                    mappings,
-                    vec![(source, target)],
-                    "{source_game:?} {signature}"
+                    interner.resolve(mapped.plugin),
+                    Some("FalloutNV.esm"),
+                    "{name}"
                 );
+                assert_ne!(mapped, target, "{name}");
             }
         }
-    }
-
-    #[test]
-    fn fnv_fo4_static_marker_reuses_fo4_record() {
-        let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_marker = FormKey::parse("00003B@FalloutNV.esm", &mut interner).unwrap();
-        let target_marker = FormKey::parse("00003B@Fallout4.esm", &mut interner).unwrap();
-        let marker_editor_id = interner.intern("xmarker");
-        let mut mapper = FormKeyMapper::new(
-            [(marker_editor_id, target_marker, stat_sig)],
-            MapperOptions {
-                output_plugin_name: "FalloutNV.esm".into(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
-                    Game::Fnv,
-                    Game::Fo4,
-                ),
-                ..Default::default()
-            },
-            &mut interner,
-        );
-
-        let mapped = mapper.allocate_or_resolve(source_marker, Some(marker_editor_id), stat_sig);
-
-        assert_eq!(mapped, target_marker);
-    }
-
-    #[test]
-    fn fnv_fo4_visible_static_stays_source_owned() {
-        let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_static = FormKey::parse("0C387F@Fallout3.esm", &mut interner).unwrap();
-        let target_static = FormKey::parse("0C387F@Fallout4.esm", &mut interner).unwrap();
-        let editor_id = interner.intern("JunkWall01");
-        let mut mapper = FormKeyMapper::new(
-            [(editor_id, target_static, stat_sig)],
-            MapperOptions {
-                output_plugin_name: "FalloutNV.esm".into(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
-                    Game::Fnv,
-                    Game::Fo4,
-                ),
-                ..Default::default()
-            },
-            &mut interner,
-        );
-
-        let mapped = mapper.allocate_or_resolve(source_static, Some(editor_id), stat_sig);
-
-        assert_eq!(mapped.local, source_static.local);
-        assert_eq!(interner.resolve(mapped.plugin), Some("FalloutNV.esm"));
-        assert_ne!(mapped, target_static);
+        assert!(!allows_source_target_preflight_remap(
+            Game::Fnv,
+            Game::Fo4,
+            SigCode::from_str("CELL").unwrap(),
+            "Wilderness",
+        ));
     }
 
     #[test]
@@ -19762,42 +19764,6 @@ mod tests {
     }
 
     #[test]
-    fn fo76_fo4_wearable_armor_records_still_remap_by_editor_id() {
-        let mut interner = StringInterner::new();
-
-        for (sig_name, source_fk, target_fk, editor_id) in [
-            (
-                "ARMO",
-                "210000@SeventySix.esm",
-                "220000@Fallout4.esm",
-                "Armor_Raider_Chest",
-            ),
-            (
-                "ARMA",
-                "210001@SeventySix.esm",
-                "220001@Fallout4.esm",
-                "Armor_Raider_Chest_AA",
-            ),
-        ] {
-            let sig = SigCode::from_str(sig_name).unwrap();
-            let source = FormKey::parse(source_fk, &mut interner).unwrap();
-            let target = FormKey::parse(target_fk, &mut interner).unwrap();
-            let source_eid = interner.intern(editor_id);
-            let target_eid = interner.intern(&editor_id.to_ascii_lowercase());
-
-            let mappings = source_target_mappings_from_preflight(
-                [(source_eid, source, sig)],
-                &[(target_eid, target, sig)],
-                &interner,
-                Game::Fo76,
-                Game::Fo4,
-            );
-
-            assert_eq!(mappings, vec![(source, target)], "{sig_name} should remap");
-        }
-    }
-
-    #[test]
     fn fo76_fo4_skin_race_exact_target_match_does_not_need_protection() {
         let mut interner = StringInterner::new();
         let race_sig = SigCode::from_str("RACE").unwrap();
@@ -19828,305 +19794,160 @@ mod tests {
     }
 
     #[test]
-    fn fo76_fo4_cell_preflight_mappings_do_not_remap_reused_editor_ids() {
-        let mut interner = StringInterner::new();
-        let cell_sig = SigCode::from_str("CELL").unwrap();
-        let source_cell = FormKey::parse("261548@SeventySix.esm", &mut interner).unwrap();
-        let target_cell = FormKey::parse("00DFF7@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("RelayTower04Ext");
-        let target_eid = interner.intern("relaytower04ext");
+    fn fo76_fo4_editor_id_collisions_get_fo76_suffix_unless_vanilla_remap_candidate() {
+        for (
+            name,
+            source_sig,
+            source_key,
+            target_sig,
+            target_key,
+            editor_id,
+            force_same_signature,
+            renamed_to,
+        ) in [
+            (
+                "cell",
+                "CELL",
+                "261548@SeventySix.esm",
+                "CELL",
+                "00DFF7@Fallout4.esm",
+                "RelayTower04Ext",
+                false,
+                Some("RelayTower04Extfo76"),
+            ),
+            (
+                "cross_signature",
+                "ALCH",
+                "0330FB@SeventySix.esm",
+                "NPC_",
+                "01D15C@Fallout4.esm",
+                "Dogmeat",
+                false,
+                Some("Dogmeatfo76"),
+            ),
+            (
+                "blocked_same_signature",
+                "ARMO",
+                "112BED@SeventySix.esm",
+                "ARMO",
+                "00CE5F@DLCNukaWorld.esm",
+                "DLC04_SkinRadAnt01",
+                true,
+                Some("DLC04_SkinRadAnt01fo76"),
+            ),
+            (
+                "same_signature_candidate",
+                "ALCH",
+                "0330FB@SeventySix.esm",
+                "ALCH",
+                "0330FB@Fallout4.esm",
+                "Dogmeat",
+                false,
+                None,
+            ),
+            (
+                "decal_txst",
+                "TXST",
+                "061880@SeventySix.esm",
+                "TXST",
+                "061880@Fallout4.esm",
+                "DecalGrossStain02",
+                false,
+                Some("DecalGrossStain02fo76"),
+            ),
+            (
+                "non_decal_txst_candidate",
+                "TXST",
+                "061880@SeventySix.esm",
+                "TXST",
+                "061880@Fallout4.esm",
+                "LandscapeDirt01",
+                false,
+                None,
+            ),
+            (
+                "static_marker_candidate",
+                "STAT",
+                "00003B@SeventySix.esm",
+                "STAT",
+                "00003B@Fallout4.esm",
+                "XMarker",
+                true,
+                None,
+            ),
+        ] {
+            let mut interner = StringInterner::new();
+            let source_sig = SigCode::from_str(source_sig).unwrap();
+            let target_sig = SigCode::from_str(target_sig).unwrap();
+            let source = FormKey::parse(source_key, &mut interner).unwrap();
+            let target = FormKey::parse(target_key, &mut interner).unwrap();
+            let original_eid = interner.intern(editor_id);
+            let normalized_eid = interner.intern(&editor_id.to_ascii_lowercase());
+            let edid_sig = SubrecordSig::from_str("EDID").unwrap();
+            let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> =
+                FxHashMap::default();
+            target_eid_index.insert(normalized_eid, vec![(target, target_sig)]);
 
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_cell, cell_sig)],
-            &[(target_eid, target_cell, cell_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
+            let mut record = Record::new(source_sig, source);
+            record.eid = Some(original_eid);
+            record.fields.push(FieldEntry {
+                sig: edid_sig,
+                value: FieldValue::String(original_eid),
+            });
 
-        assert!(mappings.is_empty());
-    }
+            let renamed = rename_fo76_target_editor_id_collision(
+                &mut record,
+                &target_eid_index,
+                &FxHashSet::default(),
+                &[],
+                &interner,
+                force_same_signature,
+            );
 
-    #[test]
-    fn fo76_fo4_info_preflight_mappings_defer_to_topic_parent() {
-        let mut interner = StringInterner::new();
-        let info_sig = SigCode::from_str("INFO").unwrap();
-        let source_info = FormKey::parse("046CFE@SeventySix.esm", &mut interner).unwrap();
-        let target_info = FormKey::parse("046CFE@Fallout4.esm", &mut interner).unwrap();
-        let source_eid = interner.intern("PlayerCantPickMasterContainer");
-        let target_eid = interner.intern("playercantpickmastercontainer");
+            assert_eq!(
+                renamed,
+                renamed_to.map(|new| (editor_id.to_string(), new.to_string())),
+                "{name}"
+            );
+            let expected_eid = renamed_to.unwrap_or(editor_id);
+            assert_eq!(
+                record.eid.and_then(|eid| interner.resolve(eid)),
+                Some(expected_eid),
+                "{name}"
+            );
+            assert_eq!(record.fields.len(), 1, "{name}");
+            assert_eq!(record.fields[0].sig, edid_sig, "{name}");
+            assert_eq!(
+                match record.fields[0].value {
+                    FieldValue::String(sym) => interner.resolve(sym),
+                    _ => None,
+                },
+                Some(expected_eid),
+                "{name}"
+            );
+        }
 
-        let mappings = source_target_mappings_from_preflight(
-            [(source_eid, source_info, info_sig)],
-            &[(target_eid, target_info, info_sig)],
-            &interner,
-            Game::Fo76,
-            Game::Fo4,
-        );
-
-        assert!(mappings.is_empty());
-    }
-
-    #[test]
-    fn fnv_fo4_wilderness_cell_stays_source_owned() {
-        let mut interner = StringInterner::new();
-        let cell_sig = SigCode::from_str("CELL").unwrap();
-        let source_cell = FormKey::parse("0DDCAB@FalloutNV.esm", &mut interner).unwrap();
-        let target_cell = FormKey::parse("000D8A@DLCCoast.esm", &mut interner).unwrap();
-        let wilderness = interner.intern("wilderness");
-        let mut mapper = FormKeyMapper::new(
-            [(wilderness, target_cell, cell_sig)],
-            MapperOptions {
-                output_plugin_name: "FalloutNV.esm".into(),
-                use_base_game_assets: true,
-                vanilla_remap_blocked_signatures: editor_id_vanilla_remap_blocked_sigs(
-                    Game::Fnv,
-                    Game::Fo4,
-                ),
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &interner,
-        );
-
-        let mapped = mapper.allocate_or_resolve(source_cell, Some(wilderness), cell_sig);
-
-        assert_eq!(mapped.local, 0x0D_DCAB);
-        assert_eq!(interner.resolve(mapped.plugin), Some("FalloutNV.esm"));
-        assert_ne!(mapped, target_cell);
-        assert!(!allows_source_target_preflight_remap(
-            Game::Fnv,
-            Game::Fo4,
-            cell_sig,
-            "Wilderness",
-        ));
-    }
-
-    #[test]
-    fn fo76_fo4_cell_editor_id_collision_gets_fo76_suffix() {
-        let mut interner = StringInterner::new();
-        let cell_sig = SigCode::from_str("CELL").unwrap();
-        let source_cell = FormKey::parse("261548@SeventySix.esm", &mut interner).unwrap();
-        let target_cell = FormKey::parse("00DFF7@Fallout4.esm", &mut interner).unwrap();
-        let original_eid = interner.intern("RelayTower04Ext");
-        let normalized_eid = interner.intern("relaytower04ext");
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
-        target_eid_index.insert(normalized_eid, vec![(target_cell, cell_sig)]);
-
-        let mut record = Record::new(cell_sig, source_cell);
-        record.eid = Some(original_eid);
-        record.fields.push(FieldEntry {
-            sig: edid_sig,
-            value: FieldValue::String(original_eid),
-        });
-
-        let renamed = rename_fo76_target_editor_id_collision(
-            &mut record,
-            &target_eid_index,
-            &FxHashSet::default(),
-            &interner,
-            false,
-        );
-
-        assert_eq!(
-            renamed,
-            Some(("RelayTower04Ext".into(), "RelayTower04Extfo76".into()))
-        );
-        assert_eq!(
-            record.eid.and_then(|eid| interner.resolve(eid)),
-            Some("RelayTower04Extfo76")
-        );
-        assert_eq!(record.fields.len(), 1);
-        assert_eq!(record.fields[0].sig, edid_sig);
-        assert_eq!(
-            match record.fields[0].value {
-                FieldValue::String(sym) => interner.resolve(sym),
-                _ => None,
-            },
-            Some("RelayTower04Extfo76")
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_cross_signature_editor_id_collision_gets_fo76_suffix() {
-        let mut interner = StringInterner::new();
-        let alch_sig = SigCode::from_str("ALCH").unwrap();
-        let npc_sig = SigCode::from_str("NPC_").unwrap();
-        let source_alch = FormKey::parse("0330FB@SeventySix.esm", &mut interner).unwrap();
-        let target_npc = FormKey::parse("01D15C@Fallout4.esm", &mut interner).unwrap();
-        let original_eid = interner.intern("Dogmeat");
-        let normalized_eid = interner.intern("dogmeat");
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
-        target_eid_index.insert(normalized_eid, vec![(target_npc, npc_sig)]);
-
-        let mut record = Record::new(alch_sig, source_alch);
-        record.eid = Some(original_eid);
-        record.fields.push(FieldEntry {
-            sig: edid_sig,
-            value: FieldValue::String(original_eid),
-        });
-
-        let renamed = rename_fo76_target_editor_id_collision(
-            &mut record,
-            &target_eid_index,
-            &FxHashSet::default(),
-            &interner,
-            false,
-        );
-
-        assert_eq!(renamed, Some(("Dogmeat".into(), "Dogmeatfo76".into())));
-        assert_eq!(
-            record.eid.and_then(|eid| interner.resolve(eid)),
-            Some("Dogmeatfo76")
-        );
-        assert_eq!(
-            match record.fields[0].value {
-                FieldValue::String(sym) => interner.resolve(sym),
-                _ => None,
-            },
-            Some("Dogmeatfo76")
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_blocked_same_signature_editor_id_collision_gets_fo76_suffix() {
-        let mut interner = StringInterner::new();
-        let armo_sig = SigCode::from_str("ARMO").unwrap();
-        let source_skin = FormKey::parse("112BED@SeventySix.esm", &mut interner).unwrap();
-        let target_skin = FormKey::parse("00CE5F@DLCNukaWorld.esm", &mut interner).unwrap();
-        let original_eid = interner.intern("DLC04_SkinRadAnt01");
-        let normalized_eid = interner.intern("dlc04_skinradant01");
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
-        target_eid_index.insert(normalized_eid, vec![(target_skin, armo_sig)]);
-
-        let mut record = Record::new(armo_sig, source_skin);
-        record.eid = Some(original_eid);
-        record.fields.push(FieldEntry {
-            sig: edid_sig,
-            value: FieldValue::String(original_eid),
-        });
-
-        let renamed = rename_fo76_target_editor_id_collision(
-            &mut record,
-            &target_eid_index,
-            &FxHashSet::default(),
-            &interner,
-            true,
-        );
-
-        assert_eq!(
-            renamed,
-            Some(("DLC04_SkinRadAnt01".into(), "DLC04_SkinRadAnt01fo76".into()))
-        );
-        assert_eq!(
-            record.eid.and_then(|eid| interner.resolve(eid)),
-            Some("DLC04_SkinRadAnt01fo76")
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_same_signature_editor_id_collision_keeps_vanilla_remap_candidate() {
-        let mut interner = StringInterner::new();
-        let alch_sig = SigCode::from_str("ALCH").unwrap();
-        let source_alch = FormKey::parse("0330FB@SeventySix.esm", &mut interner).unwrap();
-        let target_alch = FormKey::parse("0330FB@Fallout4.esm", &mut interner).unwrap();
-        let original_eid = interner.intern("Dogmeat");
-        let normalized_eid = interner.intern("dogmeat");
-        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
-        target_eid_index.insert(normalized_eid, vec![(target_alch, alch_sig)]);
-
-        let mut record = Record::new(alch_sig, source_alch);
-        record.eid = Some(original_eid);
-
-        let renamed = rename_fo76_target_editor_id_collision(
-            &mut record,
-            &target_eid_index,
-            &FxHashSet::default(),
-            &interner,
-            false,
-        );
-
-        assert_eq!(renamed, None);
-        assert_eq!(
-            record.eid.and_then(|eid| interner.resolve(eid)),
-            Some("Dogmeat")
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_decal_txst_collision_stays_source_owned() {
-        let mut interner = StringInterner::new();
         let txst_sig = SigCode::from_str("TXST").unwrap();
-        let source_txst = FormKey::parse("061880@SeventySix.esm", &mut interner).unwrap();
-        let target_txst = FormKey::parse("061880@Fallout4.esm", &mut interner).unwrap();
-        let original_eid = interner.intern("DecalGrossStain02");
-        let normalized_eid = interner.intern("decalgrossstain02");
-        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
-        target_eid_index.insert(normalized_eid, vec![(target_txst, txst_sig)]);
-
-        let mut record = Record::new(txst_sig, source_txst);
-        record.eid = Some(original_eid);
-
         assert!(!allows_source_target_preflight_remap(
             Game::Fo76,
             Game::Fo4,
             txst_sig,
             "DecalGrossStain02",
         ));
-        let renamed = rename_fo76_target_editor_id_collision(
-            &mut record,
-            &target_eid_index,
-            &FxHashSet::default(),
-            &interner,
-            false,
-        );
-
-        assert_eq!(
-            renamed,
-            Some(("DecalGrossStain02".into(), "DecalGrossStain02fo76".into()))
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_non_decal_txst_collision_keeps_vanilla_remap_candidate() {
-        let mut interner = StringInterner::new();
-        let txst_sig = SigCode::from_str("TXST").unwrap();
-        let source_txst = FormKey::parse("061880@SeventySix.esm", &mut interner).unwrap();
-        let target_txst = FormKey::parse("061880@Fallout4.esm", &mut interner).unwrap();
-        let original_eid = interner.intern("LandscapeDirt01");
-        let normalized_eid = interner.intern("landscapedirt01");
-        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
-        target_eid_index.insert(normalized_eid, vec![(target_txst, txst_sig)]);
-
-        let mut record = Record::new(txst_sig, source_txst);
-        record.eid = Some(original_eid);
-
         assert!(allows_source_target_preflight_remap(
             Game::Fo76,
             Game::Fo4,
             txst_sig,
             "LandscapeDirt01",
         ));
-        let renamed = rename_fo76_target_editor_id_collision(
-            &mut record,
-            &target_eid_index,
-            &FxHashSet::default(),
-            &interner,
-            false,
-        );
-
-        assert_eq!(renamed, None);
     }
 
     /// Every source but FO76 shares Bethesda's naming habits with FO4 without
-    /// sharing its records: `RockCliff04` names a different rock in Skyrim,
-    /// `CloudDistant04` a different cloud in Starfield. World object signatures
-    /// must stay source-owned for all of them.
+    /// sharing its records (`RockCliff04` names a different rock in Skyrim), so
+    /// world object signatures stay source-owned. FO76 genuinely inherits FO4's
+    /// record set, so its block list stays narrow; a same-game run blocks nothing.
     #[test]
-    fn every_non_fo76_source_blocks_world_object_vanilla_remap() {
+    fn editor_id_vanilla_remap_block_lists_by_source_game() {
         for source in [
             Game::Skyrim,
             Game::SkyrimSe,
@@ -20143,14 +19964,7 @@ mod tests {
                 );
             }
         }
-    }
 
-    /// FO76 genuinely inherits Fallout 4's record set, so its block list stays
-    /// narrow — widening it to the world object list would stop FO76 reusing
-    /// records it really does share. This is the one source the generalized
-    /// `source != Fo76` branch must not catch.
-    #[test]
-    fn fo76_fo4_keeps_narrow_vanilla_remap_block_list() {
         let blocked = editor_id_vanilla_remap_blocked_sigs(Game::Fo76, Game::Fo4);
         assert!(blocked.iter().any(|b| b == "STAT"));
         for sig in ["ACTI", "MISC", "SOUN", "WEAP", "NPC_"] {
@@ -20159,53 +19973,47 @@ mod tests {
                 "FO76->Fo4 must keep reusing {sig}"
             );
         }
-    }
 
-    /// A same-game run is not a cross-game conversion and must stay unblocked.
-    #[test]
-    fn fo4_to_fo4_blocks_nothing() {
         assert!(editor_id_vanilla_remap_blocked_sigs(Game::Fo4, Game::Fo4).is_empty());
     }
 
     #[test]
-    fn fo76_fo4_static_marker_editor_id_collision_keeps_vanilla_remap_candidate() {
-        let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_marker = FormKey::parse("00003B@SeventySix.esm", &mut interner).unwrap();
-        let target_marker = FormKey::parse("00003B@Fallout4.esm", &mut interner).unwrap();
-        let original_eid = interner.intern("XMarker");
-        let normalized_eid = interner.intern("xmarker");
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let mut target_eid_index: FxHashMap<Sym, Vec<(FormKey, SigCode)>> = FxHashMap::default();
-        target_eid_index.insert(normalized_eid, vec![(target_marker, stat_sig)]);
+    fn fo76_fo4_re_trigger_bases_stay_remap_blocked_and_keep_their_own_vmad() {
+        let interner = StringInterner::new();
+        let blocked =
+            editor_id_vanilla_remap_blocked_source_form_keys(Game::Fo76, Game::Fo4, &interner);
+        let fo76 =
+            |local| FormKey::parse(&format!("{local:06X}@SeventySix.esm"), &interner).unwrap();
+        let travel = fo76(0x02E503);
+        let re_main_branch = fo76(0x027DE0);
+        let fo4_travel = FormKey::parse("02E503@Fallout4.esm", &interner).unwrap();
 
-        let mut record = Record::new(stat_sig, source_marker);
-        record.eid = Some(original_eid);
-        record.fields.push(FieldEntry {
-            sig: edid_sig,
-            value: FieldValue::String(original_eid),
-        });
-
-        let renamed = rename_fo76_target_editor_id_collision(
-            &mut record,
-            &target_eid_index,
-            &FxHashSet::default(),
-            &interner,
-            true,
-        );
-
-        assert_eq!(renamed, None);
-        assert_eq!(
-            record.eid.and_then(|eid| interner.resolve(eid)),
-            Some("XMarker")
-        );
-        assert_eq!(
-            match record.fields[0].value {
-                FieldValue::String(sym) => interner.resolve(sym),
-                _ => None,
-            },
-            Some("XMarker")
-        );
+        assert!(blocked.contains(&travel));
+        assert!(blocked.contains(&re_main_branch));
+        assert!(fo76_fo4_collision_keeps_source_vmad(
+            Game::Fo76,
+            Game::Fo4,
+            travel,
+            &interner
+        ));
+        assert!(!fo76_fo4_collision_keeps_source_vmad(
+            Game::Fo76,
+            Game::Fo4,
+            re_main_branch,
+            &interner
+        ));
+        assert!(!fo76_fo4_collision_keeps_source_vmad(
+            Game::Fo76,
+            Game::Fo4,
+            fo4_travel,
+            &interner
+        ));
+        assert!(!fo76_fo4_collision_keeps_source_vmad(
+            Game::Fo4,
+            Game::Fo4,
+            travel,
+            &interner
+        ));
     }
 
     #[test]
@@ -20229,10 +20037,7 @@ mod tests {
             },
             &target_master_syms
         ));
-    }
 
-    #[test]
-    fn target_master_names_from_config_apply_outside_whole_plugin_mode() {
         let cfg = RunConfig {
             is_whole_plugin: false,
             target_master_names: vec!["Fallout4.esm".into()],
@@ -20246,50 +20051,70 @@ mod tests {
     }
 
     #[test]
-    fn fo76_fo4_relocation_member_static_model_path_is_namespaced() {
+    fn fo76_fo4_relocation_member_asset_paths_are_namespaced() {
+        for (name, signature, source_key, model, member, expected) in [
+            (
+                "static",
+                "STAT",
+                "012345@SeventySix.esm",
+                "Landscape\\DirtCliffs\\TerrainShelfRocks01.nif",
+                "Landscape\\DirtCliffs\\TerrainShelfRocks01.nif",
+                "FO76\\Landscape\\DirtCliffs\\TerrainShelfRocks01.nif",
+            ),
+            (
+                "movable_static",
+                "MSTT",
+                "196D46@SeventySix.esm",
+                "vehicles\\whitespring\\Vehicle_ShuttleBus_WhitePlain.nif",
+                "vehicles\\whitespring\\Vehicle_ShuttleBus_WhitePlain.nif",
+                "FO76\\vehicles\\whitespring\\Vehicle_ShuttleBus_WhitePlain.nif",
+            ),
+            (
+                "forced_flagwall_static",
+                "STAT",
+                "17FE29@SeventySix.esm",
+                "SetDressing\\Minutemen\\FlagWallMinutemen01.nif",
+                "SetDressing\\Minutemen\\FlagWallMinutemen01.nif",
+                "FO76\\SetDressing\\Minutemen\\FlagWallMinutemen01.nif",
+            ),
+            (
+                "non_member_untouched",
+                "STAT",
+                "012345@SeventySix.esm",
+                "Landscape\\DirtCliffs\\TerrainShelfRocks01.nif",
+                "Landscape\\Rocks\\SomeOtherRock.nif",
+                "Landscape\\DirtCliffs\\TerrainShelfRocks01.nif",
+            ),
+        ] {
+            let mut interner = StringInterner::new();
+            let source = FormKey::parse(source_key, &mut interner).unwrap();
+            let mut record = Record::new(SigCode::from_str(signature).unwrap(), source);
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("MODL").unwrap(),
+                value: FieldValue::String(interner.intern(model)),
+            });
+            let members: std::collections::HashSet<String> =
+                [relocation_modl_key(member)].into_iter().collect();
+
+            let changed =
+                namespace_base_asset_model_paths(&mut record, &members, "FO76", &interner);
+
+            assert_eq!(changed, usize::from(model != expected), "{name}");
+            let FieldValue::String(sym) = record.fields[0].value else {
+                panic!("{name}: expected string MODL");
+            };
+            assert_eq!(interner.resolve(sym), Some(expected), "{name}");
+        }
+
         let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_stat = FormKey::parse("012345@SeventySix.esm", &mut interner).unwrap();
-        let mut record = Record::new(stat_sig, source_stat);
-        let model = interner.intern("Landscape\\DirtCliffs\\TerrainShelfRocks01.nif");
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("MODL").unwrap(),
-            value: FieldValue::String(model),
-        });
-
-        let members: std::collections::HashSet<String> = [relocation_modl_key(
-            "Landscape\\DirtCliffs\\TerrainShelfRocks01.nif",
-        )]
-        .into_iter()
-        .collect();
-        let changed = namespace_base_asset_model_paths(&mut record, &members, "FO76", &interner);
-
-        assert_eq!(changed, 1);
-        let FieldValue::String(sym) = record.fields[0].value else {
-            panic!("expected string MODL");
-        };
-        assert_eq!(
-            interner.resolve(sym),
-            Some("FO76\\Landscape\\DirtCliffs\\TerrainShelfRocks01.nif")
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_changed_decal_material_path_is_namespaced() {
-        let mut interner = StringInterner::new();
-        let txst_sig = SigCode::from_str("TXST").unwrap();
         let source_txst = FormKey::parse("112A13@SeventySix.esm", &mut interner).unwrap();
-        let mut record = Record::new(txst_sig, source_txst);
-        let material = interner.intern("DLC04\\DECALS\\DLC04_ParkingSpaceDecal_SWSingle03.BGSM");
+        let mut record = Record::new(SigCode::from_str("TXST").unwrap(), source_txst);
+        let material = "DLC04\\DECALS\\DLC04_ParkingSpaceDecal_SWSingle03.BGSM";
         record.fields.push(FieldEntry {
             sig: SubrecordSig::from_str("MNAM").unwrap(),
-            value: FieldValue::String(material),
+            value: FieldValue::String(interner.intern(material)),
         });
-        let members = [relocation_material_key(
-            "DLC04\\DECALS\\DLC04_ParkingSpaceDecal_SWSingle03.BGSM",
-        )]
-        .into_iter()
-        .collect();
+        let members = [relocation_material_key(material)].into_iter().collect();
 
         let changed =
             namespace_base_asset_decal_material_path(&mut record, &members, "FO76", &interner);
@@ -20304,185 +20129,35 @@ mod tests {
         );
     }
 
+    /// Starfield routes through the same BTD terrain-texture phase as FO76, so
+    /// the generic writer must not also emit LTEX/GRAS when that phase runs.
     #[test]
-    fn fo76_fo4_relocation_member_movable_static_model_path_is_namespaced() {
-        let mut interner = StringInterner::new();
-        let mstt_sig = SigCode::from_str("MSTT").unwrap();
-        let source_mstt = FormKey::parse("196D46@SeventySix.esm", &mut interner).unwrap();
-        let mut record = Record::new(mstt_sig, source_mstt);
-        let model = interner.intern("vehicles\\whitespring\\Vehicle_ShuttleBus_WhitePlain.nif");
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("MODL").unwrap(),
-            value: FieldValue::String(model),
-        });
+    fn terrain_phase_owns_ltex_and_gras_for_fo76_and_starfield() {
+        for source in [Game::Fo76, Game::Starfield] {
+            for terrain in [true, false] {
+                let mut translator = Translator::new(source, Game::Fo4).unwrap();
+                let cfg = RunConfig {
+                    asset_phases: AssetPhaseFlags {
+                        terrain,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
 
-        let members: std::collections::HashSet<String> = [relocation_modl_key(
-            "vehicles\\whitespring\\Vehicle_ShuttleBus_WhitePlain.nif",
-        )]
-        .into_iter()
-        .collect();
-        let changed = namespace_base_asset_model_paths(&mut record, &members, "FO76", &interner);
+                assert!(!translator.maps.skip_records.contains("LTEX"));
+                assert!(!translator.maps.skip_records.contains("GRAS"));
 
-        assert_eq!(changed, 1);
-        let FieldValue::String(sym) = record.fields[0].value else {
-            panic!("expected string MODL");
-        };
-        assert_eq!(
-            interner.resolve(sym),
-            Some("FO76\\vehicles\\whitespring\\Vehicle_ShuttleBus_WhitePlain.nif")
-        );
-    }
+                apply_terrain_owned_record_skips(&mut translator, source, Game::Fo4, &cfg);
 
-    #[test]
-    fn fo76_fo4_forced_flagwall_static_model_path_is_namespaced() {
-        let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_stat = FormKey::parse("17FE29@SeventySix.esm", &mut interner).unwrap();
-        let mut record = Record::new(stat_sig, source_stat);
-        let model = interner.intern("SetDressing\\Minutemen\\FlagWallMinutemen01.nif");
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("MODL").unwrap(),
-            value: FieldValue::String(model),
-        });
-
-        let members: std::collections::HashSet<String> = [relocation_modl_key(
-            "SetDressing\\Minutemen\\FlagWallMinutemen01.nif",
-        )]
-        .into_iter()
-        .collect();
-        let changed = namespace_base_asset_model_paths(&mut record, &members, "FO76", &interner);
-
-        assert_eq!(changed, 1);
-        let FieldValue::String(sym) = record.fields[0].value else {
-            panic!("expected string MODL");
-        };
-        assert_eq!(
-            interner.resolve(sym),
-            Some("FO76\\SetDressing\\Minutemen\\FlagWallMinutemen01.nif")
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_non_member_model_path_is_left_untouched() {
-        let mut interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let source_stat = FormKey::parse("012345@SeventySix.esm", &mut interner).unwrap();
-        let mut record = Record::new(stat_sig, source_stat);
-        let model = interner.intern("Landscape\\DirtCliffs\\TerrainShelfRocks01.nif");
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("MODL").unwrap(),
-            value: FieldValue::String(model),
-        });
-
-        // Member set covers a different mesh, so this STAT's MODL must not move.
-        let members: std::collections::HashSet<String> =
-            [relocation_modl_key("Landscape\\Rocks\\SomeOtherRock.nif")]
-                .into_iter()
-                .collect();
-        let changed = namespace_base_asset_model_paths(&mut record, &members, "FO76", &interner);
-
-        assert_eq!(changed, 0);
-        let FieldValue::String(sym) = record.fields[0].value else {
-            panic!("expected string MODL");
-        };
-        assert_eq!(
-            interner.resolve(sym),
-            Some("Landscape\\DirtCliffs\\TerrainShelfRocks01.nif")
-        );
-    }
-
-    #[test]
-    fn fo76_fo4_terrain_phase_skips_terrain_owned_records() {
-        let mut translator = Translator::new(Game::Fo76, Game::Fo4).unwrap();
-        let cfg = RunConfig {
-            asset_phases: AssetPhaseFlags {
-                terrain: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        assert!(!translator.maps.skip_records.contains("LTEX"));
-        assert!(!translator.maps.skip_records.contains("GRAS"));
-
-        apply_terrain_owned_record_skips(&mut translator, Game::Fo76, Game::Fo4, &cfg);
-
-        assert!(translator.maps.skip_records.contains("LTEX"));
-        assert!(translator.maps.skip_records.contains("GRAS"));
-    }
-
-    #[test]
-    fn fo76_fo4_without_terrain_phase_keeps_ltex_and_gras_translatable() {
-        let mut translator = Translator::new(Game::Fo76, Game::Fo4).unwrap();
-        let cfg = RunConfig {
-            asset_phases: AssetPhaseFlags {
-                terrain: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        apply_terrain_owned_record_skips(&mut translator, Game::Fo76, Game::Fo4, &cfg);
-
-        assert!(!translator.maps.skip_records.contains("LTEX"));
-        assert!(!translator.maps.skip_records.contains("GRAS"));
-    }
-
-    #[test]
-    fn starfield_fo4_terrain_phase_skips_terrain_owned_records() {
-        // Starfield routes through the same BTD terrain-texture phase as FO76,
-        // so the generic writer must not also emit LTEX/GRAS.
-        let mut translator = Translator::new(Game::Starfield, Game::Fo4).unwrap();
-        let cfg = RunConfig {
-            asset_phases: AssetPhaseFlags {
-                terrain: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        assert!(!translator.maps.skip_records.contains("LTEX"));
-        assert!(!translator.maps.skip_records.contains("GRAS"));
-
-        apply_terrain_owned_record_skips(&mut translator, Game::Starfield, Game::Fo4, &cfg);
-
-        assert!(translator.maps.skip_records.contains("LTEX"));
-        assert!(translator.maps.skip_records.contains("GRAS"));
-    }
-
-    #[test]
-    fn starfield_fo4_without_terrain_phase_keeps_ltex_and_gras_translatable() {
-        let mut translator = Translator::new(Game::Starfield, Game::Fo4).unwrap();
-        let cfg = RunConfig {
-            asset_phases: AssetPhaseFlags {
-                terrain: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        apply_terrain_owned_record_skips(&mut translator, Game::Starfield, Game::Fo4, &cfg);
-
-        assert!(!translator.maps.skip_records.contains("LTEX"));
-        assert!(!translator.maps.skip_records.contains("GRAS"));
-    }
-
-    #[test]
-    fn explicit_quest_dialogue_skips_disable_structured_dialogue_tail() {
-        for signature in ["QUST", "DIAL", "INFO"] {
-            let cfg = RunConfig {
-                skip_record_signatures: vec![signature.to_lowercase()],
-                ..Default::default()
-            };
-
-            assert!(cfg.skips_fo76_quest_dialogue());
+                for sig in ["LTEX", "GRAS"] {
+                    assert_eq!(
+                        translator.maps.skip_records.contains(sig),
+                        terrain,
+                        "{source:?} terrain={terrain} {sig}"
+                    );
+                }
+            }
         }
-
-        let cfg = RunConfig {
-            skip_record_signatures: vec!["WEAP".to_string()],
-            ..Default::default()
-        };
-        assert!(!cfg.skips_fo76_quest_dialogue());
     }
 
     fn mvp_exception(signature: &str, local: u32, plugin: &str) -> MvpRecordExceptionRow {
@@ -20542,10 +20217,7 @@ mod tests {
 
         config.mvp_record_exceptions.pop();
         assert!(!config.has_complete_mvp_weapon_closure(Game::SkyrimSe, Game::Fo4));
-    }
 
-    #[test]
-    fn malformed_mvp_weapon_exception_rows_are_rejected() {
         for rows in [
             vec![mvp_exception("ARMO", 0x01_3984, "Skyrim.esm")],
             vec![mvp_exception("WEAP", 0x01_3984, "Update.esm")],
@@ -20569,110 +20241,128 @@ mod tests {
     }
 
     #[test]
-    fn melee_only_requires_supported_pair_and_weap_fence() {
-        let config = RunConfig {
-            mvp_melee_only: true,
-            skip_record_signatures: vec!["WEAP".to_string()],
-            ..Default::default()
-        };
-        config
-            .validate_mvp_melee_only(Game::SkyrimSe, Game::Fo4)
-            .unwrap();
-        config
-            .validate_mvp_melee_only(Game::Fnv, Game::Fo4)
-            .unwrap();
-        assert!(
+    fn run_config_skip_fences_gate_melee_only_and_quest_dialogue() {
+        {
+            let config = RunConfig {
+                mvp_melee_only: true,
+                skip_record_signatures: vec!["WEAP".to_string()],
+                ..Default::default()
+            };
             config
-                .validate_mvp_melee_only(Game::Fo76, Game::Fo4)
-                .is_err()
-        );
-
-        let missing_fence = RunConfig {
-            mvp_melee_only: true,
-            ..Default::default()
-        };
-        assert!(
-            missing_fence
+                .validate_mvp_melee_only(Game::SkyrimSe, Game::Fo4)
+                .unwrap();
+            config
                 .validate_mvp_melee_only(Game::Fnv, Game::Fo4)
-                .is_err()
-        );
+                .unwrap();
+            assert!(
+                config
+                    .validate_mvp_melee_only(Game::Fo76, Game::Fo4)
+                    .is_err()
+            );
+
+            let missing_fence = RunConfig {
+                mvp_melee_only: true,
+                ..Default::default()
+            };
+            assert!(
+                missing_fence
+                    .validate_mvp_melee_only(Game::Fnv, Game::Fo4)
+                    .is_err()
+            );
+        }
+        {
+            for signature in ["QUST", "DIAL", "INFO"] {
+                let cfg = RunConfig {
+                    skip_record_signatures: vec![signature.to_lowercase()],
+                    ..Default::default()
+                };
+
+                assert!(cfg.skips_fo76_quest_dialogue());
+            }
+
+            let cfg = RunConfig {
+                skip_record_signatures: vec!["WEAP".to_string()],
+                ..Default::default()
+            };
+            assert!(!cfg.skips_fo76_quest_dialogue());
+        }
     }
 
     #[test]
-    fn full_merged_creature_coverage_is_zero_when_creatures_are_excluded() {
-        use esp_authoring_core::plugin_runtime::{
-            plugin_handle_close_native, plugin_handle_new_native,
-        };
+    fn fnv_whole_plugin_gates_follow_creature_skips_and_quest_slice() {
+        {
+            use esp_authoring_core::plugin_runtime::{
+                plugin_handle_close_native, plugin_handle_new_native,
+            };
 
-        let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
-        let target_handle = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
-        let id = create_run(RunParams {
-            source: Game::Fnv,
-            target: Game::Fo4,
-            source_handle_id: source_handle,
-            target_handle_id: target_handle,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Out.esm".into(),
-                is_whole_plugin: true,
-                skip_record_signatures: vec!["CREA".to_string()],
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        with_run(id, |run| {
-            run.mapper_state = Some(MapperState::new(
-                [],
-                MapperOptions {
-                    source_plugin_name: "FalloutNV.esm".to_string(),
+            let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
+            let target_handle = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
+            let id = create_run(RunParams {
+                source: Game::Fnv,
+                target: Game::Fo4,
+                source_handle_id: source_handle,
+                target_handle_id: target_handle,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Out.esm".into(),
+                    is_whole_plugin: true,
+                    skip_record_signatures: vec!["CREA".to_string()],
                     ..Default::default()
                 },
-            ));
-            assert_eq!(run.legacy_creature_race_expected_candidates(), 0);
-            run.finalize_legacy_creature_race_coverage()
-        })
-        .unwrap();
+            })
+            .unwrap();
 
-        drop_run(id).unwrap();
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
+            with_run(id, |run| {
+                run.mapper_state = Some(MapperState::new(
+                    [],
+                    MapperOptions {
+                        source_plugin_name: "FalloutNV.esm".to_string(),
+                        ..Default::default()
+                    },
+                ));
+                assert_eq!(run.legacy_creature_race_expected_candidates(), 0);
+                run.finalize_legacy_creature_race_coverage()
+            })
+            .unwrap();
 
-    #[test]
-    fn strict_quest_slice_uses_exact_pack_lowerers_not_corpus_preflight() {
-        use esp_authoring_core::plugin_runtime::{
-            plugin_handle_close_native, plugin_handle_new_native,
-        };
+            drop_run(id).unwrap();
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+        }
+        {
+            use esp_authoring_core::plugin_runtime::{
+                plugin_handle_close_native, plugin_handle_new_native,
+            };
 
-        let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
-        let target_handle = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
-        let id = create_run(RunParams {
-            source: Game::Fnv,
-            target: Game::Fo4,
-            source_handle_id: source_handle,
-            target_handle_id: target_handle,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Out.esm".into(),
-                is_whole_plugin: true,
-                fnv_quest_slice: true,
-                ..Default::default()
-            },
-        })
-        .unwrap();
+            let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
+            let target_handle = plugin_handle_new_native("Out.esm", Some("fo4")).unwrap();
+            let id = create_run(RunParams {
+                source: Game::Fnv,
+                target: Game::Fo4,
+                source_handle_id: source_handle,
+                target_handle_id: target_handle,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Out.esm".into(),
+                    is_whole_plugin: true,
+                    fnv_quest_slice: true,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
 
-        with_run(id, |run| {
-            assert!(!run.legacy_pack_gate_active());
-            run.config.fnv_quest_slice = false;
-            assert!(run.legacy_pack_gate_active());
-            Ok::<_, RunError>(())
-        })
-        .unwrap();
+            with_run(id, |run| {
+                assert!(!run.legacy_pack_gate_active());
+                run.config.fnv_quest_slice = false;
+                assert!(run.legacy_pack_gate_active());
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
 
-        drop_run(id).unwrap();
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
+            drop_run(id).unwrap();
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+        }
     }
 
     /// Verify create/lookup/drop lifecycle without needing real plugin handles.
@@ -20720,21 +20410,6 @@ mod tests {
             with_run(id, |_| Ok::<_, RunError>(())),
             Err(RunError::UnknownRun(_))
         ));
-    }
-
-    #[test]
-    fn run_create_unknown_game_returns_invalid_config() {
-        let result = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: 1,
-            target_handle_id: 2,
-            master_handle_ids: vec![],
-            config: RunConfig::default(),
-        });
-        // fo4 is a valid game, so this should succeed.
-        assert!(result.is_ok());
-        drop_run(result.unwrap()).unwrap();
     }
 
     #[test]
@@ -20854,47 +20529,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn translate_all_mapper_persists_across_records() {
-        use crate::formkey_mapper::FormKeyMapper;
-        use crate::formkey_mapper::{MapperOptions, MapperState};
-        use crate::ids::{FormKey, SigCode};
-        use crate::sym::StringInterner;
-
-        let mut interner = StringInterner::new();
-        let opts = MapperOptions {
-            output_plugin_name: "Output.esp".into(),
-            ..Default::default()
-        };
-        let mut state = MapperState::new([], opts);
-        let weap = SigCode::from_str("WEAP").unwrap();
-
-        let src1 = FormKey::parse("001000@Source.esm", &mut interner).unwrap();
-        let src2 = FormKey::parse("002000@Source.esm", &mut interner).unwrap();
-
-        // Simulate record 1: allocate target for src1.
-        let tgt1 = {
-            let mut mapper = FormKeyMapper::from_state(&mut state, &mut interner);
-            mapper.allocate_or_resolve(src1, None, weap)
-        };
-
-        // Simulate record 2: allocate target for src2.
-        let tgt2 = {
-            let mut mapper = FormKeyMapper::from_state(&mut state, &mut interner);
-            mapper.allocate_or_resolve(src2, None, weap)
-        };
-
-        // Both must be under Output.esp.
-        assert_eq!(interner.resolve(tgt1.plugin).unwrap(), "Output.esp");
-        assert_eq!(interner.resolve(tgt2.plugin).unwrap(), "Output.esp");
-        // They must have distinct object-ids across records.
-        assert_ne!(
-            tgt1.local, tgt2.local,
-            "object-ids must not collide across records"
-        );
-    }
-
-    #[test]
-    fn fnv_fo3_humanoid_race_substitutions_cover_merged_source_catalog() {
+    fn fnv_fo3_humanoid_race_substitutions_cover_catalog_with_shared_donor_policy() {
         let source_races = [
             "CaucasianOldAged",
             "AfricanAmericanOldAged",
@@ -20989,10 +20624,7 @@ mod tests {
                 .iter()
                 .all(|(_, target)| { interner.resolve(target.plugin) == Some("Fallout4.esm") })
         );
-    }
 
-    #[test]
-    fn fnv_and_fo3_humanoid_races_use_same_fo4_donor_policy() {
         let interner = StringInterner::new();
         let race_sig = SigCode::from_str("RACE").unwrap();
         for (source_game, source_plugin, editor_id, expected_local) in [
@@ -21136,10 +20768,7 @@ mod tests {
                 .iter()
                 .all(|(_, target)| interner.resolve(target.plugin) == Some("Fallout4.esm"))
         );
-    }
 
-    #[test]
-    fn skyrim_beast_and_custom_humanoid_races_are_not_human_aliased() {
         let interner = StringInterner::new();
         let race_sig = SigCode::from_str("RACE").unwrap();
         let entries = ["ArgonianRace", "KhajiitRace", "DremoraRace"]
@@ -21253,10 +20882,7 @@ mod tests {
             )
             .is_ok()
         );
-    }
 
-    #[test]
-    fn only_skyrim_actor_signatures_are_mandatory_for_skyrim_to_fo4() {
         for signature in ["RACE", "NPC_", "ACHR"] {
             assert!(is_mandatory_skyrim_actor_record(
                 Game::SkyrimSe,
@@ -21586,12 +21212,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn fo76_fo4_forced_keyword_substitutions_target_fo4_master_keywords() {
-        use crate::ids::FormKey;
-        use crate::sym::StringInterner;
-
+    fn fo76_fo4_forced_substitutions_target_fo4_master_records() {
         let interner = StringInterner::new();
-        let mappings = fo76_fo4_forced_keyword_substitution_mappings(&interner);
         let src = |local| FormKey {
             local,
             plugin: interner.intern("SeventySix.esm"),
@@ -21600,108 +21222,88 @@ mod tests {
             local,
             plugin: interner.intern(plugin_name),
         };
-        // ap_gun_Appearance -> ap_WeaponMaterial
-        assert!(mappings.contains(&(src(0x0011_4364), tgt("Fallout4.esm", 0x0024_A0D8))));
-        // ma_Gun_Appearance -> ma_WeaponMaterialSwaps
-        assert!(mappings.contains(&(src(0x0037_D0B2), tgt("Fallout4.esm", 0x0024_A0D7))));
-        // ap_melee_Appearance -> ap_melee_Material (FO76 1A001E -> FO4 1A001E)
-        assert!(mappings.contains(&(src(0x001A_001E), tgt("Fallout4.esm", 0x001A_001E))));
-        // DLC04_ma_HandmadeAssaultRifle -> DLC04_ma_HandmadeAssaultRifle
-        assert!(mappings.contains(&(src(0x0011_3855), tgt("DLCNukaWorld.esm", 0x0003_3B61))));
-        // ma_armor_Generic_Paint -> ap_armor_Paint
-        assert!(mappings.contains(&(src(0x0045_2EF4), tgt("Fallout4.esm", 0x0024_A0FA))));
-        // ma_PowerArmorMod -> ma_PA_Material
-        assert!(mappings.contains(&(src(0x0053_03FE), tgt("Fallout4.esm", 0x0018_DFCB))));
-    }
-
-    #[test]
-    fn fo76_fo4_renamed_linked_ref_keywords_resolve_to_fo4_keywords() {
-        use crate::ids::FormKey;
-        use crate::sym::StringInterner;
-
-        let interner = StringInterner::new();
-        let mappings = fo76_fo4_forced_keyword_substitution_mappings(&interner);
-        for local in [
-            0x001C_A8CF, // DMP_Sandbox -> DMP_Sandbox_Prim
-            0x0004_21F8, // DMP_Suspicious_Sandbox -> DMP_Suspicious_Sandbox_512
-            0x0004_2241, // DMP_Combat_HoldPosition -> DMP_Combat_HoldPosition_128
-            0x0006_6510, // TurfSystemLinkToSleep -> EMSystemLinkToSleep
-            0x0018_12F6, // TurfSystemLinkToTurf -> EMSystemLinkToTurf
-            0x001C_5EDD, // WorkshopStackedItemParent -> WorkshopStackedItemParentKEYWORD
-            0x000F_9E1B, // LinkTerminalRobot -> LinkTerminalProtectron
-            0x000F_9E13, // LinkCaptive -> DefaultCaptiveLink
+        let keywords = fo76_fo4_forced_keyword_substitution_mappings(&interner);
+        for (name, source_local, target_plugin, target_local) in [
+            (
+                "ap_gun_Appearance",
+                0x0011_4364,
+                "Fallout4.esm",
+                0x0024_A0D8,
+            ),
+            (
+                "ma_Gun_Appearance",
+                0x0037_D0B2,
+                "Fallout4.esm",
+                0x0024_A0D7,
+            ),
+            (
+                "ap_melee_Appearance",
+                0x001A_001E,
+                "Fallout4.esm",
+                0x001A_001E,
+            ),
+            (
+                "DLC04_ma_HandmadeAssaultRifle",
+                0x0011_3855,
+                "DLCNukaWorld.esm",
+                0x0003_3B61,
+            ),
+            (
+                "ma_armor_Generic_Paint",
+                0x0045_2EF4,
+                "Fallout4.esm",
+                0x0024_A0FA,
+            ),
+            ("ma_PowerArmorMod", 0x0053_03FE, "Fallout4.esm", 0x0018_DFCB),
+            ("DMP_Sandbox", 0x001C_A8CF, "Fallout4.esm", 0x001C_A8CF),
+            (
+                "DMP_Suspicious_Sandbox",
+                0x0004_21F8,
+                "Fallout4.esm",
+                0x0004_21F8,
+            ),
+            (
+                "DMP_Combat_HoldPosition",
+                0x0004_2241,
+                "Fallout4.esm",
+                0x0004_2241,
+            ),
+            (
+                "TurfSystemLinkToSleep",
+                0x0006_6510,
+                "Fallout4.esm",
+                0x0006_6510,
+            ),
+            (
+                "TurfSystemLinkToTurf",
+                0x0018_12F6,
+                "Fallout4.esm",
+                0x0018_12F6,
+            ),
+            (
+                "WorkshopStackedItemParent",
+                0x001C_5EDD,
+                "Fallout4.esm",
+                0x001C_5EDD,
+            ),
+            (
+                "LinkTerminalRobot",
+                0x000F_9E1B,
+                "Fallout4.esm",
+                0x000F_9E1B,
+            ),
+            ("LinkCaptive", 0x000F_9E13, "Fallout4.esm", 0x000F_9E13),
         ] {
-            let source = FormKey {
-                local,
-                plugin: interner.intern("SeventySix.esm"),
-            };
-            let target = FormKey {
-                local,
-                plugin: interner.intern("Fallout4.esm"),
-            };
             assert!(
-                mappings.contains(&(source, target)),
-                "{local:06X} must resolve to the FO4 keyword"
+                keywords.contains(&(src(source_local), tgt(target_plugin, target_local))),
+                "{name}"
             );
         }
-    }
 
-    #[test]
-    fn fo76_fo4_forced_race_substitutions_target_matching_fo4_races() {
-        use crate::ids::FormKey;
-        use crate::sym::StringInterner;
-
-        let interner = StringInterner::new();
-        let mappings = fo76_fo4_forced_race_substitution_mappings(&interner);
-        let src = |local| FormKey {
-            local,
-            plugin: interner.intern("SeventySix.esm"),
-        };
-        let tgt = |plugin_name, local| FormKey {
-            local,
-            plugin: interner.intern(plugin_name),
-        };
-
-        assert!(mappings.contains(&(src(0x0079_CCE7), tgt("Fallout4.esm", 0x000E_AFB6))));
-        assert!(mappings.contains(&(src(0x0077_2F32), tgt("DLCRobot.esm", 0x0000_1129))));
-    }
-
-    #[test]
-    fn fo76_fo4_forced_base_object_substitution_targets_fo4_workbench() {
-        use crate::ids::FormKey;
-        use crate::sym::StringInterner;
-
-        let interner = StringInterner::new();
-        let mappings = fo76_fo4_forced_base_object_substitution_mappings(&interner);
-        let src = FormKey {
-            local: 0x003B_D4F4,
-            plugin: interner.intern("SeventySix.esm"),
-        };
-        let tgt = FormKey {
-            local: 0x000C_1AEB,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-
-        assert!(mappings.contains(&(src, tgt)));
-    }
-
-    #[test]
-    fn fo76_fo4_forced_location_ref_type_substitution_targets_fo4_boss() {
-        use crate::ids::FormKey;
-        use crate::sym::StringInterner;
-
-        let interner = StringInterner::new();
-        let mappings = fo76_fo4_forced_location_ref_type_substitution_mappings(&interner);
-        let src = FormKey {
-            local: 0x0000_3956,
-            plugin: interner.intern("SeventySix.esm"),
-        };
-        let tgt = FormKey {
-            local: 0x0000_3956,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-
-        assert!(mappings.contains(&(src, tgt)));
+        assert!(
+            fo76_fo4_forced_location_ref_type_substitution_mappings(&interner)
+                .contains(&(src(0x0000_3956), tgt("Fallout4.esm", 0x0000_3956)))
+        );
     }
 
     #[test]
@@ -21865,7 +21467,7 @@ mod tests {
     }
 
     #[test]
-    fn seeded_base_object_substitution_rewrites_workshop_refr_base_to_fo4_workbench() {
+    fn seeded_base_object_and_race_substitutions_rewrite_refs_to_fo4_records() {
         use crate::formkey_mapper::FormKeyMapper;
         use crate::formkey_mapper::{MapperOptions, MapperState};
         use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -21880,88 +21482,68 @@ mod tests {
         let mut state = MapperState::new([], opts);
         for (source_form_key, target_form_key) in
             fo76_fo4_forced_base_object_substitution_mappings(&interner)
+                .into_iter()
+                .chain(fo76_fo4_forced_race_substitution_mappings(&interner))
         {
             state
                 .source_to_target
                 .insert(source_form_key, target_form_key);
         }
 
-        let source_workbench = FormKey {
-            local: 0x003B_D4F4,
-            plugin: interner.intern("SeventySix.esm"),
-        };
-        let target_workbench = FormKey {
-            local: 0x000C_1AEB,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-        let mut refr = Record::new(
-            SigCode::from_str("REFR").unwrap(),
-            FormKey {
-                local: 0x0020_106D,
-                plugin: interner.intern("SeventySix.esm"),
-            },
-        );
-        refr.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("NAME").unwrap(),
-            value: FieldValue::FormKey(source_workbench),
-        });
-
-        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
-        mapper.rewrite_record(&mut refr).unwrap();
-
-        assert_eq!(refr.fields[0].value, FieldValue::FormKey(target_workbench));
-    }
-
-    #[test]
-    fn seeded_race_substitutions_rewrite_npc_rnam_to_fo4_compatible_races() {
-        use crate::formkey_mapper::FormKeyMapper;
-        use crate::formkey_mapper::{MapperOptions, MapperState};
-        use crate::ids::{FormKey, SigCode, SubrecordSig};
-        use crate::record::{FieldEntry, FieldValue, Record};
-        use crate::sym::StringInterner;
-
-        let interner = StringInterner::new();
-        let opts = MapperOptions {
-            output_plugin_name: "SeventySix.esm".into(),
-            ..Default::default()
-        };
-        let mut state = MapperState::new([], opts);
-        for (source_form_key, target_form_key) in
-            fo76_fo4_forced_race_substitution_mappings(&interner)
-        {
-            state
-                .source_to_target
-                .insert(source_form_key, target_form_key);
-        }
-
-        for (source_local, target_plugin, target_local) in [
-            (0x0079_CCE7, "Fallout4.esm", 0x000E_AFB6),
-            (0x0077_2F32, "DLCRobot.esm", 0x0000_1129),
+        for (name, record_sig, field_sig, source_local, target_plugin, target_local) in [
+            (
+                "workshop_workbench",
+                "REFR",
+                "NAME",
+                0x003B_D4F4,
+                "Fallout4.esm",
+                0x000C_1AEB,
+            ),
+            (
+                "race",
+                "NPC_",
+                "RNAM",
+                0x0079_CCE7,
+                "Fallout4.esm",
+                0x000E_AFB6,
+            ),
+            (
+                "robot_race",
+                "NPC_",
+                "RNAM",
+                0x0077_2F32,
+                "DLCRobot.esm",
+                0x0000_1129,
+            ),
         ] {
-            let source_race = FormKey {
+            let source = FormKey {
                 local: source_local,
                 plugin: interner.intern("SeventySix.esm"),
             };
-            let target_race = FormKey {
+            let target = FormKey {
                 local: target_local,
                 plugin: interner.intern(target_plugin),
             };
-            let mut npc = Record::new(
-                SigCode::from_str("NPC_").unwrap(),
+            let mut record = Record::new(
+                SigCode::from_str(record_sig).unwrap(),
                 FormKey {
                     local: 0x0083_26DD,
                     plugin: interner.intern("SeventySix.esm"),
                 },
             );
-            npc.fields.push(FieldEntry {
-                sig: SubrecordSig::from_str("RNAM").unwrap(),
-                value: FieldValue::FormKey(source_race),
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str(field_sig).unwrap(),
+                value: FieldValue::FormKey(source),
             });
 
             let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
-            mapper.rewrite_record(&mut npc).unwrap();
+            mapper.rewrite_record(&mut record).unwrap();
 
-            assert_eq!(npc.fields[0].value, FieldValue::FormKey(target_race));
+            assert_eq!(
+                record.fields[0].value,
+                FieldValue::FormKey(target),
+                "{name}"
+            );
         }
     }
 
@@ -22038,131 +21620,109 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn apply_fixups_v2_without_translate_all_does_not_panic() {
-        let id = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        let result = with_run(id, |run| run.apply_fixups_v2().map_err(RunError::from));
-        // All fixups have applies_to returning false for handles 9999/9998
-        // (no real plugin) so reports should be empty (no panic).
-        let _ = result; // may error due to invalid handles — just confirm no panic
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn apply_fixups_v2_preserves_mapper_state() {
-        let id = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        with_run(id, |run| {
-            let source_fk = FormKey::parse("000800@Source.esm", &mut run.interner).unwrap();
-            let target_fk = FormKey::parse("000900@Output.esp", &mut run.interner).unwrap();
-            let mut state = MapperState::new(
-                [],
-                MapperOptions {
+    fn apply_fixups_v2_preserves_mapper_state_and_logs_each_fixup() {
+        {
+            let id = create_run(RunParams {
+                source: Game::Fo4,
+                target: Game::Fo4,
+                source_handle_id: 9999,
+                target_handle_id: 9998,
+                master_handle_ids: vec![],
+                config: RunConfig {
                     output_plugin_name: "Output.esp".into(),
                     ..Default::default()
                 },
-            );
-            state.source_to_target.insert(source_fk, target_fk);
-            run.mapper_state = Some(state);
+            })
+            .unwrap();
 
-            let _ = run.apply_fixups_v2();
+            with_run(id, |run| {
+                let source_fk = FormKey::parse("000800@Source.esm", &mut run.interner).unwrap();
+                let target_fk = FormKey::parse("000900@Output.esp", &mut run.interner).unwrap();
+                let mut state = MapperState::new(
+                    [],
+                    MapperOptions {
+                        output_plugin_name: "Output.esp".into(),
+                        ..Default::default()
+                    },
+                );
+                state.source_to_target.insert(source_fk, target_fk);
+                run.mapper_state = Some(state);
 
-            let state = run
-                .mapper_state
-                .as_ref()
-                .expect("apply_fixups_v2 must restore mapper_state");
-            assert_eq!(state.source_to_target.get(&source_fk), Some(&target_fk));
-            Ok::<_, RunError>(())
-        })
-        .unwrap();
+                let _ = run.apply_fixups_v2();
 
-        drop_run(id).unwrap();
-    }
+                let state = run
+                    .mapper_state
+                    .as_ref()
+                    .expect("apply_fixups_v2 must restore mapper_state");
+                assert_eq!(state.source_to_target.get(&source_fk), Some(&target_fk));
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
 
-    #[test]
-    fn apply_fixups_v2_emits_per_fixup_log_events() {
-        let source =
-            esp_authoring_core::plugin_runtime::plugin_handle_new_native("Source.esm", Some("fo4"))
-                .unwrap();
-        let target =
-            esp_authoring_core::plugin_runtime::plugin_handle_new_native("Output.esp", Some("fo4"))
-                .unwrap();
-        let id = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: source,
-            target_handle_id: target,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                is_whole_plugin: true,
-                ..Default::default()
-            },
-        })
-        .unwrap();
+            drop_run(id).unwrap();
+        }
+        {
+            let source = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
+                "Source.esm",
+                Some("fo4"),
+            )
+            .unwrap();
+            let target = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
+                "Output.esp",
+                Some("fo4"),
+            )
+            .unwrap();
+            let id = create_run(RunParams {
+                source: Game::Fo4,
+                target: Game::Fo4,
+                source_handle_id: source,
+                target_handle_id: target,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Output.esp".into(),
+                    is_whole_plugin: true,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
 
-        with_run(id, |run| {
-            run.apply_fixups_v2().map_err(RunError::from)?;
-            let messages: Vec<String> = run
-                .event_rx
-                .try_iter()
-                .filter_map(|event| match event {
-                    crate::phase::PhaseEvent::Log {
-                        phase: "fixups_v2",
-                        message,
-                        ..
-                    } => Some(message),
-                    _ => None,
-                })
-                .collect();
+            with_run(id, |run| {
+                run.apply_fixups_v2().map_err(RunError::from)?;
+                let messages: Vec<String> = run
+                    .event_rx
+                    .try_iter()
+                    .filter_map(|event| match event {
+                        crate::phase::PhaseEvent::Log {
+                            phase: "fixups_v2",
+                            message,
+                            ..
+                        } => Some(message),
+                        _ => None,
+                    })
+                    .collect();
 
-            assert!(
-                messages
-                    .iter()
-                    .any(|message| message.contains("queued apply_weapon_sound_defaults")),
-                "missing sweep fixup log event: {messages:?}"
-            );
-            assert!(
-                messages
-                    .iter()
-                    .any(|message| message
+                assert!(
+                    messages
+                        .iter()
+                        .any(|message| message.contains("queued apply_weapon_sound_defaults")),
+                    "missing sweep fixup log event: {messages:?}"
+                );
+                assert!(
+                    messages.iter().any(|message| message
                         .contains("queued normalize_creature_lvln_template_chains")),
-                "missing creature normalizer log event: {messages:?}"
-            );
-            assert!(
-                messages
-                    .iter()
-                    .any(|message| message
+                    "missing creature normalizer log event: {messages:?}"
+                );
+                assert!(
+                    messages.iter().any(|message| message
                         .contains("starting normalize_creature_lvln_template_chains")),
-                "missing creature normalizer start event: {messages:?}"
-            );
-            Ok::<_, RunError>(())
-        })
-        .unwrap();
+                    "missing creature normalizer start event: {messages:?}"
+                );
+                Ok::<_, RunError>(())
+            })
+            .unwrap();
 
-        drop_run(id).unwrap();
+            drop_run(id).unwrap();
+        }
     }
 
     #[test]
@@ -22381,70 +21941,11 @@ mod tests {
         plugin_handle_close_native(target);
     }
 
-    #[test]
-    fn run_error_cancelled_display() {
-        let msg = format!("{}", RunError::Cancelled);
-        assert_eq!(msg, "translation cancelled");
-    }
-
-    #[test]
-    fn progress_callback_starts_none() {
-        let id = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        with_run(id, |run| {
-            assert!(
-                run.progress_callback.is_none(),
-                "progress_callback must start as None"
-            );
-            Ok::<_, RunError>(())
-        })
-        .unwrap();
-
-        drop_run(id).unwrap();
-    }
-
     // -----------------------------------------------------------------------
     // translate_all on a run with no plugin handles returns quickly
     //     (no records to process, no cancel triggered). This confirms the
     //     yield-check logic doesn't fire when record_count is always 0.
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn translate_all_zero_records_no_cancel() {
-        let id = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        // translate_all on sentinel handles: source_signatures will fail with an error.
-        // The important thing is it does NOT return RunError::Cancelled.
-        let result = with_run(id, |run| run.translate_all());
-        match result {
-            Err(RunError::Cancelled) => panic!("unexpected Cancelled on zero-record run"),
-            _ => {} // any other outcome is acceptable
-        }
-
-        drop_run(id).unwrap();
-    }
 
     // -----------------------------------------------------------------------
     // mod_path / source_extracted_dir flow from RunConfig into the FixupContext
@@ -22452,58 +21953,6 @@ mod tests {
     // reuses apply_fixups_v2's ctx-building lines to check that the as_deref()
     // plumbing yields the expected Option<&Path>.
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn run_config_carries_mod_path_into_fixup_context() {
-        use crate::fixups::{FixupConfig, FixupContext};
-        use crate::schema::AuthoringSchema;
-        use std::path::{Path, PathBuf};
-
-        let mod_path = PathBuf::from("/fake/mod");
-        let extracted = PathBuf::from("/fake/extracted");
-
-        let cfg = RunConfig {
-            output_plugin_name: "Output.esm".into(),
-            mod_path: Some(mod_path.clone()),
-            source_extracted_dir: Some(extracted.clone()),
-            ..Default::default()
-        };
-
-        // Sanity-check the round-trip through RunConfig itself.
-        assert_eq!(cfg.mod_path.as_deref(), Some(mod_path.as_path()));
-        assert_eq!(
-            cfg.source_extracted_dir.as_deref(),
-            Some(extracted.as_path())
-        );
-
-        // Build a FixupContext using the same expressions apply_fixups_v2 uses
-        // (`self.config.mod_path.as_deref()`), so this test fails if anyone
-        // reverts the fixup-context plumbing to hardcoded `None`.
-        let fixup_config = FixupConfig::default();
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let masters: Vec<u64> = vec![];
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: cfg.mod_path.as_deref(),
-            source_extracted_dir: cfg.source_extracted_dir.as_deref(),
-            target_master_handle_ids: &masters,
-            config: &fixup_config,
-        };
-
-        assert_eq!(ctx.mod_path, Some(Path::new("/fake/mod")));
-        assert_eq!(ctx.source_extracted_dir, Some(Path::new("/fake/extracted")));
-    }
-
-    #[test]
-    fn run_config_default_mod_path_is_none() {
-        let cfg = RunConfig::default();
-        assert!(cfg.mod_path.is_none());
-        assert!(cfg.source_extracted_dir.is_none());
-    }
 
     #[test]
     fn navi_warnings_capped() {
@@ -22539,46 +21988,7 @@ mod tests {
     }
 
     #[test]
-    fn release_remap_state_drops_mapper() {
-        let id = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        with_run(id, |run| {
-            run.mapper_state = Some(MapperState::new(
-                [],
-                MapperOptions {
-                    output_plugin_name: "Output.esp".into(),
-                    ..Default::default()
-                },
-            ));
-            assert!(
-                run.mapper_state.is_some(),
-                "mapper_state must be Some before release"
-            );
-            run.release_remap_state();
-            assert!(
-                run.mapper_state.is_none(),
-                "mapper_state must be None after release"
-            );
-            Ok::<_, RunError>(())
-        })
-        .unwrap();
-
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn final_quest_condition_repair_runs_after_placed_repairs() {
+    fn placed_and_interior_repair_phase_ordering() {
         let source = include_str!("run.rs");
         let start = source.find("pub fn repair_placed_child_refs").unwrap();
         let end = source[start..]
@@ -22602,10 +22012,7 @@ mod tests {
         assert!(final_conditions > teleport);
         assert!(final_conditions > actor_specialization);
         assert!(final_conditions < flush);
-    }
 
-    #[test]
-    fn copied_placed_normalization_runs_after_all_cell_copy_paths() {
         let source = include_str!("run.rs");
         let interior = source.find("pub fn emit_interior_cells").unwrap();
         let repair = source.find("pub fn repair_placed_child_refs").unwrap();
@@ -22617,10 +22024,31 @@ mod tests {
         assert!(!source[interior..repair].contains("normalize_copied_placed_records"));
         assert!(source[repair..repair_end].contains("normalize_copied_placed_records"));
         assert!(source[repair..repair_end].contains("resolve_placed_leveled_bases_for_refs"));
-    }
 
-    #[test]
-    fn interior_recentre_runs_before_insert_and_after_navi_and_door_repairs() {
+        let source = include_str!("run.rs");
+        let start = source.find("pub fn repair_placed_child_refs").unwrap();
+        let end = source[start..]
+            .find("pub fn synthesize_encounter_zones")
+            .map(|offset| start + offset)
+            .unwrap();
+        let body = &source[start..end];
+        let normalize = body
+            .find("normalize_copied_placed_records_in_session(")
+            .unwrap();
+        let linked = body.find("repair_placed_linked_refs(").unwrap();
+        let teleport = body
+            .find("repair_placed_teleport_doors::repair_placed_references")
+            .unwrap();
+        let light = body
+            .find("normalize_light_radii::normalize_light_radii")
+            .unwrap();
+        let fo76_gate = "if self.source == Game::Fo76 && self.target == Game::Fo4";
+
+        assert!(body[..normalize].contains(fo76_gate));
+        assert!(normalize < linked);
+        assert!(linked < teleport);
+        assert!(body[teleport..light].contains(fo76_gate));
+
         let source = include_str!("run.rs");
         let emit = source.find("pub fn emit_interior_cells").unwrap();
         let emit_end = emit
@@ -22629,8 +22057,18 @@ mod tests {
                 .unwrap();
         let emit_body = &source[emit..emit_end];
         let recentre = emit_body.find("recentre_cell_children(").unwrap();
-        assert!(recentre > emit_body.rfind("translate_and_remap_snapshot_record(").unwrap());
-        assert!(recentre < emit_body.find("add_interior_cell_with_children_native(").unwrap());
+        assert!(
+            recentre
+                > emit_body
+                    .rfind("translate_and_remap_snapshot_record(")
+                    .unwrap()
+        );
+        assert!(
+            recentre
+                < emit_body
+                    .find("add_interior_cell_with_children_native(")
+                    .unwrap()
+        );
 
         let navi = source
             .find("pub fn rebuild_projected_navi(&mut self)")
@@ -22658,56 +22096,46 @@ mod tests {
     }
 
     #[test]
-    fn fo4_placed_ref_target_repair_includes_starfield_and_fo76_sources() {
-        assert!(needs_fo4_placed_ref_target_repair(
-            Game::Starfield,
-            Game::Fo4
-        ));
-        assert!(needs_fo4_placed_ref_target_repair(Game::Fo76, Game::Fo4));
-    }
+    fn source_pair_gates_for_placed_ref_repair_and_worldspace_topology() {
+        {
+            assert!(needs_fo4_placed_ref_target_repair(
+                Game::Starfield,
+                Game::Fo4
+            ));
+            assert!(needs_fo4_placed_ref_target_repair(Game::Fo76, Game::Fo4));
 
-    #[test]
-    fn fo4_placed_ref_target_repair_excludes_unrelated_pairs() {
-        assert!(!needs_fo4_placed_ref_target_repair(Game::Fo4, Game::Fo4));
-        assert!(!needs_fo4_placed_ref_target_repair(
-            Game::SkyrimSe,
-            Game::Fo4
-        ));
-        assert!(!needs_fo4_placed_ref_target_repair(
-            Game::Fo4,
-            Game::Starfield
-        ));
-        assert!(!needs_fo4_placed_ref_target_repair(
-            Game::Starfield,
-            Game::Starfield
-        ));
-    }
-
-    #[test]
-    fn starfield_ref_target_repair_keeps_fo76_payload_fixups_fo76_only() {
-        let source = include_str!("run.rs");
-        let start = source.find("pub fn repair_placed_child_refs").unwrap();
-        let end = source[start..]
-            .find("pub fn synthesize_encounter_zones")
-            .map(|offset| start + offset)
-            .unwrap();
-        let body = &source[start..end];
-        let normalize = body
-            .find("normalize_copied_placed_records_in_session(")
-            .unwrap();
-        let linked = body.find("repair_placed_linked_refs(").unwrap();
-        let teleport = body
-            .find("repair_placed_teleport_doors::repair_placed_references")
-            .unwrap();
-        let light = body
-            .find("normalize_light_radii::normalize_light_radii")
-            .unwrap();
-        let fo76_gate = "if self.source == Game::Fo76 && self.target == Game::Fo4";
-
-        assert!(body[..normalize].contains(fo76_gate));
-        assert!(normalize < linked);
-        assert!(linked < teleport);
-        assert!(body[teleport..light].contains(fo76_gate));
+            assert!(!needs_fo4_placed_ref_target_repair(Game::Fo4, Game::Fo4));
+            assert!(!needs_fo4_placed_ref_target_repair(
+                Game::SkyrimSe,
+                Game::Fo4
+            ));
+            assert!(!needs_fo4_placed_ref_target_repair(
+                Game::Fo4,
+                Game::Starfield
+            ));
+            assert!(!needs_fo4_placed_ref_target_repair(
+                Game::Starfield,
+                Game::Starfield
+            ));
+        }
+        {
+            assert!(supports_source_worldspace_topology_rebuild(
+                Game::SkyrimSe,
+                Game::Fo4
+            ));
+            assert!(supports_source_worldspace_topology_rebuild(
+                Game::Fnv,
+                Game::Fo4
+            ));
+            assert!(!supports_source_worldspace_topology_rebuild(
+                Game::Fo76,
+                Game::Fo4
+            ));
+            assert!(!supports_source_worldspace_topology_rebuild(
+                Game::SkyrimSe,
+                Game::SkyrimSe
+            ));
+        }
     }
 
     #[test]

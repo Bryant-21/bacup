@@ -399,12 +399,7 @@ mod tests {
             &[0u8; 12],
             "inert zero EFIT (mag/area/dur = 0)"
         );
-    }
 
-    #[test]
-    fn leaves_ench_that_already_has_an_effect() {
-        let interner = StringInterner::new();
-        let base = interner.intern(BASE_MASTER);
         let mut rec = record(
             "ENCH",
             vec![
@@ -464,6 +459,60 @@ mod tests {
             base,
             &interner
         ));
+
+        let mut rec = record(
+            "ALCH",
+            vec![
+                (
+                    "EFID",
+                    FieldValue::FormKey(FormKey {
+                        plugin: base,
+                        local: 0x0012_3456,
+                    }),
+                ),
+                (
+                    "EFIT",
+                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[1u8; 12])),
+                ),
+                (
+                    "CTDA",
+                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[2u8; 32])),
+                ),
+                (
+                    "EFID",
+                    FieldValue::FormKey(FormKey {
+                        plugin: base,
+                        local: 0x0065_4321,
+                    }),
+                ),
+                (
+                    "EFIT",
+                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[3u8; 12])),
+                ),
+            ],
+            &interner,
+        );
+        rec.form_key.local = VERIFIED_EFFECTLESS_ALCH_LOCALS[1];
+        let before = rec.fields.clone();
+
+        assert!(!repair_verified_effectless_alch(&mut rec, base, &interner));
+        assert_eq!(rec.fields, before);
+
+        let mut rec = record(
+            "ALCH",
+            vec![(
+                "EFIT",
+                FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0xFFu8; 12])),
+            )],
+            &interner,
+        );
+        rec.form_key.local = VERIFIED_EFFECTLESS_ALCH_LOCALS[2];
+
+        assert!(repair_verified_effectless_alch(&mut rec, base, &interner));
+        let once = rec.fields.clone();
+        assert!(!repair_verified_effectless_alch(&mut rec, base, &interner));
+        assert_eq!(rec.fields, once);
+        assert_eq!(order(&rec), ["EFID", "EFIT"]);
     }
 
     #[test]
@@ -518,70 +567,6 @@ mod tests {
             panic!("EFIT must be bytes")
         };
         assert_eq!(efit.as_slice(), &[0u8; 12]);
-    }
-
-    #[test]
-    fn leaves_alch_with_valid_multiple_effects_unchanged() {
-        let interner = StringInterner::new();
-        let base = interner.intern(BASE_MASTER);
-        let mut rec = record(
-            "ALCH",
-            vec![
-                (
-                    "EFID",
-                    FieldValue::FormKey(FormKey {
-                        plugin: base,
-                        local: 0x0012_3456,
-                    }),
-                ),
-                (
-                    "EFIT",
-                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[1u8; 12])),
-                ),
-                (
-                    "CTDA",
-                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[2u8; 32])),
-                ),
-                (
-                    "EFID",
-                    FieldValue::FormKey(FormKey {
-                        plugin: base,
-                        local: 0x0065_4321,
-                    }),
-                ),
-                (
-                    "EFIT",
-                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[3u8; 12])),
-                ),
-            ],
-            &interner,
-        );
-        rec.form_key.local = VERIFIED_EFFECTLESS_ALCH_LOCALS[1];
-        let before = rec.fields.clone();
-
-        assert!(!repair_verified_effectless_alch(&mut rec, base, &interner));
-        assert_eq!(rec.fields, before);
-    }
-
-    #[test]
-    fn alch_repair_is_idempotent() {
-        let interner = StringInterner::new();
-        let base = interner.intern(BASE_MASTER);
-        let mut rec = record(
-            "ALCH",
-            vec![(
-                "EFIT",
-                FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0xFFu8; 12])),
-            )],
-            &interner,
-        );
-        rec.form_key.local = VERIFIED_EFFECTLESS_ALCH_LOCALS[2];
-
-        assert!(repair_verified_effectless_alch(&mut rec, base, &interner));
-        let once = rec.fields.clone();
-        assert!(!repair_verified_effectless_alch(&mut rec, base, &interner));
-        assert_eq!(rec.fields, once);
-        assert_eq!(order(&rec), ["EFID", "EFIT"]);
     }
 
     #[test]
@@ -649,13 +634,7 @@ mod tests {
         };
         assert_eq!(fk.local, FALLBACK_CLASS_LOCAL);
         assert_eq!(fk.plugin, base);
-    }
 
-    #[test]
-    fn leaves_npc_that_already_has_cnam() {
-        let interner = StringInterner::new();
-        let base = interner.intern(BASE_MASTER);
-        let cnam_idx = npc_subrecord_order("CNAM");
         let mut rec = record(
             "NPC_",
             vec![
@@ -676,10 +655,7 @@ mod tests {
         );
         assert!(!inject_npc_cnam(&mut rec, base, cnam_idx));
         assert_eq!(order(&rec), ["EDID", "CNAM", "DATA"]);
-    }
 
-    #[test]
-    fn npc_cnam_lands_before_data_when_no_full() {
         // An NPC whose only post-CNAM field present is DATA → CNAM before DATA.
         let interner = StringInterner::new();
         let base = interner.intern(BASE_MASTER);

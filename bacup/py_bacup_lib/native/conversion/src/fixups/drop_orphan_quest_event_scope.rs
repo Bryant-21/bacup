@@ -270,7 +270,7 @@ mod tests {
     /// `EN05_MQ_Officer` shape: event-scoped, no node anywhere. The `ENAM` is
     /// what refuses `Start()`, so it has to go or the quest is unreachable.
     #[test]
-    fn drops_event_scope_from_a_quest_no_node_selects() {
+    fn drops_only_the_event_scope_and_keeps_unrelated_fields() {
         let interner = StringInterner::new();
         let mut record = quest(&interner, 0x0010_DBEA, true);
 
@@ -280,41 +280,7 @@ mod tests {
             record.fields.iter().any(|entry| entry.sig.0 == *b"FLTR"),
             "unrelated fields must survive"
         );
-    }
 
-    /// `Storm_MQ01_Breadcrumb_Radio` shape: event-scoped, its `SMQN` node was
-    /// never emitted, and it is on the autostart allowlist. Dropping `ENAM` is
-    /// required (it is what refuses `Start()`), but clearing start-game-enabled
-    /// on top of it leaves the station's quest stopped forever — the Pip-Boy
-    /// never lists it and the broadcast scene never begins.
-    #[test]
-    fn keeps_autostart_on_an_allowlisted_quest_it_de_scopes() {
-        let interner = StringInterner::new();
-        let mut record = quest(&interner, 0x0069_9466, true);
-        record.eid = Some(interner.intern("Storm_MQ01_Breadcrumb_Radio"));
-        record.fields.push(dnam(&interner, 0x8511)); // StartGameEnabled|StartsEnabled|RunOnce|WarnOnAliasFill|HasDialogueData
-
-        assert!(drop_quest_event_scope(&mut record, &interner));
-        assert!(record.fields.iter().all(|entry| entry.sig.0 != *b"ENAM"));
-        assert_eq!(quest_flags(&record, &interner), Some(0x8511));
-    }
-
-    /// The exemption must be scoped to the allowlist: an identical quest that is
-    /// not on it still loses the bit, or an unstartable quest becomes always-on.
-    #[test]
-    fn still_clears_autostart_on_a_quest_outside_the_allowlist() {
-        let interner = StringInterner::new();
-        let mut record = quest(&interner, 0x0010_DBEA, true);
-        record.eid = Some(interner.intern("EN05_MQ_Officer"));
-        record.fields.push(dnam(&interner, 0x8511));
-
-        assert!(drop_quest_event_scope(&mut record, &interner));
-        assert_eq!(quest_flags(&record, &interner), Some(0x8510));
-    }
-
-    #[test]
-    fn de_scopes_en05_course_quests_without_story_manager_producers() {
-        let interner = StringInterner::new();
         let node_quests: FxHashSet<FormKey> = FxHashSet::default();
 
         for local in [0x0008_D23B, 0x0009_C824, 0x0008_C881] {
@@ -325,41 +291,98 @@ mod tests {
             assert!(record.fields.iter().all(|entry| entry.sig.0 != *b"ENAM"));
             assert!(record.fields.iter().any(|entry| entry.sig.0 == *b"FLTR"));
         }
-    }
 
-    #[test]
-    fn leaves_a_quest_without_event_scope_untouched() {
-        let interner = StringInterner::new();
         let mut record = quest(&interner, 0x0010_DBEA, false);
 
         assert!(!drop_quest_event_scope(&mut record, &interner));
-    }
 
-    /// `NPE_DQ01_BetterTomorrow` (`006FD072`) shape: event-scoped AND
-    /// `StartGameEnabled`. FO76 let the event scope suppress the auto-start.
-    /// Dropping `ENAM` without clearing the flag made it start at game load, and
-    /// its priority-50 Greeting DIAL hijacked every human NPC's dialogue.
-    #[test]
-    fn clears_start_game_enabled_when_it_drops_the_event_scope() {
-        let interner = StringInterner::new();
         let mut record = quest(&interner, 0x006F_D072, true);
-        // StartGameEnabled | RunOnce | WarnOnAliasFillFailure | HasDialogueData
-        record
-            .fields
-            .push(dnam(&interner, 0x0001 | 0x0100 | 0x0400 | 0x8000));
+        let reward = FormKey {
+            local: 0x0002_C6,
+            plugin: interner.intern("SeventySix.esm"),
+        };
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"DNAM"),
+            value: FieldValue::FormKey(reward),
+        });
 
         assert!(drop_quest_event_scope(&mut record, &interner));
-        let flags = quest_flags(&record, &interner).expect("DNAM flags must survive");
-        assert_eq!(
-            flags & 0x0001,
-            0,
-            "StartGameEnabled must be cleared or the quest auto-starts"
+        assert!(
+            record
+                .fields
+                .iter()
+                .any(|entry| entry.value == FieldValue::FormKey(reward)),
+            "stage reward DNAM must survive untouched"
         );
-        assert_eq!(
-            flags,
-            0x0100 | 0x0400 | 0x8000,
-            "every other flag must be preserved exactly"
-        );
+    }
+
+    /// Dropping `ENAM` without clearing `StartGameEnabled` made
+    /// `NPE_DQ01_BetterTomorrow` auto-start and hijack every NPC's Greeting;
+    /// clearing it on the allowlisted `Storm_MQ01_Breadcrumb_Radio` leaves the
+    /// station's quest stopped forever.
+    #[test]
+    fn start_game_enabled_is_cleared_only_when_de_scoping_a_non_allowlisted_quest() {
+        const START_GAME_ENABLED: u64 = 0x0001;
+        const STARTS_RUN_ONCE_WARN_DIALOGUE: u64 = 0x8510;
+        const OTHER_FLAGS: u64 = 0x0100 | 0x0400 | 0x8000;
+        let interner = StringInterner::new();
+        for (name, local, editor_id, event_scoped, flags, expected_changed, expected_flags) in [
+            (
+                "allowlisted quest keeps autostart",
+                0x0069_9466,
+                Some("Storm_MQ01_Breadcrumb_Radio"),
+                true,
+                STARTS_RUN_ONCE_WARN_DIALOGUE | START_GAME_ENABLED,
+                true,
+                STARTS_RUN_ONCE_WARN_DIALOGUE | START_GAME_ENABLED,
+            ),
+            (
+                "same quest outside the allowlist",
+                0x0010_DBEA,
+                Some("EN05_MQ_Officer"),
+                true,
+                STARTS_RUN_ONCE_WARN_DIALOGUE | START_GAME_ENABLED,
+                true,
+                STARTS_RUN_ONCE_WARN_DIALOGUE,
+            ),
+            (
+                "NPE_DQ01_BetterTomorrow would auto-start",
+                0x006F_D072,
+                None,
+                true,
+                OTHER_FLAGS | START_GAME_ENABLED,
+                true,
+                OTHER_FLAGS,
+            ),
+            (
+                "no event scope to drop",
+                0x0010_DBEA,
+                None,
+                false,
+                0x8000 | START_GAME_ENABLED,
+                false,
+                0x8000 | START_GAME_ENABLED,
+            ),
+        ] {
+            let mut record = quest(&interner, local, event_scoped);
+            record.eid = editor_id.map(|id| interner.intern(id));
+            record.fields.push(dnam(&interner, flags));
+
+            assert_eq!(
+                drop_quest_event_scope(&mut record, &interner),
+                expected_changed,
+                "{name}"
+            );
+            assert!(
+                record.fields.iter().all(|entry| entry.sig.0 != *b"ENAM"),
+                "{name}"
+            );
+            assert_eq!(
+                quest_flags(&record, &interner),
+                Some(expected_flags),
+                "{name}"
+            );
+        }
     }
 
     /// The real pipeline hands `DNAM` over as raw `Bytes`, not a decoded struct.
@@ -394,42 +417,6 @@ mod tests {
         assert_eq!(got, 0x0100 | 0x0400 | 0x8000, "other flags preserved");
         assert_eq!(bytes[2], 50, "priority byte must be untouched");
         assert_eq!(bytes.len(), 14, "payload length must not change");
-    }
-
-    /// The flag is only unsafe *because* the event scope is gone. A quest a node
-    /// selects keeps both, so its Story Manager start path is unchanged.
-    #[test]
-    fn leaves_start_game_enabled_alone_when_there_is_no_event_scope_to_drop() {
-        let interner = StringInterner::new();
-        let mut record = quest(&interner, 0x006F_D072, false);
-        record.fields.push(dnam(&interner, 0x0001 | 0x8000));
-
-        assert!(!drop_quest_event_scope(&mut record, &interner));
-        assert_eq!(quest_flags(&record, &interner), Some(0x0001 | 0x8000));
-    }
-
-    /// Stage-level `DNAM` is a reward FormKey, not the quest flag struct.
-    #[test]
-    fn stage_level_dnam_reward_links_are_untouched() {
-        let interner = StringInterner::new();
-        let mut record = quest(&interner, 0x006F_D072, true);
-        let reward = FormKey {
-            local: 0x0002_C6,
-            plugin: interner.intern("SeventySix.esm"),
-        };
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"DNAM"),
-            value: FieldValue::FormKey(reward),
-        });
-
-        assert!(drop_quest_event_scope(&mut record, &interner));
-        assert!(
-            record
-                .fields
-                .iter()
-                .any(|entry| entry.value == FieldValue::FormKey(reward)),
-            "stage reward DNAM must survive untouched"
-        );
     }
 
     /// The selection happens before this helper is reached, so prove the node

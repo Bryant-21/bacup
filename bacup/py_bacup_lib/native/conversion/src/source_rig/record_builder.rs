@@ -691,106 +691,106 @@ mod tests {
     }
 
     #[test]
-    fn pure_key_planning_is_deterministic_and_does_not_mutate_mapper() {
-        let plan = plan(
-            CreatureGraphTemplate::GroundMelee,
-            MotionAttackKind::MeleeUnarmed,
-            vec![("skyrimse", 0x1000), ("fnv", 0x2000)],
-        );
-        let mapper = mapper_state();
-        let state_before = (
-            mapper.source_to_target.clone(),
-            mapper.used_object_ids.clone(),
-            mapper.reserved_generated_object_ids.clone(),
-            mapper.next_object_id,
-        );
-        let interner = StringInterner::new();
-        let forward = plan_creature_record_form_keys(
-            &plan,
-            &mapper,
-            requests(&plan, Some("attack")),
-            &interner,
-        )
-        .unwrap();
-        let mut reverse_requests = requests(&plan, Some("attack"));
-        reverse_requests.reverse();
-        let reverse =
-            plan_creature_record_form_keys(&plan, &mapper, reverse_requests, &interner).unwrap();
-
-        assert_eq!(forward, reverse);
-        assert_eq!(
-            state_before,
-            (
+    fn key_planning_is_deterministic_typed_and_has_no_phantom_unarmed() {
+        {
+            let plan = plan(
+                CreatureGraphTemplate::GroundMelee,
+                MotionAttackKind::MeleeUnarmed,
+                vec![("skyrimse", 0x1000), ("fnv", 0x2000)],
+            );
+            let mapper = mapper_state();
+            let state_before = (
                 mapper.source_to_target.clone(),
                 mapper.used_object_ids.clone(),
                 mapper.reserved_generated_object_ids.clone(),
                 mapper.next_object_id,
-            )
-        );
-        let locals = forward
-            .iter()
-            .flat_map(|keys| {
-                [
-                    keys.base.race.local,
-                    keys.base.npc.local,
-                    keys.base.skin.local,
-                    keys.base.armor_addon.local,
-                    keys.base.body_part_data.local,
-                    keys.base.unarmed_weapon.local,
-                ]
-            })
-            .collect::<BTreeSet<_>>();
-        assert_eq!(locals.len(), 12);
-    }
-
-    #[test]
-    fn non_melee_key_plan_does_not_consume_a_phantom_unarmed_record() {
-        let plan = plan(
-            CreatureGraphTemplate::GroundRangedProjectile,
-            MotionAttackKind::RangedProjectile,
-            vec![("fnv", 0x2000)],
-        );
-        let mapper = mapper_state();
-        let interner = StringInterner::new();
-        let keys = plan_creature_record_form_keys(&plan, &mapper, requests(&plan, None), &interner)
-            .unwrap()
-            .pop()
-            .unwrap();
-
-        assert_eq!(keys.base.unarmed_weapon.local, 0);
-        assert!(keys.melee_attacks.is_empty());
-        assert_eq!(keys.base.race.local, 0x800);
-        assert_eq!(keys.base.body_part_data.local, 0x804);
-        assert_eq!(mapper.next_object_id, 0x800);
-    }
-
-    #[test]
-    fn missing_and_duplicate_key_plan_requests_are_typed_and_atomic() {
-        let plan = plan(
-            CreatureGraphTemplate::GroundMelee,
-            MotionAttackKind::MeleeUnarmed,
-            vec![("fnv", 0x2000)],
-        );
-        let mapper = mapper_state();
-        let interner = StringInterner::new();
-        let next_before = mapper.next_object_id;
-
-        assert!(matches!(
-            plan_creature_record_form_keys(&plan, &mapper, Vec::new(), &interner),
-            Err(CreatureRecordBatchBuildError::InvalidKeyPlanRequest { .. })
-        ));
-        let request = requests(&plan, Some("attack")).pop().unwrap();
-        assert!(matches!(
-            plan_creature_record_form_keys(
+            );
+            let interner = StringInterner::new();
+            let forward = plan_creature_record_form_keys(
                 &plan,
                 &mapper,
-                vec![request.clone(), request],
+                requests(&plan, Some("attack")),
                 &interner,
-            ),
-            Err(CreatureRecordBatchBuildError::InvalidKeyPlanRequest { .. })
-        ));
-        assert_eq!(mapper.next_object_id, next_before);
-        assert!(mapper.used_object_ids.is_empty());
-        assert!(mapper.source_to_target.is_empty());
+            )
+            .unwrap();
+            let mut reverse_requests = requests(&plan, Some("attack"));
+            reverse_requests.reverse();
+            let reverse =
+                plan_creature_record_form_keys(&plan, &mapper, reverse_requests, &interner)
+                    .unwrap();
+
+            assert_eq!(forward, reverse);
+            assert_eq!(
+                state_before,
+                (
+                    mapper.source_to_target.clone(),
+                    mapper.used_object_ids.clone(),
+                    mapper.reserved_generated_object_ids.clone(),
+                    mapper.next_object_id,
+                )
+            );
+            let locals = forward
+                .iter()
+                .flat_map(|keys| {
+                    [
+                        keys.base.race.local,
+                        keys.base.npc.local,
+                        keys.base.skin.local,
+                        keys.base.armor_addon.local,
+                        keys.base.body_part_data.local,
+                        keys.base.unarmed_weapon.local,
+                    ]
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(locals.len(), 12);
+        }
+        {
+            let plan = plan(
+                CreatureGraphTemplate::GroundRangedProjectile,
+                MotionAttackKind::RangedProjectile,
+                vec![("fnv", 0x2000)],
+            );
+            let mapper = mapper_state();
+            let interner = StringInterner::new();
+            let keys =
+                plan_creature_record_form_keys(&plan, &mapper, requests(&plan, None), &interner)
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+
+            assert_eq!(keys.base.unarmed_weapon.local, 0);
+            assert!(keys.melee_attacks.is_empty());
+            assert_eq!(keys.base.race.local, 0x800);
+            assert_eq!(keys.base.body_part_data.local, 0x804);
+            assert_eq!(mapper.next_object_id, 0x800);
+        }
+        {
+            let plan = plan(
+                CreatureGraphTemplate::GroundMelee,
+                MotionAttackKind::MeleeUnarmed,
+                vec![("fnv", 0x2000)],
+            );
+            let mapper = mapper_state();
+            let interner = StringInterner::new();
+            let next_before = mapper.next_object_id;
+
+            assert!(matches!(
+                plan_creature_record_form_keys(&plan, &mapper, Vec::new(), &interner),
+                Err(CreatureRecordBatchBuildError::InvalidKeyPlanRequest { .. })
+            ));
+            let request = requests(&plan, Some("attack")).pop().unwrap();
+            assert!(matches!(
+                plan_creature_record_form_keys(
+                    &plan,
+                    &mapper,
+                    vec![request.clone(), request],
+                    &interner,
+                ),
+                Err(CreatureRecordBatchBuildError::InvalidKeyPlanRequest { .. })
+            ));
+            assert_eq!(mapper.next_object_id, next_before);
+            assert!(mapper.used_object_ids.is_empty());
+            assert!(mapper.source_to_target.is_empty());
+        }
     }
 }

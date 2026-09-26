@@ -38,6 +38,13 @@ Function PrepareFO76Defaults()
         CloseAnimEventName = "Done"
     EndIf
 
+    ; The retained FO4 klaxon has no Done event or JumpState animations.
+    If openAnim == "stage2" && closeAnim == "Reset"
+        SetClosedAnim = closeAnim
+        SetOpenAnim = openAnim
+        AllowInterrupt = True
+    EndIf
+
     openEvent = OpenAnimEventName
     closeEvent = CloseAnimEventName
     startOpenAnim = SetOpenAnim
@@ -68,7 +75,7 @@ Function SetDefaultState()
     EndIf
 EndFunction
 
-Function SetOpen(Bool abOpen = True)
+Function SetOpen(Bool abOpen = true)
     PrepareFO76Defaults()
     Bool changed = isOpen != abOpen
     Parent.SetOpen(abOpen)

@@ -7,6 +7,7 @@ duplicates a multi-GB parse tree for the whole run. Short-lived
 open/operate/close handles remain allowed.
 """
 
+import inspect
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -145,3 +146,50 @@ def test_run_source_handle_released_before_run_drop():
     assert SRC.index("release_source_handle()") < SRC.index(
         "_drain_and_drop_rust_run(ctx)"
     )
+
+
+def test_run_source_handle_retained_for_quest_inventory_and_released_before_save():
+    record_track_src = inspect.getsource(unified.UnifiedDriver._convert_record_track)
+    inventory = record_track_src.index('"Inventory Quest Runtime Routes"')
+    before = record_track_src.index('"before:native_source_release"')
+    release = record_track_src.index("release_source_handle()")
+    trim = record_track_src.index("_trim_bacup_native_allocator()")
+    after = record_track_src.index('"after:native_source_release"')
+    save = record_track_src.index("rust_run.save_target(")
+    assert inventory < before < release < trim < after < save
+
+
+def test_bacup_allocator_trim_dispatches_to_conversion_native(monkeypatch):
+    import bacup_lib.esp_native_runtime as esp_native_runtime
+
+    calls = []
+    native = SimpleNamespace(trim_allocator_native=lambda: calls.append("trim"))
+    monkeypatch.setattr(esp_native_runtime, "load_esp_native", lambda: native)
+
+    unified._trim_bacup_native_allocator()
+
+    assert calls == ["trim"]
+
+
+def test_collect_assets_mark_trims_creation_allocator_after_snapshot(monkeypatch):
+    from creation_lib.esp import native_runtime
+
+    calls = []
+    report = SimpleNamespace(
+        memory_report=SimpleNamespace(
+            mark=lambda label: calls.append(("mark", label))
+        )
+    )
+    monkeypatch.setattr(unified, "_timing_report", lambda _ctx: report)
+    monkeypatch.setattr(
+        native_runtime,
+        "trim_allocator",
+        lambda: calls.append(("trim", "creation")),
+    )
+
+    unified._memory_mark(SimpleNamespace(), "after:collect_assets")
+
+    assert calls == [
+        ("mark", "after:collect_assets"),
+        ("trim", "creation"),
+    ]

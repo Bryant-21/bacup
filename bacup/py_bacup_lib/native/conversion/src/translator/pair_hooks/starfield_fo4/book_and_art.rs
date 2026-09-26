@@ -23,7 +23,10 @@ const FO4_BOOK_FLAG_MASK: u8 = 0x1F;
 
 const MAGIC_HIT_EFFECT: u32 = 1;
 
-pub(crate) fn normalize(record: &mut Record, mapper: &mut FormKeyMapper<'_>) -> MgefNormalizeReport {
+pub(crate) fn normalize(
+    record: &mut Record,
+    mapper: &mut FormKeyMapper<'_>,
+) -> MgefNormalizeReport {
     let mut report = MgefNormalizeReport::default();
     let sig = record.sig.0;
     if !matches!(&sig, b"BOOK" | b"DMGT" | b"ARTO") {
@@ -110,7 +113,11 @@ fn convert_damage_type(
 /// references (NPC grav jumps, a magic hit effect), which vanilla FO4 art does
 /// as Magic Hit Effect: every MGEF hit effect art and 50 of 53 RFCT arts.
 fn convert_art_type(source: u32, report: &mut MgefNormalizeReport) -> FieldValue {
-    let target = if source <= 2 { source } else { MAGIC_HIT_EFFECT };
+    let target = if source <= 2 {
+        source
+    } else {
+        MAGIC_HIT_EFFECT
+    };
     report.enums.push(MgefEnumDecision {
         field: "art_type",
         source,
@@ -180,7 +187,9 @@ mod tests {
             .iter()
             .find(|field| field.sig.0 == *b"DNAM")
             .expect("DNAM");
-        hex::encode(encode_field_pub(dnam, schema.record_def(record.sig.as_str()), interner).unwrap())
+        hex::encode(
+            encode_field_pub(dnam, schema.record_def(record.sig.as_str()), interner).unwrap(),
+        )
     }
 
     fn outcome<'a>(report: &'a MgefNormalizeReport, field: &str) -> &'a MgefReferenceOutcome {
@@ -197,10 +206,10 @@ mod tests {
     const NEW_ATLANTIAN_05: &str = "30460c1f00000000000000000000000000";
 
     #[test]
-    fn magazine_without_an_fo4_perk_becomes_a_plain_book() {
+    fn book_types_keep_only_resolved_fo4_perks_and_flags() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
-        let mut book = record(&interner, b"BOOK", 0x1F_F722, NEW_ATLANTIAN_05);
+        let mut mapper = self::mapper(&interner);
+        let mut book = self::record(&interner, b"BOOK", 0x1F_F722, NEW_ATLANTIAN_05);
 
         let report = normalize(&mut book, &mut mapper);
 
@@ -213,17 +222,14 @@ mod tests {
                 source_raw: 0x1F_0C46
             }
         );
-    }
 
-    #[test]
-    fn magazine_perk_that_resolves_keeps_add_perk() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         mapper.add_mapping(
             form_key(&interner, "Starfield.esm", 0x1F_0C46),
             form_key(&interner, "Fallout4.esm", 0x1E_3CFB),
         );
-        let mut book = record(&interner, b"BOOK", 0x1F_F722, NEW_ATLANTIAN_05);
+        let mut book = self::record(&interner, b"BOOK", 0x1F_F722, NEW_ATLANTIAN_05);
 
         normalize(&mut book, &mut mapper);
 
@@ -231,49 +237,56 @@ mod tests {
             written_dnam(&book, &interner),
             "10".to_owned() + "fb3c1e00" + &"00".repeat(8)
         );
-    }
 
-    #[test]
-    fn data_slate_type_and_starfield_flag_leave_the_book() {
         let interner = StringInterner::new();
         // BOOK 001CF1 `CF_KryxHistoryInterview_Slate001`, an audio slate.
-        let mut slate = record(&interner, b"BOOK", 0x1CF1, "2000000000000000000000000003000000");
-        normalize(&mut slate, &mut mapper(&interner));
+        let mut slate = self::record(
+            &interner,
+            b"BOOK",
+            0x1CF1,
+            "2000000000000000000000000003000000",
+        );
+        normalize(&mut slate, &mut self::mapper(&interner));
         assert_eq!(written_dnam(&slate, &interner), "00".repeat(13));
 
         // BOOK 0B2E51 `HT_Book_BestDefenseSpitting`: Can't be Taken survives.
-        let mut book = record(&interner, b"BOOK", 0xB_2E51, "2200000000000000000000000001000000");
-        normalize(&mut book, &mut mapper(&interner));
-        assert_eq!(written_dnam(&book, &interner), "02".to_owned() + &"00".repeat(12));
+        let mut book = self::record(
+            &interner,
+            b"BOOK",
+            0xB_2E51,
+            "2200000000000000000000000001000000",
+        );
+        normalize(&mut book, &mut self::mapper(&interner));
+        assert_eq!(
+            written_dnam(&book, &interner),
+            "02".to_owned() + &"00".repeat(12)
+        );
     }
 
     #[test]
-    fn damage_type_resistances_resolve_by_editor_id_never_by_shared_form_id() {
+    fn damage_type_references_resolve_by_editor_id_or_mapper() {
         let interner = StringInterner::new();
         // DMGT 060A81 `dtEnergy` resists with Starfield `EnergyResist`.
-        let mut energy = record(&interner, b"DMGT", 0x6_0A81, "eb02000000000000");
-        let report = normalize(&mut energy, &mut mapper(&interner));
+        let mut energy = self::record(&interner, b"DMGT", 0x6_0A81, "eb02000000000000");
+        let report = normalize(&mut energy, &mut self::mapper(&interner));
         assert_eq!(report.converted_rows, 1);
         assert_eq!(written_dnam(&energy, &interner), "eb02000000000000");
 
         // DMGT 060A82 `dtFire_DONOTUSE` resists with `FireResist_DONOTUSE`.
-        let mut fire = record(&interner, b"DMGT", 0x6_0A82, "e502000000000000");
-        normalize(&mut fire, &mut mapper(&interner));
+        let mut fire = self::record(&interner, b"DMGT", 0x6_0A82, "e502000000000000");
+        normalize(&mut fire, &mut self::mapper(&interner));
         assert_eq!(
             written_dnam(&fire, &interner),
             "00".repeat(8),
             "FireResist_DONOTUSE must not become FO4 FireResist"
         );
-    }
 
-    #[test]
-    fn damage_type_spell_resolves_through_the_mapper_or_is_nulled() {
         let interner = StringInterner::new();
         // DMGT 000B79 `dtToxic` applies SPEL 255D8F `CCT_HitSpell_Poison`.
         const DT_TOXIC: &str = "000000008f5d2500";
 
-        let mut unmapped = mapper(&interner);
-        let mut toxic = record(&interner, b"DMGT", 0xB79, DT_TOXIC);
+        let mut unmapped = self::mapper(&interner);
+        let mut toxic = self::record(&interner, b"DMGT", 0xB79, DT_TOXIC);
         let report = normalize(&mut toxic, &mut unmapped);
         assert_eq!(written_dnam(&toxic, &interner), "00".repeat(8));
         assert_eq!(
@@ -283,12 +296,12 @@ mod tests {
             }
         );
 
-        let mut mapped = mapper(&interner);
+        let mut mapped = self::mapper(&interner);
         mapped.add_mapping(
             form_key(&interner, "Starfield.esm", 0x25_5D8F),
             form_key(&interner, "Fallout4.esm", 0x09_252C),
         );
-        let mut toxic = record(&interner, b"DMGT", 0xB79, DT_TOXIC);
+        let mut toxic = self::record(&interner, b"DMGT", 0xB79, DT_TOXIC);
         normalize(&mut toxic, &mut mapped);
         assert_eq!(written_dnam(&toxic, &interner), "000000002c250900");
     }
@@ -305,20 +318,21 @@ mod tests {
             // ARTO 022DE3 `ArtifactPowerAntiGravFX_AO`: magic casting.
             (0x2_2DE3, "0000000000000000", "00000000"),
         ] {
-            let mut mapper = mapper(&interner);
-            let mut art = record(&interner, b"ARTO", local, dnam);
+            let mut mapper = self::mapper(&interner);
+            let mut art = self::record(&interner, b"ARTO", local, dnam);
             let report = normalize(&mut art, &mut mapper);
             assert_eq!(report.converted_rows, 1, "ARTO {local:06X}");
             assert_eq!(written_dnam(&art, &interner), written, "ARTO {local:06X}");
         }
-    }
 
-    #[test]
-    fn unexpected_payloads_are_left_alone() {
         let interner = StringInterner::new();
-        for (sig, dnam) in [(b"BOOK", "00".repeat(13)), (b"ARTO", "01000000".into()), (b"DMGT", "00".repeat(16))] {
-            let mut mapper = mapper(&interner);
-            let mut unexpected = record(&interner, sig, 0x800, &dnam);
+        for (sig, dnam) in [
+            (b"BOOK", "00".repeat(13)),
+            (b"ARTO", "01000000".into()),
+            (b"DMGT", "00".repeat(16)),
+        ] {
+            let mut mapper = self::mapper(&interner);
+            let mut unexpected = self::record(&interner, sig, 0x800, &dnam);
             let before = unexpected.fields[0].value.clone();
             let report = normalize(&mut unexpected, &mut mapper);
             assert_eq!(report.converted_rows, 0);

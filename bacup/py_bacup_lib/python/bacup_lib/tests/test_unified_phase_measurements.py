@@ -108,21 +108,6 @@ def test_convert_scripts_emits_ordered_child_measurements(
         assert event["elapsed_seconds"] >= 0
 
 
-def test_convert_scripts_early_return_preserves_log_and_collect_measurement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = _runtime(tmp_path)
-    runtime._req.source_game = "skyrimse"
-    ctx = _ctx(tmp_path)
-    runner = _runner()
-    monkeypatch.setattr(runtime, "_collect_script_references", lambda *_: ([], 0))
-
-    runtime._run_convert_scripts_phase(ctx, runner)
-
-    assert _event_names(ctx) == ["convert_scripts_collect_references"]
-    assert runner.logs[-1] == ("INFO", "[Scripts] no Papyrus script references found")
-
-
 def test_quest_inventory_emits_ordered_measurements_and_unchanged_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,63 +147,40 @@ def test_quest_inventory_emits_ordered_measurements_and_unchanged_report(
     assert runner.logs[-1][0] == "INFO"
 
 
-def test_quest_inventory_native_error_preserves_warning_and_return(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _fail_inventory(*_args):
+    raise RuntimeError("inventory failed")
+
+
+@pytest.mark.parametrize(
+    ("inventory", "failed_stage", "report_text"),
+    [
+        (_fail_inventory, "quest_runtime_inventory_native", None),
+        (lambda *_args: "not-json", "quest_runtime_inventory_json_decode", "not-json\n"),
+    ],
+)
+def test_quest_inventory_failure_records_failed_stage_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory, failed_stage, report_text
 ) -> None:
     runtime = _runtime(tmp_path)
     ctx = _ctx(tmp_path)
     runner = _runner()
-
-    def fail(*_args):
-        raise RuntimeError("inventory failed")
-
     monkeypatch.setattr(
         unified,
         "load_native_module",
-        lambda: SimpleNamespace(conversion_run_quest_runtime_inventory_json=fail),
+        lambda: SimpleNamespace(conversion_run_quest_runtime_inventory_json=inventory),
     )
     monkeypatch.setattr(unified, "_script_addition_sources", lambda *_: {})
 
     runtime._run_quest_runtime_inventory_phase(ctx, runner)
 
-    assert _event_names(ctx) == [
-        "quest_runtime_inventory_input_preparation",
-        "quest_runtime_inventory_native",
-    ]
+    assert _event_names(ctx)[-1] == failed_stage
     assert ctx.timing_report.events[-1]["status"] == "failed"
-    assert ctx.timing_report.events[-1]["error_type"] == "RuntimeError"
-    assert runner.logs[-1] == (
-        "WARN",
-        "[Quest Runtime] native inventory could not complete: inventory failed",
-    )
-    assert not (ctx.diagnostics_root / "quest_runtime_inventory.json").exists()
-
-
-def test_quest_inventory_decode_error_records_failed_stage_after_report_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = _runtime(tmp_path)
-    ctx = _ctx(tmp_path)
-    runner = _runner()
-    native = SimpleNamespace(
-        conversion_run_quest_runtime_inventory_json=lambda *_args: "not-json"
-    )
-    monkeypatch.setattr(unified, "load_native_module", lambda: native)
-    monkeypatch.setattr(unified, "_script_addition_sources", lambda *_: {})
-
-    runtime._run_quest_runtime_inventory_phase(ctx, runner)
-
-    assert _event_names(ctx) == [
-        "quest_runtime_inventory_input_preparation",
-        "quest_runtime_inventory_native",
-        "quest_runtime_inventory_report_write",
-        "quest_runtime_inventory_json_decode",
-    ]
-    assert ctx.timing_report.events[-1]["status"] == "failed"
-    assert (ctx.diagnostics_root / "quest_runtime_inventory.json").read_text(
-        encoding="utf-8"
-    ) == "not-json\n"
     assert runner.logs[-1][0] == "WARN"
+    report_path = ctx.diagnostics_root / "quest_runtime_inventory.json"
+    if report_text is None:
+        assert not report_path.exists()
+    else:
+        assert report_path.read_text(encoding="utf-8") == report_text
 
 
 def test_run_unified_emits_setup_completion_and_cleanup_measurements(

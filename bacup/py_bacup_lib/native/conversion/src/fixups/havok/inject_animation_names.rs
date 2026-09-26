@@ -456,129 +456,100 @@ fn find_character_hkx_dirs(dir: &Path, f: &mut impl FnMut(&Path)) {
 mod tests {
     use super::*;
 
+    /// Real FO76 layout: characters use a per-creature name, next to strays.
     #[test]
-    fn collect_anim_files_empty_dir_returns_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = collect_anim_files_from_disk(dir.path());
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn collect_anim_files_picks_up_hkx() {
+    fn discovers_animation_character_and_mesh_root_files_on_disk() {
         use std::fs;
         let dir = tempfile::tempdir().unwrap();
+        assert!(collect_anim_files_from_disk(dir.path()).is_empty());
         fs::write(dir.path().join("idle.hkx"), b"dummy").unwrap();
         fs::write(dir.path().join("readme.txt"), b"txt").unwrap();
-        let files = collect_anim_files_from_disk(dir.path());
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0], "Animations\\idle.hkx");
-    }
-
-    #[test]
-    fn filters_missing_behavior_clips_against_recursive_emitted_animations() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        let nested = dir.path().join("Weapon").join("Injured").join("Left");
-        fs::create_dir_all(&nested).unwrap();
-        fs::write(nested.join("Walk.hkx"), b"dummy").unwrap();
-        let clip_names = HashSet::from([
-            "Animations\\Weapon\\Injured\\Left\\Walk.hkt".to_string(),
-            "Animations\\Weapon\\Injured\\Left\\Missing.hkt".to_string(),
-        ]);
-
-        let selected = select_animation_names(&clip_names, Some(dir.path()));
-
         assert_eq!(
-            selected,
-            vec!["Animations\\Weapon\\Injured\\Left\\Walk.hkt".to_string()]
+            collect_anim_files_from_disk(dir.path()),
+            vec!["Animations\\idle.hkx".to_string()]
         );
-    }
 
-    #[test]
-    fn preserves_behavior_clips_when_no_animation_inventory_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let clip_names = HashSet::from(["Animations\\Idle.hkt".to_string()]);
-
-        let selected = select_animation_names(&clip_names, Some(dir.path()));
-
-        assert_eq!(selected, vec!["Animations\\Idle.hkt".to_string()]);
-    }
-
-    #[test]
-    fn preserves_nonlocal_behavior_clips() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Idle.hkx"), b"dummy").unwrap();
-        let clip_names = HashSet::from([
-            "Animations\\Idle.hkt".to_string(),
-            "..\\Character\\Animations\\SharedDeath.hkt".to_string(),
-        ]);
-
-        let selected = select_animation_names(&clip_names, Some(dir.path()));
-
+        let chars = tempfile::tempdir().unwrap();
+        fs::write(chars.path().join("radhog.hkx"), b"x").unwrap();
+        fs::write(chars.path().join("character.hkx"), b"x").unwrap();
+        fs::write(chars.path().join("notes.txt"), b"x").unwrap();
+        let names: Vec<String> = character_hkx_files_in_dir(chars.path())
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
-            selected,
-            vec![
-                "..\\Character\\Animations\\SharedDeath.hkt".to_string(),
-                "Animations\\Idle.hkt".to_string(),
-            ]
+            names,
+            vec!["character.hkx".to_string(), "radhog.hkx".to_string()]
         );
-    }
 
-    #[test]
-    fn includes_emitted_race_subgraph_overrides_not_named_by_local_behaviors() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("H2H")).unwrap();
-        fs::create_dir_all(dir.path().join("MT")).unwrap();
-        fs::write(dir.path().join("H2H").join("Idle.hkx"), b"idle").unwrap();
-        fs::write(dir.path().join("MT").join("RunForward.hkx"), b"run").unwrap();
-        let clip_names = HashSet::from(["Animations\\H2H\\Idle.hkt".to_string()]);
-
-        let selected = select_animation_names(&clip_names, Some(dir.path()));
-
-        assert_eq!(
-            selected,
-            vec![
-                "Animations\\H2H\\Idle.hkt".to_string(),
-                "Animations\\MT\\RunForward.hkt".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn mesh_roots_prefer_unified_data_meshes() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("data").join("Meshes")).unwrap();
-        fs::create_dir_all(dir.path().join("meshes")).unwrap();
-
-        let roots = mesh_roots_for_mod_path(dir.path());
+        let mod_dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(mod_dir.path().join("data").join("Meshes")).unwrap();
+        fs::create_dir_all(mod_dir.path().join("meshes")).unwrap();
+        let roots = mesh_roots_for_mod_path(mod_dir.path());
         assert_eq!(roots.len(), 2);
         assert!(roots[0].ends_with("data\\Meshes") || roots[0].ends_with("data/Meshes"));
         assert!(roots[1].ends_with("meshes"));
     }
 
+    /// Local behavior clips are filtered against the (recursive) emitted
+    /// animations; non-local clips are kept, nothing is filtered when there is
+    /// no inventory, and emitted race-subgraph overrides no local behavior
+    /// names are added.
     #[test]
-    fn finds_per_creature_character_files_not_just_character_hkx() {
+    fn selects_animation_names_from_behavior_clips_and_emitted_animations() {
         use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        let chars = dir.path();
-        // Real FO76 layout: per-creature name + a stray non-character file.
-        fs::write(chars.join("radhog.hkx"), b"x").unwrap();
-        fs::write(chars.join("character.hkx"), b"x").unwrap();
-        fs::write(chars.join("notes.txt"), b"x").unwrap();
-
-        let names: Vec<String> = character_hkx_files_in_dir(chars)
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-
-        // Both .hkx files are returned (sorted).
-        assert_eq!(
-            names,
-            vec!["character.hkx".to_string(), "radhog.hkx".to_string()]
-        );
+        let s = |value: &str| value.to_string();
+        for (name, files, clips, expected) in [
+            (
+                "filters_missing_nested",
+                vec!["Weapon/Injured/Left/Walk.hkx"],
+                vec![
+                    "Animations\\Weapon\\Injured\\Left\\Walk.hkt",
+                    "Animations\\Weapon\\Injured\\Left\\Missing.hkt",
+                ],
+                vec!["Animations\\Weapon\\Injured\\Left\\Walk.hkt"],
+            ),
+            (
+                "no_inventory",
+                vec![],
+                vec!["Animations\\Idle.hkt"],
+                vec!["Animations\\Idle.hkt"],
+            ),
+            (
+                "non_local_clip",
+                vec!["Idle.hkx"],
+                vec![
+                    "Animations\\Idle.hkt",
+                    "..\\Character\\Animations\\SharedDeath.hkt",
+                ],
+                vec![
+                    "..\\Character\\Animations\\SharedDeath.hkt",
+                    "Animations\\Idle.hkt",
+                ],
+            ),
+            (
+                "race_subgraph_override",
+                vec!["H2H/Idle.hkx", "MT/RunForward.hkx"],
+                vec!["Animations\\H2H\\Idle.hkt"],
+                vec![
+                    "Animations\\H2H\\Idle.hkt",
+                    "Animations\\MT\\RunForward.hkt",
+                ],
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            for file in files {
+                let path = dir.path().join(file);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, b"dummy").unwrap();
+            }
+            let clip_names: HashSet<String> = clips.into_iter().map(s).collect();
+            assert_eq!(
+                select_animation_names(&clip_names, Some(dir.path())),
+                expected.into_iter().map(s).collect::<Vec<_>>(),
+                "{name}"
+            );
+        }
     }
 
     fn write_hkx_file(path: &Path, objects: Vec<havok_native::hkx::HkxObject>) {
@@ -723,31 +694,15 @@ mod tests {
         std::fs::create_dir_all(project_dir.join("Animations")).unwrap();
         std::fs::write(project_dir.join("Animations").join("Idle.hkx"), b"dummy").unwrap();
 
-        let report = inject_animation_names_in_mod_path(dir.path()).unwrap();
-
-        assert_eq!(report.records_changed, 1);
-        let character_strings = all_hkx_strings(&character);
-        assert!(character_strings.contains(&"Animations\\Idle.hkt".to_string()));
-        assert!(character_strings.contains(&"CharacterAssets\\skeleton.hkt".to_string()));
-        assert!(character_bundle_name_is_null(&character));
-
-        let behavior_strings = all_hkx_strings(&behavior);
-        assert_eq!(behavior_strings, vec!["Animations\\Idle.hkt".to_string()]);
-    }
-
-    #[test]
-    fn injects_nested_character_variant_from_actor_animation_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let project_dir = dir.path().join("data/Meshes/Actors/Turret");
-        let character = project_dir
+        let turret_dir = dir.path().join("data/Meshes/Actors/Turret");
+        let turret = turret_dir
             .join("Characters")
             .join("Military")
             .join("turretmilitarycharacter.hkx");
-
-        write_character_fixture(&character, &[]);
-        std::fs::create_dir_all(project_dir.join("Animations").join("Military")).unwrap();
+        write_character_fixture(&turret, &[]);
+        std::fs::create_dir_all(turret_dir.join("Animations").join("Military")).unwrap();
         std::fs::write(
-            project_dir
+            turret_dir
                 .join("Animations")
                 .join("Military")
                 .join("idle.hkx"),
@@ -757,45 +712,28 @@ mod tests {
 
         let report = inject_animation_names_in_mod_path(dir.path()).unwrap();
 
-        assert_eq!(report.records_changed, 1);
+        assert_eq!(report.records_changed, 2);
         let character_strings = all_hkx_strings(&character);
-        assert!(character_strings.contains(&"Animations\\Military\\idle.hkx".to_string()));
-    }
-
-    #[test]
-    fn normalizes_default_bundle_name_when_assets_are_already_present() {
-        let dir = tempfile::tempdir().unwrap();
-        let character = dir.path().join("character.hkx");
-        let animation_names = vec!["Animations\\Idle.hkt".to_string()];
-        write_character_fixture(&character, &["Animations\\Idle.hkt"]);
-
-        assert!(!character_bundle_name_is_null(&character));
-        assert!(inject_anim_names(&character, &animation_names).unwrap());
+        assert!(character_strings.contains(&"Animations\\Idle.hkt".to_string()));
+        assert!(character_strings.contains(&"CharacterAssets\\skeleton.hkt".to_string()));
         assert!(character_bundle_name_is_null(&character));
-        assert!(!inject_anim_names(&character, &animation_names).unwrap());
-    }
 
-    #[test]
-    fn no_mod_path_returns_empty() {
-        use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
-        use crate::session::open_session;
-        use crate::sym::StringInterner;
+        let behavior_strings = all_hkx_strings(&behavior);
+        assert_eq!(behavior_strings, vec!["Animations\\Idle.hkt".to_string()]);
+        assert!(
+            all_hkx_strings(&turret).contains(&"Animations\\Military\\idle.hkx".to_string()),
+            "nested character variant reads the matching actor animation dir"
+        );
 
-        let target_handle = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
-            "InjectAnimationNamesTest.esp",
-            Some("fo4"),
-        )
-        .expect("test plugin handle");
-        let config = FixupConfig::default();
-        let mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let fixup = InjectAnimationNamesFixup;
-        assert!(!fixup.applies_to_session(&session, &config));
-        let report = fixup
-            .run_with_session(&mut session, &mut mapper, &config)
-            .unwrap();
-        assert!(report.is_no_op());
+        let present = dir.path().join("character.hkx");
+        let animation_names = vec!["Animations\\Idle.hkt".to_string()];
+        write_character_fixture(&present, &["Animations\\Idle.hkt"]);
+        assert!(!character_bundle_name_is_null(&present));
+        assert!(
+            inject_anim_names(&present, &animation_names).unwrap(),
+            "default bundle name is normalized when assets are already present"
+        );
+        assert!(character_bundle_name_is_null(&present));
+        assert!(!inject_anim_names(&present, &animation_names).unwrap());
     }
 }

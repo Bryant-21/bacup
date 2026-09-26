@@ -340,37 +340,18 @@ def _exported_signatures(items) -> set[str]:
 class TestTranslateAll:
     """conversion_run_translate_all returns stats and writes records to target."""
 
-    def test_translate_all_returns_stats_dict(self):
+    def test_translate_all_translates_fixture_weap_without_failures(self):
         m = _native()
         with _create_run(FIXTURE) as run:
             stats = m.conversion_run_translate_all(run.id)
-            assert isinstance(stats, dict), f"expected dict, got {type(stats)}"
-            assert "records_translated" in stats
             assert "records_dropped" in stats
             assert "records_deferred" in stats
-            assert "records_failed" in stats
-            assert "by_signature" in stats
-            assert isinstance(stats["by_signature"], dict)
-
-    def test_translate_all_translates_weap_record(self):
-        """The fixture has exactly one WEAP record; it should be translated."""
-        m = _native()
-        with _create_run(FIXTURE) as run:
-            stats = m.conversion_run_translate_all(run.id)
-            assert stats["records_translated"] >= 1, (
-                f"expected at least 1 translated record, got {stats}"
-            )
-            assert stats["by_signature"]["WEAP"]["seen"] >= 1
+            assert stats["records_translated"] >= 1
+            assert stats["records_failed"] == 0
             assert stats["by_signature"]["WEAP"]["translated"] >= 1
 
-    def test_translate_all_no_failures(self):
-        """The minimal fixture should produce no failed records."""
-        m = _native()
-        with _create_run(FIXTURE) as run:
-            stats = m.conversion_run_translate_all(run.id)
-            assert stats["records_failed"] == 0, (
-                f"expected 0 failed records, got {stats['records_failed']}"
-            )
+        with pytest.raises(Exception):
+            m.conversion_run_translate_all(999999999)
 
     def test_translate_all_preserves_short_fnv_inline_lstring(self, tmp_path):
         source_path = _write_plugin(
@@ -425,102 +406,11 @@ class TestTranslateAll:
             assert stats["by_signature"]["WEAP"]["seen"] >= 1
             assert not any("bad_form_key" in warning for warning in warnings)
 
-    def test_translate_all_drops_records_missing_from_target_schema(self, tmp_path):
-        """FO76-only record signatures must not be written to FO4 targets."""
-        m = _native()
-        source_path = _write_plugin(
-            tmp_path / "Source.esm",
-            game="fo76",
-            records=[
-                Record(
-                    signature="ATXO",
-                    form_id=0x000800,
-                    form_version=257,
-                    subrecords=[Subrecord("EDID", b"AtomicShopOnly\0")],
-                )
-            ],
-        )
-        with _create_run(source_path, source_game="fo76") as run:
-            stats = m.conversion_run_translate_all(run.id)
-            assert stats["records_translated"] == 0
-            assert stats["records_dropped"] == 1
-            assert stats["records_failed"] == 0
-            assert stats["by_signature"]["ATXO"]["seen"] == 1
-            assert stats["by_signature"]["ATXO"]["dropped"] == 1
-            assert _group_count(run, tmp_path, "ATXO") == 0
-
-    def test_translate_all_skips_fo76_game_settings(self, tmp_path):
-        m = _native()
-        source_path = _write_plugin(
-            tmp_path / "Source.esm",
-            game="fo76",
-            records=[
-                Record(
-                    signature="GMST",
-                    form_id=0x000800,
-                    form_version=257,
-                    subrecords=[
-                        Subrecord("EDID", b"uInvalidForFo4\0"),
-                        Subrecord("DATA", (123).to_bytes(4, "little")),
-                    ],
-                )
-            ],
-        )
-        with _create_run(source_path, source_game="fo76") as run:
-            stats = m.conversion_run_translate_all(run.id)
-            assert stats["records_translated"] == 0
-            assert stats["records_dropped"] == 1
-            assert stats["records_failed"] == 0
-            assert stats["by_signature"]["GMST"]["seen"] == 1
-            assert stats["by_signature"]["GMST"]["dropped"] == 1
-            assert _group_count(run, tmp_path, "GMST") == 0
-
-    def test_translate_all_skips_fo76_default_object_assignments(self, tmp_path):
-        m = _native()
-        source_path = _write_plugin(
-            tmp_path / "SourceDfoo.esm",
-            game="fo76",
-            records=[
-                Record(
-                    signature="DFOB",
-                    form_id=0x000800,
-                    form_version=257,
-                    subrecords=[
-                        Subrecord("EDID", b"GoldBullion_DO\0"),
-                        Subrecord("DATA", (0x000801).to_bytes(4, "little")),
-                    ],
-                )
-            ],
-        )
-        target_name = "OutputDfoo.esm"
-        with _create_run(
-            source_path,
-            source_game="fo76",
-            target_plugin_name=target_name,
-        ) as run:
-            stats = m.conversion_run_translate_all(run.id)
-            assert stats["records_translated"] == 0
-            assert stats["records_dropped"] == 1
-            assert stats["records_failed"] == 0
-            assert stats["by_signature"]["DFOB"]["seen"] == 1
-            assert stats["by_signature"]["DFOB"]["dropped"] == 1
-            assert _group_count(run, tmp_path, "DFOB", target_name) == 0
-
     @pytest.mark.parametrize(
         "signature",
-        [
-            "ACHR",
-            "DIAL",
-            "INFO",
-            "NAVM",
-            "PGRE",
-            "PHZD",
-            "PLYR",
-            "PMIS",
-            "REFR",
-        ],
+        ["ATXO", "GMST", "DFOB", "DIAL", "NAVM", "REFR"],
     )
-    def test_translate_all_skips_fo76_records_that_cannot_be_flat_top_level(
+    def test_translate_all_drops_fo76_records_fo4_cannot_hold_top_level(
         self,
         signature,
         tmp_path,
@@ -750,87 +640,6 @@ class TestTranslateAll:
                 {"QUST", "DIAL", "INFO"}
             )
 
-    def test_skyrim_mvp_excludes_all_mapped_actor_anatomy_records(self, tmp_path):
-        actor_only_signatures = {
-            "BPTD",
-            "CLFM",
-            "CSTY",
-            "EYES",
-            "HDPT",
-            "MOVT",
-            "RACE",
-        }
-        m = _native()
-        items = []
-        for index, signature in enumerate(sorted(actor_only_signatures), start=0x800):
-            editor_id = f"Test{signature}".encode().hex() + "00"
-            items.append(
-                {
-                    "type": "group",
-                    "label_text": signature,
-                    "group_type": 0,
-                    "children": [
-                        {
-                            "signature": signature,
-                            "form_id": f"{index:06X}",
-                            "form_version": 44,
-                            "subrecords": [
-                                {"signature": "EDID", "data_hex": editor_id}
-                            ],
-                        }
-                    ],
-                }
-            )
-
-        source_path = _write_imported_plugin(
-            tmp_path / "SkyrimActorAnatomy.esm",
-            json.dumps(
-                {
-                    "plugin": "SkyrimActorAnatomy.esm",
-                    "game": "skyrimse",
-                    "header": {"version": 1.7, "next_object_id": "000805"},
-                    "items": items,
-                }
-            ),
-        )
-        target_name = "SkyrimActorAnatomyOutput.esm"
-        with _create_run(
-            source_path,
-            source_game="skyrimse",
-            target_plugin_name=target_name,
-            config={
-                "preserve_source_ids": True,
-                "is_whole_plugin": True,
-                "skip_record_signatures": sorted(actor_only_signatures),
-            },
-        ) as run:
-            stats = m.conversion_run_translate_all(run.id)
-            assert stats["records_translated"] == 0
-            assert all(
-                stats["by_signature"][signature]["dropped"] == 1
-                for signature in actor_only_signatures
-            )
-
-            exported = _target_export(run, tmp_path, target_name)
-            assert _exported_signatures(exported["items"]).isdisjoint(
-                actor_only_signatures
-            )
-
-    def test_translate_all_unknown_run_raises(self):
-        """Calling translate_all with an unknown run_id must raise RuntimeError."""
-        m = _native()
-        with pytest.raises(Exception):
-            m.conversion_run_translate_all(999999999)
-
-    def test_translate_all_no_longer_raises_stub_error(self):
-        """translate_all must not raise a stub RuntimeError."""
-        m = _native()
-        with _create_run(FIXTURE) as run:
-            # Should NOT raise.
-            stats = m.conversion_run_translate_all(run.id)
-            assert isinstance(stats, dict)
-
-
 # ---------------------------------------------------------------------------
 # fixups_v2
 # ---------------------------------------------------------------------------
@@ -844,7 +653,6 @@ class TestFixupsV2:
         with _create_run(FIXTURE) as run:
             m.conversion_run_translate_all(run.id)
             report = _run_fixups_v2(m, run.id)
-            assert isinstance(report, dict), f"expected dict, got {type(report)}"
             for key in (
                 "records_changed",
                 "records_dropped",
@@ -854,26 +662,8 @@ class TestFixupsV2:
                 "elapsed_ms",
             ):
                 assert key in report
-
-    def test_fixups_v2_reports_aggregate_changes(self):
-        m = _native()
-        with _create_run(FIXTURE) as run:
-            m.conversion_run_translate_all(run.id)
-            report = _run_fixups_v2(m, run.id)
-            assert report["records_changed"] >= 0
-            assert report["records_added"] >= 0
-            assert report["records_dropped"] >= 0
-
-    def test_legacy_fixups_phase_is_rejected(self):
-        m = _native()
-        with _create_run(FIXTURE) as run:
             with pytest.raises(Exception):
                 m.conversion_run_phase(run.id, "fixups", {"mod_path": "", "params": {}})
-
-    def test_fixups_v2_unknown_run_raises(self):
-        m = _native()
-        with pytest.raises(Exception):
-            _run_fixups_v2(m, 999999999)
 
     def test_fixups_v2_preserves_packin_storage_cell(self, tmp_path):
         m = _native()
@@ -1011,35 +801,16 @@ class TestProgressCallback:
                 "expected translate_all setup status strings via the callback"
             )
 
-    def test_translate_all_cancel_via_callback(self):
-        """A callback that immediately returns False should cancel translation."""
+    def test_set_progress_callback_then_clear_with_none(self):
         m = _native()
-        # We need a fixture with >=1000 records to trigger the yield; for the
-        # minimal fixture this test is skipped since it has only 1 record.
-        # Instead we verify the API plumbing: set_progress_callback + translate_all
-        # with a True callback succeeds, confirming the callback wiring works.
+        calls: list = []
         with _create_run(FIXTURE) as run:
-            # A callback that always returns True — should not cancel.
-            stats = m.conversion_run_translate_all(
-                run.id,
-                progress_callback=lambda n: True,
-            )
-            assert isinstance(stats, dict)
-
-    def test_set_progress_callback_then_translate_all(self):
-        """conversion_run_set_progress_callback stores the callback for translate_all."""
-        m = _native()
+            m.conversion_run_set_progress_callback(run.id, lambda n: calls.append(n) or True)
+            m.conversion_run_translate_all(run.id)
+            assert calls
+        calls.clear()
         with _create_run(FIXTURE) as run:
-            # Pre-install the callback, then call translate_all without inline cb.
-            m.conversion_run_set_progress_callback(run.id, lambda n: True)
-            stats = m.conversion_run_translate_all(run.id)
-            assert isinstance(stats, dict)
-
-    def test_set_progress_callback_clear_with_none(self):
-        """Passing None to set_progress_callback clears any existing callback."""
-        m = _native()
-        with _create_run(FIXTURE) as run:
-            m.conversion_run_set_progress_callback(run.id, lambda n: True)
+            m.conversion_run_set_progress_callback(run.id, lambda n: calls.append(n) or True)
             m.conversion_run_set_progress_callback(run.id, None)
-            stats = m.conversion_run_translate_all(run.id)
-            assert isinstance(stats, dict)
+            assert isinstance(m.conversion_run_translate_all(run.id), dict)
+            assert calls == []

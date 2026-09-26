@@ -1,3 +1,14 @@
+Function AdvanceYouFirstCounter(Int aiCompletedReply)
+    If !IsRunning() || IsStageDone(709) || bProcessingIncrement
+        Return
+    EndIf
+    bProcessingIncrement = True
+    If iYouFirstCount <= aiCompletedReply
+        iYouFirstCount = aiCompletedReply + 1
+    EndIf
+    bProcessingIncrement = False
+EndFunction
+
 ObjectReference Function GetCampEncounterMarker()
     ObjectReference markerRef = SpawnedSign.GetReference()
     If markerRef == None
@@ -126,6 +137,10 @@ Event OnStageSet(int auiStageID, int auiItemID)
         EndIf
     ElseIf auiStageID == iPlayerApproachedCAMP
         StartTimer(1.0, iFirstEncTimerID)
+    ElseIf auiStageID == iFirstEncSpawnedStage && !IsStageDone(iGangersSpawnedStage)
+        ; The gangers follow the treasure hunter on their own clock; without this
+        ; only killing the hunter (525) ever reached stage 600.
+        StartTimer(Utility.RandomInt(iSecondEncTimerLengthMin, iSecondEncTimerLengthMax), iSecondEncTimerID)
     ElseIf auiStageID == iGangersSpawnedStage
         SpawnSecondEncounter()
     ElseIf auiStageID == 745 && !IsStageDone(iRadGangersPlayerEnemyStage)
@@ -150,7 +165,14 @@ Event OnTimer(int aiTimerID)
     ElseIf aiTimerID == iFirstEncTimerID
         SpawnFirstEncounter()
     ElseIf aiTimerID == iSecondEncTimerID
-        SpawnSecondEncounter()
+        Actor waitingPlayer = owningPlayer.GetActorReference()
+        If IsStageDone(iGangersSpawnedStage)
+            Return
+        ElseIf waitingPlayer && waitingPlayer.IsInScene()
+            StartTimer(Utility.RandomInt(iSecondEncTimerLengthMinRestart, iSecondEncTimerLengthMaxRestart), iSecondEncTimerID)
+        Else
+            SetStage(iGangersSpawnedStage)
+        EndIf
     ElseIf aiTimerID == iPlayerEnemyTimerID && !IsStageDone(iRadGangersPlayerEnemyStage)
         SetStage(iRadGangersPlayerEnemyStage)
     ElseIf aiTimerID == 746

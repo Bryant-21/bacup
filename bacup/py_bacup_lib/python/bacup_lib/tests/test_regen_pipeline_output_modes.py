@@ -54,6 +54,7 @@ def test_ba2_creation_tracks_deploy_and_overwrite_is_forced(
     timing_reports: list[object] = []
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr("bacup_lib.target_assets.ensure_target_asset_catalog", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
     monkeypatch.setattr(
         "bacup_lib.target_assets.ensure_target_asset_catalog",
@@ -136,6 +137,7 @@ def test_unified_failure_records_once_before_report_and_preserves_exception(
     paths = _paths(tmp_path)
     calls: list[tuple[str, object]] = []
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr("bacup_lib.target_assets.ensure_target_asset_catalog", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
     monkeypatch.setattr(
         "bacup_lib.target_assets.ensure_target_asset_catalog",
@@ -181,6 +183,7 @@ def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
     deploy_kwargs: list[dict] = []
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr("bacup_lib.target_assets.ensure_target_asset_catalog", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_snapshot_land_cache", lambda *_a, **_k: True)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
     monkeypatch.setattr(
@@ -214,6 +217,7 @@ def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -252,7 +256,11 @@ def test_direct_deploy_archives_packs_to_deploy_data_and_skips_archive_deploy(
     assert captures["target_master_paths"] == [paths.deploy_data_dir.parent]
     assert captures["skip_pack"] is True
     assert deploy_kwargs == [
-        {"archives_already_deployed": True, "update_runtime_ini": True}
+        {
+            "archives_already_deployed": True,
+            "update_runtime_ini": True,
+            "register_runtime_archives": False,
+        }
     ]
 
 
@@ -302,6 +310,7 @@ def test_write_land_cache_false_skips_cache_snapshots(monkeypatch, tmp_path):
     run_snapshots: list[object] = []
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr("bacup_lib.target_assets.ensure_target_asset_catalog", lambda *_a, **_k: None)
     monkeypatch.setattr(
         regen_pipeline,
         "_snapshot_land_cache",
@@ -327,6 +336,7 @@ def test_write_land_cache_false_skips_cache_snapshots(monkeypatch, tmp_path):
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -401,6 +411,8 @@ def test_land_cache_snapshot_saves_through_conversion_run(tmp_path):
 
 
 def test_land_cache_snapshots_and_restores_terrain_assets(tmp_path):
+    import shutil
+
     output_root = tmp_path / "mods" / "SeventySix"
     source_data = tmp_path / "fo76" / "Data"
     source_data.mkdir(parents=True)
@@ -425,12 +437,15 @@ def test_land_cache_snapshots_and_restores_terrain_assets(tmp_path):
         / "LForestDirt01.bgsm"
     )
     unrelated_texture = output_root / "data" / "Textures" / "actors" / "body_d.dds"
-    terrain_texture.parent.mkdir(parents=True)
-    terrain_material.parent.mkdir(parents=True)
-    unrelated_texture.parent.mkdir(parents=True)
-    terrain_texture.write_bytes(b"dds")
-    terrain_material.write_bytes(b"bgsm")
-    unrelated_texture.write_bytes(b"actor")
+    sidecar = output_root / "Terrain" / "APPALACHIA.btd4"
+    for path, payload in (
+        (terrain_texture, b"dds"),
+        (terrain_material, b"bgsm"),
+        (unrelated_texture, b"actor"),
+        (sidecar, b"BTD4 first run"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
 
     assert regen_pipeline._snapshot_land_cache(
         output_root,
@@ -439,15 +454,22 @@ def test_land_cache_snapshots_and_restores_terrain_assets(tmp_path):
         extracted_dir=tmp_path / "fo76_extracted",
     )
 
-    import shutil
-
     shutil.rmtree(output_root / "data")
     restored = regen_pipeline._restore_land_cache_assets(output_root)
 
-    assert restored == 2
+    assert restored == 3
     assert terrain_texture.read_bytes() == b"dds"
     assert terrain_material.read_bytes() == b"bgsm"
     assert not unrelated_texture.exists()
+
+    # A later terrain run replaces the sidecar by rename; the cache keeps its copy.
+    replacement = sidecar.with_name("APPALACHIA.btd4.partial")
+    replacement.write_bytes(b"BTD4 second run")
+    replacement.replace(sidecar)
+    sidecar.unlink()
+
+    assert regen_pipeline._restore_land_cache_terrain_assets(output_root) == 3
+    assert sidecar.read_bytes() == b"BTD4 first run"
 
 
 def test_lod_cleanup_preserves_full_resolution_terrain_textures(tmp_path):
@@ -506,6 +528,7 @@ def test_reuse_land_restores_cached_assets_before_unified_run(monkeypatch, tmp_p
     captures: dict[str, object] = {}
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr("bacup_lib.target_assets.ensure_target_asset_catalog", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_check_run_invariants", lambda *_a, **_k: ([], []))
 
@@ -527,6 +550,7 @@ def test_reuse_land_restores_cached_assets_before_unified_run(monkeypatch, tmp_p
         captures["restored_before_run"] = restored_texture.is_file()
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -559,6 +583,7 @@ def test_resume_from_textures_skips_prior_phases_and_overwrites(monkeypatch, tmp
     captures: dict[str, object] = {}
 
     monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 1)
+    monkeypatch.setattr("bacup_lib.target_assets.ensure_target_asset_catalog", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
     monkeypatch.setattr(regen_pipeline, "_check_run_invariants", lambda *_a, **_k: ([], []))
 
@@ -582,6 +607,7 @@ def test_resume_from_textures_skips_prior_phases_and_overwrites(monkeypatch, tmp
         captures["copy_sounds"] = opts.copy_sounds
         captures["overwrite_existing"] = opts.overwrite_existing
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -661,7 +687,7 @@ def test_resume_from_lodgen_runs_lod_pack_and_deploy(monkeypatch, tmp_path):
     def fake_lod(**kwargs):
         captures["lod"] = kwargs
 
-    def fake_pack(pack_paths, pack_options, *, resolved_workers):
+    def fake_pack(pack_paths, pack_options, *, resolved_workers, pack_progress=None):
         captures["pack"] = (pack_paths, pack_options, resolved_workers)
         return True
 
@@ -700,7 +726,7 @@ def test_resume_from_lodgen_runs_lod_pack_and_deploy(monkeypatch, tmp_path):
         start_phase="lodgen",
         phases=PhaseSelection(lod_mode="hybrid-atlas"),
         runner=runner,
-        lod_settings={"global": {"worldspaces": ["APPALACHIA"]}},
+        lod_settings={"_pair_id": "fo76:fo4", "global": {"worldspaces": ["APPALACHIA"]}},
     )
 
     assert result.exit_code == 0
@@ -716,6 +742,7 @@ def test_resume_from_lodgen_runs_lod_pack_and_deploy(monkeypatch, tmp_path):
     assert captures["deploy_kwargs"] == {
         "archives_already_deployed": True,
         "update_runtime_ini": True,
+        "register_runtime_archives": False,
     }
     assert captures["phase_complete"] == ["Generate LOD", "Pack BA2", "Deploy Mod"]
 
@@ -755,6 +782,7 @@ def test_cross_game_resume_from_lodgen_preserves_layout_and_source_root(
         phases=PhaseSelection(lod_mode="generate"),
         runner=runner,
         lod_settings={
+            "_pair_id": pair.pair_id,
             "global": {
                 "worldspaces": [],
                 "southwest_cell": [-96, -96],
@@ -771,7 +799,24 @@ def test_cross_game_resume_from_lodgen_preserves_layout_and_source_root(
     assert captures["lod"]["settings"]["global"]["stride"] == 256
 
 
-def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("start_phase", "options", "expected_order"),
+    [
+        (
+            "regenerate_modt",
+            RegenOptions(deploy=True, lod_mode="hybrid-atlas", generate_anim_text_data=True),
+            ["modt", "term", "map", "offsets", "animtext", "lod", "pack", "deploy", "cleanup"],
+        ),
+        (
+            "offsets",
+            RegenOptions(deploy=True, lod_mode="none"),
+            ["offsets", "pack", "deploy", "cleanup"],
+        ),
+    ],
+)
+def test_resume_from_post_phase_runs_every_downstream_phase(
+    monkeypatch, tmp_path, start_phase, options, expected_order
+):
     paths = _paths(tmp_path)
     paths.output_root.mkdir(parents=True)
     (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
@@ -806,26 +851,13 @@ def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
 
     import bacup_lib.workflows.unified as unified
 
-    monkeypatch.setattr(
-        unified,
-        "_regenerate_modt_after_asset_waves",
-        lambda *_a, **_k: order.append("modt"),
-    )
-    monkeypatch.setattr(
-        unified,
-        "_finalize_fo76_pipboy_map_texture",
-        lambda *_a, **_k: order.append("map"),
-    )
-    monkeypatch.setattr(
-        unified,
-        "_run_anim_text_data_generation",
-        lambda *_a, **_k: order.append("animtext"),
-    )
-    monkeypatch.setattr(
-        unified,
-        "_rebuild_cell_offsets_after_build",
-        lambda *_a, **_k: order.append("offsets"),
-    )
+    for name, label in (
+        ("_regenerate_modt_after_asset_waves", "modt"),
+        ("_finalize_fo76_pipboy_map_texture", "map"),
+        ("_run_anim_text_data_generation", "animtext"),
+        ("_rebuild_cell_offsets_after_build", "offsets"),
+    ):
+        monkeypatch.setattr(unified, name, lambda *_a, _label=label, **_k: order.append(_label))
 
     runner = SimpleNamespace(
         emit_log=lambda *_a, **_k: None,
@@ -835,94 +867,16 @@ def test_resume_from_modt_runs_every_downstream_phase(monkeypatch, tmp_path):
     )
     result = regen_pipeline.run_resume_from_phase(
         paths,
-        RegenOptions(
-            deploy=True,
-            lod_mode="hybrid-atlas",
-            generate_anim_text_data=True,
-        ),
-        start_phase="regenerate_modt",
-        phases=PhaseSelection(lod_mode="hybrid-atlas"),
+        options,
+        start_phase=start_phase,
+        phases=PhaseSelection(lod_mode=options.lod_mode),
         runner=runner,
         lod_settings={"global": {"worldspaces": ["APPALACHIA"]}},
     )
 
     assert result.exit_code == 0
     assert result.deployed is True
-    assert order == [
-        "modt",
-        "term",
-        "map",
-        "offsets",
-        "animtext",
-        "lod",
-        "pack",
-        "deploy",
-        "cleanup",
-    ]
-
-
-def test_resume_from_offsets_skips_modt_but_rebuilds_tables(monkeypatch, tmp_path):
-    paths = _paths(tmp_path)
-    paths.output_root.mkdir(parents=True)
-    (paths.output_root / "SeventySix.esm").write_bytes(b"TES4")
-    order: list[str] = []
-
-    class FakeRecordRuntime:
-        def _repair_term_marker_parameters_final(self, *_args):
-            order.append("term")
-
-        def _close_target_master_handles(self, *_args):
-            order.append("cleanup")
-
-    post_driver = SimpleNamespace(record_runtime=FakeRecordRuntime())
-    post_request = SimpleNamespace(options=SimpleNamespace(convert_textures=False))
-    post_ctx = SimpleNamespace()
-    source_plugin = paths.source_data_dir / "SeventySix.esm"
-
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_build_existing_post_driver",
-        lambda *_a, **_k: (source_plugin, post_request, post_driver, post_ctx),
-    )
-    monkeypatch.setattr(regen_pipeline, "_effective_conversion_workers", lambda _v: 2)
-    monkeypatch.setattr(regen_pipeline, "_write_conversion_reports", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_pack_existing_output",
-        lambda *_a, **_k: order.append("pack") or True,
-    )
-    monkeypatch.setattr(regen_pipeline, "_deploy_post_steps", lambda *_a, **_k: order.append("deploy"))
-
-    import bacup_lib.workflows.unified as unified
-
-    monkeypatch.setattr(
-        unified,
-        "_regenerate_modt_after_asset_waves",
-        lambda *_a, **_k: order.append("modt"),
-    )
-    monkeypatch.setattr(
-        unified,
-        "_rebuild_cell_offsets_after_build",
-        lambda *_a, **_k: order.append("offsets"),
-    )
-
-    runner = SimpleNamespace(
-        emit_log=lambda *_a, **_k: None,
-        emit_phase_start=lambda _p: None,
-        emit_phase_complete=lambda _p: None,
-        emit_item_progress=lambda _p: None,
-    )
-    result = regen_pipeline.run_resume_from_phase(
-        paths,
-        RegenOptions(deploy=True, lod_mode="none"),
-        start_phase="offsets",
-        phases=PhaseSelection(lod_mode="none"),
-        runner=runner,
-    )
-
-    assert result.exit_code == 0
-    assert result.deployed is True
-    assert order == ["offsets", "pack", "deploy", "cleanup"]
+    assert order == expected_order
 
 
 def test_resume_from_build_esp_uses_full_rebuild_without_existing_output(

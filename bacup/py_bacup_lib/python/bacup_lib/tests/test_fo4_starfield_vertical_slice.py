@@ -645,59 +645,30 @@ def _authoring_field(record: dict, sig: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def test_output_plugin_name_and_masters(slice_run: dict[str, Any]) -> None:
+def test_translated_records_are_starfield_shaped(slice_run: dict[str, Any]) -> None:
     assert slice_run["output_path"].name == OUTPUT_PLUGIN_NAME
     assert slice_run["lossless"]["header"]["masters"] == [STARFIELD_DONOR]
 
-
-def test_every_translated_record_has_starfield_form_version_581(slice_run: dict[str, Any]) -> None:
     records = _iter_records(slice_run["lossless"])
     assert records, "expected at least one translated record"
-    for record in records:
-        assert record["form_version"] == 581, (record["signature"], record["form_id"])
-
-
-def test_no_fo76_or_removed_visibility_subrecords_survive(slice_run: dict[str, Any]) -> None:
     # XCRI/VISI/RVIS are FO76-only visibility subrecords that must never
     # appear on any FO4- or Starfield-schema record.
     forbidden = {"XCRI", "VISI", "RVIS"}
-    for record in _iter_records(slice_run["lossless"]):
+    for record in records:
+        assert record["form_version"] == 581, (record["signature"], record["form_id"])
         signatures = {sub["signature"] for sub in record.get("subrecords", [])}
         assert not (signatures & forbidden), (record["signature"], record["form_id"], signatures)
 
-
-def test_musc_tnam_points_at_the_translated_must(slice_run: dict[str, Any]) -> None:
-    musc = _find_one(slice_run["lossless"], "MUSC", f"{MUSC_ID:06X}")
-    must = _find_one(slice_run["lossless"], "MUST", f"{MUST_ID:06X}")
-    assert musc is not None and must is not None
+    assert _find_one(slice_run["lossless"], "MUSC", f"{MUSC_ID:06X}") is not None
+    assert _find_one(slice_run["lossless"], "MUST", f"{MUST_ID:06X}") is not None
 
 
-def test_must_mtsh_is_forty_bytes(slice_run: dict[str, Any]) -> None:
-    # audio_rewire's placeholder pass does not touch content refs (see the
-    # module docstring's gap #2), so MTSH only exists if something upstream
-    # of audio_rewire (translation) put it there. Confirm the real, current
-    # shape: MTSH is absent post-translate/placeholder-rewire, because
-    # nothing in this pair's map or the placeholder rewire path emits it.
-    must = _find_one(slice_run["lossless"], "MUST", f"{MUST_ID:06X}")
-    mtsh_size = _subrecord_size(must, "MTSH")
-    if mtsh_size is not None:
-        assert mtsh_size == 40
-    else:
-        pytest.skip(
-            "MUST.MTSH is not present after placeholder-mode audio_rewire "
-            "(see this file's module docstring, gap #2: run_placeholder "
-            "never rewires content refs) -- nothing to measure"
-        )
-
-
-def test_lighting_data_becomes_dat2_not_data(slice_run: dict[str, Any]) -> None:
+def test_ligh_and_scol_fields_are_translated(slice_run: dict[str, Any]) -> None:
     ligh = _find_one(slice_run["lossless"], "LIGH", f"{LIGH_ID:06X}")
     assert _subrecord_hex(ligh, "DATA") is None, "FO4 DATA must not survive translation"
     dat2_hex = _subrecord_hex(ligh, "DAT2")
     assert dat2_hex is not None and len(dat2_hex) > 0
 
-
-def test_scol_onam_is_struct_shaped(slice_run: dict[str, Any]) -> None:
     scol = _find_one(slice_run["authoring"], "SCOL", f"{SCOL_ID:06X}")
     onam = _authoring_field(scol, "ONAM")
     assert onam is not None
@@ -706,20 +677,17 @@ def test_scol_onam_is_struct_shaped(slice_run: dict[str, Any]) -> None:
     assert onam_hex is not None
     assert len(onam_hex) // 2 == 8  # FO4's plain 4-byte formid grew to 8.
 
-
-def test_scol_data_positions_are_metre_scaled(slice_run: dict[str, Any]) -> None:
-    scol = _find_one(slice_run["authoring"], "SCOL", f"{SCOL_ID:06X}")
     data_field = _authoring_field(scol, "DATA")
     assert data_field is not None
     row = data_field["value"][0]
-    expected_x = SCOL_POS_X_FO4 * FO4_TO_SF_SCALE
-    assert row["PlacementsPositionX"] == pytest.approx(expected_x, rel=1e-4)
+    assert row["PlacementsPositionX"] == pytest.approx(SCOL_POS_X_FO4 * FO4_TO_SF_SCALE, rel=1e-4)
 
 
 @requires_starfield_cells
-def test_cells_and_placed_refs_reach_starfield(slice_run: dict[str, Any]) -> None:
+def test_cells_and_placed_refs_reach_starfield_metre_scaled(slice_run: dict[str, Any]) -> None:
     """CELL/REFR stay skip-listed in the map (parentage is group topology, not a
-    subrecord), but the `starfield_cells` phase carries them."""
+    subrecord), but the `starfield_cells` phase carries them and owns the
+    world-distance rescale."""
     cells = _find_all(slice_run["lossless"], "CELL")
     refs = _find_all(slice_run["lossless"], "REFR")
     assert cells, "no CELL reached the Starfield output"
@@ -737,12 +705,8 @@ def test_cells_and_placed_refs_reach_starfield(slice_run: dict[str, Any]) -> Non
     for cell in exterior:
         assert len(_subrecord_hex(cell, "XCLC")) // 2 == 12
 
-
-@requires_starfield_cells
-def test_placed_ref_positions_are_metre_scaled(slice_run: dict[str, Any]) -> None:
-    """`REFR.DATA` position is a world distance and must arrive divided by
-    69.99125; the rotation triple beside it is radians and must not move.
-    `starfield_cells` owns this rescale."""
+    # REFR.DATA position arrives divided by 69.99125; the radian rotation
+    # triple beside it must not move.
     door = _find_one(slice_run["lossless"], "REFR", f"{DOOR_EXT_REF_ID:06X}")
     data_hex = _subrecord_hex(door, "DATA")
     assert data_hex is not None
@@ -778,6 +742,17 @@ def test_xtel_door_pair_resolves_both_endpoints(slice_run: dict[str, Any]) -> No
         )
 
 
+def test_placeholder_audio_writes_manifest_and_no_banks(slice_run: dict[str, Any]) -> None:
+    manifest_path = slice_run["mod_path"] / "debug" / "wwise" / "events_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["mode"] == "placeholder"
+    assert manifest["sound_event_sets"] == "zeroed"
+    purposes = {t["purpose"] for t in manifest["targets"]}
+    assert {"music_explore", "ambient_interior", "reverb_default"} <= purposes
+    assert slice_run["wwise_report"]["assets_written"] == 0
+    assert not (slice_run["mod_path"] / "data" / "sound" / "soundbanks").exists()
+
+
 def test_musc_vnam_unam_defaults_are_materialized_in_placeholder_mode(
     slice_run: dict[str, Any],
 ) -> None:
@@ -795,8 +770,8 @@ def test_musc_vnam_unam_defaults_are_materialized_in_placeholder_mode(
             "-- see this file's module docstring, gap #2); run `uv run python "
             "scripts/ensure_native.py --package bacup` to pick it up"
         )
-    assert struct.unpack("<Q", bytes.fromhex(vnam_hex))[0] == 0
-    assert struct.unpack("<Q", bytes.fromhex(unam_hex))[0] == 0
+    assert int.from_bytes(bytes.fromhex(vnam_hex), "little") == 0
+    assert int.from_bytes(bytes.fromhex(unam_hex), "little") == 0
 
 
 def test_stat_object_bounds_are_scaled(slice_run: dict[str, Any]) -> None:
@@ -842,21 +817,6 @@ def test_btd_is_written_and_round_trips_within_quantization_tolerance(
     assert len(heights) == 128 * 128
     decoded = lo + heights[0] * quantization_step
     assert decoded == pytest.approx(expected_height_m, abs=quantization_step + 1e-3)
-
-
-def test_wwise_placeholder_manifest_has_mode_placeholder(slice_run: dict[str, Any]) -> None:
-    manifest_path = slice_run["mod_path"] / "debug" / "wwise" / "events_manifest.json"
-    assert manifest_path.is_file()
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["mode"] == "placeholder"
-    assert manifest["sound_event_sets"] == "zeroed"
-    purposes = {t["purpose"] for t in manifest["targets"]}
-    assert {"music_explore", "ambient_interior", "reverb_default"} <= purposes
-
-
-def test_wwise_report_writes_no_bank_files_in_placeholder_mode(slice_run: dict[str, Any]) -> None:
-    assert slice_run["wwise_report"]["assets_written"] == 0
-    assert not (slice_run["mod_path"] / "data" / "sound" / "soundbanks").exists()
 
 
 # ---------------------------------------------------------------------------

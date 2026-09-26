@@ -387,33 +387,25 @@ mod tests {
     }
 
     #[test]
-    fn reference_lumens_land_on_fo4_modal_radius() {
-        // The calibration anchor: 1000 lm with a wider authored cull distance.
-        assert_eq!(fo4_radius_from_lumens(1000, 4000), 256);
-    }
+    fn fo4_radius_from_lumens_calibration_caps_and_floors() {
+        for (name, lumens, fo76_radius, expected) in [
+            ("1000 lm calibration anchor", 1000, 4000, 256),
+            ("4x lumens doubles reach", 4000, 8000, 512),
+            ("quarter lumens halves reach", 250, 8000, 128),
+            ("authored radius caps", 1000, 100, 100),
+            ("no authored radius uses lumens alone", 2000, 0, 362),
+            ("missing lumens keep authored radius", 0, 640, 640),
+            ("floored", 1, 0, 8),
+            ("no data", 0, 0, 1),
+            ("capped", 10_000_000, 0, MAX_RADIUS as u32),
+        ] {
+            assert_eq!(
+                fo4_radius_from_lumens(lumens, fo76_radius),
+                expected,
+                "{name}"
+            );
+        }
 
-    #[test]
-    fn radius_scales_with_square_root_of_lumens() {
-        // 4x the lumens is 2x the reach in a 1/d^2 system, not 4x.
-        assert_eq!(fo4_radius_from_lumens(4000, 8000), 512);
-        assert_eq!(fo4_radius_from_lumens(250, 8000), 128);
-    }
-
-    #[test]
-    fn authored_radius_caps_the_derived_radius() {
-        // Artist culled tighter than the physical falloff — keep their intent.
-        assert_eq!(fo4_radius_from_lumens(1000, 100), 100);
-    }
-
-    #[test]
-    fn zero_authored_radius_uses_lumens_alone() {
-        // LGT_HoodedLamp01NS: 2000 lm, no authored radius. The old pass copied the
-        // lumens straight into the radius and produced a 2000-unit floodlight.
-        assert_eq!(fo4_radius_from_lumens(2000, 0), 362);
-    }
-
-    #[test]
-    fn derived_radius_never_exceeds_the_hooks_radius() {
         // The pass must stay non-increasing so the hook's sunlight/gobo/shadow
         // ceilings remain upper bounds.
         for fo76_radius in [1u32, 64, 256, 1000, 1024, 2048] {
@@ -427,55 +419,28 @@ mod tests {
     }
 
     #[test]
-    fn missing_lumens_keep_the_authored_radius() {
-        assert_eq!(fo4_radius_from_lumens(0, 640), 640);
-    }
-
-    #[test]
-    fn derived_radius_is_floored_and_capped() {
-        assert_eq!(fo4_radius_from_lumens(1, 0), 8);
-        assert_eq!(fo4_radius_from_lumens(0, 0), 1);
-        assert_eq!(fo4_radius_from_lumens(10_000_000, 0), MAX_RADIUS as u32);
-    }
-
-    #[test]
     fn placed_override_scales_with_the_rederived_base() {
         // 50FC1E on LGT_HoodedLamp01NS: FO76 base 2000 with a -373.15 delta is an
         // 81% reach instance, which must land at 81% of the new 362 base.
-        let base = BaseLight {
+        let hooded_lamp = BaseLight {
             fo76_radius: 2000,
             fo4_radius: 362,
         };
-        let r = placed_radius_from_delta(base, -373.15);
+        let r = placed_radius_from_delta(hooded_lamp, -373.15);
         assert!((r - 294.46).abs() < 0.5, "got {r}");
-    }
 
-    #[test]
-    fn placed_override_matching_base_is_unchanged() {
         let base = BaseLight {
             fo76_radius: 1000,
             fo4_radius: 256,
         };
         assert_eq!(placed_radius_from_delta(base, 0.0), 256.0);
-    }
-
-    #[test]
-    fn placed_override_below_zero_is_floored() {
         // The negative-absolute-radius case that corrupted the cell partition.
-        let base = BaseLight {
-            fo76_radius: 1000,
-            fo4_radius: 256,
-        };
         assert_eq!(placed_radius_from_delta(base, -1262.7), MIN_RADIUS);
-    }
-
-    #[test]
-    fn placed_override_on_zero_radius_base_falls_back_to_base() {
-        let base = BaseLight {
+        let zero_radius_base = BaseLight {
             fo76_radius: 0,
             fo4_radius: 362,
         };
-        assert_eq!(placed_radius_from_delta(base, -500.0), 362.0);
+        assert_eq!(placed_radius_from_delta(zero_radius_base, -500.0), 362.0);
     }
 
     #[test]

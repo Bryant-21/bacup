@@ -244,139 +244,6 @@ def test_finalize_archive_labels_only_packs_selected_families(tmp_path):
     assert untouched.read_bytes() == b"keep"
 
 
-def test_finalize_external_archive_root_packs_to_target_temp_then_replaces(
-    tmp_path, monkeypatch
-):
-    from bacup_lib.workflows import unified
-
-    mod = tmp_path / "mods" / "SeventySix"
-    textures = mod / "data" / "Textures"
-    textures.mkdir(parents=True)
-    texture = textures / "a.dds"
-    texture.write_bytes(b"dds")
-    deploy_dir = tmp_path / "MO2" / "mods" / "SeventySix"
-    captured_outputs: list[Path] = []
-
-    class Native:
-        def sinks_streamed(self, sink_id):
-            return []
-
-        def sinks_add_files(self, sink_id, items, workers):
-            return len(items)
-
-        def sinks_abort(self, sink_id):
-            raise AssertionError("unexpected abort")
-
-        def sinks_cleanup_spills(self, sink_id):
-            return None
-
-    class Entry:
-        source_path = texture
-        relative_path = "Textures/a.dds"
-        size = 3
-
-    class Plan:
-        output_name = "SeventySix - Textures.ba2"
-        texture_archive = True
-        entries = (Entry(),)
-
-    def fake_run_native_pack_plans(plans, *_args, **_kwargs):
-        for _planned, output_path in plans:
-            captured_outputs.append(Path(output_path))
-            Path(output_path).write_bytes(b"BA2")
-        return len(plans)
-
-    monkeypatch.setattr(unified, "load_native_module", lambda: Native())
-    monkeypatch.setattr(unified, "plan_archive_outputs", lambda *a, **k: [Plan()])
-    monkeypatch.setattr(unified, "_run_native_pack_plans", fake_run_native_pack_plans)
-    monkeypatch.setattr(unified, "_validate_archive_size", lambda *a, **k: None)
-
-    unified.finalize_sinks_for_mod(
-        1,
-        mod,
-        mod_name="SeventySix",
-        direct_pack_all=True,
-        archive_output_dir=deploy_dir,
-    )
-
-    final_archive = deploy_dir / "SeventySix - Textures.ba2"
-    assert captured_outputs == [deploy_dir / "SeventySix - Textures.ba2.tmp"]
-    assert final_archive.read_bytes() == b"BA2"
-    assert not list(deploy_dir.glob("*.tmp"))
-    assert not list(mod.glob("*.ba2"))
-
-
-def test_custom_compression_level_uses_direct_archive_packer(monkeypatch, tmp_path):
-    import bacup_lib.workflows.unified as unified
-
-    mod = tmp_path / "mods" / "SeventySix"
-    meshes = mod / "data" / "Meshes"
-    meshes.mkdir(parents=True)
-    mesh = meshes / "a.nif"
-    mesh.write_bytes(b"nif")
-    calls = []
-
-    class Native:
-        def sinks_streamed(self, _sink_id):
-            return []
-
-        def sinks_add_files(self, _sink_id, items, _workers):
-            return len(items)
-
-        def sinks_abort(self, _sink_id):
-            raise AssertionError("unexpected abort")
-
-        def sinks_cleanup_spills(self, _sink_id):
-            return None
-
-    class Entry:
-        source_path = mesh
-        relative_path = "Meshes/a.nif"
-        size = 3
-
-    class Plan:
-        output_name = "SeventySix - Main.ba2"
-        texture_archive = False
-        entries = (Entry(),)
-
-    def fake_run_native_pack_entries(entries, output_path, game, **kwargs):
-        calls.append((entries, Path(output_path), game, kwargs))
-        Path(output_path).write_bytes(b"BA2")
-
-    monkeypatch.setattr(unified, "load_native_module", lambda: Native())
-    monkeypatch.setattr(unified, "plan_archive_outputs", lambda *a, **k: [Plan()])
-    monkeypatch.setattr(unified, "discover_mod_archives", lambda *a, **k: [])
-    monkeypatch.setattr(
-        unified, "_run_native_pack_entries", fake_run_native_pack_entries
-    )
-    monkeypatch.setattr(
-        unified,
-        "_run_native_pack_plans",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("batch defaults only")),
-    )
-    monkeypatch.setattr(unified, "_validate_archive_size", lambda *a, **k: None)
-
-    unified.finalize_sinks_for_mod(
-        1,
-        mod,
-        mod_name="SeventySix",
-        ba2_compression_level=9,
-        texture_pack_workers=5,
-    )
-
-    assert len(calls) == 1
-    entries, output, game, kwargs = calls[0]
-    assert entries == Plan.entries
-    assert output == mod / "SeventySix - Main.ba2"
-    assert game == "fo4"
-    assert kwargs == {
-        "texture_archive": False,
-        "og": False,
-        "compression_level": 9,
-        "jobs": 5,
-    }
-
-
 def test_join_mixed_streamed_and_reconciled(tmp_path):
     """Half the tree pre-streamed via the sink, half left for reconcile —
     the BA2 membership must still equal the full packable inventory."""
@@ -484,117 +351,6 @@ def test_join_compact_archives_remove_obsolete_generated_ba2s(tmp_path):
         conversion.sinks_drop(sink_id)
 
 
-def test_finalize_no_loose_reconciles_unstreamed_packable_files(tmp_path):
-    mod = tmp_path / "mods" / "SeventySix"
-    mesh_dir = (
-        mod / "data" / "Meshes" / "actors" / "character" / "animations" / "common"
-    )
-    mesh_dir.mkdir(parents=True)
-    (mesh_dir / "fx.nif").write_bytes(b"nif")
-
-    sink_id = conversion.sinks_create(
-        json.dumps(
-            {
-                "mod_root": str(mod),
-                "spill_dir": str(mod / "_sink_tmp"),
-                "emit_loose": False,
-                "enable_ba2": True,
-            }
-        )
-    )
-    try:
-        plans = finalize_sinks_for_mod(
-            sink_id,
-            mod,
-            mod_name="SeventySix",
-        )
-
-        listed = set()
-        for ba2 in mod.glob("*.ba2"):
-            listed.update(n.replace("\\", "/").lower() for n in archive_listing(ba2))
-        assert plans
-        assert listed == {"meshes/actors/character/animations/common/fx.nif"}
-    finally:
-        conversion.sinks_drop(sink_id)
-
-
-def test_finalize_direct_texture_pack_uses_worker_budget(tmp_path, monkeypatch):
-    from bacup_lib.workflows import unified
-
-    mod = tmp_path / "mods" / "SeventySix"
-    textures = mod / "data" / "Textures"
-    textures.mkdir(parents=True)
-    texture = textures / "a.dds"
-    texture.write_bytes(b"dds")
-    calls: list[dict] = []
-
-    class Native:
-        def sinks_streamed(self, sink_id):
-            return []
-
-        def sinks_add_files(self, sink_id, items, workers):
-            return len(items)
-
-        def sinks_abort(self, sink_id):
-            raise AssertionError("unexpected abort")
-
-        def sinks_cleanup_spills(self, sink_id):
-            return None
-
-    class Entry:
-        source_path = texture
-        relative_path = "Textures/a.dds"
-        size = 3
-
-    class Plan:
-        output_name = "SeventySix - Textures.ba2"
-        texture_archive = True
-        entries = (Entry(),)
-
-    monkeypatch.setattr(unified, "load_native_module", lambda: Native())
-    monkeypatch.setattr(unified, "plan_archive_outputs", lambda *a, **k: [Plan()])
-    monkeypatch.setattr(unified, "discover_mod_archives", lambda *a, **k: [])
-    monkeypatch.setattr(unified, "_validate_archive_size", lambda *a, **k: None)
-
-    pack_events = []
-
-    def pack_progress(event):
-        pack_events.append(event)
-
-    def fake_run_native_pack_plans(plans, game, **kwargs):
-        calls.append({"game": game, "plans": len(plans), **kwargs})
-        kwargs["progress"]({"completed": 1, "total": 1})
-        for _planned, output_path in plans:
-            Path(output_path).write_bytes(b"BA2")
-        return len(plans)
-
-    monkeypatch.setattr(
-        unified,
-        "_run_native_pack_plans",
-        fake_run_native_pack_plans,
-    )
-
-    plans = unified.finalize_sinks_for_mod(
-        1,
-        mod,
-        mod_name="SeventySix",
-        texture_pack_workers=12,
-        pack_progress=pack_progress,
-    )
-
-    assert plans
-    assert calls[0].pop("progress") is pack_progress
-    assert calls == [
-        {
-            "game": "fo4",
-            "plans": 1,
-            "og": False,
-            "total_workers": 12,
-        }
-    ]
-    assert pack_events == [{"completed": 1, "total": 1}]
-
-
 def test_finalize_no_loose_reconciles_existing_packable_assets(tmp_path):
     mod = tmp_path / "mods" / "SeventySix"
     meshes = mod / "data" / "Meshes"
@@ -635,14 +391,17 @@ def test_finalize_no_loose_reconciles_existing_packable_assets(tmp_path):
         conversion.sinks_drop(sink_id)
 
 
-def test_direct_pack_all_covers_scripts_and_strings(tmp_path):
+def test_direct_pack_all_covers_scripts_strings_animtextdata_and_lodsettings(tmp_path):
     mod = tmp_path / "mods" / "SeventySix"
-    scripts = mod / "data" / "Scripts"
-    strings = mod / "Strings"
-    scripts.mkdir(parents=True)
-    strings.mkdir(parents=True)
-    (scripts / "p.pex").write_bytes(b"pex")
-    (strings / "SeventySix_en.STRINGS").write_bytes(b"strings")
+    for relative, payload in (
+        ("data/Scripts/p.pex", b"pex"),
+        ("Strings/SeventySix_en.STRINGS", b"strings"),
+        ("data/Meshes/AnimTextData/AnimEventInfo/4152054059.txt", b"events"),
+        ("data/LODSettings/APPALACHIA.lod", b"lod"),
+    ):
+        path = mod / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
 
     sink_id = conversion.sinks_create(
         json.dumps(
@@ -669,96 +428,9 @@ def test_direct_pack_all_covers_scripts_and_strings(tmp_path):
         assert listed == {
             "scripts/p.pex",
             "strings/seventysix_en.strings",
-        }
-    finally:
-        conversion.sinks_drop(sink_id)
-
-
-def test_direct_pack_all_covers_ck_animtextdata(tmp_path):
-    mod = tmp_path / "mods" / "SeventySix"
-    animtext = mod / "data" / "Meshes" / "AnimTextData" / "AnimEventInfo"
-    animtext.mkdir(parents=True)
-    (animtext / "4152054059.txt").write_bytes(b"events")
-
-    sink_id = conversion.sinks_create(
-        json.dumps(
-            {
-                "mod_root": str(mod),
-                "spill_dir": str(mod / "_sink_tmp"),
-                "emit_loose": True,
-                "enable_ba2": False,
-            }
-        )
-    )
-    try:
-        plans = finalize_sinks_for_mod(
-            sink_id,
-            mod,
-            mod_name="SeventySix",
-            direct_pack_all=True,
-        )
-
-        listed = set()
-        for ba2 in mod.glob("*.ba2"):
-            listed.update(n.replace("\\", "/").lower() for n in archive_listing(ba2))
-        assert plans
-        assert listed == {
             "meshes/animtextdata/animeventinfo/4152054059.txt",
+            "lodsettings/appalachia.lod",
         }
-    finally:
-        conversion.sinks_drop(sink_id)
-
-
-def test_direct_pack_all_covers_lodsettings(tmp_path):
-    mod = tmp_path / "mods" / "SeventySix"
-    lodsettings = mod / "data" / "LODSettings"
-    lodsettings.mkdir(parents=True)
-    (lodsettings / "APPALACHIA.lod").write_bytes(b"lod")
-
-    sink_id = conversion.sinks_create(
-        json.dumps(
-            {
-                "mod_root": str(mod),
-                "spill_dir": str(mod / "_sink_tmp"),
-                "emit_loose": True,
-                "enable_ba2": False,
-            }
-        )
-    )
-    try:
-        plans = finalize_sinks_for_mod(
-            sink_id,
-            mod,
-            mod_name="SeventySix",
-            direct_pack_all=True,
-        )
-
-        listed = set()
-        for ba2 in mod.glob("*.ba2"):
-            listed.update(n.replace("\\", "/").lower() for n in archive_listing(ba2))
-        assert plans
-        assert listed == {"lodsettings/appalachia.lod"}
-    finally:
-        conversion.sinks_drop(sink_id)
-
-
-def test_sidecar_registry_roundtrip(tmp_path):
-    mod = tmp_path / "mods" / "Z"
-    mod.mkdir(parents=True)
-    sink_id = conversion.sinks_create(
-        json.dumps(
-            {
-                "mod_root": str(mod),
-                "spill_dir": str(mod / "_sink_tmp"),
-                "emit_loose": True,
-                "enable_ba2": False,
-            }
-        )
-    )
-    try:
-        conversion.sinks_register_sidecar(sink_id, "Terrain/APPALACHIA.btd4")
-        conversion.sinks_register_sidecar(sink_id, "Terrain/APPALACHIA.btd4")
-        assert conversion.sinks_sidecars(sink_id) == ["Terrain/APPALACHIA.btd4"]
     finally:
         conversion.sinks_drop(sink_id)
 

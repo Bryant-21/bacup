@@ -520,12 +520,7 @@ mod tests {
         assert_eq!(missing, vec!["QTOP", "NQUT"]);
         assert_eq!(plans[0].player_donor, fk(0x84BECE, plugin));
         assert_eq!(plans[0].npc_donor, fk(0x84BEC0, plugin));
-    }
 
-    #[test]
-    fn action_without_topics_and_full_action_are_both_skipped() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
         let record = scene(
             smallvec![
                 field("ANAM", FieldValue::Uint(1)),
@@ -540,14 +535,9 @@ mod tests {
         );
 
         assert!(plan_scene(&record).is_empty());
-    }
 
-    /// Vanilla `Fallout4.esm` ships 601 actions with a full player family and no
-    /// NPC responses; XDI null-checks that side, so they must not be padded.
-    #[test]
-    fn player_only_action_does_not_gain_npc_responses() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
+        // Vanilla ships 601 player-only actions with no NPC responses; XDI
+        // null-checks that side, so they must not be padded.
         let record = scene(
             smallvec![
                 field("ANAM", FieldValue::Uint(0)),
@@ -647,14 +637,7 @@ mod tests {
             FieldValue::Uint(0)
         ));
         assert_eq!(pad.form_key, fk(0xF01, plugin));
-    }
 
-    /// A topic whose quest lives in a master cannot be parented, so its action is
-    /// left partial rather than pointed at a DIAL that never gets written.
-    #[test]
-    fn donor_on_a_foreign_quest_is_rejected() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
         let master = interner.intern("Fallout4.esm");
         let donor_record = Record {
             sig: SigCode::from_str("DIAL").unwrap(),

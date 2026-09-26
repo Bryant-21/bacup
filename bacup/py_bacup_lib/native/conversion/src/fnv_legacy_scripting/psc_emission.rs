@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::dialogue::{InfoFragmentPhase, TranslatedInfo};
+#[cfg(test)]
+use super::dialogue::InfoFragmentPhase;
+use super::dialogue::TranslatedInfo;
 use super::quest::TranslatedQuest;
 use super::scene::TranslatedScene;
 use super::script_synthesizer::{PackageDataAliasContract, TranslatedScript};
@@ -372,85 +374,138 @@ mod tests {
     }
 
     #[test]
-    fn emits_scpt_files_under_source_user() {
-        let dir = tempfile::tempdir().unwrap();
-        let scripts = vec![
-            make_scpt(
-                "B21_S_001234",
-                "ScriptName B21_S_001234 extends ObjectReference\n",
-            ),
-            make_scpt(
-                "B21_S_001235",
-                "ScriptName B21_S_001235 extends ObjectReference\n",
-            ),
-        ];
-        let report = emit_psc_files(dir.path(), &scripts, &[], &[], &[]);
-        assert_eq!(report.files_written, 2);
-        assert_eq!(report.files_skipped, 0);
-        assert!(report.errors.is_empty());
+    fn emits_psc_files_for_every_kind_under_source_user() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let scripts = vec![
+                make_scpt(
+                    "B21_S_001234",
+                    "ScriptName B21_S_001234 extends ObjectReference\n",
+                ),
+                make_scpt(
+                    "B21_S_001235",
+                    "ScriptName B21_S_001235 extends ObjectReference\n",
+                ),
+            ];
+            let report = emit_psc_files(dir.path(), &scripts, &[], &[], &[]);
+            assert_eq!(report.files_written, 2);
+            assert_eq!(report.files_skipped, 0);
+            assert!(report.errors.is_empty());
 
-        let out_dir = dir.path().join("Scripts").join("Source").join("User");
-        assert!(out_dir.join("B21_S_001234.psc").is_file());
-        assert!(out_dir.join("B21_S_001235.psc").is_file());
+            let out_dir = dir.path().join("Scripts").join("Source").join("User");
+            assert!(out_dir.join("B21_S_001234.psc").is_file());
+            assert!(out_dir.join("B21_S_001235.psc").is_file());
 
-        let content = std::fs::read_to_string(out_dir.join("B21_S_001234.psc")).unwrap();
-        assert!(content.contains("ScriptName B21_S_001234"));
-    }
-
-    #[test]
-    fn empty_mod_path_is_noop_but_counts_skipped() {
-        let scripts = vec![make_scpt("B21_S_001234", "body")];
-        let empty: PathBuf = PathBuf::new();
-        let report = emit_psc_files(&empty, &scripts, &[], &[], &[]);
-        assert_eq!(report.files_written, 0);
-        assert_eq!(report.files_skipped, 1);
-        assert!(report.errors.is_empty());
-    }
-
-    #[test]
-    fn empty_psc_text_is_skipped() {
-        let dir = tempfile::tempdir().unwrap();
-        let scripts = vec![make_scpt("B21_S_001234", "")];
-        let report = emit_psc_files(dir.path(), &scripts, &[], &[], &[]);
-        assert_eq!(report.files_written, 0);
-        assert_eq!(report.files_skipped, 1);
-        // Out dir not necessarily created when no real writes happen.
-        assert!(
-            !dir.path()
+            let content = std::fs::read_to_string(out_dir.join("B21_S_001234.psc")).unwrap();
+            assert!(content.contains("ScriptName B21_S_001234"));
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let info = TranslatedInfo {
+                source_form_key: "001234:FNV.esm".into(),
+                fragment_class_name: Some("TIF__001234".into()),
+                fragment_psc_text: Some("ScriptName TIF__001234 extends TopicInfo\n".into()),
+                fragment_phases: vec![InfoFragmentPhase::Begin],
+                fragment_properties: Vec::new(),
+                voice_target_path: String::new(),
+                voice_source_path: String::new(),
+                lip_dropped: false,
+                lip_regeneration_target: None,
+                authoring_record_payload: None,
+                warnings: Vec::new(),
+            };
+            let report = emit_psc_files(dir.path(), &[], &[], &[info], &[]);
+            assert_eq!(report.files_written, 1);
+            assert_eq!(report.files_skipped, 0);
+            let out = dir
+                .path()
                 .join("Scripts")
                 .join("Source")
                 .join("User")
-                .join("B21_S_001234.psc")
-                .exists()
-        );
+                .join("TIF__001234.psc");
+            assert!(out.is_file());
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let scripts = vec![make_scpt("Script1", "body1")];
+            let infos = vec![TranslatedInfo {
+                source_form_key: "002:FNV.esm".into(),
+                fragment_class_name: Some("Info1".into()),
+                fragment_psc_text: Some("body-info".into()),
+                fragment_phases: vec![InfoFragmentPhase::Begin],
+                fragment_properties: Vec::new(),
+                voice_target_path: String::new(),
+                voice_source_path: String::new(),
+                lip_dropped: false,
+                lip_regeneration_target: None,
+                authoring_record_payload: None,
+                warnings: Vec::new(),
+            }];
+            let report = emit_psc_files(dir.path(), &scripts, &[], &infos, &[]);
+            assert_eq!(report.files_written, 2);
+            assert_eq!(report.files_skipped, 0);
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let nested = dir.path().join("a").join("b").join("c");
+            assert!(!nested.exists());
+            ensure_dir(&nested).unwrap();
+            assert!(nested.is_dir());
+            // Second call should not error.
+            ensure_dir(&nested).unwrap();
+        }
     }
 
     #[test]
-    fn info_without_fragment_is_not_a_psc_candidate() {
-        let dir = tempfile::tempdir().unwrap();
-        let info = make_info("001234:FNV.esm", None, None);
-        let report = emit_psc_files(dir.path(), &[], &[], &[info], &[]);
-        assert_eq!(report.files_written, 0);
-        assert_eq!(report.files_skipped, 0);
-        assert!(report.generated_psc_classes.is_empty());
-    }
-
-    #[test]
-    fn malformed_or_empty_info_fragment_remains_terminally_skipped() {
-        let dir = tempfile::tempdir().unwrap();
-        let infos = vec![
-            make_info("001234:FNV.esm", Some("TIF__001234"), None),
-            make_info(
-                "001235:FNV.esm",
-                None,
-                Some("ScriptName TIF__001235 extends TopicInfo\n"),
-            ),
-            make_info("001236:FNV.esm", Some("TIF__001236"), Some("")),
-        ];
-        let report = emit_psc_files(dir.path(), &[], &[], &infos, &[]);
-        assert_eq!(report.files_written, 0);
-        assert_eq!(report.files_skipped, 3);
-        assert!(report.generated_psc_classes.is_empty());
+    fn psc_emission_skips_empty_or_fragmentless_inputs() {
+        {
+            let scripts = vec![make_scpt("B21_S_001234", "body")];
+            let empty: PathBuf = PathBuf::new();
+            let report = emit_psc_files(&empty, &scripts, &[], &[], &[]);
+            assert_eq!(report.files_written, 0);
+            assert_eq!(report.files_skipped, 1);
+            assert!(report.errors.is_empty());
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let scripts = vec![make_scpt("B21_S_001234", "")];
+            let report = emit_psc_files(dir.path(), &scripts, &[], &[], &[]);
+            assert_eq!(report.files_written, 0);
+            assert_eq!(report.files_skipped, 1);
+            // Out dir not necessarily created when no real writes happen.
+            assert!(
+                !dir.path()
+                    .join("Scripts")
+                    .join("Source")
+                    .join("User")
+                    .join("B21_S_001234.psc")
+                    .exists()
+            );
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let info = make_info("001234:FNV.esm", None, None);
+            let report = emit_psc_files(dir.path(), &[], &[], &[info], &[]);
+            assert_eq!(report.files_written, 0);
+            assert_eq!(report.files_skipped, 0);
+            assert!(report.generated_psc_classes.is_empty());
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let infos = vec![
+                make_info("001234:FNV.esm", Some("TIF__001234"), None),
+                make_info(
+                    "001235:FNV.esm",
+                    None,
+                    Some("ScriptName TIF__001235 extends TopicInfo\n"),
+                ),
+                make_info("001236:FNV.esm", Some("TIF__001236"), Some("")),
+            ];
+            let report = emit_psc_files(dir.path(), &[], &[], &infos, &[]);
+            assert_eq!(report.files_written, 0);
+            assert_eq!(report.files_skipped, 3);
+            assert!(report.generated_psc_classes.is_empty());
+        }
     }
 
     #[test]
@@ -482,67 +537,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["TIF__130161", "TIF__134B9B"]
         );
-    }
-
-    #[test]
-    fn info_with_class_name_and_text_emits_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let info = TranslatedInfo {
-            source_form_key: "001234:FNV.esm".into(),
-            fragment_class_name: Some("TIF__001234".into()),
-            fragment_psc_text: Some("ScriptName TIF__001234 extends TopicInfo\n".into()),
-            fragment_phases: vec![InfoFragmentPhase::Begin],
-            fragment_properties: Vec::new(),
-            voice_target_path: String::new(),
-            voice_source_path: String::new(),
-            lip_dropped: false,
-            lip_regeneration_target: None,
-            authoring_record_payload: None,
-            warnings: Vec::new(),
-        };
-        let report = emit_psc_files(dir.path(), &[], &[], &[info], &[]);
-        assert_eq!(report.files_written, 1);
-        assert_eq!(report.files_skipped, 0);
-        let out = dir
-            .path()
-            .join("Scripts")
-            .join("Source")
-            .join("User")
-            .join("TIF__001234.psc");
-        assert!(out.is_file());
-    }
-
-    #[test]
-    fn mixed_kinds_all_emit() {
-        let dir = tempfile::tempdir().unwrap();
-        let scripts = vec![make_scpt("Script1", "body1")];
-        let infos = vec![TranslatedInfo {
-            source_form_key: "002:FNV.esm".into(),
-            fragment_class_name: Some("Info1".into()),
-            fragment_psc_text: Some("body-info".into()),
-            fragment_phases: vec![InfoFragmentPhase::Begin],
-            fragment_properties: Vec::new(),
-            voice_target_path: String::new(),
-            voice_source_path: String::new(),
-            lip_dropped: false,
-            lip_regeneration_target: None,
-            authoring_record_payload: None,
-            warnings: Vec::new(),
-        }];
-        let report = emit_psc_files(dir.path(), &scripts, &[], &infos, &[]);
-        assert_eq!(report.files_written, 2);
-        assert_eq!(report.files_skipped, 0);
-    }
-
-    #[test]
-    fn ensure_dir_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let nested = dir.path().join("a").join("b").join("c");
-        assert!(!nested.exists());
-        ensure_dir(&nested).unwrap();
-        assert!(nested.is_dir());
-        // Second call should not error.
-        ensure_dir(&nested).unwrap();
     }
 
     #[test]

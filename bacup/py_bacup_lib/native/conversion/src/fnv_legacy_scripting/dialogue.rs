@@ -5,7 +5,9 @@
 use std::collections::HashSet;
 
 use encoding_rs::WINDOWS_1252;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 use super::form_keys::object_id_from_form_key;
 use super::naming::{standalone_script_name, topic_info_fragment_name};
@@ -526,74 +528,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn translate_info_record_no_sctx() {
-        let record = json!({
-            "eid": "Info1",
-            "__target_voice_folder": "VTechatticupRenolds",
-            "fields": []
-        });
-        let result = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm");
-        let ti = result.expect("translate ok");
-        assert!(ti.fragment_class_name.is_none());
-        assert!(ti.fragment_psc_text.is_none());
-        assert!(ti.fragment_phases.is_empty());
-        assert!(ti.voice_target_path.contains("FNV.esm"));
-        assert!(ti.lip_dropped);
-    }
-
-    #[test]
-    fn translate_info_record_with_sctx() {
-        let record = json!({
-            "eid": "Info2",
-            "__target_voice_folder": "VTechatticupRenolds",
-            "fields": [
-                { "SCTX": "set x to 1" },
-            ]
-        });
-        let result = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm");
-        let ti = result.expect("translate ok");
-        assert!(ti.fragment_class_name.is_some());
-        let class = ti.fragment_class_name.as_ref().unwrap();
-        assert!(class.starts_with("TIF__"));
-        let psc = ti.fragment_psc_text.as_ref().unwrap();
-        assert!(psc.contains("extends TopicInfo"));
-        assert!(psc.contains("Fragment_Begin"));
-        assert_eq!(ti.fragment_phases, [InfoFragmentPhase::Begin]);
-        let fields = ti
-            .authoring_record_payload
-            .as_ref()
-            .and_then(|payload| payload.get("fields"))
-            .and_then(Value::as_array)
-            .unwrap();
-        assert!(fields.iter().all(|field| {
-            !field
-                .as_object()
-                .is_some_and(|field| field.contains_key("VirtualMachineAdapter"))
-        }));
-    }
-
-    #[test]
-    fn translate_info_record_without_voice_resolution_never_defaults_voice() {
-        let record = json!({
-            "fields": []
-        });
-        let translated = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm")
-            .expect("legacy wrapper records unresolved voice metadata");
-        assert!(translated.voice_target_path.contains("UNRESOLVED_001234"));
-        assert!(!translated.voice_target_path.contains("MaleEvenToned"));
-        assert_eq!(translated.warnings.len(), 1);
-    }
-
-    #[test]
-    fn translate_info_record_voice_type_from_vtck() {
-        let record = json!({
-            "fields": [
-                { "VTCK": "FemaleSultry" },
-            ]
-        });
-        let ti =
-            translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm").expect("ok");
-        assert!(ti.voice_target_path.contains("FemaleSultry"));
+    fn translate_info_record_scripts_and_voice_resolution() {
+        {
+            let record = json!({
+                "eid": "Info1",
+                "__target_voice_folder": "VTechatticupRenolds",
+                "fields": []
+            });
+            let result = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm");
+            let ti = result.expect("translate ok");
+            assert!(ti.fragment_class_name.is_none());
+            assert!(ti.fragment_psc_text.is_none());
+            assert!(ti.fragment_phases.is_empty());
+            assert!(ti.voice_target_path.contains("FNV.esm"));
+            assert!(ti.lip_dropped);
+        }
+        {
+            let record = json!({
+                "eid": "Info2",
+                "__target_voice_folder": "VTechatticupRenolds",
+                "fields": [
+                    { "SCTX": "set x to 1" },
+                ]
+            });
+            let result = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm");
+            let ti = result.expect("translate ok");
+            assert!(ti.fragment_class_name.is_some());
+            let class = ti.fragment_class_name.as_ref().unwrap();
+            assert!(class.starts_with("TIF__"));
+            let psc = ti.fragment_psc_text.as_ref().unwrap();
+            assert!(psc.contains("extends TopicInfo"));
+            assert!(psc.contains("Fragment_Begin"));
+            assert_eq!(ti.fragment_phases, [InfoFragmentPhase::Begin]);
+            let fields = ti
+                .authoring_record_payload
+                .as_ref()
+                .and_then(|payload| payload.get("fields"))
+                .and_then(Value::as_array)
+                .unwrap();
+            assert!(fields.iter().all(|field| {
+                !field
+                    .as_object()
+                    .is_some_and(|field| field.contains_key("VirtualMachineAdapter"))
+            }));
+        }
+        {
+            let record = json!({
+                "fields": []
+            });
+            let translated =
+                translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm")
+                    .expect("legacy wrapper records unresolved voice metadata");
+            assert!(translated.voice_target_path.contains("UNRESOLVED_001234"));
+            assert!(!translated.voice_target_path.contains("MaleEvenToned"));
+            assert_eq!(translated.warnings.len(), 1);
+        }
+        {
+            let record = json!({
+                "fields": [
+                    { "VTCK": "FemaleSultry" },
+                ]
+            });
+            let ti = translate_info_record(&record, "B21", "FNV.esm", false, "001234:FNV.esm")
+                .expect("ok");
+            assert!(ti.voice_target_path.contains("FemaleSultry"));
+        }
+        {
+            let psc = build_info_psc(
+                "TIF__001234",
+                &[],
+                &[(InfoFragmentPhase::End, "x = 1".to_string())],
+            );
+            assert!(psc.contains("ScriptName TIF__001234 extends TopicInfo"));
+            assert!(psc.contains("Function Fragment_End()"));
+            assert!(psc.contains("    x = 1"));
+            assert!(psc.contains("EndFunction"));
+        }
     }
 
     #[test]
@@ -618,111 +628,96 @@ mod tests {
     }
 
     #[test]
-    fn build_info_psc_format() {
-        let psc = build_info_psc(
-            "TIF__001234",
-            &[],
-            &[(InfoFragmentPhase::End, "x = 1".to_string())],
-        );
-        assert!(psc.contains("ScriptName TIF__001234 extends TopicInfo"));
-        assert!(psc.contains("Function Fragment_End()"));
-        assert!(psc.contains("    x = 1"));
-        assert!(psc.contains("EndFunction"));
-    }
-
-    #[test]
-    fn live_info_130161_preserves_begin_result_script() {
-        let record = json!({
-            "__target_voice_folder": "VTechatticupRenolds",
-            "fields": [{
-                "SCHR": [{
-                    "SCHR": { "RefCount": 1, "CompiledSize": 28 },
-                    "SCTX": { "encoding": "raw-bytes-hex", "hex": "7365747374616765207674656368617474696375702031300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2032" },
-                    "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } }
+    fn info_result_scripts_keep_begin_and_end_phases() {
+        {
+            let record = json!({
+                "__target_voice_folder": "VTechatticupRenolds",
+                "fields": [{
+                    "SCHR": [{
+                        "SCHR": { "RefCount": 1, "CompiledSize": 28 },
+                        "SCTX": { "encoding": "raw-bytes-hex", "hex": "7365747374616765207674656368617474696375702031300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2032" },
+                        "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } }
+                    }]
                 }]
-            }]
-        });
-        let translated = translate_info_record(
-            &record,
-            "FNV_FO3",
-            "FalloutNV.esm",
-            true,
-            "130161:FalloutNV.esm",
-        )
-        .unwrap();
-        assert_eq!(translated.fragment_phases, [InfoFragmentPhase::Begin]);
-        let psc = translated.fragment_psc_text.as_deref().unwrap();
-        assert!(psc.contains("Function Fragment_Begin()"));
-        assert!(psc.contains("VTechatticup.SetStage(10)"));
-        assert!(psc.contains("VTechatticup.HostageStorVar = 2"));
-        assert!(psc.contains("FNV_FO3_S_11FC64 Property VTechatticup Auto Const"));
-        assert_eq!(
-            translated.fragment_properties,
-            [InfoFragmentProperty {
-                name: "VTechatticup".into(),
-                papyrus_type: "FNV_FO3_S_11FC64".into(),
-                source_form_key: "11F935:FalloutNV.esm".into(),
-            }]
-        );
-        assert!(translated.fragment_properties[0].papyrus_type.len() <= 38);
-        assert!(!psc.contains("Fragment_End"));
-    }
-
-    #[test]
-    fn live_info_134b9b_preserves_end_result_script() {
-        let record = json!({
-            "__target_voice_folder": "VTechatticupRenolds",
-            "fields": [
-                { "SCHR": [{ "SCHR": { "Flags": ["Enabled"] } }] },
-                { "NEXT": [{
-                    "Marker": true,
-                    "SCHR": { "RefCount": 1, "CompiledSize": 28 },
-                    "SCTX": { "encoding": "raw-bytes-hex", "hex": "736574537461676520565465636861747469637570203130300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2033" },
-                    "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } }
-                }] }
-            ]
-        });
-        let translated = translate_info_record(
-            &record,
-            "FNV_FO3",
-            "FalloutNV.esm",
-            true,
-            "134B9B:FalloutNV.esm",
-        )
-        .unwrap();
-        assert_eq!(translated.fragment_phases, [InfoFragmentPhase::End]);
-        let psc = translated.fragment_psc_text.as_deref().unwrap();
-        assert!(psc.contains("Function Fragment_End()"));
-        assert!(psc.contains("VTechatticup.SetStage(100)"));
-        assert!(psc.contains("VTechatticup.HostageStorVar = 3"));
-        assert!(!psc.contains("Fragment_Begin"));
-    }
-
-    #[test]
-    fn production_flat_info_134b9b_marks_trailing_sctx_as_end() {
-        let record = json!({
-            "__target_voice_folder": "VTechatticupRenolds",
-            "fields": [
-                { "SCHR": { "Flags": ["Enabled"], "RefCount": 0 } },
-                { "NEXT": null },
-                { "SCHR": { "Flags": ["Enabled"], "RefCount": 1, "CompiledSize": 28 } },
-                { "SCDA": { "encoding": "raw-bytes-hex", "hex": "01020304" } },
-                { "SCTX": { "encoding": "raw-bytes-hex", "hex": "736574537461676520565465636861747469637570203130300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2033" } },
-                { "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } } }
-            ]
-        });
-        let translated = translate_info_record(
-            &record,
-            "FNV_FO3",
-            "FalloutNV.esm",
-            true,
-            "134B9B:FalloutNV.esm",
-        )
-        .unwrap();
-        assert_eq!(translated.fragment_phases, [InfoFragmentPhase::End]);
-        let psc = translated.fragment_psc_text.unwrap();
-        assert!(psc.contains("Function Fragment_End()"));
-        assert!(!psc.contains("Fragment_Begin"));
+            });
+            let translated = translate_info_record(
+                &record,
+                "FNV_FO3",
+                "FalloutNV.esm",
+                true,
+                "130161:FalloutNV.esm",
+            )
+            .unwrap();
+            assert_eq!(translated.fragment_phases, [InfoFragmentPhase::Begin]);
+            let psc = translated.fragment_psc_text.as_deref().unwrap();
+            assert!(psc.contains("Function Fragment_Begin()"));
+            assert!(psc.contains("VTechatticup.SetStage(10)"));
+            assert!(psc.contains("VTechatticup.HostageStorVar = 2"));
+            assert!(psc.contains("FNV_FO3_S_11FC64 Property VTechatticup Auto Const"));
+            assert_eq!(
+                translated.fragment_properties,
+                [InfoFragmentProperty {
+                    name: "VTechatticup".into(),
+                    papyrus_type: "FNV_FO3_S_11FC64".into(),
+                    source_form_key: "11F935:FalloutNV.esm".into(),
+                }]
+            );
+            assert!(translated.fragment_properties[0].papyrus_type.len() <= 38);
+            assert!(!psc.contains("Fragment_End"));
+        }
+        {
+            let record = json!({
+                "__target_voice_folder": "VTechatticupRenolds",
+                "fields": [
+                    { "SCHR": [{ "SCHR": { "Flags": ["Enabled"] } }] },
+                    { "NEXT": [{
+                        "Marker": true,
+                        "SCHR": { "RefCount": 1, "CompiledSize": 28 },
+                        "SCTX": { "encoding": "raw-bytes-hex", "hex": "736574537461676520565465636861747469637570203130300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2033" },
+                        "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } }
+                    }] }
+                ]
+            });
+            let translated = translate_info_record(
+                &record,
+                "FNV_FO3",
+                "FalloutNV.esm",
+                true,
+                "134B9B:FalloutNV.esm",
+            )
+            .unwrap();
+            assert_eq!(translated.fragment_phases, [InfoFragmentPhase::End]);
+            let psc = translated.fragment_psc_text.as_deref().unwrap();
+            assert!(psc.contains("Function Fragment_End()"));
+            assert!(psc.contains("VTechatticup.SetStage(100)"));
+            assert!(psc.contains("VTechatticup.HostageStorVar = 3"));
+            assert!(!psc.contains("Fragment_Begin"));
+        }
+        {
+            let record = json!({
+                "__target_voice_folder": "VTechatticupRenolds",
+                "fields": [
+                    { "SCHR": { "Flags": ["Enabled"], "RefCount": 0 } },
+                    { "NEXT": null },
+                    { "SCHR": { "Flags": ["Enabled"], "RefCount": 1, "CompiledSize": 28 } },
+                    { "SCDA": { "encoding": "raw-bytes-hex", "hex": "01020304" } },
+                    { "SCTX": { "encoding": "raw-bytes-hex", "hex": "736574537461676520565465636861747469637570203130300D0A736574207674656368617474696375702E486F737461676553746F7256617220746F2033" } },
+                    { "SCRO": { "reference": { "plugin": "FalloutNV.esm", "object_id": "11F935" } } }
+                ]
+            });
+            let translated = translate_info_record(
+                &record,
+                "FNV_FO3",
+                "FalloutNV.esm",
+                true,
+                "134B9B:FalloutNV.esm",
+            )
+            .unwrap();
+            assert_eq!(translated.fragment_phases, [InfoFragmentPhase::End]);
+            let psc = translated.fragment_psc_text.unwrap();
+            assert!(psc.contains("Function Fragment_End()"));
+            assert!(!psc.contains("Fragment_Begin"));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -730,111 +725,107 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn dial_payload_strips_legacy_script_subrecords() {
-        let record = json!({
-            "__source_form_key": "001234:FNV.esm",
-            "form_id": "001234",
-            "fields": [
-                { "EDID": "GreetingTopic" },
-                { "QNAM": "001:FNV.esm" },
-                { "SCTX": "begin GameMode\nset x to 1\nend\n" },
-                { "VTCK": "FemaleSultry" },
-                { "VMAD": { "version": 5 } },
-                { "VirtualMachineAdapter": {} },
-                { "FULL": "Hello there" },
-            ]
-        });
-        let payload = dial_payload(&record);
-        let obj = payload.as_object().expect("object");
-        assert!(!obj.contains_key("__source_form_key"));
-        assert_eq!(obj.get("form_id").and_then(|v| v.as_str()), Some("001234"));
+    fn dial_payload_strips_scripts_and_accumulates_one_payload_per_record() {
+        {
+            let record = json!({
+                "__source_form_key": "001234:FNV.esm",
+                "form_id": "001234",
+                "fields": [
+                    { "EDID": "GreetingTopic" },
+                    { "QNAM": "001:FNV.esm" },
+                    { "SCTX": "begin GameMode\nset x to 1\nend\n" },
+                    { "VTCK": "FemaleSultry" },
+                    { "VMAD": { "version": 5 } },
+                    { "VirtualMachineAdapter": {} },
+                    { "FULL": "Hello there" },
+                ]
+            });
+            let payload = dial_payload(&record);
+            let obj = payload.as_object().expect("object");
+            assert!(!obj.contains_key("__source_form_key"));
+            assert_eq!(obj.get("form_id").and_then(|v| v.as_str()), Some("001234"));
 
-        let fields = obj.get("fields").and_then(|v| v.as_array()).unwrap();
-        let keys: Vec<&str> = fields
-            .iter()
-            .filter_map(|f| f.as_object()?.keys().next().map(|s| s.as_str()))
-            .collect();
-        // Stripped:
-        assert!(!keys.contains(&"SCTX"));
-        assert!(!keys.contains(&"VTCK"));
-        assert!(!keys.contains(&"VMAD"));
-        assert!(!keys.contains(&"VirtualMachineAdapter"));
-        // Kept:
-        assert!(keys.contains(&"EDID"));
-        assert!(keys.contains(&"QNAM"));
-        assert!(keys.contains(&"FULL"));
-    }
-
-    #[test]
-    fn dial_payload_keeps_record_when_no_fields_array() {
-        let record = json!({ "form_id": "001234" });
-        let payload = dial_payload(&record);
-        // No `fields` array → payload still has `form_id`, no error.
-        assert_eq!(
-            payload
+            let fields = obj.get("fields").and_then(|v| v.as_array()).unwrap();
+            let keys: Vec<&str> = fields
+                .iter()
+                .filter_map(|f| f.as_object()?.keys().next().map(|s| s.as_str()))
+                .collect();
+            // Stripped:
+            assert!(!keys.contains(&"SCTX"));
+            assert!(!keys.contains(&"VTCK"));
+            assert!(!keys.contains(&"VMAD"));
+            assert!(!keys.contains(&"VirtualMachineAdapter"));
+            // Kept:
+            assert!(keys.contains(&"EDID"));
+            assert!(keys.contains(&"QNAM"));
+            assert!(keys.contains(&"FULL"));
+        }
+        {
+            let record = json!({ "form_id": "001234" });
+            let payload = dial_payload(&record);
+            // No `fields` array → payload still has `form_id`, no error.
+            assert_eq!(
+                payload
+                    .as_object()
+                    .unwrap()
+                    .get("form_id")
+                    .and_then(|v| v.as_str()),
+                Some("001234")
+            );
+        }
+        {
+            // Python's filter only keeps single-key field dicts; mirror that.
+            let record = json!({
+                "fields": [
+                    { "EDID": "Topic", "QNAM": "stray" },
+                    { "FULL": "Hello" },
+                ]
+            });
+            let payload = dial_payload(&record);
+            let fields = payload
                 .as_object()
                 .unwrap()
-                .get("form_id")
-                .and_then(|v| v.as_str()),
-            Some("001234")
-        );
-    }
-
-    #[test]
-    fn dial_payload_drops_multikey_field_entries() {
-        // Python's filter only keeps single-key field dicts; mirror that.
-        let record = json!({
-            "fields": [
-                { "EDID": "Topic", "QNAM": "stray" },
-                { "FULL": "Hello" },
-            ]
-        });
-        let payload = dial_payload(&record);
-        let fields = payload
-            .as_object()
-            .unwrap()
-            .get("fields")
-            .and_then(|v| v.as_array())
-            .unwrap();
-        assert_eq!(fields.len(), 1);
-        assert_eq!(
-            fields[0].as_object().unwrap().keys().next().unwrap(),
-            "FULL"
-        );
-    }
-
-    #[test]
-    fn accumulate_dial_records_pushes_one_payload_per_record() {
-        use crate::fnv_legacy_scripting::FnvLegacyScriptingContext;
-        let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
-        let records = vec![
-            (
-                json!({ "fields": [{ "EDID": "T1" }, { "SCTX": "dead" }] }),
-                "001:FNV.esm".to_string(),
-            ),
-            (
-                json!({ "fields": [{ "EDID": "T2" }] }),
-                "002:FNV.esm".to_string(),
-            ),
-        ];
-        accumulate_dial_records(&mut ctx, &records);
-        assert_eq!(ctx.translated_record_payloads.len(), 2);
-        assert_eq!(ctx.translated_record_payloads[0].signature, "DIAL");
-        assert_eq!(
-            ctx.translated_record_payloads[0].source_form_key,
-            "001:FNV.esm"
-        );
-        // SCTX should be stripped from the first record's payload.
-        let fields = ctx.translated_record_payloads[0]
-            .translated_record
-            .get("fields")
-            .and_then(|v| v.as_array())
-            .unwrap();
-        let keys: Vec<&str> = fields
-            .iter()
-            .filter_map(|f| f.as_object()?.keys().next().map(|s| s.as_str()))
-            .collect();
-        assert!(!keys.contains(&"SCTX"));
-        assert!(keys.contains(&"EDID"));
+                .get("fields")
+                .and_then(|v| v.as_array())
+                .unwrap();
+            assert_eq!(fields.len(), 1);
+            assert_eq!(
+                fields[0].as_object().unwrap().keys().next().unwrap(),
+                "FULL"
+            );
+        }
+        {
+            use crate::fnv_legacy_scripting::FnvLegacyScriptingContext;
+            let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
+            let records = vec![
+                (
+                    json!({ "fields": [{ "EDID": "T1" }, { "SCTX": "dead" }] }),
+                    "001:FNV.esm".to_string(),
+                ),
+                (
+                    json!({ "fields": [{ "EDID": "T2" }] }),
+                    "002:FNV.esm".to_string(),
+                ),
+            ];
+            accumulate_dial_records(&mut ctx, &records);
+            assert_eq!(ctx.translated_record_payloads.len(), 2);
+            assert_eq!(ctx.translated_record_payloads[0].signature, "DIAL");
+            assert_eq!(
+                ctx.translated_record_payloads[0].source_form_key,
+                "001:FNV.esm"
+            );
+            // SCTX should be stripped from the first record's payload.
+            let fields = ctx.translated_record_payloads[0]
+                .translated_record
+                .get("fields")
+                .and_then(|v| v.as_array())
+                .unwrap();
+            let keys: Vec<&str> = fields
+                .iter()
+                .filter_map(|f| f.as_object()?.keys().next().map(|s| s.as_str()))
+                .collect();
+            assert!(!keys.contains(&"SCTX"));
+            assert!(keys.contains(&"EDID"));
+        }
     }
 }

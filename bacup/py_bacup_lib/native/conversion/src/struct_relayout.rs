@@ -362,8 +362,7 @@ mod tests {
             .find(|field| field.field_id == "flags")
             .expect("FO4 flags");
         let mut src = vec![0u8; src_span];
-        src[src_flags.offset..src_flags.offset + src_flags.width]
-            .copy_from_slice(&512_u16.to_le_bytes());
+        src[src_flags.offset..src_flags.offset + src_flags.width].copy_from_slice(&[0x03]);
 
         let ctx = StructRelayoutCtx {
             target_schema: &fo4,
@@ -380,7 +379,7 @@ mod tests {
                     .try_into()
                     .unwrap()
             ),
-            512
+            3
         );
     }
 

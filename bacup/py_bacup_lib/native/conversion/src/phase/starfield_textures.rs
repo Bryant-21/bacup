@@ -490,26 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_ao_texture_is_one_by_one_white_and_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let textures_root = tmp.path().join("data/Textures");
-
-        let first = write_shared_ao_texture(&textures_root).unwrap();
-        let bytes_after_first = std::fs::read(&first).unwrap();
-
-        let decoded = directxtex_native::read_dds_mips_rgba8(&first).unwrap();
-        assert_eq!(decoded.width, 1);
-        assert_eq!(decoded.height, 1);
-        assert_eq!(decoded.mips.len(), 1);
-        assert_eq!(decoded.mips[0].2[0], 255);
-
-        let second = write_shared_ao_texture(&textures_root).unwrap();
-        assert_eq!(second, first);
-        assert_eq!(std::fs::read(&second).unwrap(), bytes_after_first);
-    }
-
-    #[test]
-    fn phase_run_converts_one_set_and_writes_shared_ao() {
+    fn phase_run_converts_one_set_and_writes_idempotent_shared_ao() {
         use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
@@ -614,5 +595,21 @@ mod tests {
         )));
 
         drop_run(id).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let textures_root = tmp.path().join("data/Textures");
+
+        let first = write_shared_ao_texture(&textures_root).unwrap();
+        let bytes_after_first = std::fs::read(&first).unwrap();
+
+        let decoded = directxtex_native::read_dds_mips_rgba8(&first).unwrap();
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.mips.len(), 1);
+        assert_eq!(decoded.mips[0].2[0], 255);
+
+        let second = write_shared_ao_texture(&textures_root).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(std::fs::read(&second).unwrap(), bytes_after_first);
     }
 }

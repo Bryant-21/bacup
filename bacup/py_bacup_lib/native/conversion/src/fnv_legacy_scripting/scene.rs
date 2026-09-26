@@ -4,7 +4,9 @@
 
 use std::collections::HashSet;
 
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 use super::form_keys::object_id_from_form_key;
 use super::naming::scene_action_fragment_name;
@@ -58,7 +60,7 @@ pub struct SceneAction {
 /// Translate a single SCEN record value.
 pub fn translate_scen_record(
     record: &Value,
-    mod_prefix: &str,
+    _mod_prefix: &str,
     strict: bool,
     source_form_key: &str,
 ) -> Result<TranslatedScene, TranslateError> {
@@ -188,58 +190,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn translate_scen_record_empty_no_fragments() {
-        let record = json!({
-            "eid": "TestScene",
-            "fields": []
-        });
-        let result = translate_scen_record(&record, "B21", false, "001234:FNV.esm");
-        let ts = result.expect("translate ok");
-        assert_eq!(ts.source_editor_id, "TestScene");
-        assert!(ts.actions.is_empty());
-        assert!(
-            ts.fragment_psc_text
-                .contains("ScriptName SF_TestScene_001234 extends Scene")
-        );
-    }
-
-    #[test]
-    fn translate_scen_record_with_sctx() {
-        let record = json!({
-            "eid": "TestScene",
-            "fields": [
-                { "SCTX": "set x to 1" },
-            ]
-        });
-        let result = translate_scen_record(&record, "B21", false, "001234:FNV.esm");
-        let ts = result.expect("translate ok");
-        assert_eq!(ts.actions.len(), 1);
-        assert!(ts.fragment_psc_text.contains("Fragment_1"));
-        assert!(ts.fragment_psc_text.contains("EndFunction"));
-        let fields = ts
-            .authoring_record_payload
-            .as_ref()
-            .and_then(|payload| payload.get("fields"))
-            .and_then(Value::as_array)
-            .unwrap();
-        assert!(fields.iter().all(|field| {
-            !field
-                .as_object()
-                .is_some_and(|field| field.contains_key("VirtualMachineAdapter"))
-        }));
-    }
-
-    #[test]
-    fn translate_scen_record_parent_quest_extracted() {
-        let record = json!({
-            "eid": "TestScene",
-            "fields": [
-                { "PNAM": "001000:FNV.esm" },
-            ]
-        });
-        let result = translate_scen_record(&record, "B21", false, "001234:FNV.esm");
-        let ts = result.expect("translate ok");
-        assert_eq!(ts.parent_quest_form_key, "001000:FNV.esm");
+    fn translate_scen_record_extracts_fragments_and_parent_quest() {
+        {
+            let record = json!({
+                "eid": "TestScene",
+                "fields": []
+            });
+            let result = translate_scen_record(&record, "B21", false, "001234:FNV.esm");
+            let ts = result.expect("translate ok");
+            assert_eq!(ts.source_editor_id, "TestScene");
+            assert!(ts.actions.is_empty());
+            assert!(
+                ts.fragment_psc_text
+                    .contains("ScriptName SF_TestScene_001234 extends Scene")
+            );
+        }
+        {
+            let record = json!({
+                "eid": "TestScene",
+                "fields": [
+                    { "SCTX": "set x to 1" },
+                ]
+            });
+            let result = translate_scen_record(&record, "B21", false, "001234:FNV.esm");
+            let ts = result.expect("translate ok");
+            assert_eq!(ts.actions.len(), 1);
+            assert!(ts.fragment_psc_text.contains("Fragment_1"));
+            assert!(ts.fragment_psc_text.contains("EndFunction"));
+            let fields = ts
+                .authoring_record_payload
+                .as_ref()
+                .and_then(|payload| payload.get("fields"))
+                .and_then(Value::as_array)
+                .unwrap();
+            assert!(fields.iter().all(|field| {
+                !field
+                    .as_object()
+                    .is_some_and(|field| field.contains_key("VirtualMachineAdapter"))
+            }));
+        }
+        {
+            let record = json!({
+                "eid": "TestScene",
+                "fields": [
+                    { "PNAM": "001000:FNV.esm" },
+                ]
+            });
+            let result = translate_scen_record(&record, "B21", false, "001234:FNV.esm");
+            let ts = result.expect("translate ok");
+            assert_eq!(ts.parent_quest_form_key, "001000:FNV.esm");
+        }
     }
 
     #[test]

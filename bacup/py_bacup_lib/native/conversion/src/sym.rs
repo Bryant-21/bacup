@@ -77,53 +77,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intern_returns_stable_sym_for_repeated_string() {
-        let interner = StringInterner::new();
-        let a = interner.intern("hello");
-        let b = interner.intern("hello");
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn intern_returns_distinct_syms_for_distinct_strings() {
-        let interner = StringInterner::new();
-        let a = interner.intern("hello");
-        let b = interner.intern("world");
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn resolve_returns_original_string() {
-        let interner = StringInterner::new();
-        let sym = interner.intern("WEAP");
-        assert_eq!(interner.resolve(sym), Some("WEAP"));
-    }
-
-    #[test]
-    fn resolve_returns_none_for_unknown_sym() {
+    fn intern_resolve_and_len_track_distinct_strings() {
         use lasso::{Key, Spur};
-        let interner = StringInterner::new();
-        // Construct a Spur that was never interned (usize 9999).
-        if let Some(spur) = Spur::try_from_usize(9999) {
-            assert!(interner.resolve(Sym(spur)).is_none());
-        }
-        // An empty interner has no valid Syms at all.
-        assert!(interner.is_empty());
-    }
-
-    #[test]
-    fn empty_interner_reports_zero_len() {
         let interner = StringInterner::new();
         assert!(interner.is_empty());
         assert_eq!(interner.len(), 0);
-    }
+        if let Some(spur) = Spur::try_from_usize(9999) {
+            assert!(interner.resolve(Sym(spur)).is_none());
+        }
 
-    #[test]
-    fn interner_len_grows_with_distinct_strings_only() {
-        let interner = StringInterner::new();
-        interner.intern("a");
-        interner.intern("a");
-        interner.intern("b");
+        let hello = interner.intern("hello");
+        assert_eq!(interner.intern("hello"), hello);
+        let world = interner.intern("world");
+        assert_ne!(hello, world);
+        assert_eq!(interner.resolve(hello), Some("hello"));
+        assert_eq!(interner.resolve(world), Some("world"));
         assert_eq!(interner.len(), 2);
     }
 
@@ -136,15 +104,6 @@ mod tests {
         let before = interner.len();
         assert!(interner.get("never-seen").is_none());
         assert_eq!(interner.len(), before);
-    }
-
-    #[test]
-    fn intern_works_with_shared_reference() {
-        let interner = StringInterner::new();
-        let a = interner.intern("hello");
-        let b = interner.intern("hello");
-        assert_eq!(a, b);
-        assert_eq!(interner.resolve(a), Some("hello"));
     }
 
     #[test]

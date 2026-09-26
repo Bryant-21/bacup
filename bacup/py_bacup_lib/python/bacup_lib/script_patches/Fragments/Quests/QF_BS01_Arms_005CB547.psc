@@ -9,6 +9,9 @@ Function Fragment_Stage_0010_Item_00()
     If Alias_Dagger && Alias_Dagger.GetReference()
         Alias_Dagger.GetReference().Enable()
     EndIf
+    If !IsStageDone(610)
+        SetStage(610)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
@@ -190,6 +193,10 @@ Function Fragment_Stage_0640_Item_00()
     Actor player = Game.GetPlayer()
     If player && Caps001 && player.GetItemCount(Caps001) >= 300
         player.RemoveItem(Caps001, 300, True)
+        ; FO76 logged the paid bribe server-side; 650 carries it to the peaceful resolution.
+        If !IsStageDone(650)
+            SetStage(650)
+        EndIf
     EndIf
 EndFunction
 
@@ -324,6 +331,9 @@ Function Fragment_Stage_0920_Item_00()
             player.RemoveItem(BS01_MQ04_Arms_Supplies, 1, True)
         EndIf
     EndIf
+    If !IsStageDone(945)
+        SetStage(945)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0940_Item_00()
@@ -356,6 +366,9 @@ Function Fragment_Stage_0940_Item_00()
     EndIf
     If Alias_Jennie_FortAtlas && Alias_Jennie_FortAtlas.GetReference() && BS01_MQ04_Arms_GaveWeaponsKeyword
         Alias_Jennie_FortAtlas.GetReference().AddKeyword(BS01_MQ04_Arms_GaveWeaponsKeyword)
+    EndIf
+    If !IsStageDone(945)
+        SetStage(945)
     EndIf
 EndFunction
 

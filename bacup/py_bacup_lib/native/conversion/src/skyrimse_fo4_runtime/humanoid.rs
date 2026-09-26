@@ -1,12 +1,19 @@
+#[cfg(test)]
 use std::fmt;
 
+#[cfg(test)]
 use smallvec::SmallVec;
 
+#[cfg(test)]
 use crate::ids::{FormKey, SigCode, SubrecordSig};
+#[cfg(test)]
 use crate::materialized_npc_facegen::FacegenAlias;
+#[cfg(test)]
 use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
+#[cfg(test)]
 use crate::sym::{StringInterner, Sym};
 
+#[cfg(test)]
 const PERSISTENT_CELL_CHILD_GROUP_TYPE: u32 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -76,23 +83,27 @@ pub(crate) fn source_humanoid_face_kind(editor_id: &str) -> Option<SkyrimHumanoi
     }
 }
 
+#[cfg(test)]
 const DROPPED_NPC_FIELDS: &[[u8; 4]] = &[
     *b"VMAD", *b"SNAM", *b"INAM", *b"TPLT", *b"TPTA", *b"SPCT", *b"SPLO", *b"PRKZ", *b"PRKR",
     *b"COCT", *b"CNTO", *b"KSIZ", *b"KWDA", *b"PKID", *b"CRIF", *b"SOFT", *b"DPLT", *b"GNAM",
     *b"CS2H", *b"CS2K", *b"CS2D", *b"CS2E", *b"CS2F", *b"CSCR", *b"PFRN", *b"ATKR",
 ];
 
+#[cfg(test)]
 const REQUIRED_DONOR_FACE_FIELDS: &[[u8; 4]] = &[
     *b"HCLF", *b"NAM5", *b"NAM6", *b"NAM4", *b"MWGT", *b"NAM8", *b"FTST", *b"QNAM", *b"MSDK",
     *b"MSDV", *b"MRSV", *b"FMIN",
 ];
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TargetNativePlacement {
     pub position: [f32; 3],
     pub rotation: [f32; 3],
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TargetNativeFacegenAssetCopy {
     pub source_archive: String,
@@ -101,6 +112,7 @@ pub(crate) struct TargetNativeFacegenAssetCopy {
     pub required: bool,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TargetNativeFacegenCopy {
     pub alias: FacegenAlias,
@@ -108,6 +120,7 @@ pub(crate) struct TargetNativeFacegenCopy {
     pub tint: Option<TargetNativeFacegenAssetCopy>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TargetNativeVoicePlan {
     pub form_key: FormKey,
@@ -115,6 +128,7 @@ pub(crate) struct TargetNativeVoicePlan {
     pub flags: u64,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TargetNativeHumanoidPlan {
     pub source_npc: FormKey,
@@ -162,12 +176,14 @@ pub(crate) struct TargetNativeHumanoidPlan {
     pub facegeom_source_archive: String,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct HumanoidFormMapping {
     pub source: FormKey,
     pub target: FormKey,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct HumanoidTopologyReceipt {
     pub source_placed_actor: FormKey,
@@ -181,6 +197,7 @@ pub(crate) struct HumanoidTopologyReceipt {
     pub target_navmesh_evidence: FormKey,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct HumanoidProjectionReceipt {
     pub mappings: Vec<HumanoidFormMapping>,
@@ -188,6 +205,7 @@ pub(crate) struct HumanoidProjectionReceipt {
     pub facegeom: TargetNativeFacegenAssetCopy,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct TargetNativeHumanoidProjection {
     pub npc: Record,
@@ -198,6 +216,7 @@ pub(crate) struct TargetNativeHumanoidProjection {
     pub receipt: HumanoidProjectionReceipt,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum NpcContractError {
     InvalidSource(&'static str),
@@ -206,6 +225,7 @@ pub(crate) enum NpcContractError {
     InvalidProjection(&'static str),
 }
 
+#[cfg(test)]
 impl fmt::Display for NpcContractError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -224,8 +244,10 @@ impl fmt::Display for NpcContractError {
     }
 }
 
+#[cfg(test)]
 impl std::error::Error for NpcContractError {}
 
+#[cfg(test)]
 pub(crate) fn project_target_native_humanoid(
     source_npc: &Record,
     source_achr: &Record,
@@ -255,6 +277,7 @@ pub(crate) fn project_target_native_humanoid(
     Ok(projection)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_target_native_humanoid_projection(
     projection: &TargetNativeHumanoidProjection,
     plan: &TargetNativeHumanoidPlan,
@@ -286,6 +309,7 @@ pub(crate) fn validate_target_native_humanoid_projection(
     Ok(())
 }
 
+#[cfg(test)]
 fn projection_receipt(
     plan: &TargetNativeHumanoidPlan,
     facegeom: TargetNativeFacegenAssetCopy,
@@ -320,6 +344,7 @@ fn projection_receipt(
     }
 }
 
+#[cfg(test)]
 fn validate_humanoid_plan(
     plan: &TargetNativeHumanoidPlan,
     interner: &StringInterner,
@@ -418,6 +443,7 @@ fn validate_humanoid_plan(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_source_npc(
     record: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -458,6 +484,7 @@ fn validate_source_npc(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_source_achr(
     record: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -493,6 +520,7 @@ fn validate_source_achr(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_donor_npc(
     record: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -533,6 +561,7 @@ fn validate_donor_npc(
     validate_face_fields(record).map_err(NpcContractError::InvalidDonor)
 }
 
+#[cfg(test)]
 fn project_npc(
     donor: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -582,6 +611,7 @@ fn project_npc(
     npc
 }
 
+#[cfg(test)]
 fn project_voice(plan: &TargetNativeHumanoidPlan, interner: &StringInterner) -> Record {
     let mut voice = Record::new(sig("VTYP"), plan.target_voice.form_key);
     set_editor_id(&mut voice, &plan.target_voice.editor_id, interner);
@@ -591,6 +621,7 @@ fn project_voice(plan: &TargetNativeHumanoidPlan, interner: &StringInterner) -> 
     voice
 }
 
+#[cfg(test)]
 fn project_actor(plan: &TargetNativeHumanoidPlan, interner: &StringInterner) -> Record {
     let mut actor = Record::new(sig("ACHR"), plan.target_placed_actor);
     actor.flags = RecordFlags::PERSISTENT;
@@ -608,6 +639,7 @@ fn project_actor(plan: &TargetNativeHumanoidPlan, interner: &StringInterner) -> 
     actor
 }
 
+#[cfg(test)]
 fn facegen_copy(
     plan: &TargetNativeHumanoidPlan,
     interner: &StringInterner,
@@ -637,6 +669,7 @@ fn facegen_copy(
     }
 }
 
+#[cfg(test)]
 fn validate_projected_npc(
     npc: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -693,6 +726,7 @@ fn validate_projected_npc(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_projected_voice(
     voice: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -717,6 +751,7 @@ fn validate_projected_voice(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_projected_actor(
     actor: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -747,6 +782,7 @@ fn validate_projected_actor(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_face_fields(record: &Record) -> Result<(), &'static str> {
     for signature in REQUIRED_DONOR_FACE_FIELDS {
         if count_fields(record, signature) != 1 {
@@ -763,6 +799,7 @@ fn validate_face_fields(record: &Record) -> Result<(), &'static str> {
     Ok(())
 }
 
+#[cfg(test)]
 fn require_exact_record(
     record: &Record,
     signature: &str,
@@ -785,6 +822,7 @@ fn require_exact_record(
     Ok(())
 }
 
+#[cfg(test)]
 fn require_exact_form_key(
     record: &Record,
     signature: &[u8; 4],
@@ -798,6 +836,7 @@ fn require_exact_form_key(
     Ok(())
 }
 
+#[cfg(test)]
 fn require_source_name(
     record: &Record,
     plan: &TargetNativeHumanoidPlan,
@@ -822,6 +861,7 @@ fn require_source_name(
     }
 }
 
+#[cfg(test)]
 fn require_string(
     record: &Record,
     signature: &[u8; 4],
@@ -839,6 +879,7 @@ fn require_string(
     Ok(())
 }
 
+#[cfg(test)]
 fn require_bytes<'a>(record: &'a Record, signature: &[u8; 4]) -> Result<&'a [u8], &'static str> {
     if count_fields(record, signature) != 1 {
         return Err("required byte field is missing or repeated");
@@ -849,6 +890,7 @@ fn require_bytes<'a>(record: &'a Record, signature: &[u8; 4]) -> Result<&'a [u8]
     }
 }
 
+#[cfg(test)]
 fn field_value<'a>(record: &'a Record, signature: &[u8; 4]) -> Option<&'a FieldValue> {
     record
         .fields
@@ -857,6 +899,7 @@ fn field_value<'a>(record: &'a Record, signature: &[u8; 4]) -> Option<&'a FieldV
         .map(|entry| &entry.value)
 }
 
+#[cfg(test)]
 fn count_fields(record: &Record, signature: &[u8; 4]) -> usize {
     record
         .fields
@@ -865,6 +908,7 @@ fn count_fields(record: &Record, signature: &[u8; 4]) -> usize {
         .count()
 }
 
+#[cfg(test)]
 fn set_editor_id(record: &mut Record, editor_id: &str, interner: &StringInterner) {
     let value = interner.intern(editor_id);
     record.eid = Some(value);
@@ -881,6 +925,7 @@ fn set_editor_id(record: &mut Record, editor_id: &str, interner: &StringInterner
     }
 }
 
+#[cfg(test)]
 fn replace_single(record: &mut Record, signature: &[u8; 4], value: FieldValue) {
     if let Some(entry) = record
         .fields
@@ -896,6 +941,7 @@ fn replace_single(record: &mut Record, signature: &[u8; 4], value: FieldValue) {
     }
 }
 
+#[cfg(test)]
 fn insert_before(record: &mut Record, anchor: &[u8; 4], entry: FieldEntry) {
     let position = record
         .fields
@@ -905,6 +951,7 @@ fn insert_before(record: &mut Record, anchor: &[u8; 4], entry: FieldEntry) {
     record.fields.insert(position, entry);
 }
 
+#[cfg(test)]
 fn planned_acbs(plan: &TargetNativeHumanoidPlan) -> SmallVec<[u8; 32]> {
     let mut bytes = vec![0u8; 20];
     bytes[0..4].copy_from_slice(&plan.target_acbs_flags.to_le_bytes());
@@ -914,6 +961,7 @@ fn planned_acbs(plan: &TargetNativeHumanoidPlan) -> SmallVec<[u8; 32]> {
     SmallVec::from_vec(bytes)
 }
 
+#[cfg(test)]
 fn encode_transform(position: [f32; 3], rotation: [f32; 3]) -> SmallVec<[u8; 32]> {
     let mut bytes = SmallVec::new();
     for value in position.into_iter().chain(rotation) {
@@ -922,6 +970,7 @@ fn encode_transform(position: [f32; 3], rotation: [f32; 3]) -> SmallVec<[u8; 32]
     bytes
 }
 
+#[cfg(test)]
 fn decode_transform(bytes: &[u8]) -> Option<([f32; 3], [f32; 3])> {
     if bytes.len() != 24 {
         return None;
@@ -936,6 +985,7 @@ fn decode_transform(bytes: &[u8]) -> Option<([f32; 3], [f32; 3])> {
     ))
 }
 
+#[cfg(test)]
 fn approx_transform(actual: [f32; 3], expected: [f32; 3]) -> bool {
     actual
         .iter()
@@ -943,18 +993,21 @@ fn approx_transform(actual: [f32; 3], expected: [f32; 3]) -> bool {
         .all(|(actual, expected)| (actual - expected).abs() <= 0.000_1)
 }
 
+#[cfg(test)]
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_le_bytes(
         bytes.get(offset..offset + 2)?.try_into().ok()?,
     ))
 }
 
+#[cfg(test)]
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
         bytes.get(offset..offset + 4)?.try_into().ok()?,
     ))
 }
 
+#[cfg(test)]
 fn value_contains_source_dependency(
     value: &FieldValue,
     allowed_voice: FormKey,
@@ -972,10 +1025,12 @@ fn value_contains_source_dependency(
     }
 }
 
+#[cfg(test)]
 fn facegen_geometry_path(plugin: &str, local: u32) -> String {
     format!("Meshes/Actors/Character/FaceGenData/FaceGeom/{plugin}/{local:08x}.nif")
 }
 
+#[cfg(test)]
 fn field(signature: &str, value: FieldValue) -> FieldEntry {
     FieldEntry {
         sig: SubrecordSig::from_str(signature).expect("static subrecord signature is valid"),
@@ -983,6 +1038,7 @@ fn field(signature: &str, value: FieldValue) -> FieldEntry {
     }
 }
 
+#[cfg(test)]
 fn sig(signature: &str) -> SigCode {
     SigCode::from_str(signature).expect("static record signature is valid")
 }

@@ -2000,11 +2000,25 @@ mod tests {
     use crate::record::{FieldEntry, FieldValue, Record};
 
     #[test]
-    fn form_key_to_legacy_key_flips_plugin_first_shape() {
-        assert_eq!(
-            form_key_to_legacy_key("FalloutNV.esm:001234"),
-            "001234:FalloutNV.esm"
-        );
+    fn legacy_form_key_shapes_flip_plugin_first() {
+        {
+            assert_eq!(
+                form_key_to_legacy_key("FalloutNV.esm:001234"),
+                "001234:FalloutNV.esm"
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("FalloutNV.esm");
+            let value = FieldValue::FormKey(FormKey {
+                local: 0x5678,
+                plugin,
+            });
+            assert_eq!(
+                field_value_to_json(&value, &interner),
+                Value::String("005678:FalloutNV.esm".to_string())
+            );
+        }
     }
 
     #[test]
@@ -2049,81 +2063,68 @@ mod tests {
     }
 
     #[test]
-    fn field_value_to_json_renders_form_key_in_legacy_shape() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("FalloutNV.esm");
-        let value = FieldValue::FormKey(FormKey {
-            local: 0x5678,
-            plugin,
-        });
-        assert_eq!(
-            field_value_to_json(&value, &interner),
-            Value::String("005678:FalloutNV.esm".to_string())
-        );
-    }
-
-    #[test]
-    fn scpt_payload_carries_central_mapper_targets_for_scro_dependencies() {
-        let interner = StringInterner::new();
-        let source_plugin = interner.intern("FalloutNV.esm");
-        let target_plugin = interner.intern("Converted.esp");
-        let script_form_key = FormKey {
-            local: 0x13015B,
-            plugin: source_plugin,
-        };
-        let source_dependency = FormKey {
-            local: 0x130161,
-            plugin: source_plugin,
-        };
-        let target_dependency = FormKey {
-            local: 0x800123,
-            plugin: target_plugin,
-        };
-        let mut record = Record::new(SigCode::from_str("SCPT").unwrap(), script_form_key);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("SCRO").unwrap(),
-            value: FieldValue::FormKey(source_dependency),
-        });
-        let mut state = MapperState::new([], MapperOptions::default());
-        state
-            .source_to_target
-            .insert(source_dependency, target_dependency);
-        let mut payload = serde_json::json!({});
-
-        attach_scpt_mapped_form_keys_with_state(&record, &mut payload, &state, &interner).unwrap();
-
-        assert_eq!(
-            payload["__mapped_form_keys"]["130161:FalloutNV.esm"],
-            "800123:Converted.esp"
-        );
-    }
-
-    #[test]
-    fn scpt_payload_fails_closed_when_scro_dependency_is_unmapped() {
-        let interner = StringInterner::new();
-        let source_plugin = interner.intern("FalloutNV.esm");
-        let mut record = Record::new(
-            SigCode::from_str("SCPT").unwrap(),
-            FormKey {
+    fn scpt_payload_maps_scro_dependencies_or_fails_closed() {
+        {
+            let interner = StringInterner::new();
+            let source_plugin = interner.intern("FalloutNV.esm");
+            let target_plugin = interner.intern("Converted.esp");
+            let script_form_key = FormKey {
                 local: 0x13015B,
                 plugin: source_plugin,
-            },
-        );
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("SCRO").unwrap(),
-            value: FieldValue::FormKey(FormKey {
+            };
+            let source_dependency = FormKey {
                 local: 0x130161,
                 plugin: source_plugin,
-            }),
-        });
-        let state = MapperState::new([], MapperOptions::default());
-        let mut payload = serde_json::json!({});
+            };
+            let target_dependency = FormKey {
+                local: 0x800123,
+                plugin: target_plugin,
+            };
+            let mut record = Record::new(SigCode::from_str("SCPT").unwrap(), script_form_key);
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("SCRO").unwrap(),
+                value: FieldValue::FormKey(source_dependency),
+            });
+            let mut state = MapperState::new([], MapperOptions::default());
+            state
+                .source_to_target
+                .insert(source_dependency, target_dependency);
+            let mut payload = serde_json::json!({});
 
-        let error =
             attach_scpt_mapped_form_keys_with_state(&record, &mut payload, &state, &interner)
-                .unwrap_err();
+                .unwrap();
 
-        assert!(error.to_string().contains("has no target mapping"));
+            assert_eq!(
+                payload["__mapped_form_keys"]["130161:FalloutNV.esm"],
+                "800123:Converted.esp"
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let source_plugin = interner.intern("FalloutNV.esm");
+            let mut record = Record::new(
+                SigCode::from_str("SCPT").unwrap(),
+                FormKey {
+                    local: 0x13015B,
+                    plugin: source_plugin,
+                },
+            );
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("SCRO").unwrap(),
+                value: FieldValue::FormKey(FormKey {
+                    local: 0x130161,
+                    plugin: source_plugin,
+                }),
+            });
+            let state = MapperState::new([], MapperOptions::default());
+            let mut payload = serde_json::json!({});
+
+            let error =
+                attach_scpt_mapped_form_keys_with_state(&record, &mut payload, &state, &interner)
+                    .unwrap_err();
+
+            assert!(error.to_string().contains("has no target mapping"));
+        }
     }
 
     #[test]
@@ -2404,36 +2405,71 @@ mod tests {
     }
 
     #[test]
-    fn strict_slice_closure_is_immutable() {
-        let selected = REQUIRED_FNV_QUEST_SLICE
-            .iter()
-            .map(|(signature, locals)| ((*signature).to_string(), locals.to_vec()))
-            .collect();
-        validate_required_quest_slice(&selected).unwrap();
-        assert_eq!(
-            selected.get("DIAL"),
-            Some(&vec![0x13015B, 0x134B9A, 0x138A74])
-        );
-        assert!(
-            !selected
-                .get("DIAL")
-                .is_some_and(|locals| locals.contains(&0x0000C8))
-        );
-        assert_eq!(
-            selected.get("INFO"),
-            Some(&vec![0x130161, 0x134B9B, 0x15734B, 0x15734C, 0x15734D])
-        );
-        assert_eq!(selected.get("ACTI"), Some(&vec![0x133F41]));
-        assert_eq!(selected.get("REFR"), Some(&vec![0x133F42]));
+    fn strict_slice_closure_and_deferred_allowlist_are_exact() {
+        {
+            let selected = REQUIRED_FNV_QUEST_SLICE
+                .iter()
+                .map(|(signature, locals)| ((*signature).to_string(), locals.to_vec()))
+                .collect();
+            validate_required_quest_slice(&selected).unwrap();
+            assert_eq!(
+                selected.get("DIAL"),
+                Some(&vec![0x13015B, 0x134B9A, 0x138A74])
+            );
+            assert!(
+                !selected
+                    .get("DIAL")
+                    .is_some_and(|locals| locals.contains(&0x0000C8))
+            );
+            assert_eq!(
+                selected.get("INFO"),
+                Some(&vec![0x130161, 0x134B9B, 0x15734B, 0x15734C, 0x15734D])
+            );
+            assert_eq!(selected.get("ACTI"), Some(&vec![0x133F41]));
+            assert_eq!(selected.get("REFR"), Some(&vec![0x133F42]));
 
-        for missing in ["QUST", "INFO"] {
-            let mut incomplete = selected.clone();
-            incomplete.remove(missing);
-            assert!(validate_required_quest_slice(&incomplete).is_err());
+            for missing in ["QUST", "INFO"] {
+                let mut incomplete = selected.clone();
+                incomplete.remove(missing);
+                assert!(validate_required_quest_slice(&incomplete).is_err());
+            }
+            let mut phantom_scene = selected;
+            phantom_scene.insert("SCEN".to_string(), vec![0x123456]);
+            assert!(validate_required_quest_slice(&phantom_scene).is_err());
         }
-        let mut phantom_scene = selected;
-        phantom_scene.insert("SCEN".to_string(), vec![0x123456]);
-        assert!(validate_required_quest_slice(&phantom_scene).is_err());
+        {
+            let interner = StringInterner::new();
+            let source_plugin = interner.intern("FalloutNV.esm");
+            let other_plugin = interner.intern("Collision.esm");
+            let selected = std::collections::HashSet::from([("QUST".to_string(), 0x11F935)]);
+            assert!(is_selected_deferred_record(
+                &selected,
+                source_plugin,
+                FormKey {
+                    local: 0x11F935,
+                    plugin: source_plugin,
+                },
+                "QUST",
+            ));
+            assert!(!is_selected_deferred_record(
+                &selected,
+                source_plugin,
+                FormKey {
+                    local: 0x11F935,
+                    plugin: other_plugin,
+                },
+                "QUST",
+            ));
+            assert!(!is_selected_deferred_record(
+                &selected,
+                source_plugin,
+                FormKey {
+                    local: 0x11F935,
+                    plugin: source_plugin,
+                },
+                "INFO",
+            ));
+        }
     }
 
     #[test]
@@ -2511,40 +2547,5 @@ mod tests {
 
         assert_eq!(result.quest_runtime_component_plans, plans);
         assert_eq!(result.quest_runtime_expected_receipts, frozen);
-    }
-
-    #[test]
-    fn strict_deferred_allowlist_keys_signature_and_source_plugin() {
-        let interner = StringInterner::new();
-        let source_plugin = interner.intern("FalloutNV.esm");
-        let other_plugin = interner.intern("Collision.esm");
-        let selected = std::collections::HashSet::from([("QUST".to_string(), 0x11F935)]);
-        assert!(is_selected_deferred_record(
-            &selected,
-            source_plugin,
-            FormKey {
-                local: 0x11F935,
-                plugin: source_plugin,
-            },
-            "QUST",
-        ));
-        assert!(!is_selected_deferred_record(
-            &selected,
-            source_plugin,
-            FormKey {
-                local: 0x11F935,
-                plugin: other_plugin,
-            },
-            "QUST",
-        ));
-        assert!(!is_selected_deferred_record(
-            &selected,
-            source_plugin,
-            FormKey {
-                local: 0x11F935,
-                plugin: source_plugin,
-            },
-            "INFO",
-        ));
     }
 }

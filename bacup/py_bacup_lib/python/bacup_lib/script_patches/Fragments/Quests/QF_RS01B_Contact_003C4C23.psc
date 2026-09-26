@@ -62,12 +62,29 @@ Function Fragment_Stage_1000_Item_00()
     If RS01B_Contact_Completed != None
         playerRef.SetValue(RS01B_Contact_Completed, 1.0)
     EndIf
-    If RS03_Inoculation_Started != None && playerRef.GetValue(RS03_Inoculation_Started) < 1.0
-        If RS03_Inoculation_Keyword != None
-            RS03_Inoculation_Keyword.SendStoryEvent(None, playerRef, playerRef)
-        EndIf
+    If !RS01B_TryStartInoculation()
+        StartTimer(5.0, 1000)
     EndIf
     If RS06_Manual_Stims_Keyword != None
         RS06_Manual_Stims_Keyword.SendStoryEvent(None, playerRef, playerRef)
     EndIf
 EndFunction
+
+Bool Function RS01B_TryStartInoculation()
+    Quest nextQuest = Game.GetFormFromFile(0x0022730F, "SeventySix.esm") as Quest
+    If nextQuest != None && (nextQuest.IsRunning() || nextQuest.IsCompleted())
+        Return True
+    EndIf
+    Actor playerRef = Game.GetPlayer()
+    If nextQuest == None || playerRef == None || RS03_Inoculation_Keyword == None
+        Return False
+    EndIf
+    Bool accepted = RS03_Inoculation_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
+    Return accepted || nextQuest.IsRunning() || nextQuest.IsCompleted()
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID == 1000 && IsRunning() && IsStageDone(1000) && !RS01B_TryStartInoculation()
+        StartTimer(5.0, 1000)
+    EndIf
+EndEvent

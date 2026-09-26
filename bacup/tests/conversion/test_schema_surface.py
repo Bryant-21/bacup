@@ -1,48 +1,31 @@
 from __future__ import annotations
 
+import pytest
+
 from bacup_lib.record.schema_surface import (
     SchemaRecordError,
     get_schema_surface,
 )
 
 
-def test_surface_knows_fo4_weap_native_keys() -> None:
+@pytest.mark.parametrize(
+    "record_type,present,absent",
+    [
+        ("WEAP", ["FULL", "MODL", "Data", "Name"], ["Model"]),
+        ("MISC", ["Name", "FULL"], []),
+        ("RACE", ["BodyDatas"], ["SkeletalDatas"]),
+        ("QUST", ["QuestDialogueConditions", "StoryManagerConditions"], []),
+    ],
+)
+def test_surface_allowed_and_ordered_keys(record_type, present, absent) -> None:
     surface = get_schema_surface("fo4")
-    keys = surface.allowed_keys("WEAP")
-    assert "FULL" in keys
-    assert "MODL" in keys
-    assert "Data" in keys
-    assert "Name" in keys
-    assert "Model" not in keys
-
-
-def test_surface_knows_fo4_misc_name_alias() -> None:
-    surface = get_schema_surface("fo4")
-    keys = surface.allowed_keys("MISC")
-    assert "Name" in keys
-    assert "FULL" in keys
-
-
-def test_surface_knows_fo4_race_group_aliases() -> None:
-    surface = get_schema_surface("fo4")
-    keys = surface.allowed_keys("RACE")
-    assert "BodyDatas" in keys
-    assert "SkeletalDatas" not in keys
-
-
-def test_surface_knows_fo4_condition_group_aliases() -> None:
-    surface = get_schema_surface("fo4")
-    keys = surface.allowed_keys("QUST")
-    assert "QuestDialogueConditions" in keys
-    assert "StoryManagerConditions" in keys
-
-
-def test_orchestrator_uses_schema_surface_order_aliases() -> None:
-    surface = get_schema_surface("fo4")
-
-    assert "Name" in surface.ordered_keys("MISC")
-    assert "BodyDatas" in surface.ordered_keys("RACE")
-    assert "QuestDialogueConditions" in surface.ordered_keys("QUST")
+    keys = surface.allowed_keys(record_type)
+    ordered = surface.ordered_keys(record_type)
+    for key in present:
+        assert key in keys
+        assert key in ordered
+    for key in absent:
+        assert key not in keys
 
 
 def test_surface_orders_fields_by_schema_order_hint() -> None:
@@ -62,53 +45,21 @@ def test_surface_orders_fields_by_schema_order_hint() -> None:
     assert decisions == []
 
 
-def test_surface_reports_invalid_target_field() -> None:
+@pytest.mark.parametrize(
+    "fields,fragments",
+    [
+        ([{"FULL": "Test Weapon"}, {"Model": "bad.nif"}], ["WEAP.Model"]),
+        ([{"FULL": "Test Weapon"}, "bad"], ["WEAP", "fields[1]"]),
+        ([{"FULL": "Test Weapon", "Data": {"DamageBase": 12}}], ["WEAP", "fields[0]", "FULL", "Data"]),
+    ],
+)
+def test_surface_rejects_bad_field_entries(fields, fragments) -> None:
     surface = get_schema_surface("fo4")
-    record = {
-        "form_id": "000800",
-        "eid": "B21_TestWeapon",
-        "fields": [{"FULL": "Test Weapon"}, {"Model": "bad.nif"}],
-    }
-    try:
+    record = {"form_id": "000800", "eid": "B21_TestWeapon", "fields": fields}
+    with pytest.raises(SchemaRecordError) as exc:
         surface.normalize_record(record, "WEAP")
-    except SchemaRecordError as exc:
-        assert "WEAP.Model" in str(exc)
-    else:
-        raise AssertionError("Expected SchemaRecordError")
-
-
-def test_surface_reports_non_dict_field_entry() -> None:
-    surface = get_schema_surface("fo4")
-    record = {
-        "form_id": "000800",
-        "eid": "B21_TestWeapon",
-        "fields": [{"FULL": "Test Weapon"}, "bad"],
-    }
-    try:
-        surface.normalize_record(record, "WEAP")
-    except SchemaRecordError as exc:
-        assert "WEAP" in str(exc)
-        assert "fields[1]" in str(exc)
-    else:
-        raise AssertionError("Expected SchemaRecordError")
-
-
-def test_surface_reports_multi_key_field_entry() -> None:
-    surface = get_schema_surface("fo4")
-    record = {
-        "form_id": "000800",
-        "eid": "B21_TestWeapon",
-        "fields": [{"FULL": "Test Weapon", "Data": {"DamageBase": 12}}],
-    }
-    try:
-        surface.normalize_record(record, "WEAP")
-    except SchemaRecordError as exc:
-        assert "WEAP" in str(exc)
-        assert "fields[0]" in str(exc)
-        assert "FULL" in str(exc)
-        assert "Data" in str(exc)
-    else:
-        raise AssertionError("Expected SchemaRecordError")
+    for fragment in fragments:
+        assert fragment in str(exc.value)
 
 
 def test_surface_normalizes_flat_record_fields() -> None:

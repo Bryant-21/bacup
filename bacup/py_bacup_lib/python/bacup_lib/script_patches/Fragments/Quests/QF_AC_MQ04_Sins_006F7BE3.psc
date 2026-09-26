@@ -213,11 +213,20 @@ EndFunction
 Function Fragment_Stage_0106_Item_00()
     SetTravelActorsInAtlanticCity(True)
     EnableAlias(Gene)
+    ; Arriving in the Flooded City Center is the only remaining signal for 130, which
+    ; opens the chem lab entrance and points the player at Gene.
+    If !IsStageDone(130)
+        SetStage(130)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0107_Item_00()
     SetFinaleActorPresence()
     PrepareFinaleActors()
+    ; The finale Rose Room trigger requires 400; the finale instance load is the arrival.
+    If !IsStageDone(400)
+        SetStage(400)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0110_Item_00()
@@ -433,6 +442,9 @@ Function Fragment_Stage_0195_Item_00()
     If controller != None
         controller.ReleaseJerseyDevil()
     EndIf
+    If !IsStageDone(190)
+        SetStage(190)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
@@ -443,6 +455,9 @@ Function Fragment_Stage_0200_Item_00()
     AC_MQ04_Sins_QuestScript controller = QuestController()
     If controller != None
         controller.ReleaseJerseyDevil()
+    EndIf
+    If !IsStageDone(190)
+        SetStage(190)
     EndIf
 EndFunction
 
@@ -570,6 +585,9 @@ EndFunction
 Function Fragment_Stage_0367_Item_00()
     MoveActorToMarker(AbbieCity, Alias_AbbieGeneMarker)
     EnableAlias(AntonioCity)
+    If IsStageDone(300) && !IsStageDone(380)
+        SetStage(380)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0369_Item_00()

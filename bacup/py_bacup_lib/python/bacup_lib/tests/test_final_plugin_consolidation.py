@@ -159,6 +159,7 @@ def test_final_plugin_batch_uses_one_session_and_preserves_operation_flags(
     assert params["manifest_entries"] == 12
     assert params["repair_term_markers"] is expected_term
     assert params["rebuild_cell_offsets"] is offsets
+    assert params["fail_on_duplicate_form_ids"] is False
     assert params["source_plugin_path"] == (str(source) if expected_term else None)
     assert len([call for call in calls if call[0] == "save"]) == 1
     assert output.read_bytes() == b"final plugin"

@@ -238,7 +238,7 @@ mod tests {
     ) -> (MgefNormalizeReport, Vec<u8>) {
         let source = hex::decode(hex_enam).unwrap();
         assert_eq!(source.len(), STARFIELD_EXPL_ENAM_LEN);
-        let mut record = record(interner, local, source);
+        let mut record = self::record(interner, local, source);
         let report = normalize(&mut record, mapper);
         (report, encoded_data(&record))
     }
@@ -258,9 +258,9 @@ mod tests {
     /// Starfield retuned the same EditorID to 3.5, 8 and 50 m (245, 560 and 3500
     /// units); `REDeathExplosion` went from outer 64 to 2 m (140 units).
     #[test]
-    fn hornet_nest_lands_every_field_in_the_fo4_layout() {
+    fn hornet_nest_lands_every_field_and_reference_in_the_fo4_layout() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
 
         let (report, data) = convert(&interner, &mut mapper, 0x02957A, HORNET_NEST);
 
@@ -297,12 +297,9 @@ mod tests {
                 source_raw: 0x0002_9598
             }
         );
-    }
 
-    #[test]
-    fn hornet_nest_references_resolve_through_the_mapper() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         for (source_local, target_local) in [
             (0x1B_1865, 0x0F_4B7A), // light
             (0x15_CCFD, 0x04_BB6A), // impact data set
@@ -327,10 +324,39 @@ mod tests {
         assert_eq!(u32_at(&data, 20), 0x0102_9598, "converted projectile");
     }
 
+    /// Thirteen `Starfield.esm` explosions still share an EditorID with
+    /// `Fallout4.esm`, and every sound level lines up by name: Starfield Normal (3)
+    /// is FO4 1 on eight of them, Loud (4) is 0 on three, Very Loud (5) is 3 on two
+    /// and Silent (1) is 2 on `REDeathExplosion`.
     #[test]
-    fn terrormorph_splash_keeps_its_placed_hazard_fade_and_silent_level() {
+    fn starfield_only_explosion_semantics_translate_or_drop_by_meaning() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        for (source_level, target_level) in [(0, 2), (1, 2), (2, 4), (3, 1), (4, 0), (5, 3), (9, 1)]
+        {
+            let mut mapper = self::mapper(&interner);
+            let mut source = hex::decode(HORNET_NEST).unwrap();
+            set_u32(&mut source, 128, source_level);
+            let mut record = self::record(&interner, 0x02957A, source);
+            normalize(&mut record, &mut mapper);
+            assert_eq!(
+                u32_at(&encoded_data(&record), 52),
+                target_level,
+                "Starfield sound level {source_level}"
+            );
+        }
+
+        let mut mapper = self::mapper(&interner);
+        let mut source = hex::decode(HORNET_NEST).unwrap();
+        set_u32(&mut source, 124, u32::MAX);
+        set_u32(&mut source, 136, 5);
+        let mut record = self::record(&interner, 0x02957A, source);
+        normalize(&mut record, &mut mapper);
+        let data = encoded_data(&record);
+        assert_eq!(u32_at(&data, 48), 0x7FF, "only the eleven shared flags");
+        assert_eq!(u32_at(&data, 60), 0, "stagger past Extra Large");
+
+        let interner = StringInterner::new();
+        let mut mapper = self::mapper(&interner);
         mapper.add_mapping(
             form_key(&interner, "Starfield.esm", 0x000B7A),
             form_key(&interner, "Starfield.esm", 0x000B7A),
@@ -350,12 +376,9 @@ mod tests {
         );
         assert_eq!(u32_at(&data, 52), 2, "Starfield Silent is FO4 Silent (2)");
         assert_eq!(f32_at(&data, 56), 10.0, "placed object autofade delay");
-    }
 
-    #[test]
-    fn supernova_condition_form_and_duration_have_no_fo4_slot() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
 
         let (report, data) = convert(&interner, &mut mapper, 0x09114E, STARBORN_SUPERNOVA);
 
@@ -380,56 +403,6 @@ mod tests {
         assert_eq!(f32_at(&data, 72), 1.0, "spawn z");
         assert_eq!(f32_at(&data, 76), 180.0, "spread degrees");
         assert_eq!(u32_at(&data, 80), 0, "spawn count, not the 10 s duration");
-    }
-
-    /// Thirteen `Starfield.esm` explosions still share an EditorID with
-    /// `Fallout4.esm`, and every sound level lines up by name: Starfield Normal (3)
-    /// is FO4 1 on eight of them, Loud (4) is 0 on three, Very Loud (5) is 3 on two
-    /// and Silent (1) is 2 on `REDeathExplosion`.
-    #[test]
-    fn flags_stagger_and_sound_level_translate_into_fo4_meanings() {
-        let interner = StringInterner::new();
-        for (source_level, target_level) in [(0, 2), (1, 2), (2, 4), (3, 1), (4, 0), (5, 3), (9, 1)]
-        {
-            let mut mapper = mapper(&interner);
-            let mut source = hex::decode(HORNET_NEST).unwrap();
-            set_u32(&mut source, 128, source_level);
-            let mut record = record(&interner, 0x02957A, source);
-            normalize(&mut record, &mut mapper);
-            assert_eq!(
-                u32_at(&encoded_data(&record), 52),
-                target_level,
-                "Starfield sound level {source_level}"
-            );
-        }
-
-        let mut mapper = mapper(&interner);
-        let mut source = hex::decode(HORNET_NEST).unwrap();
-        set_u32(&mut source, 124, u32::MAX);
-        set_u32(&mut source, 136, 5);
-        let mut record = record(&interner, 0x02957A, source);
-        normalize(&mut record, &mut mapper);
-        let data = encoded_data(&record);
-        assert_eq!(u32_at(&data, 48), 0x7FF, "only the eleven shared flags");
-        assert_eq!(u32_at(&data, 60), 0, "stagger past Extra Large");
-    }
-
-    #[test]
-    fn malformed_enam_rows_are_left_alone() {
-        let interner = StringInterner::new();
-        for len in [FO4_EXPL_DATA_LEN, 160, 0] {
-            let mut mapper = mapper(&interner);
-            let source = vec![7; len];
-            let mut record = record(&interner, 0x02957A, source.clone());
-            let report = normalize(&mut record, &mut mapper);
-            assert_eq!(report.converted_rows, 0);
-            assert_eq!(report.unsupported_rows, 1);
-            assert_eq!(record.fields[0].sig, SubrecordSig(*b"ENAM"));
-            assert_eq!(
-                record.fields[0].value,
-                FieldValue::Bytes(SmallVec::from_vec(source))
-            );
-        }
     }
 
     fn parsed_subrecord(signature: &'static str, data: Vec<u8>) -> ParsedSubrecord {
@@ -504,7 +477,7 @@ mod tests {
             FieldValue::Bytes(SmallVec::from_vec(enam))
         );
 
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         normalize(&mut translated, &mut mapper);
         let normalizer = TargetRecordNormalizer {
             target_schema: &target_schema,
@@ -532,5 +505,20 @@ mod tests {
         assert_eq!(u32_at(&data, 48), 0x53);
         assert_eq!(u32_at(&data, 52), 0, "Loud");
         assert_eq!(f32_at(&data, 76), 180.0);
+
+        let interner = StringInterner::new();
+        for len in [FO4_EXPL_DATA_LEN, 160, 0] {
+            let mut mapper = self::mapper(&interner);
+            let source = vec![7; len];
+            let mut record = self::record(&interner, 0x02957A, source.clone());
+            let report = normalize(&mut record, &mut mapper);
+            assert_eq!(report.converted_rows, 0);
+            assert_eq!(report.unsupported_rows, 1);
+            assert_eq!(record.fields[0].sig, SubrecordSig(*b"ENAM"));
+            assert_eq!(
+                record.fields[0].value,
+                FieldValue::Bytes(SmallVec::from_vec(source))
+            );
+        }
     }
 }

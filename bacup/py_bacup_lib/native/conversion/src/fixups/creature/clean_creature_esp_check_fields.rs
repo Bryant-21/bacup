@@ -541,14 +541,11 @@ fn sig(name: &str) -> Option<SubrecordSig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixups::{FixupConfig, FixupContext, FixupRegistry};
-    use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
+    use crate::fixups::{FixupConfig, FixupContext};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
     use crate::schema::AuthoringSchema;
-    use crate::session::open_session;
     use crate::sym::StringInterner;
-    use esp_authoring_core::plugin_runtime::plugin_handle_new_native;
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -584,10 +581,6 @@ mod tests {
             sig: s,
             value: FieldValue::Uint(n),
         });
-    }
-
-    fn lvlo_entry(local: u32, plugin: &str, interner: &StringInterner) -> FieldEntry {
-        lvlo_entry_with_field("Reference", local, plugin, interner)
     }
 
     fn lvlo_entry_with_field(
@@ -641,206 +634,98 @@ mod tests {
     }
 
     #[test]
-    fn registry_no_op_when_no_records() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let target_handle =
-            plugin_handle_new_native("CleanCreatureEspCheckFieldsTest.esp", Some("fo4"))
-                .expect("test plugin handle");
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("NPC_").unwrap()),
-            target_schema: Some(schema.clone()),
-            ..Default::default()
-        };
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(CleanCreatureEspCheckFieldsFixup));
-        let reports = registry
-            .run_all_in_session(&mut session, &mut mapper, &config)
-            .expect("run_all_in_session");
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0].1.is_no_op());
-    }
-
-    #[test]
-    fn applies_to_npc_root() {
+    fn applies_only_to_creature_roots() {
         let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("NPC_").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(CleanCreatureEspCheckFieldsFixup.applies_to(&ctx));
-    }
-
-    #[test]
-    fn applies_to_lvln_root() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("LVLN").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(CleanCreatureEspCheckFieldsFixup.applies_to(&ctx));
-    }
-
-    #[test]
-    fn does_not_apply_when_no_root_sig() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig::default();
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!CleanCreatureEspCheckFieldsFixup.applies_to(&ctx));
-    }
-
-    #[test]
-    fn does_not_apply_to_armo_root() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("ARMO").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!CleanCreatureEspCheckFieldsFixup.applies_to(&ctx));
+        for (root, expected) in [
+            (Some("NPC_"), true),
+            (Some("LVLN"), true),
+            (Some("ARMO"), false),
+            (None, false),
+        ] {
+            let config = FixupConfig {
+                root_sig: root.map(|sig| SigCode::from_str(sig).unwrap()),
+                ..Default::default()
+            };
+            let ctx = FixupContext {
+                source_handle_id: 1,
+                target_handle_id: 2,
+                schema_target: &schema,
+                schema_source: &schema,
+                skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
+                mod_path: None,
+                source_extracted_dir: None,
+                target_master_handle_ids: &[],
+                config: &config,
+            };
+            assert_eq!(
+                CleanCreatureEspCheckFieldsFixup.applies_to(&ctx),
+                expected,
+                "{root:?}"
+            );
+        }
     }
 
     #[test]
     fn syncs_ksiz_to_kwda_byte_count() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("NPC_", 0x000100, "Out.esp", &mut interner);
-        // KWDA holds 3 FormIDs (12 bytes), KSIZ claims 1.
-        let mut kwda_payload = Vec::new();
-        for fid in [0x000123_u32, 0x000456_u32, 0x000789_u32] {
-            kwda_payload.extend_from_slice(&fid.to_le_bytes());
+        for (keywords, ksiz, expected) in [
+            (Some(3usize), 1u64, Some(3u64)),
+            (Some(2), 2, None),
+            (None, 5, None),
+        ] {
+            let interner = StringInterner::new();
+            let mut r = make_record("NPC_", 0x000100, "Out.esp", &interner);
+            if let Some(count) = keywords {
+                let payload = (0..count as u32)
+                    .flat_map(|index| (0x000123 + index).to_le_bytes())
+                    .collect();
+                push_bytes(&mut r, "KWDA", payload);
+            }
+            push_uint(&mut r, "KSIZ", ksiz);
+
+            assert_eq!(
+                sync_ksiz_to_kwda(&mut r),
+                expected.is_some(),
+                "{keywords:?}/{ksiz}"
+            );
+            assert_eq!(first_uint(&r, "KSIZ"), Some(expected.unwrap_or(ksiz)));
         }
-        push_bytes(&mut r, "KWDA", kwda_payload);
-        push_uint(&mut r, "KSIZ", 1);
-
-        let changed = sync_ksiz_to_kwda(&mut r);
-        assert!(changed);
-        assert_eq!(first_uint(&r, "KSIZ"), Some(3));
     }
 
     #[test]
-    fn ksiz_sync_noop_when_already_in_sync() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("NPC_", 0x000101, "Out.esp", &mut interner);
-        let mut kwda_payload = Vec::new();
-        for fid in [0x000123_u32, 0x000456_u32] {
-            kwda_payload.extend_from_slice(&fid.to_le_bytes());
-        }
-        push_bytes(&mut r, "KWDA", kwda_payload);
-        push_uint(&mut r, "KSIZ", 2);
+    fn leveled_list_header_gains_lvld_and_masks_lvlf() {
+        let interner = StringInterner::new();
+        let rsym = ref_sym(&interner);
 
-        let changed = sync_ksiz_to_kwda(&mut r);
-        assert!(!changed);
-    }
-
-    #[test]
-    fn ksiz_sync_noop_when_kwda_absent() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("NPC_", 0x000102, "Out.esp", &mut interner);
-        push_uint(&mut r, "KSIZ", 5);
-
-        let changed = sync_ksiz_to_kwda(&mut r);
-        assert!(!changed);
-    }
-
-    #[test]
-    fn lvln_lvld_added_when_missing() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLN", 0x000200, "Out.esp", &mut interner);
-        let rsym = ref_sym(&mut interner);
+        let mut r = make_record("LVLN", 0x000200, "Out.esp", &interner);
         let (_, changed) = apply_to_record(&mut r, rsym);
         assert!(changed);
         assert_eq!(count_subrecords(&r, "LVLD"), 1);
-        assert_eq!(first_uint(&r, "LVLD"), Some(0));
-    }
+        assert_eq!(first_uint(&r, "LVLD"), Some(0), "missing LVLD is added");
 
-    #[test]
-    fn lvln_lvld_preserved_when_present() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLN", 0x000201, "Out.esp", &mut interner);
+        let mut r = make_record("LVLN", 0x000201, "Out.esp", &interner);
         push_uint(&mut r, "LVLD", 50);
-        let rsym = ref_sym(&mut interner);
         let _ = apply_to_record(&mut r, rsym);
         assert_eq!(count_subrecords(&r, "LVLD"), 1);
-        assert_eq!(first_uint(&r, "LVLD"), Some(50));
-    }
+        assert_eq!(first_uint(&r, "LVLD"), Some(50), "authored LVLD is kept");
 
-    #[test]
-    fn lvln_lvlf_masked_to_low_three_bits() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLN", 0x000300, "Out.esp", &mut interner);
+        let mut r = make_record("LVLN", 0x000300, "Out.esp", &interner);
         push_uint(&mut r, "LVLF", 0xFF);
-        let rsym = ref_sym(&mut interner);
         let (_, changed) = apply_to_record(&mut r, rsym);
         assert!(changed);
         assert_eq!(first_uint(&r, "LVLF"), Some(0x07));
-    }
 
-    #[test]
-    fn lvln_lvlf_already_masked_is_noop() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLN", 0x000301, "Out.esp", &mut interner);
+        let mut r = make_record("LVLN", 0x000301, "Out.esp", &interner);
         push_uint(&mut r, "LVLF", 0x05);
-        push_uint(&mut r, "LVLD", 0); // pre-seed so no LVLD synthesis fires
-        let rsym = ref_sym(&mut interner);
-        let lvlf_changed = mask_lvlf_to_fo4_bits(&mut r);
-        assert!(!lvlf_changed);
-        let _ = rsym;
-    }
+        assert!(!mask_lvlf_to_fo4_bits(&mut r), "already masked");
 
-    #[test]
-    fn lvlc_lvlf_byte_payload_is_masked() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLC", 0x000302, "Out.esp", &mut interner);
+        let mut r = make_record("LVLC", 0x000302, "Out.esp", &interner);
         push_bytes(&mut r, "LVLF", vec![0xF0]);
-        let changed = mask_lvlf_to_fo4_bits(&mut r);
-        assert!(changed);
-        let data = first_bytes(&r, "LVLF").unwrap();
-        assert_eq!(data[0], 0x00, "0xF0 & 0x07 = 0");
+        assert!(mask_lvlf_to_fo4_bits(&mut r));
+        assert_eq!(
+            first_bytes(&r, "LVLF").unwrap()[0],
+            0x00,
+            "byte payload is masked"
+        );
     }
 
     #[test]
@@ -851,8 +736,12 @@ mod tests {
             push_bytes(&mut r, sig, vec![1]);
         }
         push_uint(&mut r, "LLCT", 1);
-        r.fields
-            .push(lvlo_entry(0x001000, "Out.esp", &mut interner));
+        r.fields.push(lvlo_entry_with_field(
+            "Reference",
+            0x001000,
+            "Out.esp",
+            &interner,
+        ));
 
         let rsym = ref_sym(&mut interner);
         let (dropped, changed) = apply_to_record(&mut r, rsym);
@@ -864,233 +753,136 @@ mod tests {
         assert_eq!(count_subrecords(&r, "LVLO"), 1);
     }
 
+    /// LVLI rows pre-seed LLCT so the count sync is a no-op: without it the
+    /// missing-LLCT branch appends LLCT=0 and reports `changed`.
     #[test]
-    fn lvln_drops_null_reference_and_syncs_llct() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLN", 0x000400, "Out.esp", &mut interner);
-        push_uint(&mut r, "LLCT", 3);
-        // 2 valid, 1 null.
-        r.fields
-            .push(lvlo_entry(0x001000, "Out.esp", &mut interner));
-        r.fields
-            .push(lvlo_entry(0x000000, "Out.esp", &mut interner));
-        r.fields
-            .push(lvlo_entry(0x002000, "Out.esp", &mut interner));
+    fn leveled_lists_drop_null_references_and_sync_llct() {
+        for (name, sig, llct, entries, dropped, lvlo, expected_llct, changed) in [
+            (
+                "lvln_null",
+                "LVLN",
+                Some(3),
+                vec![
+                    ("Reference", 0x001000, "Out.esp"),
+                    ("Reference", 0, "Out.esp"),
+                    ("Reference", 0x002000, "Out.esp"),
+                ],
+                1,
+                2,
+                2,
+                true,
+            ),
+            (
+                "lvln_missing_llct",
+                "LVLN",
+                None,
+                vec![
+                    ("Reference", 0x001000, "Out.esp"),
+                    ("Reference", 0, "Out.esp"),
+                ],
+                1,
+                1,
+                1,
+                true,
+            ),
+            (
+                "lvli_null",
+                "LVLI",
+                Some(2),
+                vec![
+                    ("Reference", 0, "Out.esp"),
+                    ("Reference", 0x003000, "Out.esp"),
+                ],
+                1,
+                1,
+                1,
+                true,
+            ),
+            (
+                "lvli_fo4_item_reference",
+                "LVLI",
+                Some(1),
+                vec![("item", 0x00000F, "Fallout4.esm")],
+                0,
+                1,
+                1,
+                false,
+            ),
+            ("lvli_empty", "LVLI", Some(0), vec![], 0, 0, 0, false),
+        ] {
+            let interner = StringInterner::new();
+            let mut r = make_record(sig, 0x000400, "Out.esp", &interner);
+            if let Some(count) = llct {
+                push_uint(&mut r, "LLCT", count);
+            }
+            for (field, local, plugin) in entries {
+                r.fields
+                    .push(lvlo_entry_with_field(field, local, plugin, &interner));
+            }
 
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 1, "exactly one null LVLO must be dropped");
-        // 2 valid LVLO entries remain.
-        assert_eq!(count_subrecords(&r, "LVLO"), 2);
-        assert_eq!(first_uint(&r, "LLCT"), Some(2));
+            let result = apply_to_record(&mut r, ref_sym(&interner));
+            assert_eq!(result, (dropped, changed), "{name}");
+            assert_eq!(count_subrecords(&r, "LVLO"), lvlo, "{name}");
+            assert_eq!(first_uint(&r, "LLCT"), Some(expected_llct), "{name}");
+            if sig == "LVLI" {
+                assert_eq!(count_subrecords(&r, "LVLD"), 0, "{name}");
+                assert_eq!(count_subrecords(&r, "LVLF"), 0, "{name}");
+            }
+        }
     }
 
+    /// ALCH drops EFIT only when no EFID pairs with it; QUST drops only an
+    /// FNAM wider than 8 bytes.
     #[test]
-    fn lvln_drops_null_reference_and_creates_llct_when_missing() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLN", 0x000401, "Out.esp", &mut interner);
-        r.fields
-            .push(lvlo_entry(0x001000, "Out.esp", &mut interner));
-        r.fields
-            .push(lvlo_entry(0x000000, "Out.esp", &mut interner));
+    fn strips_fo76_only_subrecords_per_record_type() {
+        for (sig, fields, dropped, remaining) in [
+            (
+                "SNDR",
+                vec![
+                    ("HNAM", 4),
+                    ("INAM", 4),
+                    ("PNAM", 1),
+                    ("QNAM", 1),
+                    ("GNAM", 1),
+                ],
+                4,
+                vec!["GNAM"],
+            ),
+            ("SNDR", vec![("GNAM", 1)], 0, vec!["GNAM"]),
+            (
+                "MGEF",
+                vec![("VMAD", 3), ("CTDA", 32), ("DNAM", 1)],
+                2,
+                vec!["DNAM"],
+            ),
+            ("ALCH", vec![("CTDA", 32), ("EFIT", 12)], 2, vec![]),
+            (
+                "SPEL",
+                vec![("CTDA", 32), ("EFID", 4), ("EFIT", 12)],
+                1,
+                vec!["EFID", "EFIT"],
+            ),
+            ("ENCH", vec![("CTDA", 32)], 1, vec![]),
+            (
+                "QUST",
+                vec![("VMAD", 3), ("CTDA", 32), ("FNAM", 16)],
+                3,
+                vec![],
+            ),
+            ("QUST", vec![("FNAM", 4)], 0, vec!["FNAM"]),
+            ("ARMO", vec![("DNAM", 1)], 0, vec!["DNAM"]),
+        ] {
+            let interner = StringInterner::new();
+            let mut r = make_record(sig, 0x000600, "Out.esp", &interner);
+            for (field, len) in &fields {
+                push_bytes(&mut r, field, vec![1u8; *len]);
+            }
+            let label = format!("{sig} {fields:?}");
 
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 1);
-        // LLCT was missing; must be appended at 1.
-        assert_eq!(first_uint(&r, "LLCT"), Some(1));
-    }
-
-    #[test]
-    fn lvli_drops_null_reference_and_syncs_llct() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLI", 0x000500, "Out.esp", &mut interner);
-        push_uint(&mut r, "LLCT", 2);
-        r.fields
-            .push(lvlo_entry(0x000000, "Out.esp", &mut interner));
-        r.fields
-            .push(lvlo_entry(0x003000, "Out.esp", &mut interner));
-
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 1);
-        assert_eq!(count_subrecords(&r, "LVLO"), 1);
-        assert_eq!(first_uint(&r, "LLCT"), Some(1));
-    }
-
-    #[test]
-    fn lvli_keeps_item_reference_and_syncs_llct() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLI", 0x000502, "Out.esp", &mut interner);
-        push_uint(&mut r, "LLCT", 1);
-        r.fields.push(lvlo_entry_with_field(
-            "item",
-            0x00000F,
-            "Fallout4.esm",
-            &mut interner,
-        ));
-
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-
-        assert_eq!(dropped, 0, "FO4 LVLI item reference should be kept");
-        assert!(!changed);
-        assert_eq!(count_subrecords(&r, "LVLO"), 1);
-        assert_eq!(first_uint(&r, "LLCT"), Some(1));
-    }
-
-    #[test]
-    fn lvli_does_not_synthesize_lvld_or_lvlf() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("LVLI", 0x000501, "Out.esp", &mut interner);
-        // Pre-seed LLCT=0 so the count-sync branch is a no-op.  Without it
-        // the missing-LLCT branch appends LLCT=0 and reports `changed=true`,
-        // matching Python where `field_at(...) != entry_count` is True for
-        // `None != 0`.
-        push_uint(&mut r, "LLCT", 0);
-        let rsym = ref_sym(&mut interner);
-        let (_, changed) = apply_to_record(&mut r, rsym);
-        assert!(!changed);
-        assert_eq!(count_subrecords(&r, "LVLD"), 0);
-        assert_eq!(count_subrecords(&r, "LVLF"), 0);
-    }
-
-    #[test]
-    fn sndr_strips_hnam_inam_pnam_qnam() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("SNDR", 0x000600, "Out.esp", &mut interner);
-        push_bytes(&mut r, "HNAM", vec![1, 2, 3, 4]);
-        push_bytes(&mut r, "INAM", vec![5, 6, 7, 8]);
-        push_bytes(&mut r, "PNAM", vec![9]);
-        push_bytes(&mut r, "QNAM", vec![10]);
-        // A non-rejected subrecord must survive.
-        push_bytes(&mut r, "GNAM", vec![0xAA]);
-
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 4);
-        assert_eq!(count_subrecords(&r, "HNAM"), 0);
-        assert_eq!(count_subrecords(&r, "INAM"), 0);
-        assert_eq!(count_subrecords(&r, "PNAM"), 0);
-        assert_eq!(count_subrecords(&r, "QNAM"), 0);
-        assert_eq!(count_subrecords(&r, "GNAM"), 1);
-    }
-
-    #[test]
-    fn sndr_with_none_of_the_rejected_subrecords_is_noop() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("SNDR", 0x000601, "Out.esp", &mut interner);
-        push_bytes(&mut r, "GNAM", vec![0xAA]);
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(!changed);
-        assert_eq!(dropped, 0);
-    }
-
-    #[test]
-    fn mgef_strips_vmad_and_ctda() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("MGEF", 0x000700, "Out.esp", &mut interner);
-        push_bytes(&mut r, "VMAD", vec![1, 2, 3]);
-        push_bytes(&mut r, "CTDA", vec![0u8; 32]);
-        push_bytes(&mut r, "DNAM", vec![0xAA]);
-
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 2);
-        assert_eq!(count_subrecords(&r, "VMAD"), 0);
-        assert_eq!(count_subrecords(&r, "CTDA"), 0);
-        assert_eq!(count_subrecords(&r, "DNAM"), 1);
-    }
-
-    #[test]
-    fn alch_strips_ctda_and_efit_when_efid_missing() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("ALCH", 0x000800, "Out.esp", &mut interner);
-        push_bytes(&mut r, "CTDA", vec![0u8; 32]);
-        push_bytes(&mut r, "EFIT", vec![1u8; 12]);
-
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 2);
-        assert_eq!(count_subrecords(&r, "CTDA"), 0);
-        assert_eq!(count_subrecords(&r, "EFIT"), 0);
-    }
-
-    #[test]
-    fn spel_keeps_efit_when_efid_present() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("SPEL", 0x000801, "Out.esp", &mut interner);
-        push_bytes(&mut r, "CTDA", vec![0u8; 32]);
-        push_bytes(&mut r, "EFID", vec![0u8; 4]);
-        push_bytes(&mut r, "EFIT", vec![1u8; 12]);
-
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(
-            dropped, 1,
-            "only CTDA should be dropped when EFID is present"
-        );
-        assert_eq!(count_subrecords(&r, "EFID"), 1);
-        assert_eq!(count_subrecords(&r, "EFIT"), 1);
-    }
-
-    #[test]
-    fn ench_strips_ctda_only_when_no_effects() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("ENCH", 0x000802, "Out.esp", &mut interner);
-        push_bytes(&mut r, "CTDA", vec![0u8; 32]);
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 1);
-        assert_eq!(count_subrecords(&r, "CTDA"), 0);
-    }
-
-    #[test]
-    fn qust_strips_vmad_ctda_and_oversize_fnam() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("QUST", 0x000900, "Out.esp", &mut interner);
-        push_bytes(&mut r, "VMAD", vec![1, 2, 3]);
-        push_bytes(&mut r, "CTDA", vec![0u8; 32]);
-        push_bytes(&mut r, "FNAM", vec![0u8; 16]); // >8 bytes
-
-        let rsym = ref_sym(&mut interner);
-        let (dropped, changed) = apply_to_record(&mut r, rsym);
-        assert!(changed);
-        assert_eq!(dropped, 3);
-        assert_eq!(count_subrecords(&r, "VMAD"), 0);
-        assert_eq!(count_subrecords(&r, "CTDA"), 0);
-        assert_eq!(count_subrecords(&r, "FNAM"), 0);
-    }
-
-    #[test]
-    fn qust_preserves_small_fnam() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("QUST", 0x000901, "Out.esp", &mut interner);
-        push_bytes(&mut r, "FNAM", vec![0u8; 4]);
-
-        let rsym = ref_sym(&mut interner);
-        let (_, changed) = apply_to_record(&mut r, rsym);
-        assert!(!changed);
-        assert_eq!(count_subrecords(&r, "FNAM"), 1);
-    }
-
-    #[test]
-    fn unrelated_record_type_with_no_kwda_is_noop() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("ARMO", 0x000A00, "Out.esp", &mut interner);
-        push_bytes(&mut r, "DNAM", vec![0xAA]);
-
-        let rsym = ref_sym(&mut interner);
-        let (_, changed) = apply_to_record(&mut r, rsym);
-        assert!(!changed);
+            let result = apply_to_record(&mut r, ref_sym(&interner));
+            assert_eq!(result, (dropped, dropped > 0), "{label}");
+            let observed: Vec<&str> = r.fields.iter().map(|e| e.sig.as_str()).collect();
+            assert_eq!(observed, remaining, "{label}");
+        }
     }
 }

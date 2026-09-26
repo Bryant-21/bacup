@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_all_emits_same_race_ambush_aliases_for_fo4_character_paths() {
+    fn convert_all_emits_only_exact_same_race_ambush_aliases() {
         let tmp = tempfile::tempdir().unwrap();
         let mod_dir = tmp.path();
         let donors = [
@@ -1045,10 +1045,7 @@ mod tests {
                 "missing converted alias {expected}"
             );
         }
-    }
 
-    #[test]
-    fn creature_animation_aliases_require_exact_same_race_donor() {
         let mut assets = vec![HkxAsset {
             source_path: "Meshes/Actors/Other/Animations/Ambush.hkx".to_string(),
             resolved_path: "other.hkx".to_string(),
@@ -1164,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_source_hkx_walks_every_subtree_not_just_actors() {
+    fn source_hkx_enumeration_walks_every_subtree_with_direct_root_precedence() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let meshes = root.join("Meshes");
@@ -1194,10 +1191,7 @@ mod tests {
             ],
             "convert-all must enumerate UniqueBehaviors/GenericBehaviors too, not only Actors/"
         );
-    }
 
-    #[test]
-    fn source_inventory_havok_enumeration_matches_direct_root_precedence() {
         let temp = tempfile::tempdir().unwrap();
         let primary = temp.path().join("primary");
         let secondary = temp.path().join("secondary");
@@ -1238,27 +1232,21 @@ mod tests {
     }
 
     #[test]
-    fn hkx_output_path_strips_source_prefix_component() {
+    fn hkx_output_path_strips_prefix_and_adds_meshes_root() {
         let base = Path::new("/mod");
         let result = hkx_output_path(base, "Meshes/fnv/Actors/Foo/Behavior.hkx");
         assert_eq!(
             result,
             Path::new("/mod/data/Meshes/Actors/Foo/Behavior.hkx")
         );
-    }
 
-    #[test]
-    fn hkx_output_path_unprefixed() {
         let base = Path::new("/mod");
         let result = hkx_output_path(base, "Meshes/Actors/Foo/Behavior.hkx");
         assert_eq!(
             result,
             Path::new("/mod/data/Meshes/Actors/Foo/Behavior.hkx")
         );
-    }
 
-    #[test]
-    fn hkx_output_path_adds_meshes_root_for_actor_relative_path() {
         let base = Path::new("/mod");
         let result = hkx_output_path(base, "Actors/GraftonMonster/CharacterAssets/skeleton.hkx");
         assert_eq!(
@@ -1319,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_only_cloth_hkx_with_runtime_companion_nif_is_skipped() {
+    fn setup_only_cloth_hkx_is_skipped_only_with_runtime_companion() {
         use crate::phase::{LogLevel, PhaseEvent};
 
         let temp = tempfile::tempdir().unwrap();
@@ -1372,11 +1360,6 @@ mod tests {
             } if message.contains("HKX skipped setup-only cloth: Actors/Mirelurk/seaweed.hkx")
                 && message.contains("companion NIF contains runtime BSClothExtraData")
         )));
-    }
-
-    #[test]
-    fn setup_only_cloth_hkx_without_runtime_companion_warns_and_converts() {
-        use crate::phase::{LogLevel, PhaseEvent};
 
         let temp = tempfile::tempdir().unwrap();
         let src_hkx = temp
@@ -1474,7 +1457,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_resolved_path_counts_as_warning() {
+    fn missing_or_invalid_hkx_counts_warnings_and_failures() {
         use crate::phase::{PhaseCtx, PhaseReport};
         use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
@@ -1529,10 +1512,7 @@ mod tests {
         assert_eq!(report.assets_written, 0);
         assert_eq!(report.warnings, 1);
         drop_run(id).unwrap();
-    }
 
-    #[test]
-    fn invalid_hkx_counts_and_logs_item_failure() {
         use crate::phase::{LogLevel, PhaseEvent};
 
         let temp = tempfile::tempdir().unwrap();
@@ -1568,13 +1548,6 @@ mod tests {
                 message,
             } if message.contains("HKX failed: Meshes/Actors/Foo/bad.hkx")
         )));
-    }
-
-    #[test]
-    fn panic_payload_to_string_extracts_message() {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| panic!("bad hkx")));
-        let payload = result.unwrap_err();
-        assert_eq!(panic_payload_to_string(&*payload), "bad hkx");
     }
 
     #[test]

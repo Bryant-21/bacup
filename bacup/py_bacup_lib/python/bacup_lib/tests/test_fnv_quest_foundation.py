@@ -165,22 +165,17 @@ def test_dependency_closure_cap_is_explicit_and_json_is_deterministic():
     assert report.closure_truncated
     assert json.loads(report.to_json()) == report.to_dict()
 
-
-def test_inventory_requires_a_reader_and_positive_cap():
-    with pytest.raises(ValueError, match="at least one"):
-        audit_fnv_quest_readers([])
-    reader = FakeReader("FalloutNV.esm", (), {}, {}, frozenset(), {})
     with pytest.raises(ValueError, match="positive"):
         audit_fnv_quest_readers([reader], max_closure_records=0)
+    with pytest.raises(ValueError, match="at least one"):
+        audit_fnv_quest_readers([])
 
 
-def test_fnv_autostart_reads_legacy_qust_data_flags():
+def test_fnv_autostart_flags_and_master_owned_form_keys():
     assert _fnv_quest_start_game_enabled((("DATA", b"\x01\x64\x00\x00", None),))
     assert not _fnv_quest_start_game_enabled((("DATA", b"\x04\x64\x00\x00", None),))
     assert not _fnv_quest_start_game_enabled((("DNAM", b"\x01\x00", None),))
 
-
-def test_dialogue_topology_preserves_master_owned_form_keys_for_overrides():
     raw_form_id = 0x01001234
     assert _canonical_form_key(
         "DeadMoney.esm", raw_form_id, {raw_form_id: "FalloutNV.esm:001234"}
@@ -188,3 +183,5 @@ def test_dialogue_topology_preserves_master_owned_form_keys_for_overrides():
     assert _canonical_form_key("DeadMoney.esm", 0x02005678, {}) == (
         "DeadMoney.esm:005678"
     )
+
+

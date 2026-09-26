@@ -287,92 +287,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_parses_without_panic() {
-        let catalog = default_catalog();
-        assert!(
-            !catalog.archetypes.is_empty(),
-            "archetypes should not be empty"
-        );
-        assert!(!catalog.entries.is_empty(), "entries should not be empty");
-    }
-
-    #[test]
-    fn catalog_lookup_deathclaw_by_source_dir() {
-        let catalog = default_catalog();
-        let entry = catalog
-            .entry_for("Creatures/Deathclaw", None)
-            .expect("deathclaw entry");
-        assert_eq!(entry.archetype_key, "deathclaw");
-        assert_eq!(entry.target_name, "Deathclaw");
-    }
-
-    #[test]
-    fn catalog_lookup_normalizes_leading_meshes_prefix() {
-        let catalog = default_catalog();
-        let entry = catalog
-            .entry_for("Meshes/Creatures/Deathclaw", None)
-            .expect("deathclaw via Meshes/ prefix");
-        assert_eq!(entry.archetype_key, "deathclaw");
-    }
-
-    #[test]
-    fn catalog_lookup_normalizes_backslashes() {
-        let catalog = default_catalog();
-        let entry = catalog
-            .entry_for(r"Meshes\Creatures\Dog", None)
-            .expect("dog via backslash path");
-        assert_eq!(entry.archetype_key, "quadruped_mammal");
-    }
-
-    #[test]
-    fn catalog_lookup_case_insensitive() {
-        let catalog = default_catalog();
-        let entry = catalog
-            .entry_for("meshes/creatures/deathclaw", None)
-            .expect("case-insensitive lookup");
-        assert_eq!(entry.archetype_key, "deathclaw");
-    }
-
-    #[test]
-    fn catalog_lookup_unknown_returns_none() {
-        let catalog = default_catalog();
-        let entry = catalog.entry_for("Creatures/CompletelyUnknownThing", None);
-        assert!(entry.is_none(), "unknown dir should return None");
-    }
-
-    #[test]
-    fn catalog_archetype_for_deathclaw() {
-        let catalog = default_catalog();
-        let arch = catalog
-            .archetype_for("deathclaw")
-            .expect("deathclaw archetype");
-        assert_eq!(arch.behavior_template, "Deathclaw");
-        assert!(!arch.bone_map_key.is_empty());
-    }
-
-    #[test]
-    fn catalog_archetype_for_unknown_returns_none() {
-        let catalog = default_catalog();
-        assert!(catalog.archetype_for("nonexistent_key").is_none());
-    }
-
-    #[test]
-    fn catalog_all_archetypes_referenced_by_entries() {
-        let catalog = default_catalog();
-        for entry in &catalog.entries {
-            assert!(
-                catalog.archetypes.contains_key(&entry.archetype_key),
-                "entry {} references unknown archetype {}",
-                entry.source_dir,
-                entry.archetype_key
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_includes_expected_fnv_creatures() {
+    fn catalog_entry_lookup_normalizes_paths_and_maps_expected_creatures() {
         let catalog = default_catalog();
         let cases = [
+            ("Creatures/Deathclaw", "deathclaw", "Deathclaw"),
+            ("Meshes/Creatures/Deathclaw", "deathclaw", "Deathclaw"),
+            ("meshes/creatures/deathclaw", "deathclaw", "Deathclaw"),
+            (r"Meshes\Creatures\Dog", "quadruped_mammal", "Dog"),
             ("Creatures/Dog", "quadruped_mammal", "Dog"),
             ("Creatures/Mirelurk", "mirelurk", "Mirelurk"),
             ("Creatures/RadScorpion", "scorpion_8leg", "RadScorpion"),
@@ -388,5 +309,30 @@ mod tests {
             assert_eq!(&entry.archetype_key, expected_archetype, "{source_dir}");
             assert_eq!(&entry.target_name, expected_target, "{source_dir}");
         }
+        assert!(
+            catalog
+                .entry_for("Creatures/CompletelyUnknownThing", None)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn catalog_archetypes_resolve_for_every_entry() {
+        let catalog = default_catalog();
+        assert!(!catalog.entries.is_empty(), "entries should not be empty");
+        for entry in &catalog.entries {
+            assert!(
+                catalog.archetypes.contains_key(&entry.archetype_key),
+                "entry {} references unknown archetype {}",
+                entry.source_dir,
+                entry.archetype_key
+            );
+        }
+        let arch = catalog
+            .archetype_for("deathclaw")
+            .expect("deathclaw archetype");
+        assert_eq!(arch.behavior_template, "Deathclaw");
+        assert!(!arch.bone_map_key.is_empty());
+        assert!(catalog.archetype_for("nonexistent_key").is_none());
     }
 }

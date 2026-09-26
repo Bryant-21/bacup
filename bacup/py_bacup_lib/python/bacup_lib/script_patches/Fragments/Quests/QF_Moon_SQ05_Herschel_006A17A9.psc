@@ -1,9 +1,35 @@
 Function Fragment_Stage_0100_Item_00()
+	If !IsCostaBusinessStartAllowed()
+		Stop()
+		Return
+	EndIf
 	If Alias_Player != None
 		Alias_Player.ForceRefIfEmpty(Game.GetPlayer())
 	EndIf
 	RegisterForQuestActors()
+	SetPageCount()
 	SetObjectiveDisplayed(100)
+EndFunction
+
+; Moon_SQ06_Vera_Branch (6A9F35) and all six of its quest nodes carry no conditions, and
+; the converted QUST lost the FO76 event-condition block, so any script story event that
+; reaches the branch starts this quest out of order. The Blue Ridge master quest owns the
+; real order/one-per-day rule; refuse the start when it says this is not our turn.
+; The namespaced script type must not be stored in a local -- the emitted local is
+; unresolvable at runtime -- so the cast is inlined.
+Bool Function IsCostaBusinessStartAllowed()
+	Quest costaMaster = Game.GetFormFromFile(0x0056B640, "SeventySix.esm") as Quest
+	If costaMaster as Quests:E05_Caravan:Master_QuestScript
+		Return (costaMaster as Quests:E05_Caravan:Master_QuestScript).IsCostaBusinessQuestEligible(Self as Quest)
+	EndIf
+	Return True
+EndFunction
+
+Function NotifyCostaBusinessCompleted()
+	Quest costaMaster = Game.GetFormFromFile(0x0056B640, "SeventySix.esm") as Quest
+	If costaMaster as Quests:E05_Caravan:Master_QuestScript
+		(costaMaster as Quests:E05_Caravan:Master_QuestScript).NotifyCostaBusinessCompleted(Self as Quest)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
@@ -73,6 +99,7 @@ Function Fragment_Stage_0800_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+	NotifyCostaBusinessCompleted()
 	RemovePages()
 	Stop()
 EndFunction
@@ -104,6 +131,14 @@ Function SetPageCount()
 	Actor player = Game.GetPlayer()
 	If player != None && Moon_SQ05_AV_PagesCurrent != None
 		player.SetValue(Moon_SQ05_AV_PagesCurrent, count)
+	EndIf
+
+	; Objective 300 reads <Global=B21_QuestVar_6A17A9_Pages_Current/_Max>; nothing else
+	; writes either global, so the counter reads 0/0 until this publishes it.
+	Quest owner = Self as Quest
+	If owner as B21:QuestVariables
+		(owner as B21:QuestVariables).SetVariable("Pages_Current", count as Float)
+		(owner as B21:QuestVariables).SetVariable("Pages_Max", 5.0)
 	EndIf
 EndFunction
 

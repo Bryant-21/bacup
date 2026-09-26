@@ -85,12 +85,7 @@ impl Phase for PostprocessHavokAssetsPhase {
                     "FO76 behavior ports require the extracted FO4 project contracts".into(),
                 )
             })?;
-            let generation = crate::fo76_behaviors::assets::build_profiled(
-                ctx.mod_path,
-                ctx.source_extracted_dir,
-                target,
-            )
-            .map_err(PhaseError::Internal)?;
+            let generation = crate::fo76_behaviors::recovery::build(ctx, target)?;
             let generated = generation.assets_written;
             assets_written += generated;
             log_timing!("fo76_behavior_generation", started, generated, 0, 0);
@@ -445,7 +440,6 @@ impl Phase for PostprocessHavokAssetsPhase {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::fixups::havok::filter_unreferenced_behaviors::filter_unreferenced_behaviors_in_mod_path;
     use crate::fixups::havok::fix_character_rig_path::fix_character_rig_path_in_mod_path;
     use crate::fixups::havok::inject_animation_names::inject_animation_names_in_mod_path;

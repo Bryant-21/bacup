@@ -103,78 +103,72 @@ mod tests {
     }
 
     #[test]
-    fn matching_nonempty_editor_id_deduplicates_case_insensitively() {
-        let items = vec![ParsedItem::Record(rec("GLOB", 0x9900, "TimeScale"))];
-        let mut used = HashSet::from([0x1200]);
-        let result = classify_grafted(&items, &primary_index(), &mut used);
-        assert_eq!(result.remap[&0x9900], 0x1200);
-        assert!(result.dropped.contains(&0x9900));
+    fn editor_id_dedup_is_case_insensitive_and_scoped_to_global_identity() {
+        {
+            let items = vec![ParsedItem::Record(rec("GLOB", 0x9900, "TimeScale"))];
+            let mut used = HashSet::from([0x1200]);
+            let result = classify_grafted(&items, &primary_index(), &mut used);
+            assert_eq!(result.remap[&0x9900], 0x1200);
+            assert!(result.dropped.contains(&0x9900));
+        }
+        {
+            let items = vec![ParsedItem::Record(rec("REFR", 0x9900, ""))];
+            let mut used = HashSet::new();
+            let result = classify_grafted(&items, &HashMap::new(), &mut used);
+            assert_eq!(result.remap[&0x9900], 0x9900);
+            assert!(result.dropped.is_empty());
+        }
+        {
+            let items = vec![ParsedItem::Record(rec("CELL", 0x162A, "Wilderness"))];
+            let index = HashMap::from([(("wilderness".to_string(), "CELL".into()), 0xDDCAB)]);
+            let mut used = HashSet::from([0x162A, 0xDDCAB]);
+
+            let result = classify_grafted(&items, &index, &mut used);
+
+            assert_ne!(result.remap[&0x162A], 0xDDCAB);
+            assert!(!result.dropped.contains(&0x162A));
+        }
+        {
+            let items = vec![ParsedItem::Record(rec("PACK", 0x162A, "FollowPlayer"))];
+            let index = HashMap::from([(("followplayer".to_string(), "PACK".into()), 0xDDCAB)]);
+            let mut used = HashSet::from([0x162A, 0xDDCAB]);
+
+            let result = classify_grafted(&items, &index, &mut used);
+
+            assert_ne!(result.remap[&0x162A], 0xDDCAB);
+            assert!(!result.dropped.contains(&0x162A));
+            assert_eq!(result.by_signature["PACK"].deduped, 0);
+            assert_eq!(result.by_signature["PACK"].copied, 1);
+        }
     }
 
     #[test]
-    fn free_id_is_preserved() {
-        let items = vec![ParsedItem::Record(rec("WEAP", 0xA000, "10mmPistol"))];
-        let mut used = HashSet::new();
-        let result = classify_grafted(&items, &HashMap::new(), &mut used);
-        assert_eq!(result.remap[&0xA000], 0xA000);
-        assert!(used.contains(&0xA000));
-        assert!(!result.dropped.contains(&0xA000));
-    }
-
-    #[test]
-    fn colliding_id_is_reallocated_above_current_maximum() {
-        let items = vec![ParsedItem::Record(rec("WEAP", 0xA000, "10mmPistol"))];
-        let mut used = HashSet::from([0xA000]);
-        let result = classify_grafted(&items, &HashMap::new(), &mut used);
-        assert!(result.remap[&0xA000] > 0xA000);
-        assert!(!result.dropped.contains(&0xA000));
-    }
-
-    #[test]
-    fn empty_editor_id_never_deduplicates() {
-        let items = vec![ParsedItem::Record(rec("REFR", 0x9900, ""))];
-        let mut used = HashSet::new();
-        let result = classify_grafted(&items, &HashMap::new(), &mut used);
-        assert_eq!(result.remap[&0x9900], 0x9900);
-        assert!(result.dropped.is_empty());
-    }
-
-    #[test]
-    fn cell_editor_id_is_not_global_identity() {
-        let items = vec![ParsedItem::Record(rec("CELL", 0x162A, "Wilderness"))];
-        let index = HashMap::from([(("wilderness".to_string(), "CELL".into()), 0xDDCAB)]);
-        let mut used = HashSet::from([0x162A, 0xDDCAB]);
-
-        let result = classify_grafted(&items, &index, &mut used);
-
-        assert_ne!(result.remap[&0x162A], 0xDDCAB);
-        assert!(!result.dropped.contains(&0x162A));
-    }
-
-    #[test]
-    fn pack_editor_id_is_not_cross_game_identity() {
-        let items = vec![ParsedItem::Record(rec("PACK", 0x162A, "FollowPlayer"))];
-        let index = HashMap::from([(("followplayer".to_string(), "PACK".into()), 0xDDCAB)]);
-        let mut used = HashSet::from([0x162A, 0xDDCAB]);
-
-        let result = classify_grafted(&items, &index, &mut used);
-
-        assert_ne!(result.remap[&0x162A], 0xDDCAB);
-        assert!(!result.dropped.contains(&0x162A));
-        assert_eq!(result.by_signature["PACK"].deduped, 0);
-        assert_eq!(result.by_signature["PACK"].copied, 1);
-    }
-
-    #[test]
-    fn nested_records_are_classified() {
-        let items = vec![ParsedItem::Group(ParsedGroup {
-            label: *b"GLOB",
-            group_type: 0,
-            tail: Bytes::new(),
-            children: vec![ParsedItem::Record(rec("GLOB", 0x9900, "TimeScale"))],
-        })];
-        let mut used = HashSet::from([0x1200]);
-        let result = classify_grafted(&items, &primary_index(), &mut used);
-        assert_eq!(result.remap[&0x9900], 0x1200);
+    fn free_ids_are_kept_collisions_reallocated_and_nested_records_classified() {
+        {
+            let items = vec![ParsedItem::Record(rec("WEAP", 0xA000, "10mmPistol"))];
+            let mut used = HashSet::new();
+            let result = classify_grafted(&items, &HashMap::new(), &mut used);
+            assert_eq!(result.remap[&0xA000], 0xA000);
+            assert!(used.contains(&0xA000));
+            assert!(!result.dropped.contains(&0xA000));
+        }
+        {
+            let items = vec![ParsedItem::Record(rec("WEAP", 0xA000, "10mmPistol"))];
+            let mut used = HashSet::from([0xA000]);
+            let result = classify_grafted(&items, &HashMap::new(), &mut used);
+            assert!(result.remap[&0xA000] > 0xA000);
+            assert!(!result.dropped.contains(&0xA000));
+        }
+        {
+            let items = vec![ParsedItem::Group(ParsedGroup {
+                label: *b"GLOB",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: vec![ParsedItem::Record(rec("GLOB", 0x9900, "TimeScale"))],
+            })];
+            let mut used = HashSet::from([0x1200]);
+            let result = classify_grafted(&items, &primary_index(), &mut used);
+            assert_eq!(result.remap[&0x9900], 0x1200);
+        }
     }
 }

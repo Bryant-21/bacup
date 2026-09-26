@@ -5,7 +5,10 @@ use crate::sym::StringInterner;
 fn compound_route(route: &Route) -> bool {
     matches!(
         clean(&route.project).as_str(),
-        "actors/character" | "actors/character/_1stperson"
+        "actors/character"
+            | "actors/character/_1stperson"
+            | "actors/powerarmor"
+            | "actors/powerarmor/_1stperson"
     ) && route.animations.values().any(|path| {
         let path = clean(path);
         path.ends_with("/wpnidleready.hkx")
@@ -14,8 +17,63 @@ fn compound_route(route: &Route) -> bool {
     })
 }
 
+pub(super) fn power_armor_route(route: &Route) -> bool {
+    clean(&route.project).starts_with("actors/powerarmor") && compound_route(route)
+}
+
+pub(super) fn animation_namespace(project: &Project, route: &Route) -> &'static str {
+    if project.vanilla && power_armor_route(route) {
+        "fo4rig_pa_bow"
+    } else if project.vanilla {
+        "fo4rig"
+    } else {
+        "source_rig"
+    }
+}
+
+pub(super) fn suppress_power_armor_first_person_fidgets(
+    file: &mut HkxFile,
+    route: &Route,
+) -> usize {
+    if !power_armor_route(route) || clean(&route.project) != "actors/powerarmor/_1stperson" {
+        return 0;
+    }
+    let Some(event) = file
+        .objects()
+        .iter()
+        .find(|o| o.class_name == "hkbBehaviorGraphStringData")
+        .and_then(|o| {
+            array(o, "eventNames")
+                .iter()
+                .position(|e| text(e) == Some("fidgetStart"))
+        })
+    else {
+        return 0;
+    };
+    let mut changed = 0;
+    for object in file.objects_mut() {
+        if object.class_name != "hkbStateMachineTransitionInfoArray" {
+            continue;
+        }
+        let mut transitions = array(object, "transitions");
+        let before = transitions.len();
+        transitions.retain(|transition| {
+            !transition.as_object_members().is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|m| m.name == "eventId" && number(&m.value) == Some(event as f32))
+            })
+        });
+        if transitions.len() != before {
+            changed += before - transitions.len();
+            set(object, "transitions", HkxValue::Array(transitions));
+        }
+    }
+    changed
+}
+
 pub(super) fn repair_player_locomotion(file: &mut HkxFile, route: &Route) -> usize {
-    if !compound_route(route) || clean(&route.project) != "actors/character" {
+    if !compound_route(route) || clean(&route.project).contains("_1stperson") {
         return 0;
     }
     let Some(strings) = file
@@ -32,47 +90,46 @@ pub(super) fn repair_player_locomotion(file: &mut HkxFile, route: &Route) -> usi
     ) else {
         return 0;
     };
-    let Some(binding) = file
+    // Ready, Sneak and Relaxed locomotion each pick their human eight-way set by IsHuman.
+    let sets: std::collections::BTreeSet<usize> = file
         .objects()
         .iter()
-        .find(|o| {
-            o.class_name == "hkbManualSelectorGenerator"
-                && string(o, "name") == "Ready_Locomotion Selector"
-        })
-        .and_then(|o| pointer(o, "variableBindingSet"))
-    else {
-        return 0;
-    };
-    let mut bindings = array(&file.objects()[binding], "bindings");
+        .filter(|o| o.class_name == "hkbManualSelectorGenerator")
+        .filter_map(|o| pointer(o, "variableBindingSet"))
+        .collect();
     let mut changed = 0;
-    for binding in &mut bindings {
-        let Some(fields) = binding.as_object_members_mut() else {
-            continue;
-        };
-        if !fields
-            .iter()
-            .any(|m| m.name == "memberPath" && text(&m.value) == Some("selectedGeneratorIndex"))
-            || !fields
+    for set_index in sets {
+        let mut bindings = array(&file.objects()[set_index], "bindings");
+        let before = changed;
+        for binding in &mut bindings {
+            let Some(fields) = binding.as_object_members_mut() else {
+                continue;
+            };
+            if !fields
                 .iter()
-                .any(|m| m.name == "bindingType" && number(&m.value) == Some(0.0))
-        {
-            continue;
+                .any(|m| m.name == "memberPath" && text(&m.value) == Some("selectedGeneratorIndex"))
+                || !fields
+                    .iter()
+                    .any(|m| m.name == "bindingType" && number(&m.value) == Some(0.0))
+            {
+                continue;
+            }
+            if let Some(index) = fields
+                .iter_mut()
+                .find(|m| m.name == "variableIndex" && number(&m.value) == Some(human as f32))
+            {
+                // FO4 leaves IsHuman at zero; iIsPlayer selects the source human bow poses for the player.
+                index.value = HkxValue::I32(player as i32);
+                changed += 1;
+            }
         }
-        if let Some(index) = fields
-            .iter_mut()
-            .find(|m| m.name == "variableIndex" && number(&m.value) == Some(human as f32))
-        {
-            // FO4 leaves IsHuman at zero; iIsPlayer selects the source human bow poses for the player.
-            index.value = HkxValue::I32(player as i32);
-            changed += 1;
+        if changed != before {
+            set(
+                &mut file.objects_mut()[set_index],
+                "bindings",
+                HkxValue::Array(bindings),
+            );
         }
-    }
-    if changed != 0 {
-        set(
-            &mut file.objects_mut()[binding],
-            "bindings",
-            HkxValue::Array(bindings),
-        );
     }
     changed
 }
@@ -82,7 +139,7 @@ pub(super) fn repair_release_condition(
     route: &Route,
     interner: &StringInterner,
 ) {
-    if !compound_route(route) || clean(&route.project) != "actors/character"
+    if !compound_route(route) || clean(&route.project).contains("_1stperson")
         || !record.fields.iter().any(|f| f.sig.as_str() == "ENAM"
             && matches!(&f.value, FieldValue::String(s) if interner.resolve(*s) == Some("attackReleaseChargingHoldForceFire"))) {
         return;
@@ -146,6 +203,8 @@ mod tests {
         for (project, weapon, count) in [
             ("actors/character", "compoundbow", 2),
             ("actors/character/_1stperson", "compoundbow", 3),
+            ("actors/powerarmor", "compoundbow", 2),
+            ("actors/powerarmor/_1stperson", "compoundbow", 3),
             ("actors/character", "regularbow", 3),
             ("actors/scorched", "compoundbow", 3),
         ] {
@@ -163,118 +222,5 @@ mod tests {
                 .into(),
         );
         assert!(!compound_route(&rifle));
-    }
-
-    #[test]
-    #[ignore = "requires the September 9 bow proof HKX fixtures"]
-    fn live_compound_bow_locomotion_matches_user_validated_graph() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap();
-        let evidence = repo.join("mods/B21_FO76BowReleaseProbe/testing/evidence");
-        let original = read(&evidence.join("third-before-human-locomotion.hkx")).unwrap();
-        let expected = read(&repo.join("mods/B21_FO76BowReleaseProbe/data/Meshes/actors/character/behaviors/B21_FO76_gunbehavior_1563fc0113cf.hkx")).unwrap();
-        let mut graph = original.clone();
-        assert_eq!(
-            repair_player_locomotion(&mut graph, &route("actors/character", "compoundbow")),
-            1
-        );
-        assert_eq!(graph.save(), expected.save());
-        assert_eq!(
-            repair_player_locomotion(&mut graph, &route("actors/character", "compoundbow")),
-            0
-        );
-        for r in [
-            route("actors/character", "regularbow"),
-            route("actors/scorched", "compoundbow"),
-            route("actors/character/_1stperson", "compoundbow"),
-        ] {
-            let mut graph = original.clone();
-            assert_eq!(repair_player_locomotion(&mut graph, &r), 0);
-            assert_eq!(graph.save(), original.save());
-        }
-    }
-
-    #[test]
-    #[ignore = "requires the converted plan and extracted FO76/FO4 assets"]
-    fn live_compound_bow_asset_pipeline() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap();
-        let mut plan: Plan = serde_json::from_slice(
-            &std::fs::read(repo.join("mods/SeventySix").join(PLAN_PATH)).unwrap(),
-        )
-        .unwrap();
-        plan.routes.retain(compound_route);
-        assert_eq!(plan.routes.len(), 2);
-        plan.projects
-            .retain(|key, _| plan.routes.iter().any(|r| &r.project == key));
-        let output = tempfile::Builder::new()
-            .prefix("bow_pipeline_")
-            .tempdir_in(repo.join("tmp"))
-            .unwrap()
-            .keep();
-        std::fs::create_dir_all(output.join("debug/fo76_behaviors")).unwrap();
-        std::fs::write(
-            output.join(PLAN_PATH),
-            serde_json::to_vec_pretty(&plan).unwrap(),
-        )
-        .unwrap();
-        assets::build(
-            &output,
-            &repo.join("extracted/fo76/meshes"),
-            &repo.join("extracted/fo4/meshes"),
-        )
-        .unwrap();
-        let third = plan
-            .routes
-            .iter()
-            .find(|r| r.project == "actors/character")
-            .unwrap();
-        let path = third
-            .dependencies
-            .iter()
-            .find(|(source, _)| source.ends_with("/gunbehavior.hkx"))
-            .unwrap()
-            .1;
-        let graph = read(&output.join("data/Meshes").join(path)).unwrap();
-        let names = array(
-            graph
-                .objects()
-                .iter()
-                .find(|o| o.class_name == "hkbBehaviorGraphStringData")
-                .unwrap(),
-            "variableNames",
-        );
-        let selector = graph
-            .objects()
-            .iter()
-            .find(|o| string(o, "name") == "Ready_Locomotion Selector")
-            .unwrap();
-        let bindings = array(
-            &graph.objects()[pointer(selector, "variableBindingSet").unwrap()],
-            "bindings",
-        );
-        let index = bindings[0]
-            .as_object_members()
-            .unwrap()
-            .iter()
-            .find(|m| m.name == "variableIndex")
-            .and_then(|m| number(&m.value))
-            .unwrap() as usize;
-        assert_eq!(text(&names[index]), Some("iIsPlayer"));
-        let repaired = crate::fixups::havok::repair_weapon_charge_reference_frames::repair_weapon_charge_reference_frames_in_mod_path(&output).unwrap();
-        assert_eq!(repaired.records_changed, 2);
-        for leaf in ["wpnchargeholdreadyadd.hkx", "wpnchargeholdsightedadd.hkx"] {
-            let relative = format!(
-                "data/Meshes/actors/B21_FO76/Source/fo4rig/actors/character/_1stperson/animations/compoundbow/{leaf}"
-            );
-            let actual = read(&output.join(&relative)).unwrap();
-            let expected = read(&repo.join("mods/B21_FO76BowReleaseProbe").join(relative)).unwrap();
-            assert_eq!(actual.save(), expected.save(), "{leaf}");
-        }
-        println!("Compound Bow pipeline fixture: {}", output.display());
     }
 }

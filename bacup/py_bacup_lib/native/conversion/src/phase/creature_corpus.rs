@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use rayon::prelude::*;
@@ -58,7 +57,6 @@ const EXECUTION_LEDGER_FILE: &str = "execution_ledger.json";
 const DEPENDENCY_LEDGER_FILE: &str = "dependency_ledger.json";
 const LIVE_PREPARATION_LEDGER_FILE: &str = "live_preparation_ledger.json";
 const LIVE_RECIPE_DIAGNOSTICS_FILE: &str = "live_recipe_diagnostics.json";
-const ANCILLARY_NPC_COMMIT_LEDGER_FILE: &str = "ancillary_npc_commit_ledger.json";
 const LIVE_PREPARED_DIR: &str = "live_prepared";
 const LIVE_PREPARED_WORK_DIR: &str = "live_prepared.work";
 
@@ -2259,38 +2257,6 @@ fn motion_kf_disposition(disposition: &fnv_motion::KfAccountingDisposition) -> S
     }
 }
 
-fn pending_motion_bridge(
-    catalog: &str,
-    family_ids: impl IntoIterator<Item = String>,
-) -> Result<NativeMotionBridgeLedger, PhaseError> {
-    let mut family_ids = family_ids.into_iter().collect::<Vec<_>>();
-    family_ids.sort();
-    family_ids.dedup();
-    let entries = family_ids
-        .into_iter()
-        .map(|family_id| NativeMotionFamilyEntry {
-            family_id,
-            disposition: NativeMotionDisposition::AdapterUnavailable,
-            motion_set_emitted: false,
-            has_melee: false,
-            has_ranged: false,
-            has_overlay: false,
-            kfs: Vec::new(),
-        })
-        .collect::<Vec<_>>();
-    let ledger = NativeMotionBridgeLedger {
-        catalog: catalog.to_string(),
-        family_count: entries.len(),
-        terminal_family_count: entries.len(),
-        referenced_kf_count: 0,
-        emitted_motion_set_count: 0,
-        entries_blake3: motion_entries_hash(&entries)?,
-        entries,
-    };
-    validate_motion_bridge(&ledger)?;
-    Ok(ledger)
-}
-
 fn build_skyrim_motion_bridge(
     ctx: &PhaseCtx<'_>,
     native: &skyrim_catalog::CreatureCorpusPlan,
@@ -3190,6 +3156,7 @@ fn skyrim_live_preparation_ledger(
     })
 }
 
+#[cfg(test)]
 fn blocked_live_preparation(
     source_game: &str,
     corpus: &CreatureCorpusPlan,
@@ -3712,188 +3679,6 @@ fn discover_legacy_live_corpus(
         jobs,
         preparation,
     })
-}
-
-fn publish_live_ancillary_npc_batch(
-    ctx: &mut PhaseCtx<'_>,
-    debug_dir: &str,
-    prepared: crate::source_rig::PreparedCreatureAncillaryNpcBatch,
-) -> Result<(), PhaseError> {
-    let (projection_ledger, record_family_batch, staged_data_root) = prepared.into_parts();
-    let target_plugin = crate::source_read::plugin_name_for_handle(ctx.run.target_handle_id)
-        .map_err(|error| PhaseError::Internal(format!("read output plugin name: {error}")))?;
-    if !projection_ledger
-        .target_plugin
-        .eq_ignore_ascii_case(&target_plugin)
-    {
-        return Err(PhaseError::Internal(format!(
-            "ancillary NPC target plugin {:?} does not match output plugin {target_plugin:?}",
-            projection_ledger.target_plugin
-        )));
-    }
-
-    let mut registrations = Vec::new();
-    let mut targets = BTreeSet::new();
-    for artifact in projection_ledger
-        .canonical_target_artifacts()
-        .map_err(|error| PhaseError::Internal(error.to_string()))?
-    {
-        let relative =
-            canonical_relative(&artifact.target_data_path, "ancillary NPC target artifact")?;
-        if !targets.insert(relative.to_ascii_lowercase()) {
-            return Err(PhaseError::Internal(format!(
-                "duplicate ancillary NPC target artifact {relative}"
-            )));
-        }
-        let staged = staged_data_root.join(path_from_runtime(&relative));
-        let bytes = fs::read(&staged).map_err(|error| {
-            PhaseError::Internal(format!(
-                "read staged ancillary NPC artifact {}: {error}",
-                staged.display()
-            ))
-        })?;
-        let actual_hash = blake3::hash(&bytes).to_hex().to_string();
-        if bytes.len() as u64 != artifact.target_byte_len || actual_hash != artifact.target_blake3 {
-            return Err(PhaseError::Internal(format!(
-                "staged ancillary NPC artifact {} changed after preparation",
-                staged.display()
-            )));
-        }
-        let destination = ctx
-            .mod_path
-            .join("data")
-            .join(path_from_canonical(&relative));
-        if destination.exists() {
-            return Err(PhaseError::Internal(format!(
-                "ancillary NPC target artifact already exists: {}",
-                destination.display()
-            )));
-        }
-        registrations.push((relative, staged, destination));
-    }
-    registrations.sort_by_key(|(relative, _, _)| relative.to_ascii_lowercase());
-
-    let prepared_sink = if registrations.is_empty() {
-        None
-    } else if let Some(sink) = ctx.run.output_sink.as_deref() {
-        let borrowed = registrations
-            .iter()
-            .map(|(relative, staged, _)| (relative.as_str(), staged.as_path()))
-            .collect::<Vec<_>>();
-        Some(
-            sink.prepare_existing_files_batch(&borrowed)
-                .map_err(|message| {
-                    PhaseError::Internal(format!("prepare ancillary NPC asset sink: {message}"))
-                })?,
-        )
-    } else {
-        None
-    };
-
-    let mapper_state = ctx.run.mapper_state.as_mut().ok_or_else(|| {
-        PhaseError::Internal(
-            "ancillary NPC publication requires initialized mapper state".to_string(),
-        )
-    })?;
-    let mut session = crate::session::open_session(ctx.run.target_handle_id, None)
-        .map_err(|error| PhaseError::Internal(format!("open ancillary NPC session: {error}")))?;
-    let prepared_records = crate::source_rig::prepare_creature_record_families_batch(
-        &mut session,
-        mapper_state,
-        vec![record_family_batch],
-        &ctx.run.schema_target,
-        &ctx.run.interner,
-    )
-    .map_err(|error| PhaseError::Internal(format!("prepare ancillary NPC records: {error}")))?;
-    let commit_ledger = crate::source_rig::CreatureAncillaryNpcCommitLedger::new(
-        projection_ledger,
-        prepared_records.receipt().clone(),
-    )
-    .map_err(|error| PhaseError::Internal(error.to_string()))?;
-    let commit_ledger_json = commit_ledger
-        .canonical_json()
-        .map_err(|error| PhaseError::Internal(error.to_string()))?;
-    let commit_ledger_path = ctx
-        .mod_path
-        .join(path_from_canonical(debug_dir))
-        .join(ANCILLARY_NPC_COMMIT_LEDGER_FILE);
-    if commit_ledger_path.exists() {
-        return Err(PhaseError::Internal(format!(
-            "ancillary NPC commit ledger already exists: {}",
-            commit_ledger_path.display()
-        )));
-    }
-    let ledger_parent = commit_ledger_path
-        .parent()
-        .expect("ancillary NPC ledger path has a parent");
-    fs::create_dir_all(ledger_parent).map_err(|error| {
-        PhaseError::Internal(format!(
-            "create ancillary NPC ledger directory {}: {error}",
-            ledger_parent.display()
-        ))
-    })?;
-    let mut staged_ledger = tempfile::NamedTempFile::new_in(ledger_parent).map_err(|error| {
-        PhaseError::Internal(format!(
-            "stage ancillary NPC commit ledger in {}: {error}",
-            ledger_parent.display()
-        ))
-    })?;
-    staged_ledger
-        .write_all(commit_ledger_json.as_bytes())
-        .and_then(|()| staged_ledger.flush())
-        .map_err(|error| {
-            PhaseError::Internal(format!("write staged ancillary NPC commit ledger: {error}"))
-        })?;
-
-    let mut promoted = Vec::new();
-    for (_, staged, destination) in &registrations {
-        if let Some(parent) = destination.parent()
-            && let Err(error) = fs::create_dir_all(parent)
-        {
-            let rollback = rollback_recipe_files(&promoted);
-            return Err(PhaseError::Internal(append_rollback_errors(
-                format!(
-                    "create ancillary NPC output directory {}: {error}",
-                    parent.display()
-                ),
-                rollback,
-            )));
-        }
-        if let Err(error) = fs::rename(staged, destination) {
-            let rollback = rollback_recipe_files(&promoted);
-            return Err(PhaseError::Internal(append_rollback_errors(
-                format!(
-                    "promote ancillary NPC artifact {} to {}: {error}",
-                    staged.display(),
-                    destination.display()
-                ),
-                rollback,
-            )));
-        }
-        promoted.push((destination.clone(), staged.clone()));
-    }
-    if let Some(prepared_sink) = prepared_sink
-        && let Err(error) = prepared_sink.commit()
-    {
-        let rollback = rollback_recipe_files(&promoted);
-        return Err(PhaseError::Internal(append_rollback_errors(
-            format!("commit ancillary NPC asset sink: {error}"),
-            rollback,
-        )));
-    }
-
-    let committed_receipt = prepared_records.commit();
-    debug_assert_eq!(&committed_receipt, &commit_ledger.record_receipt);
-    staged_ledger
-        .persist_noclobber(&commit_ledger_path)
-        .map_err(|error| {
-            PhaseError::Internal(format!(
-                "ancillary NPC records committed but ledger persistence at {} failed: {}",
-                commit_ledger_path.display(),
-                error.error
-            ))
-        })?;
-    Ok(())
 }
 
 fn legacy_namespaced_source_data_root(source_root: &Path) -> Result<PathBuf, PhaseError> {
@@ -7226,23 +7011,6 @@ fn family_publish_root(recipe: &crate::source_rig::SourceRigExecutableRecipe) ->
     format!("Meshes/{parent}")
 }
 
-fn rollback_recipe_files(promoted: &[(PathBuf, PathBuf)]) -> Vec<String> {
-    let mut errors = Vec::new();
-    for (destination, staged) in promoted.iter().rev() {
-        if let Some(parent) = staged.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Err(error) = fs::rename(destination, staged) {
-            errors.push(format!(
-                "rollback {} to {}: {error}",
-                destination.display(),
-                staged.display()
-            ));
-        }
-    }
-    errors
-}
-
 fn rollback_replaced_recipe_files(promoted: &[(PathBuf, PathBuf, Option<PathBuf>)]) -> Vec<String> {
     let mut errors = Vec::new();
     for (destination, staged, backup) in promoted.iter().rev() {
@@ -8541,29 +8309,8 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
 
-    const FNV_OFFICIAL_CREATURE_CENSUS_PLUGINS: &[&str] = &[
-        "FalloutNV.esm",
-        "DeadMoney.esm",
-        "HonestHearts.esm",
-        "OldWorldBlues.esm",
-        "LonesomeRoad.esm",
-        "GunRunnersArsenal.esm",
-        "CaravanPack.esm",
-        "ClassicPack.esm",
-        "MercenaryPack.esm",
-        "TribalPack.esm",
-    ];
-    const FO3_OFFICIAL_CREATURE_CENSUS_PLUGINS: &[&str] = &[
-        "Fallout3.esm",
-        "Anchorage.esm",
-        "ThePitt.esm",
-        "BrokenSteel.esm",
-        "PointLookout.esm",
-        "Zeta.esm",
-    ];
-
     #[test]
-    fn skyrim_transitive_race_dependency_is_not_a_primary_reservation() {
+    fn skyrim_reservations_and_ready_owners_ignore_transitive_or_blocked_dependencies() {
         let interner = StringInterner::new();
         let source = FormKey::parse("001234@Skyrim.esm", &interner).expect("source");
         let candidate_race =
@@ -8577,10 +8324,14 @@ mod tests {
             skyrim_reservation_kind("RACE", candidate_race, candidate_race),
             Some(SkyrimCreatureReservedRecordKind::Race)
         );
+
+        let owners_by_record = BTreeMap::<String, BTreeSet<String>>::new();
+
+        assert!(ready_owner_ids(&owners_by_record, &"00002e@skyrim.esm".to_string()).is_none());
     }
 
     #[test]
-    fn live_family_jobs_are_sorted_by_job_id() {
+    fn family_jobs_sort_by_job_id_and_reject_orphan_closures() {
         let mut jobs = vec![
             fixture_job("family-a", "A", "Meshes/Actors/A", Vec::new()),
             fixture_job("family-z", "Z", "Meshes/Actors/Z", Vec::new()),
@@ -8592,10 +8343,17 @@ mod tests {
 
         assert_eq!(jobs[0].job_id, "a-job");
         assert_eq!(jobs[1].job_id, "z-job");
+
+        let mut artifacts = vec![fixture_artifact("a.hkx", "Meshes/Actors/A/a.hkx")];
+        artifacts.push(fixture_artifact("b.hkx", "Meshes/Actors/A/b.hkx"));
+        artifacts[0].root = true;
+        let job = fixture_job("family-a", "A", "Meshes/Actors/A", artifacts);
+        let error = validate_job(&job).expect_err("orphan must fail");
+        assert!(error.to_string().contains("unreachable target"));
     }
 
     #[test]
-    fn shared_prepared_targets_coalesce_only_when_bytes_match() {
+    fn shared_prepared_targets_coalesce_only_when_bytes_match_and_never_overwrite_implicitly() {
         let temp = tempfile::tempdir().expect("tempdir");
         let first = temp.path().join("first.nif");
         let identical = temp.path().join("identical.nif");
@@ -8639,10 +8397,7 @@ mod tests {
             .expect_err("conflicting shared registration"),
             "conflicting prepared data target Meshes/Shared/Debris.nif"
         );
-    }
 
-    #[test]
-    fn existing_prepared_target_requires_explicit_overwrite() {
         let temp = tempfile::tempdir().expect("tempdir");
         let staged = temp.path().join("staged.hkx");
         let destination = temp.path().join("data/Meshes/Actors/Test/idle.hkx");
@@ -8670,13 +8425,6 @@ mod tests {
         )
         .expect("explicit overwrite registration");
         assert_eq!(registrations.len(), 1);
-    }
-
-    #[test]
-    fn dependency_owned_only_by_blocked_candidates_has_no_ready_owners() {
-        let owners_by_record = BTreeMap::<String, BTreeSet<String>>::new();
-
-        assert!(ready_owner_ids(&owners_by_record, &"00002e@skyrim.esm".to_string()).is_none());
     }
 
     #[test]
@@ -8772,389 +8520,6 @@ mod tests {
         fail_target: String,
     }
 
-    #[derive(Default, Serialize)]
-    struct LegacyPayloadRange {
-        count: usize,
-        min: Option<f64>,
-        max: Option<f64>,
-    }
-
-    #[derive(Default, Serialize)]
-    struct LegacyRecordShapeCensus {
-        record_count: usize,
-        field_signature_sets: BTreeMap<String, usize>,
-        payload_shapes: BTreeMap<String, usize>,
-        numeric_ranges: BTreeMap<String, LegacyPayloadRange>,
-        dependency_locator_edges: Vec<String>,
-    }
-
-    #[derive(Serialize)]
-    struct LegacyWeaponDnamCensus {
-        length: usize,
-        animation_type: Option<u32>,
-        flags_1: Option<u8>,
-        flags_2: Option<u32>,
-        projectile_raw: Option<u32>,
-    }
-
-    #[derive(Serialize)]
-    struct LegacyWeaponDetailCensus {
-        game: String,
-        source: String,
-        etyp_values: Vec<String>,
-        data_lengths: Vec<usize>,
-        dnam: Vec<LegacyWeaponDnamCensus>,
-        sound_fields: BTreeMap<String, Vec<String>>,
-        model_fields: BTreeMap<String, Vec<String>>,
-        optional_field_presence: BTreeMap<String, bool>,
-        candidate_incidence: usize,
-        candidate_sources: Vec<String>,
-    }
-
-    #[derive(Serialize)]
-    struct LegacyRuntimeRecordDetailCensus {
-        game: String,
-        signature: String,
-        source: String,
-        field_values: BTreeMap<String, Vec<String>>,
-        dependency_locator_edges: Vec<String>,
-        candidate_incidence: usize,
-        candidate_sources: Vec<String>,
-    }
-
-    #[derive(Default, Serialize)]
-    struct LegacyBptdDecodedCensus {
-        record_count: usize,
-        candidate_owners_by_record: BTreeMap<String, Vec<String>>,
-        part_count_distribution: BTreeMap<usize, usize>,
-        field_value_counts: BTreeMap<String, BTreeMap<String, usize>>,
-        field_numeric_ranges: BTreeMap<String, LegacyPayloadRange>,
-        dependency_edges_by_signature: BTreeMap<String, Vec<String>>,
-        nam1_content_counts: BTreeMap<String, usize>,
-        nam4_content_counts: BTreeMap<String, usize>,
-        nam5_rows: Vec<String>,
-        raga_records: Vec<String>,
-    }
-
-    #[derive(Default, Serialize)]
-    struct LegacyLvliDecodedCensus {
-        record_count: usize,
-        candidate_owners_by_record: BTreeMap<String, Vec<String>>,
-        inbound_runtime_edges_by_source_signature: BTreeMap<String, Vec<String>>,
-        entry_count: usize,
-        lvlo_byte_value_counts: BTreeMap<String, BTreeMap<u8, usize>>,
-        lvlo_target_signature_counts: BTreeMap<String, usize>,
-        lvlo_resolution_counts: BTreeMap<String, usize>,
-        coed_rows: Vec<String>,
-    }
-
-    #[derive(Default, Serialize)]
-    struct LegacyIpdsSlotCensus {
-        record_count: usize,
-        record_sources: Vec<String>,
-        inbound_runtime_edges_by_source_signature: BTreeMap<String, Vec<String>>,
-        slot_reference_incidence: BTreeMap<String, usize>,
-        slot_unique_targets: BTreeMap<String, usize>,
-        slot_unique_candidate_owners: BTreeMap<String, usize>,
-        slot_null_record_count: BTreeMap<String, usize>,
-        exact_edges: Vec<String>,
-    }
-
-    #[derive(Serialize)]
-    struct LegacyClosureDispositionCensus {
-        unique_records: usize,
-        unique_candidate_owners: usize,
-    }
-
-    fn legacy_value_shape(value: &FieldValue, interner: &StringInterner) -> String {
-        match value {
-            FieldValue::None => "none".to_string(),
-            FieldValue::Bool(_) => "bool".to_string(),
-            FieldValue::Int(_) => "int".to_string(),
-            FieldValue::Uint(_) => "uint".to_string(),
-            FieldValue::Float(_) => "float".to_string(),
-            FieldValue::String(_) => "string".to_string(),
-            FieldValue::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
-            FieldValue::FormKey(_) => "form_key".to_string(),
-            FieldValue::List(values) => {
-                let shapes = values
-                    .iter()
-                    .map(|value| legacy_value_shape(value, interner))
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>()
-                    .join("|");
-                format!("list[{}]<{shapes}>", values.len())
-            }
-            FieldValue::Struct(fields) => {
-                let fields = fields
-                    .iter()
-                    .map(|(name, value)| {
-                        format!(
-                            "{}:{}",
-                            interner.resolve(*name).unwrap_or("<unresolved>"),
-                            legacy_value_shape(value, interner)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!("struct{{{fields}}}")
-            }
-        }
-    }
-
-    fn collect_legacy_numeric_ranges(
-        value: &FieldValue,
-        path: &str,
-        interner: &StringInterner,
-        ranges: &mut BTreeMap<String, LegacyPayloadRange>,
-    ) {
-        let numeric = match value {
-            FieldValue::Int(value) => Some(("int", *value as f64)),
-            FieldValue::Uint(value) => Some(("uint", *value as f64)),
-            FieldValue::Float(value) if value.is_finite() => Some(("float", *value as f64)),
-            _ => None,
-        };
-        if let Some((kind, value)) = numeric {
-            let range = ranges.entry(format!("{path}:{kind}")).or_default();
-            range.count += 1;
-            range.min = Some(range.min.map_or(value, |current| current.min(value)));
-            range.max = Some(range.max.map_or(value, |current| current.max(value)));
-            return;
-        }
-        match value {
-            FieldValue::List(values) => {
-                for value in values {
-                    collect_legacy_numeric_ranges(value, &format!("{path}[]"), interner, ranges);
-                }
-            }
-            FieldValue::Struct(fields) => {
-                for (name, value) in fields {
-                    collect_legacy_numeric_ranges(
-                        value,
-                        &format!(
-                            "{path}.{}",
-                            interner.resolve(*name).unwrap_or("<unresolved>")
-                        ),
-                        interner,
-                        ranges,
-                    );
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn legacy_census_field_value(value: &FieldValue, interner: &StringInterner) -> String {
-        match value {
-            FieldValue::None => "none".to_string(),
-            FieldValue::Bool(value) => format!("bool:{value}"),
-            FieldValue::Int(value) => format!("int:{value}"),
-            FieldValue::Uint(value) => format!("uint:{value}"),
-            FieldValue::Float(value) => format!("float_bits:{:08x}", value.to_bits()),
-            FieldValue::String(value) => format!(
-                "string:{}",
-                interner.resolve(*value).unwrap_or("<unresolved>")
-            ),
-            FieldValue::Bytes(bytes) => format!(
-                "bytes:{}",
-                bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            ),
-            FieldValue::FormKey(form_key) => format!(
-                "form:{:06X}@{}",
-                form_key.local,
-                interner.resolve(form_key.plugin).unwrap_or("<unresolved>")
-            ),
-            FieldValue::List(values) => format!(
-                "list:[{}]",
-                values
-                    .iter()
-                    .map(|value| legacy_census_field_value(value, interner))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            FieldValue::Struct(fields) => format!(
-                "struct:{{{}}}",
-                fields
-                    .iter()
-                    .map(|(name, value)| format!(
-                        "{}={}",
-                        interner.resolve(*name).unwrap_or("<unresolved>"),
-                        legacy_census_field_value(value, interner)
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-        }
-    }
-
-    fn legacy_weapon_dnam_census(value: &FieldValue) -> Option<LegacyWeaponDnamCensus> {
-        let FieldValue::Bytes(bytes) = value else {
-            return None;
-        };
-        let read_u32 = |offset: usize| {
-            bytes
-                .get(offset..offset + 4)
-                .and_then(|bytes| bytes.try_into().ok())
-                .map(u32::from_le_bytes)
-        };
-        Some(LegacyWeaponDnamCensus {
-            length: bytes.len(),
-            animation_type: read_u32(0),
-            flags_1: bytes.get(12).copied(),
-            flags_2: read_u32(56),
-            projectile_raw: read_u32(36),
-        })
-    }
-
-    fn add_exact_numeric_value(
-        census: &mut LegacyBptdDecodedCensus,
-        field: &str,
-        exact: String,
-        numeric: Option<f64>,
-    ) {
-        *census
-            .field_value_counts
-            .entry(field.to_string())
-            .or_default()
-            .entry(exact)
-            .or_default() += 1;
-        let Some(numeric) = numeric.filter(|value| value.is_finite()) else {
-            return;
-        };
-        let range = census
-            .field_numeric_ranges
-            .entry(field.to_string())
-            .or_default();
-        range.count += 1;
-        range.min = Some(range.min.map_or(numeric, |current| current.min(numeric)));
-        range.max = Some(range.max.map_or(numeric, |current| current.max(numeric)));
-    }
-
-    fn decode_legacy_bpnd_row(
-        bytes: &[u8],
-        census: &mut LegacyBptdDecodedCensus,
-    ) -> Result<(), String> {
-        if bytes.len() != 84 {
-            return Err(format!("expected 84-byte BPND row, got {}", bytes.len()));
-        }
-        let u16_at = |offset| u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
-        let u32_at = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        let i32_at = |offset| i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        let float_at = |offset| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        for (field, offset) in [
-            ("damage_mult", 0usize),
-            ("tracking_max_angle", 20),
-            ("explodable_debris_scale", 24),
-            ("severable_debris_scale", 40),
-            ("gore_position_x", 44),
-            ("gore_position_y", 48),
-            ("gore_position_z", 52),
-            ("gore_rotation_x", 56),
-            ("gore_rotation_y", 60),
-            ("gore_rotation_z", 64),
-            ("limb_replacement_scale", 80),
-        ] {
-            let value = float_at(offset);
-            add_exact_numeric_value(
-                census,
-                field,
-                format!("float_bits:{:08x}", value.to_bits()),
-                Some(value as f64),
-            );
-        }
-        for (field, offset) in [
-            ("flags", 4usize),
-            ("health_percent", 6),
-            ("to_hit_chance", 8),
-            ("explodable_explosion_chance", 9),
-            ("severable_decal_count", 76),
-            ("explodable_decal_count", 77),
-            ("unknown_u8_26", 78),
-            ("unknown_u8_27", 79),
-        ] {
-            add_exact_numeric_value(
-                census,
-                field,
-                format!("uint8:{}", bytes[offset]),
-                Some(bytes[offset] as f64),
-            );
-        }
-        for (field, offset) in [("part_type", 5usize), ("actor_value", 7)] {
-            let value = bytes[offset] as i8;
-            add_exact_numeric_value(census, field, format!("int8:{value}"), Some(value as f64));
-        }
-        add_exact_numeric_value(
-            census,
-            "explodable_debris_count",
-            format!("uint16:{}", u16_at(10)),
-            Some(u16_at(10) as f64),
-        );
-        add_exact_numeric_value(
-            census,
-            "severable_debris_count",
-            format!("int32:{}", i32_at(28)),
-            Some(i32_at(28) as f64),
-        );
-        for (field, offset) in [
-            ("explodable_debris", 12usize),
-            ("explodable_explosion", 16),
-            ("severable_debris", 32),
-            ("severable_explosion", 36),
-            ("severable_impact_dataset", 68),
-            ("explodable_impact_dataset", 72),
-        ] {
-            let value = u32_at(offset);
-            add_exact_numeric_value(
-                census,
-                field,
-                format!("raw_formid:{value:08x}"),
-                Some(value as f64),
-            );
-        }
-        Ok(())
-    }
-
-    fn census_text_content(value: &FieldValue, interner: &StringInterner) -> &'static str {
-        match value {
-            FieldValue::String(value) => match interner.resolve(*value) {
-                Some("") | None => "empty",
-                Some(_) => "nonempty",
-            },
-            FieldValue::Bytes(bytes) if bytes.is_empty() || bytes.iter().all(|byte| *byte == 0) => {
-                "empty"
-            }
-            FieldValue::Bytes(_) => "nonempty",
-            _ => "unexpected_shape",
-        }
-    }
-
-    fn legacy_census_form_key_for_raw(
-        raw_form_id: u32,
-        source_plugin: &str,
-        source_master_names: &[String],
-        interner: &StringInterner,
-    ) -> Option<FormKey> {
-        if raw_form_id == 0 {
-            return None;
-        }
-        let load_order_index = (raw_form_id >> 24) as usize;
-        let plugin = if load_order_index < source_master_names.len() {
-            source_master_names.get(load_order_index)?.as_str()
-        } else if load_order_index == source_master_names.len() {
-            source_plugin
-        } else {
-            return None;
-        };
-        Some(FormKey {
-            local: raw_form_id & 0x00ff_ffff,
-            plugin: interner.intern(plugin),
-        })
-    }
-
     impl ArtifactStager for InjectFailure {
         fn stage(&self, source: &Path, destination: &Path) -> Result<(), String> {
             if path_display(destination).ends_with(&self.fail_target) {
@@ -9165,7 +8530,7 @@ mod tests {
     }
 
     #[test]
-    fn evidence_bound_preparation_uses_workers_and_preserves_input_order() {
+    fn evidence_bound_preparation_uses_workers_in_order_and_cleans_staging_on_failure() {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(4)
             .build()
@@ -9178,8 +8543,15 @@ mod tests {
                     .lock()
                     .expect("worker index lock")
                     .insert(rayon::current_thread_index().expect("rayon worker"));
-                for _ in 0..256 {
-                    std::hint::spin_loop();
+                // Hold the first item until another worker has stolen work, so a loaded
+                // machine cannot let one worker drain the whole batch.
+                if *value == 0 {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while worker_indices.lock().expect("worker index lock").len() < 2
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::yield_now();
+                    }
                 }
                 Ok::<_, ()>(*value)
             })
@@ -9190,6 +8562,40 @@ mod tests {
             inputs
         );
         assert!(worker_indices.lock().unwrap().len() > 1);
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let staging_parent = temp.path().join("recipe_staging").join("batch");
+        fs::create_dir_all(&staging_parent).expect("staging directory");
+        fs::write(staging_parent.join("partial.hkx"), b"partial").expect("partial artifact");
+        let corpus = CreatureCorpusPlan {
+            version: 1,
+            candidate_count: 0,
+            planned: Vec::new(),
+            rejected: Vec::new(),
+        };
+        let plan = CreatureCorpusExecutionPlan {
+            version: PLAN_VERSION,
+            debug_dir: DEFAULT_DEBUG_DIR.to_string(),
+            native_catalog: fixture_bridge_ledger(&corpus).expect("fixture bridge"),
+            corpus,
+            jobs: vec![fixture_job(
+                "failed-family",
+                "Failed",
+                "Meshes/Actors/Failed",
+                Vec::new(),
+            )],
+        };
+
+        let ledger = failed_evidence_bound_ledger_with_cleanup(
+            &plan,
+            "failed-family",
+            "injected failure".to_string(),
+            &staging_parent,
+        );
+
+        assert!(ledger.strict_aborted);
+        assert_eq!(ledger.families[0].disposition, TerminalDisposition::Failed);
+        assert!(!staging_parent.exists());
     }
 
     #[test]
@@ -9492,1137 +8898,7 @@ mod tests {
     }
 
     #[test]
-    fn evidence_bound_failure_removes_private_staging() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let staging_parent = temp.path().join("recipe_staging").join("batch");
-        fs::create_dir_all(&staging_parent).expect("staging directory");
-        fs::write(staging_parent.join("partial.hkx"), b"partial").expect("partial artifact");
-        let corpus = CreatureCorpusPlan {
-            version: 1,
-            candidate_count: 0,
-            planned: Vec::new(),
-            rejected: Vec::new(),
-        };
-        let plan = CreatureCorpusExecutionPlan {
-            version: PLAN_VERSION,
-            debug_dir: DEFAULT_DEBUG_DIR.to_string(),
-            native_catalog: fixture_bridge_ledger(&corpus).expect("fixture bridge"),
-            corpus,
-            jobs: vec![fixture_job(
-                "failed-family",
-                "Failed",
-                "Meshes/Actors/Failed",
-                Vec::new(),
-            )],
-        };
-
-        let ledger = failed_evidence_bound_ledger_with_cleanup(
-            &plan,
-            "failed-family",
-            "injected failure".to_string(),
-            &staging_parent,
-        );
-
-        assert!(ledger.strict_aborted);
-        assert_eq!(ledger.families[0].disposition, TerminalDisposition::Failed);
-        assert!(!staging_parent.exists());
-    }
-
-    #[test]
-    #[ignore = "requires explicit official FNV and FO3 Data directories"]
-    fn live_official_fnv_fo3_dependency_census() {
-        #[derive(Clone)]
-        struct LoadedRecords {
-            records: Vec<Record>,
-            provenance: fnv_catalog::CreatureProvenance,
-            source_master_names: Vec<String>,
-        }
-
-        let fnv_data = PathBuf::from(
-            std::env::var("BACUP_CENSUS_FNV_DATA_DIR")
-                .expect("BACUP_CENSUS_FNV_DATA_DIR must name the official FNV Data directory"),
-        );
-        let fo3_data = PathBuf::from(
-            std::env::var("BACUP_CENSUS_FO3_DATA_DIR")
-                .expect("BACUP_CENSUS_FO3_DATA_DIR must name the official FO3 Data directory"),
-        );
-        let interner = StringInterner::new();
-        let mut loaded = Vec::new();
-        for (game, data_dir, plugins) in [
-            (
-                fnv_catalog::LegacyCreatureGame::Fnv,
-                fnv_data,
-                FNV_OFFICIAL_CREATURE_CENSUS_PLUGINS,
-            ),
-            (
-                fnv_catalog::LegacyCreatureGame::Fo3,
-                fo3_data,
-                FO3_OFFICIAL_CREATURE_CENSUS_PLUGINS,
-            ),
-        ] {
-            let schema = crate::schema::AuthoringSchema::for_game(match game {
-                fnv_catalog::LegacyCreatureGame::Fnv => "fnv",
-                fnv_catalog::LegacyCreatureGame::Fo3 => "fo3",
-            })
-            .expect("source schema");
-            for plugin in plugins {
-                let path = data_dir.join(plugin);
-                assert!(
-                    path.is_file(),
-                    "official source is missing: {}",
-                    path.display()
-                );
-                let handle = crate::merge_sources::load_no_py(
-                    path.to_str().expect("Unicode plugin path"),
-                    Some(match game {
-                        fnv_catalog::LegacyCreatureGame::Fnv => "fnv",
-                        fnv_catalog::LegacyCreatureGame::Fo3 => "fo3",
-                    }),
-                )
-                .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
-                let mut records =
-                    read_legacy_dependency_records_from_handle(handle, &schema, &interner)
-                        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-                let detailed_impact_records =
-                    read_records_from_handle(handle, &schema, &interner, &["IPCT", "TXST"])
-                        .unwrap_or_else(|error| {
-                            panic!("read impact records {}: {error}", path.display())
-                        });
-                let detailed_impact_keys = detailed_impact_records
-                    .iter()
-                    .map(|record| record.form_key)
-                    .collect::<HashSet<_>>();
-                records.retain(|record| !detailed_impact_keys.contains(&record.form_key));
-                records.extend(detailed_impact_records);
-                records.sort_by(|left, right| {
-                    let left_plugin = interner.resolve(left.form_key.plugin).unwrap_or_default();
-                    let right_plugin = interner.resolve(right.form_key.plugin).unwrap_or_default();
-                    left_plugin
-                        .to_ascii_lowercase()
-                        .cmp(&right_plugin.to_ascii_lowercase())
-                        .then_with(|| left.form_key.local.cmp(&right.form_key.local))
-                        .then_with(|| left.sig.cmp(&right.sig))
-                });
-                let source_master_names =
-                    esp_authoring_core::plugin_runtime::plugin_handle_master_names_no_py(handle)
-                        .unwrap_or_else(|error| panic!("read masters {}: {error}", path.display()));
-                assert!(
-                    esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle),
-                    "close {}",
-                    path.display()
-                );
-                loaded.push(LoadedRecords {
-                    records,
-                    provenance: fnv_catalog::CreatureProvenance {
-                        game,
-                        source_plugin: (*plugin).to_string(),
-                        precedence: loaded.len() as u32,
-                    },
-                    source_master_names,
-                });
-            }
-        }
-        let sources = loaded
-            .iter()
-            .flat_map(|input| {
-                input
-                    .records
-                    .iter()
-                    .map(|record| fnv_catalog::LegacyRecordSource {
-                        record,
-                        provenance: input.provenance.clone(),
-                    })
-            })
-            .collect::<Vec<_>>();
-        let source_load_orders = loaded
-            .iter()
-            .map(|input| fnv_dependencies::LegacyPluginLoadOrder {
-                game: input.provenance.game,
-                source_plugin: input.provenance.source_plugin.clone(),
-                source_master_names: input.source_master_names.clone(),
-            })
-            .collect::<Vec<_>>();
-        let source_master_names_by_plugin = source_load_orders
-            .iter()
-            .map(|load_order| {
-                (
-                    load_order.source_plugin.to_ascii_lowercase(),
-                    load_order.source_master_names.as_slice(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut winners = BTreeMap::<(String, u32), &fnv_catalog::LegacyRecordSource<'_>>::new();
-        for source in &sources {
-            let plugin = interner
-                .resolve(source.record.form_key.plugin)
-                .expect("resolved source plugin")
-                .to_ascii_lowercase();
-            let key = (plugin, source.record.form_key.local);
-            if winners.get(&key).is_none_or(|existing| {
-                source.provenance.precedence > existing.provenance.precedence
-            }) {
-                winners.insert(key, source);
-            }
-        }
-        let creature_winners = winners
-            .values()
-            .filter(|source| source.record.sig.as_str() == "CREA")
-            .copied()
-            .collect::<Vec<_>>();
-        let mut creature_winners_by_plugin = BTreeMap::new();
-        let mut creature_winner_flag_counts = BTreeMap::new();
-        for source in &creature_winners {
-            *creature_winners_by_plugin
-                .entry(source.provenance.source_plugin.clone())
-                .or_insert(0usize) += 1;
-            for (name, flag) in [
-                ("deleted", crate::record::RecordFlags::DELETED),
-                (
-                    "initially_disabled",
-                    crate::record::RecordFlags::INITIALLY_DISABLED,
-                ),
-                ("ignored", crate::record::RecordFlags::IGNORED),
-            ] {
-                if source.record.flags.contains(flag) {
-                    *creature_winner_flag_counts
-                        .entry(name.to_string())
-                        .or_insert(0usize) += 1;
-                }
-            }
-        }
-        let ledger = fnv_dependencies::build_creature_dependency_ledger_with_load_orders(
-            &sources,
-            fnv_dependencies::CreatureDependencyOptions {
-                expected_creature_winners: Some(fnv_catalog::EXPECTED_FULL_SOURCE_CREA_WINNERS),
-            },
-            &source_load_orders,
-            &interner,
-        )
-        .expect("full official dependency census");
-        let mut blocker_counts = BTreeMap::new();
-        for candidate in &ledger.candidates {
-            for blocker in &candidate.blockers {
-                *blocker_counts
-                    .entry(legacy_dependency_blocker_code(blocker))
-                    .or_insert(0usize) += 1;
-            }
-        }
-        let mut candidate_owners_by_record = BTreeMap::<(String, u32), BTreeSet<String>>::new();
-        for candidate in &ledger.candidates {
-            for dependency in &candidate.closure_form_keys {
-                candidate_owners_by_record
-                    .entry((dependency.plugin.to_ascii_lowercase(), dependency.local))
-                    .or_default()
-                    .insert(candidate.source.to_string());
-            }
-        }
-        let mut closure_disposition_sets =
-            BTreeMap::<String, (BTreeSet<String>, BTreeSet<String>)>::new();
-        for receipt in &ledger.records {
-            let keys = match &receipt.lowering {
-                fnv_dependencies::PairRecordLoweringDisposition::Ready { mechanism } => {
-                    vec![format!("{}:ready:{mechanism}", receipt.signature)]
-                }
-                fnv_dependencies::PairRecordLoweringDisposition::Consumed { mechanism } => {
-                    vec![format!("{}:consumed:{mechanism}", receipt.signature)]
-                }
-                fnv_dependencies::PairRecordLoweringDisposition::Blocked { reason_codes } => {
-                    reason_codes
-                        .iter()
-                        .map(|reason| format!("{}:blocked:{reason}", receipt.signature))
-                        .collect()
-                }
-            };
-            let owners = candidate_owners_by_record
-                .get(&(
-                    receipt.source.plugin.to_ascii_lowercase(),
-                    receipt.source.local,
-                ))
-                .cloned()
-                .unwrap_or_default();
-            for key in keys {
-                let (records, candidate_owners) = closure_disposition_sets.entry(key).or_default();
-                records.insert(receipt.source.to_string());
-                candidate_owners.extend(owners.iter().cloned());
-            }
-        }
-        let closure_dispositions = closure_disposition_sets
-            .into_iter()
-            .map(|(key, (records, candidate_owners))| {
-                (
-                    key,
-                    LegacyClosureDispositionCensus {
-                        unique_records: records.len(),
-                        unique_candidate_owners: candidate_owners.len(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let weapon_keys = ledger
-            .records
-            .iter()
-            .filter(|record| record.signature == "WEAP")
-            .map(|record| {
-                (
-                    record.source.plugin.to_ascii_lowercase(),
-                    record.source.local,
-                )
-            })
-            .collect::<BTreeSet<_>>();
-        let mut weapon_candidate_sources = BTreeMap::<(String, u32), BTreeSet<String>>::new();
-        for candidate in &ledger.candidates {
-            for dependency in &candidate.closure_form_keys {
-                let key = (dependency.plugin.to_ascii_lowercase(), dependency.local);
-                if weapon_keys.contains(&key) {
-                    weapon_candidate_sources
-                        .entry(key)
-                        .or_default()
-                        .insert(candidate.source.to_string());
-                }
-            }
-        }
-        let mut record_shapes = BTreeMap::<String, LegacyRecordShapeCensus>::new();
-        let mut weapon_details = BTreeMap::<String, LegacyWeaponDetailCensus>::new();
-        let mut runtime_record_details = BTreeMap::<String, LegacyRuntimeRecordDetailCensus>::new();
-        let mut bptd_decoded = LegacyBptdDecodedCensus::default();
-        let mut lvli_decoded = LegacyLvliDecodedCensus::default();
-        let mut ipds_slots = LegacyIpdsSlotCensus::default();
-        let mut ipds_slot_targets = BTreeMap::<String, BTreeSet<String>>::new();
-        let mut ipds_slot_candidate_owners = BTreeMap::<String, BTreeSet<String>>::new();
-        for receipt in ledger.records.iter().filter(|receipt| {
-            matches!(
-                receipt.signature.as_str(),
-                "WEAP"
-                    | "AMMO"
-                    | "DEBR"
-                    | "EXPL"
-                    | "FACT"
-                    | "GLOB"
-                    | "HAIR"
-                    | "IMOD"
-                    | "KEYM"
-                    | "LIGH"
-                    | "MISC"
-                    | "NOTE"
-                    | "NPC_"
-                    | "SOUN"
-                    | "STAT"
-                    | "CSTY"
-                    | "BPTD"
-                    | "LVLI"
-                    | "FLST"
-                    | "IPCT"
-                    | "IPDS"
-                    | "TXST"
-                    | "IDLE"
-                    | "PACK"
-            )
-        }) {
-            let winner = winners
-                .get(&(
-                    receipt.source.plugin.to_ascii_lowercase(),
-                    receipt.source.local,
-                ))
-                .expect("dependency receipt has a winning source record");
-            let game = match receipt.provenance.game {
-                fnv_catalog::LegacyCreatureGame::Fnv => "fnv",
-                fnv_catalog::LegacyCreatureGame::Fo3 => "fo3",
-            };
-            let group = record_shapes
-                .entry(format!("{game}:{}", receipt.signature))
-                .or_default();
-            group.record_count += 1;
-            let field_set = winner
-                .record
-                .fields
-                .iter()
-                .map(|field| field.sig.as_str().to_string())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
-                .join(",");
-            *group.field_signature_sets.entry(field_set).or_default() += 1;
-            for field in &winner.record.fields {
-                let path = format!("{}.{}", receipt.signature, field.sig.as_str());
-                *group
-                    .payload_shapes
-                    .entry(format!(
-                        "{path}:{}",
-                        legacy_value_shape(&field.value, &interner)
-                    ))
-                    .or_default() += 1;
-                collect_legacy_numeric_ranges(
-                    &field.value,
-                    &path,
-                    &interner,
-                    &mut group.numeric_ranges,
-                );
-            }
-            group
-                .dependency_locator_edges
-                .extend(receipt.references.iter().map(|reference| {
-                    serde_json::to_string(&serde_json::json!({
-                        "source": &receipt.source,
-                        "target": &reference.target,
-                        "source_locators": &reference.source_locators,
-                        "resolution": &reference.resolution,
-                    }))
-                    .expect("reference edge json")
-                }));
-
-            let candidate_sources = candidate_owners_by_record
-                .get(&(
-                    receipt.source.plugin.to_ascii_lowercase(),
-                    receipt.source.local,
-                ))
-                .map(|sources| sources.iter().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
-
-            if receipt.signature == "BPTD" {
-                bptd_decoded.record_count += 1;
-                bptd_decoded
-                    .candidate_owners_by_record
-                    .insert(receipt.source.to_string(), candidate_sources.clone());
-                let part_count = winner
-                    .record
-                    .fields
-                    .iter()
-                    .filter(|field| field.sig.as_str() == "BPND")
-                    .count();
-                *bptd_decoded
-                    .part_count_distribution
-                    .entry(part_count)
-                    .or_default() += 1;
-                let mut nam5_index = 0usize;
-                let mut bpnd_index = 0usize;
-                let source_masters = source_master_names_by_plugin
-                    .get(&receipt.provenance.source_plugin.to_ascii_lowercase())
-                    .copied()
-                    .expect("BPTD source master list");
-                for field in &winner.record.fields {
-                    match (field.sig.as_str(), &field.value) {
-                        ("BPND", FieldValue::Bytes(bytes)) => {
-                            decode_legacy_bpnd_row(bytes, &mut bptd_decoded).unwrap_or_else(
-                                |error| panic!("decode BPND {}: {error}", receipt.source),
-                            );
-                            for (field_name, offset) in [
-                                ("explodable_debris", 12usize),
-                                ("explodable_explosion", 16),
-                                ("severable_debris", 32),
-                                ("severable_explosion", 36),
-                                ("severable_impact_dataset", 68),
-                                ("explodable_impact_dataset", 72),
-                            ] {
-                                let raw = u32::from_le_bytes(
-                                    bytes[offset..offset + 4].try_into().unwrap(),
-                                );
-                                if raw == 0 {
-                                    continue;
-                                }
-                                let target = legacy_census_form_key_for_raw(
-                                    raw,
-                                    &receipt.provenance.source_plugin,
-                                    source_masters,
-                                    &interner,
-                                );
-                                let signature = target
-                                    .and_then(|key| {
-                                        winners
-                                            .get(&(
-                                                interner
-                                                    .resolve(key.plugin)
-                                                    .unwrap_or_default()
-                                                    .to_ascii_lowercase(),
-                                                key.local,
-                                            ))
-                                            .map(|source| source.record.sig.as_str())
-                                    })
-                                    .unwrap_or("missing");
-                                bptd_decoded
-                                    .dependency_edges_by_signature
-                                    .entry(signature.to_string())
-                                    .or_default()
-                                    .push(
-                                        serde_json::to_string(&serde_json::json!({
-                                            "source": &receipt.source,
-                                            "source_locator": format!(
-                                                "BPND[{bpnd_index}].{field_name}@{offset}"
-                                            ),
-                                            "raw_formid": format!("{raw:08x}"),
-                                            "target": target.map(|key| stable_form_key_string(key, &interner).expect("BPND target key")),
-                                            "target_signature": signature,
-                                        }))
-                                        .expect("BPTD embedded dependency edge json"),
-                                    );
-                            }
-                            bpnd_index += 1;
-                        }
-                        ("NAM1", value) => {
-                            *bptd_decoded
-                                .nam1_content_counts
-                                .entry(census_text_content(value, &interner).to_string())
-                                .or_default() += 1;
-                        }
-                        ("NAM4", value) => {
-                            *bptd_decoded
-                                .nam4_content_counts
-                                .entry(census_text_content(value, &interner).to_string())
-                                .or_default() += 1;
-                        }
-                        ("NAM5", FieldValue::Bytes(bytes)) => {
-                            bptd_decoded.nam5_rows.push(
-                                serde_json::to_string(&serde_json::json!({
-                                    "source": &receipt.source,
-                                    "index": nam5_index,
-                                    "length": bytes.len(),
-                                    "blake3": blake3::hash(bytes).to_hex().to_string(),
-                                    "all_zero": bytes.iter().all(|byte| *byte == 0),
-                                }))
-                                .expect("BPTD NAM5 row json"),
-                            );
-                            nam5_index += 1;
-                        }
-                        ("RAGA", _) => {
-                            bptd_decoded.raga_records.push(receipt.source.to_string());
-                        }
-                        _ => {}
-                    }
-                }
-                for reference in &receipt.references {
-                    let signature = match &reference.resolution {
-                        fnv_dependencies::DependencyReferenceResolution::Followed { signature }
-                        | fnv_dependencies::DependencyReferenceResolution::OutOfRuntimeScope {
-                            signature,
-                        }
-                        | fnv_dependencies::DependencyReferenceResolution::TargetIntrinsic {
-                            signature,
-                            ..
-                        } => signature.as_str(),
-                        fnv_dependencies::DependencyReferenceResolution::MissingSourceRecord => {
-                            "missing"
-                        }
-                    };
-                    if !reference
-                        .source_locators
-                        .iter()
-                        .any(|locator| locator.starts_with("BPND["))
-                    {
-                        continue;
-                    }
-                    bptd_decoded
-                        .dependency_edges_by_signature
-                        .entry(signature.to_string())
-                        .or_default()
-                        .push(
-                            serde_json::to_string(&serde_json::json!({
-                                "source": &receipt.source,
-                                "target": &reference.target,
-                                "source_locators": &reference.source_locators,
-                                "resolution": &reference.resolution,
-                            }))
-                            .expect("BPTD dependency edge json"),
-                        );
-                }
-            }
-
-            if receipt.signature == "LVLI" {
-                lvli_decoded.record_count += 1;
-                lvli_decoded
-                    .candidate_owners_by_record
-                    .insert(receipt.source.to_string(), candidate_sources.clone());
-                let mut lvlo_index = 0usize;
-                let source_masters = source_master_names_by_plugin
-                    .get(&receipt.provenance.source_plugin.to_ascii_lowercase())
-                    .copied()
-                    .expect("LVLI source master list");
-                for field in &winner.record.fields {
-                    match (field.sig.as_str(), &field.value) {
-                        ("LVLO", FieldValue::Bytes(bytes)) if bytes.len() == 12 => {
-                            lvli_decoded.entry_count += 1;
-                            for (name, offset) in [
-                                ("byte2_unknown_u8_1", 2usize),
-                                ("byte3_unknown_u8_2", 3),
-                                ("byte10_source_unknown_target_chance_none", 10),
-                                ("byte11_unknown_u8_6", 11),
-                            ] {
-                                *lvli_decoded
-                                    .lvlo_byte_value_counts
-                                    .entry(name.to_string())
-                                    .or_default()
-                                    .entry(bytes[offset])
-                                    .or_default() += 1;
-                            }
-                            lvlo_index += 1;
-                        }
-                        ("COED", FieldValue::Bytes(bytes)) if bytes.len() == 12 => {
-                            let owner_raw = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-                            let union_raw = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-                            let condition_bits =
-                                u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-                            let owner_key = legacy_census_form_key_for_raw(
-                                owner_raw,
-                                &receipt.provenance.source_plugin,
-                                source_masters,
-                                &interner,
-                            );
-                            let owner_signature = owner_key
-                                .and_then(|key| {
-                                    winners
-                                        .get(&(
-                                            interner
-                                                .resolve(key.plugin)
-                                                .unwrap_or_default()
-                                                .to_ascii_lowercase(),
-                                            key.local,
-                                        ))
-                                        .map(|source| source.record.sig.as_str().to_string())
-                                })
-                                .unwrap_or_else(|| {
-                                    if owner_raw == 0 {
-                                        "null".to_string()
-                                    } else {
-                                        "missing".to_string()
-                                    }
-                                });
-                            let union = if owner_signature == "FACT" {
-                                format!("required_rank:{}", union_raw as i32)
-                            } else if union_raw == 0 {
-                                "global:null".to_string()
-                            } else {
-                                let global = legacy_census_form_key_for_raw(
-                                    union_raw,
-                                    &receipt.provenance.source_plugin,
-                                    source_masters,
-                                    &interner,
-                                );
-                                let global_signature = global
-                                    .and_then(|key| {
-                                        winners
-                                            .get(&(
-                                                interner
-                                                    .resolve(key.plugin)
-                                                    .unwrap_or_default()
-                                                    .to_ascii_lowercase(),
-                                                key.local,
-                                            ))
-                                            .map(|source| source.record.sig.as_str())
-                                    })
-                                    .unwrap_or("missing");
-                                format!("global:{union_raw:08x}:{global_signature}")
-                            };
-                            lvli_decoded.coed_rows.push(
-                                serde_json::to_string(&serde_json::json!({
-                                    "source": &receipt.source,
-                                    "preceding_lvlo_index": lvlo_index.checked_sub(1),
-                                    "owner_raw": format!("{owner_raw:08x}"),
-                                    "owner_signature": owner_signature,
-                                    "union_raw": format!("{union_raw:08x}"),
-                                    "union_interpretation": union,
-                                    "condition_bits": format!("{condition_bits:08x}"),
-                                    "condition": f32::from_bits(condition_bits),
-                                }))
-                                .expect("LVLI COED row json"),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                for reference in &receipt.references {
-                    let resolution = match &reference.resolution {
-                        fnv_dependencies::DependencyReferenceResolution::Followed { signature } => {
-                            *lvli_decoded
-                                .lvlo_target_signature_counts
-                                .entry(signature.clone())
-                                .or_default() += reference.source_locators.len();
-                            format!("followed:{signature}")
-                        }
-                        fnv_dependencies::DependencyReferenceResolution::OutOfRuntimeScope {
-                            signature,
-                        } => {
-                            *lvli_decoded
-                                .lvlo_target_signature_counts
-                                .entry(signature.clone())
-                                .or_default() += reference.source_locators.len();
-                            format!("out_of_runtime_scope:{signature}")
-                        }
-                        fnv_dependencies::DependencyReferenceResolution::TargetIntrinsic {
-                            signature,
-                            ..
-                        } => format!("target_intrinsic:{signature}"),
-                        fnv_dependencies::DependencyReferenceResolution::MissingSourceRecord => {
-                            "missing_source_record".to_string()
-                        }
-                    };
-                    let lvlo_locator_count = reference
-                        .source_locators
-                        .iter()
-                        .filter(|locator| locator.starts_with("LVLO["))
-                        .count();
-                    *lvli_decoded
-                        .lvlo_resolution_counts
-                        .entry(resolution)
-                        .or_default() += lvlo_locator_count;
-                }
-            }
-
-            if receipt.signature == "IPDS" {
-                ipds_slots.record_count += 1;
-                ipds_slots.record_sources.push(format!(
-                    "{}|{}",
-                    receipt.source.plugin, receipt.source.local
-                ));
-                const SLOT_NAMES: [&str; 12] = [
-                    "stone",
-                    "dirt",
-                    "grass",
-                    "glass",
-                    "metal",
-                    "wood",
-                    "organic",
-                    "cloth",
-                    "water",
-                    "hollow_metal",
-                    "organic_bug",
-                    "organic_glow",
-                ];
-                let mut nonnull_slots = BTreeSet::new();
-                for reference in &receipt.references {
-                    for locator in reference
-                        .source_locators
-                        .iter()
-                        .filter(|locator| locator.starts_with("DATA[0]."))
-                    {
-                        let Some(slot) = locator
-                            .strip_prefix("DATA[0].")
-                            .and_then(|value| value.split('@').next())
-                        else {
-                            continue;
-                        };
-                        nonnull_slots.insert(slot.to_string());
-                        *ipds_slots
-                            .slot_reference_incidence
-                            .entry(slot.to_string())
-                            .or_default() += 1;
-                        ipds_slot_targets
-                            .entry(slot.to_string())
-                            .or_default()
-                            .insert(reference.target.to_string());
-                        ipds_slot_candidate_owners
-                            .entry(slot.to_string())
-                            .or_default()
-                            .extend(candidate_sources.iter().cloned());
-                        ipds_slots.exact_edges.push(
-                            serde_json::to_string(&serde_json::json!({
-                                "source": &receipt.source,
-                                "slot": slot,
-                                "target": &reference.target,
-                                "resolution": &reference.resolution,
-                                "candidate_incidence": candidate_sources.len(),
-                            }))
-                            .expect("IPDS slot edge json"),
-                        );
-                    }
-                }
-                for slot in SLOT_NAMES {
-                    if !nonnull_slots.contains(slot) {
-                        *ipds_slots
-                            .slot_null_record_count
-                            .entry(slot.to_string())
-                            .or_default() += 1;
-                    }
-                }
-            }
-            let mut field_values = BTreeMap::<String, Vec<String>>::new();
-            for field in &winner.record.fields {
-                field_values
-                    .entry(field.sig.as_str().to_string())
-                    .or_default()
-                    .push(legacy_census_field_value(&field.value, &interner));
-            }
-            runtime_record_details.insert(
-                format!("{game}:{}", receipt.source),
-                LegacyRuntimeRecordDetailCensus {
-                    game: game.to_string(),
-                    signature: receipt.signature.clone(),
-                    source: receipt.source.to_string(),
-                    field_values,
-                    dependency_locator_edges: receipt
-                        .references
-                        .iter()
-                        .map(|reference| {
-                            serde_json::to_string(&serde_json::json!({
-                                "target": &reference.target,
-                                "source_locators": &reference.source_locators,
-                                "resolution": &reference.resolution,
-                            }))
-                            .expect("runtime record reference edge json")
-                        })
-                        .collect(),
-                    candidate_incidence: candidate_sources.len(),
-                    candidate_sources,
-                },
-            );
-
-            if receipt.signature == "WEAP" {
-                let sound_signature = |signature: &str| {
-                    matches!(
-                        signature,
-                        "SNAM" | "XNAM" | "NAM7" | "TNAM" | "NAM6" | "UNAM" | "NAM9" | "NAM8"
-                    ) || signature.starts_with("WMS")
-                };
-                let model_signature = |signature: &str| {
-                    matches!(signature, "MODL" | "MOD2" | "MOD3" | "MOD4" | "WNAM")
-                        || signature.starts_with("MWD")
-                        || signature.starts_with("WNM")
-                        || signature.starts_with("WMI")
-                };
-                let fields = &winner.record.fields;
-                let values_for = |signature: &str| {
-                    fields
-                        .iter()
-                        .filter(|field| field.sig.as_str() == signature)
-                        .map(|field| legacy_census_field_value(&field.value, &interner))
-                        .collect::<Vec<_>>()
-                };
-                let mut sound_fields = BTreeMap::<String, Vec<String>>::new();
-                let mut model_fields = BTreeMap::<String, Vec<String>>::new();
-                for field in fields {
-                    let signature = field.sig.as_str();
-                    if sound_signature(signature) {
-                        sound_fields
-                            .entry(signature.to_string())
-                            .or_default()
-                            .push(legacy_census_field_value(&field.value, &interner));
-                    }
-                    if model_signature(signature) {
-                        model_fields
-                            .entry(signature.to_string())
-                            .or_default()
-                            .push(legacy_census_field_value(&field.value, &interner));
-                    }
-                }
-                let optional_field_presence = ["CRDT", "EITM", "SCRI", "BIPL", "REPL"]
-                    .into_iter()
-                    .map(|signature| {
-                        (
-                            signature.to_string(),
-                            fields.iter().any(|field| field.sig.as_str() == signature),
-                        )
-                    })
-                    .collect::<BTreeMap<_, _>>();
-                let candidate_sources = weapon_candidate_sources
-                    .get(&(
-                        receipt.source.plugin.to_ascii_lowercase(),
-                        receipt.source.local,
-                    ))
-                    .map(|sources| sources.iter().cloned().collect::<Vec<_>>())
-                    .unwrap_or_default();
-                weapon_details.insert(
-                    format!("{game}:{}", receipt.source),
-                    LegacyWeaponDetailCensus {
-                        game: game.to_string(),
-                        source: receipt.source.to_string(),
-                        etyp_values: values_for("ETYP"),
-                        data_lengths: fields
-                            .iter()
-                            .filter(|field| field.sig.as_str() == "DATA")
-                            .filter_map(|field| match &field.value {
-                                FieldValue::Bytes(bytes) => Some(bytes.len()),
-                                _ => None,
-                            })
-                            .collect(),
-                        dnam: fields
-                            .iter()
-                            .filter(|field| field.sig.as_str() == "DNAM")
-                            .filter_map(|field| legacy_weapon_dnam_census(&field.value))
-                            .collect(),
-                        sound_fields,
-                        model_fields,
-                        optional_field_presence,
-                        candidate_incidence: candidate_sources.len(),
-                        candidate_sources,
-                    },
-                );
-            }
-        }
-
-        ipds_slots.slot_unique_targets = ipds_slot_targets
-            .into_iter()
-            .map(|(slot, targets)| (slot, targets.len()))
-            .collect();
-        for receipt in &ledger.records {
-            for reference in &receipt.references {
-                let followed_signature = match &reference.resolution {
-                    fnv_dependencies::DependencyReferenceResolution::Followed { signature } => {
-                        signature.as_str()
-                    }
-                    _ => continue,
-                };
-                let edge = serde_json::to_string(&serde_json::json!({
-                    "source": &receipt.source,
-                    "target": &reference.target,
-                    "source_locators": &reference.source_locators,
-                }))
-                .expect("runtime inbound edge json");
-                if followed_signature == "LVLI" {
-                    lvli_decoded
-                        .inbound_runtime_edges_by_source_signature
-                        .entry(receipt.signature.clone())
-                        .or_default()
-                        .push(edge.clone());
-                }
-                if followed_signature == "IPDS" {
-                    ipds_slots
-                        .inbound_runtime_edges_by_source_signature
-                        .entry(receipt.signature.clone())
-                        .or_default()
-                        .push(edge);
-                }
-            }
-        }
-        for edges in lvli_decoded
-            .inbound_runtime_edges_by_source_signature
-            .values_mut()
-        {
-            edges.sort();
-            edges.dedup();
-        }
-        ipds_slots.record_sources.sort();
-        ipds_slots.record_sources.dedup();
-        for edges in ipds_slots
-            .inbound_runtime_edges_by_source_signature
-            .values_mut()
-        {
-            edges.sort();
-            edges.dedup();
-        }
-        ipds_slots.slot_unique_candidate_owners = ipds_slot_candidate_owners
-            .into_iter()
-            .map(|(slot, owners)| (slot, owners.len()))
-            .collect();
-        ipds_slots.exact_edges.sort();
-        ipds_slots.exact_edges.dedup();
-        for edges in bptd_decoded.dependency_edges_by_signature.values_mut() {
-            edges.sort();
-            edges.dedup();
-        }
-        bptd_decoded.nam5_rows.sort();
-        bptd_decoded.raga_records.sort();
-        bptd_decoded.raga_records.dedup();
-        lvli_decoded.coed_rows.sort();
-        for group in record_shapes.values_mut() {
-            group.dependency_locator_edges.sort();
-            group.dependency_locator_edges.dedup();
-        }
-        assert_eq!(
-            weapon_details.len(),
-            weapon_keys.len(),
-            "every closure WEAP needs one exact detail census row"
-        );
-        assert!(
-            weapon_details
-                .values()
-                .all(
-                    |weapon| weapon.candidate_incidence == weapon.candidate_sources.len()
-                        && weapon.candidate_incidence > 0
-                ),
-            "every closure WEAP must name every owning creature candidate"
-        );
-        assert_eq!(bptd_decoded.record_count, 95, "official BPTD closure drift");
-        assert_eq!(
-            lvli_decoded.record_count, 286,
-            "official LVLI closure drift after explicit PACK condition omission"
-        );
-        assert_eq!(
-            ipds_slots.record_count, 91,
-            "official IPDS closure drift; sources={:?}; inbound={:?}",
-            ipds_slots.record_sources, ipds_slots.inbound_runtime_edges_by_source_signature
-        );
-        assert!(
-            ipds_slots
-                .record_sources
-                .iter()
-                .any(|source| source == "FalloutNV.esm|1461223"),
-            "official IPDS closure must retain BloodSpoutRedDataSet 164BE7:FalloutNV.esm"
-        );
-        let weapon_ipds_edges = ipds_slots
-            .inbound_runtime_edges_by_source_signature
-            .get("WEAP")
-            .expect("official IPDS closure must retain inbound WEAP evidence");
-        for source_local in [1_400_422_u32, 1_400_429_u32] {
-            assert!(
-                weapon_ipds_edges.iter().any(|edge| {
-                    edge.contains(&format!("\"local\":{source_local}"))
-                        && edge.contains("\"local\":1461223")
-                        && edge.contains("INAM[0]")
-                }),
-                "official IPDS closure must retain WEAP {source_local:06X} INAM[0] -> 164BE7:FalloutNV.esm"
-            );
-        }
-        let json = ledger
-            .canonical_json()
-            .expect("canonical dependency ledger");
-        if let Ok(output) = std::env::var("BACUP_CREATURE_CENSUS_OUTPUT") {
-            fs::write(&output, &json)
-                .unwrap_or_else(|error| panic!("write census ledger {output}: {error}"));
-            let shape_output =
-                Path::new(&output).with_file_name("fnv_fo3_creature_record_shape_census.json");
-            fs::write(
-                &shape_output,
-                serde_json::to_vec_pretty(&record_shapes).expect("shape census json"),
-            )
-            .unwrap_or_else(|error| {
-                panic!("write shape census {}: {error}", shape_output.display())
-            });
-            let detail_output =
-                Path::new(&output).with_file_name("fnv_fo3_creature_weap_detail_census.json");
-            fs::write(
-                &detail_output,
-                serde_json::to_vec_pretty(&weapon_details).expect("WEAP detail census json"),
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "write WEAP detail census {}: {error}",
-                    detail_output.display()
-                )
-            });
-            let summary_output =
-                Path::new(&output).with_file_name("fnv_fo3_creature_closure_summary.json");
-            fs::write(
-                &summary_output,
-                serde_json::to_vec_pretty(&closure_dispositions).expect("closure summary json"),
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "write closure summary {}: {error}",
-                    summary_output.display()
-                )
-            });
-            let runtime_detail_output = Path::new(&output)
-                .with_file_name("fnv_fo3_creature_runtime_record_detail_census.json");
-            fs::write(
-                &runtime_detail_output,
-                serde_json::to_vec_pretty(&runtime_record_details)
-                    .expect("runtime record detail census json"),
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "write runtime record detail census {}: {error}",
-                    runtime_detail_output.display()
-                )
-            });
-            for (file_name, payload) in [
-                (
-                    "fnv_fo3_creature_bptd_decoded_census.json",
-                    serde_json::to_vec_pretty(&bptd_decoded).expect("BPTD decoded census json"),
-                ),
-                (
-                    "fnv_fo3_creature_lvli_decoded_census.json",
-                    serde_json::to_vec_pretty(&lvli_decoded).expect("LVLI decoded census json"),
-                ),
-                (
-                    "fnv_fo3_creature_ipds_slot_census.json",
-                    serde_json::to_vec_pretty(&ipds_slots).expect("IPDS slot census json"),
-                ),
-            ] {
-                let path = Path::new(&output).with_file_name(file_name);
-                fs::write(&path, payload).unwrap_or_else(|error| {
-                    panic!("write decoded census {}: {error}", path.display())
-                });
-            }
-        }
-        println!(
-            "FNV_FO3_CREATURE_CENSUS winners={} ready={} blocked={} records={} blockers={}",
-            ledger.winning_creatures,
-            ledger.ready_candidates,
-            ledger.blocked_candidates,
-            ledger.records.len(),
-            serde_json::to_string(&blocker_counts).unwrap(),
-        );
-        println!(
-            "FNV_FO3_CREATURE_CENSUS_BY_PLUGIN {} flags={}",
-            serde_json::to_string(&creature_winners_by_plugin).unwrap(),
-            serde_json::to_string(&creature_winner_flag_counts).unwrap(),
-        );
-    }
-
-    #[test]
-    fn real_fnv_kf_stages_against_the_converted_source_owned_skeleton() {
-        let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../extracted/fnv/meshes/creatures/nvgecko");
-        let skeleton_source = fixture_root.join("skeleton.nif");
-        let kf_source = fixture_root.join("mtidle.kf");
-        if !skeleton_source.is_file() || !kf_source.is_file() {
-            return;
-        }
-        let temp = tempfile::tempdir().expect("tempdir");
-        let skeleton_artifact = PlannedArtifact {
-            source_root: ArtifactSourceRoot::SourceExtracted,
-            source_path: "meshes/creatures/nvgecko/skeleton.nif".to_string(),
-            target_path: "Meshes/Actors/B21_FNVGecko/CharacterAssets/Skeleton.hkx".to_string(),
-            kind: ArtifactKind::SkeletonHkx,
-            record_signature: None,
-            dependencies: Vec::new(),
-            root: false,
-            source_blake3: None,
-            skeleton_name: Some("NVGecko".to_string()),
-            float_slot_names: Vec::new(),
-            sequence_index: None,
-            event_map: BTreeMap::new(),
-            target_sample_rate_hz: None,
-        };
-        let skeleton_destination = temp.path().join("Skeleton.hkx");
-        let skeleton =
-            stage_source_rig_skeleton(&skeleton_artifact, &skeleton_source, &skeleton_destination)
-                .expect("stage source-owned skeleton");
-        let kf_bytes = fs::read(&kf_source).expect("read KF fixture");
-        let clip_artifact = PlannedArtifact {
-            source_root: ArtifactSourceRoot::SourceExtracted,
-            source_path: "meshes/creatures/nvgecko/mtidle.kf".to_string(),
-            target_path: "Meshes/Actors/B21_FNVGecko/Animations/Idle.hkx".to_string(),
-            kind: ArtifactKind::IdleHkx,
-            record_signature: None,
-            dependencies: Vec::new(),
-            root: false,
-            source_blake3: Some(blake3::hash(&kf_bytes).to_hex().to_string()),
-            skeleton_name: None,
-            float_slot_names: Vec::new(),
-            sequence_index: Some(0),
-            event_map: BTreeMap::new(),
-            target_sample_rate_hz: None,
-        };
-        let job = CreatureCorpusJob {
-            job_id: "fixture".to_string(),
-            source_key: "fnv|falloutnv.esm|10cd73".to_string(),
-            output_slug: "fnv-gecko".to_string(),
-            family_id: "fnv-gecko".to_string(),
-            adapter: CreatureAdapterProfile::FnvGecko,
-            unsupported_capability: None,
-            publish_root: "Meshes/Actors/B21_FNVGecko".to_string(),
-            graph_paths: Vec::new(),
-            artifacts: Vec::new(),
-            executable_recipe: None,
-            member_source_keys: Vec::new(),
-            candidate_recipes: Vec::new(),
-            family_bundle_blake3: None,
-            preflight_issues: Vec::new(),
-        };
-        let clip_destination = temp.path().join("Idle.hkx");
-        stage_fnv_kf(
-            &job,
-            &clip_artifact,
-            &kf_bytes,
-            &skeleton,
-            &clip_destination,
-        )
-        .expect("stage verified KF");
-        let hkx_bytes = fs::read(clip_destination).expect("read staged HKX");
-        assert!(!hkx_bytes.is_empty());
-        assert_ne!(blake3::hash(&hkx_bytes), blake3::hash(&kf_bytes));
-    }
-
-    #[test]
-    fn best_effort_publishes_good_family_and_leaves_failed_family_uncommitted() {
+    fn best_effort_publishes_good_families_and_strict_failures_roll_back_every_family() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (plan, roots) = two_family_fixture(temp.path());
         let mut ledger = execute_batch(
@@ -10646,10 +8922,7 @@ mod tests {
         assert!(!temp.path().join("data/Meshes/Actors/Bad").exists());
         assert_eq!(ledger.family_disposition_counts.get("published"), Some(&1));
         assert_eq!(ledger.family_disposition_counts.get("failed"), Some(&1));
-    }
 
-    #[test]
-    fn strict_failure_aborts_every_family_without_publishing() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (plan, roots) = two_family_fixture(temp.path());
         let mut ledger = execute_batch(
@@ -10673,10 +8946,7 @@ mod tests {
             Some(&1)
         );
         assert_eq!(ledger.family_disposition_counts.get("failed"), Some(&1));
-    }
 
-    #[test]
-    fn strict_publish_failure_rolls_back_every_promoted_family() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (mut plan, roots) = two_family_fixture(temp.path());
         plan.jobs[1].publish_root = "Textures/Bad".to_string();
@@ -10705,7 +8975,7 @@ mod tests {
     }
 
     #[test]
-    fn attached_ba2_sink_commits_the_strict_family_batch_atomically() {
+    fn attached_ba2_sink_commits_strict_batch_atomically_or_rolls_back() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (plan, roots) = two_family_fixture(temp.path());
         let sink = crate::sinks::SinkSet {
@@ -10734,10 +9004,7 @@ mod tests {
         assert_eq!(sink.ba2.as_ref().expect("BA2").entry_count(), 2);
         assert!(temp.path().join("data/Meshes/Actors/Good").exists());
         assert!(temp.path().join("data/Meshes/Actors/Bad").exists());
-    }
 
-    #[test]
-    fn strict_sink_commit_failure_rolls_back_assets_and_leaves_ba2_empty() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (plan, roots) = two_family_fixture(temp.path());
         let sink = crate::sinks::SinkSet {
@@ -10769,7 +9036,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_prepared_record_batch_publishes_zero_family_assets() {
+    fn missing_record_batches_and_unsupported_families_publish_nothing_and_are_counted() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (mut plan, roots) = two_family_fixture(temp.path());
         fs::write(temp.path().join("race.record"), b"prepared record fixture")
@@ -10805,10 +9072,7 @@ mod tests {
         assert!(ledger.strict_aborted);
         assert_eq!(ledger.family_disposition_counts.get("failed"), Some(&1));
         assert!(!temp.path().join("data/Meshes/Actors/Good").exists());
-    }
 
-    #[test]
-    fn unsupported_family_is_terminal_and_counted() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (mut plan, roots) = two_family_fixture(temp.path());
         plan.jobs[1].adapter = CreatureAdapterProfile::UnsupportedCapability;
@@ -10953,7 +9217,7 @@ mod tests {
     }
 
     #[test]
-    fn live_preparation_terminal_accounting_retains_every_blocked_candidate() {
+    fn live_preparation_accounts_blocked_candidates_and_promotes_atomically() {
         let candidates = [0x100u32, 0x101]
             .into_iter()
             .map(|local| {
@@ -10998,10 +9262,7 @@ mod tests {
         assert!(ledger.terminals.iter().all(|terminal| {
             terminal.disposition == "blocked" && terminal.blockers[0].code == "live_fixture_blocked"
         }));
-    }
 
-    #[test]
-    fn live_preparation_promotion_is_atomic_and_failed_publish_keeps_previous_output() {
         let temp = tempfile::tempdir().expect("tempdir");
         let final_root = temp.path().join("live_prepared");
         let work_root = temp.path().join("live_prepared.work");
@@ -11285,42 +9546,6 @@ mod tests {
     }
 
     #[test]
-    fn optional_prepared_skyrim_atronach_flame_family_executes() {
-        let Some(mod_root) = std::env::var_os("SKYRIM_CREATURE_MOD_ROOT").map(PathBuf::from) else {
-            return;
-        };
-        let plan_json = fs::read_to_string(mod_root.join(DEFAULT_DEBUG_DIR).join(PLAN_FILE))
-            .expect("prepared Skyrim corpus plan");
-        let plan: CreatureCorpusExecutionPlan =
-            serde_json::from_str(&plan_json).expect("valid prepared Skyrim corpus plan");
-        let job = plan
-            .jobs
-            .iter()
-            .find(|job| job.family_id == "atronach_flame")
-            .expect("Flame Atronach family job");
-        let temp = tempfile::tempdir().expect("private staging root");
-        let roots = SourceRoots {
-            mod_root: &mod_root,
-            source_extracted: &mod_root,
-            target_extracted: None,
-            target_data: None,
-        };
-
-        prepare_evidence_bound_family(job, temp.path(), &roots, &StringInterner::new())
-            .expect("prepared Flame Atronach family executes");
-    }
-
-    #[test]
-    fn recursive_closure_rejects_an_orphan() {
-        let mut artifacts = vec![fixture_artifact("a.hkx", "Meshes/Actors/A/a.hkx")];
-        artifacts.push(fixture_artifact("b.hkx", "Meshes/Actors/A/b.hkx"));
-        artifacts[0].root = true;
-        let job = fixture_job("family-a", "A", "Meshes/Actors/A", artifacts);
-        let error = validate_job(&job).expect_err("orphan must fail");
-        assert!(error.to_string().contains("unreachable target"));
-    }
-
-    #[test]
     fn supported_ground_melee_family_becomes_planned_with_complete_evidence() {
         let evidence = ground_melee_motion_evidence("creatures/test/skeleton.nif");
         let rig = evidence.rig.clone();
@@ -11399,110 +9624,6 @@ mod tests {
             target_data: None,
         };
         assert!(build_jobs(&corpus, &BTreeMap::new(), &roots).is_err());
-    }
-
-    #[test]
-    fn ranged_motion_stays_a_typed_creature_capability() {
-        let evidence = ranged_motion_evidence("creatures/ranged/skeleton.nif");
-        let mut adapters = LegacyBridgeAdapters {
-            motion_evidence: vec![evidence.clone()],
-            ..LegacyBridgeAdapters::default()
-        };
-        add_converted_clips(&mut adapters, &evidence);
-        let (motion_sets, ledger) = build_legacy_motion_bridge(&adapters).expect("motion bridge");
-        assert!(motion_sets.is_empty());
-        assert_eq!(
-            ledger.entries[0].disposition,
-            NativeMotionDisposition::ReadyRangedCreature
-        );
-        assert!(ledger.entries[0].has_ranged);
-        assert!(!ledger.entries[0].motion_set_emitted);
-        let rejection = motion_contract_rejection(&ledger.entries[0]);
-        assert!(matches!(
-            rejection,
-            CreatureRejectionReason::UpstreamCatalogRejected {
-                ref catalog,
-                ref reason_code,
-                ..
-            } if catalog == "source_rig_contract"
-                && reason_code == "creature_ranged_behavior_unavailable"
-                && !reason_code.contains("weapon")
-        ));
-    }
-
-    #[test]
-    fn missing_ambiguous_and_overlay_motion_remain_typed_and_accounted() {
-        let missing_rig = test_motion_rig("creatures/missing/skeleton.nif");
-        let missing = fnv_motion::CreatureMotionFamilyEvidence {
-            rig: missing_rig,
-            referenced_kfs: vec!["creatures/missing/idle.kf".to_string()],
-            kf_evidence: Vec::new(),
-            creature_traits: Vec::new(),
-        };
-        let mut ambiguous = ground_melee_motion_evidence("creatures/ambiguous/skeleton.nif");
-        let second_idle = parsed_motion(
-            &ambiguous.rig,
-            "creatures/ambiguous/combatidle.kf",
-            "CombatIdle",
-            fnv_motion::SequenceCycle::Loop,
-            fnv_motion::RootMotionEvidence::Stationary {
-                accum_root: Some("Bip01".to_string()),
-            },
-            &["start", "end"],
-            &["Bip01"],
-        );
-        ambiguous.referenced_kfs.push(second_idle.source_kf.clone());
-        ambiguous.kf_evidence.push(second_idle);
-        let mut overlay = ground_melee_motion_evidence("creatures/overlay/skeleton.nif");
-        let attack = overlay
-            .kf_evidence
-            .iter_mut()
-            .find(|entry| entry.source_kf.contains("attack"))
-            .expect("attack evidence");
-        let fnv_motion::KfParseEvidence::Parsed(sequence) = &mut attack.sequence else {
-            panic!("parsed attack");
-        };
-        sequence.binding.target_names.push("##Weapon".to_string());
-
-        let mut adapters = LegacyBridgeAdapters {
-            motion_evidence: vec![missing, ambiguous.clone(), overlay.clone()],
-            ..LegacyBridgeAdapters::default()
-        };
-        add_converted_clips(&mut adapters, &ambiguous);
-        add_converted_clips(&mut adapters, &overlay);
-        let (_, ledger) = build_legacy_motion_bridge(&adapters).expect("motion bridge");
-        assert_eq!(ledger.family_count, 3);
-        assert_eq!(ledger.terminal_family_count, 3);
-        assert_eq!(
-            ledger.referenced_kf_count,
-            ledger
-                .entries
-                .iter()
-                .map(|entry| entry.kfs.len())
-                .sum::<usize>()
-        );
-        let dispositions = ledger
-            .entries
-            .iter()
-            .map(|entry| entry.disposition)
-            .collect::<BTreeSet<_>>();
-        assert!(dispositions.contains(&NativeMotionDisposition::EvidenceIncomplete));
-        assert!(dispositions.contains(&NativeMotionDisposition::Ambiguous));
-        assert!(dispositions.contains(&NativeMotionDisposition::UnsupportedOverlay));
-        assert!(
-            ledger
-                .entries
-                .iter()
-                .flat_map(|entry| &entry.kfs)
-                .any(|entry| {
-                    entry.source_kf == "creatures/missing/idle.kf"
-                        && entry.disposition == "missing_evidence"
-                })
-        );
-        assert_eq!(
-            ledger.entries_blake3,
-            motion_entries_hash(&ledger.entries).expect("motion hash")
-        );
     }
 
     fn ground_melee_motion_evidence(skeleton: &str) -> fnv_motion::CreatureMotionFamilyEvidence {
@@ -11605,36 +9726,6 @@ mod tests {
                 value: "true".to_string(),
             }],
         }
-    }
-
-    fn ranged_motion_evidence(skeleton: &str) -> fnv_motion::CreatureMotionFamilyEvidence {
-        let mut evidence = ground_melee_motion_evidence(skeleton);
-        evidence
-            .referenced_kfs
-            .retain(|path| !path.ends_with("attack.kf"));
-        evidence
-            .kf_evidence
-            .retain(|entry| !entry.source_kf.ends_with("attack.kf"));
-        let source_kf = format!(
-            "{}/spitattack.kf",
-            skeleton
-                .trim_end_matches("skeleton.nif")
-                .trim_end_matches('/')
-        );
-        let ranged = parsed_motion(
-            &evidence.rig,
-            &source_kf,
-            "SpitAttack",
-            fnv_motion::SequenceCycle::Clamp,
-            fnv_motion::RootMotionEvidence::Stationary {
-                accum_root: Some("Bip01".to_string()),
-            },
-            &["start", "Release", "end"],
-            &["Bip01"],
-        );
-        evidence.referenced_kfs.push(source_kf);
-        evidence.kf_evidence.push(ranged);
-        evidence
     }
 
     fn test_motion_rig(skeleton: &str) -> fnv_catalog::RigFamilyKey {

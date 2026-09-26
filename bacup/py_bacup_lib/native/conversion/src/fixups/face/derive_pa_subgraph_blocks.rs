@@ -45,6 +45,11 @@ pub fn derive_pa_subgraph_blocks(
         if is_furniture_role(block) {
             continue;
         }
+        if is_bow_block(block, interner) {
+            // FO76 has no PA bow clips. Keep the real human inputs for the bow retargeter.
+            out.push(block.clone());
+            continue;
+        }
         let mut new_paths: Vec<Sym> = Vec::with_capacity(block.paths.len());
         let mut pa_first_person_paths: Vec<Sym> = Vec::new();
         let mut has_specific = false;
@@ -107,6 +112,35 @@ pub fn derive_pa_subgraph_blocks(
         out.push(new_block);
     }
     out
+}
+
+pub(super) fn is_bow_block(block: &SubgraphBlock, interner: &StringInterner) -> bool {
+    !is_furniture_role(block)
+        && block.paths.iter().any(|path| {
+            interner.resolve(*path).is_some_and(|path| {
+                let path = path.replace('\\', "/").to_ascii_lowercase();
+                path.starts_with("actors/character/animations/weapon/compoundbow")
+                    || path.starts_with("actors/character/_1stperson/animations/compoundbow")
+            })
+        })
+}
+
+pub(super) fn merge_missing_bow_blocks(
+    existing: &mut Vec<SubgraphBlock>,
+    human: &[SubgraphBlock],
+    interner: &StringInterner,
+) -> usize {
+    let before = existing.len();
+    for block in human.iter().filter(|block| is_bow_block(block, interner)) {
+        if !existing.iter().any(|other| {
+            other.target_keywords == block.target_keywords
+                && other.subgraph_keywords == block.subgraph_keywords
+                && other.flags_bytes == block.flags_bytes
+        }) {
+            existing.push(block.clone());
+        }
+    }
+    existing.len() - before
 }
 
 // ---------------------------------------------------------------------------
@@ -233,152 +267,134 @@ mod tests {
         interner.intern(s)
     }
 
-    /// character-weapon path is rewritten to PA path.
     #[test]
-    fn rewrites_character_weapon() {
-        let mut interner = StringInterner::new();
-        let block = SubgraphBlock {
-            behaviour_graph: sym(
+    fn power_armor_bow_merges_missing_selectors_without_replacing_source_routes() {
+        let interner = StringInterner::new();
+        let keyword = crate::ids::FormKey {
+            local: 0x800,
+            plugin: interner.intern("B21_Test.esp"),
+        };
+        let third = SubgraphBlock {
+            behaviour_graph: interner
+                .intern("Actors/Character/Behaviors/NoHandIKRelaxedGunWrappingBehavior.hkx"),
+            paths: vec![interner.intern("Actors/Character/Animations/Weapon/CompoundBow/Player")],
+            subgraph_keywords: vec![],
+            target_keywords: vec![keyword],
+            flags_bytes: Some(vec![0, 0, 0, 0].into()),
+        };
+        let mut first = third.clone();
+        first.paths = vec![interner.intern("Actors/Character/_1stPerson/Animations/CompoundBow")];
+        first.flags_bytes = Some(vec![0, 0, 1, 0].into());
+        let mut gun = third.clone();
+        gun.target_keywords[0].local += 1;
+        gun.paths = vec![interner.intern("Actors/PowerArmor/Animations/Weapons/Crossbow")];
+        let mut furniture = third.clone();
+        furniture.flags_bytes = Some(vec![2, 0, 0, 0].into());
+        let human = vec![third.clone(), first.clone(), furniture];
+        assert_eq!(
+            derive_pa_subgraph_blocks(&human, &interner),
+            vec![third.clone(), first.clone()]
+        );
+        let mut existing = vec![gun.clone()];
+        assert_eq!(
+            merge_missing_bow_blocks(&mut existing, &human, &interner),
+            2
+        );
+        assert_eq!(existing, vec![gun.clone(), third, first]);
+        assert_eq!(
+            merge_missing_bow_blocks(&mut existing, &human, &interner),
+            0
+        );
+        existing[1].behaviour_graph =
+            interner.intern("Actors/PowerArmor/Behaviors/ExistingBow.hkx");
+        let preserved = existing.clone();
+        assert_eq!(
+            merge_missing_bow_blocks(&mut existing, &human, &interner),
+            0
+        );
+        assert_eq!(existing, preserved);
+    }
+
+    /// Character weapon paths are rewritten to PA paths (prefix match is
+    /// case-insensitive across slash styles) while generic shared paths in the
+    /// block are kept; PA first-person paths supplement the complete Character
+    /// fallback chain; a block with no PA-specific path is dropped.
+    #[test]
+    fn derives_pa_blocks_from_character_weapon_paths() {
+        const FOO: &str = "Actors\\Character\\Foo.hkx";
+        const PA_MY_GUN: &str = "Actors\\powerarmor\\animations\\Weapons\\MyGun";
+        const KILL: &str = "Actors\\Character\\Animations\\Paired\\Kill01";
+        for (name, graph, paths, expected) in [
+            (
+                "character_weapon",
                 "Actors\\Character\\Behaviors\\NoHandIKRelaxedWeaponWrappingBehavior.hkx",
-                &mut interner,
+                vec!["Actors\\Character\\animations\\weapon\\MyGun"],
+                Some((
+                    Some("Actors\\Character\\Behaviors\\NoHandIKWeaponWrappingBehavior.hkx"),
+                    vec![PA_MY_GUN],
+                )),
             ),
-            paths: vec![sym(
-                "Actors\\Character\\animations\\weapon\\MyGun",
-                &mut interner,
-            )],
-            subgraph_keywords: vec![],
-            target_keywords: vec![],
-            flags_bytes: None,
-        };
-        let out = derive_pa_subgraph_blocks(&[block], &mut interner);
-        assert_eq!(out.len(), 1);
-        let p = interner.resolve(out[0].paths[0]).unwrap();
-        assert_eq!(p, "Actors\\powerarmor\\animations\\Weapons\\MyGun");
-        assert_eq!(
-            interner.resolve(out[0].behaviour_graph).unwrap(),
-            "Actors\\Character\\Behaviors\\NoHandIKWeaponWrappingBehavior.hkx"
-        );
-    }
-
-    /// PA first-person paths supplement the complete Character fallback chain.
-    #[test]
-    fn preserves_first_person_character_fallbacks() {
-        let mut interner = StringInterner::new();
-        let block = SubgraphBlock {
-            behaviour_graph: sym(
+            (
+                "first_person_fallbacks",
                 "Actors\\Character\\_1stPerson\\Behaviors\\Pistol_GunWrappingBehavior.hkx",
-                &mut interner,
-            ),
-            paths: vec![
-                sym(
+                vec![
                     "Actors\\Character\\_1stPerson\\animations\\Paired",
-                    &mut interner,
-                ),
-                sym(
                     "Actors\\Character\\_1stPerson\\animations\\MyAnim",
-                    &mut interner,
-                ),
-                sym(
                     "Actors\\Character\\_1stPerson\\animations\\Common",
-                    &mut interner,
-                ),
-            ],
-            subgraph_keywords: vec![],
-            target_keywords: vec![],
-            flags_bytes: None,
-        };
-        let out = derive_pa_subgraph_blocks(&[block], &mut interner);
-        assert_eq!(out.len(), 1);
-        let paths: Vec<_> = out[0]
-            .paths
-            .iter()
-            .map(|path| interner.resolve(*path).unwrap())
-            .collect();
-        assert_eq!(
-            paths,
-            [
-                "Actors\\powerarmor\\_1stperson\\animations\\MyAnim",
-                "Actors\\Character\\_1stPerson\\animations\\Paired",
-                "Actors\\Character\\_1stPerson\\animations\\MyAnim",
-                "Actors\\Character\\_1stPerson\\animations\\Common",
-            ]
-        );
-        assert_eq!(
-            interner.resolve(out[0].behaviour_graph).unwrap(),
-            "Actors\\Character\\_1stPerson\\Behaviors\\GunBehavior.hkx"
-        );
-    }
-
-    /// blocks with no PA-specific path are dropped.
-    #[test]
-    fn drops_blocks_without_specific_paths() {
-        let mut interner = StringInterner::new();
-        let block = SubgraphBlock {
-            behaviour_graph: sym("Actors\\Character\\Foo.hkx", &mut interner),
-            paths: vec![sym(
-                "Actors\\Character\\Animations\\Paired\\Kill01",
-                &mut interner,
-            )],
-            subgraph_keywords: vec![],
-            target_keywords: vec![],
-            flags_bytes: None,
-        };
-        let out = derive_pa_subgraph_blocks(&[block], &mut interner);
-        assert!(out.is_empty());
-    }
-
-    /// case-insensitive prefix matching with mixed slash styles.
-    #[test]
-    fn case_insensitive_prefix() {
-        let mut interner = StringInterner::new();
-        let block = SubgraphBlock {
-            behaviour_graph: sym("Actors\\Character\\Foo.hkx", &mut interner),
-            paths: vec![sym(
-                "actors/character/ANIMATIONS/weapon/MyGun",
-                &mut interner,
-            )],
-            subgraph_keywords: vec![],
-            target_keywords: vec![],
-            flags_bytes: None,
-        };
-        let out = derive_pa_subgraph_blocks(&[block], &mut interner);
-        assert_eq!(out.len(), 1);
-        let p = interner.resolve(out[0].paths[0]).unwrap();
-        assert_eq!(p, "Actors\\powerarmor\\animations\\Weapons\\MyGun");
-    }
-
-    /// generic shared paths within a PA-relevant block are
-    /// preserved (only the specific paths get rewritten; the block survives
-    /// because it has at least one specific path).
-    #[test]
-    fn preserves_shared_paths_inside_pa_block() {
-        let mut interner = StringInterner::new();
-        let shared = sym(
-            "Actors\\Character\\Animations\\Paired\\Kill01",
-            &mut interner,
-        );
-        let specific = sym(
-            "Actors\\Character\\animations\\weapon\\MyGun",
-            &mut interner,
-        );
-        let block = SubgraphBlock {
-            behaviour_graph: sym("Actors\\Character\\Foo.hkx", &mut interner),
-            paths: vec![shared, specific],
-            subgraph_keywords: vec![],
-            target_keywords: vec![],
-            flags_bytes: None,
-        };
-        let out = derive_pa_subgraph_blocks(&[block], &mut interner);
-        assert_eq!(out.len(), 1);
-        // Shared path preserved unchanged; specific path rewritten.
-        assert_eq!(
-            interner.resolve(out[0].paths[0]).unwrap(),
-            "Actors\\Character\\Animations\\Paired\\Kill01"
-        );
-        assert_eq!(
-            interner.resolve(out[0].paths[1]).unwrap(),
-            "Actors\\powerarmor\\animations\\Weapons\\MyGun"
-        );
+                ],
+                Some((
+                    Some("Actors\\Character\\_1stPerson\\Behaviors\\GunBehavior.hkx"),
+                    vec![
+                        "Actors\\powerarmor\\_1stperson\\animations\\MyAnim",
+                        "Actors\\Character\\_1stPerson\\animations\\Paired",
+                        "Actors\\Character\\_1stPerson\\animations\\MyAnim",
+                        "Actors\\Character\\_1stPerson\\animations\\Common",
+                    ],
+                )),
+            ),
+            ("no_specific_path", FOO, vec![KILL], None),
+            (
+                "case_insensitive_prefix",
+                FOO,
+                vec!["actors/character/ANIMATIONS/weapon/MyGun"],
+                Some((None, vec![PA_MY_GUN])),
+            ),
+            (
+                "shared_path_kept",
+                FOO,
+                vec![KILL, "Actors\\Character\\animations\\weapon\\MyGun"],
+                Some((None, vec![KILL, PA_MY_GUN])),
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let block = SubgraphBlock {
+                behaviour_graph: sym(graph, &interner),
+                paths: paths.iter().map(|path| sym(path, &interner)).collect(),
+                subgraph_keywords: vec![],
+                target_keywords: vec![],
+                flags_bytes: None,
+            };
+            let out = derive_pa_subgraph_blocks(&[block], &interner);
+            let Some((expected_graph, expected_paths)) = expected else {
+                assert!(out.is_empty(), "{name}");
+                continue;
+            };
+            assert_eq!(out.len(), 1, "{name}");
+            let resolved: Vec<&str> = out[0]
+                .paths
+                .iter()
+                .map(|path| interner.resolve(*path).unwrap())
+                .collect();
+            assert_eq!(resolved, expected_paths, "{name}");
+            if let Some(expected_graph) = expected_graph {
+                assert_eq!(
+                    interner.resolve(out[0].behaviour_graph).unwrap(),
+                    expected_graph,
+                    "{name}"
+                );
+            }
+        }
+        assert!(derive_pa_subgraph_blocks(&[], &StringInterner::new()).is_empty());
     }
 
     #[test]
@@ -440,13 +456,6 @@ mod tests {
                 .iter()
                 .any(|p| p.eq_ignore_ascii_case("Actors\\Character\\Animations\\Paired"))
         );
-    }
-
-    /// empty input → empty output.
-    #[test]
-    fn empty_input_returns_empty() {
-        let mut interner = StringInterner::new();
-        assert!(derive_pa_subgraph_blocks(&[], &mut interner).is_empty());
     }
 
     /// a Furniture-role (SRAF role=2) block is never derived onto the PA

@@ -163,6 +163,10 @@ EndFunction
 Function Fragment_Stage_0115_Item_00()
 	EnableAlias(Alias_Door_BoardwalkToCasinoQuarter)
 	EnableAlias(Fabio)
+	; The checkpoint stages 116/141 carry the arrival objectives and had no setter.
+	If IsStageDone(110) && !IsStageDone(116) && !IsStageDone(125)
+		SetStage(116)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0116_Item_00()
@@ -210,6 +214,9 @@ EndFunction
 Function Fragment_Stage_0140_Item_00()
 	EnableAlias(Alias_Door_BoardwalkToCasinoQuarter)
 	DisableCollection(OvergrownDisabler)
+	If !IsStageDone(141) && !IsStageDone(145)
+		SetStage(141)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0141_Item_00()
@@ -289,6 +296,11 @@ Function Fragment_Stage_0252_Item_00()
 	SetObjectiveCompleted(71)
 	SetObjectiveDisplayed(75)
 	EnableAlias(Quentino)
+	; Concerta confronts the player after the body is found; 255 is the only stage that
+	; enables and places her before her 260 line can fire.
+	If !IsStageDone(255) && !IsStageDone(260)
+		SetStage(255)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0255_Item_00()

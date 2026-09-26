@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_one_bgsm_writes_mat_with_color_path_at_mapped_location() {
+    fn convert_one_bgsm_writes_mat_and_guards_crc_collisions() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("Materials/Weapons/Foo.bgsm");
         write_fixture_bgsm(
@@ -242,10 +242,7 @@ mod tests {
                     .unwrap_or(false)
             });
         assert!(has_color_path, "expected a _color texture path in {text}");
-    }
 
-    #[test]
-    fn collision_guard_trips_on_two_bgsms_mapping_to_the_same_crc() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("Materials/Weapons/Foo.bgsm");
         write_fixture_bgsm(&src, "Textures\\Weapons\\Foo_d.dds", "");

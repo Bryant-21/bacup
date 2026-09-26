@@ -731,199 +731,129 @@ mod tests {
             };
             assert_eq!(fk.plugin, base_sym);
         }
-    }
 
-    #[test]
-    fn injects_default_female_head_parts() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
-            vec![
-                ("EDID", bytes()),
-                ("ACBS", acbs(NPC_ACBS_FEMALE_FLAG)),
-                ("RNAM", human_race(&interner)),
-                ("HCLF", bytes()),
-                ("FMRI", bytes()),
-            ],
-            &interner,
-        );
-
-        assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        let pnams: Vec<u32> = npc
-            .fields
-            .iter()
-            .filter_map(|entry| {
-                if entry.sig.as_str() != "PNAM" {
-                    return None;
-                }
-                let FieldValue::FormKey(fk) = &entry.value else {
-                    panic!("PNAM must be FormKey");
-                };
-                assert_eq!(fk.plugin, base_sym);
-                Some(fk.local)
-            })
-            .collect();
-        assert_eq!(pnams, DEFAULT_FEMALE_HUMAN_HEAD_PARTS);
-    }
-
-    #[test]
-    fn injects_default_ghoul_head_parts_without_human_hair_color() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(NPC_ACBS_FEMALE_FLAG)),
-                ("RNAM", ghoul_race(&interner)),
-                ("FMRI", bytes()),
-            ],
-            &interner,
-        );
-
-        assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        let pnams: Vec<u32> = npc
-            .fields
-            .iter()
-            .filter_map(|entry| match (&*entry.sig.as_str(), &entry.value) {
-                ("PNAM", FieldValue::FormKey(fk)) => Some(fk.local),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(pnams, DEFAULT_FEMALE_GHOUL_HEAD_PARTS);
-        assert_eq!(count_sig(&npc, "HCLF"), 0);
-    }
-
-    #[test]
-    fn injects_default_child_head_parts_and_hair_color() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
+        let mut no_hclf = record(
             vec![
                 ("ACBS", acbs(0)),
-                ("RNAM", child_race(&interner)),
+                ("RNAM", human_race(&interner)),
                 ("MSDK", bytes()),
             ],
             &interner,
         );
-
         assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
+            &mut no_hclf,
+            base_sym,
+            &interner,
+            NPC_ORDER
         ));
-        let pnams: Vec<u32> = npc
-            .fields
-            .iter()
-            .filter_map(|entry| match (&*entry.sig.as_str(), &entry.value) {
-                ("PNAM", FieldValue::FormKey(fk)) => Some(fk.local),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(pnams, DEFAULT_MALE_CHILD_HEAD_PARTS);
         assert_eq!(
-            hclf_target(&npc),
-            Some((base_sym, DEFAULT_HUMAN_HAIR_COLOR_FO4))
+            hclf_target(&no_hclf),
+            Some((base_sym, DEFAULT_HUMAN_HAIR_COLOR_FO4)),
+            "default hair color is injected when absent"
+        );
+        let got = order(&no_hclf);
+        let last_pnam = got.iter().rposition(|sig| *sig == "PNAM").unwrap();
+        let hclf = got.iter().position(|sig| *sig == "HCLF").unwrap();
+        assert!(
+            last_pnam < hclf,
+            "HCLF follows the head parts in schema order"
         );
     }
 
     #[test]
-    fn preserves_existing_pnam() {
+    fn injects_default_head_parts_per_race_and_sex() {
         let interner = StringInterner::new();
         let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(0)),
-                ("RNAM", human_race(&interner)),
-                (
-                    "PNAM",
-                    FieldValue::FormKey(FormKey {
-                        plugin: base_sym,
-                        local: 0x0000_1234,
-                    }),
-                ),
-                ("HCLF", bytes()),
-            ],
-            &interner,
-        );
+        for (name, flags, race, expected, hair_color) in [
+            (
+                "female_human",
+                NPC_ACBS_FEMALE_FLAG,
+                human_race(&interner),
+                DEFAULT_FEMALE_HUMAN_HEAD_PARTS,
+                true,
+            ),
+            (
+                "female_ghoul",
+                NPC_ACBS_FEMALE_FLAG,
+                ghoul_race(&interner),
+                DEFAULT_FEMALE_GHOUL_HEAD_PARTS,
+                false,
+            ),
+            (
+                "male_child",
+                0,
+                child_race(&interner),
+                DEFAULT_MALE_CHILD_HEAD_PARTS,
+                true,
+            ),
+        ] {
+            let mut npc = record(
+                vec![("ACBS", acbs(flags)), ("RNAM", race), ("FMRI", bytes())],
+                &interner,
+            );
 
-        assert!(!inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        assert_eq!(count_sig(&npc, "PNAM"), 1);
-    }
-
-    #[test]
-    fn skips_non_human_npc() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(0)),
-                ("RNAM", other_race(&interner)),
-                ("HCLF", bytes()),
-            ],
-            &interner,
-        );
-
-        assert!(!inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        assert_eq!(count_sig(&npc, "PNAM"), 0);
-    }
-
-    #[test]
-    fn parses_custom_ghoul_armor_race_head_parts() {
-        let interner = StringInterner::new();
-        let masters = vec![BASE_MASTER.to_string()];
-        let subrecords = [
-            ("RNAM", raw_form_id(GHOUL_RACE_LOCAL)),
-            ("NAM0", Vec::new()),
-            ("MNAM", Vec::new()),
-            ("HEAD", raw_form_id(0x0176_9BA4)),
-            ("HEAD", raw_form_id(0x0176_9B9E)),
-            ("NAM0", Vec::new()),
-            ("FNAM", Vec::new()),
-            ("HEAD", raw_form_id(0x0111_CCBC)),
-            ("HEAD", raw_form_id(0x0176_9B9D)),
-        ];
-
-        let parts = parse_custom_humanoid_race_head_parts(
-            subrecords
+            assert!(
+                inject_default_human_head_parts(&mut npc, base_sym, &interner, NPC_ORDER),
+                "{name}"
+            );
+            let pnams: Vec<u32> = npc
+                .fields
                 .iter()
-                .map(|(signature, data)| (*signature, data.as_slice())),
-            &masters,
-            "SeventySix.esm",
-            &interner,
-        )
-        .expect("custom humanoid head parts");
-        let own_sym = interner.intern("SeventySix.esm");
-        assert_eq!(
-            parts.male,
-            vec![
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x0076_9BA4,
-                },
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x0076_9B9E,
-                },
-            ]
-        );
-        assert_eq!(
-            parts.female,
-            vec![
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x0011_CCBC,
-                },
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x0076_9B9D,
-                },
-            ]
-        );
+                .filter_map(|entry| match (&*entry.sig.as_str(), &entry.value) {
+                    ("PNAM", FieldValue::FormKey(fk)) => {
+                        assert_eq!(fk.plugin, base_sym, "{name}");
+                        Some(fk.local)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(pnams, expected, "{name}");
+            assert_eq!(
+                hclf_target(&npc),
+                hair_color.then_some((base_sym, DEFAULT_HUMAN_HAIR_COLOR_FO4)),
+                "{name}: ghouls get no human hair color"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_npcs_with_head_parts_or_non_human_races_alone() {
+        let interner = StringInterner::new();
+        let base_sym = interner.intern(BASE_MASTER);
+        let existing = FieldValue::FormKey(FormKey {
+            plugin: base_sym,
+            local: 0x0000_1234,
+        });
+        for (name, flags, race, pnam, expected_pnams) in [
+            (
+                "male_with_pnam",
+                0,
+                human_race(&interner),
+                Some(existing.clone()),
+                1,
+            ),
+            (
+                "female_with_pnam",
+                NPC_ACBS_FEMALE_FLAG,
+                human_race(&interner),
+                Some(existing.clone()),
+                1,
+            ),
+            ("non_human", 0, other_race(&interner), None, 0),
+        ] {
+            let mut fields = vec![("ACBS", acbs(flags)), ("RNAM", race)];
+            if let Some(pnam) = pnam {
+                fields.push(("PNAM", pnam));
+            }
+            fields.push(("HCLF", bytes()));
+            let mut npc = record(fields, &interner);
+
+            assert!(
+                !inject_default_human_head_parts(&mut npc, base_sym, &interner, NPC_ORDER),
+                "{name}"
+            );
+            assert_eq!(count_sig(&npc, "PNAM"), expected_pnams, "{name}");
+        }
     }
 
     /// Real FO4/FO76 races put the skeletal-model `MNAM`/`FNAM` markers first
@@ -931,59 +861,63 @@ mod tests {
     /// only be identified by counting `NAM0`. Reading it off the markers gave
     /// every head part to the female bucket and left male NPCs headless.
     #[test]
-    fn parses_race_head_parts_with_male_marker_before_head_data() {
+    fn parses_custom_race_head_parts_by_nam0_sections() {
         let interner = StringInterner::new();
         let masters = vec![BASE_MASTER.to_string()];
-        let subrecords = [
-            ("MNAM", Vec::new()),
-            ("FNAM", Vec::new()),
-            ("RNAM", raw_form_id(GHOUL_RACE_LOCAL)),
-            ("MNAM", Vec::new()),
-            ("NAM0", Vec::new()),
-            ("HEAD", raw_form_id(0x011C_206F)),
-            ("HEAD", raw_form_id(0x0176_9BA4)),
+        let own_sym = interner.intern("SeventySix.esm");
+        let own = |local| FormKey {
+            plugin: own_sym,
+            local,
+        };
+        let female_tail = [
             ("NAM0", Vec::new()),
             ("FNAM", Vec::new()),
             ("HEAD", raw_form_id(0x0111_CCBC)),
             ("HEAD", raw_form_id(0x0176_9B9D)),
         ];
-
-        let parts = parse_custom_humanoid_race_head_parts(
-            subrecords
-                .iter()
-                .map(|(signature, data)| (*signature, data.as_slice())),
-            &masters,
-            "SeventySix.esm",
-            &interner,
-        )
-        .expect("custom humanoid head parts");
-        let own_sym = interner.intern("SeventySix.esm");
-        assert_eq!(
-            parts.male,
-            vec![
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x001C_206F,
-                },
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x0076_9BA4,
-                },
-            ]
-        );
-        assert_eq!(
-            parts.female,
-            vec![
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x0011_CCBC,
-                },
-                FormKey {
-                    plugin: own_sym,
-                    local: 0x0076_9B9D,
-                },
-            ]
-        );
+        for (name, male_section, male) in [
+            (
+                "ghoul_armor",
+                vec![
+                    ("RNAM", raw_form_id(GHOUL_RACE_LOCAL)),
+                    ("NAM0", Vec::new()),
+                    ("MNAM", Vec::new()),
+                    ("HEAD", raw_form_id(0x0176_9BA4)),
+                    ("HEAD", raw_form_id(0x0176_9B9E)),
+                ],
+                vec![own(0x0076_9BA4), own(0x0076_9B9E)],
+            ),
+            (
+                "male_marker_before_head_data",
+                vec![
+                    ("MNAM", Vec::new()),
+                    ("FNAM", Vec::new()),
+                    ("RNAM", raw_form_id(GHOUL_RACE_LOCAL)),
+                    ("MNAM", Vec::new()),
+                    ("NAM0", Vec::new()),
+                    ("HEAD", raw_form_id(0x011C_206F)),
+                    ("HEAD", raw_form_id(0x0176_9BA4)),
+                ],
+                vec![own(0x001C_206F), own(0x0076_9BA4)],
+            ),
+        ] {
+            let parts = parse_custom_humanoid_race_head_parts(
+                male_section
+                    .iter()
+                    .chain(female_tail.iter())
+                    .map(|(signature, data)| (*signature, data.as_slice())),
+                &masters,
+                "SeventySix.esm",
+                &interner,
+            )
+            .expect("custom humanoid head parts");
+            assert_eq!(parts.male, male, "{name}");
+            assert_eq!(
+                parts.female,
+                vec![own(0x0011_CCBC), own(0x0076_9B9D)],
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1046,32 +980,6 @@ mod tests {
         assert_eq!(count_sig(&npc, "HCLF"), 0);
     }
 
-    #[test]
-    fn preserves_female_pnam() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(NPC_ACBS_FEMALE_FLAG)),
-                ("RNAM", human_race(&interner)),
-                (
-                    "PNAM",
-                    FieldValue::FormKey(FormKey {
-                        plugin: base_sym,
-                        local: 0x0000_1234,
-                    }),
-                ),
-                ("HCLF", bytes()),
-            ],
-            &interner,
-        );
-
-        assert!(!inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        assert_eq!(count_sig(&npc, "PNAM"), 1);
-    }
-
     fn hclf_target(record: &Record) -> Option<(Sym, u32)> {
         record.fields.iter().find_map(|entry| {
             if entry.sig.as_str() != "HCLF" {
@@ -1088,115 +996,47 @@ mod tests {
         FieldValue::FormKey(FormKey { plugin, local })
     }
 
+    /// A carried hair color keeps its local id but is retargeted to Fallout4 when
+    /// the id is shared, remapped when FO76 moved it (3E48C0 is FO4 DLC04
+    /// 24A04E), defaulted when it is not a hair CLFM (it would dangle), and left
+    /// alone when already a valid FO4 hair color.
     #[test]
-    fn injects_default_hair_color_when_absent() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(0)),
-                ("RNAM", human_race(&interner)),
-                ("MSDK", bytes()),
-            ],
-            &interner,
-        );
-
-        assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        assert_eq!(
-            hclf_target(&npc),
-            Some((base_sym, DEFAULT_HUMAN_HAIR_COLOR_FO4))
-        );
-        // HCLF must follow the injected head parts in schema order.
-        let got = order(&npc);
-        let last_pnam = got.iter().rposition(|sig| *sig == "PNAM").unwrap();
-        let hclf = got.iter().position(|sig| *sig == "HCLF").unwrap();
-        assert!(last_pnam < hclf);
-    }
-
-    #[test]
-    fn retargets_carried_base_hair_color_master() {
+    fn carried_hair_color_is_retargeted_remapped_or_defaulted() {
         let interner = StringInterner::new();
         let base_sym = interner.intern(BASE_MASTER);
         let source_sym = interner.intern("SeventySix.esm");
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(0)),
-                ("RNAM", human_race(&interner)),
-                ("HCLF", formkey(source_sym, 0x0019_EE60)), // JetBlack (shared id)
-            ],
-            &interner,
-        );
-
-        assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        // Same local FormID, master retargeted SeventySix → Fallout4.
-        assert_eq!(hclf_target(&npc), Some((base_sym, 0x0019_EE60)));
-        assert_eq!(count_sig(&npc, "HCLF"), 1);
-    }
-
-    #[test]
-    fn remaps_carried_dlc04_hair_color() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let source_sym = interner.intern("SeventySix.esm");
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(0)),
-                ("RNAM", human_race(&interner)),
-                ("HCLF", formkey(source_sym, 0x003E_48C0)), // FO76 HairColor23Purple
-            ],
-            &interner,
-        );
-
-        assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        // FO76 3E48C0 → FO4 DLC04 24A04E (same color).
-        assert_eq!(hclf_target(&npc), Some((base_sym, 0x0024_A04E)));
-    }
-
-    #[test]
-    fn defaults_unknown_carried_hair_color() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let source_sym = interner.intern("SeventySix.esm");
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(0)),
-                ("RNAM", human_race(&interner)),
-                ("HCLF", formkey(source_sym, 0x0011_1111)), // non-hair CLFM → would dangle
-            ],
-            &interner,
-        );
-
-        assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        assert_eq!(
-            hclf_target(&npc),
-            Some((base_sym, DEFAULT_HUMAN_HAIR_COLOR_FO4))
-        );
-    }
-
-    #[test]
-    fn keeps_existing_fo4_hair_color() {
-        let interner = StringInterner::new();
-        let base_sym = interner.intern(BASE_MASTER);
-        let mut npc = record(
-            vec![
-                ("ACBS", acbs(0)),
-                ("RNAM", human_race(&interner)),
-                ("HCLF", formkey(base_sym, 0x0019_EE61)), // already a valid FO4 hair color
-            ],
-            &interner,
-        );
-
-        assert!(inject_default_human_head_parts(
-            &mut npc, base_sym, &interner, NPC_ORDER
-        ));
-        assert_eq!(hclf_target(&npc), Some((base_sym, 0x0019_EE61)));
+        for (name, carried, expected) in [
+            ("shared_id", formkey(source_sym, 0x0019_EE60), 0x0019_EE60),
+            (
+                "fo76_dlc04_color",
+                formkey(source_sym, 0x003E_48C0),
+                0x0024_A04E,
+            ),
+            (
+                "unknown_color",
+                formkey(source_sym, 0x0011_1111),
+                DEFAULT_HUMAN_HAIR_COLOR_FO4,
+            ),
+            (
+                "valid_fo4_color",
+                formkey(base_sym, 0x0019_EE61),
+                0x0019_EE61,
+            ),
+        ] {
+            let mut npc = record(
+                vec![
+                    ("ACBS", acbs(0)),
+                    ("RNAM", human_race(&interner)),
+                    ("HCLF", carried),
+                ],
+                &interner,
+            );
+            assert!(
+                inject_default_human_head_parts(&mut npc, base_sym, &interner, NPC_ORDER),
+                "{name}"
+            );
+            assert_eq!(hclf_target(&npc), Some((base_sym, expected)), "{name}");
+            assert_eq!(count_sig(&npc, "HCLF"), 1, "{name}");
+        }
     }
 }

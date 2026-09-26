@@ -221,7 +221,7 @@ pub(crate) mod port_test_util {
     }
 
     pub(crate) fn config_for(handle: u64) -> FixupConfig {
-        let mut session = open_session(handle, None).expect("session");
+        let session = open_session(handle, None).expect("session");
         let schema = session.schema().expect("schema");
         let mut config = FixupConfig::default();
         config.target_schema = Some(schema);

@@ -2,7 +2,17 @@ Function CompleteFabrication(Int aiQuestIndex, Int aiStage, Bool abCloth)
     MoMMasterQuestScript masterScript = MoMMaster as MoMMasterQuestScript
     If masterScript != None && masterScript.MoMQuestList.Length > aiQuestIndex
         Quest targetQuest = masterScript.MoMQuestList[aiQuestIndex].MoMQuest
-        If targetQuest != None && !targetQuest.IsStageDone(aiStage)
+        If targetQuest != None && targetQuest.IsRunning() && !targetQuest.IsStageDone(aiStage)
+            If aiQuestIndex == 4
+                MoM02AQuestScript phantom = targetQuest as MoM02AQuestScript
+                If phantom == None || !targetQuest.IsStageDone(50) || Game.GetPlayer().GetItemCount(phantom.StealthBoy) < 1 || Game.GetPlayer().GetItemCount(phantom.HallucigenGasCanister) < 1
+                    Return
+                EndIf
+            ElseIf aiQuestIndex == 5 && aiStage == 100 && !targetQuest.IsStageDone(90)
+                Return
+            ElseIf aiQuestIndex == 6 && !targetQuest.IsStageDone(80)
+                Return
+            EndIf
             If MoMFabricatorActivatorRef != None
                 If abCloth
                     MoMFabricatorActivatorRef.ClientFabricateCloth()
@@ -48,8 +58,7 @@ Function Fragment_Terminal_08(ObjectReference akTerminalRef)
     If masterScript != None && masterScript.MoMQuestList.Length > 9
         Quest targetQuest = masterScript.MoMQuestList[9].MoMQuest
         Int stage = masterScript.CONST_MoMVeil_UseTheFabricatorAndCheckpoint
-        If targetQuest != None && !targetQuest.IsStageDone(stage)
-            Game.GetPlayer().RemoveItem(MoM_ClothesMistressOfMysteryVeilCorpse, 1, true)
+        If targetQuest != None && targetQuest.IsRunning() && !targetQuest.IsStageDone(stage) && Game.GetPlayer().GetItemCount(MoM_ClothesMistressOfMysteryVeilCorpse) > 0
             CompleteFabrication(9, stage, true)
         EndIf
     EndIf

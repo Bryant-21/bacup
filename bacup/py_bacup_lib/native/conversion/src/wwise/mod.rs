@@ -379,80 +379,80 @@ mod tests {
     }
 
     #[test]
-    fn build_bank_end_to_end_over_two_inputs() {
-        let root = tempfile::tempdir().unwrap();
-        let project_src = root.path().join("project_src");
-        make_fake_project(&project_src);
+    fn build_bank_end_to_end_and_reports_missing_streamed_files() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let project_src = root.path().join("project_src");
+            make_fake_project(&project_src);
 
-        let inputs_dir = root.path().join("inputs");
-        let xwm_in = inputs_dir.join("Track.xwm");
-        write_file(&xwm_in, b"fake xwm bytes");
-        let wav_in = inputs_dir.join("Beep.wav");
-        write_file(&wav_in, b"fake wav bytes");
+            let inputs_dir = root.path().join("inputs");
+            let xwm_in = inputs_dir.join("Track.xwm");
+            write_file(&xwm_in, b"fake xwm bytes");
+            let wav_in = inputs_dir.join("Beep.wav");
+            write_file(&wav_in, b"fake wav bytes");
 
-        let tools = make_tools(&project_src);
-        let work_dir = root.path().join("work");
-        fs::create_dir_all(&work_dir).unwrap();
+            let tools = make_tools(&project_src);
+            let work_dir = root.path().join("work");
+            fs::create_dir_all(&work_dir).unwrap();
 
-        let inputs = vec![
-            ("music/Track.xwm".to_string(), xwm_in),
-            ("sound/fx/Beep.wav".to_string(), wav_in),
-        ];
+            let inputs = vec![
+                ("music/Track.xwm".to_string(), xwm_in),
+                ("sound/fx/Beep.wav".to_string(), wav_in),
+            ];
 
-        let out = build_bank(&tools, &work_dir, &inputs, "Fallout4_SF")
-            .expect("build_bank should succeed against stub tools");
+            let out = build_bank(&tools, &work_dir, &inputs, "Fallout4_SF")
+                .expect("build_bank should succeed against stub tools");
 
-        assert_eq!(out.events.len(), 2);
-        let names: HashSet<_> = out.events.iter().map(|e| e.event_name.clone()).collect();
-        assert!(names.contains("FO4SF_MUSIC_TRACK_XWM"));
-        assert!(names.contains("FO4SF_SOUND_FX_BEEP_WAV"));
-        for ev in &out.events {
-            assert_ne!(
-                ev.event_guid, [0u8; 16],
-                "event GUID should be parsed, not zero"
+            assert_eq!(out.events.len(), 2);
+            let names: HashSet<_> = out.events.iter().map(|e| e.event_name.clone()).collect();
+            assert!(names.contains("FO4SF_MUSIC_TRACK_XWM"));
+            assert!(names.contains("FO4SF_SOUND_FX_BEEP_WAV"));
+            for ev in &out.events {
+                assert_ne!(
+                    ev.event_guid, [0u8; 16],
+                    "event GUID should be parsed, not zero"
+                );
+            }
+
+            let bank_id = encode::fnv1_32("Fallout4_SF");
+            assert_eq!(bank_id, 3768386522);
+            let paths: HashSet<_> = out.bank_files.iter().map(|(p, _)| p.clone()).collect();
+            assert!(paths.contains(&format!("sound/soundbanks/{bank_id}.bnk")));
+            assert!(paths.contains(&format!("sound/soundbanks/{bank_id}.json")));
+            for ev in &out.events {
+                assert!(paths.contains(&format!("sound/soundbanks/{}.wem", ev.media_id)));
+            }
+
+            // GeneratedSoundBanks must never be carried into the scratch copy.
+            assert!(!work_dir.join("proj").join("GeneratedSoundBanks").exists());
+
+            // Exactly one generate-soundbank invocation for the whole batch.
+            let counter_path = work_dir.join("banks").join("_wwiseconsole_call_count.txt");
+            let count = fs::read_to_string(&counter_path).unwrap();
+            assert_eq!(count.trim(), "1");
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let project_src = root.path().join("project_src");
+            make_fake_project(&project_src);
+
+            let inputs_dir = root.path().join("inputs");
+            let wav_in = inputs_dir.join("Beep.wav");
+            write_file(&wav_in, b"fake wav bytes");
+
+            let mut tools = make_tools(&project_src);
+            tools.copy_streamed_files = root.path().join("does_not_exist_copystreamedfiles.exe");
+
+            let work_dir = root.path().join("work");
+            fs::create_dir_all(&work_dir).unwrap();
+
+            let inputs = vec![("sound/fx/Beep.wav".to_string(), wav_in)];
+            let err = build_bank(&tools, &work_dir, &inputs, "Fallout4_SF")
+                .expect_err("missing CopyStreamedFiles must fail, not panic");
+            assert!(
+                err.contains("does_not_exist_copystreamedfiles.exe"),
+                "error should name the missing tool: {err}"
             );
         }
-
-        let bank_id = encode::fnv1_32("Fallout4_SF");
-        assert_eq!(bank_id, 3768386522);
-        let paths: HashSet<_> = out.bank_files.iter().map(|(p, _)| p.clone()).collect();
-        assert!(paths.contains(&format!("sound/soundbanks/{bank_id}.bnk")));
-        assert!(paths.contains(&format!("sound/soundbanks/{bank_id}.json")));
-        for ev in &out.events {
-            assert!(paths.contains(&format!("sound/soundbanks/{}.wem", ev.media_id)));
-        }
-
-        // GeneratedSoundBanks must never be carried into the scratch copy.
-        assert!(!work_dir.join("proj").join("GeneratedSoundBanks").exists());
-
-        // Exactly one generate-soundbank invocation for the whole batch.
-        let counter_path = work_dir.join("banks").join("_wwiseconsole_call_count.txt");
-        let count = fs::read_to_string(&counter_path).unwrap();
-        assert_eq!(count.trim(), "1");
-    }
-
-    #[test]
-    fn build_bank_reports_missing_copy_streamed_files_by_name() {
-        let root = tempfile::tempdir().unwrap();
-        let project_src = root.path().join("project_src");
-        make_fake_project(&project_src);
-
-        let inputs_dir = root.path().join("inputs");
-        let wav_in = inputs_dir.join("Beep.wav");
-        write_file(&wav_in, b"fake wav bytes");
-
-        let mut tools = make_tools(&project_src);
-        tools.copy_streamed_files = root.path().join("does_not_exist_copystreamedfiles.exe");
-
-        let work_dir = root.path().join("work");
-        fs::create_dir_all(&work_dir).unwrap();
-
-        let inputs = vec![("sound/fx/Beep.wav".to_string(), wav_in)];
-        let err = build_bank(&tools, &work_dir, &inputs, "Fallout4_SF")
-            .expect_err("missing CopyStreamedFiles must fail, not panic");
-        assert!(
-            err.contains("does_not_exist_copystreamedfiles.exe"),
-            "error should name the missing tool: {err}"
-        );
     }
 }

@@ -32,6 +32,7 @@ from bacup_lib.paths import (
             "Meshes/fnv/weapons/2hammer/club.nif",
             "Meshes/weapons/2hammer/club.nif",
         ),
+        ("fnv", "interface/foo.swf", "interface/foo.swf"),
     ],
 )
 def test_apply_asset_prefix_returns_unprefixed_known_root(
@@ -39,20 +40,10 @@ def test_apply_asset_prefix_returns_unprefixed_known_root(
     raw_path: str,
     expected: str,
 ) -> None:
-    result = apply_asset_prefix(raw_path, GAME_PROFILES[source_id])
+    profile = GAME_PROFILES[source_id]
+    result = apply_asset_prefix(raw_path, profile)
     assert result.replace("\\", "/") == expected
-
-
-def test_apply_asset_prefix_is_idempotent() -> None:
-    profile = GAME_PROFILES["fnv"]
-    once = apply_asset_prefix("Meshes/foo.nif", profile)
-    twice = apply_asset_prefix(once, profile)
-    assert twice == once
-
-
-def test_apply_asset_prefix_preserves_unknown_root() -> None:
-    profile = GAME_PROFILES["fnv"]
-    assert apply_asset_prefix("interface/foo.swf", profile) == "interface/foo.swf"
+    assert apply_asset_prefix(result, profile) == result
 
 
 @pytest.mark.parametrize(
@@ -70,6 +61,10 @@ def test_apply_asset_prefix_preserves_unknown_root() -> None:
             "Textures",
             "Textures/clutter/jukebox/jukebox_d.dds",
         ),
+        ("Null", "Meshes", "Null"),
+        ("null", "Meshes", "null"),
+        ("0ABC12:FalloutNV.esm", "Meshes", "0ABC12:FalloutNV.esm"),
+        ("interface/foo.swf", "Meshes", "interface/foo.swf"),
     ],
 )
 def test_apply_asset_prefix_for_root_returns_unprefixed_asset_paths(
@@ -79,9 +74,3 @@ def test_apply_asset_prefix_for_root_returns_unprefixed_asset_paths(
 ) -> None:
     profile = GAME_PROFILES["fnv"]
     assert apply_asset_prefix_for_root(raw_path, profile, root) == expected
-
-
-@pytest.mark.parametrize("raw_path", ["Null", "null", "0ABC12:FalloutNV.esm", "interface/foo.swf"])
-def test_apply_asset_prefix_for_root_preserves_non_asset_values(raw_path: str) -> None:
-    profile = GAME_PROFILES["fnv"]
-    assert apply_asset_prefix_for_root(raw_path, profile, "Meshes") == raw_path

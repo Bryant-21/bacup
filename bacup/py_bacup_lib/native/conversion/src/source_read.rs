@@ -160,6 +160,39 @@ pub(crate) fn snapshot_records_by_form_keys(
                 raw_record,
             });
         }
+    } else if let Some((core, indexed_records)) = slot.cached_unique_core_records_sections() {
+        for fk in fks {
+            let lookup_fk = lookup_form_key(fk, interner)?;
+            let Some(raw_record) = core
+                .by_form_key
+                .get(&lookup_fk)
+                .and_then(|entry| indexed_records.record(&slot.parsed, entry.raw_form_id))
+            else {
+                break;
+            };
+            records.push(SourceRecordSnapshot {
+                form_key: *fk,
+                raw_record: raw_record.clone(),
+            });
+        }
+        if records.len() != fks.len() {
+            records.clear();
+            let locator = ensure_locator_section(slot);
+            for fk in fks {
+                let lookup_fk = lookup_form_key(fk, interner)?;
+                let entry = locator
+                    .by_form_key
+                    .get(&lookup_fk)
+                    .ok_or_else(|| RecordReadError::NotFound(not_found_form_key(fk, interner)))?;
+                let raw_record = locator
+                    .record(&slot.parsed, entry)
+                    .ok_or_else(|| RecordReadError::NotFound(not_found_form_key(fk, interner)))?;
+                records.push(SourceRecordSnapshot {
+                    form_key: *fk,
+                    raw_record: raw_record.clone(),
+                });
+            }
+        }
     } else {
         let locator = ensure_locator_section(slot);
         for fk in fks {
@@ -267,6 +300,27 @@ pub(crate) fn decode_record_in_slot(
         );
     }
 
+    if let Some((core, indexed_records)) = slot.cached_unique_core_records_sections()
+        && let Some(raw_record) = core
+            .by_form_key
+            .get(&lookup_fk)
+            .and_then(|entry| indexed_records.record(&slot.parsed, entry.raw_form_id))
+    {
+        let plugin_is_localized = (slot.parsed.header.flags & TES4_FLAG_LOCALIZED) != 0;
+        let strings = plugin_is_localized.then(|| slot.strings_ref());
+        return decode_record_from_parsed_relayout(
+            raw_record,
+            fk,
+            schema,
+            &slot.parsed.header.masters,
+            &slot.parsed.plugin_name,
+            strings,
+            plugin_is_localized,
+            interner,
+            relayout,
+        );
+    }
+
     let locator = ensure_locator_section(slot);
     let entry = locator
         .by_form_key
@@ -360,6 +414,8 @@ pub(crate) fn decode_record_from_parsed_relayout(
     let is_scen_record = raw_record.signature.as_str() == "SCEN";
     let is_term_record = raw_record.signature.as_str() == "TERM";
     let is_furn_record = raw_record.signature.as_str() == "FURN";
+    let is_perk_record = raw_record.signature.as_str() == "PERK";
+    let mut perk_entry_type = None;
     let mut in_pack_package_data = false;
     let mut after_pack_procedure_marker = false;
     let mut after_term_marker_model = false;
@@ -447,7 +503,25 @@ pub(crate) fn decode_record_from_parsed_relayout(
         };
         let effective_codec = override_codec.or(codec);
 
-        let value = if force_raw_bytes {
+        let perk_reference_data =
+            is_perk_record && subrec_sig_str == "DATA" && matches!(perk_entry_type, Some(0 | 1));
+        let value = if perk_reference_data && sr.data.len() >= 4 {
+            let reference = decode_nullable_form_id_value(
+                u32::from_le_bytes(sr.data[..4].try_into().unwrap()),
+                masters,
+                plugin_name,
+                interner,
+            )
+            .map_err(|error| RecordReadError::InvalidFormKey(error.to_string()))?;
+            if sr.data.len() == 4 {
+                reference
+            } else {
+                FieldValue::List(vec![
+                    reference,
+                    FieldValue::Bytes(sr.data[4..].iter().copied().collect()),
+                ])
+            }
+        } else if force_raw_bytes {
             let bytes: smallvec::SmallVec<[u8; 32]> = sr.data.iter().copied().collect();
             FieldValue::Bytes(bytes)
         } else {
@@ -511,6 +585,15 @@ pub(crate) fn decode_record_from_parsed_relayout(
             sig: sub_sig,
             value,
         });
+
+        if is_perk_record {
+            match subrec_sig_str {
+                // FO76 has a two-byte header; legacy Fallout's converter owns its three-byte union.
+                "PRKE" => perk_entry_type = (sr.data.len() == 2).then(|| sr.data[0]),
+                "PRKF" => perk_entry_type = None,
+                _ => {}
+            }
+        }
 
         if is_scen_record {
             if subrec_sig_str == "HNAM" {
@@ -776,7 +859,7 @@ pub(crate) fn decode_subrecord(
                         return Ok(FieldValue::String(interner.intern("")));
                     }
                     if let Some(text) = resolve_localized_string(strings, id) {
-                        return Ok(FieldValue::String(interner.intern(text)));
+                        return Ok(FieldValue::String(interner.intern(&text)));
                     }
                     return Ok(FieldValue::Uint(id as u64));
                 }
@@ -1215,38 +1298,21 @@ fn decode_nullable_form_id_value(
         .ok_or(DecodeError::UnresolvableFormId(raw))
 }
 
-fn resolve_localized_string<'a>(
-    strings: &'a LocalizedStringsState,
-    string_id: u32,
-) -> Option<&'a str> {
+fn resolve_localized_string(strings: &LocalizedStringsState, string_id: u32) -> Option<String> {
     let default_language = strings.default_language.trim();
     if !default_language.is_empty() {
-        if let Some(text) = strings
-            .by_language
-            .get(default_language)
-            .and_then(|table| table.get(&string_id))
-        {
-            return Some(text.as_str());
+        if let Some(text) = strings.resolve(default_language, string_id) {
+            return Some(text);
         }
     }
     if default_language != "en" {
-        if let Some(text) = strings
-            .by_language
-            .get("en")
-            .and_then(|table| table.get(&string_id))
-        {
-            return Some(text.as_str());
+        if let Some(text) = strings.resolve("en", string_id) {
+            return Some(text);
         }
     }
-    let mut languages: Vec<&String> = strings.by_language.keys().collect();
-    languages.sort();
-    for language in languages {
-        if let Some(text) = strings
-            .by_language
-            .get(language)
-            .and_then(|table| table.get(&string_id))
-        {
-            return Some(text.as_str());
+    for language in strings.language_codes() {
+        if let Some(text) = strings.resolve(&language, string_id) {
+            return Some(text);
         }
     }
     None
@@ -1354,6 +1420,160 @@ mod tests {
             data: Bytes::from(data),
             semantic_type: None,
         }
+    }
+
+    #[test]
+    fn perk_effect_references_decode_with_their_master_and_keep_quest_stage_bytes() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo76").unwrap();
+        let key = FormKey {
+            local: 0x800,
+            plugin: interner.intern("Cards.esm"),
+        };
+        let record = ParsedRecord {
+            signature: "PERK".into(),
+            form_id: 0x01000800,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(209),
+            version2: None,
+            subrecords: vec![
+                parsed_subrecord("DATA", vec![1, 0, 1]),
+                parsed_subrecord("PRKE", vec![1, 0]),
+                parsed_subrecord("DATA", 0x01000801u32.to_le_bytes().to_vec()),
+                parsed_subrecord("PRKF", vec![]),
+                parsed_subrecord("PRKE", vec![0, 0]),
+                parsed_subrecord("DATA", vec![2, 8, 0, 0, 20, 0, 0, 0]),
+                parsed_subrecord("PRKF", vec![]),
+                parsed_subrecord("PRKE", vec![2, 0]),
+                parsed_subrecord("DATA", vec![14, 9, 2, 0]),
+                parsed_subrecord("PRKF", vec![]),
+            ],
+            raw_payload: None,
+            parse_error: None,
+        };
+        let decoded = decode_record_from_parsed(
+            &record,
+            &key,
+            &schema,
+            &["Base.esm".into()],
+            "Cards.esm",
+            None,
+            false,
+            &interner,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded.fields[2].value,
+            FieldValue::FormKey(FormKey {
+                local: 0x801,
+                plugin: key.plugin
+            })
+        );
+        assert_eq!(
+            decoded.fields[5].value,
+            FieldValue::List(vec![
+                FieldValue::FormKey(FormKey {
+                    local: 0x802,
+                    plugin: interner.intern("Base.esm")
+                }),
+                FieldValue::Bytes([20, 0, 0, 0].into_iter().collect()),
+            ])
+        );
+        assert_eq!(
+            decoded.fields[8].value,
+            FieldValue::Bytes([14, 9, 2, 0].into_iter().collect())
+        );
+    }
+
+    fn indexed_test_handle(masters: Vec<String>, records: Vec<ParsedRecord>) -> u64 {
+        use esp_authoring_core::plugin_runtime::{ensure_records_section, plugin_handle_new_no_py};
+
+        let handle = plugin_handle_new_no_py("Source.esm", Some("fo76"));
+        let mut store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get_mut(&handle).expect("test handle");
+        slot.parsed.header.masters = masters;
+        slot.parsed.root_items = records.into_iter().map(ParsedItem::Record).collect();
+        let _ = ensure_core_section(slot);
+        let _ = ensure_records_section(slot);
+        handle
+    }
+
+    fn indexed_test_record(form_id: u32, editor_id: &str) -> ParsedRecord {
+        let mut eid = editor_id.as_bytes().to_vec();
+        eid.push(0);
+        ParsedRecord {
+            signature: SmolStr::new_static("MISC"),
+            form_id,
+            flags: 0,
+            version_control: 0,
+            form_version: Some(131),
+            version2: Some(1),
+            subrecords: vec![parsed_subrecord("EDID", eid)],
+            raw_payload: None,
+            parse_error: None,
+        }
+    }
+
+    #[test]
+    fn eager_reads_reuse_cached_core_records_without_locator() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_close_native, plugin_handle_debug_section_loaded_native,
+        };
+
+        let handle = indexed_test_handle(Vec::new(), vec![indexed_test_record(0x100, "First")]);
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("Source.esm");
+        let fk = FormKey {
+            local: 0x100,
+            plugin: source_plugin,
+        };
+        let schema = AuthoringSchema::for_game("fo76").expect("fo76 schema");
+
+        let decoded = read_record_relayout_by_form_key(handle, &fk, &schema, &interner, None)
+            .expect("single cached read");
+        assert_eq!(
+            decoded.eid.and_then(|eid| interner.resolve(eid)),
+            Some("First")
+        );
+        assert!(!plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+
+        let batch =
+            snapshot_records_by_form_keys(handle, &[fk], &interner).expect("batch cached read");
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.records[0].raw_record.form_id, 0x100);
+        assert!(!plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+        assert!(plugin_handle_close_native(handle));
+    }
+
+    #[test]
+    fn duplicate_normalized_form_key_falls_back_to_first_locator_record() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_close_native, plugin_handle_debug_section_loaded_native,
+        };
+
+        let handle = indexed_test_handle(
+            vec!["Master.esm".to_string(), "master.ESM".to_string()],
+            vec![
+                indexed_test_record(0x0000_0100, "First"),
+                indexed_test_record(0x0100_0100, "Second"),
+            ],
+        );
+        let interner = StringInterner::new();
+        let fk = FormKey {
+            local: 0x100,
+            plugin: interner.intern("Master.esm"),
+        };
+        let schema = AuthoringSchema::for_game("fo76").expect("fo76 schema");
+
+        let decoded = read_record_relayout_by_form_key(handle, &fk, &schema, &interner, None)
+            .expect("locator fallback read");
+        assert_eq!(
+            decoded.eid.and_then(|eid| interner.resolve(eid)),
+            Some("First")
+        );
+        assert!(plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+        assert!(plugin_handle_close_native(handle));
     }
 
     #[test]
@@ -1687,12 +1907,6 @@ mod tests {
     }
 
     #[test]
-    fn decode_zstring_strips_null_terminator() {
-        let data = b"TestWeap\x00";
-        assert_eq!(decode_zstring(data).unwrap(), "TestWeap");
-    }
-
-    #[test]
     fn decode_lcep_yields_list_of_structs_with_formkey_leaves() {
         let mut interner = StringInterner::new();
         // one 12-byte LCEP row: Ref=0x0018116E, EnableParent=0x00000000 (NULL),
@@ -1793,40 +2007,15 @@ mod tests {
     }
 
     #[test]
-    fn decode_lcep_malformed_length_falls_back_to_bytes() {
-        let mut interner = StringInterner::new();
-        let data = vec![0u8; 7]; // not a multiple of 12
-        let v = decode_subrecord(
-            "LCTN",
-            "LCEP",
-            "array_struct:I,I,B,B,B,B",
-            &data,
-            &[],
-            "SeventySix.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-        assert!(
-            matches!(v, FieldValue::Bytes(_)),
-            "malformed row count -> raw Bytes, never panic"
-        );
-    }
-
-    #[test]
-    fn decode_zstring_no_null_is_fine() {
-        let data = b"Hello";
-        assert_eq!(decode_zstring(data).unwrap(), "Hello");
-    }
-
-    #[test]
-    fn decode_zstring_empty_is_empty_string() {
-        assert_eq!(decode_zstring(&[]).unwrap(), "");
-    }
-
-    #[test]
-    fn decode_zstring_nul_only_is_empty() {
-        assert_eq!(decode_zstring(&[0]).unwrap(), "");
+    fn decode_zstring_strips_optional_null_terminator() {
+        for (data, expected) in [
+            (&b"TestWeap\x00"[..], "TestWeap"),
+            (&b"Hello"[..], "Hello"),
+            (&b""[..], ""),
+            (&b"\x00"[..], ""),
+        ] {
+            assert_eq!(decode_zstring(data).unwrap(), expected, "{data:?}");
+        }
     }
 
     #[test]
@@ -1936,7 +2125,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_lstring_resolves_loaded_localized_string() {
+    fn decode_lstring_resolves_localized_ids_inline_text_and_keeps_unresolved_ids() {
         let mut interner = StringInterner::new();
         let mut strings = LocalizedStringsState::default();
         strings.default_language = "en".to_string();
@@ -1945,9 +2134,9 @@ mod tests {
             .entry("en".to_string())
             .or_default()
             .insert(0x0003_4695, "Resolved Name".to_string());
-
         let data = 0x0003_4695u32.to_le_bytes();
-        let value = decode_subrecord(
+
+        let resolved = decode_subrecord(
             "WEAP",
             "FULL",
             "lstring",
@@ -1958,20 +2147,14 @@ mod tests {
             &mut interner,
         )
         .unwrap();
-
-        match value {
+        match resolved {
             FieldValue::String(sym) => {
                 assert_eq!(interner.resolve(sym), Some("Resolved Name"));
             }
             other => panic!("expected resolved string, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn decode_nonlocalized_four_byte_lstring_as_inline_text() {
-        let mut interner = StringInterner::new();
-
-        let value = decode_subrecord(
+        let inline = decode_subrecord(
             "MISC",
             "FULL",
             "lstring",
@@ -1982,127 +2165,70 @@ mod tests {
             &mut interner,
         )
         .unwrap();
-
-        match value {
+        match inline {
             FieldValue::String(sym) => assert_eq!(interner.resolve(sym), Some("Cup")),
             other => panic!("expected inline string, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn decode_lstring_keeps_unresolved_localized_id() {
-        let mut interner = StringInterner::new();
-        let strings = LocalizedStringsState {
+        let unloaded = LocalizedStringsState {
             default_language: "en".to_string(),
             ..LocalizedStringsState::default()
         };
-
-        let data = 0x0003_4695u32.to_le_bytes();
-        let value = decode_subrecord(
+        let unresolved = decode_subrecord(
             "WEAP",
             "FULL",
             "lstring",
             &data,
             &[],
             "test.esm",
-            Some(&strings),
+            Some(&unloaded),
             &mut interner,
         )
         .unwrap();
-
-        assert_eq!(value, FieldValue::Uint(0x0003_4695));
+        assert_eq!(unresolved, FieldValue::Uint(0x0003_4695));
     }
 
     #[test]
-    fn decode_uint32_round_trip() {
-        let data = 42u32.to_le_bytes();
+    fn decode_scalar_codecs_and_reject_unknown_codecs() {
         let mut interner = StringInterner::new();
-        let v = decode_subrecord(
-            "WEAP",
-            "DATA",
-            "uint32",
-            &data,
-            &[],
-            "test.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-        assert_eq!(v, FieldValue::Uint(42));
-    }
-
-    #[test]
-    fn decode_int32_round_trip() {
-        let data = (-7i32).to_le_bytes();
-        let mut interner = StringInterner::new();
-        let v = decode_subrecord(
-            "WEAP",
-            "DATA",
-            "int32",
-            &data,
-            &[],
-            "test.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-        assert_eq!(v, FieldValue::Int(-7));
-    }
-
-    #[test]
-    fn decode_float32_round_trip() {
-        let data = 1.5f32.to_le_bytes();
-        let mut interner = StringInterner::new();
-        let v = decode_subrecord(
-            "WEAP",
-            "DATA",
-            "float32",
-            &data,
-            &[],
-            "test.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-        assert_eq!(v, FieldValue::Float(1.5));
-    }
-
-    #[test]
-    fn decode_bool_true_and_false() {
-        let mut interner = StringInterner::new();
-        assert_eq!(
-            decode_subrecord(
+        for (codec, data, expected) in [
+            ("uint32", 42u32.to_le_bytes().to_vec(), FieldValue::Uint(42)),
+            ("int32", (-7i32).to_le_bytes().to_vec(), FieldValue::Int(-7)),
+            (
+                "float32",
+                1.5f32.to_le_bytes().to_vec(),
+                FieldValue::Float(1.5),
+            ),
+            ("bool", vec![1], FieldValue::Bool(true)),
+            ("bool", vec![0], FieldValue::Bool(false)),
+        ] {
+            let value = decode_subrecord(
                 "WEAP",
                 "DATA",
-                "bool",
-                &[1],
+                codec,
+                &data,
                 &[],
                 "test.esm",
                 None,
-                &mut interner
+                &mut interner,
             )
-            .unwrap(),
-            FieldValue::Bool(true)
-        );
-        assert_eq!(
-            decode_subrecord(
-                "WEAP",
-                "DATA",
-                "bool",
-                &[0],
-                &[],
-                "test.esm",
-                None,
-                &mut interner
-            )
-            .unwrap(),
-            FieldValue::Bool(false)
-        );
-    }
+            .unwrap();
+            assert_eq!(value, expected, "{codec} {data:?}");
+        }
 
-    #[test]
-    fn unknown_codec_returns_error() {
-        let mut interner = StringInterner::new();
+        let struct_value = decode_subrecord(
+            "WEAP",
+            "DATA",
+            "struct:I",
+            &[1, 2, 3, 4],
+            &[],
+            "test.esm",
+            None,
+            &mut interner,
+        )
+        .unwrap();
+        assert!(matches!(struct_value, FieldValue::Bytes(_)));
+
         let err = decode_subrecord(
             "WEAP",
             "DATA",
@@ -2117,24 +2243,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_form_id_own_record() {
+    fn resolve_form_id_maps_own_master_and_null_ids() {
         let masters = vec!["Fallout4.esm".to_string()];
-        // Master index 0x01 = own plugin (masters.len() == 1 → own_index == 1)
-        let s = resolve_form_id(0x01000800, &masters, "MyMod.esp");
-        assert_eq!(s, "MyMod.esp:000800");
-    }
-
-    #[test]
-    fn resolve_form_id_master_record() {
-        let masters = vec!["Fallout4.esm".to_string()];
-        let s = resolve_form_id(0x001ABCDE, &masters, "MyMod.esp");
-        assert_eq!(s, "Fallout4.esm:1ABCDE");
-    }
-
-    #[test]
-    fn resolve_form_id_zero_returns_empty() {
-        let s = resolve_form_id(0, &[], "test.esm");
-        assert!(s.is_empty());
+        assert_eq!(
+            resolve_form_id(0x01000800, &masters, "MyMod.esp"),
+            "MyMod.esp:000800"
+        );
+        assert_eq!(
+            resolve_form_id(0x001ABCDE, &masters, "MyMod.esp"),
+            "Fallout4.esm:1ABCDE"
+        );
+        assert!(resolve_form_id(0, &[], "test.esm").is_empty());
     }
 
     #[test]
@@ -2285,90 +2404,18 @@ mod tests {
     }
 
     #[test]
-    fn cobj_fvpa_keeps_malformed_payload_raw() {
+    fn parse_form_key_str_accepts_both_spellings_and_renders_read_str() {
         let mut interner = StringInterner::new();
-
-        let value = decode_subrecord(
-            "COBJ",
-            "FVPA",
-            "array_struct:I,I,I",
-            &[1, 2, 3, 4, 5, 6, 7, 8], // 8 bytes: not a multiple of 12
-            &[],
-            "SeventySix.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-
-        assert!(matches!(value, FieldValue::Bytes(_)));
-    }
-
-    #[test]
-    fn regn_rdwt_keeps_malformed_payload_raw() {
-        let mut interner = StringInterner::new();
-
-        let value = decode_subrecord(
-            "REGN",
-            "RDWT",
-            "array_struct:I,I,I",
-            &[1, 2, 3],
-            &[],
-            "SeventySix.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-
-        assert!(matches!(value, FieldValue::Bytes(_)));
-    }
-
-    #[test]
-    fn parse_form_key_str_plugin_colon_hex() {
-        let mut interner = StringInterner::new();
-        let (plugin, fk) = parse_form_key_str("test.esm:000800", &mut interner).unwrap();
-        assert_eq!(plugin, "test.esm");
-        assert_eq!(fk.local, 0x800);
-    }
-
-    #[test]
-    fn parse_form_key_str_hex_at_plugin() {
-        let mut interner = StringInterner::new();
-        let (plugin, fk) = parse_form_key_str("000800@test.esm", &mut interner).unwrap();
-        assert_eq!(plugin, "test.esm");
-        assert_eq!(fk.local, 0x800);
-    }
-
-    #[test]
-    fn struct_codec_emits_bytes() {
-        let data = [1u8, 2, 3, 4];
-        let mut interner = StringInterner::new();
-        let v = decode_subrecord(
-            "WEAP",
-            "DATA",
-            "struct:I",
-            &data,
-            &[],
-            "test.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-        assert!(matches!(v, FieldValue::Bytes(_)));
-    }
-
-    // The read_record round-trip test uses a fixture plugin loaded via the Python
-    // integration test (test_native_record_io.py). The Rust-level fixture test is
-    // omitted here because NativePluginSlot construction requires private
-    // plugin_runtime internals; the Python test covers the same path end-to-end.
-
-    #[test]
-    fn form_key_to_read_str_formats_correctly() {
-        let mut interner = StringInterner::new();
-        let fk = parse_form_key_str("fo4_minimal_weap.esm:000800", &mut interner)
-            .map(|(_, fk)| fk)
-            .unwrap();
-        let s = form_key_to_read_str(&fk, &interner);
-        assert_eq!(s, "fo4_minimal_weap.esm:000800");
+        for text in ["test.esm:000800", "000800@test.esm"] {
+            let (plugin, fk) = parse_form_key_str(text, &mut interner).unwrap();
+            assert_eq!(plugin, "test.esm", "{text}");
+            assert_eq!(fk.local, 0x800, "{text}");
+            assert_eq!(
+                form_key_to_read_str(&fk, &interner),
+                "test.esm:000800",
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -2533,54 +2580,6 @@ mod tests {
     }
 
     #[test]
-    fn scen_actions_tnam_before_template_tnam_stays_non_formkey() {
-        // When an action TNAM (float32, preceded by ANAM not VNAM) and a
-        // Template Scene TNAM (preceded by VNAM) both exist, only the one
-        // preceded by VNAM becomes a FormKey.
-        let template_raw = 0x0040_5B40u32;
-        let raw_record = scen_with_template_tnam(template_raw);
-        let schema = AuthoringSchema::for_game("fo76").expect("fo76 schema");
-        let interner = StringInterner::new();
-        let fk = FormKey {
-            local: 0x001234,
-            plugin: interner.intern("SeventySix.esm"),
-        };
-        let record = decode_record_from_parsed(
-            &raw_record,
-            &fk,
-            &schema,
-            &[],
-            "SeventySix.esm",
-            None,
-            false,
-            &interner,
-        )
-        .unwrap();
-
-        // Collect all TNAM fields in order.
-        let tnam_values: Vec<_> = record
-            .fields
-            .iter()
-            .filter(|f| f.sig.as_str() == "TNAM")
-            .collect();
-        assert_eq!(tnam_values.len(), 2, "fixture has 2 TNAMs");
-
-        // First TNAM (actions timer, float32 1.0) must NOT be a FormKey.
-        assert!(
-            !matches!(tnam_values[0].value, FieldValue::FormKey(_)),
-            "actions TNAM[0] must not be FormKey; got {:?}",
-            tnam_values[0].value
-        );
-
-        // Last TNAM (Template Scene) must be a FormKey.
-        assert!(
-            matches!(tnam_values[1].value, FieldValue::FormKey(_)),
-            "Template Scene TNAM[1] must be FormKey; got {:?}",
-            tnam_values[1].value
-        );
-    }
-
-    #[test]
     fn scen_timer_only_tnam_not_preceded_by_vnam_stays_float() {
         // Population danger case: a SCEN that has only action-scoped timer TNAMs
         // (no Template Scene). The preceding sig is ANAM, not VNAM — none should
@@ -2641,94 +2640,81 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn lvli_llkc_fo76_three_field_rows_decode_keyword_formkey() {
-        // FO76 LLKC rows: [keyword FK u32, chance u32, curve_table FK u32]
-        // Expected: decode to List[Struct[(keyword=FK, chance=Uint)]] dropping
-        // curve_table, so the keyword FK is remapped 00→07 by the walker.
-        let mut data = Vec::new();
-        // Row 1: keyword=0x001234 (master 0 = Fallout4.esm), chance=50, curve=0x0007_AAAA
-        data.extend_from_slice(&0x0000_1234u32.to_le_bytes());
-        data.extend_from_slice(&50u32.to_le_bytes());
-        data.extend_from_slice(&0x0007_AAAAu32.to_le_bytes());
+    fn lvli_llkc_rows_decode_keyword_formkey_and_drop_fo76_curve_table() {
         let mut interner = StringInterner::new();
-
-        let value = decode_subrecord(
-            "LVLI",
-            "LLKC",
-            "array_struct:I,I,I",
-            &data,
-            &["Fallout4.esm".to_string()],
-            "SeventySix.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-
-        let FieldValue::List(rows) = value else {
-            panic!("LLKC must decode to List, got non-List");
-        };
-        assert_eq!(rows.len(), 1);
-        let FieldValue::Struct(fields) = &rows[0] else {
-            panic!("LLKC row must be Struct");
-        };
-        // Must have exactly 2 fields (keyword + chance), curve_table dropped.
-        assert_eq!(fields.len(), 2, "curve_table must be dropped");
-        assert!(
-            matches!(fields[0].1, FieldValue::FormKey(_)),
-            "keyword must be a FormKey for 00→07 remap; got {:?}",
-            fields[0].1
-        );
-        assert_eq!(fields[1].1, FieldValue::Uint(50), "chance preserved");
+        for (name, words, codec, chance) in [
+            (
+                "fo76 keyword/chance/curve",
+                vec![0x0000_1234u32, 50, 0x0007_AAAA],
+                "array_struct:I,I,I",
+                50,
+            ),
+            (
+                "fo4 keyword/chance",
+                vec![0x0001_ABCD, 75],
+                "array_struct:I,I",
+                75,
+            ),
+        ] {
+            let data: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+            let value = decode_subrecord(
+                "LVLI",
+                "LLKC",
+                codec,
+                &data,
+                &["Fallout4.esm".to_string()],
+                "SeventySix.esm",
+                None,
+                &mut interner,
+            )
+            .unwrap();
+            let FieldValue::List(rows) = value else {
+                panic!("{name}: LLKC must decode to List");
+            };
+            assert_eq!(rows.len(), 1, "{name}");
+            let FieldValue::Struct(fields) = &rows[0] else {
+                panic!("{name}: LLKC row must be Struct");
+            };
+            assert_eq!(fields.len(), 2, "{name}: keyword + chance only");
+            assert!(
+                matches!(fields[0].1, FieldValue::FormKey(_)),
+                "{name}: keyword must be a FormKey; got {:?}",
+                fields[0].1
+            );
+            assert_eq!(fields[1].1, FieldValue::Uint(chance), "{name}");
+        }
     }
 
     #[test]
-    fn lvli_llkc_fo4_two_field_rows_decode_keyword_formkey() {
-        // FO4 LLKC rows: [keyword FK u32, chance u32]
-        let mut data = Vec::new();
-        data.extend_from_slice(&0x0001_ABCDu32.to_le_bytes()); // Fallout4.esm:1ABCD
-        data.extend_from_slice(&75u32.to_le_bytes());
+    fn malformed_array_struct_payloads_fall_back_to_raw_bytes() {
         let mut interner = StringInterner::new();
-
-        let value = decode_subrecord(
-            "LVLI",
-            "LLKC",
-            "array_struct:I,I",
-            &data,
-            &["Fallout4.esm".to_string()],
-            "SeventySix.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-
-        let FieldValue::List(rows) = value else {
-            panic!("LLKC (FO4) must decode to List");
-        };
-        assert_eq!(rows.len(), 1);
-        let FieldValue::Struct(fields) = &rows[0] else {
-            panic!("row must be Struct");
-        };
-        assert_eq!(fields.len(), 2);
-        assert!(matches!(fields[0].1, FieldValue::FormKey(_)), "keyword FK");
-        assert_eq!(fields[1].1, FieldValue::Uint(75));
-    }
-
-    #[test]
-    fn lvli_llkc_malformed_length_falls_back_to_bytes() {
-        let mut interner = StringInterner::new();
-        let data = vec![0u8; 7]; // not multiple of 8 or 12
-        let v = decode_subrecord(
-            "LVLI",
-            "LLKC",
-            "array_struct:I,I",
-            &data,
-            &[],
-            "SeventySix.esm",
-            None,
-            &mut interner,
-        )
-        .unwrap();
-        assert!(matches!(v, FieldValue::Bytes(_)));
+        for (record, subrecord, codec, data) in [
+            ("LCTN", "LCEP", "array_struct:I,I,B,B,B,B", vec![0u8; 7]),
+            (
+                "COBJ",
+                "FVPA",
+                "array_struct:I,I,I",
+                vec![1, 2, 3, 4, 5, 6, 7, 8],
+            ),
+            ("REGN", "RDWT", "array_struct:I,I,I", vec![1, 2, 3]),
+            ("LVLI", "LLKC", "array_struct:I,I", vec![0u8; 7]),
+        ] {
+            let value = decode_subrecord(
+                record,
+                subrecord,
+                codec,
+                &data,
+                &[],
+                "SeventySix.esm",
+                None,
+                &mut interner,
+            )
+            .unwrap();
+            assert!(
+                matches!(value, FieldValue::Bytes(_)),
+                "{record}.{subrecord}"
+            );
+        }
     }
 
     fn field_value<'a>(

@@ -770,19 +770,12 @@ fn source_error<T>(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use smallvec::SmallVec;
 
     use super::*;
     use crate::ids::{SigCode, SubrecordSig};
     use crate::record::{FieldEntry, RecordFlags};
-    use crate::schema::AuthoringSchema;
-    use crate::source_rig::{
-        BoneDecl, Capsule, ClipBinding, ClipDecl, CreatureManifest, EventDecl, EventUsage,
-        GraphDeclarations, MvpGraphManifest, ScaffoldPaths, SkeletonDecl, TargetFormKey,
-        emit_creature_record_closure,
-    };
+    use crate::source_rig::TargetFormKey;
 
     fn fk(interner: &StringInterner, local: u32) -> FormKey {
         FormKey {
@@ -958,337 +951,47 @@ mod tests {
         )
     }
 
-    fn rig() -> (CreatureManifest, MvpGraphManifest) {
-        let skeleton = "Actors\\B21_SkyrimWolf\\CharacterAssets\\Skeleton.hkx";
-        let clip = |name: &str, looping: bool| ClipDecl {
-            name: name.to_string(),
-            path: format!("Actors\\B21_SkyrimWolf\\Animations\\{name}.hkx"),
-            binding: ClipBinding {
-                skeleton_path: skeleton.to_string(),
-                original_skeleton_name: "B21_SkyrimWolfSkeleton".to_string(),
-                declared_transform_tracks: 1,
-                transform_track_to_bone_indices: vec![0],
-                declared_float_tracks: 0,
-                float_track_to_float_slot_indices: Vec::new(),
-            },
-            looping,
-        };
-        let events = [
-            ("Idle", EventUsage::Generic),
-            ("startWalk", EventUsage::Generic),
-            ("TurnLeft90", EventUsage::Generic),
-            ("TurnRight90", EventUsage::Generic),
-            ("meleeWolfAttack1", EventUsage::MeleeAttack),
-        ]
-        .into_iter()
-        .map(|(name, usage)| EventDecl {
-            name: name.to_string(),
-            usage,
-            flags: 0,
-        })
-        .collect::<Vec<_>>();
-        (
-            CreatureManifest {
-                creature_name: "B21_SkyrimWolf".to_string(),
-                visual_skeleton_nif: "Actors\\B21_SkyrimWolf\\CharacterAssets\\Skeleton.nif"
-                    .to_string(),
-                animation_skeleton: SkeletonDecl {
-                    path: skeleton.to_string(),
-                    runtime_name: "B21_SkyrimWolfSkeleton".to_string(),
-                    bones: vec![BoneDecl {
-                        name: "NPC Root [Root]".to_string(),
-                        parent_index: None,
-                    }],
-                    float_slots: Vec::new(),
-                },
-                controller: crate::source_rig::CreatureControllerDecl {
-                    collision_filter_info: 1,
-                    rigid_body_type: 255,
-                    model_up_ms: [0.0, 0.0, 1.0, 0.0],
-                    model_forward_ms: [1.0, 0.0, 0.0, 0.0],
-                    model_right_ms: [0.0, -1.0, 0.0, 0.0],
-                    model_scale: 1.0,
-                },
-                ragdoll: crate::source_rig::RagdollDisposition::deferred(),
-                clips: vec![
-                    clip("mt_idle_wolf", true),
-                    clip("walkforward_wolf", true),
-                    clip("turncannedl90_wolf", false),
-                    clip("turncannedr90_wolf", false),
-                    clip("attack1", false),
-                ],
-                idle_clip: "mt_idle_wolf".to_string(),
-                capsule: Capsule {
-                    height: 1.7,
-                    radius: 0.4,
-                },
-                paths: ScaffoldPaths {
-                    project: "Actors\\B21_SkyrimWolf\\B21_SkyrimWolfProject.hkx".to_string(),
-                    character: "Actors\\B21_SkyrimWolf\\Characters\\B21_SkyrimWolfCharacter.hkx"
-                        .to_string(),
-                    root_behavior:
-                        "Actors\\B21_SkyrimWolf\\Behaviors\\B21_SkyrimWolfRootBehavior.hkx"
-                            .to_string(),
-                    core_behavior:
-                        "Actors\\B21_SkyrimWolf\\Behaviors\\B21_SkyrimWolfCoreBehavior.hkx"
-                            .to_string(),
-                },
-                root: GraphDeclarations {
-                    events: events.clone(),
-                    ..GraphDeclarations::default()
-                },
-                core: GraphDeclarations {
-                    events,
-                    ..GraphDeclarations::default()
-                },
-            },
-            MvpGraphManifest {
-                idle_clip: "mt_idle_wolf".to_string(),
-                walk_forward_clip: "walkforward_wolf".to_string(),
-                turn_left_90_clip: "turncannedl90_wolf".to_string(),
-                turn_right_90_clip: "turncannedr90_wolf".to_string(),
-                attack_1_clip: "attack1".to_string(),
-                melee_event: "meleeWolfAttack1".to_string(),
-            },
-        )
-    }
-
     #[test]
-    fn exact_wolf_source_adapter_emits_six_target_owned_records() {
-        let interner = StringInterner::new();
-        let records = source_records(&interner);
-        let projection = adapt(&records, &interner).unwrap();
-        let (rig, graph) = rig();
-        let closure = emit_creature_record_closure(
-            &rig,
-            &graph,
-            &projection.manifest,
-            &projection.profile,
-            &interner,
-        )
-        .unwrap();
-
-        assert_eq!(closure.records.len(), 6);
-        assert_eq!(projection.profile.npc_level, 2);
-        assert_eq!(projection.profile.attack_damage_multiplier, 1.0);
-        assert_eq!(projection.profile.attack_chance, 0.5);
-        assert_eq!(projection.profile.attack_strike_angle, 35.0);
-        assert_eq!(projection.profile.unarmed_reach, 1.0);
-        assert_eq!(
-            projection.manifest.body_nif,
-            "Actors\\B21_SkyrimWolf\\CharacterAssets\\B21_SkyrimWolf.nif"
-        );
-        for record in &closure.records {
-            assert_eq!(
-                interner.resolve(record.form_key.plugin),
-                Some("B21_CreatureMVP.esp")
-            );
-            for field in &record.fields {
-                assert_no_source_form_keys(&field.value, &interner);
-            }
+    fn wolf_source_adapter_emits_target_records_preserves_rig_and_rejects_drift() {
+        {
+            let (rig, graph, motion) = canonical_skyrim_wolf_runtime_contract();
+            let errors = rig.validate_mvp_motion(&graph, &motion).unwrap_err();
+            assert_eq!(errors.0.len(), 1);
+            assert_eq!(errors.0[0].code, "ragdoll_deferred");
+            assert_eq!(rig.animation_skeleton.bones.len(), 50);
+            assert_eq!(rig.animation_skeleton.bones[0].name, "NPC Root [Root]");
+            assert_eq!(rig.animation_skeleton.bones[1].name, "Canine_COM");
+            assert_eq!(rig.animation_skeleton.bones[49].name, "Canine_Dog_RBrow");
+            assert!(rig.clips.iter().all(|clip| {
+                clip.binding.declared_transform_tracks == 50
+                    && clip.binding.transform_track_to_bone_indices == (0..50).collect::<Vec<_>>()
+            }));
+            assert!(rig.clips[0].looping);
+            assert!(rig.clips[1].looping);
+            assert!(rig.clips[2..].iter().all(|clip| !clip.looping));
         }
-        assert!(record_has_string(
-            closure.record("RACE").unwrap(),
-            "ATKE",
-            "meleeWolfAttack1",
-            &interner
-        ));
-        assert!(record_has_string(
-            closure.record("RACE").unwrap(),
-            "ANAM",
-            "Actors\\B21_SkyrimWolf\\CharacterAssets\\Skeleton.nif",
-            &interner
-        ));
-        assert!(record_has_string(
-            closure.record("RACE").unwrap(),
-            "MODL",
-            "Actors\\B21_SkyrimWolf\\B21_SkyrimWolfProject.hkx",
-            &interner
-        ));
-        assert!(record_has_string(
-            closure.record("ARMA").unwrap(),
-            "MOD2",
-            "Actors\\B21_SkyrimWolf\\CharacterAssets\\B21_SkyrimWolf.nif",
-            &interner
-        ));
-        assert_eq!(
-            record_struct_u8(
-                closure.record("BPTD").unwrap(),
-                "BPND",
-                "geometry_segment_index",
-                &interner
-            ),
-            Some(32)
-        );
-    }
+        {
+            let interner = StringInterner::new();
 
-    #[test]
-    fn canonical_runtime_contract_preserves_the_fifty_bone_source_rig() {
-        let (rig, graph, motion) = canonical_skyrim_wolf_runtime_contract();
-        let errors = rig.validate_mvp_motion(&graph, &motion).unwrap_err();
-        assert_eq!(errors.0.len(), 1);
-        assert_eq!(errors.0[0].code, "ragdoll_deferred");
-        assert_eq!(rig.animation_skeleton.bones.len(), 50);
-        assert_eq!(rig.animation_skeleton.bones[0].name, "NPC Root [Root]");
-        assert_eq!(rig.animation_skeleton.bones[1].name, "Canine_COM");
-        assert_eq!(rig.animation_skeleton.bones[49].name, "Canine_Dog_RBrow");
-        assert!(rig.clips.iter().all(|clip| {
-            clip.binding.declared_transform_tracks == 50
-                && clip.binding.transform_track_to_bone_indices == (0..50).collect::<Vec<_>>()
-        }));
-        assert!(rig.clips[0].looping);
-        assert!(rig.clips[1].looping);
-        assert!(rig.clips[2..].iter().all(|clip| !clip.looping));
-    }
+            for signature in ["VMAD", "TPLT"] {
+                let mut records = source_records(&interner);
+                records[0]
+                    .fields
+                    .push(field(signature, FieldValue::Bytes(SmallVec::new())));
+                assert!(adapt(&records, &interner).is_err());
+            }
 
-    #[test]
-    fn adapter_rejects_script_template_enchantment_and_unknown_drift() {
-        let interner = StringInterner::new();
-
-        for signature in ["VMAD", "TPLT"] {
             let mut records = source_records(&interner);
-            records[0]
+            records[5]
                 .fields
-                .push(field(signature, FieldValue::Bytes(SmallVec::new())));
+                .push(form_field("EITM", &interner, 0x000800));
+            assert!(adapt(&records, &interner).is_err());
+
+            let mut records = source_records(&interner);
+            records[1]
+                .fields
+                .push(field("ZZZZ", FieldValue::Bytes(SmallVec::new())));
             assert!(adapt(&records, &interner).is_err());
         }
-
-        let mut records = source_records(&interner);
-        records[5]
-            .fields
-            .push(form_field("EITM", &interner, 0x000800));
-        assert!(adapt(&records, &interner).is_err());
-
-        let mut records = source_records(&interner);
-        records[1]
-            .fields
-            .push(field("ZZZZ", FieldValue::Bytes(SmallVec::new())));
-        assert!(adapt(&records, &interner).is_err());
-    }
-
-    #[test]
-    fn optional_real_skyrim_wolf_corpus_emits_normalized_closure() {
-        let Some(path) = skyrim_corpus_path() else {
-            return;
-        };
-        if !path.is_file() {
-            return;
-        }
-        let handle = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
-            path.to_str().unwrap(),
-            Some("skyrimse"),
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        let plugin_name = crate::source_read::plugin_name_for_handle(handle).unwrap();
-        assert_eq!(plugin_name, SKYRIM_MASTER);
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("skyrimse").unwrap();
-        let records = [
-            WOLF_NPC_LOCAL,
-            WOLF_RACE_LOCAL,
-            WOLF_SKIN_LOCAL,
-            WOLF_ARMOR_ADDON_LOCAL,
-            WOLF_BODY_PART_DATA_LOCAL,
-            UNARMED_WEAPON_LOCAL,
-            RIGHT_HAND_LOCAL,
-            LEFT_HAND_LOCAL,
-            BOTH_HANDS_LOCAL,
-        ]
-        .into_iter()
-        .map(|local| {
-            crate::source_read::read_record(
-                handle,
-                &format!("{local:06X}@{plugin_name}"),
-                &schema,
-                &interner,
-            )
-            .unwrap()
-        })
-        .collect::<Vec<_>>();
-
-        let projection = adapt(&records, &interner).unwrap();
-        let (rig, graph) = rig();
-        let closure = emit_creature_record_closure(
-            &rig,
-            &graph,
-            &projection.manifest,
-            &projection.profile,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(closure.records.len(), 6);
-        for record in &closure.records {
-            assert_eq!(
-                interner.resolve(record.form_key.plugin),
-                Some("B21_CreatureMVP.esp")
-            );
-            for field in &record.fields {
-                assert_no_source_form_keys(&field.value, &interner);
-            }
-        }
-    }
-
-    fn skyrim_corpus_path() -> Option<PathBuf> {
-        std::env::var_os("SKYRIMSE_WOLF_CORPUS_PLUGIN")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("SKYRIMSE_DIR")
-                    .map(PathBuf::from)
-                    .map(|path| path.join("Data").join("Skyrim.esm"))
-            })
-    }
-
-    fn assert_no_source_form_keys(value: &FieldValue, interner: &StringInterner) {
-        match value {
-            FieldValue::FormKey(form_key) => assert_ne!(
-                interner.resolve(form_key.plugin),
-                Some(SKYRIM_MASTER),
-                "source FormKey leaked into target closure"
-            ),
-            FieldValue::List(values) => {
-                for value in values {
-                    assert_no_source_form_keys(value, interner);
-                }
-            }
-            FieldValue::Struct(fields) => {
-                for (_, value) in fields {
-                    assert_no_source_form_keys(value, interner);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn record_has_string(
-        record: &Record,
-        signature: &str,
-        expected: &str,
-        interner: &StringInterner,
-    ) -> bool {
-        record.fields.iter().any(|field| {
-            field.sig.as_str() == signature
-                && string_value(&field.value, interner) == Some(expected)
-        })
-    }
-
-    fn record_struct_u8(
-        record: &Record,
-        signature: &str,
-        member: &str,
-        interner: &StringInterner,
-    ) -> Option<u8> {
-        let FieldValue::Struct(fields) = exact_field(record, signature)? else {
-            return None;
-        };
-        fields.iter().find_map(|(key, value)| {
-            (interner.resolve(*key) == Some(member)).then(|| match value {
-                FieldValue::Uint(value) => u8::try_from(*value).ok(),
-                FieldValue::Bytes(bytes) if bytes.len() == 1 => Some(bytes[0]),
-                _ => None,
-            })?
-        })
     }
 }

@@ -16,9 +16,10 @@ use crate::sym::StringInterner;
 use crate::translator::pair_hooks::fnv_conditions::LegacyConditionFamily;
 use crate::translator::pair_hooks::fnv_pack::LegacyPackSourceFamily;
 
+#[cfg(test)]
+use super::creature_catalog::EXPECTED_FULL_MERGED_CREA_WINNERS;
 use super::creature_catalog::{
-    CreatureProvenance, EXPECTED_FULL_MERGED_CREA_WINNERS, LegacyCreatureGame, LegacyRecordSource,
-    StableFormKey,
+    CreatureProvenance, LegacyCreatureGame, LegacyRecordSource, StableFormKey,
 };
 use super::legacy_ammo::{
     LegacyAmmoSourceFamily, classify_legacy_ammo, decode_legacy_ammo_dat2,
@@ -203,6 +204,7 @@ pub struct FnvFo3CreatureDependencyLedger {
 }
 
 impl FnvFo3CreatureDependencyLedger {
+    #[cfg(test)]
     pub fn canonical_json(&self) -> Result<String, CreatureDependencyError> {
         self.validate()?;
         serde_json::to_string(self)
@@ -415,6 +417,7 @@ pub enum CreatureDependencyError {
     },
 }
 
+#[cfg(test)]
 pub fn build_full_merged_creature_dependency_ledger(
     records: &[LegacyRecordSource<'_>],
     interner: &StringInterner,
@@ -429,6 +432,7 @@ pub fn build_full_merged_creature_dependency_ledger(
     )
 }
 
+#[cfg(test)]
 pub fn build_creature_dependency_ledger(
     records: &[LegacyRecordSource<'_>],
     options: CreatureDependencyOptions,
@@ -437,6 +441,7 @@ pub fn build_creature_dependency_ledger(
     build_creature_dependency_ledger_with_load_orders(records, options, &[], interner)
 }
 
+#[cfg(test)]
 pub fn build_creature_dependency_ledger_with_load_orders(
     records: &[LegacyRecordSource<'_>],
     options: CreatureDependencyOptions,

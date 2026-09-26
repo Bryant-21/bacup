@@ -5,19 +5,26 @@
 //! `convergent()` fixups to a fixed point. The `FormKeyMapper` is passed beside the
 //! `FixupContext`, not inside it; fixups reach the interner via `mapper.interner`.
 
+pub(crate) mod allow_interior_fast_travel;
 pub mod apply_fo76_workshop_catalog;
 pub mod apply_weapon_sound_defaults;
 pub mod assign_legacy_worldspace_music;
 pub mod attach_fo76_camp_collectors;
+pub mod attach_fo76_encounter_wave_catalog;
 pub mod attach_fo76_furniture_buffs;
 pub mod attach_fo76_holotape_stage_listener;
+pub mod attach_fo76_quest_start_keyword;
+pub mod attach_fo76_quest_timers;
+pub mod attach_fo76_quest_variables;
 pub mod backfill_placed_loc_ref_types;
 pub mod bridge_fo76_combat_music;
+pub mod bridge_fo76_weapon_object_templates;
 pub mod clean_leveled_item_entries;
 pub mod clear_interior_hand_changed;
 pub mod clear_orphaned_npc_template_flags;
 pub mod clear_protected_on_hostile_actors;
 pub mod collapse_projectile_compound_loop_sounds;
+pub mod convert_holotape_scenes_to_radio;
 pub mod creature;
 pub(crate) mod curve_table;
 pub mod drop_incompatible_player_idles;
@@ -30,6 +37,8 @@ pub mod filter_non_vanilla_races_for_weapon_roots;
 pub mod fix_invalid_target_formkeys;
 pub mod fix_stag_sound_refs;
 pub mod fix_water_spell_refs;
+pub mod flatten_armo_damage_curves;
+pub mod flatten_expl_damage_curves;
 pub mod flatten_npc_property_curves;
 pub mod flatten_omod_includes;
 pub mod gate_event_quest_barks;
@@ -60,6 +69,7 @@ pub mod preserve_packin_storage_cells;
 pub mod promote_placed_custom_material_swaps;
 pub mod prune_faction_relations;
 pub mod prune_orphaned_records;
+pub(crate) mod quest_script_binding;
 pub(crate) mod quest_script_vmad;
 pub mod recentre_far_interiors;
 pub mod recover_fo76_leveled_list_values;
@@ -88,6 +98,7 @@ pub mod restrict_translated_npc_for_slice;
 pub mod rewrite_raw_lctn_formids;
 pub mod rewrite_raw_object_template_formids;
 pub mod rewrite_raw_wrld_large_refs;
+pub mod separate_fo76_random_encounters;
 pub mod sky_regions;
 pub mod strip_alias_created_base_loc_ref_types;
 pub mod strip_atx_cobj_conditions;
@@ -785,25 +796,86 @@ mod tests {
     }
 
     #[test]
-    fn registry_runs_no_op_fixup_with_session() {
-        let target_handle = create_test_plugin_handle();
-        let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
-        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
+    fn registry_iterates_convergent_fixups_and_skips_non_applicable() {
+        {
+            let target_handle = create_test_plugin_handle();
+            let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
+            let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
+            let mut session = open_session(target_handle, None).expect("open session");
 
-        let fixup = CountingFixup::new("counting");
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(fixup));
+            let fixup = CountingFixup::new("counting");
+            let mut registry = FixupRegistry::new();
+            registry.register(Box::new(fixup));
 
-        let reports = registry
-            .run_all_in_session(&mut session, &mut mapper, &config)
-            .expect("run_all should succeed");
+            let reports = registry
+                .run_all_in_session(&mut session, &mut mapper, &config)
+                .expect("run_all should succeed");
 
-        // One report for the one fixup.
-        assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].0, "counting");
-        assert_eq!(reports[0].1.iteration, 1);
-        assert!(reports[0].1.is_no_op());
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].0, "counting");
+            assert_eq!(reports[0].1.iteration, 1);
+            assert!(reports[0].1.is_no_op());
+        }
+
+        {
+            let target_handle = create_test_plugin_handle();
+            let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
+            let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
+            let mut session = open_session(target_handle, None).expect("open session");
+
+            // Will report changes for 3 calls, then no-op on the 4th.
+            let fixup = ConvergingFixup::new("converging", 3);
+            let mut registry = FixupRegistry::new();
+            registry.register(Box::new(fixup));
+
+            let reports = registry
+                .run_all_in_session(&mut session, &mut mapper, &config)
+                .expect("should converge");
+
+            // 3 change reports + 1 no-op = 4 total entries.
+            assert_eq!(reports.len(), 4);
+            assert_eq!(reports[0].1.iteration, 1);
+            assert_eq!(reports[3].1.iteration, 4);
+            assert!(reports[3].1.is_no_op());
+            for report in &reports[..3] {
+                assert!(!report.1.is_no_op());
+            }
+        }
+
+        {
+            let target_handle = create_test_plugin_handle();
+            let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
+            let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
+            let mut session = open_session(target_handle, None).expect("open session");
+
+            let mut registry = FixupRegistry::new();
+            registry.register(Box::new(NeverConvergesFixup));
+
+            let result = registry.run_all_in_session(&mut session, &mut mapper, &config);
+            assert!(
+                matches!(
+                    result,
+                    Err(FixupError::ConvergenceFailure("never_converges"))
+                ),
+                "expected ConvergenceFailure, got: {result:?}"
+            );
+        }
+
+        {
+            let target_handle = create_test_plugin_handle();
+            let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
+            let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
+            let mut session = open_session(target_handle, None).expect("open session");
+
+            let mut registry = FixupRegistry::new();
+            registry.register(Box::new(NeverAppliesFixup));
+
+            let reports = registry
+                .run_all_in_session(&mut session, &mut mapper, &config)
+                .expect("run_all should succeed");
+            // Skipped fixup produces no report.
+            assert!(reports.is_empty());
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -866,32 +938,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn convergent_fixup_loops_until_no_op() {
-        let target_handle = create_test_plugin_handle();
-        let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
-        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        // Will report changes for 3 calls, then no-op on the 4th.
-        let fixup = ConvergingFixup::new("converging", 3);
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(fixup));
-
-        let reports = registry
-            .run_all_in_session(&mut session, &mut mapper, &config)
-            .expect("should converge");
-
-        // 3 change reports + 1 no-op = 4 total entries.
-        assert_eq!(reports.len(), 4);
-        assert_eq!(reports[0].1.iteration, 1);
-        assert_eq!(reports[3].1.iteration, 4);
-        assert!(reports[3].1.is_no_op());
-        for report in &reports[..3] {
-            assert!(!report.1.is_no_op());
-        }
-    }
-
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
@@ -928,26 +974,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn convergence_failure_after_64_iters() {
-        let target_handle = create_test_plugin_handle();
-        let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
-        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(NeverConvergesFixup));
-
-        let result = registry.run_all_in_session(&mut session, &mut mapper, &config);
-        assert!(
-            matches!(
-                result,
-                Err(FixupError::ConvergenceFailure("never_converges"))
-            ),
-            "expected ConvergenceFailure, got: {result:?}"
-        );
-    }
-
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
@@ -974,23 +1000,6 @@ mod tests {
         ) -> Result<FixupReport, FixupError> {
             panic!("run() must not be called when applies_to returns false");
         }
-    }
-
-    #[test]
-    fn applies_to_false_skips_fixup() {
-        let target_handle = create_test_plugin_handle();
-        let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
-        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(NeverAppliesFixup));
-
-        let reports = registry
-            .run_all_in_session(&mut session, &mut mapper, &config)
-            .expect("run_all should succeed");
-        // Skipped fixup produces no report.
-        assert!(reports.is_empty());
     }
 
     struct HavokAssetFixup {
@@ -1030,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn whole_plugin_skips_asset_fixup_when_required_phase_disabled() {
+    fn whole_plugin_asset_fixup_runs_only_with_its_phase() {
         let target_handle = create_test_plugin_handle();
         let (mapper_interner, mut mapper_state, mut config) = make_mapper_and_config();
         config.is_whole_plugin = true;
@@ -1060,31 +1069,32 @@ mod tests {
             .unwrap();
         assert_eq!(message, "fixup_skipped:havok_asset:asset_only");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
 
-    #[test]
-    fn whole_plugin_runs_asset_fixup_when_required_phase_enabled() {
-        let target_handle = create_test_plugin_handle();
-        let (mapper_interner, mut mapper_state, mut config) = make_mapper_and_config();
-        config.is_whole_plugin = true;
-        config.asset_phases.havok = true;
-        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-        let calls = StdArc::new(AtomicU32::new(0));
+        drop(session);
 
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(HavokAssetFixup {
-            calls: StdArc::clone(&calls),
-        }));
+        {
+            let target_handle = create_test_plugin_handle();
+            let (mapper_interner, mut mapper_state, mut config) = make_mapper_and_config();
+            config.is_whole_plugin = true;
+            config.asset_phases.havok = true;
+            let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
+            let mut session = open_session(target_handle, None).expect("open session");
+            let calls = StdArc::new(AtomicU32::new(0));
 
-        let reports = registry
-            .run_all_in_session(&mut session, &mut mapper, &config)
-            .expect("run_all should succeed");
+            let mut registry = FixupRegistry::new();
+            registry.register(Box::new(HavokAssetFixup {
+                calls: StdArc::clone(&calls),
+            }));
 
-        assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].1.status, FixupStatus::Ran);
-        assert_eq!(reports[0].1.scope, FixupScope::AssetOnly);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let reports = registry
+                .run_all_in_session(&mut session, &mut mapper, &config)
+                .expect("run_all should succeed");
+
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].1.status, FixupStatus::Ran);
+            assert_eq!(reports[0].1.scope, FixupScope::AssetOnly);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
     }
 
     struct AddRecordUntilVisibleFixup;
@@ -1151,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn run_all_in_session_refreshes_session_between_iterations() {
+    fn run_all_in_session_refreshes_between_iterations_and_flushes_on_error() {
         let target_handle = create_test_plugin_handle();
         let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
         let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
@@ -1176,6 +1186,29 @@ mod tests {
             .form_keys_of_sig(ammo_sig, &mapper_interner)
             .expect("fresh session should see added record");
         assert_eq!(ammo_records.len(), 1);
+
+        drop(session);
+
+        {
+            let target_handle = create_test_plugin_handle();
+            let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
+            let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
+            let mut session = open_session(target_handle, None).expect("open session");
+
+            let mut registry = FixupRegistry::new();
+            registry.register(Box::new(ErrorAfterStructuralWriteFixup));
+
+            let result = registry.run_all_in_session(&mut session, &mut mapper, &config);
+            assert!(
+                matches!(result, Err(FixupError::HandleError(message)) if message == "expected test error")
+            );
+
+            let ammo_sig = SigCode::from_str("AMMO").expect("valid AMMO sig");
+            let ammo_records = session
+                .form_keys_of_sig(ammo_sig, &mapper_interner)
+                .expect("session should remain usable after helper error");
+            assert_eq!(ammo_records.len(), 1);
+        }
     }
 
     struct ErrorAfterStructuralWriteFixup;
@@ -1224,26 +1257,6 @@ mod tests {
             Err(FixupError::HandleError("expected test error".to_string()))
         }
     }
-
-    #[test]
-    fn run_all_in_session_flushes_and_keeps_session_usable_on_error() {
-        let target_handle = create_test_plugin_handle();
-        let (mapper_interner, mut mapper_state, config) = make_mapper_and_config();
-        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(ErrorAfterStructuralWriteFixup));
-
-        let result = registry.run_all_in_session(&mut session, &mut mapper, &config);
-        assert!(
-            matches!(result, Err(FixupError::HandleError(message)) if message == "expected test error")
-        );
-
-        let ammo_sig = SigCode::from_str("AMMO").expect("valid AMMO sig");
-        let ammo_records = session
-            .form_keys_of_sig(ammo_sig, &mapper_interner)
-            .expect("session should remain usable after helper error");
-        assert_eq!(ammo_records.len(), 1);
-    }
 }
+pub mod legendary_perks;
+pub mod player_ghoul;

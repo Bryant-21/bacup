@@ -536,26 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn namespaced_model_path_is_recognized_with_and_without_meshes_root() {
-        assert!(is_namespaced_model_path(
-            "FO76\\SetDressing\\Minutemen\\FlagpoleMinutemen02.nif",
-            "FO76"
-        ));
-        assert!(is_namespaced_model_path(
-            "Meshes\\FO76\\Landscape\\Rocks\\RockCliff01.nif",
-            "FO76"
-        ));
-        assert!(is_namespaced_model_path("fo76/landscape/x.nif", "FO76"));
-        assert!(!is_namespaced_model_path(
-            "SetDressing\\Minutemen\\FlagpoleMinutemen02.nif",
-            "FO76"
-        ));
-        // A folder that merely starts with the namespace must not match.
-        assert!(!is_namespaced_model_path("FO76Extra\\x.nif", "FO76"));
-    }
-
-    #[test]
-    fn candidate_needs_both_a_namespaced_model_and_an_out_of_plugin_swap() {
+    fn candidate_needs_a_namespaced_model_and_an_out_of_plugin_swap() {
         let own_index = 0x08u32;
         let items = vec![
             // Relocated model + base-owned swap -> candidate.
@@ -599,6 +580,22 @@ mod tests {
                 swap_sig: "MODS",
             }]
         );
+
+        assert!(is_namespaced_model_path(
+            "FO76\\SetDressing\\Minutemen\\FlagpoleMinutemen02.nif",
+            "FO76"
+        ));
+        assert!(is_namespaced_model_path(
+            "Meshes\\FO76\\Landscape\\Rocks\\RockCliff01.nif",
+            "FO76"
+        ));
+        assert!(is_namespaced_model_path("fo76/landscape/x.nif", "FO76"));
+        assert!(!is_namespaced_model_path(
+            "SetDressing\\Minutemen\\FlagpoleMinutemen02.nif",
+            "FO76"
+        ));
+        // A folder that merely starts with the namespace must not match.
+        assert!(!is_namespaced_model_path("FO76Extra\\x.nif", "FO76"));
     }
 
     fn zsub(sig: &str, value: &str) -> (SmolStr, Vec<u8>) {
@@ -608,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_namespaces_only_relocated_originals_and_keeps_extras() {
+    fn swap_namespaces_only_relocated_originals_and_skips_untouched_swaps() {
         let relocation_members =
             HashSet::from(["materials/setdressing/minutemen/flagminutemen01.bgsm".to_string()]);
         let subrecords = vec![
@@ -636,10 +633,7 @@ mod tests {
             zstring(&out[3].1).unwrap(),
             "SetDressing\\Power\\PowerSwitchBox01.BGSM"
         );
-    }
 
-    #[test]
-    fn swap_touching_no_relocated_material_is_not_cloned() {
         let relocation_members =
             HashSet::from(["materials/landscape/rocks/rock01.bgsm".to_string()]);
         let subrecords = vec![
@@ -651,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_subrecords_drop_edid_and_require_an_original() {
+    fn swap_subrecords_drop_edid_require_an_original_and_repoint_only_mapped_slot() {
         let mswp = ParsedRecord {
             signature: SmolStr::from("MSWP"),
             form_id: 0x0017_FE49,
@@ -680,10 +674,7 @@ mod tests {
             .subrecords
             .retain(|s| s.signature.as_str() != "BNAM");
         assert!(swap_subrecords_from_record(&no_original).is_none());
-    }
 
-    #[test]
-    fn repoint_rewrites_only_the_mapped_slot() {
         let mut items = vec![stat(
             0x0817_FE47,
             vec![

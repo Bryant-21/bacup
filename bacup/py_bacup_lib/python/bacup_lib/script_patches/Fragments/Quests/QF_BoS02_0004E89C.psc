@@ -205,6 +205,9 @@ EndFunction
 Function Fragment_Stage_0800_Item_00()
     SetObjectiveCompleted(600, True)
     SetObjectiveDisplayed(800, True)
+    ; The postmarked letter is created initially disabled in the Charleston mailbox
+    ; and nothing else enables it.
+    Alias_JunkMail.TryToEnable()
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()

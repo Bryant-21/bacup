@@ -59,6 +59,7 @@ impl DanglingReference {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn repoint_record(
     record: &mut ParsedRecord,
     remap: &FxHashMap<u32, u32>,
@@ -337,51 +338,66 @@ mod tests {
     }
 
     #[test]
-    fn formid_field_is_repointed() {
-        let mut record = rec("ACTI", 0xA000, "Item");
-        record.subrecords.push(formid_sub("SCRI", 0x9900));
-        let mut stats = RepointStats::default();
-        repoint_record(
-            &mut record,
-            &FxHashMap::from_iter([(0x9900, 0x1200)]),
-            &HashSet::new(),
-            &mut stats,
-        );
-        assert_eq!(value(record.subrecords.last().unwrap(), 0), 0x1200);
-        assert_eq!(stats.remapped, 1);
-    }
-
-    #[test]
-    fn formid_array_repoints_each_entry() {
-        let mut record = rec("FLST", 0xA000, "List");
-        let mut data = Vec::new();
-        for id in [0x9900_u32, 0x9A00, 0x14] {
-            data.extend_from_slice(&id.to_le_bytes());
+    fn formid_fields_and_arrays_are_repointed() {
+        {
+            let mut record = rec("ACTI", 0xA000, "Item");
+            record.subrecords.push(formid_sub("SCRI", 0x9900));
+            let mut stats = RepointStats::default();
+            repoint_record(
+                &mut record,
+                &FxHashMap::from_iter([(0x9900, 0x1200)]),
+                &HashSet::new(),
+                &mut stats,
+            );
+            assert_eq!(value(record.subrecords.last().unwrap(), 0), 0x1200);
+            assert_eq!(stats.remapped, 1);
         }
-        record.subrecords.push(ParsedSubrecord {
-            signature: "LNAM".into(),
-            data: data.into(),
-            semantic_type: Some("formid_array".to_string()),
-        });
-        let mut stats = RepointStats::default();
-        repoint_record(
-            &mut record,
-            &FxHashMap::from_iter([(0x9900, 0x1200), (0x9A00, 0x1300)]),
-            &HashSet::new(),
-            &mut stats,
-        );
-        let subrecord = record.subrecords.last().unwrap();
-        assert_eq!(value(subrecord, 0), 0x1200);
-        assert_eq!(value(subrecord, 4), 0x1300);
-        assert_eq!(value(subrecord, 8), 0x14);
-        assert_eq!(stats.remapped, 2);
+        {
+            let mut record = rec("FLST", 0xA000, "List");
+            let mut data = Vec::new();
+            for id in [0x9900_u32, 0x9A00, 0x14] {
+                data.extend_from_slice(&id.to_le_bytes());
+            }
+            record.subrecords.push(ParsedSubrecord {
+                signature: "LNAM".into(),
+                data: data.into(),
+                semantic_type: Some("formid_array".to_string()),
+            });
+            let mut stats = RepointStats::default();
+            repoint_record(
+                &mut record,
+                &FxHashMap::from_iter([(0x9900, 0x1200), (0x9A00, 0x1300)]),
+                &HashSet::new(),
+                &mut stats,
+            );
+            let subrecord = record.subrecords.last().unwrap();
+            assert_eq!(value(subrecord, 0), 0x1200);
+            assert_eq!(value(subrecord, 4), 0x1300);
+            assert_eq!(value(subrecord, 8), 0x14);
+            assert_eq!(stats.remapped, 2);
+        }
     }
 
     #[test]
-    fn reserved_zero_and_runtime_ids_pass_through() {
-        for id in [0_u32, 0x14, 0xFF00_0001] {
+    fn reserved_runtime_and_primary_ids_pass_and_unknown_ids_dangle() {
+        {
+            for id in [0_u32, 0x14, 0xFF00_0001] {
+                let mut record = rec("XXXX", 0xA000, "Record");
+                record.subrecords.push(formid_sub("DATA", id));
+                let mut stats = RepointStats::default();
+                repoint_record(
+                    &mut record,
+                    &FxHashMap::default(),
+                    &HashSet::new(),
+                    &mut stats,
+                );
+                assert_eq!(value(record.subrecords.last().unwrap(), 0), id);
+                assert!(stats.dangling.is_empty());
+            }
+        }
+        {
             let mut record = rec("XXXX", 0xA000, "Record");
-            record.subrecords.push(formid_sub("DATA", id));
+            record.subrecords.push(formid_sub("DATA", 0xBEEF));
             let mut stats = RepointStats::default();
             repoint_record(
                 &mut record,
@@ -389,37 +405,20 @@ mod tests {
                 &HashSet::new(),
                 &mut stats,
             );
-            assert_eq!(value(record.subrecords.last().unwrap(), 0), id);
+            assert_eq!(stats.dangling[0].render(), "XXXX:0000A000:DATA:0000BEEF");
+        }
+        {
+            let mut record = rec("XXXX", 0xA000, "Record");
+            record.subrecords.push(formid_sub("DATA", 0xBEEF));
+            let mut stats = RepointStats::default();
+            repoint_record(
+                &mut record,
+                &FxHashMap::default(),
+                &HashSet::from([0xBEEF]),
+                &mut stats,
+            );
             assert!(stats.dangling.is_empty());
         }
-    }
-
-    #[test]
-    fn unknown_non_primary_id_is_dangling() {
-        let mut record = rec("XXXX", 0xA000, "Record");
-        record.subrecords.push(formid_sub("DATA", 0xBEEF));
-        let mut stats = RepointStats::default();
-        repoint_record(
-            &mut record,
-            &FxHashMap::default(),
-            &HashSet::new(),
-            &mut stats,
-        );
-        assert_eq!(stats.dangling[0].render(), "XXXX:0000A000:DATA:0000BEEF");
-    }
-
-    #[test]
-    fn primary_id_passes_silently() {
-        let mut record = rec("XXXX", 0xA000, "Record");
-        record.subrecords.push(formid_sub("DATA", 0xBEEF));
-        let mut stats = RepointStats::default();
-        repoint_record(
-            &mut record,
-            &FxHashMap::default(),
-            &HashSet::from([0xBEEF]),
-            &mut stats,
-        );
-        assert!(stats.dangling.is_empty());
     }
 
     #[test]

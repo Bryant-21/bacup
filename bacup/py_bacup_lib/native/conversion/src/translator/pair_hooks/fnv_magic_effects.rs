@@ -41,6 +41,7 @@ const FO4_RESTORE_CONDITION_EFFECTS: &[u32] =
     &[0x05C529, 0x05C52C, 0x05C52D, 0x05C52A, 0x05C52B, 0x05C52E];
 const FO4_RESTORE_CONDITION_MAGNITUDE: f32 = 100.0;
 
+#[cfg(test)]
 const FNV_CTDA_PARAM1_FORMID_FUNCTIONS: &[u16] = &[
     1, 27, 32, 42, 43, 44, 45, 47, 53, 56, 58, 59, 60, 66, 67, 68, 69, 71, 72, 73, 74, 76, 79, 84,
     99, 122, 129, 130, 132, 136, 149, 161, 162, 163, 172, 180, 182, 193, 195, 197, 199, 214, 223,
@@ -48,13 +49,16 @@ const FNV_CTDA_PARAM1_FORMID_FUNCTIONS: &[u16] = &[
     450, 451, 464, 478, 515, 518, 519, 520, 521, 525, 526, 527, 528, 546, 555, 573, 574, 575, 607,
     610, 612, 614,
 ];
+#[cfg(test)]
 const FNV_CTDA_PARAM2_FORMID_FUNCTIONS: &[u16] = &[60, 230, 280, 411];
+#[cfg(test)]
 const FO3_CTDA_PARAM1_FORMID_FUNCTIONS: &[u16] = &[
     1, 27, 32, 42, 43, 44, 45, 47, 53, 56, 58, 59, 60, 66, 67, 68, 69, 71, 72, 73, 74, 76, 79, 84,
     99, 122, 129, 130, 132, 136, 149, 161, 162, 163, 172, 180, 182, 193, 195, 197, 199, 214, 223,
     228, 230, 246, 278, 280, 310, 370, 372, 382, 399, 409, 410, 411, 415, 427, 446, 449, 450, 451,
     464, 478, 515, 518, 519, 520, 521, 525, 526, 527, 528, 546, 555,
 ];
+#[cfg(test)]
 const FO3_CTDA_PARAM2_FORMID_FUNCTIONS: &[u16] = &[60, 230, 280, 411];
 
 const DROPPED_LEGACY_CONDITION_FUNCTIONS: &[u16] = &[
@@ -118,6 +122,7 @@ enum RowShape {
     Malformed,
 }
 
+#[cfg(test)]
 /// Rebuild the FNV/FO3 ALCH, ENCH, or SPEL magic contract for FO4.
 ///
 /// The caller must supply the run's serial `FormKeyMapper`. Legacy EFID rows whose base MGEF is
@@ -576,19 +581,6 @@ fn condition_row_shape(value: &FieldValue, interner: &crate::sym::StringInterner
             RowShape::Legacy
         }
         _ => RowShape::Malformed,
-    }
-}
-
-fn condition_formid_functions(family: LegacyMagicFamily) -> (&'static [u16], &'static [u16]) {
-    match family {
-        LegacyMagicFamily::Fnv => (
-            FNV_CTDA_PARAM1_FORMID_FUNCTIONS,
-            FNV_CTDA_PARAM2_FORMID_FUNCTIONS,
-        ),
-        LegacyMagicFamily::Fo3 => (
-            FO3_CTDA_PARAM1_FORMID_FUNCTIONS,
-            FO3_CTDA_PARAM2_FORMID_FUNCTIONS,
-        ),
     }
 }
 
@@ -1219,6 +1211,7 @@ fn named_i64(
     }
 }
 
+#[cfg(test)]
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
 }
@@ -1325,7 +1318,7 @@ mod tests {
     fn cook_cooks_fiend_stew_golden_preserves_three_ordered_effects_for_fnv_and_fo3() {
         for family in [LegacyMagicFamily::Fnv, LegacyMagicFamily::Fo3] {
             let interner = StringInterner::new();
-            let mut mapper = mapper(
+            let mut mapper = self::mapper(
                 &interner,
                 family,
                 &[
@@ -1388,7 +1381,7 @@ mod tests {
     fn caesars_armor_golden_builds_apparel_enchantment_contract_for_fnv_and_fo3() {
         for family in [LegacyMagicFamily::Fnv, LegacyMagicFamily::Fo3] {
             let interner = StringInterner::new();
-            let mut mapper = mapper(
+            let mut mapper = self::mapper(
                 &interner,
                 family,
                 &[(0x031D74, 0x04B268), (0x134B25, 0x03693A)],
@@ -1431,7 +1424,7 @@ mod tests {
     fn alch_20_byte_legacy_enit_is_relaid_out_and_remapped() {
         for family in [LegacyMagicFamily::Fnv, LegacyMagicFamily::Fo3] {
             let interner = StringInterner::new();
-            let mut mapper = mapper(&interner, family, &[(0x500, 0x1500), (0x600, 0x1600)]);
+            let mut mapper = self::mapper(&interner, family, &[(0x500, 0x1500), (0x600, 0x1600)]);
             let mut alch = record(&interner, b"ALCH");
             let mut source = vec![0_u8; LEGACY_ALCH_ENIT_LEN];
             set_u32(&mut source, 0, 25);
@@ -1458,7 +1451,7 @@ mod tests {
     fn assert_doctor_limb_restoration_expands(source_plugin: &str) {
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, family, &[(0x0CB05D, 0x00397E)]);
+        let mut mapper = self::mapper(&interner, family, &[(0x0CB05D, 0x00397E)]);
         let mut spell = record(&interner, b"SPEL");
         spell.form_key = form_key(&interner, source_plugin, FNV_DOCTOR_LIMB_RESTORATION_SPEL);
         spell.eid = Some(interner.intern(FNV_DOCTOR_LIMB_RESTORATION_EDID));
@@ -1500,12 +1493,9 @@ mod tests {
     }
 
     #[test]
-    fn doctor_limb_restoration_golden_expands_the_canonical_fnv_script_effect() {
-        assert_doctor_limb_restoration_expands(FNV_SOURCE_PLUGIN);
-    }
-
-    #[test]
     fn restore_all_limbs_expansion_requires_the_exact_doctor_spell_identity() {
+        assert_doctor_limb_restoration_expands(FNV_SOURCE_PLUGIN);
+
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
         for (plugin, local, eid) in [
@@ -1520,7 +1510,7 @@ mod tests {
                 FNV_DOCTOR_LIMB_RESTORATION_EDID,
             ),
         ] {
-            let mut mapper = mapper(&interner, family, &[(0x0CB05D, 0x00397E)]);
+            let mut mapper = self::mapper(&interner, family, &[(0x0CB05D, 0x00397E)]);
             let mut spell = record(&interner, b"SPEL");
             spell.form_key = form_key(&interner, plugin, local);
             spell.eid = Some(interner.intern(eid));
@@ -1542,7 +1532,7 @@ mod tests {
     fn condition_references_use_mapper_and_keep_cis_rows_in_lockstep() {
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
-        let mut mapper = mapper(
+        let mut mapper = self::mapper(
             &interner,
             family,
             &[
@@ -1588,14 +1578,14 @@ mod tests {
     }
 
     #[test]
-    fn condition_function_ids_and_legacy_run_on_are_translated() {
+    fn condition_function_ids_run_on_and_fo3_parameters_are_translated() {
         for (family, source_function, target_function) in [
             (LegacyMagicFamily::Fnv, 79, 629),
             (LegacyMagicFamily::Fo3, 391, 390),
             (LegacyMagicFamily::Fnv, 1030, 14),
         ] {
             let interner = StringInterner::new();
-            let mut mapper = mapper(&interner, family, &[(0x200, 0x1200), (0x400, 0x1400)]);
+            let mut mapper = self::mapper(&interner, family, &[(0x200, 0x1200), (0x400, 0x1400)]);
             let mut condition = legacy_ctda(source_function);
             if source_function == 79 {
                 set_u32(&mut condition, 12, 0x200);
@@ -1621,13 +1611,10 @@ mod tests {
                     && decision.target == u32::from(target_function)
             }));
         }
-    }
 
-    #[test]
-    fn fo3_condition_parameter_two_uses_fo3_formid_contract() {
         let family = LegacyMagicFamily::Fo3;
         let interner = StringInterner::new();
-        let mut mapper = mapper(
+        let mut mapper = self::mapper(
             &interner,
             family,
             &[(0x200, 0x1200), (0x300, 0x1300), (0x400, 0x1400)],
@@ -1651,7 +1638,7 @@ mod tests {
     fn typed_condition_normalizes_function_run_on_and_parameter_three() {
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, family, &[(0x400, 0x1400)]);
+        let mut mapper = self::mapper(&interner, family, &[(0x400, 0x1400)]);
         let mut spell = record(&interner, b"SPEL");
         spell.fields.extend([
             efid(0x400),
@@ -1685,7 +1672,7 @@ mod tests {
     fn unmapped_or_malformed_rows_drop_only_their_atomic_scope() {
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, family, &[(0x400, 0x1400)]);
+        let mut mapper = self::mapper(&interner, family, &[(0x400, 0x1400)]);
         let mut condition = legacy_ctda(72);
         set_u32(&mut condition, 12, 0xDEAD);
         let mut spell = record(&interner, b"SPEL");
@@ -1711,10 +1698,10 @@ mod tests {
     }
 
     #[test]
-    fn dropped_effect_preserves_non_effect_tail_fields() {
+    fn dropped_effects_and_conditions_remove_only_their_own_rows() {
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, family, &[]);
+        let mut mapper = self::mapper(&interner, family, &[]);
         let mut spell = record(&interner, b"SPEL");
         spell.fields.extend([
             efid(0x401),
@@ -1730,13 +1717,10 @@ mod tests {
         assert_eq!(report.dropped_effects, 1);
         assert_eq!(report.dropped_conditions, 1);
         assert_eq!(report.orphan_condition_strings_dropped, 1);
-    }
 
-    #[test]
-    fn proto_dropped_condition_function_removes_its_cis_rows_only() {
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, family, &[(0x400, 0x1400)]);
+        let mut mapper = self::mapper(&interner, family, &[(0x400, 0x1400)]);
         let mut spell = record(&interner, b"SPEL");
         spell.fields.extend([
             efid(0x400),
@@ -1757,7 +1741,7 @@ mod tests {
     fn target_sized_rows_are_preserved_and_malformed_metadata_is_removed() {
         let family = LegacyMagicFamily::Fnv;
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, family, &[]);
+        let mut mapper = self::mapper(&interner, family, &[]);
         for (sig, metadata_sig, target_len) in [
             (*b"ENCH", *b"ENIT", FO4_ENCH_ENIT_LEN),
             (*b"SPEL", *b"SPIT", FO4_SPEL_SPIT_LEN),

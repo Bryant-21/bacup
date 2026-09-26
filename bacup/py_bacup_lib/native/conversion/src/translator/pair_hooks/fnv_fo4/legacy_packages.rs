@@ -1577,13 +1577,13 @@ mod tests {
         location[4..8].copy_from_slice(&raw_location.to_le_bytes());
         location[8..12].copy_from_slice(&128_i32.to_le_bytes());
         record.fields.extend([
-            field(b"PKDT", &pkdt),
-            field(b"PSDT", &schedule),
-            field(b"PLDT", &location),
+            self::field(b"PKDT", &pkdt),
+            self::field(b"PSDT", &schedule),
+            self::field(b"PLDT", &location),
         ]);
         for marker in [b"POBA", b"POEA", b"POCA"] {
-            record.fields.push(field(marker, &[]));
-            record.fields.push(field(b"SCHR", &[0; 20]));
+            record.fields.push(self::field(marker, &[]));
+            record.fields.push(self::field(b"SCHR", &[0; 20]));
         }
         record
     }
@@ -1624,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn travel_projection_encodes_verified_fo4_template_and_location() {
+    fn travel_and_patrol_projections_encode_verified_fo4_templates() {
         let interner = StringInterner::new();
         let masters = ["Master.esm".to_string()];
         let mut record = fixture(&interner, 0x800, 6, 0, 0x0000_1234);
@@ -1658,14 +1658,11 @@ mod tests {
         assert_eq!(read_u32(&location, 4), 0x1234);
         assert_eq!(read_i32(&location, 8), 128);
         assert_eq!(read_u32(&location, 12), 0);
-    }
 
-    #[test]
-    fn patrol_projection_preserves_repeatable_and_exact_reference() {
         let interner = StringInterner::new();
         let masters = ["Master.esm".to_string()];
         let mut record = fixture(&interner, 0x801, 13, 0, 0x0000_4321);
-        record.fields.insert(3, field(b"PKPT", &[1, 0]));
+        record.fields.insert(3, self::field(b"PKPT", &[1, 0]));
         let proof = lower_generic_legacy_package(
             &mut record,
             LegacyPackSourceFamily::Fo3,
@@ -1704,7 +1701,7 @@ mod tests {
         bytes[..4].copy_from_slice(&kind.to_le_bytes());
         bytes[4..8].copy_from_slice(&raw_target.to_le_bytes());
         bytes[8..12].copy_from_slice(&distance.to_le_bytes());
-        field(b"PTDT", &bytes)
+        self::field(b"PTDT", &bytes)
     }
 
     fn add_before_events(record: &mut Record, fields: impl IntoIterator<Item = FieldEntry>) {
@@ -1754,15 +1751,18 @@ mod tests {
         pkdd[16..20].copy_from_slice(&1_u32.to_le_bytes());
         add_before_events(
             &mut dialogue,
-            [target(0, 0x0000_0014, 128), field(b"PKDD", &pkdd)],
+            [
+                self::target(0, 0x0000_0014, 128),
+                self::field(b"PKDD", &pkdd),
+            ],
         );
 
         let mut follow = without_location(fixture(&interner, 0x811, 1, 3, 0));
         add_before_events(
             &mut follow,
             [
-                target(0, 0x0000_1234, 128),
-                field(b"PKFD", &32_f32.to_le_bytes()),
+                self::target(0, 0x0000_1234, 128),
+                self::field(b"PKFD", &32_f32.to_le_bytes()),
             ],
         );
 
@@ -1770,20 +1770,20 @@ mod tests {
         add_before_events(
             &mut escort,
             [
-                target(0, 0x0000_0014, 128),
-                field(b"PKE2", &300_u32.to_le_bytes()),
+                self::target(0, 0x0000_0014, 128),
+                self::field(b"PKE2", &300_u32.to_le_bytes()),
             ],
         );
 
         let sandbox = fixture(&interner, 0x813, 12, 3, 0);
 
         let mut activate = without_location(fixture(&interner, 0x814, 8, 3, 0));
-        add_before_events(&mut activate, [target(0, 0x0000_1234, 2)]);
+        add_before_events(&mut activate, [self::target(0, 0x0000_1234, 2)]);
 
         let mut use_item = without_location(fixture(&interner, 0x815, 8, 3, 0));
         add_before_events(
             &mut use_item,
-            [target(0, 0x0000_1234, 1), field(b"PUID", &[])],
+            [self::target(0, 0x0000_1234, 1), self::field(b"PUID", &[])],
         );
 
         for (record, family, policy, template) in [
@@ -1866,7 +1866,7 @@ mod tests {
             )
         };
         let mut condition = fixture(&interner, 0x800, 6, 6, 0);
-        condition.fields.insert(2, field(b"CTDA", &[0; 28]));
+        condition.fields.insert(2, self::field(b"CTDA", &[0; 28]));
         let GenericLegacyPackageSupport::Fallback { warning_codes, .. } = classify(&condition)
         else {
             panic!("conditioned Travel must be blocked");
@@ -1903,7 +1903,9 @@ mod tests {
             unreachable!()
         };
         header[8..12].copy_from_slice(&1_u32.to_le_bytes());
-        scripted.fields.insert(begin + 2, field(b"SCDA", &[0x01]));
+        scripted
+            .fields
+            .insert(begin + 2, self::field(b"SCDA", &[0x01]));
         let GenericLegacyPackageSupport::Fallback { warning_codes, .. } = classify(&scripted)
         else {
             panic!("nonempty event script must be blocked");
@@ -1913,7 +1915,7 @@ mod tests {
         let mut sandbox = fixture(&interner, 0x804, 12, 3, 0);
         let mut second = [0_u8; 12];
         second[..4].copy_from_slice(&7_u32.to_le_bytes());
-        add_before_events(&mut sandbox, [field(b"PLD2", &second)]);
+        add_before_events(&mut sandbox, [self::field(b"PLD2", &second)]);
         let GenericLegacyPackageSupport::Fallback { warning_codes, .. } = classify(&sandbox) else {
             panic!("two-location sandbox must be blocked");
         };
@@ -1922,7 +1924,7 @@ mod tests {
         let mut use_item = without_location(fixture(&interner, 0x805, 8, 3, 0));
         add_before_events(
             &mut use_item,
-            [target(0, 0x0000_1234, 2), field(b"PUID", &[])],
+            [self::target(0, 0x0000_1234, 2), self::field(b"PUID", &[])],
         );
         let GenericLegacyPackageSupport::Fallback { warning_codes, .. } = classify(&use_item)
         else {

@@ -16,12 +16,15 @@ Function EN05MQ_RememberKill(Actor akVictim)
 EndFunction
 
 Int Function EN05MQ_CommendationValueFor(Actor akVictim)
+    If akVictim == None
+        Return 0
+    EndIf
+    Int awarded = 0
     If EpicRankAV != None && EN05_Officer_EpicAVThreshold != None \
         && akVictim.GetValue(EpicRankAV) >= EN05_Officer_EpicAVThreshold.GetValue()
         If EN05_Officer_Legendary_KillCommendationValue != None
-            Return EN05_Officer_Legendary_KillCommendationValue.GetValue() as Int
+            awarded += EN05_Officer_Legendary_KillCommendationValue.GetValue() as Int
         EndIf
-        Return 0
     EndIf
 
     Bool isTarget = False
@@ -32,9 +35,9 @@ Int Function EN05MQ_CommendationValueFor(Actor akVictim)
     EndIf
 
     If isTarget && EN05_MQ_KillCommendenationValue != None
-        Return EN05_MQ_KillCommendenationValue.GetValue() as Int
+        awarded += EN05_MQ_KillCommendenationValue.GetValue() as Int
     EndIf
-    Return 0
+    Return awarded
 EndFunction
 
 Event OnKill(Actor akVictim)
@@ -65,14 +68,12 @@ Event OnKill(Actor akVictim)
         player = Game.GetPlayer()
     EndIf
     If player != None && EN05_Officer_KillCompletedValue != None
-        player.SetValue(EN05_Officer_KillCompletedValue, player.GetValue(EN05_Officer_KillCompletedValue) + 1.0)
+        player.SetValue(EN05_Officer_KillCompletedValue, player.GetValue(EN05_Officer_KillCompletedValue) + awarded as Float)
     EndIf
 
-    Int legendaryValue = 0
-    If EN05_Officer_Legendary_KillCommendationValue != None
-        legendaryValue = EN05_Officer_Legendary_KillCommendationValue.GetValue() as Int
-    EndIf
-    If legendaryValue > 0 && awarded >= legendaryValue && !owner.GetStageDone(iFirstLegendaryKill)
+    If EpicRankAV != None && EN05_Officer_EpicAVThreshold != None \
+        && akVictim.GetValue(EpicRankAV) >= EN05_Officer_EpicAVThreshold.GetValue() \
+        && !owner.GetStageDone(iFirstLegendaryKill)
         owner.SetObjectiveCompleted(iFirstLegendaryKill)
         owner.SetStage(iFirstLegendaryKill)
     EndIf

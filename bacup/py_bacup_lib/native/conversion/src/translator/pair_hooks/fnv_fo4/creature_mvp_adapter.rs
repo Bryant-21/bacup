@@ -168,6 +168,7 @@ pub enum FnvFo3MvpAdapterError {
     Serialization(String),
 }
 
+#[cfg(test)]
 pub fn build_fnv_fo3_mvp_candidate_preparations(
     dependency_ledger: &FnvFo3CreatureDependencyLedger,
     recipe_ledger: &CreatureFamilyRecipeLedger,

@@ -1,24 +1,11 @@
-; Fallout 76 opened a native numeric-entry menu from the ShowKeypadOnActivate
-; keyword and reported the result through a native success event. Fallout 4 has
-; neither, so entry is rebuilt from the two things the base game does have: the
-; Vitale Pumphouse puzzle's per-digit selection, and MS07c's keypad contract
-; where activation alone never advances anything.
-;
-; Activating cycles the digit under the cursor; pausing commits it. Only a
-; complete code equal to the keypad's own code counts as success, and only the
-; owner of the outcome performs the effect: a quest alias that has taken the
-; completion over can refuse it after its own prerequisite and actor checks, and
-; the keypad then stays open for another attempt.
-
-Float Function DigitCommitSeconds() Global
-    Return 1.5
-EndFunction
-
 Int Function DigitCommitTimerID() Global
     Return 76001
 EndFunction
 
 Int Function DigitCount()
+    If presetCode <= 0 && KeypadCode == None && DynamicCode() >= 0
+        Return 6
+    EndIf
     If codeNumDigits > 0
         Return codeNumDigits
     EndIf
@@ -61,12 +48,47 @@ Int Function DynamicCode()
     Return dynamicCode as Int
 EndFunction
 
-Function SetCompletionDelegated(Bool abDelegated)
-    bCompletionDelegated = abDelegated
+Function RegisterCompletionDelegate(ReferenceAlias akDelegate)
+    If akDelegate == None
+        Return
+    EndIf
+    If completionDelegates == None
+        completionDelegates = new ReferenceAlias[0]
+    EndIf
+    If completionDelegates.Find(akDelegate) < 0
+        completionDelegates.Add(akDelegate)
+        bKeypadSolved = False
+        ResetEntry()
+    EndIf
+EndFunction
+
+Function UnregisterCompletionDelegate(ReferenceAlias akDelegate)
+    If completionDelegates != None
+        Int index = completionDelegates.Find(akDelegate)
+        If index >= 0
+            completionDelegates.Remove(index)
+        EndIf
+    EndIf
+EndFunction
+
+Bool Function HasCompletionDelegate()
+    Int index = 0
+    While completionDelegates != None && index < completionDelegates.Length
+        ReferenceAlias listener = completionDelegates[index]
+        If listener != None && listener.GetReference() == Self
+            Quest owningQuest = listener.GetOwningQuest()
+            If owningQuest != None && owningQuest.IsRunning()
+                Return True
+            EndIf
+        EndIf
+        index += 1
+    EndWhile
+    Return False
 EndFunction
 
 Function ResetEntry()
     CancelTimer(DigitCommitTimerID())
+    iEntryGeneration += 1
     bDigitInProgress = False
     iEntryDigit = 0
     iEntryPosition = 0
@@ -74,31 +96,37 @@ Function ResetEntry()
 EndFunction
 
 Event OnActivate(ObjectReference akActionRef)
-    If bKeypadSolved
+    If bKeypadSolved && !HasCompletionDelegate()
         Return
     EndIf
     If akActionRef == None || akActionRef != Game.GetPlayer()
         Return
     EndIf
-    If ExpectedCode() < 0
+    If ExpectedCode() < 0 || bDigitInProgress
         Return
     EndIf
-    If bDigitInProgress
-        iEntryDigit = iEntryDigit + 1
-        If iEntryDigit > 9
-            iEntryDigit = 0
-        EndIf
-    Else
-        bDigitInProgress = True
-        iEntryDigit = 0
+    If !B21:KeypadNative.Ready()
+        Debug.Notification("The Tales keypad runtime is unavailable.")
+        Return
     EndIf
-    Debug.Notification("Keypad digit " + (iEntryPosition + 1) + " of " + DigitCount() + ": " + iEntryDigit)
-    StartTimer(DigitCommitSeconds(), DigitCommitTimerID())
+    ResetEntry()
+    Int entryGeneration = iEntryGeneration
+    bDigitInProgress = True
+    Int enteredCode = B21:KeypadNative.ReadCode(Self, DigitCount())
+    If entryGeneration != iEntryGeneration
+        Return
+    EndIf
+    bDigitInProgress = False
+    If enteredCode < 0 || (bKeypadSolved && !HasCompletionDelegate())
+        Return
+    EndIf
+    iEnteredCode = enteredCode
+    EvaluateEnteredCode()
 EndEvent
 
 Event OnTimer(Int aiTimerID)
     If aiTimerID == DigitCommitTimerID()
-        CommitDigit()
+        ResetEntry()
     EndIf
 EndEvent
 
@@ -108,18 +136,16 @@ Event OnUnload()
     EndIf
 EndEvent
 
-Function CommitDigit()
-    If bKeypadSolved || !bDigitInProgress
-        Return
+Event OnLoad()
+    RegisterForRemoteEvent(Game.GetPlayer(), "OnPlayerLoadGame")
+    ResetEntry()
+EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    If akSender == Game.GetPlayer()
+        ResetEntry()
     EndIf
-    iEnteredCode = iEnteredCode * 10 + iEntryDigit
-    iEntryPosition = iEntryPosition + 1
-    bDigitInProgress = False
-    If iEntryPosition < DigitCount()
-        Return
-    EndIf
-    EvaluateEnteredCode()
-EndFunction
+EndEvent
 
 Function EvaluateEnteredCode()
     Int expectedCode = ExpectedCode()
@@ -129,10 +155,12 @@ Function EvaluateEnteredCode()
         Debug.Notification("The keypad rejects that code.")
         Return
     EndIf
-    Var[] successArgs = new Var[1]
+    Bool delegated = HasCompletionDelegate()
+    Var[] successArgs = new Var[2]
     successArgs[0] = enteredCode
+    successArgs[1] = Game.GetPlayer()
     SendCustomEvent("KeypadSuccess", successArgs)
-    If !bCompletionDelegated
+    If !delegated
         CompleteKeypad()
     EndIf
 EndFunction

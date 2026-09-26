@@ -132,6 +132,11 @@ Function Fragment_Stage_0010_Item_00()
 	If !IsStageDone(200)
 		EnableAlias(Alias_Actor_Sam_Boardwalk)
 	EndIf
+	; Boardwalk instance entry is the only arrival signal; 110 swaps "Travel to the
+	; Boardwalk" for "Meet with Saltwater Sam".
+	If !IsStageDone(110) && !IsStageDone(200)
+		SetStage(110)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0020_Item_00()

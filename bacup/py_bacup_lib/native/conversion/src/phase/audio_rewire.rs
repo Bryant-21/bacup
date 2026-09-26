@@ -960,7 +960,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn musc_defaults_added_when_absent() {
+    fn musc_and_must_defaults_are_added_only_when_absent() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let record = record_with_fields("MUSC", 0x1000, plugin, vec![]);
@@ -983,10 +983,7 @@ mod tests {
                 .map(|f| &f.value),
             Some(&FieldValue::Uint(0))
         );
-    }
 
-    #[test]
-    fn musc_defaults_unchanged_when_already_present() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let record = record_with_fields(
@@ -1009,10 +1006,7 @@ mod tests {
                 .map(|f| &f.value),
             Some(&FieldValue::Uint(2000))
         );
-    }
 
-    #[test]
-    fn must_defaults_add_mstf_false_when_absent() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let record = record_with_fields("MUST", 0x1000, plugin, vec![]);
@@ -1030,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn aspc_defaults_add_all_pinned_values_when_absent() {
+    fn aspc_defaults_are_added_when_absent_force_exterior_weather_and_skip_non_audio() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let record = record_with_fields("ASPC", 0x1000, plugin, vec![]);
@@ -1050,10 +1044,7 @@ mod tests {
         assert_eq!(get("DEVT"), Some(&FieldValue::Uint(0)));
         assert_eq!(get("AEAR"), Some(&FieldValue::Float(1.0)));
         assert_eq!(get("ASDF"), Some(&FieldValue::Uint(16)));
-    }
 
-    #[test]
-    fn aspc_defaults_unchanged_when_already_present_and_asdf_bit_already_set() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let record = record_with_fields(
@@ -1080,10 +1071,7 @@ mod tests {
                 .map(|f| &f.value),
             Some(&FieldValue::Float(0.5))
         );
-    }
 
-    #[test]
-    fn aspc_asdf_exterior_weather_bit_forced_on_even_when_asdf_already_present() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         // ASDF present (bit 1 = EnvironmentType) but WITHOUT bit 16 set.
@@ -1098,10 +1086,7 @@ mod tests {
             .find(|f| f.sig == sub("ASDF"))
             .unwrap();
         assert_eq!(asdf.value, FieldValue::Uint(1 | 16));
-    }
 
-    #[test]
-    fn non_audio_signature_is_untouched() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let record = record_with_fields("STAT", 0x1000, plugin, vec![]);
@@ -1115,7 +1100,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn write_sound_event_set_builds_full_40_bytes_with_start_stop_and_wwed_secondary() {
+    fn write_sound_event_set_writes_full_40_bytes_idempotently() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let mut record = record_with_fields("MUST", 0x1000, plugin, vec![]);
@@ -1144,10 +1129,7 @@ mod tests {
             "Condition FormID always 0 (no CNDF synthesis)"
         );
         assert_eq!(&bytes[36..40], &0x01_000800u32.to_le_bytes());
-    }
 
-    #[test]
-    fn write_sound_event_set_zeros_stop_and_wwed_when_absent() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let mut record = record_with_fields("ASPC", 0x1000, plugin, vec![]);
@@ -1160,10 +1142,7 @@ mod tests {
             panic!("expected Bytes");
         };
         assert_eq!(&bytes[16..40], &[0u8; 24][..]);
-    }
 
-    #[test]
-    fn write_sound_event_set_overwrites_existing_raw_bytes_field_fully() {
         // Field arrived as raw Bytes of another length: still a full overwrite.
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
@@ -1186,10 +1165,7 @@ mod tests {
         };
         assert_eq!(bytes.len(), 40);
         assert_eq!(&bytes[0..16], &start[..]);
-    }
 
-    #[test]
-    fn write_sound_event_set_is_idempotent_when_value_unchanged() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let mut record = record_with_fields("MUST", 0x1000, plugin, vec![]);
@@ -1215,7 +1191,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn group_manifest_rows_collapses_music_start_stop_pair() {
+    fn group_manifest_rows_pairs_music_keeps_solo_ambience_and_rejects_unknown_roles() {
         let rows = vec![
             ManifestRow {
                 fo4_form_key: "0217A3@Fallout4.esm".into(),
@@ -1240,10 +1216,7 @@ mod tests {
         assert!(!groups[0].is_ambience);
         assert!(groups[0].stop_guid.is_some());
         assert_eq!(groups[0].wwed_local_formid, Some(0x000800));
-    }
 
-    #[test]
-    fn group_manifest_rows_solo_ambience_loop() {
         let rows = vec![ManifestRow {
             fo4_form_key: "002000@Fallout4.esm".into(),
             fo4_editor_id: "AmbSpace".into(),
@@ -1257,10 +1230,7 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert!(groups[0].is_ambience);
         assert!(groups[0].stop_guid.is_none());
-    }
 
-    #[test]
-    fn group_manifest_rows_rejects_unknown_role() {
         let rows = vec![ManifestRow {
             fo4_form_key: "002000@Fallout4.esm".into(),
             fo4_editor_id: "X".into(),
@@ -1273,14 +1243,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_hex_formid_accepts_0x_prefix_and_bare_hex() {
+    fn manifest_parsing_reads_normal_rows_placeholder_mode_and_hex_formids() {
         assert_eq!(parse_hex_formid("0x000800").unwrap(), 0x000800);
         assert_eq!(parse_hex_formid("000800").unwrap(), 0x000800);
         assert!(parse_hex_formid("not-hex").is_err());
-    }
 
-    #[test]
-    fn parse_normal_rows_reads_all_fields() {
         let manifest = json!([
             {
                 "fo4_form_key": "0217A3@Fallout4.esm",
@@ -1297,18 +1264,12 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].role, "music_start");
         assert_eq!(rows[0].wwed_local_formid, "0x000800");
-    }
 
-    #[test]
-    fn is_placeholder_manifest_detects_mode() {
         assert!(is_placeholder_manifest(
             &json!({"mode": "placeholder", "targets": []})
         ));
         assert!(!is_placeholder_manifest(&json!([])));
-    }
 
-    #[test]
-    fn parse_placeholder_targets_reads_purpose_and_form_id() {
         let manifest = json!({
             "mode": "placeholder",
             "sound_event_sets": "zeroed",
@@ -1328,7 +1289,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn form_key_field_reads_and_set_form_key_field_writes() {
+    fn form_key_fields_read_write_and_read_arrays() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Starfield.esm");
         let target = FormKey {
@@ -1355,10 +1316,7 @@ mod tests {
             1,
             "overwrite in place, not a duplicate field"
         );
-    }
 
-    #[test]
-    fn form_key_list_field_reads_formid_array() {
         let interner = StringInterner::new();
         let plugin = interner.intern("Fallout4.esm");
         let a = FormKey {
@@ -1603,7 +1561,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn regn_music_compensation_pushes_region_music_onto_uncovered_cell_xcmo() {
+    fn regn_music_compensation_fills_uncovered_cells_without_overriding_direct_xcmo() {
         use esp_authoring_core::plugin_runtime::{
             plugin_handle_close_native, plugin_handle_new_native,
         };
@@ -1719,13 +1677,6 @@ mod tests {
 
         plugin_handle_close_native(source_handle);
         plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
-    fn regn_music_compensation_never_overrides_cells_own_direct_xcmo() {
-        use esp_authoring_core::plugin_runtime::{
-            plugin_handle_close_native, plugin_handle_new_native,
-        };
 
         let source_handle = plugin_handle_new_native("Fallout4b.esm", Some("fo4")).unwrap();
         let target_handle =
@@ -2012,7 +1963,7 @@ mod tests {
     }
 
     #[test]
-    fn full_phase_placeholder_mode_repoints_cell_xcmo_and_touches_no_sound_event_set() {
+    fn full_phase_placeholder_mode_repoints_xcmo_and_materializes_musc_defaults() {
         use esp_authoring_core::plugin_runtime::{
             plugin_handle_close_native, plugin_handle_new_native,
         };
@@ -2150,20 +2101,10 @@ mod tests {
         drop_run(run_id).unwrap();
         plugin_handle_close_native(source_handle);
         plugin_handle_close_native(target_handle);
-    }
 
-    #[test]
-    fn full_phase_placeholder_mode_materializes_musc_defaults() {
         // run_placeholder() must run materialize_defaults_pass like run_normal()
         // does: placeholder audio is the only CI-safe path (real Wwise needs a
         // licensed local install).
-        use esp_authoring_core::plugin_runtime::{
-            plugin_handle_close_native, plugin_handle_new_native,
-        };
-        use std::sync::atomic::AtomicBool;
-
-        use crate::run::{drop_run, with_run};
-
         let source_handle = plugin_handle_new_native("Fallout4e.esm", Some("fo4")).unwrap();
         let target_handle =
             plugin_handle_new_native("Fallout4_SFe.esm", Some("starfield")).unwrap();

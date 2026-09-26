@@ -317,9 +317,37 @@ pub fn generate_anim_text_data_for_handle_with_progress(
         progress,
     )?;
     crate::fixups::creature::player_fear::write_selection_timing(
-        &inputs.subgraphs, src_meshes_root, out_meshes_root,
+        &inputs.subgraphs,
+        src_meshes_root,
+        out_meshes_root,
     )?;
     Ok(report.written)
+}
+
+/// Generate AnimTextData for subgraphs that no converted RACE carries (e.g. a graph
+/// registered only by a companion plugin). No weapon profiles or target plugin name
+/// are supplied, so no weapon StanceData, offsets aggregate or plugin SyncAnimData is
+/// written; only the per-subgraph and per-core buckets derivable from the graphs.
+pub fn generate_anim_text_data_for_subgraphs(
+    subgraphs: Vec<SubgraphInput>,
+    src_meshes_root: &Path,
+    out_meshes_root: &Path,
+    base_meshes_root: Option<&Path>,
+    progress: &mut dyn FnMut(&str),
+) -> Result<u32, String> {
+    let inputs = AnimTextDataInputs {
+        subgraphs,
+        ..AnimTextDataInputs::default()
+    };
+    generate_anim_text_data_with_progress(
+        &inputs,
+        src_meshes_root,
+        out_meshes_root,
+        base_meshes_root,
+        None,
+        progress,
+    )
+    .map(|report| report.written)
 }
 
 fn decode_anim_text_data_inputs_for_handle(

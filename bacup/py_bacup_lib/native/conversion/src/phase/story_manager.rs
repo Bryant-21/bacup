@@ -32,7 +32,8 @@ const BETTER_TOMORROW_START_KEYWORD_LOCAL: u32 = 0x0072_C956;
 const BETTER_TOMORROW_REGION_LOCAL: u32 = 0x0009_5004;
 // These quests have exact single-player adapters for required FO76 event fills;
 // any remaining stripped event aliases are optional in the converted record.
-const SINGLE_PLAYER_EVENT_ALIAS_ADAPTED_QUESTS: [(u32, &str); 14] = [
+const SINGLE_PLAYER_EVENT_ALIAS_ADAPTED_QUESTS: [(u32, &str); 15] = [
+    (0x007B_D0A8, "fishing_mq01_changelocation"),
     (0x0000_D783, "mtr06_physicalexam"),
     (0x002D_0F69, "en07_mq_fleeblast"),
     (0x002D_0F6A, "en07_mq_codehunt"),
@@ -1533,9 +1534,7 @@ fn collect_form_keys(
 pub(crate) fn npc_referenced_quest_local_ids(
     source_handle_id: u64,
 ) -> Result<FxHashSet<u32>, RunError> {
-    use esp_authoring_core::plugin_runtime::{
-        ensure_core_section, ensure_refs_section, plugin_handle_store_ref,
-    };
+    use esp_authoring_core::plugin_runtime::{ensure_core_section, plugin_handle_store_ref};
 
     let mut store = plugin_handle_store_ref()
         .lock()
@@ -1544,24 +1543,100 @@ pub(crate) fn npc_referenced_quest_local_ids(
         RunError::InvalidConfig(format!("unknown plugin handle {source_handle_id}"))
     })?;
     let core = ensure_core_section(slot);
-    let refs = ensure_refs_section(slot);
+    Ok(npc_referenced_quest_local_ids_from_plugin(
+        &slot.parsed,
+        &core,
+    ))
+}
+
+fn npc_referenced_quest_local_ids_from_plugin(
+    plugin: &esp_authoring_core::plugin_runtime::ParsedPlugin,
+    core: &esp_authoring_core::plugin_runtime::CoreSection,
+) -> FxHashSet<u32> {
+    use esp_authoring_core::plugin_runtime::{
+        ParsedItem, compiled_schema_for_game, iter_referenced_form_ids_by_subrecord,
+        resolve_form_id_to_form_key,
+    };
+
+    let schema = plugin
+        .game
+        .as_deref()
+        .and_then(|game| compiled_schema_for_game(game).ok());
+    let own_plugin_name = std::sync::Arc::<str>::from(plugin.plugin_name.as_str());
+    let indexed_record_count = core
+        .by_signature_form_keys
+        .values()
+        .map(Vec::len)
+        .sum::<usize>();
+    let form_keys_are_unique = indexed_record_count == core.by_form_key.len();
     let mut quests = FxHashSet::default();
-    for (target, incoming) in &refs.reverse_refs_by_form_key {
-        let Some(target_entry) = core.by_form_key.get(target) else {
-            continue;
-        };
-        if !target_entry.signature.eq_ignore_ascii_case("QUST") {
-            continue;
-        }
-        if incoming.iter().any(|source| {
-            core.by_form_key
-                .get(source)
-                .is_some_and(|entry| entry.signature.eq_ignore_ascii_case("NPC_"))
-        }) {
-            quests.insert(target.object_id);
+
+    fn visit(
+        items: &[ParsedItem],
+        plugin: &esp_authoring_core::plugin_runtime::ParsedPlugin,
+        core: &esp_authoring_core::plugin_runtime::CoreSection,
+        schema: Option<&esp_authoring_core::plugin_runtime::CompiledSchema>,
+        own_plugin_name: &std::sync::Arc<str>,
+        form_keys_are_unique: bool,
+        quests: &mut FxHashSet<u32>,
+    ) {
+        for item in items {
+            let ParsedItem::Record(record) = item else {
+                if let ParsedItem::Group(group) = item {
+                    visit(
+                        &group.children,
+                        plugin,
+                        core,
+                        schema,
+                        own_plugin_name,
+                        form_keys_are_unique,
+                        quests,
+                    );
+                }
+                continue;
+            };
+            let source_is_npc = if form_keys_are_unique {
+                record.signature.eq_ignore_ascii_case("NPC_")
+            } else {
+                let source = resolve_form_id_to_form_key(
+                    record.form_id,
+                    own_plugin_name,
+                    &plugin.header.masters,
+                );
+                core.by_form_key
+                    .get(&source)
+                    .is_some_and(|entry| entry.signature.eq_ignore_ascii_case("NPC_"))
+            };
+            if !source_is_npc {
+                continue;
+            }
+            for (_, raw_target) in iter_referenced_form_ids_by_subrecord(record, schema) {
+                let target = resolve_form_id_to_form_key(
+                    raw_target,
+                    own_plugin_name,
+                    &plugin.header.masters,
+                );
+                if core
+                    .by_form_key
+                    .get(&target)
+                    .is_some_and(|entry| entry.signature.eq_ignore_ascii_case("QUST"))
+                {
+                    quests.insert(target.object_id);
+                }
+            }
         }
     }
-    Ok(quests)
+
+    visit(
+        &plugin.root_items,
+        plugin,
+        core,
+        schema.as_deref(),
+        &own_plugin_name,
+        form_keys_are_unique,
+        &mut quests,
+    );
+    quests
 }
 
 pub(crate) fn classify_story_manager_records(
@@ -3003,6 +3078,7 @@ fn nnam_sig() -> SubrecordSig {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes as RawBytes;
     use smallvec::SmallVec;
 
     use super::*;
@@ -3033,6 +3109,119 @@ mod tests {
 
     fn bytes(bytes: &[u8]) -> FieldValue {
         FieldValue::Bytes(SmallVec::from_slice(bytes))
+    }
+
+    fn parsed_subrecord(
+        signature: &str,
+        data: impl Into<RawBytes>,
+        semantic_type: Option<&str>,
+    ) -> esp_authoring_core::plugin_runtime::ParsedSubrecord {
+        esp_authoring_core::plugin_runtime::ParsedSubrecord {
+            signature: signature.into(),
+            data: data.into(),
+            semantic_type: semantic_type.map(str::to_string),
+        }
+    }
+
+    fn parsed_record(
+        signature: &str,
+        form_id: u32,
+        subrecords: Vec<esp_authoring_core::plugin_runtime::ParsedSubrecord>,
+    ) -> esp_authoring_core::plugin_runtime::ParsedItem {
+        esp_authoring_core::plugin_runtime::ParsedItem::Record(
+            esp_authoring_core::plugin_runtime::ParsedRecord {
+                signature: signature.into(),
+                form_id,
+                flags: 0,
+                version_control: 0,
+                form_version: Some(131),
+                version2: Some(1),
+                subrecords,
+                raw_payload: None,
+                parse_error: None,
+            },
+        )
+    }
+
+    fn compressed_parsed_record(
+        signature: &str,
+        form_id: u32,
+        subrecords: Vec<esp_authoring_core::plugin_runtime::ParsedSubrecord>,
+    ) -> esp_authoring_core::plugin_runtime::ParsedItem {
+        use esp_authoring_core::plugin_runtime::{
+            COMPRESSED_RECORD_FLAG, ParsedItem, ParsedRecord, compress_subrecords_payload,
+        };
+
+        ParsedItem::Record(ParsedRecord {
+            signature: signature.into(),
+            form_id,
+            flags: COMPRESSED_RECORD_FLAG,
+            version_control: 0,
+            form_version: Some(131),
+            version2: Some(1),
+            subrecords: Vec::new(),
+            raw_payload: Some(RawBytes::from(
+                compress_subrecords_payload(&subrecords).expect("compress fixture record"),
+            )),
+            parse_error: None,
+        })
+    }
+
+    fn parsed_plugin(
+        root_items: Vec<esp_authoring_core::plugin_runtime::ParsedItem>,
+    ) -> esp_authoring_core::plugin_runtime::ParsedPlugin {
+        use esp_authoring_core::plugin_runtime::{ParsedPlugin, ParsedPluginHeader};
+
+        ParsedPlugin {
+            plugin_name: "SeventySix.esm".to_string(),
+            file_path: String::new(),
+            header_size: 24,
+            header: ParsedPluginHeader {
+                version: 1.0,
+                num_records: root_items.len() as u32,
+                next_object_id: 0x800,
+                author: String::new(),
+                description: String::new(),
+                masters: Vec::new(),
+                master_sizes: Vec::new(),
+                overridden_forms: Vec::new(),
+                flags: 0,
+                extra_subrecords: Vec::new(),
+                version_control: 0,
+                form_version: Some(131),
+                version2: Some(1),
+                hedr_raw: None,
+                raw_subrecords: Vec::new(),
+            },
+            root_items,
+            game: Some("fo76".to_string()),
+        }
+    }
+
+    fn npc_quest_ids_via_full_refs(
+        plugin: &esp_authoring_core::plugin_runtime::ParsedPlugin,
+        core: &esp_authoring_core::plugin_runtime::CoreSection,
+    ) -> FxHashSet<u32> {
+        use esp_authoring_core::plugin_runtime::build_refs_section;
+
+        let refs = build_refs_section(plugin);
+        refs.reverse_refs_by_form_key
+            .iter()
+            .filter_map(|(target, incoming)| {
+                core.by_form_key
+                    .get(target)
+                    .is_some_and(|entry| entry.signature.eq_ignore_ascii_case("QUST"))
+                    .then_some(())?;
+                incoming
+                    .iter()
+                    .any(|source| {
+                        core.by_form_key
+                            .get(source)
+                            .is_some_and(|entry| entry.signature.eq_ignore_ascii_case("NPC_"))
+                    })
+                    .then_some(target.object_id)
+            })
+            .collect()
     }
 
     fn quest_data(flags: impl Into<u64>) -> FieldValue {
@@ -3633,7 +3822,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_skyline_breadcrumb_relation_lowers_the_active_keyword_gate() {
+    fn skyline_breadcrumb_relation_lowers_only_the_exact_active_keyword_gate() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = skyline_breadcrumb_condition_graph(
             &interner,
@@ -3654,10 +3843,82 @@ mod tests {
             SKYLINE_BREADCRUMB_QUEST_LOCAL
         );
         assert_eq!(condition_count(node), 2);
+
+        let cases = [
+            (
+                "wrong node",
+                "SeventySix.esm",
+                SKYLINE_BREADCRUMB_NODE_LOCAL + 1,
+                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_QUEST_LOCAL,
+            ),
+            (
+                "wrong start keyword",
+                "SeventySix.esm",
+                SKYLINE_BREADCRUMB_NODE_LOCAL,
+                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL + 1,
+                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_QUEST_LOCAL,
+            ),
+            (
+                "wrong active keyword",
+                "SeventySix.esm",
+                SKYLINE_BREADCRUMB_NODE_LOCAL,
+                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL + 1,
+                SKYLINE_BREADCRUMB_QUEST_LOCAL,
+            ),
+            (
+                "wrong quest",
+                "SeventySix.esm",
+                SKYLINE_BREADCRUMB_NODE_LOCAL,
+                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_QUEST_LOCAL + 1,
+            ),
+            (
+                "wrong plugin",
+                "SeventySix_Lookalike.esm",
+                SKYLINE_BREADCRUMB_NODE_LOCAL,
+                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
+                SKYLINE_BREADCRUMB_QUEST_LOCAL,
+            ),
+        ];
+
+        for (label, plugin, node, start_keyword, active_keyword, quest) in cases {
+            let interner = StringInterner::new();
+            let (mut graph, node_fk) = skyline_breadcrumb_condition_graph(
+                &interner,
+                plugin,
+                node,
+                start_keyword,
+                active_keyword,
+                quest,
+            );
+
+            let diagnostics = normalize_story_manager_quest_start_conditions(&mut graph, &interner);
+
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.form_key == node_fk
+                        && diagnostic.message
+                            == "quest_start_unqualified:no_unique_quest_relation"),
+                "{label}: {diagnostics:?}"
+            );
+            assert_eq!(
+                condition_function_ids(&graph.nodes[&node_fk]),
+                vec![560, 576],
+                "{label}"
+            );
+            assert_eq!(condition_count(&graph.nodes[&node_fk]), 2, "{label}");
+        }
     }
 
     #[test]
-    fn exact_ac_sq05_relation_lowers_the_unowned_active_keyword_gate() {
+    fn ac_sq05_relation_lowers_only_the_exact_unowned_active_keyword_gate() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = ac_sq05_condition_graph(&interner);
 
@@ -3668,10 +3929,7 @@ mod tests {
         assert_eq!(condition_function_ids(node), vec![56, 576]);
         assert_eq!(condition_parameter_1(node, 0), AC_SQ05_QUEST_LOCAL);
         assert_eq!(condition_count(node), 2);
-    }
 
-    #[test]
-    fn ac_sq05_relation_rejects_an_active_keyword_identity_lookalike() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = ac_sq05_condition_graph(&interner);
         graph
@@ -3698,7 +3956,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_ac_sq05_node_rechains_around_removed_sq04() {
+    fn ac_sq05_node_rechains_around_removed_sq04_only_when_exact() {
         let interner = StringInterner::new();
         let (graph, node_fk) = ac_sq05_condition_graph(&interner);
         let sq03_fk = fk(&interner, AC_SQ03_NODE_LOCAL);
@@ -3715,10 +3973,7 @@ mod tests {
         assert!(node.warnings.iter().any(|warning| {
             interner.resolve(*warning) == Some("story_manager_previous_node_rechained")
         }));
-    }
 
-    #[test]
-    fn ac_sq05_rechain_rejects_unsafe_lookalikes() {
         let cases = [
             "wrong_editor_id",
             "wrong_parent",
@@ -3778,7 +4033,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_burn_sq01_radio_relation_preserves_the_lcp_gate() {
+    fn burn_sq01_radio_relation_preserves_the_lcp_gate_only_when_exact() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = burn_sq01_radio_condition_graph(&interner);
 
@@ -3790,10 +4045,7 @@ mod tests {
             vec![576, 74]
         );
         assert_eq!(condition_count(&graph.nodes[&node_fk]), 2);
-    }
 
-    #[test]
-    fn burn_sq01_radio_relation_rejects_an_identity_lookalike() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = burn_sq01_radio_condition_graph(&interner);
         graph.nodes.get_mut(&node_fk).unwrap().eid =
@@ -3812,7 +4064,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_overseer_self_completion_start_relations_lower_only_the_self_completion_gate() {
+    fn overseer_self_completion_start_relations_lower_only_the_exact_gate() {
         for personal in [false, true] {
             let interner = StringInterner::new();
             let (mut graph, node_fk) =
@@ -3841,10 +4093,7 @@ mod tests {
             );
             assert_eq!(condition_count(&graph.nodes[&node_fk]), 2);
         }
-    }
 
-    #[test]
-    fn overseer_self_completion_start_relations_reject_identity_and_shape_lookalikes() {
         for personal in [false, true] {
             for case in ["node_eid", "quest_eid", "keyword_eid", "quest", "condition"] {
                 let interner = StringInterner::new();
@@ -3920,7 +4169,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_tw007_cold_case_relation_lowers_only_the_self_completion_guard() {
+    fn tw007_cold_case_relation_lowers_only_the_exact_self_completion_guard() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = tw007_cold_case_condition_graph(&interner, "SeventySix.esm");
 
@@ -3943,10 +4192,7 @@ mod tests {
             Some(TW007_COLD_CASE_START_KEYWORD_LOCAL)
         );
         assert_eq!(condition_count(&graph.nodes[&node_fk]), 2);
-    }
 
-    #[test]
-    fn tw007_cold_case_relation_rejects_identity_and_shape_lookalikes() {
         for case in [
             "node_eid",
             "quest_eid",
@@ -4039,10 +4285,7 @@ mod tests {
                 "case={case}"
             );
         }
-    }
 
-    #[test]
-    fn tw007_cold_case_relation_rejects_a_foreign_source_plugin() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = tw007_cold_case_condition_graph(&interner, "Lookalike.esm");
 
@@ -4059,7 +4302,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_burn_outro_p2_relation_lowers_the_missing_active_keyword_owner() {
+    fn burn_outro_p2_relation_lowers_only_the_exact_missing_active_keyword_owner() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = burn_outro_p2_condition_graph(&interner);
 
@@ -4075,10 +4318,7 @@ mod tests {
             BURN_OUTRO_P2_QUEST_LOCAL
         );
         assert_eq!(condition_count(&graph.nodes[&node_fk]), 3);
-    }
 
-    #[test]
-    fn burn_outro_p2_relation_rejects_an_active_keyword_lookalike() {
         let interner = StringInterner::new();
         let (mut graph, node_fk) = burn_outro_p2_condition_graph(&interner);
         let active_keyword_fk = fk(&interner, BURN_OUTRO_P2_ACTIVE_KEYWORD_LOCAL);
@@ -4102,82 +4342,7 @@ mod tests {
     }
 
     #[test]
-    fn skyline_breadcrumb_relation_rejects_every_identity_lookalike() {
-        let cases = [
-            (
-                "wrong node",
-                "SeventySix.esm",
-                SKYLINE_BREADCRUMB_NODE_LOCAL + 1,
-                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_QUEST_LOCAL,
-            ),
-            (
-                "wrong start keyword",
-                "SeventySix.esm",
-                SKYLINE_BREADCRUMB_NODE_LOCAL,
-                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL + 1,
-                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_QUEST_LOCAL,
-            ),
-            (
-                "wrong active keyword",
-                "SeventySix.esm",
-                SKYLINE_BREADCRUMB_NODE_LOCAL,
-                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL + 1,
-                SKYLINE_BREADCRUMB_QUEST_LOCAL,
-            ),
-            (
-                "wrong quest",
-                "SeventySix.esm",
-                SKYLINE_BREADCRUMB_NODE_LOCAL,
-                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_QUEST_LOCAL + 1,
-            ),
-            (
-                "wrong plugin",
-                "SeventySix_Lookalike.esm",
-                SKYLINE_BREADCRUMB_NODE_LOCAL,
-                SKYLINE_BREADCRUMB_START_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_ACTIVE_KEYWORD_LOCAL,
-                SKYLINE_BREADCRUMB_QUEST_LOCAL,
-            ),
-        ];
-
-        for (label, plugin, node, start_keyword, active_keyword, quest) in cases {
-            let interner = StringInterner::new();
-            let (mut graph, node_fk) = skyline_breadcrumb_condition_graph(
-                &interner,
-                plugin,
-                node,
-                start_keyword,
-                active_keyword,
-                quest,
-            );
-
-            let diagnostics = normalize_story_manager_quest_start_conditions(&mut graph, &interner);
-
-            assert!(
-                diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.form_key == node_fk
-                        && diagnostic.message
-                            == "quest_start_unqualified:no_unique_quest_relation"),
-                "{label}: {diagnostics:?}"
-            );
-            assert_eq!(
-                condition_function_ids(&graph.nodes[&node_fk]),
-                vec![560, 576],
-                "{label}"
-            );
-            assert_eq!(condition_count(&graph.nodes[&node_fk]), 2, "{label}");
-        }
-    }
-
-    #[test]
-    fn structural_start_condition_lowering_handles_exact_wayward_nodes() {
+    fn structural_start_condition_lowering_handles_exact_wayward_nodes_only_for_fo76() {
         let interner = StringInterner::new();
         let (mut graph, wayward_node_fk, lacey_node_fk) = scpt_quest_start_graph(&interner);
         let original_starts = [wayward_node_fk, lacey_node_fk].map(|node_fk| {
@@ -4226,10 +4391,30 @@ mod tests {
                 );
             }
         }
+
+        for source in [Game::SkyrimSe, Game::Fnv] {
+            let interner = StringInterner::new();
+            let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
+
+            let diagnostics = normalize_story_manager_quest_start_conditions_for_pair(
+                source,
+                Game::Fo4,
+                &mut graph,
+                &interner,
+            );
+
+            assert!(diagnostics.is_empty());
+            assert_eq!(
+                condition_function_ids(&graph.nodes[&wayward_node_fk]),
+                vec![576, 560, 857],
+                "{source:?} source conditions must not pass through FO76 lowering"
+            );
+            assert_eq!(condition_count(&graph.nodes[&wayward_node_fk]), 3);
+        }
     }
 
     #[test]
-    fn exact_k1_only_w05_nodes_are_valid_and_route_eligible() {
+    fn exact_w05_k1_only_and_mqr_choice_nodes_lower_only_their_gates() {
         for (
             node_local,
             quest_local,
@@ -4400,10 +4585,7 @@ mod tests {
             assert!(route.condition_valid);
             assert_eq!(route.structural_status, "eligible");
         }
-    }
 
-    #[test]
-    fn exact_w05_mqr_choice_node_lowers_only_the_active_keyword_gate() {
         let interner = StringInterner::new();
         let root_fk = fk(&interner, 0x029152);
         let branch_fk = fk(&interner, 0x3FBBBD);
@@ -4543,7 +4725,7 @@ mod tests {
     }
 
     #[test]
-    fn emitted_wayward_story_manager_quests_clear_source_sge_without_losing_selection() {
+    fn story_manager_autostart_clear_and_force_respect_node_emission_and_radio_controllers() {
         let interner = StringInterner::new();
         let (mut graph, wayward_node_fk, lacey_node_fk) = scpt_quest_start_graph(&interner);
         let wayward_quest_fk = fk(&interner, 0x405E14);
@@ -4678,10 +4860,7 @@ mod tests {
             0,
             "a non-selected quest is untouched"
         );
-    }
 
-    #[test]
-    fn condition_invalid_story_manager_nodes_do_not_claim_quest_autostart() {
         let interner = StringInterner::new();
         let (mut graph, _wayward_node_fk, lacey_node_fk) = scpt_quest_start_graph(&interner);
         let wayward_quest_fk = fk(&interner, 0x405E14);
@@ -4718,10 +4897,7 @@ mod tests {
             vec![wayward_quest_fk],
             "a quest whose only emitted node has an unnormalized start condition keeps its autostart bit",
         );
-    }
 
-    #[test]
-    fn always_on_radio_station_quests_keep_source_autostart_when_nodes_emit() {
         let interner = StringInterner::new();
         let node = fk(&interner, 0x4E2A02);
         let radio_quests = ALWAYS_ON_RADIO_STATION_QUESTS
@@ -4740,33 +4916,27 @@ mod tests {
             .is_empty(),
             "always-on station controllers cannot rely on unproduced SCPT routes",
         );
+
+        let interner = StringInterner::new();
+        let mut record = record(&interner, "QUST", 0x0100, Some("NPCConversation_Biv"));
+        record.fields.push(field(
+            "DNAM",
+            bytes(&QUST_FLAG_HAS_DIALOGUE_DATA.to_le_bytes()),
+        ));
+
+        assert!(force_qust_autostart(&mut record, &interner));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("DNAM bytes expected");
+        };
+        let flags = u16::from_le_bytes([bytes[0], bytes[1]]);
+        assert_eq!(
+            flags & (QUST_FLAG_HAS_DIALOGUE_DATA | QUST_FLAG_START_GAME_ENABLED),
+            QUST_FLAG_HAS_DIALOGUE_DATA | QUST_FLAG_START_GAME_ENABLED
+        );
     }
 
     #[test]
-    fn non_fo76_source_pairs_do_not_normalize_story_manager_conditions() {
-        for source in [Game::SkyrimSe, Game::Fnv] {
-            let interner = StringInterner::new();
-            let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
-
-            let diagnostics = normalize_story_manager_quest_start_conditions_for_pair(
-                source,
-                Game::Fo4,
-                &mut graph,
-                &interner,
-            );
-
-            assert!(diagnostics.is_empty());
-            assert_eq!(
-                condition_function_ids(&graph.nodes[&wayward_node_fk]),
-                vec![576, 560, 857],
-                "{source:?} source conditions must not pass through FO76 lowering"
-            );
-            assert_eq!(condition_count(&graph.nodes[&wayward_node_fk]), 3);
-        }
-    }
-
-    #[test]
-    fn wrong_start_keyword_role_does_not_qualify_node() {
+    fn start_keyword_rows_qualify_only_sole_typed_or_untyped_k1_selectors() {
         let interner = StringInterner::new();
         let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
         graph
@@ -4786,10 +4956,7 @@ mod tests {
             vec![576, 560, 857]
         );
         assert_eq!(condition_count(&graph.nodes[&wayward_node_fk]), 3);
-    }
 
-    #[test]
-    fn sole_untyped_k1_selector_qualifies_quest_start_node() {
         let interner = StringInterner::new();
         let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
         graph
@@ -4819,54 +4986,7 @@ mod tests {
             vec![576]
         );
         assert_eq!(condition_count(&graph.nodes[&wayward_node_fk]), 1);
-    }
 
-    #[test]
-    fn workshop_vertibird_grenade_keyword_is_a_start_selector() {
-        let interner = StringInterner::new();
-        let record = keyword(&interner, 0x04DFDE, "WorkshopVertibirdGrenadeKW");
-
-        assert_eq!(
-            story_manager_keyword_role(&record, &interner),
-            Some(StoryManagerKeywordRole::Start)
-        );
-    }
-
-    #[test]
-    fn start_quest_keyword_suffix_is_a_bounded_start_selector() {
-        let interner = StringInterner::new();
-        let exact = keyword(&interner, 0x06EFC6, "MTR06_PhysicalExamStartQuestKeyword");
-        assert_eq!(
-            story_manager_keyword_role(&exact, &interner),
-            Some(StoryManagerKeywordRole::Start)
-        );
-
-        for editor_id in [
-            "MTR06_PhysicalExamStartQuestKeywordState",
-            "MTR06_PhysicalExamStartQuestMarkerKeyword",
-            "MTR06_PhysicalExamQuestKeyword",
-        ] {
-            let lookalike = keyword(&interner, 0x06EFC7, editor_id);
-            assert_eq!(story_manager_keyword_role(&lookalike, &interner), None);
-        }
-    }
-
-    #[test]
-    fn quest_role_tokens_reject_substring_lookalikes() {
-        let interner = StringInterner::new();
-        for (local, editor_id) in [
-            (0x56C830, "COMP_Keyword_QuestStarter_Astronaut_Outtro"),
-            (0x56C831, "COMP_Keyword_QuestStartState_Astronaut_Outtro"),
-            (0x57319A, "COMP_Keyword_QuestActiveState_Astronaut_Outtro"),
-            (0x57319B, "COMP_Keyword_InQuestActive_Astronaut_Outtro"),
-        ] {
-            let lookalike = keyword(&interner, local, editor_id);
-            assert_eq!(story_manager_keyword_role(&lookalike, &interner), None);
-        }
-    }
-
-    #[test]
-    fn unresolved_second_k1_start_row_disqualifies_the_whole_node() {
         let interner = StringInterner::new();
         let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
         let node = graph.nodes.get_mut(&wayward_node_fk).unwrap();
@@ -4900,7 +5020,45 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_active_keyword_relation_is_reported_and_left_unchanged() {
+    fn story_manager_keyword_role_accepts_bounded_start_selectors_and_rejects_lookalikes() {
+        let interner = StringInterner::new();
+        let record = keyword(&interner, 0x04DFDE, "WorkshopVertibirdGrenadeKW");
+
+        assert_eq!(
+            story_manager_keyword_role(&record, &interner),
+            Some(StoryManagerKeywordRole::Start)
+        );
+
+        let interner = StringInterner::new();
+        let exact = keyword(&interner, 0x06EFC6, "MTR06_PhysicalExamStartQuestKeyword");
+        assert_eq!(
+            story_manager_keyword_role(&exact, &interner),
+            Some(StoryManagerKeywordRole::Start)
+        );
+
+        for editor_id in [
+            "MTR06_PhysicalExamStartQuestKeywordState",
+            "MTR06_PhysicalExamStartQuestMarkerKeyword",
+            "MTR06_PhysicalExamQuestKeyword",
+        ] {
+            let lookalike = keyword(&interner, 0x06EFC7, editor_id);
+            assert_eq!(story_manager_keyword_role(&lookalike, &interner), None);
+        }
+
+        let interner = StringInterner::new();
+        for (local, editor_id) in [
+            (0x56C830, "COMP_Keyword_QuestStarter_Astronaut_Outtro"),
+            (0x56C831, "COMP_Keyword_QuestStartState_Astronaut_Outtro"),
+            (0x57319A, "COMP_Keyword_QuestActiveState_Astronaut_Outtro"),
+            (0x57319B, "COMP_Keyword_InQuestActive_Astronaut_Outtro"),
+        ] {
+            let lookalike = keyword(&interner, local, editor_id);
+            assert_eq!(story_manager_keyword_role(&lookalike, &interner), None);
+        }
+    }
+
+    #[test]
+    fn ambiguous_active_gates_are_reported_and_leave_the_whole_node_unchanged() {
         let interner = StringInterner::new();
         let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
         let other_quest_fk = fk(&interner, 0x123456);
@@ -4928,10 +5086,7 @@ mod tests {
             vec![576, 560, 857]
         );
         assert_eq!(condition_count(&graph.nodes[&wayward_node_fk]), 3);
-    }
 
-    #[test]
-    fn mixed_mapped_and_ambiguous_active_gates_leave_the_whole_node_unchanged() {
         let interner = StringInterner::new();
         let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
         let ambiguous_keyword_fk = fk(&interner, 0x123456);
@@ -4988,7 +5143,7 @@ mod tests {
     }
 
     #[test]
-    fn qualified_predecessor_node_lowers_every_exact_completion_gate() {
+    fn qualified_predecessor_node_lowers_exact_completion_gates_and_keeps_unrelated_r3() {
         let interner = StringInterner::new();
         let (mut graph, _, _) = scpt_quest_start_graph(&interner);
         let branch_fk = fk(&interner, 0x3FBBBD);
@@ -5050,6 +5205,36 @@ mod tests {
         assert_eq!(condition_parameter_1(node, 1), quest_fk.local);
         assert_eq!(condition_parameter_1(node, 2), 0x405E14);
         assert_eq!(condition_parameter_1(node, 3), quest_fk.local);
+        assert_eq!(condition_count(node), 4);
+
+        let interner = StringInterner::new();
+        let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
+        let unrelated_keyword_fk = fk(&interner, 0x123456);
+        let node = graph.nodes.get_mut(&wayward_node_fk).unwrap();
+        let insert_at = node
+            .fields
+            .iter()
+            .position(|entry| entry.sig == nnam_sig())
+            .unwrap();
+        node.fields.insert(
+            insert_at,
+            field(
+                "CTDA",
+                raw_ctda("0000000000000000300294435634120000000000070000000000000052330000"),
+            ),
+        );
+        node.sync_condition_count();
+        graph.keywords.insert(
+            unrelated_keyword_fk,
+            keyword(&interner, unrelated_keyword_fk.local, "SomeGameplayKeyword"),
+        );
+
+        let diagnostics = normalize_story_manager_quest_start_conditions(&mut graph, &interner);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let node = &graph.nodes[&wayward_node_fk];
+        assert_eq!(condition_function_ids(node), vec![576, 56, 543, 560]);
+        assert_eq!(condition_parameter_1(node, 3), unrelated_keyword_fk.local);
         assert_eq!(condition_count(node), 4);
     }
 
@@ -5146,39 +5331,6 @@ mod tests {
             "the sibling active keyword must gate on the sibling quest"
         );
         assert_eq!(condition_count(misc_node), 5);
-    }
-
-    #[test]
-    fn unrelated_r3_has_keyword_gate_remains_unchanged() {
-        let interner = StringInterner::new();
-        let (mut graph, wayward_node_fk, _) = scpt_quest_start_graph(&interner);
-        let unrelated_keyword_fk = fk(&interner, 0x123456);
-        let node = graph.nodes.get_mut(&wayward_node_fk).unwrap();
-        let insert_at = node
-            .fields
-            .iter()
-            .position(|entry| entry.sig == nnam_sig())
-            .unwrap();
-        node.fields.insert(
-            insert_at,
-            field(
-                "CTDA",
-                raw_ctda("0000000000000000300294435634120000000000070000000000000052330000"),
-            ),
-        );
-        node.sync_condition_count();
-        graph.keywords.insert(
-            unrelated_keyword_fk,
-            keyword(&interner, unrelated_keyword_fk.local, "SomeGameplayKeyword"),
-        );
-
-        let diagnostics = normalize_story_manager_quest_start_conditions(&mut graph, &interner);
-
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let node = &graph.nodes[&wayward_node_fk];
-        assert_eq!(condition_function_ids(node), vec![576, 56, 543, 560]);
-        assert_eq!(condition_parameter_1(node, 3), unrelated_keyword_fk.local);
-        assert_eq!(condition_count(node), 4);
     }
 
     fn graph_with_radio(interner: &StringInterner) -> (StoryManagerSourceGraph, FormKey, FormKey) {
@@ -5371,7 +5523,7 @@ mod tests {
     }
 
     #[test]
-    fn route_seed_marks_all_fo76_only_roots_as_unproven_script_event_bridges() {
+    fn route_seed_marks_fo76_only_roots_as_unproven_bridges_and_is_pair_gated() {
         for event_type in Fo76Fo4Hook::fo76_only_qust_event_types() {
             let interner = StringInterner::new();
             let fixture = route_seed_fixture(&interner, *event_type, true);
@@ -5407,10 +5559,19 @@ mod tests {
                 )
             );
         }
+
+        let interner = StringInterner::new();
+        let fixture = route_seed_fixture(&interner, fourcc(b"CLOC"), false);
+
+        let report = route_seed_report(&interner, &fixture, Game::Fnv);
+
+        assert_eq!(report.source_game, "fnv");
+        assert_eq!(report.target_game, "fo4");
+        assert!(report.routes.is_empty());
     }
 
     #[test]
-    fn route_seed_distinguishes_native_cloc_and_scpt_selector_routes() {
+    fn route_seed_distinguishes_native_cloc_scpt_and_quest_level_selector_routes() {
         let interner = StringInterner::new();
         let cloc = route_seed_fixture(&interner, fourcc(b"CLOC"), false);
         let cloc_report = route_seed_report(&interner, &cloc, Game::Fo76);
@@ -5462,10 +5623,7 @@ mod tests {
         );
         assert!(scpt_route.condition_valid);
         assert_eq!(scpt_route.producer_status, "unproven");
-    }
 
-    #[test]
-    fn route_seed_accepts_quest_level_scpt_selector() {
         let interner = StringInterner::new();
         let mut scpt = route_seed_fixture(&interner, SCPT_EVENT_TYPE, false);
         let source_selector = 0x011111;
@@ -5515,7 +5673,7 @@ mod tests {
     }
 
     #[test]
-    fn route_seed_includes_orphans_and_is_deterministically_sorted() {
+    fn route_seed_includes_orphans_sorts_and_records_skips() {
         let interner = StringInterner::new();
         let mut fixture = route_seed_fixture(&interner, fourcc(b"CLOC"), false);
         for local in [0x700002, 0x700001] {
@@ -5590,10 +5748,7 @@ mod tests {
             orphan.source_start_keyword,
             Some(fk(&interner, 0x700011).format(&interner))
         );
-    }
 
-    #[test]
-    fn route_seed_records_skips_condition_failures_and_conflicting_k1_selectors() {
         let interner = StringInterner::new();
         let mut skipped = route_seed_fixture(&interner, SCPT_EVENT_TYPE, false);
         skipped
@@ -5657,42 +5812,7 @@ mod tests {
     }
 
     #[test]
-    fn route_seed_is_pair_gated() {
-        let interner = StringInterner::new();
-        let fixture = route_seed_fixture(&interner, fourcc(b"CLOC"), false);
-
-        let report = route_seed_report(&interner, &fixture, Game::Fnv);
-
-        assert_eq!(report.source_game, "fnv");
-        assert_eq!(report.target_game, "fo4");
-        assert!(report.routes.is_empty());
-    }
-
-    #[test]
-    fn story_manager_selects_appalachia_style_scpt_radio_chain() {
-        let interner = StringInterner::new();
-        let (graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
-        let translated = FxHashSet::from_iter([quest_fk]);
-
-        let selection = classify_story_manager_records(&graph, &translated, &interner);
-
-        assert!(selection.selected_nodes.contains(&fk(&interner, 0x029152)));
-        assert!(selection.selected_nodes.contains(&fk(&interner, 0x4E34B9)));
-        assert!(selection.selected_nodes.contains(&smqn_fk));
-        assert_eq!(selection.ordered_nodes[0], fk(&interner, 0x029152));
-        assert_eq!(selection.ordered_nodes.last().copied(), Some(smqn_fk));
-        assert_eq!(
-            selection
-                .diagnostics
-                .iter()
-                .filter(|d| d.kind == StoryManagerDiagnosticKind::Selected)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn synthesizes_better_tomorrow_node_from_exact_content_manager_contract() {
+    fn better_tomorrow_node_is_synthesized_only_from_the_exact_content_manager_contract() {
         let interner = StringInterner::new();
         let mut content_manager = record(
             &interner,
@@ -5773,10 +5893,7 @@ mod tests {
         let selection =
             classify_story_manager_records(&graph, &FxHashSet::from_iter([quest_fk]), &interner);
         assert!(selection.selected_nodes.contains(&content_manager.form_key));
-    }
 
-    #[test]
-    fn does_not_synthesize_better_tomorrow_node_for_changed_region_contract() {
         let interner = StringInterner::new();
         let mut content_manager = record(
             &interner,
@@ -5797,7 +5914,7 @@ mod tests {
     }
 
     #[test]
-    fn story_manager_selects_and_filters_every_nnam_quest() {
+    fn story_manager_selects_nnam_quests_and_scpt_radio_chains() {
         let interner = StringInterner::new();
         let (mut graph, smqn_fk, first_quest_fk) = graph_with_radio(&interner);
         let second_quest_fk = fk(&interner, 0x1948B5);
@@ -5827,10 +5944,30 @@ mod tests {
         let mut smqn = graph.nodes.get(&smqn_fk).unwrap().clone();
         retain_story_manager_quests(&mut smqn, &FxHashSet::from_iter([second_quest_fk]));
         assert_eq!(story_manager_quests(&smqn), vec![second_quest_fk]);
+
+        let interner = StringInterner::new();
+        let (graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
+        let translated = FxHashSet::from_iter([quest_fk]);
+
+        let selection = classify_story_manager_records(&graph, &translated, &interner);
+
+        assert!(selection.selected_nodes.contains(&fk(&interner, 0x029152)));
+        assert!(selection.selected_nodes.contains(&fk(&interner, 0x4E34B9)));
+        assert!(selection.selected_nodes.contains(&smqn_fk));
+        assert_eq!(selection.ordered_nodes[0], fk(&interner, 0x029152));
+        assert_eq!(selection.ordered_nodes.last().copied(), Some(smqn_fk));
+        assert_eq!(
+            selection
+                .diagnostics
+                .iter()
+                .filter(|d| d.kind == StoryManagerDiagnosticKind::Selected)
+                .count(),
+            1
+        );
     }
 
     #[test]
-    fn story_manager_carries_fo76_only_event_root() {
+    fn story_manager_carries_fo76_only_event_root_and_stops_at_inherited_parent() {
         let interner = StringInterner::new();
         let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
         // Re-root the chain on a FO76-only event type (ILOC). It is carried so
@@ -5854,10 +5991,7 @@ mod tests {
                 .iter()
                 .all(|d| d.kind == StoryManagerDiagnosticKind::Selected)
         );
-    }
 
-    #[test]
-    fn story_manager_stops_at_event_root_with_inherited_parent() {
         let interner = StringInterner::new();
         let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
         let inherited_root = FormKey {
@@ -5885,7 +6019,22 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_event_root_lowers_to_keyword_gated_script_branch() {
+    fn event_roots_map_to_fo4_native_records_or_lower_to_keyword_gated_scpt() {
+        let interner = StringInterner::new();
+        let mut script_event = record(&interner, "SMEN", 0x1000, Some("ScriptEvent"));
+        script_event.fields.push(field("ENAM", bytes(b"SCPT")));
+        let mut mine_event = record(&interner, "SMEN", 0x1001, Some("MineEvent"));
+        mine_event.fields.push(field("ENAM", bytes(b"TMEE")));
+        let mut fo76_only = record(&interner, "SMEN", 0x1002, Some("InteriorEvent"));
+        fo76_only.fields.push(field("ENAM", bytes(b"ILOC")));
+        let mut kill_event = record(&interner, "SMEN", 0x1003, Some("KillEvent"));
+        kill_event.fields.push(field("ENAM", bytes(b"KILL")));
+
+        assert_eq!(fo4_story_manager_event_root(&script_event), Some(0x029152));
+        assert_eq!(fo4_story_manager_event_root(&mine_event), Some(0x02A68B));
+        assert_eq!(fo4_story_manager_event_root(&fo76_only), None);
+        assert_eq!(fo4_story_manager_event_root(&kill_event), None);
+
         let interner = StringInterner::new();
         let mut smen = record(&interner, "SMEN", 0x1000, Some("ILocEvent"));
         smen.fields.push(field("ENAM", bytes(b"ILOC")));
@@ -5933,25 +6082,7 @@ mod tests {
     }
 
     #[test]
-    fn story_manager_maps_event_roots_to_fo4_native_records() {
-        let interner = StringInterner::new();
-        let mut script_event = record(&interner, "SMEN", 0x1000, Some("ScriptEvent"));
-        script_event.fields.push(field("ENAM", bytes(b"SCPT")));
-        let mut mine_event = record(&interner, "SMEN", 0x1001, Some("MineEvent"));
-        mine_event.fields.push(field("ENAM", bytes(b"TMEE")));
-        let mut fo76_only = record(&interner, "SMEN", 0x1002, Some("InteriorEvent"));
-        fo76_only.fields.push(field("ENAM", bytes(b"ILOC")));
-        let mut kill_event = record(&interner, "SMEN", 0x1003, Some("KillEvent"));
-        kill_event.fields.push(field("ENAM", bytes(b"KILL")));
-
-        assert_eq!(fo4_story_manager_event_root(&script_event), Some(0x029152));
-        assert_eq!(fo4_story_manager_event_root(&mine_event), Some(0x02A68B));
-        assert_eq!(fo4_story_manager_event_root(&fo76_only), None);
-        assert_eq!(fo4_story_manager_event_root(&kill_event), None);
-    }
-
-    #[test]
-    fn kill_event_root_is_unproven_and_must_fail_before_bridge_emission() {
+    fn incompatible_event_roots_include_every_fo76_only_type_and_kill_is_unproven() {
         let interner = StringInterner::new();
         let root = fk(&interner, 0x4100);
         let mut kill = record(&interner, "SMEN", root.local, Some("KillEvent"));
@@ -5970,10 +6101,7 @@ mod tests {
             incompatible_story_manager_event_roots(&selected, &graph),
             vec![(root, fourcc(b"KILL"))]
         );
-    }
 
-    #[test]
-    fn incompatible_event_roots_include_every_fo76_only_event_type() {
         let interner = StringInterner::new();
         let mut graph = StoryManagerSourceGraph::default();
         let mut selected = FxHashSet::default();
@@ -6010,7 +6138,7 @@ mod tests {
     }
 
     #[test]
-    fn bridged_quest_event_rewrites_to_scpt_after_root_emits() {
+    fn bridged_quest_events_rewrite_to_scpt_and_report_conflicts() {
         let interner = StringInterner::new();
         let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
         let root_fk = fk(&interner, 0x029152);
@@ -6072,10 +6200,7 @@ mod tests {
             vec!["DNAM", "ENAM", "LNAM"]
         );
         assert!(selection.selected_quests_by_node.contains_key(&smqn_fk));
-    }
 
-    #[test]
-    fn quest_event_plan_reports_conflicting_final_event_types() {
         let interner = StringInterner::new();
         let quest_fk = fk(&interner, 0x2000);
         let incompatible_root = fk(&interner, 0x3000);
@@ -6118,7 +6243,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_mtr06_alias_adapter_restores_the_physical_exam_story_route() {
+    fn mtr06_alias_adapter_restores_the_physical_exam_route_only_when_exact() {
         let interner = StringInterner::new();
         let root_fk = fk(&interner, 0x029152);
         let branch_fk = fk(&interner, 0x0616CF);
@@ -6274,10 +6399,20 @@ mod tests {
         );
         assert!(route.condition_valid);
         assert!(route.issues.is_empty());
+
+        let interner = StringInterner::new();
+        let wrong_form = mtr06_physical_exam_quest(&interner, 0x00D784, "MTR06_PhysicalExam");
+        let wrong_editor_id =
+            mtr06_physical_exam_quest(&interner, 0x00D783, "MTR06_PhysicalExam_UnsafeCopy");
+
+        for quest in [&wrong_form, &wrong_editor_id] {
+            assert!(qust_has_untranslatable_event_alias(quest));
+            assert_eq!(classify_quest(quest, &interner), None);
+        }
     }
 
     #[test]
-    fn exact_astronaut_outtro_adapter_restores_the_story_route() {
+    fn exact_companion_adapters_restore_astronaut_radiant_and_visitor_routes() {
         let interner = StringInterner::new();
         let root_fk = fk(&interner, 0x029152);
         let branch_fk = fk(&interner, 0x55F6CF);
@@ -6445,23 +6580,7 @@ mod tests {
         append_event_alias(&mut foreign_lookalike, "ALST", 0, 0, 0x3352);
         assert!(qust_has_untranslatable_event_alias(&foreign_lookalike));
         assert_eq!(classify_quest(&foreign_lookalike, &interner), None);
-    }
 
-    #[test]
-    fn mtr06_alias_adapter_rejects_unsafe_lookalikes() {
-        let interner = StringInterner::new();
-        let wrong_form = mtr06_physical_exam_quest(&interner, 0x00D784, "MTR06_PhysicalExam");
-        let wrong_editor_id =
-            mtr06_physical_exam_quest(&interner, 0x00D783, "MTR06_PhysicalExam_UnsafeCopy");
-
-        for quest in [&wrong_form, &wrong_editor_id] {
-            assert!(qust_has_untranslatable_event_alias(quest));
-            assert_eq!(classify_quest(quest, &interner), None);
-        }
-    }
-
-    #[test]
-    fn exact_companion_runtime_adapters_restore_radiant_and_visitor_quests() {
         let interner = StringInterner::new();
         for (local, editor_id) in [
             (0x54F1A4, "COMP_RQ_Fetch"),
@@ -7248,7 +7367,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_quest_keeps_generic_gameplay_for_story_manager() {
+    fn classify_quest_keeps_generic_gameplay_and_skips_cut_or_bridge_quests() {
         let interner = StringInterner::new();
         let quest = record(&interner, "QUST", 0x2000, Some("SQ_SomeSideQuest"));
         assert_eq!(
@@ -7258,10 +7377,7 @@ mod tests {
 
         let dev = record(&interner, "QUST", 0x2001, Some("ZZTestQuest"));
         assert_eq!(classify_quest(&dev, &interner), None);
-    }
 
-    #[test]
-    fn classify_quest_skips_cut_w05_settler_dailies() {
         let interner = StringInterner::new();
         for (local, editor_id) in [
             (0x3F2DC7, "zzz_W05_SettlersDaily_Clinic"),
@@ -7272,6 +7388,70 @@ mod tests {
             let quest = record(&interner, "QUST", local, Some(editor_id));
             assert_eq!(classify_quest(&quest, &interner), None, "{editor_id}");
         }
+
+        let interner = StringInterner::new();
+        let breadcrumb_connect = record(
+            &interner,
+            "QUST",
+            0x5EAD3B,
+            Some("BS01_MQ00_Breadcrumb_OnConnect"),
+        );
+        assert_eq!(classify_quest(&breadcrumb_connect, &interner), None);
+
+        let interner = StringInterner::new();
+        let mut quest = record(
+            &interner,
+            "QUST",
+            0x7BD0A8,
+            Some("Fishing_MQ01_ChangeLocation"),
+        );
+        quest
+            .fields
+            .push(field("ALST", bytes(&0_u32.to_le_bytes())));
+        quest
+            .fields
+            .push(field("ALFE", bytes(&fourcc(b"CLOC").to_le_bytes())));
+        quest
+            .fields
+            .push(field("ALFD", bytes(&0x3152_u32.to_le_bytes())));
+        assert!(qust_has_untranslatable_event_alias(&quest));
+        assert_eq!(
+            classify_quest(&quest, &interner),
+            Some(StoryQuestKind::Generic)
+        );
+        assert!(!qust_uses_player_connect_autostart_fallback(
+            &interner, &quest
+        ));
+        quest.form_key.plugin = interner.intern("Other.esm");
+        assert_eq!(classify_quest(&quest, &interner), None);
+
+        let interner = StringInterner::new();
+        let mut quest = record(
+            &interner,
+            "QUST",
+            0x024442,
+            Some("CB_HighSchoolPASystem_RadioScenes"),
+        );
+        quest
+            .fields
+            .push(field("DATA", quest_data(0x0401_8111_u64)));
+
+        assert_eq!(
+            classify_quest(&quest, &interner),
+            Some(StoryQuestKind::Radio)
+        );
+        assert!(!is_passive_dialogue_controller(&quest, true, &interner));
+
+        let interner = StringInterner::new();
+        let mut quest = record(&interner, "QUST", 0x37D8DD, Some("WhitespringQuest"));
+        quest
+            .fields
+            .push(field("DATA", quest_data(0x0001_8111_u64)));
+        quest.fields.push(field("VMAD", FieldValue::None));
+        quest.fields.push(field("INDX", bytes(&[10, 0, 2, 0])));
+
+        assert!(is_passive_dialogue_controller(&quest, true, &interner));
+        assert!(!is_passive_dialogue_controller(&quest, false, &interner));
     }
 
     #[test]
@@ -7411,19 +7591,54 @@ mod tests {
     }
 
     #[test]
-    fn classify_quest_skips_breadcrumb_player_connect_bridge() {
+    fn exact_event_alias_adapters_match_source_decoded_alias_names() {
+        // The source reader decodes ALID zstrings as interned strings, not bytes.
         let interner = StringInterner::new();
-        let breadcrumb_connect = record(
-            &interner,
-            "QUST",
-            0x5EAD3B,
-            Some("BS01_MQ00_Breadcrumb_OnConnect"),
+        let alias_name = |name: &str| field("ALID", FieldValue::String(interner.intern(name)));
+        let insert_name_before_flags = |quest: &mut Record, name: &str| {
+            let flags = quest
+                .fields
+                .iter()
+                .rposition(|entry| entry.sig.0 == *b"FNAM")
+                .expect("alias flags");
+            quest.fields.insert(flags, alias_name(name));
+        };
+
+        let mut tw002 = record(&interner, "QUST", 0x10E201, Some("TW002"));
+        tw002
+            .fields
+            .push(field("ENAM", bytes(&SCPT_EVENT_TYPE.to_le_bytes())));
+        append_event_alias(&mut tw002, "ALST", 39, 1, 12_626);
+        insert_name_before_flags(&mut tw002, "EventTrigger");
+        assert!(!qust_has_untranslatable_event_alias_for_source(
+            &interner, &tw002
+        ));
+        assert_eq!(
+            classify_quest(&tw002, &interner),
+            Some(StoryQuestKind::Generic)
         );
-        assert_eq!(classify_quest(&breadcrumb_connect, &interner), None);
+
+        let mut workshop_clear = record(&interner, "QUST", 0x1789F9, Some("GQ_WorkshopClear"));
+        append_event_alias(&mut workshop_clear, "ALST", 0, 0x4000_0100, 12_626);
+        insert_name_before_flags(&mut workshop_clear, "Workshop");
+        assert!(!qust_has_untranslatable_event_alias_for_source(
+            &interner,
+            &workshop_clear
+        ));
+
+        let mut renamed = record(&interner, "QUST", 0x10E201, Some("TW002"));
+        renamed
+            .fields
+            .push(field("ENAM", bytes(&SCPT_EVENT_TYPE.to_le_bytes())));
+        append_event_alias(&mut renamed, "ALST", 39, 1, 12_626);
+        insert_name_before_flags(&mut renamed, "OtherTrigger");
+        assert!(qust_has_untranslatable_event_alias_for_source(
+            &interner, &renamed
+        ));
     }
 
     #[test]
-    fn story_manager_skips_quest_with_discarded_event_alias() {
+    fn story_manager_event_alias_support_decides_quest_selection() {
         let interner = StringInterner::new();
         let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
         let quest = graph.quests.get_mut(&quest_fk).unwrap();
@@ -7446,10 +7661,7 @@ mod tests {
             selection.diagnostics[0].reason,
             Some(StoryManagerSkipReason::UnsupportedQuest)
         );
-    }
 
-    #[test]
-    fn story_manager_keeps_quest_with_script_event_location1_alias() {
         let interner = StringInterner::new();
         let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
         let quest = graph.quests.get_mut(&quest_fk).unwrap();
@@ -7473,40 +7685,6 @@ mod tests {
     }
 
     #[test]
-    fn high_school_pa_broadcast_is_story_manager_driven_not_name_blocked() {
-        let interner = StringInterner::new();
-        let mut quest = record(
-            &interner,
-            "QUST",
-            0x024442,
-            Some("CB_HighSchoolPASystem_RadioScenes"),
-        );
-        quest
-            .fields
-            .push(field("DATA", quest_data(0x0401_8111_u64)));
-
-        assert_eq!(
-            classify_quest(&quest, &interner),
-            Some(StoryQuestKind::Radio)
-        );
-        assert!(!is_passive_dialogue_controller(&quest, true, &interner));
-    }
-
-    #[test]
-    fn whitespring_live_shape_is_passive_dialogue_controller() {
-        let interner = StringInterner::new();
-        let mut quest = record(&interner, "QUST", 0x37D8DD, Some("WhitespringQuest"));
-        quest
-            .fields
-            .push(field("DATA", quest_data(0x0001_8111_u64)));
-        quest.fields.push(field("VMAD", FieldValue::None));
-        quest.fields.push(field("INDX", bytes(&[10, 0, 2, 0])));
-
-        assert!(is_passive_dialogue_controller(&quest, true, &interner));
-        assert!(!is_passive_dialogue_controller(&quest, false, &interner));
-    }
-
-    #[test]
     fn story_manager_nuls_unselected_previous_sibling() {
         let interner = StringInterner::new();
         let (graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
@@ -7527,101 +7705,82 @@ mod tests {
     }
 
     #[test]
-    fn story_manager_selects_explicit_npc_conversation_quest() {
-        let interner = StringInterner::new();
-        let (mut graph, _smqn_fk, quest_fk) = graph_with_radio(&interner);
-        let quest = graph.quests.get_mut(&quest_fk).unwrap();
-        quest.eid = Some(interner.intern("NPCConversation_Biv"));
-        quest
-            .fields
-            .push(field("DATA", quest_data(QUST_FLAG_HAS_DIALOGUE_DATA)));
-        let translated = FxHashSet::from_iter([quest_fk]);
+    fn story_manager_dialogue_fallback_depends_on_root_and_quest_shape() {
+        let dialogue = u64::from(QUST_FLAG_HAS_DIALOGUE_DATA);
+        for (label, eid, flags, unsupported_root, expect_fallback, expect_selected) in [
+            (
+                "explicit npc conversation",
+                "NPCConversation_Biv",
+                dialogue,
+                false,
+                false,
+                None,
+            ),
+            (
+                "unsupported root",
+                "NPCConversation_Biv",
+                dialogue,
+                true,
+                true,
+                None,
+            ),
+            (
+                "unique instance",
+                "NPCConversation_Unique",
+                dialogue | QUST_FLAG_UNIQUE_INSTANCE,
+                true,
+                false,
+                None,
+            ),
+            ("tw043", "TW043", dialogue, false, false, Some(true)),
+            (
+                "test quest",
+                "test_VHarbison_Dialogue_Someone",
+                dialogue,
+                false,
+                false,
+                Some(false),
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
+            if unsupported_root {
+                graph
+                    .nodes
+                    .get_mut(&fk(&interner, 0x029152))
+                    .unwrap()
+                    .fields[0]
+                    .value = bytes(b"ILOC");
+            }
+            let quest = graph.quests.get_mut(&quest_fk).unwrap();
+            quest.eid = Some(interner.intern(eid));
+            quest.fields.push(field("DATA", quest_data(flags)));
+            let translated = FxHashSet::from_iter([quest_fk]);
 
-        let selection = classify_story_manager_records(&graph, &translated, &interner);
+            let selection = classify_story_manager_records(&graph, &translated, &interner);
 
-        assert!(selection.fallback_dialogue_quests.is_empty());
-    }
-
-    #[test]
-    fn story_manager_falls_back_only_for_unsupported_dialogue_event_root() {
-        let interner = StringInterner::new();
-        let (mut graph, _smqn_fk, quest_fk) = graph_with_radio(&interner);
-        graph
-            .nodes
-            .get_mut(&fk(&interner, 0x029152))
-            .unwrap()
-            .fields[0]
-            .value = bytes(b"ILOC");
-        let quest = graph.quests.get_mut(&quest_fk).unwrap();
-        quest.eid = Some(interner.intern("NPCConversation_Biv"));
-        quest
-            .fields
-            .push(field("DATA", quest_data(QUST_FLAG_HAS_DIALOGUE_DATA)));
-        let translated = FxHashSet::from_iter([quest_fk]);
-
-        let selection = classify_story_manager_records(&graph, &translated, &interner);
-
-        assert_eq!(selection.fallback_dialogue_quests, vec![quest_fk]);
-    }
-
-    #[test]
-    fn story_manager_does_not_force_unique_dialogue_fallback() {
-        let interner = StringInterner::new();
-        let (mut graph, _smqn_fk, quest_fk) = graph_with_radio(&interner);
-        graph
-            .nodes
-            .get_mut(&fk(&interner, 0x029152))
-            .unwrap()
-            .fields[0]
-            .value = bytes(b"ILOC");
-        let quest = graph.quests.get_mut(&quest_fk).unwrap();
-        quest.eid = Some(interner.intern("NPCConversation_Unique"));
-        quest.fields.push(field(
-            "DATA",
-            quest_data(u64::from(QUST_FLAG_HAS_DIALOGUE_DATA) | QUST_FLAG_UNIQUE_INSTANCE),
-        ));
-        let translated = FxHashSet::from_iter([quest_fk]);
-
-        let selection = classify_story_manager_records(&graph, &translated, &interner);
-
-        assert!(selection.fallback_dialogue_quests.is_empty());
-    }
-
-    #[test]
-    fn story_manager_does_not_autostart_tw043_with_dialogue_data() {
-        let interner = StringInterner::new();
-        let (mut graph, smqn_fk, quest_fk) = graph_with_radio(&interner);
-        let quest = graph.quests.get_mut(&quest_fk).unwrap();
-        quest.eid = Some(interner.intern("TW043"));
-        quest
-            .fields
-            .push(field("DATA", quest_data(QUST_FLAG_HAS_DIALOGUE_DATA)));
-        let translated = FxHashSet::from_iter([quest_fk]);
-
-        let selection = classify_story_manager_records(&graph, &translated, &interner);
-
-        assert!(selection.selected_nodes.contains(&smqn_fk));
-        assert!(selection.fallback_dialogue_quests.is_empty());
-    }
-
-    #[test]
-    fn story_manager_skips_test_dialogue_quest() {
-        let interner = StringInterner::new();
-        let (mut graph, _smqn_fk, quest_fk) = graph_with_radio(&interner);
-        let quest = graph.quests.get_mut(&quest_fk).unwrap();
-        quest.eid = Some(interner.intern("test_VHarbison_Dialogue_Someone"));
-        quest
-            .fields
-            .push(field("DATA", quest_data(QUST_FLAG_HAS_DIALOGUE_DATA)));
-        let translated = FxHashSet::from_iter([quest_fk]);
-
-        let selection = classify_story_manager_records(&graph, &translated, &interner);
-
-        assert!(selection.selected_nodes.is_empty());
-        assert_eq!(
-            selection.diagnostics[0].reason,
-            Some(StoryManagerSkipReason::UnsupportedQuest)
-        );
+            let expected_fallback = if expect_fallback {
+                vec![quest_fk]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(
+                selection.fallback_dialogue_quests, expected_fallback,
+                "{label}"
+            );
+            match expect_selected {
+                Some(true) => assert!(selection.selected_nodes.contains(&smqn_fk), "{label}"),
+                Some(false) => {
+                    assert!(selection.selected_nodes.is_empty(), "{label}");
+                    assert_eq!(
+                        selection.diagnostics[0].reason,
+                        Some(StoryManagerSkipReason::UnsupportedQuest),
+                        "{label}"
+                    );
+                }
+                None => {}
+            }
+        }
     }
 
     fn lite_ally_intro_graph(
@@ -7707,7 +7866,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_lite_ally_shared_node_preserves_all_routes_and_scpt_quest_events() {
+    fn lite_ally_shared_node_preserves_all_routes_only_when_exact() {
         let interner = StringInterner::new();
         let (mut graph, node_fk, quest_fks) = lite_ally_intro_graph(&interner);
         let diagnostics = normalize_story_manager_quest_start_conditions(&mut graph, &interner);
@@ -7785,10 +7944,7 @@ mod tests {
                     .any(|issue| issue == "conflicting_mandatory_k1_selectors")
             );
         }
-    }
 
-    #[test]
-    fn lite_ally_shared_node_rejects_keyword_and_partial_route_near_misses() {
         let interner = StringInterner::new();
         let (mut graph, node_fk, quest_fks) = lite_ally_intro_graph(&interner);
         let wrong_keyword_fk = fk(&interner, LITE_ALLY_INTRO_ROUTES[2].2);
@@ -7823,10 +7979,7 @@ mod tests {
             selection.diagnostics[0].reason,
             Some(StoryManagerSkipReason::QuestNotTranslated)
         );
-    }
 
-    #[test]
-    fn lite_ally_shared_node_rejects_structural_near_misses() {
         let interner = StringInterner::new();
         for mutation in [
             "node_editor_id",
@@ -7906,22 +8059,55 @@ mod tests {
     }
 
     #[test]
-    fn story_manager_force_autostart_sets_sge_when_dialogue_data_present() {
-        let interner = StringInterner::new();
-        let mut record = record(&interner, "QUST", 0x0100, Some("NPCConversation_Biv"));
-        record.fields.push(field(
-            "DNAM",
-            bytes(&QUST_FLAG_HAS_DIALOGUE_DATA.to_le_bytes()),
-        ));
+    fn npc_quest_scan_matches_full_refs_edge_cases() {
+        use esp_authoring_core::plugin_runtime::build_core_section;
 
-        assert!(force_qust_autostart(&mut record, &interner));
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("DNAM bytes expected");
-        };
-        let flags = u16::from_le_bytes([bytes[0], bytes[1]]);
-        assert_eq!(
-            flags & (QUST_FLAG_HAS_DIALOGUE_DATA | QUST_FLAG_START_GAME_ENABLED),
-            QUST_FLAG_HAS_DIALOGUE_DATA | QUST_FLAG_START_GAME_ENABLED
-        );
+        let form_id = |value: u32| value.to_le_bytes().to_vec();
+        let plugin = parsed_plugin(vec![
+            parsed_record("QUST", 0x100, Vec::new()),
+            parsed_record("QUST", 0x101, Vec::new()),
+            parsed_record("QUST", 0x102, Vec::new()),
+            parsed_record("QUST", 0x103, Vec::new()),
+            parsed_record("MISC", 0x200, Vec::new()),
+            parsed_record(
+                "NPC_",
+                0x300,
+                vec![
+                    parsed_subrecord("RNAM", form_id(0x100), Some("formid")),
+                    parsed_subrecord("RNAM", form_id(0x200), Some("formid")),
+                    parsed_subrecord("RNAM", form_id(0x999), Some("formid")),
+                ],
+            ),
+            compressed_parsed_record(
+                "NPC_",
+                0x301,
+                vec![parsed_subrecord("RNAM", form_id(0x100), None)],
+            ),
+            parsed_record(
+                "NPC_",
+                0x302,
+                vec![parsed_subrecord("VMAD", form_id(0x101), None)],
+            ),
+            parsed_record(
+                "MISC",
+                0x400,
+                vec![parsed_subrecord("RNAM", form_id(0x102), Some("formid"))],
+            ),
+            parsed_record("NPC_", 0x400, Vec::new()),
+            parsed_record(
+                "NPC_",
+                0x401,
+                vec![parsed_subrecord("RNAM", form_id(0x103), Some("formid"))],
+            ),
+            parsed_record("MISC", 0x401, Vec::new()),
+        ]);
+        let core = build_core_section(&plugin);
+
+        let expected = FxHashSet::from_iter([0x100, 0x102]);
+        let full_refs = npc_quest_ids_via_full_refs(&plugin, &core);
+        let focused = npc_referenced_quest_local_ids_from_plugin(&plugin, &core);
+
+        assert_eq!(full_refs, expected);
+        assert_eq!(focused, full_refs);
     }
 }

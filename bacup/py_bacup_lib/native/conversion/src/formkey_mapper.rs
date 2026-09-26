@@ -49,6 +49,9 @@ pub struct MapperOptions {
     pub vanilla_remap_blocked_signatures: Vec<String>,
     /// Source records that must never be remapped to vanilla records by EditorID.
     pub vanilla_remap_blocked_source_form_keys: FxHashSet<FormKey>,
+    /// Signatures that remap to a vanilla record by EditorID only when the
+    /// object id matches as well; a namesake at another id stays source-owned.
+    pub shared_dna_remap_signatures: Vec<String>,
     /// When `true`, preserve the source object-id in the output plugin when
     /// the id is not already occupied.
     pub preserve_source_ids: bool,
@@ -151,6 +154,15 @@ fn is_shared_dna_remap_candidate(sig: SigCode) -> bool {
 /// `DefaultMasterPackage` variants convert that way.
 fn is_shared_dna_vanilla_match(source: FormKey, target: FormKey) -> bool {
     source.local & 0x00FF_FFFF == target.local & 0x00FF_FFFF
+}
+
+pub(crate) fn requires_shared_dna_for_remap(
+    shared_dna_remap_signatures: &[String],
+    sig: SigCode,
+) -> bool {
+    shared_dna_remap_signatures
+        .iter()
+        .any(|shared| shared.eq_ignore_ascii_case(sig.as_str()))
 }
 
 fn is_vanilla_default_package_list(sig: SigCode, editor_id: &str) -> bool {
@@ -654,9 +666,18 @@ impl<'a> FormKeyMapper<'a> {
                     || shared_dna_candidate
                     || mapper_allows_editor_id_vanilla_remap(&self.st().options, sig, editor_id))
             {
-                let name_only_allowed = marker_static
-                    || vanilla_default_package_list
-                    || mapper_allows_editor_id_vanilla_remap(&self.st().options, sig, editor_id);
+                let shared_dna_only = requires_shared_dna_for_remap(
+                    &self.st().options.shared_dna_remap_signatures,
+                    sig,
+                );
+                let name_only_allowed = !shared_dna_only
+                    && (marker_static
+                        || vanilla_default_package_list
+                        || mapper_allows_editor_id_vanilla_remap(
+                            &self.st().options,
+                            sig,
+                            editor_id,
+                        ));
                 if let Some(target_fk) = self.eid_matches(eid_sym, sig) {
                     if name_only_allowed || is_shared_dna_vanilla_match(source, target_fk) {
                         self.st().source_to_target.insert(source, target_fk);
@@ -1071,13 +1092,17 @@ impl<'a> FormKeyMapper<'a> {
         let source_fk = self.source_formkey_for_raw_formid(raw)?;
         let target_fk = self.lookup(source_fk).or_else(|| {
             let plugin_name = self.interner.resolve(source_fk.plugin)?;
-            self.state
-                .as_ref()
-                .options
+            let options = &self.state.as_ref().options;
+            let target_master = options
                 .target_master_names
                 .iter()
-                .any(|target| target.eq_ignore_ascii_case(plugin_name))
-                .then_some(source_fk)
+                .any(|target| target.eq_ignore_ascii_case(plugin_name));
+            // Placed records arrive after base-record VMADs. Their preserved
+            // IDs must address the output, even before the copy phase maps them.
+            let deferred_output = options.preserve_source_ids
+                && plugin_name.eq_ignore_ascii_case(&options.output_plugin_name)
+                && plugin_name.eq_ignore_ascii_case(&options.source_plugin_name);
+            (target_master || deferred_output).then_some(source_fk)
         })?;
         let target_raw = self.raw_formid_for_target(target_fk)?;
         if target_raw == raw {
@@ -1089,7 +1114,10 @@ impl<'a> FormKeyMapper<'a> {
     }
 
     fn rewrite_vmad_formid_at(&mut self, data: &mut [u8], offset: usize) -> Option<bool> {
-        self.rewrite_raw_formid_at(data, offset)
+        read_u32(data, offset)?;
+        // An unresolved or null object is a valid property, not a truncated
+        // VMAD. Continue to the following properties, scripts and aliases.
+        Some(self.rewrite_raw_formid_at(data, offset).unwrap_or(false))
     }
 
     fn source_formkey_for_raw_formid(&self, raw: u32) -> Option<FormKey> {
@@ -1380,7 +1408,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn mapper_allocates_fresh_for_new_record() {
+    fn mapper_allocates_fresh_for_new_record_and_reuses_the_mapping() {
         let mut interner = StringInterner::new();
         let mut mapper = FormKeyMapper::new(
             [],
@@ -1395,6 +1423,7 @@ mod tests {
         let target = mapper.allocate_or_resolve(source, None, sig);
         assert_eq!(mapper.interner.resolve(target.plugin).unwrap(), "Mod.esp");
         assert!(target.local < 0x0100_0000);
+        assert_eq!(mapper.allocate_or_resolve(source, None, sig), target);
     }
 
     #[test]
@@ -1492,459 +1521,91 @@ mod tests {
         assert_eq!(preserved.local, 0x000900);
     }
 
-    #[test]
-    fn mapper_reuses_existing_mapping() {
-        let mut interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Mod.esp".to_string(),
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("000800@Mod.esm", &mut mapper.interner);
-        let sig = weap_sig();
-        let t1 = mapper.allocate_or_resolve(source, None, sig);
-        let t2 = mapper.allocate_or_resolve(source, None, sig);
-        assert_eq!(t1, t2);
+    #[derive(Clone, Copy)]
+    enum EidExpectation {
+        Vanilla,
+        SourceOwned(&'static str, u32),
     }
 
     #[test]
-    fn mapper_eid_match_returns_vanilla_target() {
-        let mut interner = StringInterner::new();
-        // Pre-build the EID sym and target FK using the same interner.
-        let eid_sym = interner.intern("WeaponPistol");
-        let target_fk = parse_fk("001234@Fallout4.esm", &mut interner);
-        let sig = weap_sig();
-
-        let eid_iter = [(eid_sym, target_fk, sig)];
-        let mut mapper = FormKeyMapper::new(
-            eid_iter,
-            MapperOptions {
-                output_plugin_name: "Mod.esp".to_string(),
-                use_base_game_assets: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("000A00@Mod.esm", &mut mapper.interner);
-        // Intern the EID sym again to get the same Sym handle.
-        let eid = mapper.interner.intern("WeaponPistol");
-        let result = mapper.allocate_or_resolve(source, Some(eid), sig);
-        assert_eq!(result, target_fk);
-    }
-
-    #[test]
-    fn mapper_fo76_newspaper_ignores_vanilla_editor_id_match_when_blocked() {
-        let mut interner = StringInterner::new();
-        let eid = interner.intern("Newspaper01");
-        let source = parse_fk("01A4B9@SeventySix.esm", &mut interner);
-        let vanilla = parse_fk("01A4B9@Fallout4.esm", &mut interner);
-        let misc_sig = SigCode::from_str("MISC").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid, vanilla, misc_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_source_form_keys: [source].into_iter().collect(),
-                ..Default::default()
-            },
-            &mut interner,
-        );
-
-        assert_eq!(
-            mapper.allocate_or_resolve(source, Some(eid), misc_sig),
-            source
-        );
-    }
-
-    #[test]
-    fn mapper_layer_eid_match_returns_vanilla_target_with_base_assets_disabled() {
-        let mut interner = StringInterner::new();
-        let layr_sig = SigCode::from_str("LAYR").unwrap();
-        let eid_sym = interner.intern("randomencounters");
-        let target_fk = parse_fk("1870F4@Fallout4.esm", &mut interner);
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, layr_sig)],
-            MapperOptions {
-                output_plugin_name: "B21_TestMod.esm".to_string(),
-                use_base_game_assets: false,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("27E044@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("randomencounters");
-        let result = mapper.allocate_or_resolve(source, Some(eid), layr_sig);
-
-        assert_eq!(result, target_fk);
-    }
-
-    #[test]
-    fn mapper_does_not_eid_remap_package_templates() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("followplayer");
-        let target_fk = parse_fk("02A105@Fallout4.esm", &mut interner);
-        let pack_sig = SigCode::from_str("PACK").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, pack_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("407F9F@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("followplayer");
-        let result = mapper.allocate_or_resolve(source, Some(eid), pack_sig);
-
-        assert_eq!(
-            mapper.interner.resolve(result.plugin),
-            Some("SeventySix.esm")
-        );
-        assert_eq!(result.local, 0x407F9F);
-    }
-
-    #[test]
-    fn mapper_remaps_vanilla_default_package_form_lists() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("DefaultCombatMasterPackageList");
-        let vanilla_fk = parse_fk("04223F@Fallout4.esm", &mut interner);
-        let flst_sig = SigCode::from_str("FLST").unwrap();
+    fn mapper_editor_id_vanilla_remap_policy() {
+        use EidExpectation::{SourceOwned, Vanilla};
+        // (case, editor id, vanilla fk, signature, output, base assets, preserve ids,
+        //  blocked signatures, block this source fk, source fk, expectation)
+        #[rustfmt::skip]
+        let cases: [(&str, &str, &str, &str, &str, bool, bool, &[&str], bool, &str, EidExpectation); 16] = [
+            ("plain editor id match", "WeaponPistol", "001234@Fallout4.esm", "WEAP", "Mod.esp", true, false, &[], false, "000A00@Mod.esm", Vanilla),
+            ("fo76 newspaper blocked by source fk", "Newspaper01", "01A4B9@Fallout4.esm", "MISC", "SeventySix.esm", true, true, &[], true, "01A4B9@SeventySix.esm", SourceOwned("SeventySix.esm", 0x01A4B9)),
+            ("LAYR with base assets disabled", "randomencounters", "1870F4@Fallout4.esm", "LAYR", "B21_TestMod.esm", false, true, &[], false, "27E044@SeventySix.esm", Vanilla),
+            ("package template", "followplayer", "02A105@Fallout4.esm", "PACK", "SeventySix.esm", true, true, &[], false, "407F9F@SeventySix.esm", SourceOwned("SeventySix.esm", 0x407F9F)),
+            ("vanilla default package form list", "DefaultCombatMasterPackageList", "04223F@Fallout4.esm", "FLST", "SeventySix.esm", true, true, &[], false, "04223F@SeventySix.esm", Vanilla),
+            ("other content-bearing form list", "WorkshopVendorList", "04223F@Fallout4.esm", "FLST", "SeventySix.esm", true, true, &[], false, "04223F@SeventySix.esm", SourceOwned("SeventySix.esm", 0x04223F)),
+            ("package sharing a vanilla object id", "DefaultMasterPackage", "042A1C@Fallout4.esm", "PACK", "SeventySix.esm", true, true, &[], false, "042A1C@SeventySix.esm", Vanilla),
+            ("package object id remap without base assets", "DefaultMasterPackage", "042A1C@Fallout4.esm", "PACK", "SeventySix.esm", false, true, &[], false, "042A1C@SeventySix.esm", Vanilla),
+            ("package that is only a namesake", "AttackScentAttractorMeat", "042A1C@Fallout4.esm", "PACK", "SeventySix.esm", true, true, &[], false, "33D253@SeventySix.esm", SourceOwned("SeventySix.esm", 0x33D253)),
+            ("form list sharing an object id", "WorkshopVendorList", "022B33@Fallout4.esm", "FLST", "SeventySix.esm", true, true, &[], false, "022B33@SeventySix.esm", SourceOwned("SeventySix.esm", 0x022B33)),
+            ("blocked signature", "TerrainShelfRocks01", "012345@Fallout4.esm", "STAT", "Output.esp", true, true, &["STAT"], false, "012345@SeventySix.esm", SourceOwned("Output.esp", 0x012345)),
+            ("static marker on blocked signature", "xmarker", "00003B@Fallout4.esm", "STAT", "Output.esp", false, true, &["STAT"], false, "00003B@SeventySix.esm", Vanilla),
+            ("skyrim placement marker on blocked IDLM", "patrolidlemarker", "002CE2@Fallout4.esm", "IDLM", "Output.esp", true, true, &["IDLM"], false, "0140BD@Skyrim.esm", Vanilla),
+            ("starfield container marker on blocked CONT", "containermarker", "0345B9@Fallout4.esm", "CONT", "Output.esp", true, true, &["CONT"], false, "0012C4@Starfield.esm", Vanilla),
+            ("player on blocked NPC_", "player", "000007@Fallout4.esm", "NPC_", "Output.esp", true, true, &["NPC_"], false, "000007@Skyrim.esm", Vanilla),
+            ("non-marker namesake on blocked signature", "broom01", "05238F@Fallout4.esm", "MISC", "Output.esp", true, true, &["MISC"], false, "06717F@Skyrim.esm", SourceOwned("Output.esp", 0x06717F)),
+        ];
         assert!(is_vanilla_default_package_list(
-            flst_sig,
+            SigCode::from_str("FLST").unwrap(),
             "DefaultMasterPackageList"
         ));
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, flst_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("04223F@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("DefaultCombatMasterPackageList");
-        let result = mapper.allocate_or_resolve(source, Some(eid), flst_sig);
-
-        assert_eq!(mapper.interner.resolve(result.plugin), Some("Fallout4.esm"));
-        assert_eq!(result.local, 0x04223F);
-        assert_eq!(mapper.lookup(source), Some(result));
-        assert_eq!(result, vanilla_fk);
-    }
-
-    #[test]
-    fn mapper_does_not_eid_remap_other_content_bearing_form_lists() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("WorkshopVendorList");
-        let vanilla_fk = parse_fk("04223F@Fallout4.esm", &mut interner);
-        let flst_sig = SigCode::from_str("FLST").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, flst_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("04223F@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("WorkshopVendorList");
-        let result = mapper.allocate_or_resolve(source, Some(eid), flst_sig);
-
-        assert_eq!(
-            mapper.interner.resolve(result.plugin),
-            Some("SeventySix.esm")
-        );
-        assert_eq!(result.local, 0x04223F);
-        assert_eq!(mapper.lookup(source), Some(result));
-        assert_ne!(result, vanilla_fk);
-    }
-
-    #[test]
-    fn mapper_eid_remaps_package_sharing_a_vanilla_object_id() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("DefaultMasterPackage");
-        let vanilla_fk = parse_fk("042A1C@Fallout4.esm", &mut interner);
-        let pack_sig = SigCode::from_str("PACK").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, pack_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("042A1C@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("DefaultMasterPackage");
-        let result = mapper.allocate_or_resolve(source, Some(eid), pack_sig);
-
-        assert_eq!(mapper.interner.resolve(result.plugin), Some("Fallout4.esm"));
-        assert_eq!(result, vanilla_fk);
-        assert_eq!(mapper.lookup(source), Some(result));
-    }
-
-    #[test]
-    fn package_object_id_remap_does_not_depend_on_base_game_assets() {
-        // The redirect is a record-identity decision, not an asset-policy one.
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("DefaultMasterPackage");
-        let vanilla_fk = parse_fk("042A1C@Fallout4.esm", &mut interner);
-        let pack_sig = SigCode::from_str("PACK").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, pack_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: false,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("042A1C@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("DefaultMasterPackage");
-        let result = mapper.allocate_or_resolve(source, Some(eid), pack_sig);
-
-        assert_eq!(result, vanilla_fk);
-    }
-
-    #[test]
-    fn mapper_does_not_eid_remap_a_package_that_is_only_a_namesake() {
-        // Same EditorID but a different object id is a name collision, not the
-        // record FO76 inherited from Fallout 4 — keep it source-owned.
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("AttackScentAttractorMeat");
-        let vanilla_fk = parse_fk("042A1C@Fallout4.esm", &mut interner);
-        let pack_sig = SigCode::from_str("PACK").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, pack_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("33D253@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("AttackScentAttractorMeat");
-        let result = mapper.allocate_or_resolve(source, Some(eid), pack_sig);
-
-        assert_eq!(
-            mapper.interner.resolve(result.plugin),
-            Some("SeventySix.esm")
-        );
-        assert_eq!(result.local, 0x33D253);
-        assert_ne!(result, vanilla_fk);
-    }
-
-    #[test]
-    fn form_lists_are_not_remapped_even_when_they_share_an_object_id() {
-        // FO76 appends its own members to inherited lists, so redirecting the list
-        // would drop them — only its PACK members are safe to redirect.
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("WorkshopVendorList");
-        let vanilla_fk = parse_fk("022B33@Fallout4.esm", &mut interner);
-        let flst_sig = SigCode::from_str("FLST").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, flst_sig)],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("022B33@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("WorkshopVendorList");
-        let result = mapper.allocate_or_resolve(source, Some(eid), flst_sig);
-
-        assert_eq!(
-            mapper.interner.resolve(result.plugin),
-            Some("SeventySix.esm")
-        );
-        assert_ne!(result, vanilla_fk);
-    }
-
-    #[test]
-    fn mapper_does_not_eid_remap_blocked_signature() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("TerrainShelfRocks01");
-        let target_fk = parse_fk("012345@Fallout4.esm", &mut interner);
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, stat_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: vec!["STAT".into()],
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("012345@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("TerrainShelfRocks01");
-        let result = mapper.allocate_or_resolve(source, Some(eid), stat_sig);
-
-        assert_eq!(mapper.interner.resolve(result.plugin), Some("Output.esp"));
-        assert_eq!(result.local, 0x012345);
-    }
-
-    #[test]
-    fn mapper_remaps_static_marker_even_when_signature_blocked() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("xmarker");
-        let target_fk = parse_fk("00003B@Fallout4.esm", &mut interner);
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, stat_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".to_string(),
-                use_base_game_assets: false,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: vec!["STAT".into()],
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("00003B@SeventySix.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("xmarker");
-        let result = mapper.allocate_or_resolve(source, Some(eid), stat_sig);
-
-        assert_eq!(result, target_fk);
-    }
-
-    /// Skyrim blocks IDLM wholesale as a world object signature, but FO4's AI
-    /// packages key on `PatrolIdleMarker` — placed 267 times in Skyrim's
-    /// worldspace — so placement markers must still resolve to the FO4 record.
-    #[test]
-    fn mapper_remaps_placement_marker_on_blocked_signature() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("patrolidlemarker");
-        let target_fk = parse_fk("002CE2@Fallout4.esm", &mut interner);
-        let idlm_sig = SigCode::from_str("IDLM").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, idlm_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: vec!["IDLM".into()],
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("0140BD@Skyrim.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("patrolidlemarker");
-        let result = mapper.allocate_or_resolve(source, Some(eid), idlm_sig);
-
-        assert_eq!(result, target_fk);
-    }
-
-    /// Starfield's `ContainerMarker` is a CONT, so it needs the carve-out to
-    /// reach past the wholesale CONT block.
-    #[test]
-    fn mapper_remaps_container_marker_on_blocked_signature() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("containermarker");
-        let target_fk = parse_fk("0345B9@Fallout4.esm", &mut interner);
-        let cont_sig = SigCode::from_str("CONT").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, cont_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: vec!["CONT".into()],
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("0012C4@Starfield.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("containermarker");
-        let result = mapper.allocate_or_resolve(source, Some(eid), cont_sig);
-
-        assert_eq!(result, target_fk);
-    }
-
-    /// Skyrim blocks NPC_ as a world object signature, but `Player` is `000007`
-    /// in both games — the engine's own record, not a namesake.
-    #[test]
-    fn mapper_remaps_player_on_blocked_signature() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("player");
-        let target_fk = parse_fk("000007@Fallout4.esm", &mut interner);
-        let npc_sig = SigCode::from_str("NPC_").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, npc_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: vec!["NPC_".into()],
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("000007@Skyrim.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("player");
-        let result = mapper.allocate_or_resolve(source, Some(eid), npc_sig);
-
-        assert_eq!(result, target_fk);
-    }
-
-    /// The name exemption is for markers only: a namesake that is real content
-    /// stays source-owned so its own mesh converts.
-    #[test]
-    fn mapper_keeps_non_marker_namesake_on_blocked_signature() {
-        let mut interner = StringInterner::new();
-        let eid_sym = interner.intern("broom01");
-        let target_fk = parse_fk("05238F@Fallout4.esm", &mut interner);
-        let misc_sig = SigCode::from_str("MISC").unwrap();
-
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, target_fk, misc_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".to_string(),
-                use_base_game_assets: true,
-                preserve_source_ids: true,
-                vanilla_remap_blocked_signatures: vec!["MISC".into()],
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let source = parse_fk("06717F@Skyrim.esm", &mut mapper.interner);
-        let eid = mapper.interner.intern("broom01");
-        let result = mapper.allocate_or_resolve(source, Some(eid), misc_sig);
-
-        assert_eq!(mapper.interner.resolve(result.plugin), Some("Output.esp"));
-        assert_eq!(result.local, 0x06717F);
+        for (
+            name,
+            editor_id,
+            vanilla,
+            signature,
+            output,
+            base_assets,
+            preserve,
+            blocked,
+            block_source,
+            source,
+            expected,
+        ) in cases
+        {
+            let mut interner = StringInterner::new();
+            let eid_sym = interner.intern(editor_id);
+            let vanilla_fk = parse_fk(vanilla, &mut interner);
+            let source_fk = parse_fk(source, &mut interner);
+            let sig = SigCode::from_str(signature).unwrap();
+            let mut mapper = FormKeyMapper::new(
+                [(eid_sym, vanilla_fk, sig)],
+                MapperOptions {
+                    output_plugin_name: output.to_string(),
+                    use_base_game_assets: base_assets,
+                    preserve_source_ids: preserve,
+                    vanilla_remap_blocked_signatures: blocked.iter().map(|s| (*s).into()).collect(),
+                    vanilla_remap_blocked_source_form_keys: if block_source {
+                        [source_fk].into_iter().collect()
+                    } else {
+                        Default::default()
+                    },
+                    ..Default::default()
+                },
+                &mut interner,
+            );
+            let eid = mapper.interner.intern(editor_id);
+            let result = mapper.allocate_or_resolve(source_fk, Some(eid), sig);
+            match expected {
+                Vanilla => assert_eq!(result, vanilla_fk, "{name}"),
+                SourceOwned(plugin, local) => {
+                    assert_eq!(
+                        mapper.interner.resolve(result.plugin),
+                        Some(plugin),
+                        "{name}"
+                    );
+                    assert_eq!(result.local, local, "{name}");
+                    assert_ne!(result, vanilla_fk, "{name}");
+                }
+            }
+            assert_eq!(mapper.lookup(source_fk), Some(result), "{name}");
+        }
     }
 
     #[test]
@@ -2008,93 +1669,50 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn rewrite_strict_mode_errors_on_unmapped() {
-        let mut interner = StringInterner::new();
-        let unmapped_fk = parse_fk("000B00@Mod.esm", &mut interner);
+    fn rewrite_resolution_modes_handle_unmapped_formkeys() {
+        for mode in [
+            ResolutionMode::Strict,
+            ResolutionMode::NullAndWarn,
+            ResolutionMode::DeferAndFixup,
+        ] {
+            let mut interner = StringInterner::new();
+            let unmapped_fk = parse_fk("000B00@Mod.esm", &mut interner);
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "Mod.esp".into(),
+                    resolution_mode: mode,
+                    ..Default::default()
+                },
+                &mut interner,
+            );
+            let mut record =
+                Record::new(weap_sig(), parse_fk("000800@Mod.esm", &mut mapper.interner));
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("KNAM").unwrap(),
+                value: FieldValue::FormKey(unmapped_fk),
+            });
 
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Mod.esp".into(),
-                resolution_mode: ResolutionMode::Strict,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-
-        let mut record = Record::new(weap_sig(), parse_fk("000800@Mod.esm", &mut mapper.interner));
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("KNAM").unwrap(),
-            value: FieldValue::FormKey(unmapped_fk),
-        });
-
-        let result = mapper.rewrite_record(&mut record);
-        assert!(matches!(result, Err(MapperError::UnmappedFormKey(_))));
-    }
-
-    #[test]
-    fn rewrite_null_and_warn_replaces_with_null_and_pushes_warning() {
-        let mut interner = StringInterner::new();
-        let unmapped_fk = parse_fk("000C00@Mod.esm", &mut interner);
-
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Mod.esp".into(),
-                resolution_mode: ResolutionMode::NullAndWarn,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-
-        let mut record = Record::new(weap_sig(), parse_fk("000800@Mod.esm", &mut mapper.interner));
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("KNAM").unwrap(),
-            value: FieldValue::FormKey(unmapped_fk),
-        });
-
-        mapper.rewrite_record(&mut record).unwrap();
-
-        // The FK should now be null (local == 0).
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0);
-        } else {
-            panic!("expected FormKey variant");
+            let result = mapper.rewrite_record(&mut record);
+            let FieldValue::FormKey(fk) = &record.fields[0].value else {
+                panic!("expected FormKey variant");
+            };
+            match mode {
+                ResolutionMode::Strict => {
+                    assert!(matches!(result, Err(MapperError::UnmappedFormKey(_))));
+                }
+                ResolutionMode::NullAndWarn => {
+                    result.unwrap();
+                    assert_eq!(fk.local, 0);
+                    assert!(!record.warnings.is_empty());
+                }
+                ResolutionMode::DeferAndFixup => {
+                    result.unwrap();
+                    assert_eq!(*fk, unmapped_fk);
+                    assert!(record.warnings.is_empty());
+                }
+            }
         }
-        // A warning should have been pushed.
-        assert!(!record.warnings.is_empty());
-    }
-
-    #[test]
-    fn rewrite_defer_and_fixup_leaves_unmapped_intact() {
-        let mut interner = StringInterner::new();
-        let unmapped_fk = parse_fk("000D00@Mod.esm", &mut interner);
-
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Mod.esp".into(),
-                resolution_mode: ResolutionMode::DeferAndFixup,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-
-        let mut record = Record::new(weap_sig(), parse_fk("000800@Mod.esm", &mut mapper.interner));
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("KNAM").unwrap(),
-            value: FieldValue::FormKey(unmapped_fk),
-        });
-
-        mapper.rewrite_record(&mut record).unwrap();
-
-        // FK left as-is, no warnings.
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(*fk, unmapped_fk);
-        } else {
-            panic!("expected FormKey variant");
-        }
-        assert!(record.warnings.is_empty());
     }
 
     #[test]
@@ -2148,7 +1766,7 @@ mod tests {
 
     #[test]
     fn rewrite_record_rewrites_raw_vmad_object_formids() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let source_fk = parse_fk("001234@Source.esm", &interner);
         let target_fk = parse_fk("001234@Output.esm", &interner);
 
@@ -2179,6 +1797,87 @@ mod tests {
         let rewritten =
             u32::from_le_bytes(bytes[formid_offset..formid_offset + 4].try_into().unwrap());
         assert_eq!(rewritten, 0x0100_1234);
+    }
+
+    #[test]
+    fn vmad_continues_after_null_and_unmapped_objects() {
+        let interner = StringInterner::new();
+        let mut mapper = FormKeyMapper::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "Output.esm".into(),
+                source_plugin_name: "Source.esm".into(),
+                target_master_names: vec!["Fallout4.esm".into()],
+                ..Default::default()
+            },
+            &interner,
+        );
+        mapper.add_mapping(
+            parse_fk("001234@Source.esm", &interner),
+            parse_fk("001234@Output.esm", &interner),
+        );
+        for unresolved in [0, 0x5678, 0xFF00_5678] {
+            let (mut bytes, first_offset) = simple_vmad_object_property(unresolved);
+            bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+            let next_offset = push_vmad_object_script_entry(&mut bytes, 0x1234);
+            bytes.push(4);
+            let fragment_offset = push_vmad_object_script_entry(&mut bytes, 0x1234);
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            assert!(mapper.rewrite_vmad_formids(&mut bytes, b"TERM"));
+            assert_eq!(raw_at(&bytes, first_offset), unresolved);
+            assert_eq!(raw_at(&bytes, next_offset), 0x0100_1234);
+            assert_eq!(raw_at(&bytes, fragment_offset), 0x0100_1234);
+        }
+        assert_eq!(mapper.rewrite_vmad_formid_at(&mut [0; 3], 0), None);
+    }
+
+    #[test]
+    fn vmad_preserved_placed_ids_address_output_before_copy() {
+        let interner = StringInterner::new();
+        let mut mapper = FormKeyMapper::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "SeventySix.esm".into(),
+                source_plugin_name: "SeventySix.esm".into(),
+                target_master_names: vec!["Fallout4.esm".into()],
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+            &interner,
+        );
+        for source_id in [0x22956E, 0x19C265, 0x002CD0] {
+            let (mut bytes, offset) = simple_vmad_object_property(source_id);
+            assert!(mapper.rewrite_vmad_formids(&mut bytes, b"TERM"));
+            assert_eq!(raw_at(&bytes, offset), 0x0100_0000 | source_id);
+        }
+        mapper.add_mapping(
+            parse_fk("002CD0@SeventySix.esm", &interner),
+            parse_fk("ABCDEF@SeventySix.esm", &interner),
+        );
+        let (mut bytes, offset) = simple_vmad_object_property(0x002CD0);
+        assert!(mapper.rewrite_vmad_formids(&mut bytes, b"TERM"));
+        assert_eq!(raw_at(&bytes, offset), 0x01AB_CDEF);
+    }
+
+    #[test]
+    fn vmad_does_not_assume_output_ids_without_preservation() {
+        let interner = StringInterner::new();
+        for output_name in ["SeventySix.esm", "Renamed.esm"] {
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: output_name.into(),
+                    source_plugin_name: "SeventySix.esm".into(),
+                    target_master_names: vec!["Fallout4.esm".into()],
+                    preserve_source_ids: output_name == "Renamed.esm",
+                    ..Default::default()
+                },
+                &interner,
+            );
+            let (mut bytes, offset) = simple_vmad_object_property(0x002CD0);
+            assert!(!mapper.rewrite_vmad_formids(&mut bytes, b"TERM"));
+            assert_eq!(raw_at(&bytes, offset), 0x002CD0);
+        }
     }
 
     #[test]

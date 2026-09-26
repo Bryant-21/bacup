@@ -211,5 +211,9 @@ Function Fragment_Stage_1000_Item_00()
 	If playerRef != None
 		playerRef.SetValue(SFZ03_Queen_QuestCompletedValue, 1.0)
 	EndIf
+	; Stage 1000 carries a second log entry that the conversion appended to pay the
+	; currency reward (B21:CurrencyQuestRewards RewardStageItems = 1). Yield before
+	; stopping so that entry is dispatched first.
+	Utility.Wait(1.0)
 	Stop()
 EndFunction

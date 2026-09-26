@@ -100,13 +100,10 @@ mod tests {
     }
 
     #[test]
-    fn exact_official_key_shape_is_schema_compatible() {
+    fn only_the_exact_official_key_shape_is_admitted() {
         let interner = StringInterner::new();
         assert!(classify_legacy_key(&exact_record(&interner)).is_ready());
-    }
 
-    #[test]
-    fn a_missing_sound_or_shape_drift_is_not_admitted() {
         let interner = StringInterner::new();
         let mut record = exact_record(&interner);
         record.fields.retain(|field| field.sig.as_str() != "ZNAM");

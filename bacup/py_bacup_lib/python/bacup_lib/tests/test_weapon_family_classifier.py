@@ -1,6 +1,8 @@
 """Tests for FNV weapon -> FO4 family classification."""
 from __future__ import annotations
 
+import pytest
+
 from bacup_lib.animation.weapon_family_classifier import (
     classify_weapon,
     family_subgraph,
@@ -17,18 +19,16 @@ def test_known_weapon_returns_curated_family():
     assert family_subgraph(family) == "AnimSubgraph_PipeGun"
 
 
-def test_unknown_pistol_falls_back_to_unclassified_pistol_family():
-    family, _, _ = classify_weapon(
-        weap_eid="WeapNV12_7mmPistol", animation_type="Pistol"
-    )
-    assert family == "PipeGun"
-
-
-def test_unknown_rifle_falls_back_to_unclassified_rifle_family():
-    family, _, _ = classify_weapon(
-        weap_eid="WeapNVMedicineStick", animation_type="Rifle"
-    )
-    assert family == "HuntingRifle"
+@pytest.mark.parametrize(
+    "weap_eid,animation_type,expected",
+    [
+        ("WeapNV12_7mmPistol", "Pistol", "PipeGun"),
+        ("WeapNVMedicineStick", "Rifle", "HuntingRifle"),
+    ],
+)
+def test_unknown_weapon_falls_back_to_animation_type_family(weap_eid, animation_type, expected):
+    family, _, _ = classify_weapon(weap_eid=weap_eid, animation_type=animation_type)
+    assert family == expected
 
 
 def test_unknown_with_no_anim_type_returns_unclassified():

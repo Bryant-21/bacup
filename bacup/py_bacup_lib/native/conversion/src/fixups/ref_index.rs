@@ -398,6 +398,32 @@ mod tests {
             );
         }
         assert!(matches!(&placed.fields[2].value, FieldValue::String(_)));
+
+        // Deny-list branch: no source schema available, but RACE.DATA / MGEF.DATA
+        // are known FO76↔FO4 layout-divergent → must report divergent (skip).
+        assert!(source_struct_layout_diverges(
+            None,
+            "RACE",
+            "DATA",
+            Some(131),
+            &[]
+        ));
+        assert!(source_struct_layout_diverges(
+            None,
+            "MGEF",
+            "DATA",
+            Some(131),
+            &[]
+        ));
+        // A subrecord not on the deny-list, with no source schema, is treated as
+        // non-divergent (the byte remap proceeds — deny-list covers the danger).
+        assert!(!source_struct_layout_diverges(
+            None,
+            "LCTN",
+            "LCSR",
+            Some(131),
+            &[]
+        ));
     }
 
     #[test]
@@ -439,6 +465,12 @@ mod tests {
             FieldValue::FormKey(src_parent),
             "dropped EnableParent left as-is (no target; null/strip is a separate decision)"
         );
+
+        let mut value = FieldValue::FormKey(fk(0, "Fallout4.esm", &interner));
+        let map: FxHashMap<FormKey, FormKey> = FxHashMap::default();
+        let mut report = StructFkRemapReport::default();
+        remap_formkey_leaves(&mut value, &map, &mut report);
+        assert_eq!(report.remapped, 0);
     }
 
     #[test]
@@ -497,12 +529,7 @@ mod tests {
             u32::from_le_bytes(trda[0..4].try_into().unwrap()),
             0x000F_A847
         );
-    }
 
-    #[test]
-    fn struct_remap_still_rewrites_first_master_local_with_incompatible_type() {
-        let interner = StringInterner::new();
-        let schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
         let mut record = Record::new(SigCode(*b"INFO"), fk(0x130161, "FalloutNV.esm", &interner));
         let mut trda = vec![0_u8; 20];
         trda[0..4].copy_from_slice(&0x000F_A847_u32.to_le_bytes());
@@ -550,10 +577,7 @@ mod tests {
             u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             0x000F_A847
         );
-    }
 
-    #[test]
-    fn remap_struct_fk_fields_does_not_clobber_top_level_scalar_formkey() {
         // A top-level scalar `formid` subrecord (e.g. NPC_ RNAM) already remapped
         // to a foreign DLC master must not be re-walked by the source-keyed map,
         // even when a source record shares its object-id. Here RNAM points at
@@ -597,44 +621,5 @@ mod tests {
             FieldValue::FormKey(correct),
             "RNAM must keep DLCCoast.esm:0247C1, not be clobbered to Fallout4.esm:0247C1",
         );
-    }
-
-    #[test]
-    fn remap_formkey_leaves_skips_null_and_unmapped() {
-        let interner = StringInterner::new();
-        let mut value = FieldValue::FormKey(fk(0, "Fallout4.esm", &interner));
-        let map: FxHashMap<FormKey, FormKey> = FxHashMap::default();
-        let mut report = StructFkRemapReport::default();
-        remap_formkey_leaves(&mut value, &map, &mut report);
-        assert_eq!(report.remapped, 0);
-    }
-
-    #[test]
-    fn layout_guard_denylists_race_and_mgef_data_without_source_schema() {
-        // Deny-list branch: no source schema available, but RACE.DATA / MGEF.DATA
-        // are known FO76↔FO4 layout-divergent → must report divergent (skip).
-        assert!(source_struct_layout_diverges(
-            None,
-            "RACE",
-            "DATA",
-            Some(131),
-            &[]
-        ));
-        assert!(source_struct_layout_diverges(
-            None,
-            "MGEF",
-            "DATA",
-            Some(131),
-            &[]
-        ));
-        // A subrecord not on the deny-list, with no source schema, is treated as
-        // non-divergent (the byte remap proceeds — deny-list covers the danger).
-        assert!(!source_struct_layout_diverges(
-            None,
-            "LCTN",
-            "LCSR",
-            Some(131),
-            &[]
-        ));
     }
 }

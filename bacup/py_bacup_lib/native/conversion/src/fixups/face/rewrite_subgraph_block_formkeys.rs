@@ -68,172 +68,52 @@ mod tests {
     use crate::ids::SigCode;
     use crate::sym::StringInterner;
 
-    /// empty input → empty output.
+    /// Mapped refs are kept even when the output shares the source plugin's
+    /// name; unmapped source refs would dangle at deserialize and are dropped;
+    /// unmapped base-game refs pass through.
     #[test]
-    fn empty_input_returns_empty() {
-        let mut interner = StringInterner::new();
-        let mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut interner,
-        );
-        let out = rewrite_subgraph_block_formkeys(vec![], &mapper, &FxHashSet::default());
-        assert!(out.is_empty());
-    }
-
-    /// block with no keywords passes through unchanged.
-    #[test]
-    fn block_without_keywords_unchanged() {
-        let mut interner = StringInterner::new();
-        let bg = interner.intern("X.hkx");
-        let mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut interner,
-        );
-        let block = SubgraphBlock {
-            behaviour_graph: bg,
-            paths: vec![],
-            subgraph_keywords: vec![],
-            target_keywords: vec![],
-            flags_bytes: None,
-        };
-        let out = rewrite_subgraph_block_formkeys(vec![block], &mapper, &FxHashSet::default());
-        assert_eq!(out.len(), 1);
-        assert!(out[0].subgraph_keywords.is_empty());
-        assert!(out[0].target_keywords.is_empty());
-    }
-
-    /// an UNMAPPED ref still dangling at a source plugin is dropped.
-    /// (A source record that was never converted has no mapper entry; leaving
-    /// the ref would dangle an invalid master reference at deserialize time.)
-    #[test]
-    fn drops_unmapped_source_plugin_refs() {
+    fn remaps_keeps_and_drops_keyword_refs() {
         let mut mapper_interner = StringInterner::new();
-        let source_plugin_sym = mapper_interner.intern("SeventySix.esm");
-        let src_fk = FormKey {
-            local: 0x100,
-            plugin: source_plugin_sym,
-        };
-        // No mapping for src_fk — it was never converted.
-        let mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut mapper_interner,
-        );
-
-        let block = SubgraphBlock {
-            behaviour_graph: mapper.interner.intern("X.hkx"),
-            paths: vec![],
-            subgraph_keywords: vec![src_fk],
-            target_keywords: vec![src_fk],
-            flags_bytes: None,
-        };
-        let source_plugins: FxHashSet<Sym> = [source_plugin_sym].into_iter().collect();
-        let out = rewrite_subgraph_block_formkeys(vec![block], &mapper, &source_plugins);
-        assert_eq!(out.len(), 1);
-        assert!(out[0].subgraph_keywords.is_empty());
-        assert!(out[0].target_keywords.is_empty());
-    }
-
-    /// refs that remap to non-source plugin are kept.
-    #[test]
-    fn keeps_remapped_refs() {
-        let mut mapper_interner = StringInterner::new();
-        let source_plugin_sym = mapper_interner.intern("SeventySix.esm");
-        let target_plugin_sym = mapper_interner.intern("Output.esp");
-        let src_fk = FormKey {
-            local: 0x100,
-            plugin: source_plugin_sym,
-        };
-        let tgt_fk = FormKey {
-            local: 0x800,
-            plugin: target_plugin_sym,
-        };
+        let source = mapper_interner.intern("SeventySix.esm");
+        let output = mapper_interner.intern("Output.esp");
+        let base = mapper_interner.intern("Fallout4.esm");
+        let fk = |local, plugin| FormKey { local, plugin };
+        let remapped_src = fk(0x100, source);
+        let remapped_out = fk(0x800, output);
+        let same_named = fk(0x568776, source);
+        let unmapped_src = fk(0x200, source);
+        let base_ref = fk(0x12345, base);
         let mut mapper = FormKeyMapper::new(
             std::iter::empty::<(Sym, FormKey, SigCode)>(),
             MapperOptions::default(),
             &mut mapper_interner,
         );
-        mapper.add_mapping(src_fk, tgt_fk);
+        mapper.add_mapping(remapped_src, remapped_out);
+        mapper.add_mapping(same_named, same_named);
+        let source_plugins: FxHashSet<Sym> = [source].into_iter().collect();
+        assert!(rewrite_subgraph_block_formkeys(vec![], &mapper, &source_plugins).is_empty());
 
-        let block = SubgraphBlock {
+        let block = |subgraph_keywords, target_keywords| SubgraphBlock {
             behaviour_graph: mapper.interner.intern("X.hkx"),
             paths: vec![],
-            subgraph_keywords: vec![src_fk],
-            target_keywords: vec![src_fk],
+            subgraph_keywords,
+            target_keywords,
             flags_bytes: None,
         };
-        let source_plugins: FxHashSet<Sym> = [source_plugin_sym].into_iter().collect();
-        let out = rewrite_subgraph_block_formkeys(vec![block], &mapper, &source_plugins);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].subgraph_keywords, vec![tgt_fk]);
-        assert_eq!(out[0].target_keywords, vec![tgt_fk]);
-    }
-
-    /// When the OUTPUT plugin is named the same as the SOURCE (e.g.
-    /// `SeventySix.esm` -> `SeventySix.esm`), a keyword that SUCCESSFULLY maps to
-    /// a converted output record must be KEPT even though the output plugin name
-    /// is also in `source_plugins`.
-    #[test]
-    fn keeps_ref_mapped_into_same_named_output_plugin() {
-        let mut mapper_interner = StringInterner::new();
-        // Source AND output share the name (whole-plugin FO76->FO4 regen).
-        let plugin_sym = mapper_interner.intern("SeventySix.esm");
-        let src_fk = FormKey {
-            local: 0x568776,
-            plugin: plugin_sym,
-        };
-        // Converted output keyword: objid preserved, still in SeventySix.esm.
-        let out_fk = FormKey {
-            local: 0x568776,
-            plugin: plugin_sym,
-        };
-        let mut mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut mapper_interner,
+        let out = rewrite_subgraph_block_formkeys(
+            vec![
+                block(vec![], vec![]),
+                block(
+                    vec![remapped_src, unmapped_src, base_ref],
+                    vec![unmapped_src, same_named],
+                ),
+            ],
+            &mapper,
+            &source_plugins,
         );
-        mapper.add_mapping(src_fk, out_fk);
-
-        let block = SubgraphBlock {
-            behaviour_graph: mapper.interner.intern("X.hkx"),
-            paths: vec![],
-            subgraph_keywords: vec![],
-            target_keywords: vec![src_fk],
-            flags_bytes: None,
-        };
-        let source_plugins: FxHashSet<Sym> = [plugin_sym].into_iter().collect();
-        let out = rewrite_subgraph_block_formkeys(vec![block], &mapper, &source_plugins);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].target_keywords, vec![out_fk]);
-    }
-
-    /// unmapped ref pointing at a non-source plugin is kept as-is.
-    #[test]
-    fn unmapped_non_source_ref_passes_through() {
-        let mut mapper_interner = StringInterner::new();
-        let source_plugin_sym = mapper_interner.intern("SeventySix.esm");
-        let other_plugin_sym = mapper_interner.intern("Fallout4.esm");
-        let other_fk = FormKey {
-            local: 0x12345,
-            plugin: other_plugin_sym,
-        };
-        let mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut mapper_interner,
-        );
-        let block = SubgraphBlock {
-            behaviour_graph: mapper.interner.intern("X.hkx"),
-            paths: vec![],
-            subgraph_keywords: vec![other_fk],
-            target_keywords: vec![],
-            flags_bytes: None,
-        };
-        let source_plugins: FxHashSet<Sym> = [source_plugin_sym].into_iter().collect();
-        let out = rewrite_subgraph_block_formkeys(vec![block], &mapper, &source_plugins);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].subgraph_keywords, vec![other_fk]);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].subgraph_keywords.is_empty() && out[0].target_keywords.is_empty());
+        assert_eq!(out[1].subgraph_keywords, vec![remapped_out, base_ref]);
+        assert_eq!(out[1].target_keywords, vec![same_named]);
     }
 }

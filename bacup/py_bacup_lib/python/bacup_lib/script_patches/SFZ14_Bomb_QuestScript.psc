@@ -26,18 +26,28 @@ Function PrepareBombs()
                 markerRef = GetAuthoredBombMarker(locationSet, BombsToUse[index].IntAssigned)
             EndIf
             If bombRef != None && markerRef != None
+                ; Bomb01-05 are created *in* HoldingContainer, so the reference is
+                ; inventory, not world: MoveTo leaves a contained item where it is.
+                ; Drop it out of the container first, then place it on the marker.
+                If bombRef.GetContainer() != None
+                    bombRef.Drop(true)
+                EndIf
                 bombRef.MoveTo(markerRef)
-                bombRef.AddKeyword(SFZ14_Bomb_ChosenBombKeyword)
-                BombsChosen.AddRef(bombRef)
-                placedBombs += 1
+                If bombRef.GetContainer() == None
+                    bombRef.AddKeyword(SFZ14_Bomb_ChosenBombKeyword)
+                    BombsChosen.AddRef(bombRef)
+                    placedBombs += 1
+                EndIf
             EndIf
         EndIf
         index += 1
     EndWhile
 
     BombsWanted = placedBombs
+    ; Republish the count every run: a day-2 run that places fewer bombs must not inherit
+    ; a larger threshold from day 1, or the collect objective can never complete.
     DefaultAliasInventoryManagement inventoryManager = SFZ14Player as DefaultAliasInventoryManagement
-    If inventoryManager != None && BombsWanted >= 3
+    If inventoryManager != None && BombsWanted > 0
         inventoryManager.SetRequiredAmount(BombsWanted)
     EndIf
 EndFunction
@@ -93,3 +103,22 @@ Function ClearBombTracking()
         index -= 1
     EndWhile
 EndFunction
+
+; Stage 100 was authored to come from Boomer's dialogue; the converted topics are dead,
+; so the proximity/trigger arrival that already sets stage 75 stands in for the
+; conversation after a short beat for SFZ14_Bomb_BoomerIntroScene.
+Event OnStageSet(Int auiStageID, Int auiItemID)
+    If auiStageID == 75 && !IsStageDone(100)
+        StartTimer(8.0, 14)
+    EndIf
+EndEvent
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID == 14 && IsRunning() && IsStageDone(75) && !IsStageDone(100)
+        SetStage(100)
+    EndIf
+EndEvent
+
+Event OnQuestShutdown()
+    CancelTimer(14)
+EndEvent

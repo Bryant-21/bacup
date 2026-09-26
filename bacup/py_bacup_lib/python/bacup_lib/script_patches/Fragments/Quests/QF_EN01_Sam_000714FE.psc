@@ -16,6 +16,7 @@ Function Fragment_Stage_0003_Item_00()
         Alias_BypassTapeName.ForceRefTo(Alias_BypassTape.GetRef())
         playerRef.SetValue(EN01_Bunker_StartedValue, 1.0)
     EndIf
+    HideBypassTapeInNest()
     If EN01_MQ_Bunker_Master != None && !EN01_MQ_Bunker_Master.IsRunning()
         EN01_MQ_Bunker_Master.Start()
     EndIf
@@ -284,6 +285,18 @@ Function FinishBunkerQuest(Bool abStartEN02)
     EndIf
     If !IsStageDone(300)
         SetStage(300)
+    EndIf
+EndFunction
+
+; The tape is created at EN01_IDTapeSpawnREF in 76HoldingCellEnclave; the nest is the only place players can reach it.
+Function HideBypassTapeInNest()
+    ObjectReference tapeRef = Alias_BypassTape.GetRef()
+    ObjectReference nestRef = Alias_DeathclawNest.GetRef()
+    If tapeRef == None || nestRef == None
+        Return
+    EndIf
+    If tapeRef.GetContainer() != Game.GetPlayer()
+        nestRef.AddItem(tapeRef, 1, True)
     EndIf
 EndFunction
 

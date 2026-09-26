@@ -1,5 +1,5 @@
 #[test]
-fn serial_magic_dispatch_reports_unmapped_effect_reference() {
+fn serial_magic_dispatch_reports_unmapped_references_and_uses_source_form_key() {
     let interner = StringInterner::new();
     let mut record = make_record("ALCH", &interner);
     push_field(
@@ -41,10 +41,7 @@ fn serial_magic_dispatch_reports_unmapped_effect_reference() {
             && diagnostic.message.contains("base_effect")
     }));
     assert!(!record.fields.iter().any(|field| field.sig.0 == *b"EFID"));
-}
 
-#[test]
-fn serial_magic_uses_source_form_key_for_doctor_limb_restoration() {
     let interner = StringInterner::new();
     for (source_plugin, expected_effects) in [("FalloutNV.esm", 6), ("Fallout3.esm", 0)] {
         let mut record = make_record("SPEL", &interner);
@@ -143,7 +140,7 @@ fn serial_dispatch_isolated_from_fo76() {
 }
 
 #[test]
-fn serial_perk_dispatch_is_exactly_once_and_transient() {
+fn serial_perk_dispatch_is_once_source_keyed_and_idempotent() {
     let interner = StringInterner::new();
     let mut record = make_record("PERK", &interner);
     push_field(
@@ -208,10 +205,7 @@ fn serial_perk_dispatch_is_exactly_once_and_transient() {
     assert_eq!(record.fields, converted_fields);
     assert_eq!(record.warnings, converted_warnings);
     assert!(record.warnings.is_empty(), "once-only guard must not leak");
-}
 
-#[test]
-fn serial_perk_uses_source_form_key_for_native_power_armor_adaptation() {
     let interner = StringInterner::new();
     let mut record = make_record("PERK", &interner);
     record.form_key = FormKey {
@@ -262,10 +256,7 @@ fn serial_perk_uses_source_form_key_for_native_power_armor_adaptation() {
     assert_eq!(perk_report.dropped_entries, 0);
     assert_eq!(record.fields.len(), 1);
     assert_eq!(record.fields[0].sig.0, *b"DATA");
-}
 
-#[test]
-fn serial_perk_typed_target_is_idempotent_under_strict_mapper_rewrite() {
     let interner = StringInterner::new();
     let source_spell = FormKey {
         local: 0x1234,
@@ -319,7 +310,7 @@ fn serial_perk_typed_target_is_idempotent_under_strict_mapper_rewrite() {
 }
 
 #[test]
-fn serial_wrld_dispatch_returns_atomic_drop_diagnostic() {
+fn serial_wrld_dispatch_reports_drops_changes_and_references() {
     let interner = StringInterner::new();
     let mut record = make_record("WRLD", &interner);
     push_field(
@@ -346,10 +337,7 @@ fn serial_wrld_dispatch_returns_atomic_drop_diagnostic() {
     assert!(diagnostic.warning);
     assert!(diagnostic.message.contains("UnsupportedDataValue"));
     assert_eq!(record.fields, before);
-}
 
-#[test]
-fn serial_wrld_dispatch_reports_each_change_and_reference() {
     let interner = StringInterner::new();
     let mut record = make_record("WRLD", &interner);
     push_field(
@@ -380,3 +368,4 @@ fn serial_wrld_dispatch_reports_each_change_and_reference() {
         1 + wrld_report.data_changes.len() + wrld_report.references.len()
     );
 }
+

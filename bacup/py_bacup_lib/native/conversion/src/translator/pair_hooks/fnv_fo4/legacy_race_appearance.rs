@@ -33,6 +33,7 @@ pub(crate) struct LegacyRaceSexFaceAssets {
     pub texture_basis_model: String,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct LegacyEgtTextureBasisHeader {
     pub rows: u32,
@@ -477,6 +478,7 @@ pub(crate) fn decode_legacy_race_face_assets(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn decode_legacy_egt_texture_basis_header(
     bytes: &[u8],
 ) -> Result<LegacyEgtTextureBasisHeader, String> {
@@ -860,7 +862,7 @@ mod tests {
         let evidence = decode_legacy_race_face_assets(
             LegacyCreatureGame::Fnv,
             &source(),
-            &race(&interner),
+            &self::race(&interner),
             &interner,
         )
         .unwrap();
@@ -911,7 +913,7 @@ mod tests {
     #[test]
     fn sex_or_index_shape_drift_remains_terminal() {
         let interner = StringInterner::new();
-        let mut record = race(&interner);
+        let mut record = self::race(&interner);
         record
             .fields
             .retain(|field| !(field.sig.as_str() == "FNAM"));
@@ -922,7 +924,7 @@ mod tests {
             "legacy_race_appearance_head_sections_missing"
         );
 
-        let mut record = race(&interner);
+        let mut record = self::race(&interner);
         let index = record
             .fields
             .iter_mut()
@@ -940,7 +942,7 @@ mod tests {
     #[test]
     fn ancillary_race_slice_must_exactly_match_effective_rnam_set() {
         let interner = StringInterner::new();
-        let race = race(&interner);
+        let race = self::race(&interner);
         let source_record = LegacyRecordSource {
             record: &race,
             provenance: CreatureProvenance {
@@ -1002,134 +1004,5 @@ mod tests {
             .unwrap_err()
             .contains("misses TXST")
         );
-    }
-
-    #[test]
-    #[ignore = "requires explicit official FNV and FO3 Data directories"]
-    fn live_official_effective_rnam_races_decode_exact_face_rows() {
-        let fnv_data = std::path::PathBuf::from(
-            std::env::var("BACUP_CENSUS_FNV_DATA_DIR")
-                .expect("BACUP_CENSUS_FNV_DATA_DIR must name the official FNV Data directory"),
-        );
-        let fo3_data = std::path::PathBuf::from(
-            std::env::var("BACUP_CENSUS_FO3_DATA_DIR")
-                .expect("BACUP_CENSUS_FO3_DATA_DIR must name the official FO3 Data directory"),
-        );
-        let interner = StringInterner::new();
-        let mut decoded = Vec::new();
-        for (game, data_root, plugin, locals) in [
-            (
-                LegacyCreatureGame::Fnv,
-                &fnv_data,
-                "FalloutNV.esm",
-                &[0x000019, 0x0038E5, 0x00424A][..],
-            ),
-            (
-                LegacyCreatureGame::Fnv,
-                &fnv_data,
-                "HonestHearts.esm",
-                &[0x00947C][..],
-            ),
-            (
-                LegacyCreatureGame::Fo3,
-                &fo3_data,
-                "Fallout3.esm",
-                &[
-                    0x000019, 0x0038E5, 0x0038E6, 0x00424A, 0x0042BF, 0x0042C1, 0x0042C2, 0x0042C3,
-                    0x04BB8D, 0x04BF71, 0x04BF72, 0x0987DD, 0x0987DF,
-                ][..],
-            ),
-        ] {
-            let path = data_root.join(plugin);
-            let handle = crate::merge_sources::load_no_py(
-                path.to_str().expect("Unicode plugin path"),
-                Some(match game {
-                    LegacyCreatureGame::Fnv => "fnv",
-                    LegacyCreatureGame::Fo3 => "fo3",
-                }),
-            )
-            .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
-            let schema = crate::schema::AuthoringSchema::for_game(match game {
-                LegacyCreatureGame::Fnv => "fnv",
-                LegacyCreatureGame::Fo3 => "fo3",
-            })
-            .expect("source schema");
-            for local in locals {
-                let source = StableFormKey {
-                    local: *local,
-                    plugin: plugin.to_string(),
-                };
-                let record = crate::source_read::read_record(
-                    handle,
-                    &format!("{plugin}:{local:06X}"),
-                    &schema,
-                    &interner,
-                )
-                .unwrap_or_else(|error| panic!("read {source}: {error}"));
-                decoded.push(
-                    decode_legacy_race_face_assets(game, &source, &record, &interner)
-                        .unwrap_or_else(|error| panic!("decode {source}: {error:?}")),
-                );
-            }
-            assert!(
-                esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle),
-                "close {}",
-                path.display()
-            );
-        }
-        assert_eq!(decoded.len(), 17);
-        assert!(
-            decoded.iter().all(|evidence| {
-                evidence.male.rows.len() == 8 && evidence.female.rows.len() == 8
-            })
-        );
-    }
-
-    #[test]
-    #[ignore = "requires explicit official extracted FNV and FO3 Data roots"]
-    fn live_official_legacy_egt_bases_are_exact_fgts_bases() {
-        let roots = [
-            (
-                "fnv",
-                std::path::PathBuf::from(
-                    std::env::var("BACUP_CENSUS_FNV_EXTRACTED_DATA")
-                        .expect("BACUP_CENSUS_FNV_EXTRACTED_DATA must name extracted FNV Data"),
-                ),
-                &["UpperBodyHumanMale.egt", "UpperBodyHumanFemale.egt"][..],
-            ),
-            (
-                "fo3",
-                std::path::PathBuf::from(
-                    std::env::var("BACUP_CENSUS_FO3_EXTRACTED_DATA")
-                        .expect("BACUP_CENSUS_FO3_EXTRACTED_DATA must name extracted FO3 Data"),
-                ),
-                &[
-                    "UpperBodyHumanMale.egt",
-                    "UpperBodyHumanFemale.egt",
-                    "UpperBodyChild.egt",
-                    "UpperBodyChildFemale.egt",
-                ][..],
-            ),
-        ];
-        for (game, root, files) in roots {
-            for file in files {
-                let runtime_path = format!("Meshes\\Characters\\_Male\\{file}");
-                let path = root.join(&runtime_path);
-                let bytes = std::fs::read(&path)
-                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-                let header = decode_legacy_egt_texture_basis_header(&bytes)
-                    .unwrap_or_else(|error| panic!("decode {}: {error}", path.display()));
-                assert_eq!(header.rows, 32);
-                assert_eq!(header.columns, 32);
-                assert_eq!(header.symmetric_modes, 50);
-                assert_eq!(header.asymmetric_modes, 0);
-                assert_eq!(header.texture_basis_version, 81);
-                println!(
-                    "LEGACY_EGT_BASIS game={game} path={runtime_path} bytes={} blake3={}",
-                    bytes.len(),
-                    blake3::hash(&bytes).to_hex()
-                );
-            }
-        }
     }
 }

@@ -171,7 +171,10 @@ fn convert_data(
         "casting_type",
         u32_value(if casting_type <= 2 { casting_type } else { 0 }),
     );
-    push("delivery", u32_value(if delivery <= 4 { delivery } else { 0 }));
+    push(
+        "delivery",
+        u32_value(if delivery <= 4 { delivery } else { 0 }),
+    );
     push("actor_value_1", actor_value_1);
     push("casting_art", casting_art);
     push("hit_effect_art", hit_effect_art);
@@ -267,7 +270,10 @@ mod tests {
     }
 
     fn record(interner: &StringInterner, data: Vec<u8>, counter_effects: usize) -> Record {
-        let mut record = Record::new(SigCode(*b"MGEF"), form_key(interner, "Starfield.esm", 0x40613));
+        let mut record = Record::new(
+            SigCode(*b"MGEF"),
+            form_key(interner, "Starfield.esm", 0x40613),
+        );
         record.fields.push(FieldEntry {
             sig: SubrecordSig(*b"DATA"),
             value: FieldValue::Bytes(SmallVec::from_vec(data)),
@@ -389,7 +395,9 @@ mod tests {
     #[test]
     fn archetype_and_sound_level_translate_into_fo4_meanings() {
         let interner = StringInterner::new();
-        for (source_archetype, target_archetype) in [(36, 1), (26, 1), (50, 1), (55, 1), (48, 48), (1, 1)] {
+        for (source_archetype, target_archetype) in
+            [(36, 1), (26, 1), (50, 1), (55, 1), (48, 48), (1, 1)]
+        {
             let mut mapper = mapper(&interner);
             let mut source = vec![0; STARFIELD_MGEF_DATA_LEN];
             set_u32(&mut source, 80, source_archetype);
@@ -403,7 +411,8 @@ mod tests {
         }
         // Starfield: None, Silent, Quiet, Normal, Loud, Very Loud.
         // FO4: Loud, Normal, Silent, Very Loud, Quiet.
-        for (source_level, target_level) in [(0, 2), (1, 2), (2, 4), (3, 1), (4, 0), (5, 3), (9, 1)] {
+        for (source_level, target_level) in [(0, 2), (1, 2), (2, 4), (3, 1), (4, 0), (5, 3), (9, 1)]
+        {
             let mut mapper = mapper(&interner);
             let mut source = vec![0; STARFIELD_MGEF_DATA_LEN];
             set_u32(&mut source, 80, 1);

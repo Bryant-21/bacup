@@ -452,91 +452,41 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn prune_xnam_no_entries_is_no_op() {
-        let mut interner = StringInterner::new();
-        let mut record = make_fact_record(0x000800, "Output.esp", &[], &mut interner);
-        let graph: rustc_hash::FxHashSet<u32> = [0x000800].into_iter().collect();
+    fn prune_xnam_drops_only_unknown_factions() {
+        for (name, xnam_ids, graph, expected_dropped, expected_ids) in [
+            ("no entries", vec![], vec![0x000800], 0, vec![]),
+            (
+                "graph factions kept",
+                vec![0x000800, 0x000801],
+                vec![0x000800, 0x000801],
+                0,
+                vec![0x000800, 0x000801],
+            ),
+            (
+                "fo76-only faction dropped",
+                vec![0x000800, 0x3BA686],
+                vec![0x000800],
+                1,
+                vec![0x000800],
+            ),
+            (
+                "self reference kept",
+                vec![0x000800],
+                vec![],
+                0,
+                vec![0x000800],
+            ),
+            ("null reference kept", vec![0], vec![], 0, vec![0]),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_fact_record(0x000800, "Output.esp", &xnam_ids, &interner);
+            let graph: FxHashSet<u32> = graph.into_iter().collect();
 
-        let dropped = prune_xnam_entries(&mut record, 0x000800, &graph);
-        assert_eq!(dropped, 0);
-    }
+            let dropped = prune_xnam_entries(&mut record, 0x000800, &graph);
+            assert_eq!(dropped, expected_dropped, "{name}");
+            assert_eq!(xnam_raw_ids(&record), expected_ids, "{name}");
+        }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prune_xnam_keeps_graph_factions() {
-        let mut interner = StringInterner::new();
-        // Two in-graph factions with raw ids 0x000800 and 0x000801 (master byte 0x00).
-        let xnam_ids = &[0x00_000800u32, 0x00_000801u32];
-        let mut record = make_fact_record(0x000800, "Output.esp", xnam_ids, &mut interner);
-
-        let graph: rustc_hash::FxHashSet<u32> = [0x000800, 0x000801].into_iter().collect();
-
-        let dropped = prune_xnam_entries(&mut record, 0x000800, &graph);
-        assert_eq!(dropped, 0, "all in-graph factions must be kept");
-
-        // EDID + 2 XNAM.
-        assert_eq!(record.fields.len(), 3);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prune_xnam_drops_unknown_faction() {
-        let mut interner = StringInterner::new();
-        // Faction 0x000800 is in graph; 0x003BA686 is not (FO76-only).
-        let xnam_ids = &[0x00_000800u32, 0x00_3BA686u32];
-        let mut record = make_fact_record(0x000800, "Output.esp", xnam_ids, &mut interner);
-
-        let graph: rustc_hash::FxHashSet<u32> = [0x000800].into_iter().collect();
-
-        let dropped = prune_xnam_entries(&mut record, 0x000800, &graph);
-        assert_eq!(dropped, 1, "unknown faction XNAM must be dropped");
-
-        // EDID + 1 surviving XNAM.
-        assert_eq!(record.fields.len(), 2);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prune_xnam_keeps_self_reference() {
-        let mut interner = StringInterner::new();
-        // Only XNAM references the record's own FormKey (self-relation).
-        // Graph does not contain anything.
-        let xnam_ids = &[0x00_000800u32];
-        let mut record = make_fact_record(0x000800, "Output.esp", xnam_ids, &mut interner);
-
-        let graph: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
-
-        let dropped = prune_xnam_entries(&mut record, 0x000800, &graph);
-        assert_eq!(dropped, 0, "self-reference XNAM must never be pruned");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prune_xnam_keeps_null_faction_ref() {
-        let mut interner = StringInterner::new();
-        // Zero formid = null reference.
-        let xnam_ids = &[0x00_000000u32];
-        let mut record = make_fact_record(0x000800, "Output.esp", xnam_ids, &mut interner);
-
-        let graph: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
-
-        let dropped = prune_xnam_entries(&mut record, 0x000800, &graph);
-        assert_eq!(dropped, 0, "null XNAM must not be pruned");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prune_xnam_keeps_short_payload() {
         let interner = StringInterner::new();
         let sig = SigCode::from_str("FACT").unwrap();
         let fk = FormKey {
@@ -564,14 +514,7 @@ mod tests {
         let dropped = prune_xnam_entries(&mut record, 0x000800, &graph);
         assert_eq!(dropped, 0, "short XNAM must not be dropped");
         assert_eq!(record.fields.len(), 1);
-    }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prune_xnam_preserves_non_xnam_fields() {
-        let interner = StringInterner::new();
         // One XNAM (unknown faction, will be dropped) + one FULL field (kept).
         let sig = SigCode::from_str("FACT").unwrap();
         let fk = FormKey {
@@ -613,64 +556,62 @@ mod tests {
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn prune_xnam_rewrites_kept_source_local_relation() {
-        let mut interner = StringInterner::new();
-        let xnam_ids = &[0x00_342ACEu32];
-        let mut record = make_fact_record(0x868BAF, "Output.esp", xnam_ids, &mut interner);
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-        let graph: FxHashSet<u32> = [0x342ACE].into_iter().collect();
-        let mut encoded_targets = FxHashMap::default();
-        encoded_targets.insert(0x342ACE, 0x07_342ACE);
-        let target_formkeys = FxHashMap::default();
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-        let stats = prune_xnam_entries_with_rewrite(
-            &mut record,
-            0x868BAF,
-            &graph,
-            &encoded_targets,
-            &target_formkeys,
-            7,
-        );
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-        assert_eq!(stats.dropped, 0);
-        assert_eq!(stats.rewritten, 1);
-        assert_eq!(xnam_raw_ids(&record), vec![0x07_342ACE]);
-    }
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
     #[test]
-    fn prune_xnam_keeps_and_rewrites_master_mapped_source_relation() {
-        let mut interner = StringInterner::new();
-        let xnam_ids = &[0x00_01C21Cu32];
-        let mut record = make_fact_record(0x868BAF, "Output.esp", xnam_ids, &mut interner);
+    fn prune_xnam_rewrites_kept_relations_to_target_ids() {
+        for (name, xnam_id, graph, encoded, expected) in [
+            (
+                "source local",
+                0x342ACE,
+                vec![0x342ACE],
+                Some((0x342ACE, 0x07_342ACE)),
+                0x07_342ACE,
+            ),
+            (
+                "master mapped",
+                0x01C21C,
+                vec![],
+                Some((0x01C21C, 0x02_01C21C)),
+                0x02_01C21C,
+            ),
+            ("self relation", 0x868BAF, vec![], None, 0x07_868BAF),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_fact_record(0x868BAF, "Output.esp", &[xnam_id], &interner);
+            let graph: FxHashSet<u32> = graph.into_iter().collect();
+            let encoded_targets: FxHashMap<u32, u32> = encoded.into_iter().collect();
 
-        let graph: FxHashSet<u32> = FxHashSet::default();
-        let mut encoded_targets = FxHashMap::default();
-        encoded_targets.insert(0x01C21C, 0x02_01C21C);
-        let target_formkeys = FxHashMap::default();
+            let stats = prune_xnam_entries_with_rewrite(
+                &mut record,
+                0x868BAF,
+                &graph,
+                &encoded_targets,
+                &FxHashMap::default(),
+                7,
+            );
 
-        let stats = prune_xnam_entries_with_rewrite(
-            &mut record,
-            0x868BAF,
-            &graph,
-            &encoded_targets,
-            &target_formkeys,
-            7,
-        );
+            assert_eq!(stats.dropped, 0, "{name}");
+            assert_eq!(stats.rewritten, 1, "{name}");
+            assert_eq!(xnam_raw_ids(&record), vec![expected], "{name}");
+        }
 
-        assert_eq!(stats.dropped, 0);
-        assert_eq!(stats.rewritten, 1);
-        assert_eq!(xnam_raw_ids(&record), vec![0x02_01C21C]);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn prune_xnam_rewrites_typed_master_mapped_relation() {
         let interner = StringInterner::new();
         let output_plugin = interner.intern("Output.esp");
         let source_plugin = interner.intern("SeventySix.esm");
@@ -728,27 +669,9 @@ mod tests {
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn prune_xnam_rewrites_self_relation_to_target_own_index() {
-        let mut interner = StringInterner::new();
-        let xnam_ids = &[0x00_868BAFu32];
-        let mut record = make_fact_record(0x868BAF, "Output.esp", xnam_ids, &mut interner);
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-        let graph: FxHashSet<u32> = FxHashSet::default();
-        let encoded_targets = FxHashMap::default();
-        let target_formkeys = FxHashMap::default();
-
-        let stats = prune_xnam_entries_with_rewrite(
-            &mut record,
-            0x868BAF,
-            &graph,
-            &encoded_targets,
-            &target_formkeys,
-            7,
-        );
-
-        assert_eq!(stats.dropped, 0);
-        assert_eq!(stats.rewritten, 1);
-        assert_eq!(xnam_raw_ids(&record), vec![0x07_868BAF]);
-    }
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 }

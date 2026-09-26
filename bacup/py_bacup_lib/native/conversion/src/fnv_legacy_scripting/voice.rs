@@ -193,44 +193,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fo4_response_path_uses_target_plugin_voice_edid_and_response_identity() {
-        assert_eq!(
-            fnv_to_fo4_response_voice_path(
-                "B21_nv_FalloutNV.esm",
-                "MaleAdult01DefaultB",
-                "130161",
-                0,
-            ),
-            "Sound/Voice/B21_nv_FalloutNV.esm/MaleAdult01DefaultB/00130161_1.fuz"
-        );
-        assert!(
-            fnv_to_fo4_response_voice_path("Converted.esm", "Voice", "1", 0)
-                .ends_with("/00000001_1.fuz")
-        );
-        assert_eq!(
-            fnv_to_fo4_response_voice_path(
-                "B21_nv_FalloutNV.esm",
-                "MaleAdult01DefaultB",
-                "134b9b",
-                1,
-            ),
-            "Sound/Voice/B21_nv_FalloutNV.esm/MaleAdult01DefaultB/00134B9B_2.fuz"
-        );
-    }
-
-    #[test]
-    fn source_candidates_do_not_cross_response_boundaries() {
-        assert_eq!(
-            fnv_voice_source_candidates("FalloutNV.esm", "MaleAdult", "134B9B", 1),
-            vec!["Sound/Voice/FalloutNV.esm/MaleAdult/00134B9B_2.ogg"]
-        );
-        assert_eq!(
-            fnv_voice_source_candidates("FalloutNV.esm", "MaleAdult", "130161", 0),
-            vec![
-                "Sound/Voice/FalloutNV.esm/MaleAdult/00130161_1.ogg",
-                "Sound/Voice/FalloutNV.esm/MaleAdult/00130161.ogg",
-            ]
-        );
+    fn fo4_response_voice_path_is_scoped_to_its_response() {
+        {
+            assert_eq!(
+                fnv_to_fo4_response_voice_path(
+                    "B21_nv_FalloutNV.esm",
+                    "MaleAdult01DefaultB",
+                    "130161",
+                    0,
+                ),
+                "Sound/Voice/B21_nv_FalloutNV.esm/MaleAdult01DefaultB/00130161_1.fuz"
+            );
+            assert!(
+                fnv_to_fo4_response_voice_path("Converted.esm", "Voice", "1", 0)
+                    .ends_with("/00000001_1.fuz")
+            );
+            assert_eq!(
+                fnv_to_fo4_response_voice_path(
+                    "B21_nv_FalloutNV.esm",
+                    "MaleAdult01DefaultB",
+                    "134b9b",
+                    1,
+                ),
+                "Sound/Voice/B21_nv_FalloutNV.esm/MaleAdult01DefaultB/00134B9B_2.fuz"
+            );
+        }
+        {
+            assert_eq!(
+                fnv_voice_source_candidates("FalloutNV.esm", "MaleAdult", "134B9B", 1),
+                vec!["Sound/Voice/FalloutNV.esm/MaleAdult/00134B9B_2.ogg"]
+            );
+            assert_eq!(
+                fnv_voice_source_candidates("FalloutNV.esm", "MaleAdult", "130161", 0),
+                vec![
+                    "Sound/Voice/FalloutNV.esm/MaleAdult/00130161_1.ogg",
+                    "Sound/Voice/FalloutNV.esm/MaleAdult/00130161.ogg",
+                ]
+            );
+        }
     }
 
     #[test]

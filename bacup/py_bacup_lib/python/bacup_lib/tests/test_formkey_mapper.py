@@ -97,285 +97,160 @@ def mod_path(tmp_path):
     return mod_dir
 
 
-def test_vanilla_remap(target_db, mod_path):
-    """Records with matching EditorID+type in target DB get remapped to vanilla."""
+def _mapper(target_db, mod_path, **kwargs):
     from bacup_lib.formkey.formkey_mapper import FormKeyMapper
     from creation_lib.db.record_loader import RecordLoader
 
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
+    kwargs.setdefault("use_base_game_assets", True)
+    return FormKeyMapper(
         mod_name="B21_TestMod",
         target_game="fo4",
-        target_loader=target_loader,
+        target_loader=RecordLoader(str(target_db)),
         mod_path=str(mod_path),
-        use_base_game_assets=True,
+        **kwargs,
     )
 
-    result = mapper.map_formkey(
-        source_formkey="591667:SeventySix.esm",
-        editor_id="RightHand",
-        record_type="EquipTypes",
-    )
 
-    assert result["new_formkey"] == "013F42:Fallout4.esm"
-    assert result["strategy"] == "vanilla_remap"
-
-
-def test_vanilla_remap_prefers_target_master_handles(mod_path, monkeypatch):
-    """Target master handles are authoritative for vanilla remap when provided."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-
-    target_handle = _FakeTargetHandle()
-    calls = _patch_eid_rows(
-        monkeypatch,
-        {
-            99: [
-                {
-                    "form_key": "Fallout4.esm:099999",
-                    "editor_id": "RightHand",
-                    "signature": "EQUP",
-                }
-            ]
+def _write_existing_map(mod_path, source_fk, new_fk, editor_id, record_type, strategy):
+    existing = {
+        "mod_name": "B21_TestMod",
+        "target_game": "fo4",
+        "next_id": "000801",
+        "mappings": {
+            source_fk: {
+                "new_formkey": new_fk,
+                "editor_id": editor_id,
+                "record_type": record_type,
+                "strategy": strategy,
+                "source_game": "fo76",
+            }
         },
-    )
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=_FailingTargetLoader(),
-        target_master_handles=[target_handle],
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="591667:SeventySix.esm",
-        editor_id="RightHand",
-        record_type="EquipTypes",
-    )
-
-    assert result["new_formkey"] == "099999:Fallout4.esm"
-    assert result["strategy"] == "vanilla_remap"
-    assert calls == {99: 1}
+    }
+    (mod_path / "formkey_map.json").write_text(json.dumps(existing), encoding="utf-8")
 
 
-def test_preserves_source_object_id_by_default(target_db, mod_path):
-    """Records with no vanilla match keep their source object ID by default."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="55C153:SeventySix.esm",
-        editor_id="Cattleprod",
-        record_type="Weapons",
-    )
-
-    assert result["new_formkey"] == "55C153:B21_TestMod.esp"
-    assert result["strategy"] == "source_id_preserved"
-
-
-def test_preserves_source_object_id_with_output_plugin_extension(target_db, mod_path):
-    """Preserved local FormKeys use the configured output plugin extension."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-        output_plugin_extension=".esm",
+@pytest.mark.parametrize(
+    ("kwargs", "source_fk", "editor_id", "record_type", "expected_fk", "strategy"),
+    [
+        ({}, "591667:SeventySix.esm", "RightHand", "EquipTypes", "013F42:Fallout4.esm", "vanilla_remap"),
+        ({}, "55C153:SeventySix.esm", "Cattleprod", "Weapons", "55C153:B21_TestMod.esp", "source_id_preserved"),
+        (
+            {"output_plugin_extension": ".esm"},
+            "55C153:SeventySix.esm", "Cattleprod", "Weapons", "55C153:B21_TestMod.esm", "source_id_preserved",
+        ),
+        (
+            {"preserve_source_ids": False},
+            "55C153:SeventySix.esm", "Cattleprod", "Weapons", "000800:B21_TestMod.esp", "new_allocation",
+        ),
+        # Standalone conversions clone content records even when an EditorID matches.
+        (
+            {"use_base_game_assets": False},
+            "56DCA4:SeventySix.esm", "GaussRifle", "Weapons", "56DCA4:B21_TestMod.esp", "source_id_preserved",
+        ),
+        (
+            {"use_base_game_assets": False},
+            "27E044:SeventySix.esm", "RandomEncounters", "LAYR", "1870F4:Fallout4.esm", "vanilla_remap",
+        ),
+        # System records are never cloned: that surfaces as NULL sub-field refs in xEdit.
+        (
+            {"use_base_game_assets": False},
+            "591667:SeventySix.esm", "RightHand", "EquipTypes", "013F42:Fallout4.esm", "vanilla_remap",
+        ),
+        (
+            {"use_base_game_assets": False},
+            "591667:SeventySix.esm", "RightHand", "EQUP", "013F42:Fallout4.esm", "vanilla_remap",
+        ),
+    ],
+)
+def test_fresh_mapping_policy(
+    target_db, mod_path, kwargs, source_fk, editor_id, record_type, expected_fk, strategy
+):
+    result = _mapper(target_db, mod_path, **kwargs).map_formkey(
+        source_formkey=source_fk,
+        editor_id=editor_id,
+        record_type=record_type,
     )
 
-    result = mapper.map_formkey(
-        source_formkey="55C153:SeventySix.esm",
-        editor_id="Cattleprod",
-        record_type="Weapons",
-    )
-
-    assert result["new_formkey"] == "55C153:B21_TestMod.esm"
-    assert result["strategy"] == "source_id_preserved"
-
-
-def test_opt_out_new_allocation(target_db, mod_path):
-    """preserve_source_ids=False keeps the legacy sequential allocation path."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-        preserve_source_ids=False,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="55C153:SeventySix.esm",
-        editor_id="Cattleprod",
-        record_type="Weapons",
-    )
-
-    assert result["new_formkey"] == "000800:B21_TestMod.esp"
-    assert result["strategy"] == "new_allocation"
+    assert result["new_formkey"] == expected_fk
+    assert result["strategy"] == strategy
 
 
 def test_preserved_source_id_collision_allocates_fallback(target_db, mod_path):
     """If two source plugins share an object ID, only the collision allocates."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
+    mapper = _mapper(target_db, mod_path)
 
     first = mapper.map_formkey("123456:OneSource.esm", "FirstThing", "MiscItems")
     second = mapper.map_formkey("123456:OtherSource.esm", "SecondThing", "MiscItems")
+    third = mapper.map_formkey("123457:OneSource.esm", "ThirdThing", "MiscItems")
 
     assert first["new_formkey"] == "123456:B21_TestMod.esp"
     assert first["strategy"] == "source_id_preserved"
     assert second["new_formkey"] == "000800:B21_TestMod.esp"
     assert second["strategy"] == "new_allocation"
+    assert third["new_formkey"] == "123457:B21_TestMod.esp"
 
 
-def test_preserved_source_ids_do_not_consume_allocation_range(target_db, mod_path):
-    """Multiple preserved source IDs keep their own object IDs."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
+@pytest.mark.parametrize(
+    ("cached", "kwargs", "expected_fk", "strategy"),
+    [
+        (
+            ("55C153:SeventySix.esm", "000800:B21_TestMod.esp", "Cattleprod", "Weapons", "new_allocation"),
+            {},
+            "000800:B21_TestMod.esp",
+            "new_allocation",
+        ),
+        (
+            ("55C153:SeventySix.esm", "55C153:B21_TestMod.esp", "Cattleprod", "Weapons", "source_id_preserved"),
+            {"output_plugin_extension": ".esm"},
+            "55C153:B21_TestMod.esm",
+            "source_id_preserved",
+        ),
+        (
+            ("27E044:SeventySix.esm", "27E044:B21_TestMod.esp", "RandomEncounters", "LAYR", "source_id_preserved"),
+            {"use_base_game_assets": False},
+            "1870F4:Fallout4.esm",
+            "vanilla_remap",
+        ),
+        # Stale new_allocation entries self-heal; otherwise they shadow base game records.
+        (
+            ("591667:SeventySix.esm", "000800:B21_TestMod.esp", "RightHand", "EquipTypes", "new_allocation"),
+            {},
+            "013F42:Fallout4.esm",
+            "vanilla_remap",
+        ),
+        # Never downgrade vanilla_remap: that would break save games.
+        (
+            ("591667:SeventySix.esm", "013F42:Fallout4.esm", "RightHand", "EquipTypes", "vanilla_remap"),
+            {"use_base_game_assets": False},
+            "013F42:Fallout4.esm",
+            "vanilla_remap",
+        ),
+    ],
+)
+def test_cached_mapping_policy(target_db, mod_path, cached, kwargs, expected_fk, strategy):
+    source_fk, _new_fk, editor_id, record_type, _strategy = cached
+    _write_existing_map(mod_path, *cached)
+    mapper = _mapper(target_db, mod_path, **kwargs)
 
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
+    result = mapper.map_formkey(source_fk, editor_id, record_type)
 
-    r1 = mapper.map_formkey("55C153:SeventySix.esm", "Cattleprod", "Weapons")
-    r2 = mapper.map_formkey("55C154:SeventySix.esm", "CattleprodMod1", "ObjectModifications")
-
-    assert r1["new_formkey"] == "55C153:B21_TestMod.esp"
-    assert r2["new_formkey"] == "55C154:B21_TestMod.esp"
-
-
-def test_incremental_from_existing_map(target_db, mod_path):
-    """Existing mappings are honored; new source records preserve IDs by default."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    # Pre-populate a formkey_map.json
-    existing = {
-        "mod_name": "B21_TestMod",
-        "target_game": "fo4",
-        "next_id": "000805",
-        "mappings": {
-            "55C153:SeventySix.esm": {
-                "new_formkey": "000800:B21_TestMod.esp",
-                "editor_id": "Cattleprod",
-                "record_type": "Weapons",
-                "strategy": "new_allocation",
-                "source_game": "fo76",
-            }
-        },
-    }
-    with open(mod_path / "formkey_map.json", "w") as f:
-        json.dump(existing, f)
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
-
-    # Already-mapped record returns existing mapping
-    r1 = mapper.map_formkey("55C153:SeventySix.esm", "Cattleprod", "Weapons")
-    assert r1["new_formkey"] == "000800:B21_TestMod.esp"
-
-    # New records preserve their source object ID by default; next_id is only
-    # used by legacy opt-out allocation or collisions.
-    r2 = mapper.map_formkey("55C155:SeventySix.esm", "CattleprodMod2", "ObjectModifications")
-    assert r2["new_formkey"] == "55C155:B21_TestMod.esp"
-
-
-def test_existing_local_mapping_updates_output_plugin_extension(target_db, mod_path):
-    """Cached local mappings follow the current conversion plugin extension."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    existing = {
-        "mod_name": "B21_TestMod",
-        "target_game": "fo4",
-        "next_id": "000800",
-        "mappings": {
-            "55C153:SeventySix.esm": {
-                "new_formkey": "55C153:B21_TestMod.esp",
-                "editor_id": "Cattleprod",
-                "record_type": "Weapons",
-                "strategy": "source_id_preserved",
-                "source_game": "fo76",
-            }
-        },
-    }
-    with open(mod_path / "formkey_map.json", "w") as f:
-        json.dump(existing, f)
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-        output_plugin_extension=".esm",
-    )
-
-    result = mapper.map_formkey("55C153:SeventySix.esm", "Cattleprod", "Weapons")
-
-    assert result["new_formkey"] == "55C153:B21_TestMod.esm"
-    assert result["strategy"] == "source_id_preserved"
+    assert result["new_formkey"] == expected_fk
+    assert result["strategy"] == strategy
+    assert mapper._mappings[source_fk]["new_formkey"] == expected_fk
 
 
 def test_cached_source_id_preserved_does_not_recheck_vanilla(mod_path):
     """Cached source-id mappings are stable and do not hit target lookup on reconvert."""
     from bacup_lib.formkey.formkey_mapper import FormKeyMapper
 
-    existing = {
-        "mod_name": "B21_TestMod",
-        "target_game": "fo4",
-        "next_id": "000800",
-        "mappings": {
-            "55C153:SeventySix.esm": {
-                "new_formkey": "55C153:B21_TestMod.esp",
-                "editor_id": "Cattleprod",
-                "record_type": "Weapons",
-                "strategy": "source_id_preserved",
-                "source_game": "fnv",
-            }
-        },
-    }
-    with open(mod_path / "formkey_map.json", "w") as f:
-        json.dump(existing, f)
+    _write_existing_map(
+        mod_path,
+        "55C153:SeventySix.esm",
+        "55C153:B21_TestMod.esp",
+        "Cattleprod",
+        "Weapons",
+        "source_id_preserved",
+    )
 
     class FailingTargetLoader:
         def search_by_editor_id_and_type(self, editor_id, record_type):
@@ -400,206 +275,70 @@ def test_cached_source_id_preserved_does_not_recheck_vanilla(mod_path):
     assert result["strategy"] == "source_id_preserved"
 
 
-def test_cached_source_id_preserved_system_record_upgrades_to_vanilla(target_db, mod_path):
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    existing = {
-        "mod_name": "B21_TestMod",
-        "target_game": "fo4",
-        "next_id": "000800",
-        "mappings": {
-            "27E044:SeventySix.esm": {
-                "new_formkey": "27E044:B21_TestMod.esp",
-                "editor_id": "RandomEncounters",
-                "record_type": "LAYR",
-                "strategy": "source_id_preserved",
-                "source_game": "fo76",
-            }
-        },
-    }
-    with open(mod_path / "formkey_map.json", "w") as f:
-        json.dump(existing, f)
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=False,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="27E044:SeventySix.esm",
-        editor_id="RandomEncounters",
-        record_type="LAYR",
-    )
-
-    assert result["strategy"] == "vanilla_remap"
-    assert result["new_formkey"] == "1870F4:Fallout4.esm"
-    assert mapper._mappings["27E044:SeventySix.esm"]["new_formkey"] == "1870F4:Fallout4.esm"
-
-
-def test_base_game_disabled_business_records(target_db, mod_path):
-    """With use_base_game_assets=False, content records (Weapons, Armors, NPCs)
-    preserve source IDs even when an EditorID match exists in the target DB.
-    Standalone-mod conversions clone the convertable record into the mod.
-    """
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=False,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="56DCA4:SeventySix.esm",
-        editor_id="GaussRifle",
-        record_type="Weapons",
-    )
-
-    assert result["strategy"] == "source_id_preserved"
-    assert result["new_formkey"] == "56DCA4:B21_TestMod.esp"
-
-
-def test_base_game_disabled_layers_still_remap_by_editor_id(target_db, mod_path):
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=False,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="27E044:SeventySix.esm",
-        editor_id="RandomEncounters",
-        record_type="LAYR",
-    )
-
-    assert result["strategy"] == "vanilla_remap"
-    assert result["new_formkey"] == "1870F4:Fallout4.esm"
-
-
-def test_base_game_disabled_system_records_still_remap(target_db, mod_path):
-    """Game-system records (Keywords, EquipTypes, etc.) auto-remap to vanilla
-    even with use_base_game_assets=False — these are never legitimately
-    cloned, and cloning them would surface as broken sub-field references
-    in xEdit (e.g. IPDS PNAM Material -> NULL).
-    """
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=False,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="591667:SeventySix.esm",
-        editor_id="RightHand",
-        record_type="EquipTypes",
-    )
-
-    assert result["strategy"] == "vanilla_remap"
-    assert result["new_formkey"] == "013F42:Fallout4.esm"
-
-
-def test_base_game_disabled_system_signature_records_still_remap(target_db, mod_path):
-    """Canonical signatures get the same system-record remap policy."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=False,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="591667:SeventySix.esm",
-        editor_id="RightHand",
-        record_type="EQUP",
-    )
-
-    assert result["strategy"] == "vanilla_remap"
-    assert result["new_formkey"] == "013F42:Fallout4.esm"
-
-
-def test_rewrite_formkeys_in_yaml():
-    """Recursive FormKey rewriting in YAML dicts."""
+@pytest.mark.parametrize("stale_cache", [False, True])
+def test_vanilla_remap_prefers_target_master_handles(mod_path, monkeypatch, stale_cache):
+    """Target master handles are authoritative for vanilla remap when provided."""
     from bacup_lib.formkey.formkey_mapper import FormKeyMapper
 
-    mapping = {
-        "591667:SeventySix.esm": {"new_formkey": "013F42:Fallout4.esm"},
-        "55C153:SeventySix.esm": {"new_formkey": "000800:B21_Test.esp"},
-    }
-
-    record = {
-        "FormKey": "55C153:SeventySix.esm",
-        "EditorID": "Cattleprod",
-        "EquipmentType": "591667:SeventySix.esm",
-        "Keywords": [
+    if stale_cache:
+        _write_existing_map(
+            mod_path,
             "591667:SeventySix.esm",
-            "AAAAAA:SomeOther.esm",
-        ],
-        "Nested": {
-            "Ref": "55C153:SeventySix.esm",
-        },
-        "NotAFormKey": "hello world",
-        "Number": 42,
-    }
+            "000800:B21_TestMod.esp",
+            "RightHand",
+            "EquipTypes",
+            "new_allocation",
+        )
+    calls = _patch_eid_rows(
+        monkeypatch,
+        {99: [{"form_key": "Fallout4.esm:099999", "editor_id": "RightHand", "signature": "EQUP"}]},
+    )
+    mapper = FormKeyMapper(
+        mod_name="B21_TestMod",
+        target_game="fo4",
+        target_loader=_FailingTargetLoader(),
+        target_master_handles=[_FakeTargetHandle()],
+        mod_path=str(mod_path),
+        use_base_game_assets=True,
+    )
 
-    result = FormKeyMapper.rewrite_formkeys(record, mapping)
+    result = mapper.map_formkey("591667:SeventySix.esm", "RightHand", "EquipTypes")
 
-    assert result["FormKey"] == "000800:B21_Test.esp"
-    assert result["EquipmentType"] == "013F42:Fallout4.esm"
-    assert result["Keywords"][0] == "013F42:Fallout4.esm"
-    assert result["Keywords"][1] == "AAAAAA:SomeOther.esm"  # unmapped, unchanged
-    assert result["Nested"]["Ref"] == "000800:B21_Test.esp"
-    assert result["NotAFormKey"] == "hello world"  # not a FormKey pattern
-    assert result["Number"] == 42
+    assert result["new_formkey"] == "099999:Fallout4.esm"
+    assert result["strategy"] == "vanilla_remap"
+    assert mapper._mappings["591667:SeventySix.esm"]["new_formkey"] == "099999:Fallout4.esm"
+    assert calls == {99: 1}
+
+
+def test_find_vanilla_uses_target_master_handles(mod_path, monkeypatch):
+    """find_vanilla resolves through target handles even without a DB loader."""
+    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
+
+    _patch_eid_rows(
+        monkeypatch,
+        {99: [{"form_key": "Fallout4.esm:099999", "editor_id": "RightHand", "signature": "EQUP"}]},
+    )
+    mapper = FormKeyMapper(
+        mod_name="B21_TestMod",
+        target_game="fo4",
+        target_loader=None,
+        target_master_handles=[_FakeTargetHandle()],
+        mod_path=str(mod_path),
+        use_base_game_assets=False,
+    )
+
+    assert mapper.find_vanilla("RightHand", "EquipTypes") == "099999:Fallout4.esm"
 
 
 def test_save_and_load(target_db, mod_path):
     """formkey_map.json round-trips correctly."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
+    mapper = _mapper(target_db, mod_path)
 
     mapper.map_formkey("55C153:SeventySix.esm", "Cattleprod", "Weapons")
     mapper.map_formkey("591667:SeventySix.esm", "RightHand", "EquipTypes")
     mapper.save()
 
-    map_path = mod_path / "formkey_map.json"
-    assert map_path.exists()
-
-    data = json.loads(map_path.read_text())
+    data = json.loads((mod_path / "formkey_map.json").read_text())
     assert data["mod_name"] == "B21_TestMod"
     assert data["next_id"] == "000800"
     assert data["use_base_game_assets"] is True
@@ -607,174 +346,3 @@ def test_save_and_load(target_db, mod_path):
     assert len(data["mappings"]) == 2
     assert data["mappings"]["591667:SeventySix.esm"]["strategy"] == "vanilla_remap"
     assert data["mappings"]["55C153:SeventySix.esm"]["strategy"] == "source_id_preserved"
-
-
-def test_stale_new_allocation_upgrades_to_vanilla_remap(target_db, mod_path):
-    """Stale cached new_allocation entries self-heal to vanilla_remap on reconvert.
-
-    Regression for: early runs with use_base_game_assets=False (or with a
-    target DB that lacked the record) cached a new_allocation mapping. On
-    a later reconvert with use_base_game_assets=True and a vanilla match
-    available, the cache was returning the bad new_allocation instead of
-    upgrading. Symptom: duplicate Ammo2mmEC record and other records
-    shadowing base game entries.
-    """
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    # Pre-populate a stale cache entry: EquipTypes/RightHand mapped to
-    # a fresh new_allocation FormKey, even though the target DB has
-    # the vanilla 013F42:Fallout4.esm copy.
-    existing = {
-        "mod_name": "B21_TestMod",
-        "target_game": "fo4",
-        "next_id": "000801",
-        "mappings": {
-            "591667:SeventySix.esm": {
-                "new_formkey": "000800:B21_TestMod.esp",
-                "editor_id": "RightHand",
-                "record_type": "EquipTypes",
-                "strategy": "new_allocation",
-                "source_game": "fo76",
-            }
-        },
-    }
-    with open(mod_path / "formkey_map.json", "w") as f:
-        json.dump(existing, f)
-
-    target_loader = RecordLoader(str(target_db))
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
-
-    result = mapper.map_formkey(
-        source_formkey="591667:SeventySix.esm",
-        editor_id="RightHand",
-        record_type="EquipTypes",
-    )
-
-    assert result["strategy"] == "vanilla_remap"
-    assert result["new_formkey"] == "013F42:Fallout4.esm"
-    # And the internal cache is updated, not just the returned value
-    assert mapper._mappings["591667:SeventySix.esm"]["strategy"] == "vanilla_remap"
-    assert mapper._mappings["591667:SeventySix.esm"]["new_formkey"] == "013F42:Fallout4.esm"
-
-
-def test_stale_new_allocation_upgrade_uses_target_master_handles(mod_path, monkeypatch):
-    """Stale local cache entries upgrade via target handles before DB fallback."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-
-    existing = {
-        "mod_name": "B21_TestMod",
-        "target_game": "fo4",
-        "next_id": "000801",
-        "mappings": {
-            "591667:SeventySix.esm": {
-                "new_formkey": "000800:B21_TestMod.esp",
-                "editor_id": "RightHand",
-                "record_type": "EquipTypes",
-                "strategy": "new_allocation",
-                "source_game": "fo76",
-            }
-        },
-    }
-    with open(mod_path / "formkey_map.json", "w") as f:
-        json.dump(existing, f)
-
-    target_handle = _FakeTargetHandle()
-    _patch_eid_rows(
-        monkeypatch,
-        {
-            99: [
-                {
-                    "form_key": "Fallout4.esm:099999",
-                    "editor_id": "RightHand",
-                    "signature": "EQUP",
-                }
-            ]
-        },
-    )
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=_FailingTargetLoader(),
-        target_master_handles=[target_handle],
-        mod_path=str(mod_path),
-        use_base_game_assets=True,
-    )
-
-    result = mapper.map_formkey("591667:SeventySix.esm", "RightHand", "EquipTypes")
-
-    assert result["strategy"] == "vanilla_remap"
-    assert result["new_formkey"] == "099999:Fallout4.esm"
-    assert mapper._mappings["591667:SeventySix.esm"]["new_formkey"] == "099999:Fallout4.esm"
-
-
-def test_vanilla_remap_never_downgrades(target_db, mod_path):
-    """Never downgrade vanilla_remap back to new_allocation — would break save games."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-    from creation_lib.db.record_loader import RecordLoader
-
-    existing = {
-        "mod_name": "B21_TestMod",
-        "target_game": "fo4",
-        "next_id": "000800",
-        "mappings": {
-            "591667:SeventySix.esm": {
-                "new_formkey": "013F42:Fallout4.esm",
-                "editor_id": "RightHand",
-                "record_type": "EquipTypes",
-                "strategy": "vanilla_remap",
-                "source_game": "fo76",
-            }
-        },
-    }
-    with open(mod_path / "formkey_map.json", "w") as f:
-        json.dump(existing, f)
-
-    target_loader = RecordLoader(str(target_db))
-    # Even with use_base_game_assets=False, cached vanilla_remap stays
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=target_loader,
-        mod_path=str(mod_path),
-        use_base_game_assets=False,
-    )
-
-    result = mapper.map_formkey("591667:SeventySix.esm", "RightHand", "EquipTypes")
-    assert result["strategy"] == "vanilla_remap"
-    assert result["new_formkey"] == "013F42:Fallout4.esm"
-
-
-def test_find_vanilla_uses_target_master_handles(mod_path, monkeypatch):
-    """find_vanilla resolves through target handles even without a DB loader."""
-    from bacup_lib.formkey.formkey_mapper import FormKeyMapper
-
-    target_handle = _FakeTargetHandle()
-    _patch_eid_rows(
-        monkeypatch,
-        {
-            99: [
-                {
-                    "form_key": "Fallout4.esm:099999",
-                    "editor_id": "RightHand",
-                    "signature": "EQUP",
-                }
-            ]
-        },
-    )
-    mapper = FormKeyMapper(
-        mod_name="B21_TestMod",
-        target_game="fo4",
-        target_loader=None,
-        target_master_handles=[target_handle],
-        mod_path=str(mod_path),
-        use_base_game_assets=False,
-    )
-
-    assert mapper.find_vanilla("RightHand", "EquipTypes") == "099999:Fallout4.esm"

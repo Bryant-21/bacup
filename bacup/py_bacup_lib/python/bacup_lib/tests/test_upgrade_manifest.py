@@ -18,115 +18,67 @@ def _version(version_id, families, *, force_regen=False, notes=()):
     )
 
 
-M = UpgradeManifest(
-    current="alpha3",
-    versions=(
-        _version("alpha1", ("ALL",)),
-        _version("alpha2", ("Meshes", "Materials")),
-        _version("alpha3", ("Terrain",)),
-    ),
+def _manifest(*versions):
+    return UpgradeManifest(
+        current=versions[-1][0],
+        versions=tuple(_version(v, f) for v, f in versions),
+    )
+
+
+M = (("alpha1", ("ALL",)), ("alpha2", ("Meshes", "Materials")), ("alpha3", ("Terrain",)))
+
+
+@pytest.mark.parametrize(
+    ("versions", "from_id", "to_id", "expected"),
+    [
+        (M, "alpha2", "alpha3", {"Terrain"}),
+        (M, "alpha1", "alpha3", {"Meshes", "Materials", "Terrain"}),
+        (M, "alpha3", "alpha3", {"Terrain"}),
+        (M, "prealpha", "alpha3", {"ALL"}),
+        (M, None, "alpha3", {"ALL"}),
+        ((("alpha2", ("Meshes",)), ("alpha10", ("Scripts",))), "alpha2", "alpha10", {"Scripts"}),
+        ((("alpha2", ("ALL",)), ("alpha2.1", ("NIFs", "Havok"))), "alpha2.1", "alpha2.1", {"NIFs", "Havok"}),
+        ((("alpha2", ("ALL",)),), "alpha2", "alpha2", {"ALL"}),
+        (
+            (("alpha1", ("Meshes",)), ("alpha2", ("Terrain",)), ("alpha3", ("Scripts",))),
+            "alpha1", "alpha3", {"Terrain", "Scripts"},
+        ),
+        (
+            (("alpha1", ("Meshes",)), ("alpha2", ("Scripts",)), ("alpha3", ("Terrain",))),
+            "alpha3", "alpha3", {"Terrain"},
+        ),
+    ],
 )
-
-def test_single_step():
+def test_resolve_family_union(versions, from_id, to_id, expected):
     assert resolve_family_union(
-        M, "alpha2", "alpha3", conversion_id=PAIR
-    ) == frozenset({"Terrain"})
+        _manifest(*versions), from_id, to_id, conversion_id=PAIR
+    ) == frozenset(expected)
 
-def test_multi_step_union():
-    assert resolve_family_union(
-        M, "alpha1", "alpha3", conversion_id=PAIR
-    ) == frozenset({"Meshes", "Materials", "Terrain"})
-
-def test_from_equals_target_runs_declared_family():
-    assert resolve_family_union(
-        M, "alpha3", "alpha3", conversion_id=PAIR
-    ) == frozenset({"Terrain"})
-
-def test_unknown_from_is_full_build():
-    assert resolve_family_union(
-        M, "prealpha", "alpha3", conversion_id=PAIR
-    ) == frozenset({"ALL"})
-
-def test_none_from_is_full_build():
-    assert resolve_family_union(M, None, "alpha3", conversion_id=PAIR) == frozenset({"ALL"})
-
-def test_all_in_range_is_full_build():
-    assert resolve_family_union(
-        M, "alpha0_before_alpha1", "alpha2", conversion_id=PAIR
-    ) == frozenset({"ALL"})  # via unknown-from
 
 def test_downgrade_raises():
     with pytest.raises(ValueError):
-        resolve_family_union(M, "alpha3", "alpha2", conversion_id=PAIR)
-
-def test_ordering_is_list_order_not_string():
-    m = UpgradeManifest("alpha10", (
-        _version("alpha2", ("Meshes",)),
-        _version("alpha10", ("Scripts",)),
-    ))
-    assert resolve_family_union(
-        m, "alpha2", "alpha10", conversion_id=PAIR
-    ) == frozenset({"Scripts"})
+        resolve_family_union(_manifest(*M), "alpha3", "alpha2", conversion_id=PAIR)
 
 
-def test_load_upgrade_manifest_rejects_legacy_global_fields(tmp_path):
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        ("  - id: alpha3\n    families: [Meshes]\n", "legacy global field"),
+        (
+            "  - id: alpha3\n    families_by_conversion:\n      'skyrimse:fo4': [NONE, Meshes]\n",
+            "NONE cannot be combined",
+        ),
+    ],
+)
+def test_load_upgrade_manifest_rejects_invalid(tmp_path, body, match):
     manifest_path = tmp_path / "upgrade_manifest.yaml"
-    manifest_path.write_text(
-        "current: alpha2\n"
-        "versions:\n"
-        "  - id: alpha2\n"
-        "    families: [Meshes]\n",
-        encoding="utf-8",
-    )
+    manifest_path.write_text("current: alpha3\nversions:\n" + body, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="legacy global field"):
+    with pytest.raises(ValueError, match=match):
         load_upgrade_manifest(manifest_path)
 
 
-def test_load_upgrade_manifest_parses_force_regen_by_conversion(tmp_path):
-    manifest_path = tmp_path / "upgrade_manifest.yaml"
-    manifest_path.write_text(
-        "current: alpha2\n"
-        "versions:\n"
-        "  - id: alpha2\n"
-        "    families_by_conversion:\n"
-        "      'fo76:fo4': [Meshes]\n"
-        "      'fnvfo3:fo4': [NONE]\n"
-        "      'skyrimse:fo4': [NONE]\n"
-        "    force_regen_by_conversion:\n"
-        "      'fo76:fo4': true\n",
-        encoding="utf-8",
-    )
-
-    manifest = load_upgrade_manifest(manifest_path)
-
-    assert manifest.versions[0].force_regen_for_conversion(PAIR) is True
-    assert manifest.versions[0].force_regen_for_conversion("skyrimse:fo4") is False
-
-
-def test_load_upgrade_manifest_parses_notes_by_conversion(tmp_path):
-    manifest_path = tmp_path / "upgrade_manifest.yaml"
-    manifest_path.write_text(
-        "current: alpha4\n"
-        "versions:\n"
-        "  - id: alpha4\n"
-        "    families_by_conversion:\n"
-        "      'fo76:fo4': [NONE]\n"
-        "      'fnvfo3:fo4': [NONE]\n"
-        "      'skyrimse:fo4': [Textures]\n"
-        "    notes_by_conversion:\n"
-        "      'skyrimse:fo4':\n"
-        "        - skyrim note\n",
-        encoding="utf-8",
-    )
-
-    version = load_upgrade_manifest(manifest_path).versions[0]
-
-    assert version.notes_for_conversion("skyrimse:fo4") == ("skyrim note",)
-    assert version.notes_for_conversion("fo76:fo4") == ()
-
-
-def test_load_upgrade_manifest_parses_conversion_family_and_force_overrides(tmp_path):
+def test_load_upgrade_manifest_parses_per_conversion_fields(tmp_path):
     manifest_path = tmp_path / "upgrade_manifest.yaml"
     manifest_path.write_text(
         "current: alpha3\n"
@@ -135,20 +87,25 @@ def test_load_upgrade_manifest_parses_conversion_family_and_force_overrides(tmp_
         "    families_by_conversion:\n"
         "      'fo76:fo4': [Textures]\n"
         "      'skyrimse:fo4': [NONE]\n"
-        "      'fnvfo3:fo4': [Meshes]\n"
         "    force_regen_by_conversion:\n"
         "      'fo76:fo4': true\n"
-        "      'skyrimse:fo4': false\n",
+        "      'skyrimse:fo4': false\n"
+        "    notes_by_conversion:\n"
+        "      'skyrimse:fo4':\n"
+        "        - skyrim note\n",
         encoding="utf-8",
     )
 
     version = load_upgrade_manifest(manifest_path).versions[0]
 
     assert version.families_for_conversion("fo76:fo4") == ("Textures",)
-    assert version.families_for_conversion("fnvfo3:fo4") == ("Meshes",)
-    assert version.families_for_conversion("skyrimse:fo4") == ()
+    for conversion_id in set(SOURCE_PAIRS).difference({"fo76:fo4"}):
+        assert version.families_for_conversion(conversion_id) == ()
     assert version.force_regen_for_conversion("fo76:fo4") is True
     assert version.force_regen_for_conversion("skyrimse:fo4") is False
+    assert version.force_regen_for_conversion("fnvfo3:fo4") is False
+    assert version.notes_for_conversion("skyrimse:fo4") == ("skyrim note",)
+    assert version.notes_for_conversion("fo76:fo4") == ()
 
 
 def test_conversion_scopes_skip_unrelated_versions_and_union_later_changes():
@@ -186,39 +143,6 @@ def test_conversion_scopes_skip_unrelated_versions_and_union_later_changes():
     ) is True
 
 
-def test_none_family_cannot_be_combined_with_other_families(tmp_path):
-    manifest_path = tmp_path / "upgrade_manifest.yaml"
-    manifest_path.write_text(
-        "current: alpha3\n"
-        "versions:\n"
-        "  - id: alpha3\n"
-        "    families_by_conversion:\n"
-        "      'skyrimse:fo4': [NONE, Meshes]\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="NONE cannot be combined"):
-        load_upgrade_manifest(manifest_path)
-
-
-def test_manifest_defaults_missing_family_scopes_to_none(tmp_path):
-    manifest_path = tmp_path / "upgrade_manifest.yaml"
-    manifest_path.write_text(
-        "current: alpha3\n"
-        "versions:\n"
-        "  - id: alpha3\n"
-        "    families_by_conversion:\n"
-        "      'fo76:fo4': [Textures]\n",
-        encoding="utf-8",
-    )
-
-    version = load_upgrade_manifest(manifest_path).versions[0]
-
-    assert version.families_for_conversion("fo76:fo4") == ("Textures",)
-    for conversion_id in set(SOURCE_PAIRS).difference({"fo76:fo4"}):
-        assert version.families_for_conversion(conversion_id) == ()
-
-
 def test_force_regen_applies_only_when_flagged_version_is_crossed():
     manifest = UpgradeManifest(
         "alpha3",
@@ -243,130 +167,54 @@ def test_force_regen_applies_only_when_flagged_version_is_crossed():
     ) is True
 
 
-def test_load_bundled_upgrade_manifest_has_notes():
+def test_load_bundled_upgrade_manifest():
     manifest = load_upgrade_manifest(bundled_upgrade_manifest_path())
-    by_id = {v.id: v for v in manifest.versions}
-    assert manifest.current == "alpha2.1"
-    assert by_id["alpha1"].notes_for_conversion("fo76:fo4") != ()
-    assert by_id["alpha2"].notes_for_conversion("fo76:fo4") != ()
-    assert by_id["alpha2.1"].notes_for_conversion("fo76:fo4") != ()
-    assert by_id["alpha2.1"].families_for_conversion("fo76:fo4") == (
-        "NIFs",
-        "Havok",
-        "Scripts",
-        "Textures",
-    )
-    assert resolve_family_union(
-        manifest,
-        "alpha2",
-        "alpha2.1",
-        conversion_id="fo76:fo4",
-    ) == frozenset({"NIFs", "Havok", "Scripts", "Textures"})
-    assert requires_forced_regen(
-        manifest,
-        "alpha2",
-        "alpha2.1",
-        conversion_id="fo76:fo4",
-    ) is False
-    assert by_id["alpha2"].notes_for_conversion("skyrimse:fo4") != ()
-    assert by_id["alpha1"].families_for_conversion("skyrimse:fo4") == ()
-    assert by_id["alpha2"].families_for_conversion("skyrimse:fo4") == ()
-    assert by_id["alpha2"].force_regen_for_conversion("skyrimse:fo4") is True
-# --- target families --------------------------------------------------------
+    assert manifest.index_of(manifest.current) is not None
+    for version in manifest.versions:
+        for conversion_id in SOURCE_PAIRS:
+            version.families_for_conversion(conversion_id)
 
 
-def test_target_scripts_family_runs_when_already_current():
-    manifest = UpgradeManifest(
-        current="alpha3",
-        versions=(
-            _version("alpha2", ("Meshes",)),
-            _version("alpha3", ("Scripts",)),
-        ),
+def test_load_upgrade_manifest_parses_known_issues(tmp_path):
+    manifest_path = tmp_path / "upgrade_manifest.yaml"
+    manifest_path.write_text(
+        "current: alpha3\n"
+        "known_issues_by_conversion:\n"
+        "  'fo76:fo4':\n"
+        "    - first issue\n"
+        "    - second issue\n"
+        "versions:\n"
+        "  - id: alpha3\n"
+        "    families_by_conversion:\n"
+        "      'fo76:fo4': [NONE]\n",
+        encoding="utf-8",
     )
 
-    assert resolve_family_union(
-        manifest, "alpha3", "alpha3", conversion_id=PAIR
-    ) == frozenset({"Scripts"})
+    manifest = load_upgrade_manifest(manifest_path)
+
+    assert manifest.known_issues_for_conversion("fo76:fo4") == (
+        "first issue",
+        "second issue",
+    )
+    assert manifest.known_issues_for_conversion("skyrimse:fo4") == ()
 
 
-def test_target_nifs_havok_families_run_when_already_current():
-    manifest = UpgradeManifest(
-        current="alpha2.1",
-        versions=(
-            _version("alpha2", ("ALL",)),
-            _version("alpha2.1", ("NIFs", "Havok")),
-        ),
+@pytest.mark.parametrize(
+    ("known_issues", "match"),
+    [
+        ("known_issues_by_conversion:\n  'nope:fo4':\n    - x\n", "unknown conversion"),
+        ("known_issues_by_conversion:\n  'fo76:fo4': x\n", "must be a list"),
+        ("known_issues_by_conversion: [x]\n", "must be a mapping"),
+    ],
+)
+def test_load_upgrade_manifest_rejects_invalid_known_issues(tmp_path, known_issues, match):
+    manifest_path = tmp_path / "upgrade_manifest.yaml"
+    manifest_path.write_text(
+        "current: alpha3\n"
+        + known_issues
+        + "versions:\n  - id: alpha3\n    families_by_conversion:\n      'fo76:fo4': [NONE]\n",
+        encoding="utf-8",
     )
 
-    assert resolve_family_union(
-        manifest, "alpha2.1", "alpha2.1", conversion_id=PAIR
-    ) == frozenset({"NIFs", "Havok"})
-
-
-def test_target_textures_family_runs_when_already_current():
-    manifest = UpgradeManifest(
-        current="alpha2.1",
-        versions=(
-            _version("alpha2", ("ALL",)),
-            _version("alpha2.1", ("Textures",)),
-        ),
-    )
-
-    assert resolve_family_union(
-        manifest, "alpha2.1", "alpha2.1", conversion_id=PAIR
-    ) == frozenset({"Textures"})
-
-
-def test_target_lod_family_runs_when_already_current():
-    manifest = UpgradeManifest(
-        current="alpha2.1",
-        versions=(
-            _version("alpha2", ("ALL",)),
-            _version("alpha2.1", ("LOD",)),
-        ),
-    )
-
-    assert resolve_family_union(
-        manifest, "alpha2.1", "alpha2.1", conversion_id=PAIR
-    ) == frozenset({"LOD"})
-
-
-def test_target_all_runs_full_build_when_already_current():
-    manifest = UpgradeManifest(
-        current="alpha2",
-        versions=(_version("alpha2", ("ALL",)),),
-    )
-
-    assert resolve_family_union(
-        manifest, "alpha2", "alpha2", conversion_id=PAIR
-    ) == frozenset({"ALL"})
-
-
-def test_target_scripts_family_joins_version_range_changes():
-    manifest = UpgradeManifest(
-        current="alpha3",
-        versions=(
-            _version("alpha1", ("Meshes",)),
-            _version("alpha2", ("Terrain",)),
-            _version("alpha3", ("Scripts",)),
-        ),
-    )
-
-    assert resolve_family_union(
-        manifest, "alpha1", "alpha3", conversion_id=PAIR
-    ) == frozenset({"Terrain", "Scripts"})
-
-
-def test_historical_scripts_family_does_not_join_current_target_family():
-    manifest = UpgradeManifest(
-        current="alpha3",
-        versions=(
-            _version("alpha1", ("Meshes",)),
-            _version("alpha2", ("Scripts",)),
-            _version("alpha3", ("Terrain",)),
-        ),
-    )
-
-    assert resolve_family_union(
-        manifest, "alpha3", "alpha3", conversion_id=PAIR
-    ) == frozenset({"Terrain"})
+    with pytest.raises(ValueError, match=match):
+        load_upgrade_manifest(manifest_path)

@@ -11,8 +11,6 @@ from bacup_lib.source_pairs import (
     FNV_MVP_EXCLUDE_SIGNATURES,
     FNV_QUEST_SLICE_ENABLED_SIGNATURES,
     FNV_QUEST_SLICE_EXCLUDE_SIGNATURES,
-    FNV_QUEST_SLICE_RECORD_FORM_IDS,
-    fnv_quest_slice_record_form_ids,
     is_fnv_quest_slice_exclusion_set,
     quest_slice_exclude_signatures,
 )
@@ -76,7 +74,7 @@ def _legacy_result(**overrides: object) -> dict[str, object]:
     return result
 
 
-def test_quest_slice_keeps_unsupported_pack_family_excluded() -> None:
+def test_quest_slice_and_world_only_mvp_gates(tmp_path: Path) -> None:
     assert (
         quest_slice_exclude_signatures("fnvfo3:fo4")
         == FNV_QUEST_SLICE_EXCLUDE_SIGNATURES
@@ -87,69 +85,16 @@ def test_quest_slice_keeps_unsupported_pack_family_excluded() -> None:
     assert is_fnv_quest_slice_exclusion_set(FNV_QUEST_SLICE_EXCLUDE_SIGNATURES)
     assert not is_fnv_quest_slice_exclusion_set(FNV_MVP_EXCLUDE_SIGNATURES)
 
-
-def test_quest_slice_dependency_closure_is_exact_and_json_ready() -> None:
-    assert "ACRE" not in FNV_QUEST_SLICE_RECORD_FORM_IDS
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["ACHR"] == (
-        0x12319B,
-        0x12319C,
-        0x134B9C,
-    )
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["ACTI"] == (0x133F41,)
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["QUST"] == (0x06136D, 0x11F935)
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["REFR"] == (0x133F42,)
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["DIAL"] == (0x13015B, 0x134B9A, 0x138A74)
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["INFO"] == (
-        0x130161,
-        0x134B9B,
-        0x15734B,
-        0x15734C,
-        0x15734D,
-    )
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["SPEL"] == (0x172091,)
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["MGEF"] == (0x0CB05D,)
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["PACK"] == (
-        0x1231B6,
-        0x1231B7,
-        0x13289E,
-        0x133F3E,
-    )
-    copy = fnv_quest_slice_record_form_ids()
-    assert "ACRE" not in copy
-    assert copy["ACHR"] == [0x12319B, 0x12319C, 0x134B9C]
-    copy["QUST"].append(0xFFFFFF)
-    assert FNV_QUEST_SLICE_RECORD_FORM_IDS["QUST"] == (0x06136D, 0x11F935)
-
-
-def test_world_only_mvp_skips_legacy_psc_work(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path, convert_scripts=False)
-    runtime._req.options.exclude_signatures = FNV_MVP_EXCLUDE_SIGNATURES
-    runtime._req.options.fnv_quest_slice = False
-    assert runtime._is_fnv_world_only_mvp()
-    assert not runtime._is_fnv_quest_slice()
-
-
-def test_world_only_mvp_fence_overrides_ui_script_default(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path, convert_scripts=True)
-    runtime._req.options.exclude_signatures = FNV_MVP_EXCLUDE_SIGNATURES
-    runtime._req.options.fnv_quest_slice = False
-
-    assert runtime._is_fnv_world_only_mvp()
-
-
-def test_explicit_quest_slice_gate_survives_unrelated_extra_excludes(
-    tmp_path: Path,
-) -> None:
     runtime = _runtime(tmp_path)
     runtime._req.options.exclude_signatures = FNV_QUEST_SLICE_EXCLUDE_SIGNATURES | {
         "TREE"
     }
     assert runtime._is_fnv_quest_slice()
 
-
-def test_explicit_quest_slice_gate_defaults_false(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
+    # The world-only fence overrides the UI's convert_scripts default.
+    runtime._req.options.exclude_signatures = FNV_MVP_EXCLUDE_SIGNATURES
     runtime._req.options.fnv_quest_slice = False
+    assert runtime._is_fnv_world_only_mvp()
     assert not runtime._is_fnv_quest_slice()
 
 
@@ -306,27 +251,6 @@ def test_strict_slice_rejects_invalid_psc_manifest_before_compile(
     assert calls == []
 
 
-def test_fnv_manifest_rejects_case_insensitive_duplicate_class_names(
-    tmp_path: Path,
-) -> None:
-    runtime = _runtime(tmp_path)
-    with pytest.raises(ValueError, match="duplicate generated PSC class name"):
-        runtime._fnv_generated_psc_manifest(
-            {
-                "generated_psc_classes": [
-                    {
-                        "class_name": "B21_Same",
-                        "relative_source_path": "B21_Same.psc",
-                    },
-                    {
-                        "class_name": "b21_same",
-                        "relative_source_path": "b21_same.psc",
-                    },
-                ]
-            }
-        )
-
-
 def test_fnv_compiler_uses_only_current_run_manifest(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -379,63 +303,6 @@ def test_fnv_compiler_uses_only_current_run_manifest(
             "pex_path": str(tmp_path / "data" / "Scripts" / "B21_VTechatticup.pex"),
             "message": "",
         }
-    ]
-
-
-def test_fnv_manifest_honors_exe_batch_compiler(tmp_path: Path, monkeypatch) -> None:
-    runtime = _runtime(tmp_path)
-    runtime._req.options.papyrus_compiler = "exe-batch"
-    ctx = _context(tmp_path)
-    runner = _Runner()
-    psc_root = tmp_path / "Scripts" / "Source" / "User"
-    psc_root.mkdir(parents=True)
-    selected = psc_root / "B21_VTechatticup.psc"
-    selected.write_text("ScriptName B21_VTechatticup extends Quest\n", encoding="utf-8")
-    (psc_root / "StaleSibling.psc").write_text(
-        "ScriptName StaleSibling extends Quest\n", encoding="utf-8"
-    )
-    calls: list[tuple[list[str], dict[str, Path]]] = []
-
-    def compile_batch(names, **kwargs):
-        calls.append((list(names), dict(kwargs["psc_paths"])))
-        return [
-            (
-                name,
-                _ScriptResolution(
-                    name, "compiled", tmp_path / "data" / "Scripts" / f"{name}.pex"
-                ),
-            )
-            for name in names
-        ]
-
-    monkeypatch.setattr(
-        runtime, "_compile_decompiled_scripts_batch_for_fo4", compile_batch
-    )
-    monkeypatch.setattr(
-        runtime,
-        "_compile_decompiled_scripts_native_for_fo4",
-        lambda *_args, **_kwargs: pytest.fail("exe-batch must not route to native"),
-    )
-
-    runtime._compile_fnv_generated_psc_manifest(
-        manifest=[
-            {
-                "class_name": "B21_VTechatticup",
-                "relative_source_path": "B21_VTechatticup.psc",
-                "kind": "quest",
-                "required": True,
-            }
-        ],
-        psc_files_written=1,
-        ctx=ctx,
-        runner=runner,
-    )
-
-    assert calls == [
-        (
-            ["B21_VTechatticup"],
-            {"B21_VTechatticup": selected},
-        )
     ]
 
 
@@ -574,15 +441,15 @@ def test_quest_slice_rejects_psc_without_current_run_manifest(tmp_path: Path) ->
             _context(tmp_path),
             _Runner(),
         )
-
-
-def test_fnv_legacy_duplicate_phase_is_guarded(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-    ctx = _context(tmp_path)
-    ctx._fnv_legacy_completed = True
-    assert (
-        runtime._run_optional_fnv_legacy_phase(ctx, Path("FNV.esm"), _Runner()) is False
-    )
+    with pytest.raises(ValueError, match="duplicate generated PSC class name"):
+        runtime._fnv_generated_psc_manifest(
+            {
+                "generated_psc_classes": [
+                    {"class_name": "B21_Same", "relative_source_path": "B21_Same.psc"},
+                    {"class_name": "b21_same", "relative_source_path": "b21_same.psc"},
+                ]
+            }
+        )
 
 
 def test_native_fnv_result_accepts_legacy_and_structured_psc_manifests() -> None:

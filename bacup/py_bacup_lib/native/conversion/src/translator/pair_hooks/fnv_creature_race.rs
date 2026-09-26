@@ -668,6 +668,7 @@ impl CreatureRaceCoverageReport {
     }
 }
 
+#[cfg(test)]
 pub fn build_creature_race_coverage(
     evidence: &[CreatureRaceEvidence<'_>],
     expected_candidates: usize,
@@ -800,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn cazador_stingwing_gecko_nightstalker_and_robot_are_explicitly_unsupported() {
+    fn unaudited_or_conflicting_creature_architectures_fail_closed() {
         let interner = StringInterner::new();
         let cases = [
             (
@@ -836,10 +837,7 @@ mod tests {
             );
             assert_eq!(decision.audited_race(), Err(expected));
         }
-    }
 
-    #[test]
-    fn humanoid_creature_without_an_audited_race_donor_is_unsupported() {
         let interner = StringInterner::new();
         let decision = classify_legacy_creature_race(
             &evidence(
@@ -854,10 +852,7 @@ mod tests {
             decision.audited_race(),
             Err(UnsupportedCreatureReason::HumanoidCreatureHasNoAuditedFo4RaceDonor)
         );
-    }
 
-    #[test]
-    fn legion_creature_is_fail_closed() {
         let interner = StringInterner::new();
         let mut record = creature_record(
             &interner,
@@ -879,6 +874,20 @@ mod tests {
         );
 
         assert!(!record.fields.iter().any(|field| field.sig.0 == *b"RNAM"));
+
+        let interner = StringInterner::new();
+        let mut source = evidence(
+            LegacyCreatureFamily::Fnv,
+            "FalloutNV.esm",
+            "CREA",
+            Some("Creatures/Dog/dog.nif"),
+        );
+        source.behavior_path = Some("Actors/Deathclaw/DeathclawProject.hkx");
+        let decision = classify_legacy_creature_race(&source, &interner);
+        assert_eq!(
+            decision.audited_race(),
+            Err(UnsupportedCreatureReason::ConflictingArchitectureEvidence)
+        );
     }
 
     #[test]
@@ -944,23 +953,6 @@ mod tests {
         assert!(!report.coverage_gate_passes());
         assert_eq!(report.audited_donors, 0);
         assert_eq!(report.unresolved_architecture, 1);
-    }
-
-    #[test]
-    fn conflicting_model_and_behavior_architectures_fail_closed() {
-        let interner = StringInterner::new();
-        let mut source = evidence(
-            LegacyCreatureFamily::Fnv,
-            "FalloutNV.esm",
-            "CREA",
-            Some("Creatures/Dog/dog.nif"),
-        );
-        source.behavior_path = Some("Actors/Deathclaw/DeathclawProject.hkx");
-        let decision = classify_legacy_creature_race(&source, &interner);
-        assert_eq!(
-            decision.audited_race(),
-            Err(UnsupportedCreatureReason::ConflictingArchitectureEvidence)
-        );
     }
 
     #[test]
@@ -1183,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_coverage_gate_enforces_explicit_expected_count() {
+    fn coverage_gate_enforces_expected_source_candidate_count() {
         let interner = StringInterner::new();
         let decision = classify_legacy_creature_race(
             &evidence(
@@ -1204,10 +1196,7 @@ mod tests {
         assert!(complete.coverage_gate_passes());
         complete.expected_candidates -= 1;
         assert!(!complete.coverage_gate_passes());
-    }
 
-    #[test]
-    fn full_merged_gate_counts_source_candidates_not_prior_output_survivors() {
         const PRIOR_OUTPUT_CREA_SURVIVORS: usize = 2_667;
 
         assert_eq!(EXPECTED_FULL_MERGED_CREA_CANDIDATES, 2_683);

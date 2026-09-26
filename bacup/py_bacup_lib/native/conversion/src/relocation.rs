@@ -759,6 +759,8 @@ pub const FO76_FO4_DEFAULT_RELOCATION_MESH_PATHS: &[&str] = &[
     "meshes/effects/fxbitsleaveswind01.nif",
     "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif",
     "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif",
+    // FO76's Newspaper01 is the Charleston Herald at FO4's Boston Bugle path.
+    "meshes/props/newspaper02.nif",
     "meshes/setdressing/acducts/acductmed2way02.nif",
     // FO76 and FO4 share this mesh/material path but use different poster atlases.
     "meshes/setdressing/signage/advertsposter03.nif",
@@ -1027,137 +1029,40 @@ mod tests {
     }
 
     #[test]
-    fn forced_default_mesh_is_member_outside_configured_roots() {
-        let tmp = std::env::temp_dir().join("reloc_forced_mesh");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let fo76 = tmp.join("fo76");
-        let fo4 = tmp.join("fo4");
-        std::fs::create_dir_all(&fo4).unwrap();
-        touch(
-            &fo76.join(
-                "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif",
-            ),
-        );
-        touch(&fo76.join("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter07.nif"));
-        touch(&fo76.join("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter11.nif"));
-        touch(&fo76.join("meshes/effects/fxbitsleavesfromtreetops.nif"));
-        touch(&fo76.join("meshes/effects/fxbitsleaveswind01.nif"));
-        touch(&fo76.join("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif"));
-        touch(&fo76.join("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif"));
-        touch(&fo76.join("meshes/setdressing/acducts/acductmed2way02.nif"));
-        touch(&fo76.join("meshes/setdressing/signage/advertsposter03.nif"));
-        touch(&fo76.join("meshes/setdressing/minutemen/flagpoleminutemen02.nif"));
-        touch(&fo76.join("meshes/setdressing/minutemen/flagwallminutemen01.nif"));
-        touch(&fo76.join("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif"));
-        touch(&fo76.join("meshes/vehicles/automotive/busschool01empty.nif"));
+    fn forced_default_meshes_and_materials_are_members_only_when_present_in_source() {
+        use materials_native::bgsm;
 
-        let result = build_relocation_member_set(&["meshes/landscape".to_string()], &fo76, &fo4);
-
-        assert!(result.members.contains(
-            "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif"
-        ));
-        assert!(
-            result
-                .members
-                .contains("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter07.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter11.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/effects/fxbitsleavesfromtreetops.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/effects/fxbitsleaveswind01.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/setdressing/acducts/acductmed2way02.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/setdressing/signage/advertsposter03.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/setdressing/minutemen/flagpoleminutemen02.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/setdressing/minutemen/flagwallminutemen01.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif")
-        );
-        assert!(
-            result
-                .members
-                .contains("meshes/vehicles/automotive/busschool01empty.nif")
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn forced_default_mesh_missing_from_source_is_not_member() {
-        let tmp = std::env::temp_dir().join("reloc_forced_mesh_missing");
+        let tmp = std::env::temp_dir().join("reloc_forced_defaults");
         let _ = std::fs::remove_dir_all(&tmp);
         let fo76 = tmp.join("fo76");
         let fo4 = tmp.join("fo4");
         std::fs::create_dir_all(&fo76).unwrap();
         std::fs::create_dir_all(&fo4).unwrap();
+        let forced_meshes = [
+            "meshes/architecture/buildings/hightech/lobby/hitextintwalltoptrimblong01.nif",
+            "meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter07.nif",
+            "meshes/dlc06/setdressing/vaultworkshop/dlc06vaultsafetyposter11.nif",
+            "meshes/effects/fxbitsleavesfromtreetops.nif",
+            "meshes/effects/fxbitsleaveswind01.nif",
+            "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif",
+            "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif",
+            "meshes/props/newspaper02.nif",
+            "meshes/setdressing/acducts/acductmed2way02.nif",
+            "meshes/setdressing/signage/advertsposter03.nif",
+            "meshes/setdressing/minutemen/flagpoleminutemen02.nif",
+            "meshes/setdressing/minutemen/flagwallminutemen01.nif",
+            "meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif",
+            "meshes/vehicles/automotive/busschool01empty.nif",
+        ];
 
-        let result = build_relocation_member_set(&["meshes/landscape".to_string()], &fo76, &fo4);
+        let empty = build_relocation_member_set(&["meshes/landscape".to_string()], &fo76, &fo4);
+        for mesh in forced_meshes {
+            assert!(!empty.members.contains(mesh), "absent source: {mesh}");
+        }
 
-        assert!(
-            !result
-                .members
-                .contains("meshes/setdressing/minutemen/flagwallminutemen01.nif")
-        );
-        assert!(
-            !result
-                .members
-                .contains("meshes/setdressing/metalbarrel/metalbarrel01staticfiregrating.nif")
-        );
-        assert!(
-            !result
-                .members
-                .contains("meshes/vehicles/automotive/busschool01empty.nif")
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn forced_default_materials_close_over_source_textures() {
-        use materials_native::bgsm;
-
-        let tmp = std::env::temp_dir().join("reloc_forced_materials");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let fo76 = tmp.join("fo76");
-        let fo4 = tmp.join("fo4");
-        std::fs::create_dir_all(&fo4).unwrap();
-
+        for mesh in forced_meshes {
+            touch(&fo76.join(mesh));
+        }
         for material in FO76_FO4_DEFAULT_RELOCATION_MATERIAL_PATHS {
             let mut data = bgsm::BgsmData::default();
             data.header.signature = bgsm::BGSM_SIGNATURE;
@@ -1177,6 +1082,9 @@ mod tests {
 
         let result = build_relocation_member_set(&["meshes/landscape".to_string()], &fo76, &fo4);
 
+        for mesh in forced_meshes {
+            assert!(result.members.contains(mesh), "{mesh}");
+        }
         for material in FO76_FO4_DEFAULT_RELOCATION_MATERIAL_PATHS {
             assert!(result.members.contains(*material));
             let stem = Path::new(material)
@@ -1226,91 +1134,63 @@ mod tests {
     }
 
     #[test]
-    fn changed_decal_texture_relocates_texture_and_owning_material() {
+    fn decal_assets_relocate_only_when_bytes_changed() {
         use materials_native::bgsm;
 
-        let tmp = std::env::temp_dir().join("reloc_changed_decal_assets");
+        let tmp = std::env::temp_dir().join("reloc_decal_assets");
         let _ = std::fs::remove_dir_all(&tmp);
         let source = tmp.join("source");
         let target = tmp.join("target");
-        let material = "materials/dlc04/decals/parking.bgsm";
-        let diffuse = "textures/dlc04/decals/parking_d.dds";
-        let normal = "textures/dlc04/decals/parking_n.dds";
-
-        let mut data = bgsm::BgsmData::default();
-        data.header.signature = bgsm::BGSM_SIGNATURE;
-        data.header.version = 20;
-        data.DiffuseTexture = diffuse.to_string();
-        data.NormalTexture = normal.to_string();
-        let material_bytes = bgsm::write(&data);
-        for root in [&source, &target] {
-            let path = root.join(material.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let write = |root: &Path, rel: &str, bytes: &[u8]| {
+            let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, &material_bytes).unwrap();
-            touch(&root.join(normal.replace('/', std::path::MAIN_SEPARATOR_STR)));
-        }
-        let source_diffuse = source.join(diffuse.replace('/', std::path::MAIN_SEPARATOR_STR));
-        let target_diffuse = target.join(diffuse.replace('/', std::path::MAIN_SEPARATOR_STR));
-        std::fs::create_dir_all(source_diffuse.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(target_diffuse.parent().unwrap()).unwrap();
-        std::fs::write(source_diffuse, b"fo76").unwrap();
-        std::fs::write(target_diffuse, b"fo4").unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        let material_bytes = |diffuse: &str, normal: &str| {
+            let mut data = bgsm::BgsmData::default();
+            data.header.signature = bgsm::BGSM_SIGNATURE;
+            data.header.version = 20;
+            data.DiffuseTexture = diffuse.to_string();
+            data.NormalTexture = normal.to_string();
+            bgsm::write(&data)
+        };
 
-        let mut members = HashSet::new();
-        let warnings = extend_with_changed_decal_assets(
-            &mut members,
-            &[material.to_string()],
-            &source,
-            &target,
-        );
-
-        assert!(warnings.is_empty());
-        assert!(members.contains(material));
-        assert!(members.contains(diffuse));
-        assert!(!members.contains(normal));
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn byte_identical_decal_assets_remain_deduplicated() {
-        use materials_native::bgsm;
-
-        let tmp = std::env::temp_dir().join("reloc_identical_decal_assets");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        let target = tmp.join("target");
-        let material = "materials/decals/exact.bgsm";
-        let diffuse = "textures/decals/exact_d.dds";
-
-        let mut data = bgsm::BgsmData::default();
-        data.header.signature = bgsm::BGSM_SIGNATURE;
-        data.header.version = 20;
-        data.DiffuseTexture = diffuse.to_string();
-        let material_bytes = bgsm::write(&data);
+        let changed = "materials/dlc04/decals/parking.bgsm";
+        let changed_diffuse = "textures/dlc04/decals/parking_d.dds";
+        let changed_normal = "textures/dlc04/decals/parking_n.dds";
+        let exact = "materials/decals/exact.bgsm";
+        let exact_diffuse = "textures/decals/exact_d.dds";
         for root in [&source, &target] {
-            let material_path = root.join(material.replace('/', std::path::MAIN_SEPARATOR_STR));
-            std::fs::create_dir_all(material_path.parent().unwrap()).unwrap();
-            std::fs::write(material_path, &material_bytes).unwrap();
-            let texture_path = root.join(diffuse.replace('/', std::path::MAIN_SEPARATOR_STR));
-            std::fs::create_dir_all(texture_path.parent().unwrap()).unwrap();
-            std::fs::write(texture_path, b"same").unwrap();
+            write(
+                root,
+                changed,
+                &material_bytes(changed_diffuse, changed_normal),
+            );
+            write(root, changed_normal, b"x");
+            write(root, exact, &material_bytes(exact_diffuse, ""));
+            write(root, exact_diffuse, b"same");
         }
+        write(&source, changed_diffuse, b"fo76");
+        write(&target, changed_diffuse, b"fo4");
 
         let mut members = HashSet::new();
         let warnings = extend_with_changed_decal_assets(
             &mut members,
-            &[material.to_string()],
+            &[changed.to_string(), exact.to_string()],
             &source,
             &target,
         );
 
         assert!(warnings.is_empty());
-        assert!(members.is_empty());
+        assert_eq!(
+            members,
+            HashSet::from([changed.to_string(), changed_diffuse.to_string()])
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn insert_namespace_after_root_inserts_after_top_segment() {
+    fn relocation_paths_normalize_data_prefixes_and_insert_namespace_after_root() {
         assert_eq!(
             insert_namespace_after_root("textures/landscape/rock01_d.dds", "FO76"),
             "textures/FO76/landscape/rock01_d.dds"
@@ -1319,10 +1199,6 @@ mod tests {
             insert_namespace_after_root("meshes/landscape/rock01.nif", "FO76"),
             "meshes/FO76/landscape/rock01.nif"
         );
-    }
-
-    #[test]
-    fn normalize_rel_strips_absolute_data_prefix() {
         assert_eq!(
             normalize_rel("C:\\Projects\\76\\Build\\PC\\Data\\Materials\\Landscape\\Rock01.bgsm"),
             "materials/landscape/rock01.bgsm"
@@ -1336,18 +1212,41 @@ mod tests {
     #[test]
     fn build_member_set_inner_closes_over_nif_and_material_deps() {
         use nif_core_native::model::ReferencedAssetPaths;
-        let meshes = vec!["meshes/landscape/rock01.nif".to_string()];
+        let meshes = vec![
+            "meshes/landscape/rock01.nif".to_string(),
+            "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif".to_string(),
+        ];
 
         let load_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            assert_eq!(rel, "meshes/landscape/rock01.nif");
-            Some(ReferencedAssetPaths {
-                textures: vec!["textures/landscape/rock01_d.dds".to_string()],
-                materials: vec!["materials/landscape/rock01.bgsm".to_string()],
-            })
+            match rel {
+                "meshes/landscape/rock01.nif" => Some(ReferencedAssetPaths {
+                    textures: vec!["textures/landscape/rock01_d.dds".to_string()],
+                    materials: vec!["materials/landscape/rock01.bgsm".to_string()],
+                }),
+                "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif" => {
+                    Some(ReferencedAssetPaths {
+                        textures: Vec::new(),
+                        materials: vec![
+                            "Materials\\Interiors\\RedRocket\\RedRPumps01.BGSM".to_string(),
+                        ],
+                    })
+                }
+                other => panic!("unexpected NIF lookup: {other}"),
+            }
         };
         let load_mat = |rel: &str| -> Vec<String> {
-            assert_eq!(rel, "materials/landscape/rock01.bgsm");
-            vec!["textures/landscape/rock01_n.dds".to_string()]
+            match rel {
+                "materials/landscape/rock01.bgsm" => {
+                    vec!["textures/landscape/rock01_n.dds".to_string()]
+                }
+                "materials/interiors/redrocket/redrpumps01.bgsm" => vec![
+                    "Interiors/RedRocket/RedR_09_Pumps_01_d.dds".to_string(),
+                    "Interiors/RedRocket/RedR_09_Pumps_01_n.dds".to_string(),
+                    "Interiors/RedRocket/RedR_09_Pumps_01_r.dds".to_string(),
+                    "Interiors/RedRocket/RedR_09_Pumps_01_l.dds".to_string(),
+                ],
+                other => panic!("unexpected material lookup: {other}"),
+            }
         };
 
         let members = build_relocation_member_set_inner(&meshes, &load_nif, &load_mat);
@@ -1357,8 +1256,14 @@ mod tests {
         assert_eq!(
             got,
             vec![
+                "materials/interiors/redrocket/redrpumps01.bgsm".to_string(),
                 "materials/landscape/rock01.bgsm".to_string(),
+                "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif".to_string(),
                 "meshes/landscape/rock01.nif".to_string(),
+                "textures/interiors/redrocket/redr_09_pumps_01_d.dds".to_string(),
+                "textures/interiors/redrocket/redr_09_pumps_01_l.dds".to_string(),
+                "textures/interiors/redrocket/redr_09_pumps_01_n.dds".to_string(),
+                "textures/interiors/redrocket/redr_09_pumps_01_r.dds".to_string(),
                 "textures/landscape/rock01_d.dds".to_string(),
                 "textures/landscape/rock01_n.dds".to_string(),
             ]
@@ -1366,79 +1271,77 @@ mod tests {
     }
 
     #[test]
-    fn red_rocket_pump_collisions_close_over_shadow_material() {
-        use nif_core_native::model::ReferencedAssetPaths;
+    fn build_member_set_merges_source_and_target_nif_deps_from_files() {
+        use indexmap::IndexMap;
+        use materials_native::bgsm;
+        use nif_core_native::model::{NifValue, ReferencedAssetPaths};
 
-        let meshes = vec![
-            "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree01.nif".to_string(),
-            "meshes/interiors/redrocket/redr_smbldg01_pumpmeterfree02.nif".to_string(),
-        ];
-        let load_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            assert!(meshes.iter().any(|mesh| mesh == rel));
-            Some(ReferencedAssetPaths {
-                textures: Vec::new(),
-                materials: vec!["Materials\\Interiors\\RedRocket\\RedRPumps01.BGSM".to_string()],
-            })
-        };
-        let load_mat = |rel: &str| -> Vec<String> {
-            assert_eq!(rel, "materials/interiors/redrocket/redrpumps01.bgsm");
-            vec![
-                "Interiors/RedRocket/RedR_09_Pumps_01_d.dds".to_string(),
-                "Interiors/RedRocket/RedR_09_Pumps_01_n.dds".to_string(),
-                "Interiors/RedRocket/RedR_09_Pumps_01_r.dds".to_string(),
-                "Interiors/RedRocket/RedR_09_Pumps_01_l.dds".to_string(),
-            ]
-        };
-
-        let members = build_relocation_member_set_inner(&meshes, &load_nif, &load_mat);
-
-        for mesh in &meshes {
-            assert!(members.contains(mesh));
+        let tmp = tempfile::tempdir().unwrap();
+        let fo76 = tmp.path().join("fo76");
+        let fo4 = tmp.path().join("fo4");
+        let mesh = "meshes/landscape/dirtcliffs/terrainshelfrocks01.nif";
+        let native =
+            |root: &Path, rel: &str| root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        for (root, material) in [
+            (&fo76, "Materials/Landscape/Ground/ForestRocks01Decal.bgsm"),
+            (&fo4, "Materials/Landscape/Ground/RootsEroded01Decal.bgsm"),
+        ] {
+            let path = native(root, mesh);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut nif = NifFile::new("fo76");
+            let mut fields = IndexMap::new();
+            fields.insert("Name".into(), NifValue::String(material.into()));
+            nif.add_block("BSLightingShaderProperty", Some(fields));
+            nif.save(Some(path)).unwrap();
         }
-        assert!(members.contains("materials/interiors/redrocket/redrpumps01.bgsm"));
-        for texture in ["d", "n", "r", "l"] {
-            assert!(members.contains(&format!(
-                "textures/interiors/redrocket/redr_09_pumps_01_{texture}.dds"
-            )));
+        for (material, stem) in [
+            (
+                "materials/landscape/ground/forestrocks01decal.bgsm",
+                "ForestRocks01",
+            ),
+            (
+                "materials/landscape/ground/rootseroded01decal.bgsm",
+                "RootsEroded01",
+            ),
+        ] {
+            let mut data = bgsm::BgsmData::default();
+            data.header.signature = bgsm::BGSM_SIGNATURE;
+            data.header.version = 20;
+            data.DiffuseTexture = format!("Landscape\\Ground\\{stem}_d.dds");
+            data.NormalTexture = format!("Landscape\\Ground\\{stem}_n.dds");
+            let path = native(&fo76, material);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bgsm::write(&data)).unwrap();
         }
-    }
-
-    #[test]
-    fn build_member_set_merges_source_and_target_nif_deps() {
-        use nif_core_native::model::ReferencedAssetPaths;
-        let meshes = vec!["meshes/landscape/dirtcliffs/terrainshelfrocks01.nif".to_string()];
 
         let load_source_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            assert_eq!(rel, "meshes/landscape/dirtcliffs/terrainshelfrocks01.nif");
-            Some(ReferencedAssetPaths {
-                textures: vec!["textures/landscape/ground/temp_groundtexture01_d.dds".to_string()],
-                materials: vec!["materials/landscape/ground/forestrocks01decal.bgsm".to_string()],
-            })
+            NifFile::load(native(&fo76, rel))
+                .ok()
+                .map(|nif| nif.referenced_asset_paths())
         };
         let load_target_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            assert_eq!(rel, "meshes/landscape/dirtcliffs/terrainshelfrocks01.nif");
-            Some(ReferencedAssetPaths {
-                textures: Vec::new(),
-                materials: vec!["materials/landscape/ground/rootseroded01decal.bgsm".to_string()],
-            })
+            NifFile::load(native(&fo4, rel))
+                .ok()
+                .map(|nif| nif.referenced_asset_paths())
         };
-        let load_mat = |rel: &str| -> Vec<String> {
-            match rel {
-                "materials/landscape/ground/rootseroded01decal.bgsm" => {
-                    vec!["Landscape\\Ground\\RootsEroded01_d.dds".to_string()]
-                }
-                _ => Vec::new(),
-            }
-        };
+        let load_mat = |rel: &str| read_material_texture_paths(&native(&fo76, rel));
         let nif_loaders: [&dyn Fn(&str) -> Option<ReferencedAssetPaths>; 2] =
             [&load_source_nif, &load_target_nif];
 
-        let members = build_relocation_member_set_from_loaders(&meshes, &nif_loaders, &load_mat);
+        let members =
+            build_relocation_member_set_from_loaders(&[mesh.to_string()], &nif_loaders, &load_mat);
 
-        assert!(members.contains("materials/landscape/ground/forestrocks01decal.bgsm"));
-        assert!(members.contains("materials/landscape/ground/rootseroded01decal.bgsm"));
-        assert!(members.contains("textures/landscape/ground/temp_groundtexture01_d.dds"));
-        assert!(members.contains("textures/landscape/ground/rootseroded01_d.dds"));
+        for member in [
+            mesh,
+            "materials/landscape/ground/forestrocks01decal.bgsm",
+            "materials/landscape/ground/rootseroded01decal.bgsm",
+            "textures/landscape/ground/forestrocks01_d.dds",
+            "textures/landscape/ground/forestrocks01_n.dds",
+            "textures/landscape/ground/rootseroded01_d.dds",
+            "textures/landscape/ground/rootseroded01_n.dds",
+        ] {
+            assert!(members.contains(member), "{member}: {members:?}");
+        }
     }
 
     #[test]
@@ -1537,157 +1440,6 @@ mod tests {
     }
 
     #[test]
-    fn terrain_shelf_rocks_real_data_closes_over_sister_bgsm_textures() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .expect("conversion crate is repo/bacup/py_bacup_lib/native/conversion")
-            .to_path_buf();
-        let fo76 = repo_root.join("extracted").join("fo76");
-        let fo4 = repo_root.join("extracted").join("fo4");
-        let mesh = "meshes/landscape/dirtcliffs/terrainshelfrocks01.nif";
-        let sister_mat = "materials/landscape/ground/rootseroded01decal.bgsm";
-        if !fo76
-            .join(mesh.replace('/', std::path::MAIN_SEPARATOR_STR))
-            .is_file()
-            || !fo4
-                .join(mesh.replace('/', std::path::MAIN_SEPARATOR_STR))
-                .is_file()
-            || !fo76
-                .join(sister_mat.replace('/', std::path::MAIN_SEPARATOR_STR))
-                .is_file()
-        {
-            eprintln!("skip: TerrainShelfRocks01 real-data probes absent");
-            return;
-        }
-
-        let load_source_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            let abs = fo76.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-            NifFile::load(abs).ok().map(|n| n.referenced_asset_paths())
-        };
-        let load_target_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            let abs = fo4.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-            NifFile::load(abs).ok().map(|n| n.referenced_asset_paths())
-        };
-        let load_mat = |rel: &str| -> Vec<String> {
-            let abs = fo76.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-            read_material_texture_paths(&abs)
-        };
-        let nif_loaders: [&dyn Fn(&str) -> Option<ReferencedAssetPaths>; 2] =
-            [&load_source_nif, &load_target_nif];
-
-        let members =
-            build_relocation_member_set_from_loaders(&[mesh.to_string()], &nif_loaders, &load_mat);
-
-        assert!(members.contains(sister_mat));
-        assert!(members.contains("textures/landscape/ground/rootseroded01_d.dds"));
-        assert!(members.contains("textures/landscape/ground/rootseroded01_n.dds"));
-        assert!(members.contains("textures/landscape/ground/rootseroded01_r.dds"));
-    }
-
-    #[test]
-    fn forced_school_bus_real_data_closes_over_materials_and_textures() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .expect("conversion crate is repo/bacup/py_bacup_lib/native/conversion")
-            .to_path_buf();
-        let fo76 = repo_root.join("extracted").join("fo76");
-        let fo4 = repo_root.join("extracted").join("fo4");
-        let mesh = "meshes/vehicles/automotive/busschool01empty.nif";
-        if !fo76.join(mesh).is_file() || !fo4.join(mesh).is_file() {
-            return;
-        }
-
-        let load_source_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            NifFile::load(fo76.join(rel))
-                .ok()
-                .map(|nif| nif.referenced_asset_paths())
-        };
-        let load_target_nif = |rel: &str| -> Option<ReferencedAssetPaths> {
-            NifFile::load(fo4.join(rel))
-                .ok()
-                .map(|nif| nif.referenced_asset_paths())
-        };
-        let load_material = |rel: &str| read_material_texture_paths(&fo76.join(rel));
-        let nif_loaders: [&dyn Fn(&str) -> Option<ReferencedAssetPaths>; 2] =
-            [&load_source_nif, &load_target_nif];
-        let members = build_relocation_member_set_from_loaders(
-            &[mesh.to_string()],
-            &nif_loaders,
-            &load_material,
-        );
-
-        assert!(members.contains(mesh));
-        assert!(members.contains("materials/vehicles/automotive/busschool_decal_01.bgsm"));
-        assert!(
-            members
-                .iter()
-                .any(|member| member.starts_with("textures/vehicles/automotive/"))
-        );
-    }
-
-    /// Real-data validation: over the repo's extracted FO76 + FO4 dirs, a
-    /// landscape mesh that also exists in FO4 is a relocation member, while a
-    /// FO76-unique landscape mesh is NOT. Skips (returns) when the extracted
-    /// dirs are absent so CI without game data stays green.
-    #[test]
-    fn collision_compare_relocates_only_colliding_landscape_on_real_data() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .expect("conversion crate is repo/bacup/py_bacup_lib/native/conversion")
-            .to_path_buf();
-        let fo76 = repo_root.join("extracted").join("fo76");
-        let fo4 = repo_root.join("extracted").join("fo4");
-        if !fo76.join("meshes").join("landscape").is_dir() || !fo4.join("meshes").is_dir() {
-            eprintln!(
-                "skip: extracted FO76/FO4 dirs absent ({})",
-                repo_root.display()
-            );
-            return;
-        }
-
-        let members = collect_colliding_meshes(&["meshes/landscape".to_string()], &fo76, &fo4);
-        let set: HashSet<String> = members.into_iter().collect();
-
-        // A landscape NIF present in BOTH games -> relocates.
-        let colliding = "meshes/landscape/caveentrance/caveentr02.nif";
-        // A FO76-only (Atlantic City) landscape NIF -> stays put.
-        let fo76_unique = "meshes/landscape/ac_beach/beachfloor1024mid02.nif";
-
-        // Only assert on probes that actually exist on this machine's extract.
-        if fo76
-            .join("meshes/landscape/caveentrance/caveentr02.nif")
-            .is_file()
-            && fo4
-                .join("meshes/landscape/caveentrance/caveentr02.nif")
-                .is_file()
-        {
-            assert!(
-                set.contains(colliding),
-                "expected colliding landscape NIF to be a relocation member"
-            );
-        }
-        if fo76
-            .join("meshes/landscape/ac_beach/beachfloor1024mid02.nif")
-            .is_file()
-        {
-            assert!(
-                !set.contains(fo76_unique),
-                "FO76-unique landscape NIF must NOT be a relocation member"
-            );
-        }
-
-        // Sanity: the set is a strict subset of FO76 landscape meshes, never
-        // the whole tree.
-        assert!(
-            set.iter().all(|m| m.starts_with("meshes/landscape/")),
-            "collision compare must only yield configured-root meshes"
-        );
-    }
-
-    #[test]
     fn collision_only_mesh_relocates_without_pulling_its_materials() {
         use indexmap::IndexMap;
         use nif_core_native::model::NifValue;
@@ -1716,74 +1468,6 @@ mod tests {
                 .members
                 .contains("materials/interiors/hightech/flatmetalsupports01a.bgsm"),
             "a collision-only mesh must not drag its material into the FO76 namespace"
-        );
-    }
-
-    /// Real-data drift check for `FO76_FO4_COLLISION_ONLY_RELOCATION_MESH_PATHS`:
-    /// recomputes every same-path mesh whose FO76 copy has a
-    /// `bhkNPCollisionObject` and whose FO4 copy has none. Skips when the
-    /// extracted dirs are absent so CI without game data stays green.
-    #[test]
-    fn collision_only_relocation_list_matches_real_data() {
-        // Landscape already relocates in full through the default root. Weapon
-        // and actor parts are attached or skinned: their collision is not a
-        // walkable surface and swapping their geometry risks attach points.
-        const EXCLUDED_PREFIXES: &[&str] =
-            &["meshes/landscape/", "meshes/weapons/", "meshes/actors/"];
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .expect("conversion crate is repo/bacup/py_bacup_lib/native/conversion")
-            .to_path_buf();
-        let fo76 = repo_root.join("extracted").join("fo76");
-        let fo4 = repo_root.join("extracted").join("fo4");
-        if !fo76.join("meshes").is_dir() || !fo4.join("meshes").is_dir() {
-            eprintln!(
-                "skip: extracted FO76/FO4 dirs absent ({})",
-                repo_root.display()
-            );
-            return;
-        }
-        let has_collision = |path: &Path| {
-            let Ok(file) = std::fs::File::open(path) else {
-                return false;
-            };
-            let mut reader =
-                nif_core_native::io::basic_io::BasicReader::new(std::io::BufReader::new(file));
-            nif_core_native::io::reader::read_header(&mut reader).is_ok_and(|header| {
-                header
-                    .block_type_names
-                    .iter()
-                    .any(|name| name == "bhkNPCollisionObject")
-            })
-        };
-
-        let expected: std::collections::BTreeSet<String> =
-            collect_source_meshes(&["meshes".to_string()], &fo76)
-                .into_iter()
-                .filter(|mesh| {
-                    !EXCLUDED_PREFIXES
-                        .iter()
-                        .any(|prefix| mesh.starts_with(prefix))
-                })
-                .filter(|mesh| {
-                    let rel = mesh.replace('/', std::path::MAIN_SEPARATOR_STR);
-                    let twin = fo4.join(&rel);
-                    twin.is_file() && has_collision(&fo76.join(&rel)) && !has_collision(&twin)
-                })
-                .collect();
-        let listed: std::collections::BTreeSet<String> =
-            FO76_FO4_COLLISION_ONLY_RELOCATION_MESH_PATHS
-                .iter()
-                .map(|path| path.to_string())
-                .collect();
-
-        let missing: Vec<_> = expected.difference(&listed).collect();
-        let stale: Vec<_> = listed.difference(&expected).collect();
-        assert!(
-            missing.is_empty() && stale.is_empty(),
-            "collision-only relocation list drifted from extracted data; \
-             missing={missing:?} stale={stale:?}"
         );
     }
 }

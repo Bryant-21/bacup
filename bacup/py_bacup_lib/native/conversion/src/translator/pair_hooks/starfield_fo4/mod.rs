@@ -719,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn lights_drop_starfield_only_header_flags() {
+    fn lights_and_leveled_lists_drop_starfield_only_header_flags() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("000800@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("LIGH").unwrap(), form_key);
@@ -729,10 +729,7 @@ mod tests {
         run_pre_translate(&interner, &mut record);
 
         assert_eq!(record.flags.bits(), 0x0202_0000);
-    }
 
-    #[test]
-    fn leveled_lists_drop_the_starfield_use_all_header_flag() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("000800@Starfield.esm", &interner).unwrap();
         for signature in ["LVLI", "LVLN"] {
@@ -745,8 +742,10 @@ mod tests {
         }
     }
 
+    // A 28-byte Starfield row left unprojected reaches FO4 as a 4-byte SNAM,
+    // which hard-crashes the loader in TESFurniture::LoadFurnitureData.
     #[test]
-    fn starfield_furn_drops_early_snam_and_projects_each_marker_row() {
+    fn starfield_furn_and_term_drop_early_snam_and_project_each_marker_row() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("001E9A@Starfield.esm", &interner).unwrap();
         let marker_parameters = (0_u8..56).collect::<Vec<_>>();
@@ -786,12 +785,7 @@ mod tests {
             panic!("FO4 FURN SNAM must remain raw marker bytes");
         };
         assert_eq!(bytes.as_slice(), expected.as_slice());
-    }
 
-    // A 28-byte Starfield row left unprojected reaches FO4 as a 4-byte SNAM,
-    // which hard-crashes the loader in TESFurniture::LoadFurnitureData.
-    #[test]
-    fn starfield_term_drops_early_snam_and_projects_each_marker_row() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("002974@Starfield.esm", &interner).unwrap();
         let marker_parameters = (0_u8..56).collect::<Vec<_>>();
@@ -901,10 +895,7 @@ mod tests {
 
             assert_eq!(record.fields[0].value, FieldValue::Uint(expected));
         }
-    }
 
-    #[test]
-    fn destruction_header_drops_starfield_only_flag_bits() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("04A6C8@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("ACTI").unwrap(), form_key);
@@ -916,6 +907,21 @@ mod tests {
         run_pre_translate(&interner, &mut record);
 
         assert_eq!(find_bytes(&record, "DEST")[4], 0x03);
+
+        let interner = StringInterner::new();
+        let form_key = FormKey::parse("01A21B@Starfield.esm", &interner).unwrap();
+        let mut record = Record::new(SigCode::from_str("FURN").unwrap(), form_key);
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("WBDT").unwrap(),
+            value: FieldValue::Bytes(smallvec::smallvec![11]),
+        });
+
+        run_pre_translate(&interner, &mut record);
+
+        assert_eq!(
+            record.fields[0].value,
+            FieldValue::Bytes(smallvec::smallvec![0])
+        );
     }
 
     #[test]
@@ -951,25 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn furniture_bench_type_defaults_starfield_only_values() {
-        let interner = StringInterner::new();
-        let form_key = FormKey::parse("01A21B@Starfield.esm", &interner).unwrap();
-        let mut record = Record::new(SigCode::from_str("FURN").unwrap(), form_key);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("WBDT").unwrap(),
-            value: FieldValue::Bytes(smallvec::smallvec![11]),
-        });
-
-        run_pre_translate(&interner, &mut record);
-
-        assert_eq!(
-            record.fields[0].value,
-            FieldValue::Bytes(smallvec::smallvec![0])
-        );
-    }
-
-    #[test]
-    fn drops_raw_prps_from_acti_and_cont_while_preserving_models() {
+    fn drops_unemitted_starfield_base_object_fields_while_preserving_models() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("000800@Starfield.esm", &interner).unwrap();
 
@@ -999,6 +987,74 @@ mod tests {
                     .any(|entry| entry.sig.as_str() == "MODL")
             );
         }
+
+        let interner = StringInterner::new();
+        let form_key = FormKey::parse("000800@Starfield.esm", &interner).unwrap();
+        let terminal_menu = FormKey::parse("123456@Starfield.esm", &interner).unwrap();
+
+        for record_sig in ["ACTI", "CONT", "DOOR"] {
+            let mut record = Record::new(SigCode::from_str(record_sig).unwrap(), form_key);
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("NTRM").unwrap(),
+                value: FieldValue::FormKey(terminal_menu),
+            });
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("MODL").unwrap(),
+                value: FieldValue::String(interner.intern("SetDressing\\Compatible.nif")),
+            });
+
+            let record = translate_record(&interner, record);
+
+            assert!(
+                record
+                    .fields
+                    .iter()
+                    .all(|entry| entry.sig.as_str() != "NTRM")
+            );
+            assert!(
+                record
+                    .fields
+                    .iter()
+                    .any(|entry| entry.sig.as_str() == "MODL")
+            );
+        }
+
+        let interner = StringInterner::new();
+        let form_key = FormKey::parse("001559@Starfield.esm", &interner).unwrap();
+        let mut record = Record::new(SigCode::from_str("CONT").unwrap(), form_key);
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("COCT").unwrap(),
+            value: FieldValue::Uint(1),
+        });
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("CNTO").unwrap(),
+            value: FieldValue::Bytes(smallvec::smallvec![
+                0xBE, 0xFC, 0x1F, 0x00, 0x01, 0x00, 0x00, 0x00
+            ]),
+        });
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("COED").unwrap(),
+            value: FieldValue::Bytes(smallvec::smallvec![0; 12]),
+        });
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("MODL").unwrap(),
+            value: FieldValue::String(interner.intern("SetDressing\\Compatible.nif")),
+        });
+
+        let record = translate_record(&interner, record);
+
+        assert!(
+            record
+                .fields
+                .iter()
+                .all(|entry| !matches!(&entry.sig.0, b"COCT" | b"CNTO" | b"COED"))
+        );
+        assert!(
+            record
+                .fields
+                .iter()
+                .any(|entry| entry.sig.as_str() == "MODL")
+        );
     }
 
     #[test]
@@ -1051,80 +1107,6 @@ mod tests {
         assert!(record.fields.iter().any(|entry| {
             entry.sig.as_str() == "XCAS" && entry.value == FieldValue::FormKey(valid_ref)
         }));
-    }
-
-    #[test]
-    fn drops_starfield_native_terminals_from_mvp_base_objects() {
-        let interner = StringInterner::new();
-        let form_key = FormKey::parse("000800@Starfield.esm", &interner).unwrap();
-        let terminal_menu = FormKey::parse("123456@Starfield.esm", &interner).unwrap();
-
-        for record_sig in ["ACTI", "CONT", "DOOR"] {
-            let mut record = Record::new(SigCode::from_str(record_sig).unwrap(), form_key);
-            record.fields.push(FieldEntry {
-                sig: SubrecordSig::from_str("NTRM").unwrap(),
-                value: FieldValue::FormKey(terminal_menu),
-            });
-            record.fields.push(FieldEntry {
-                sig: SubrecordSig::from_str("MODL").unwrap(),
-                value: FieldValue::String(interner.intern("SetDressing\\Compatible.nif")),
-            });
-
-            let record = translate_record(&interner, record);
-
-            assert!(
-                record
-                    .fields
-                    .iter()
-                    .all(|entry| entry.sig.as_str() != "NTRM")
-            );
-            assert!(
-                record
-                    .fields
-                    .iter()
-                    .any(|entry| entry.sig.as_str() == "MODL")
-            );
-        }
-    }
-
-    #[test]
-    fn drops_unemitted_starfield_container_inventory_while_preserving_model() {
-        let interner = StringInterner::new();
-        let form_key = FormKey::parse("001559@Starfield.esm", &interner).unwrap();
-        let mut record = Record::new(SigCode::from_str("CONT").unwrap(), form_key);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("COCT").unwrap(),
-            value: FieldValue::Uint(1),
-        });
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("CNTO").unwrap(),
-            value: FieldValue::Bytes(smallvec::smallvec![
-                0xBE, 0xFC, 0x1F, 0x00, 0x01, 0x00, 0x00, 0x00
-            ]),
-        });
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("COED").unwrap(),
-            value: FieldValue::Bytes(smallvec::smallvec![0; 12]),
-        });
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("MODL").unwrap(),
-            value: FieldValue::String(interner.intern("SetDressing\\Compatible.nif")),
-        });
-
-        let record = translate_record(&interner, record);
-
-        assert!(
-            record
-                .fields
-                .iter()
-                .all(|entry| !matches!(&entry.sig.0, b"COCT" | b"CNTO" | b"COED"))
-        );
-        assert!(
-            record
-                .fields
-                .iter()
-                .any(|entry| entry.sig.as_str() == "MODL")
-        );
     }
 
     #[test]
@@ -1207,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn objectbounds_float_to_int_scales_starfield_meters_to_fo4_units() {
+    fn objectbounds_float_to_int_scales_starfield_meters_once() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
@@ -1247,6 +1229,30 @@ mod tests {
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
         assert_eq!(values, vec![-57, -28, 0, 57, -15, 168]);
+
+        let interner = StringInterner::new();
+        let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
+        let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
+        let obnd_floats: [f32; 6] = [
+            -0.818_847_66,
+            -0.393_189_28,
+            -0.000_560_298_56,
+            0.818_847_66,
+            -0.210_083_01,
+            2.400_390_6,
+        ];
+        push_bytes_field(&mut record, "OBND", &obnd_floats);
+        push_bytes_field(&mut record, "DATA", &[100.0, 200.0, 50.0, 0.1, 0.2, 0.3]);
+
+        run_pre_translate(&interner, &mut record);
+
+        let obnd_values: Vec<i16> = find_bytes(&record, "OBND")
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        assert_eq!(obnd_values, vec![-57, -28, 0, 57, -15, 168]);
+        let data_values = floats_of(find_bytes(&record, "DATA"));
+        assert_eq!(data_values, vec![100.0, 200.0, 50.0, 0.1, 0.2, 0.3]);
     }
 
     fn push_bytes_field(record: &mut Record, sig: &str, floats: &[f32]) {
@@ -1280,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn refr_position_scales_meters_to_fo4_units() {
+    fn placed_reference_positions_and_radius_scale_but_rotation_and_scale_do_not() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("REFR").unwrap(), form_key);
@@ -1290,10 +1296,7 @@ mod tests {
 
         let values = floats_of(find_bytes(&record, "DATA"));
         assert_eq!(values, vec![6999.125, 13998.25, 3499.5625, 0.1, 0.2, 0.3]);
-    }
 
-    #[test]
-    fn refr_rotation_floats_are_untouched() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("ACHR").unwrap(), form_key);
@@ -1303,10 +1306,7 @@ mod tests {
 
         let values = floats_of(find_bytes(&record, "DATA"));
         assert_eq!(&values[3..], &[0.5, -0.5, 1.5]);
-    }
 
-    #[test]
-    fn xscl_is_never_scaled() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("REFR").unwrap(), form_key);
@@ -1323,10 +1323,7 @@ mod tests {
             .find(|entry| entry.sig.as_str() == "XSCL")
             .unwrap();
         assert_eq!(xscl.value, FieldValue::Float(2.0));
-    }
 
-    #[test]
-    fn non_placed_records_keep_their_data() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
@@ -1336,37 +1333,7 @@ mod tests {
 
         let values = floats_of(find_bytes(&record, "DATA"));
         assert_eq!(values, vec![100.0, 200.0, 50.0, 0.1, 0.2, 0.3]);
-    }
 
-    #[test]
-    fn obnd_is_not_double_scaled() {
-        let interner = StringInterner::new();
-        let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
-        let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
-        let obnd_floats: [f32; 6] = [
-            -0.818_847_66,
-            -0.393_189_28,
-            -0.000_560_298_56,
-            0.818_847_66,
-            -0.210_083_01,
-            2.400_390_6,
-        ];
-        push_bytes_field(&mut record, "OBND", &obnd_floats);
-        push_bytes_field(&mut record, "DATA", &[100.0, 200.0, 50.0, 0.1, 0.2, 0.3]);
-
-        run_pre_translate(&interner, &mut record);
-
-        let obnd_values: Vec<i16> = find_bytes(&record, "OBND")
-            .chunks_exact(2)
-            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect();
-        assert_eq!(obnd_values, vec![-57, -28, 0, 57, -15, 168]);
-        let data_values = floats_of(find_bytes(&record, "DATA"));
-        assert_eq!(data_values, vec![100.0, 200.0, 50.0, 0.1, 0.2, 0.3]);
-    }
-
-    #[test]
-    fn xrds_radius_scales_meters_to_fo4_units() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("REFR").unwrap(), form_key);
@@ -1430,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn hoists_keywordformcomponent_keywords_and_drops_component_wrapper() {
+    fn keyword_components_are_hoisted_and_other_components_dropped() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("161610@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
@@ -1490,10 +1457,7 @@ mod tests {
                 .iter()
                 .any(|entry| entry.sig.as_str() == "MODL")
         );
-    }
 
-    #[test]
-    fn drops_non_keyword_components_without_hoisting_anything() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("0115EA@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("ACTI").unwrap(), form_key);
@@ -1517,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_vehicle_wwise_data_field() {
+    fn drops_starfield_only_world_fields() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("161610@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
@@ -1529,6 +1493,42 @@ mod tests {
         record.fields.push(FieldEntry {
             sig: SubrecordSig::from_str("VWWD").unwrap(),
             value: FieldValue::Bytes(smallvec::smallvec![0u8; 8]),
+        });
+
+        run_pre_translate(&interner, &mut record);
+
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].sig.as_str(), "EDID");
+
+        let interner = StringInterner::new();
+        let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
+        let mut record = Record::new(SigCode::from_str("ACTI").unwrap(), form_key);
+
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("EDID").unwrap(),
+            value: FieldValue::String(interner.intern("Test")),
+        });
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("VMAD").unwrap(),
+            value: FieldValue::Bytes(smallvec::smallvec![5, 0, 2, 0]),
+        });
+
+        run_pre_translate(&interner, &mut record);
+
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].sig.as_str(), "EDID");
+
+        let interner = StringInterner::new();
+        let form_key = FormKey::parse("161610@Starfield.esm", &interner).unwrap();
+        let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
+
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("EDID").unwrap(),
+            value: FieldValue::String(interner.intern("Test")),
+        });
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("PTT2").unwrap(),
+            value: FieldValue::Bytes(smallvec::smallvec![0u8; 32]),
         });
 
         run_pre_translate(&interner, &mut record);
@@ -1582,49 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn strips_vmad_from_world_only_records() {
-        let interner = StringInterner::new();
-        let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
-        let mut record = Record::new(SigCode::from_str("ACTI").unwrap(), form_key);
-
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("EDID").unwrap(),
-            value: FieldValue::String(interner.intern("Test")),
-        });
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("VMAD").unwrap(),
-            value: FieldValue::Bytes(smallvec::smallvec![5, 0, 2, 0]),
-        });
-
-        run_pre_translate(&interner, &mut record);
-
-        assert_eq!(record.fields.len(), 1);
-        assert_eq!(record.fields[0].sig.as_str(), "EDID");
-    }
-
-    #[test]
-    fn drops_transforms_leaving_no_preview_transform() {
-        let interner = StringInterner::new();
-        let form_key = FormKey::parse("161610@Starfield.esm", &interner).unwrap();
-        let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
-
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("EDID").unwrap(),
-            value: FieldValue::String(interner.intern("Test")),
-        });
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("PTT2").unwrap(),
-            value: FieldValue::Bytes(smallvec::smallvec![0u8; 32]),
-        });
-
-        run_pre_translate(&interner, &mut record);
-
-        assert_eq!(record.fields.len(), 1);
-        assert_eq!(record.fields[0].sig.as_str(), "EDID");
-    }
-
-    #[test]
-    fn drops_light_layer_and_empty_modt_leaving_model_flagged_for_regen() {
+    fn drops_light_layer_and_keeps_only_valid_modt() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);
@@ -1665,10 +1623,7 @@ mod tests {
                 .iter()
                 .any(|entry| entry.sig.as_str() == "MODL")
         );
-    }
 
-    #[test]
-    fn keeps_valid_modt_alongside_dropped_light_layer() {
         let interner = StringInterner::new();
         let form_key = FormKey::parse("023C1D2@Starfield.esm", &interner).unwrap();
         let mut record = Record::new(SigCode::from_str("STAT").unwrap(), form_key);

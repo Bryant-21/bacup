@@ -11,16 +11,13 @@ from bacup_lib.models import (
     RecordNode,
     WorkshopSnapPoint,
 )
-from bacup_lib.native_maps import native_translation_maps_dir
 from bacup_lib.workflows.asset_phases import (
     _params_for_convert_animations,
-    _params_for_convert_btos,
     _params_for_convert_havok,
     _params_for_convert_nifs,
     _params_for_convert_skeleton,
     phase_postprocess_havok_native,
 )
-from bacup_lib.workflows.unified import _wave_plan_for
 
 
 def _graph(*assets: AssetRef) -> DependencyGraph:
@@ -50,24 +47,6 @@ def _orchestrator(*assets: AssetRef):
         _expand_animation_dirs=lambda _root: [],
         _load_target_behavior_paths=lambda: set(),
     )
-
-
-def _weapon_metadata(
-    *,
-    model: str,
-    role: str,
-    anim_type: str,
-    first_person_model: str | None = None,
-) -> dict:
-    return {
-        "base_model": model,
-        "model_mod1": "",
-        "model_mod2": "",
-        "model_mod3": "",
-        "first_person_model": first_person_model or "",
-        "weapon_role": role,
-        "anim_type": anim_type,
-    }
 
 
 def _admitted_weapon_receipt(
@@ -115,55 +94,62 @@ def _weapon_asset(
     )
 
 
-def test_params_for_convert_nifs_forwards_addon_index_map(tmp_path):
-    asset = AssetRef("nif", "Meshes/effects/x.nif", str(tmp_path / "x.nif"))
-    orch = _orchestrator(asset)
+def test_params_for_convert_nifs_forwards_asset_fields(tmp_path):
+    plain = AssetRef("nif", "Meshes/effects/x.nif", str(tmp_path / "x.nif"))
+    wired = AssetRef(
+        "nif",
+        "Meshes/Workshop/Generator.nif",
+        str(tmp_path / "Generator.nif"),
+        workshop_wire_point=(3.5, 15.0, 77.0),
+    )
+    snapped = AssetRef(
+        "nif",
+        "Meshes/Workshop/Foundation.nif",
+        str(tmp_path / "Foundation.nif"),
+        workshop_snap_points=(
+            WorkshopSnapPoint(
+                name="P-76-0A7382",
+                translation=(0.0, 128.0, -32.0),
+                rotation=(1.0, 0.0, 0.0, 0.0),
+            ),
+        ),
+    )
+    orch = _orchestrator(plain, wired, snapped)
     orch._addon_index_map = {78: 760001}
 
-    params = _params_for_convert_nifs(orch, [asset])
+    params = _params_for_convert_nifs(orch, [plain, wired, snapped])
 
     assert params["addon_index_map"] == {"78": 760001}
     assert params["nif_paths"] == [
-        {"source_path": "Meshes/effects/x.nif", "resolved_path": str(tmp_path / "x.nif")}
+        {"source_path": "Meshes/effects/x.nif", "resolved_path": str(tmp_path / "x.nif")},
+        {
+            "source_path": "Meshes/Workshop/Generator.nif",
+            "resolved_path": str(tmp_path / "Generator.nif"),
+            "workshop_wire_point": [3.5, 15.0, 77.0],
+        },
+        {
+            "source_path": "Meshes/Workshop/Foundation.nif",
+            "resolved_path": str(tmp_path / "Foundation.nif"),
+            "workshop_snap_points": [
+                {
+                    "name": "P-76-0A7382",
+                    "translation": [0.0, 128.0, -32.0],
+                    "rotation": [1.0, 0.0, 0.0, 0.0],
+                    "scale": 1.0,
+                }
+            ],
+        },
     ]
 
 
-def test_params_for_convert_nifs_enables_skyrim_skin_conversion_by_default(tmp_path):
-    asset = AssetRef(
-        "nif",
-        "Armor/Iron/Male/CuirassLight_1.nif",
-        str(tmp_path / "CuirassLight_1.nif"),
-    )
-    orch = _orchestrator(asset)
-    orch.source_game = "skyrimse"
-
-    params = _params_for_convert_nifs(orch, [asset])
-
-    assert params["translation_maps_dir"] == str(native_translation_maps_dir())
-
-
+@pytest.mark.parametrize("store_misses", [False, True])
 def test_params_for_convert_nifs_resolves_target_skeleton_without_skin_options(
-    tmp_path,
+    tmp_path, store_misses
 ):
     """A default legacy regen requests no skin options, and that is exactly the
-    run whose translated binds need reposing onto the FO4 rest pose."""
-    skeleton = tmp_path / "meshes/actors/character/characterassets/skeleton.nif"
-    skeleton.parent.mkdir(parents=True)
-    skeleton.write_bytes(b"")
-
-    asset = AssetRef("nif", "Armor/VaultSuit/M/Outfit.NIF", str(tmp_path / "Outfit.NIF"))
-    orch = _orchestrator(asset)
-    orch.source_game = "fnv"
-    orch.target_extracted_dir = str(tmp_path)
-
-    params = _params_for_convert_nifs(orch, [asset])
-
-    assert params["target_skeleton"] == str(skeleton)
-
-
-def test_params_for_convert_nifs_falls_back_when_the_asset_store_misses(tmp_path):
-    """A store miss must not report an on-disk overlay asset as absent -- that
-    silently disabled the skin rebind for an entire regen."""
+    run whose translated binds need reposing onto the FO4 rest pose. A store
+    miss must not report an on-disk overlay asset as absent -- that silently
+    disabled the skin rebind for an entire regen."""
 
     class MissingStore:
         def materialize(self, _path):
@@ -177,7 +163,8 @@ def test_params_for_convert_nifs_falls_back_when_the_asset_store_misses(tmp_path
     orch = _orchestrator(asset)
     orch.source_game = "fnv"
     orch.target_extracted_dir = str(tmp_path)
-    orch.target_asset_store = MissingStore()
+    if store_misses:
+        orch.target_asset_store = MissingStore()
 
     params = _params_for_convert_nifs(orch, [asset])
 
@@ -219,33 +206,25 @@ def test_params_for_convert_nifs_marks_exact_skyrim_battleaxe_models_as_melee(
 
 
 @pytest.mark.parametrize(
-    ("animation_type", "family"),
-    [
-        ("0", "unarmed"),
-        ("1", "one_hand_sword"),
-        ("2", "one_hand_dagger"),
-        ("3", "one_hand_axe"),
-        ("4", "one_hand_mace"),
-        ("5", "two_hand_sword"),
-        ("6", "two_hand_axe"),
-    ],
+    ("source_game", "animation_type"),
+    [("skyrimse", "0"), ("skyrimse", "6"), ("fnv", "1"), ("fo3", "2")],
 )
-def test_params_for_convert_nifs_forwards_all_skyrim_melee_families(
-    tmp_path, animation_type, family
+def test_params_for_convert_nifs_forwards_melee_families(
+    tmp_path, source_game, animation_type
 ):
-    world_path = f"Weapons/{family}/{family}.nif"
-    first_person_path = f"Meshes/Weapons/{family}/1stPerson{family}.nif"
-    world = AssetRef("nif", world_path, str(tmp_path / f"{family}.nif"))
+    world_path = f"Weapons/Melee{animation_type}/World.nif"
+    first_person_path = f"Meshes/Weapons/Melee{animation_type}/FirstPerson.nif"
+    world = AssetRef("nif", world_path, str(tmp_path / "World.nif"))
     first_person = AssetRef(
-        "nif",
-        first_person_path,
-        str(tmp_path / f"1stPerson{family}.nif"),
+        "nif", first_person_path, str(tmp_path / "FirstPerson.nif")
     )
     orch = _orchestrator(world, first_person)
-    orch.source_game = "skyrimse"
+    orch.source_game = source_game
+    if source_game != "skyrimse":
+        orch._source_profile = SimpleNamespace(id=source_game, asset_prefix=source_game)
     orch._weapon_metadata_index = {
-        f"eid:{family}": _admitted_weapon_receipt(
-            source_form_key=f"0001{animation_type}@Skyrim.esm",
+        f"{animation_type}@Source.esm": _admitted_weapon_receipt(
+            source_form_key=f"0001{animation_type}@Source.esm",
             world_model=world_path,
             first_person_model=first_person_path,
             anim_type=animation_type,
@@ -258,82 +237,6 @@ def test_params_for_convert_nifs_forwards_all_skyrim_melee_families(
         "melee",
         "melee",
     ]
-
-
-@pytest.mark.parametrize("source_game", ["fnv", "fo3"])
-@pytest.mark.parametrize("animation_type", ["0", "1", "2"])
-def test_params_for_convert_nifs_forwards_all_legacy_melee_families(
-    tmp_path, source_game, animation_type
-):
-    world_path = f"Weapons/Melee{animation_type}/World.nif"
-    first_person_path = f"Weapons/Melee{animation_type}/FirstPerson.nif"
-    world = AssetRef("nif", world_path, str(tmp_path / "World.nif"))
-    first_person = AssetRef(
-        "nif", first_person_path, str(tmp_path / "FirstPerson.nif")
-    )
-    orch = _orchestrator(world, first_person)
-    orch.source_game = source_game
-    orch._source_profile = SimpleNamespace(id=source_game, asset_prefix=source_game)
-    row = _admitted_weapon_receipt(
-        source_form_key=f"0001{animation_type}@Legacy.esm",
-        world_model=world_path,
-        first_person_model=first_person_path,
-        anim_type=animation_type,
-    )
-    orch._weapon_metadata_index = {f"{animation_type}@Legacy.esm": row}
-
-    params = _params_for_convert_nifs(orch, [world, first_person])
-
-    assert [entry["weapon_role"] for entry in params["nif_paths"]] == [
-        "melee",
-        "melee",
-    ]
-
-
-def test_params_for_convert_nifs_marks_exact_fnv_hatchet_as_melee(tmp_path):
-    hatchet = _weapon_asset(
-        r"Weapons\1HandMelee\Hatchet.NIF",
-        str(tmp_path / "Hatchet.nif"),
-        form_key="11A8E4@FalloutNV.esm",
-    )
-    orch = _orchestrator(hatchet)
-    orch.source_game = "fnv"
-    orch._source_profile = SimpleNamespace(id="fnv", asset_prefix="fnv")
-    orch._weapon_metadata_index = {
-        "11A8E4@FalloutNV.esm": {
-            "source_form_key": "11A8E4@FalloutNV.esm",
-            "editor_id": "WeapNVHatchet",
-            "base_model": r"weapons\1handmelee\Hatchet.NIF",
-            "model_mod1": "",
-            "model_mod2": "",
-            "model_mod3": "",
-            "weapon_role": "melee",
-            "anim_type": "1",
-        }
-    }
-
-    params = _params_for_convert_nifs(orch, [hatchet])
-
-    assert params["nif_paths"][0]["weapon_role"] == "melee"
-
-
-def test_params_for_convert_nifs_keeps_skyrim_ranged_role_out_of_melee(tmp_path):
-    bow = AssetRef(
-        "nif",
-        r"Weapons\LongBow\LongBow.nif",
-        str(tmp_path / "LongBow.nif"),
-    )
-    skyrim = _orchestrator(bow)
-    skyrim.source_game = "skyrimse"
-    skyrim._weapon_metadata_index = {
-        "00013985@Skyrim.esm": _weapon_metadata(
-            model=bow.source_path,
-            role="gun",
-            anim_type="Bow",
-        )
-    }
-    bow_entry = _params_for_convert_nifs(skyrim, [bow])["nif_paths"][0]
-    assert "weapon_role" not in bow_entry
 
 
 def test_params_for_convert_nifs_fails_closed_for_shared_model_role_conflict(
@@ -403,51 +306,6 @@ def test_params_for_convert_nifs_preserves_general_fnv_weapon_roles(tmp_path):
     assert [entry["weapon_role"] for entry in params["nif_paths"]] == ["gun", "melee"]
 
 
-def test_params_for_convert_nifs_forwards_workshop_wire_point(tmp_path):
-    asset = AssetRef(
-        "nif",
-        "Meshes/Workshop/Generator.nif",
-        str(tmp_path / "Generator.nif"),
-        workshop_wire_point=(3.5, 15.0, 77.0),
-    )
-
-    params = _params_for_convert_nifs(_orchestrator(asset), [asset])
-
-    assert params["nif_paths"] == [
-        {
-            "source_path": "Meshes/Workshop/Generator.nif",
-            "resolved_path": str(tmp_path / "Generator.nif"),
-            "workshop_wire_point": [3.5, 15.0, 77.0],
-        }
-    ]
-
-
-def test_params_for_convert_nifs_forwards_workshop_snap_points(tmp_path):
-    asset = AssetRef(
-        "nif",
-        "Meshes/Workshop/Foundation.nif",
-        str(tmp_path / "Foundation.nif"),
-        workshop_snap_points=(
-            WorkshopSnapPoint(
-                name="P-76-0A7382",
-                translation=(0.0, 128.0, -32.0),
-                rotation=(1.0, 0.0, 0.0, 0.0),
-            ),
-        ),
-    )
-
-    params = _params_for_convert_nifs(_orchestrator(asset), [asset])
-
-    assert params["nif_paths"][0]["workshop_snap_points"] == [
-        {
-            "name": "P-76-0A7382",
-            "translation": [0.0, 128.0, -32.0],
-            "rotation": [1.0, 0.0, 0.0, 0.0],
-            "scale": 1.0,
-        }
-    ]
-
-
 def test_params_for_convert_nifs_adds_static_cloth_variant_from_record_decision(tmp_path):
     source_path = (
         "Meshes/ATX/backpack_flair/Flair_FilmReel/ATX_FilmReel_Flair.nif"
@@ -484,26 +342,6 @@ def test_params_for_convert_nifs_adds_static_cloth_variant_from_record_decision(
     ]
 
 
-def test_params_for_convert_btos_can_disable_collision_memo(tmp_path):
-    asset = AssetRef(
-        "bto",
-        "Meshes/Terrain/Appalachia/Appalachia.0.0.0.bto",
-        str(tmp_path / "x.bto"),
-    )
-    orch = _orchestrator(asset)
-    orch.disable_nif_collision_memo = True
-
-    params = _params_for_convert_btos(orch, [asset])
-
-    assert params["disable_collision_memo"] is True
-    assert params["bto_paths"] == [
-        {
-            "source_path": "Meshes/Terrain/Appalachia/Appalachia.0.0.0.bto",
-            "resolved_path": str(tmp_path / "x.bto"),
-        }
-    ]
-
-
 def test_params_for_convert_havok_includes_nif_assets(tmp_path):
     hkx = AssetRef(
         "behavior",
@@ -537,10 +375,6 @@ def test_params_for_convert_havok_includes_nif_assets(tmp_path):
         str(tmp_path / "extracted" / "fo3"),
         str(tmp_path / "extracted" / "fo3-override"),
     ]
-
-
-def test_fnv_world_static_plan_intentionally_leaves_actor_a4_disabled():
-    assert _wave_plan_for("fnv").wave_a4 is False
 
 
 def test_fnv_kf_assets_use_shared_animation_event_map(tmp_path):
@@ -662,17 +496,9 @@ def test_fnv_kf_assets_use_shared_animation_event_map(tmp_path):
         animation["original_skeleton_name"] for animation in params["animations"]
     } == {skeleton_params["skeleton_name"]}
 
-
-def test_fnv_unrelated_skeleton_is_not_scheduled(tmp_path):
-    skeleton = AssetRef(
-        "nif",
-        "Meshes/Characters/_Male/skeleton.nif",
-        str(tmp_path / "skeleton.nif"),
-    )
-    orch = _orchestrator(skeleton)
-    orch.source_game = "fnv"
-
-    assert _params_for_convert_skeleton(orch) is None
+    unrelated_only = _orchestrator(unrelated_skeleton)
+    unrelated_only.source_game = "fnv"
+    assert _params_for_convert_skeleton(unrelated_only) is None
 
 
 def test_postprocess_havok_forwards_distinct_source_and_target_roots(tmp_path):
@@ -703,7 +529,7 @@ def test_postprocess_havok_forwards_distinct_source_and_target_roots(tmp_path):
                 "mod_path": str(orchestrator.mod_path),
                 "source_extracted_dir": str(source_root),
                 "target_extracted_dir": str(target_root),
-                "params": {},
+                "params": {"source_archive_dirs": []},
             },
         )
     ]

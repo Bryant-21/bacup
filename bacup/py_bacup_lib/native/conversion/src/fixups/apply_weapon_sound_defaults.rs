@@ -219,206 +219,73 @@ mod tests {
         }
     }
 
-    fn zeroed_dnam(len: usize) -> Vec<u8> {
-        vec![0u8; len]
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_no_op_when_sounds_present() {
-        let mut interner = StringInterner::new();
-        let mut dnam = zeroed_dnam(140);
-
-        // Pre-fill all three sound fields with non-zero values.
-        let existing_attack: u32 = 0x00_AABB01;
-        let existing_equip: u32 = 0x00_AABB02;
-        let existing_unequip: u32 = 0x00_AABB03;
-        dnam[DNAM_SOUND_ATTACK_OFFSET..DNAM_SOUND_ATTACK_OFFSET + 4]
-            .copy_from_slice(&existing_attack.to_le_bytes());
-        dnam[DNAM_SOUND_EQUIP_OFFSET..DNAM_SOUND_EQUIP_OFFSET + 4]
-            .copy_from_slice(&existing_equip.to_le_bytes());
-        dnam[DNAM_SOUND_UNEQUIP_OFFSET..DNAM_SOUND_UNEQUIP_OFFSET + 4]
-            .copy_from_slice(&existing_unequip.to_le_bytes());
-
-        let mut record = make_weap_record_with_dnam(dnam, &mut interner);
-        let changed = apply_to_record(&mut record);
-
-        assert!(!changed, "should not mutate when sounds already set");
-
-        // Verify originals unchanged.
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            let a = u32::from_le_bytes(
-                data[DNAM_SOUND_ATTACK_OFFSET..DNAM_SOUND_ATTACK_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            assert_eq!(a, existing_attack);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_injects_defaults_when_sounds_zero() {
-        let mut interner = StringInterner::new();
-        let dnam = zeroed_dnam(140);
-        let mut record = make_weap_record_with_dnam(dnam, &mut interner);
-
-        let changed = apply_to_record(&mut record);
-        assert!(changed, "should mutate when sounds are zero");
-
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            let attack = u32::from_le_bytes(
-                data[DNAM_SOUND_ATTACK_OFFSET..DNAM_SOUND_ATTACK_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let equip = u32::from_le_bytes(
-                data[DNAM_SOUND_EQUIP_OFFSET..DNAM_SOUND_EQUIP_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let unequip = u32::from_le_bytes(
-                data[DNAM_SOUND_UNEQUIP_OFFSET..DNAM_SOUND_UNEQUIP_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            assert_eq!(attack, DEFAULT_ATTACK_FORM_ID);
-            assert_eq!(equip, DEFAULT_EQUIP_FORM_ID);
-            assert_eq!(unequip, DEFAULT_UNEQUIP_FORM_ID);
-        } else {
-            panic!("DNAM must be FieldValue::Bytes");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_partial_injection() {
-        let mut interner = StringInterner::new();
-        let mut dnam = zeroed_dnam(140);
-
-        // Pre-fill only attack sound.
-        let existing_attack: u32 = 0x00_DEADBE;
-        dnam[DNAM_SOUND_ATTACK_OFFSET..DNAM_SOUND_ATTACK_OFFSET + 4]
-            .copy_from_slice(&existing_attack.to_le_bytes());
-
-        let mut record = make_weap_record_with_dnam(dnam, &mut interner);
-        let changed = apply_to_record(&mut record);
-        assert!(changed, "should mutate when equip/unequip sounds are zero");
-
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            // Attack should remain untouched.
-            let attack = u32::from_le_bytes(
-                data[DNAM_SOUND_ATTACK_OFFSET..DNAM_SOUND_ATTACK_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            assert_eq!(attack, existing_attack);
-
-            // Equip and unequip should have defaults.
-            let equip = u32::from_le_bytes(
-                data[DNAM_SOUND_EQUIP_OFFSET..DNAM_SOUND_EQUIP_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            assert_eq!(equip, DEFAULT_EQUIP_FORM_ID);
-            let unequip = u32::from_le_bytes(
-                data[DNAM_SOUND_UNEQUIP_OFFSET..DNAM_SOUND_UNEQUIP_OFFSET + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            assert_eq!(unequip, DEFAULT_UNEQUIP_FORM_ID);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_short_dnam_is_no_op() {
-        let mut interner = StringInterner::new();
-        let short_dnam = zeroed_dnam(50); // < DNAM_MIN_LEN
-        let mut record = make_weap_record_with_dnam(short_dnam, &mut interner);
-        let changed = apply_to_record(&mut record);
-        assert!(!changed, "short DNAM must not be mutated");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_no_dnam_is_no_op() {
-        let mut interner = StringInterner::new();
-        let sig = SigCode::from_str("WEAP").unwrap();
-        let fk = FormKey::parse("000800@Test.esm", &mut interner).unwrap();
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let edid_sym = interner.intern("TestWeap");
-        let mut record = Record {
-            sig,
-            form_key: fk,
-            eid: Some(edid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-        let changed = apply_to_record(&mut record);
-        assert!(!changed, "record without DNAM must not be mutated");
-    }
-
-    // -----------------------------------------------------------------------
-    // patch_dnam_bytes: the byte-slice kernel the session fixup runs.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn patch_dnam_bytes_short_is_no_op() {
-        let mut short = vec![0u8; 50]; // < DNAM_MIN_LEN
-        assert!(!patch_dnam_bytes(&mut short));
-    }
-
-    #[test]
-    fn patch_dnam_bytes_injects_defaults_when_zero() {
-        let mut dnam = vec![0u8; 140];
-        assert!(patch_dnam_bytes(&mut dnam));
-
-        let attack = u32::from_le_bytes(
-            dnam[DNAM_SOUND_ATTACK_OFFSET..DNAM_SOUND_ATTACK_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let equip = u32::from_le_bytes(
-            dnam[DNAM_SOUND_EQUIP_OFFSET..DNAM_SOUND_EQUIP_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let unequip = u32::from_le_bytes(
-            dnam[DNAM_SOUND_UNEQUIP_OFFSET..DNAM_SOUND_UNEQUIP_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
-        assert_eq!(attack, DEFAULT_ATTACK_FORM_ID);
-        assert_eq!(equip, DEFAULT_EQUIP_FORM_ID);
-        assert_eq!(unequip, DEFAULT_UNEQUIP_FORM_ID);
-    }
-
-    #[test]
-    fn patch_dnam_bytes_no_op_when_sounds_present() {
-        let mut dnam = vec![0u8; 140];
-        // Pre-fill all sound slots so the patch returns false.
-        for offset in [
+    fn sounds(dnam: &[u8]) -> [u32; 3] {
+        [
             DNAM_SOUND_ATTACK_OFFSET,
             DNAM_SOUND_EQUIP_OFFSET,
             DNAM_SOUND_UNEQUIP_OFFSET,
+        ]
+        .map(|offset| u32::from_le_bytes(dnam[offset..offset + 4].try_into().unwrap()))
+    }
+
+    const DEFAULTS: [u32; 3] = [
+        DEFAULT_ATTACK_FORM_ID,
+        DEFAULT_EQUIP_FORM_ID,
+        DEFAULT_UNEQUIP_FORM_ID,
+    ];
+
+    #[test]
+    fn patch_dnam_bytes_fills_only_zero_sound_slots() {
+        for (name, preset, expected) in [
+            ("all zero", [0u32, 0, 0], DEFAULTS),
+            (
+                "attack already set",
+                [0x00_DEADBE, 0, 0],
+                [0x00_DEADBE, DEFAULT_EQUIP_FORM_ID, DEFAULT_UNEQUIP_FORM_ID],
+            ),
+            (
+                "all set",
+                [0x00_AABB01, 0x00_AABB02, 0x00_AABB03],
+                [0x00_AABB01, 0x00_AABB02, 0x00_AABB03],
+            ),
         ] {
-            dnam[offset..offset + 4].copy_from_slice(&0x00AABB01u32.to_le_bytes());
+            let mut dnam = vec![0u8; 140];
+            for (offset, value) in [
+                DNAM_SOUND_ATTACK_OFFSET,
+                DNAM_SOUND_EQUIP_OFFSET,
+                DNAM_SOUND_UNEQUIP_OFFSET,
+            ]
+            .into_iter()
+            .zip(preset)
+            {
+                dnam[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            assert_eq!(patch_dnam_bytes(&mut dnam), preset != expected, "{name}");
+            assert_eq!(sounds(&dnam), expected, "{name}");
         }
-        assert!(!patch_dnam_bytes(&mut dnam));
+
+        let mut short = vec![0u8; 50];
+        assert!(
+            !patch_dnam_bytes(&mut short),
+            "DNAM shorter than DNAM_MIN_LEN"
+        );
+    }
+
+    #[test]
+    fn apply_to_record_patches_weapon_dnam_only() {
+        let interner = StringInterner::new();
+        let mut record = make_weap_record_with_dnam(vec![0u8; 140], &interner);
+        assert!(apply_to_record(&mut record));
+        let FieldValue::Bytes(ref data) = record.fields[0].value else {
+            panic!("DNAM must be FieldValue::Bytes");
+        };
+        assert_eq!(sounds(data), DEFAULTS);
+
+        let mut short = make_weap_record_with_dnam(vec![0u8; 50], &interner);
+        assert!(!apply_to_record(&mut short), "short DNAM");
+
+        let mut without_dnam = make_weap_record_with_dnam(Vec::new(), &interner);
+        without_dnam.fields[0].sig = SubrecordSig::from_str("EDID").unwrap();
+        assert!(!apply_to_record(&mut without_dnam), "record without DNAM");
     }
 }

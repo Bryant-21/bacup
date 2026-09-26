@@ -208,6 +208,7 @@ class _GameExtractor:
                 workers = _default_extract_workers()
                 completed = 0
                 total_files = 0
+                failed: list[str] = []
                 _log.info(
                     "Archive extraction starting: game=%s archives=%d worker_budget=%d output=%s",
                     game_id,
@@ -266,6 +267,7 @@ class _GameExtractor:
                                 _archive, count, error = future.result()
                                 completed += 1
                                 if error:
+                                    failed.append(archive.name)
                                     _log.error("Error extracting %s: %s", archive.name, error)
                                 else:
                                     total_files += int(count)
@@ -276,6 +278,26 @@ class _GameExtractor:
                                     ),
                                     progress=game_base + (completed / total) * game_share,
                                 )
+                if failed:
+                    # Saving the manifest here would mark this tree complete, so
+                    # every later run would reuse a partially extracted game.
+                    summary = ", ".join(failed[:3]) + (
+                        f" (+{len(failed) - 3} more)" if len(failed) > 3 else ""
+                    )
+                    _log.error(
+                        "Archive extraction incomplete: game=%s failed=%d of %d (%s)",
+                        game_id, len(failed), total, summary,
+                    )
+                    self._set_state(
+                        error=(
+                            f"{profile.display_name}: {len(failed)} of {total} archive(s) "
+                            f"failed to extract ({summary}). The extracted data is "
+                            "incomplete and was not recorded; extract again."
+                        ),
+                        status=f"Extraction of {profile.display_name} failed",
+                    )
+                    continue
+
                 self._set_state(
                     progress=game_base + game_share,
                     status=f"Extracted {profile.display_name} ({total} archives)",

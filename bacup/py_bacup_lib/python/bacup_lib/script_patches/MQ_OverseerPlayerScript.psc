@@ -26,6 +26,7 @@ Event OnAliasInit()
 
     ReconcileHolotapePlayRegistrations()
     SyncHolotapesAlreadyHeld()
+    ReconcileNukeLaunchLocation(None)
 EndEvent
 
 Event OnPlayerLoadGame()
@@ -36,6 +37,7 @@ Event OnPlayerLoadGame()
     EndIf
     ReconcileHolotapePlayRegistrations()
     SyncHolotapesAlreadyHeld()
+    ReconcileNukeLaunchLocation(None)
 EndEvent
 
 Event OnItemAdded(Form akBaseItem, int aiItemCount, ObjectReference akItemReference, ObjectReference akSourceContainer)
@@ -116,7 +118,26 @@ Event OnLocationChange(Location akOldLoc, Location akNewLoc)
     SetStageOnLocation(akNewLoc, MountainsideBBLocation, 520)
     SetStageOnLocation(akNewLoc, SugarGroveMissileSiloExteriorLocation, 530)
     SetStageOnLocation(akNewLoc, SpruceKnobMissileSiloExteriorLocation, 540)
+    ReconcileNukeLaunchLocation(akNewLoc)
 EndEvent
+
+; The Site Alpha nuke launch log exists only after a launch, so its location
+; milestone waits for the launch counter the nuke flee quest increments.
+Function ReconcileNukeLaunchLocation(Location akLocation)
+    Actor playerRef = GetActorReference()
+    If playerRef == None || MQ_Overseer_NukesLaunchedValue == None
+        Return
+    EndIf
+    If playerRef.GetValue(MQ_Overseer_NukesLaunchedValue) < 1.0
+        Return
+    EndIf
+    If akLocation == None
+        akLocation = playerRef.GetCurrentLocation()
+    EndIf
+    If akLocation != None
+        SetStageOnLocation(akLocation, SugarGroveMissileSiloExteriorLocation, 120)
+    EndIf
+EndFunction
 
 Function RegisterHolotape(Holotape holotapeBase, ObjectReference itemReference, ReferenceAlias targetAlias, Int pickedUpStage)
     If itemReference != None

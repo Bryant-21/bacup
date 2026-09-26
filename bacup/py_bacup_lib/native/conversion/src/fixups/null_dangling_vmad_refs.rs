@@ -450,6 +450,7 @@ fn is_forced_output_binding(
         })
 }
 
+#[cfg(test)]
 /// Walk the VMAD blob, repairing or nulling each dangling object FormID. Mirrors
 /// `FormKeyMapper::rewrite_vmad_formids`. Returns whether any slot changed.
 /// Aborts (no further change) on a malformed blob.
@@ -1123,12 +1124,100 @@ mod tests {
     }
 
     #[test]
-    fn keeps_master_resolving_object_formid() {
-        // 0x0002058E (output master byte 0 = Fallout4.esm) resolves in FO4 → keep.
-        let r = resolver(&[0x111111], &[&[0x02058E]]);
-        let (mut b, offs) = vmad_objfmt2(&[0x0002058E]);
-        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0x0002058E);
+    fn scalar_object_formids_keep_null_or_repair() {
+        let seven = seven_masters();
+        let cases: Vec<(&str, &[u32], Vec<&[u32]>, u32, bool, bool, u32)> = vec![
+            (
+                "master-resolving FO4 object kept",
+                &[0x111111],
+                vec![&[0x02058E][..]],
+                0x0002058E,
+                false,
+                false,
+                0x0002058E,
+            ),
+            (
+                "FO4-prefixed non-FO4 record with unemitted source nulled",
+                &[0x111111],
+                vec![&[0x000010][..]],
+                0x008A5475,
+                false,
+                true,
+                0,
+            ),
+            (
+                "emitted output own record kept",
+                &[0x8AEDDB],
+                seven.clone(),
+                0x078AEDDB,
+                false,
+                false,
+                0x078AEDDB,
+            ),
+            (
+                "unemitted output own record nulled",
+                &[0x111111],
+                seven.clone(),
+                0x078A5475,
+                false,
+                true,
+                0,
+            ),
+            ("null object kept", &[], vec![&[][..]], 0, false, false, 0),
+            (
+                "unknown higher master index kept",
+                &[],
+                vec![&[0x000010][..]],
+                0x0A123456,
+                false,
+                false,
+                0x0A123456,
+            ),
+            (
+                "INFO akRef1 Class S dangler 003BA973 nulled",
+                &[0x111111],
+                seven.clone(),
+                0x003BA973,
+                false,
+                true,
+                0,
+            ),
+            (
+                "defer leaves not-yet-emitted ref intact",
+                &[0x111111],
+                seven.clone(),
+                0x007AD56F,
+                true,
+                false,
+                0x007AD56F,
+            ),
+            (
+                "defer still repairs already-emitted ref",
+                &[0x7AD56F],
+                seven.clone(),
+                0x007AD56F,
+                true,
+                true,
+                0x077AD56F,
+            ),
+        ];
+        for (name, output, masters, raw, defer, changed, expected) in cases {
+            let r = resolver(output, &masters).with_defer_null(defer);
+            let (mut b, offs) = vmad_objfmt2(&[raw]);
+            assert_eq!(
+                null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"),
+                changed,
+                "{name}"
+            );
+            assert_eq!(raw_at(&b, offs[0]), expected, "{name}");
+        }
+
+        let r = resolver(&[], &[&[]]);
+        let mut short = vec![0u8; 5];
+        assert!(
+            !null_dangling_in_vmad_blob(&mut short, &r, b"ACTI"),
+            "blob shorter than the 6-byte header is a no-op"
+        );
     }
 
     #[test]
@@ -1242,74 +1331,65 @@ mod tests {
     }
 
     #[test]
-    fn alias_collision_requires_exact_alias_index() {
-        let binding = QUST_FORCED_OUTPUT_BINDINGS
+    fn quest_bindings_outside_forced_scope_are_kept() {
+        let alias_binding = QUST_FORCED_OUTPUT_BINDINGS
             .iter()
             .find(|binding| binding.alias_index == Some(22))
             .unwrap();
-        let r = resolver_for_target(
-            &[binding.target_object_id],
-            &[&[binding.target_object_id]],
-            Some("fo4"),
-            &["Fallout4.esm"],
-        );
-        let (mut b, offset) = qust_scoped_vmad_objfmt2(
-            binding.lane,
-            Some(21),
-            std::str::from_utf8(binding.script_name).unwrap(),
-            std::str::from_utf8(binding.property_name).unwrap(),
-            binding.target_object_id,
-            true,
-        );
-
-        assert!(!null_dangling_in_vmad_blob_for_record(
-            &mut b,
-            &r,
-            b"QUST",
-            Some(binding.quest_object_id),
-        ));
-        assert_eq!(raw_at(&b, offset), binding.target_object_id);
+        let first = &QUST_FORCED_OUTPUT_BINDINGS[0];
+        let cases = [
+            (
+                "alias collision requires the exact alias index",
+                vec![alias_binding.target_object_id],
+                vec![alias_binding.target_object_id],
+                alias_binding.lane,
+                Some(21),
+                std::str::from_utf8(alias_binding.script_name).unwrap(),
+                std::str::from_utf8(alias_binding.property_name).unwrap(),
+                alias_binding.target_object_id,
+                true,
+                alias_binding.quest_object_id,
+            ),
+            (
+                "exact binding does not force a target absent from output",
+                vec![],
+                vec![first.target_object_id],
+                first.lane,
+                first.alias_index,
+                std::str::from_utf8(first.script_name).unwrap(),
+                std::str::from_utf8(first.property_name).unwrap(),
+                first.target_object_id,
+                false,
+                first.quest_object_id,
+            ),
+            (
+                "Radical PowerGenerated FO4 global kept",
+                vec![],
+                vec![],
+                QustVmadLane::TopLevel,
+                None,
+                "W05_002P_Radical_QuestScript",
+                "PowerGenerated",
+                0x0000_032E,
+                false,
+                0x0040_F5BE,
+            ),
+        ];
+        for (name, output, fo4, lane, alias_index, script, property, raw, is_array, quest) in cases
+        {
+            let r = resolver_for_target(&output, &[fo4.as_slice()], Some("fo4"), &["Fallout4.esm"]);
+            let (mut b, offset) =
+                qust_scoped_vmad_objfmt2(lane, alias_index, script, property, raw, is_array);
+            assert!(
+                !null_dangling_in_vmad_blob_for_record(&mut b, &r, b"QUST", Some(quest)),
+                "{name}"
+            );
+            assert_eq!(raw_at(&b, offset), raw, "{name}");
+        }
     }
 
     #[test]
-    fn exact_binding_does_not_force_target_absent_from_output() {
-        let binding = &QUST_FORCED_OUTPUT_BINDINGS[0];
-        let r = resolver_for_target(
-            &[],
-            &[&[binding.target_object_id]],
-            Some("fo4"),
-            &["Fallout4.esm"],
-        );
-        let (mut b, offset) = qust_scoped_vmad_objfmt2(
-            binding.lane,
-            binding.alias_index,
-            std::str::from_utf8(binding.script_name).unwrap(),
-            std::str::from_utf8(binding.property_name).unwrap(),
-            binding.target_object_id,
-            false,
-        );
-
-        assert!(!null_dangling_in_vmad_blob_for_record(
-            &mut b,
-            &r,
-            b"QUST",
-            Some(binding.quest_object_id),
-        ));
-        assert_eq!(raw_at(&b, offset), binding.target_object_id);
-    }
-
-    #[test]
-    fn nulls_dangling_fallout4_prefixed_formid() {
-        // 0x008A5475 addresses Fallout4.esm (byte 0) but isn't an FO4 record and
-        // its source CELL wasn't emitted → null.
-        let r = resolver(&[0x111111], &[&[0x000010]]);
-        let (mut b, offs) = vmad_objfmt2(&[0x008A5475]);
-        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0);
-    }
-
-    #[test]
-    fn keeps_fo4_intrinsic_aggression_for_actual_master_in_both_object_formats() {
+    fn keeps_fo4_intrinsic_aggression_in_both_formats_but_nulls_absent_neighbour() {
         let r = resolver_for_target(&[0x111111], &[&[]], Some("fo4"), &["Fallout4.esm"]);
 
         let (mut objfmt1, objfmt1_offsets) = vmad_objfmt1(&[0x0000_02BC]);
@@ -1319,74 +1399,54 @@ mod tests {
         let (mut objfmt2, objfmt2_offsets) = qust_fragment_vmad_objfmt2(&[0x0000_02BC]);
         assert!(!null_dangling_in_vmad_blob(&mut objfmt2, &r, b"QUST"));
         assert_eq!(raw_at(&objfmt2, objfmt2_offsets[0]), 0x0000_02BC);
-    }
 
-    #[test]
-    fn keeps_radical_power_generated_quest_binding() {
-        let r = resolver_for_target(&[], &[&[]], Some("fo4"), &["Fallout4.esm"]);
-        let (mut vmad, offset) = qust_scoped_vmad_objfmt2(
-            QustVmadLane::TopLevel,
-            None,
-            "W05_002P_Radical_QuestScript",
-            "PowerGenerated",
-            0x0000_032E,
-            false,
-        );
-
-        assert!(!null_dangling_in_vmad_blob_for_record(
-            &mut vmad,
-            &r,
-            b"QUST",
-            Some(0x0040_F5BE),
-        ));
-        assert_eq!(raw_at(&vmad, offset), 0x0000_032E);
-    }
-
-    #[test]
-    fn nulls_fo4_aggression_object_id_for_non_fo4_target() {
-        let r = resolver_for_target(&[0x111111], &[&[]], Some("fo76"), &["Fallout4.esm"]);
-        let (mut b, offsets) = vmad_objfmt2(&[0x0000_02BC]);
-
-        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offsets[0]), 0);
-    }
-
-    #[test]
-    fn nulls_fo4_aggression_object_id_at_wrong_master_index() {
-        let r = resolver_for_target(
-            &[0x111111],
-            &[&[], &[]],
-            Some("fo4"),
-            &["Other.esm", "Fallout4.esm"],
-        );
-        let (mut b, offsets) = vmad_objfmt2(&[0x0000_02BC]);
-
-        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offsets[0]), 0);
-    }
-
-    #[test]
-    fn keeps_fo4_aggression_at_nonzero_discovered_master_index() {
-        let r = resolver_for_target(
-            &[0x111111],
-            &[&[], &[]],
-            Some("fo4"),
-            &["Other.esm", "Fallout4.esm"],
-        );
-        let (mut b, offsets) = vmad_objfmt2(&[0x0100_02BC]);
-
-        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offsets[0]), 0x0100_02BC);
-    }
-
-    #[test]
-    fn nulls_arbitrary_absent_fo4_object_next_to_intrinsic_aggression() {
-        let r = resolver_for_target(&[0x111111], &[&[]], Some("fo4"), &["Fallout4.esm"]);
         let (mut b, offsets) = qust_fragment_vmad_objfmt2(&[0x0000_02BC, 0x00FF_FFFE]);
-
         assert!(null_dangling_in_vmad_blob(&mut b, &r, b"QUST"));
         assert_eq!(raw_at(&b, offsets[0]), 0x0000_02BC);
         assert_eq!(raw_at(&b, offsets[1]), 0);
+    }
+
+    #[test]
+    fn fo4_aggression_object_id_requires_fo4_target_and_master_index() {
+        let cases: [(&str, &[&[u32]], &str, &[&str], u32, bool, u32); 3] = [
+            (
+                "non-FO4 target nulls",
+                &[&[]],
+                "fo76",
+                &["Fallout4.esm"],
+                0x0000_02BC,
+                true,
+                0,
+            ),
+            (
+                "wrong master index nulls",
+                &[&[], &[]],
+                "fo4",
+                &["Other.esm", "Fallout4.esm"],
+                0x0000_02BC,
+                true,
+                0,
+            ),
+            (
+                "nonzero discovered master index kept",
+                &[&[], &[]],
+                "fo4",
+                &["Other.esm", "Fallout4.esm"],
+                0x0100_02BC,
+                false,
+                0x0100_02BC,
+            ),
+        ];
+        for (name, masters, game, names, raw, changed, expected) in cases {
+            let r = resolver_for_target(&[0x111111], masters, Some(game), names);
+            let (mut b, offsets) = vmad_objfmt2(&[raw]);
+            assert_eq!(
+                null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"),
+                changed,
+                "{name}"
+            );
+            assert_eq!(raw_at(&b, offsets[0]), expected, "{name}");
+        }
     }
 
     /// 7 empty masters → the output plugin's own master byte is 0x07, matching
@@ -1394,24 +1454,6 @@ mod tests {
     fn seven_masters() -> Vec<&'static [u32]> {
         let empty: &'static [u32] = &[];
         vec![empty; 7]
-    }
-
-    #[test]
-    fn keeps_emitted_output_own_formid() {
-        // 0x078AEDDB (output master byte 7) is an emitted own-record → keep.
-        let r = resolver(&[0x8AEDDB], &seven_masters());
-        let (mut b, offs) = vmad_objfmt2(&[0x078AEDDB]);
-        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0x078AEDDB);
-    }
-
-    #[test]
-    fn nulls_unemitted_output_own_formid() {
-        // 0x078A5475 (output prefix) but not actually emitted → null.
-        let r = resolver(&[0x111111], &seven_masters());
-        let (mut b, offs) = vmad_objfmt2(&[0x078A5475]);
-        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0);
     }
 
     #[test]
@@ -1479,14 +1521,6 @@ mod tests {
     }
 
     #[test]
-    fn keeps_null_object_formid() {
-        let r = resolver(&[], &[&[]]);
-        let (mut b, offs) = vmad_objfmt2(&[0]);
-        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0);
-    }
-
-    #[test]
     fn mixed_props_null_only_dangling() {
         // [legit FO4, dangling, emitted-07]: only the middle nulls.
         let r = resolver(&[0x8AEDDB], &[&[0x02058E]]);
@@ -1498,51 +1532,15 @@ mod tests {
     }
 
     #[test]
-    fn keeps_object_in_unknown_higher_master_index() {
-        // master index beyond the known masters — cannot prove it dangles → keep.
-        let r = resolver(&[], &[&[0x000010]]);
-        let (mut b, offs) = vmad_objfmt2(&[0x0A123456]);
-        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0x0A123456);
-    }
-
-    #[test]
-    fn malformed_blob_is_a_noop() {
-        let r = resolver(&[], &[&[]]);
-        let mut b = vec![0u8; 5]; // shorter than the 6-byte header
-        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-    }
-
-    #[test]
-    fn info_is_a_touched_record_sig() {
-        // Regression guard: INFO must stay in the allow-list, or its VMAD
-        // script-property danglers are never walked.
-        assert!(
-            TOUCHED_RECORD_SIGS.contains(&"INFO"),
-            "INFO must be walked for VMAD danglers (Class S, target 003BA973)"
-        );
-    }
-
-    #[test]
     fn observed_vmad_dangling_hosts_are_touched_record_sigs() {
-        for sig in ["BOOK", "FURN", "MISC", "MSTT", "NPC_", "REFR", "SCEN"] {
+        for sig in [
+            "ACHR", "BOOK", "FURN", "INFO", "MISC", "MSTT", "NPC_", "REFR", "SCEN",
+        ] {
             assert!(
                 TOUCHED_RECORD_SIGS.contains(&sig),
-                "{sig} must be walked for VMAD object danglers"
+                "{sig} must be walked for VMAD object danglers (INFO: Class S, target 003BA973)"
             );
         }
-    }
-
-    #[test]
-    fn nulls_info_akref1_dangling_object_formid() {
-        // The exact Class S case: INFO script-property Object FormID 0x003BA973
-        // (akRef1 in fragment script AddPlayersToSameInstance) addresses
-        // Fallout4.esm (byte 0) but is not an FO4 record and its source REFR was
-        // never emitted → null. Standard Scripts-section object (objfmt 2).
-        let r = resolver(&[0x111111], &seven_masters());
-        let (mut b, offs) = vmad_objfmt2(&[0x003BA973]);
-        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0);
     }
 
     #[test]
@@ -1560,58 +1558,38 @@ mod tests {
     }
 
     #[test]
-    fn defer_null_leaves_unresolved_ref_intact() {
-        // Pre-copy defer: a ref whose target isn't emitted YET (interior CELL, to
-        // be copied post-copy) is LEFT untouched instead of nulled.
-        let r = resolver(&[0x111111], &seven_masters()).with_defer_null(true);
-        let (mut b, offs) = vmad_objfmt2(&[0x007AD56F]);
-        assert!(!null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0x007AD56F);
-    }
+    fn post_copy_pass_repairs_emitted_and_nulls_genuine_danglers_left_by_defer() {
+        // ShelterCell 0x007AD56F: its interior CELL is emitted only post-copy.
+        for (name, raw, sig, post_output, expected) in [
+            (
+                "ShelterCell ref repaired after interior emit",
+                0x007AD56F,
+                b"ACTI",
+                0x7AD56F,
+                0x077AD56F,
+            ),
+            (
+                "genuine dangler still nulled post-copy",
+                0x003BA973,
+                b"INFO",
+                0x111111,
+                0,
+            ),
+        ] {
+            let (mut b, offs) = vmad_objfmt2(&[raw]);
 
-    #[test]
-    fn defer_null_still_repairs_already_emitted_ref() {
-        // Defer mode does NOT block repair — a target already in the output is
-        // still rewritten to the output master byte.
-        let r = resolver(&[0x7AD56F], &seven_masters()).with_defer_null(true);
-        let (mut b, offs) = vmad_objfmt2(&[0x007AD56F]);
-        assert!(null_dangling_in_vmad_blob(&mut b, &r, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0x077AD56F);
-    }
+            let pre = resolver(&[0x111111], &seven_masters()).with_defer_null(true);
+            assert!(!null_dangling_in_vmad_blob(&mut b, &pre, sig), "{name}");
+            assert_eq!(
+                raw_at(&b, offs[0]),
+                raw,
+                "{name}: pre-copy leaves it intact"
+            );
 
-    #[test]
-    fn post_copy_repairs_shelter_cell_ref_after_interior_emit() {
-        // The exact reported bug: source ShelterCell 0x007AD56F. Pre-copy (defer)
-        // leaves it intact because the interior CELL isn't emitted yet; post-copy
-        // (defer_null=false) with the CELL now in the output → repaired to 07.
-        let (mut b, offs) = vmad_objfmt2(&[0x007AD56F]);
-
-        let pre = resolver(&[0x111111], &seven_masters()).with_defer_null(true);
-        assert!(!null_dangling_in_vmad_blob(&mut b, &pre, b"ACTI"));
-        assert_eq!(raw_at(&b, offs[0]), 0x007AD56F, "pre-copy leaves it intact");
-
-        let post = resolver(&[0x7AD56F], &seven_masters());
-        assert!(null_dangling_in_vmad_blob(&mut b, &post, b"ACTI"));
-        assert_eq!(
-            raw_at(&b, offs[0]),
-            0x077AD56F,
-            "post-copy repairs to output"
-        );
-    }
-
-    #[test]
-    fn post_copy_nulls_genuine_dangler_after_defer() {
-        // A ref that resolves nowhere even post-copy (target never emitted) is
-        // still nulled by the authoritative post-copy pass.
-        let (mut b, offs) = vmad_objfmt2(&[0x003BA973]);
-
-        let pre = resolver(&[0x111111], &seven_masters()).with_defer_null(true);
-        assert!(!null_dangling_in_vmad_blob(&mut b, &pre, b"INFO"));
-        assert_eq!(raw_at(&b, offs[0]), 0x003BA973);
-
-        let post = resolver(&[0x111111], &seven_masters());
-        assert!(null_dangling_in_vmad_blob(&mut b, &post, b"INFO"));
-        assert_eq!(raw_at(&b, offs[0]), 0);
+            let post = resolver(&[post_output], &seven_masters());
+            assert!(null_dangling_in_vmad_blob(&mut b, &post, sig), "{name}");
+            assert_eq!(raw_at(&b, offs[0]), expected, "{name}");
+        }
     }
 
     #[test]

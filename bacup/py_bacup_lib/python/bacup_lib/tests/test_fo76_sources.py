@@ -10,7 +10,7 @@ from bacup_lib.fo76_sources import (
 )
 
 
-def test_resolve_fo76_plugin_prefers_data_dir(tmp_path: Path) -> None:
+def test_resolve_fo76_plugin_prefers_data_dir_then_falls_back_to_extracted(tmp_path: Path) -> None:
     data_dir = tmp_path / "Data"
     extracted_dir = tmp_path / "extracted" / "fo76"
     data_dir.mkdir(parents=True)
@@ -20,32 +20,18 @@ def test_resolve_fo76_plugin_prefers_data_dir(tmp_path: Path) -> None:
     data_plugin.write_bytes(b"data")
     extracted_plugin.write_bytes(b"extracted")
 
-    result = resolve_fo76_plugin(
-        "SeventySix.esm",
-        data_dir=data_dir,
-        extracted_dir=extracted_dir,
-    )
+    def resolve():
+        return resolve_fo76_plugin("SeventySix.esm", data_dir=data_dir, extracted_dir=extracted_dir)
 
+    result = resolve()
     assert result.path == data_plugin
     assert result.candidates[0] == data_plugin
     assert extracted_plugin in result.candidates
 
-
-def test_resolve_fo76_plugin_falls_back_to_extracted_dir(tmp_path: Path) -> None:
-    data_dir = tmp_path / "Data"
-    extracted_dir = tmp_path / "extracted" / "fo76"
-    extracted_dir.mkdir(parents=True)
-    extracted_plugin = extracted_dir / "SeventySix.esm"
-    extracted_plugin.write_bytes(b"extracted")
-
-    result = resolve_fo76_plugin(
-        "SeventySix.esm",
-        data_dir=data_dir,
-        extracted_dir=extracted_dir,
-    )
-
+    data_plugin.unlink()
+    result = resolve()
     assert result.path == extracted_plugin
-    assert data_dir / "SeventySix.esm" in result.candidates
+    assert data_plugin in result.candidates
 
 
 def test_resolve_appalachia_btd_checks_standard_terrain_paths(tmp_path: Path) -> None:

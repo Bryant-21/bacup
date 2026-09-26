@@ -6,7 +6,7 @@ Event OnActivate(ObjectReference akActionRef)
 	If MinLevelRequirement == None || playerRef.GetLevel() >= MinLevelRequirement.GetValueInt()
 		ClientDisplaySpecialBuildsMenu()
 	ElseIf MinLevelNotMetMessage != None
-		MinLevelNotMetMessage.Show()
+		MinLevelNotMetMessage.Show(MinLevelRequirement.GetValue())
 	EndIf
 EndEvent
 

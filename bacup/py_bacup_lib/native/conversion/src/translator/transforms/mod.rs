@@ -131,10 +131,7 @@ mod tests {
         registry.register(Box::new(IdentityTransform));
         let transform = registry.get("identity").expect("identity registered");
         assert_eq!(transform.name(), "identity");
-    }
 
-    #[test]
-    fn identity_transform_is_a_no_op() {
         let mut registry = TransformRegistry::default();
         registry.register(Box::new(IdentityTransform));
         let transform = registry.get("identity").unwrap();

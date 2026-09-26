@@ -1,4 +1,18 @@
-current: alpha6
+current: alpha8
+# Global per-conversion known issues shown in BACUP under Help > Known Issues.
+# Not tied to a version; edit between releases.
+known_issues_by_conversion:
+  "fo76:fo4":
+    - Some Objects collisions disabled due to crashing
+    - Some random black on ground textures
+    - Some perk have issues.
+    - Too many events/quests
+    - BTD land unfinished
+    - New Player Start, has some issues
+    - Loading Screens, Unfinished
+  "skyrimse:fo4": []
+  "fnvfo3:fo4": []
+  "starfield:fo4": []
 versions:
   - id: alpha1
     families_by_conversion:
@@ -207,10 +221,118 @@ versions:
         - Shelters should now have the ability to travel back and forth
         - Wendigos no longer push you into the air.
         - mothman eyes should glow again
-        - Dozens of other bug fixes, thanks for all your reports. 
+        - Dozens of other bug fixes, thanks for all your reports.
       "skyrimse:fo4":
         - creatures first attempt... they all... explode
       "fnvfo3:fo4":
         - first pass on weapons and armor. Messy, but some people thought it was impossible
       "starfield:fo4":
         - It's still broken im sorry.
+  - id: alpha7
+    families_by_conversion:
+      "fo76:fo4": [ALL]
+      "fnvfo3:fo4": [ALL]
+      "skyrimse:fo4": [ALL]
+      "starfield:fo4" : [ALL]
+    notes_by_conversion:
+      "fo76:fo4":
+        - B21_TalesFromAppalachia turned to ESM for reasons that will become clear if you continue reading
+        - Reduced Memory Overhead
+        - Converter will try and recover from missing files by extracting them from fo4 on the fly
+        - Fixed Several Conversion Bugs
+        - LOOKUP FAILED
+        - You can now place 1 camp in every worldspace (commonwealth, nuka world, etc)
+        - Camps now have a visual boarder, like regular workshops
+        - You can now travel to Vault 76 using the door, and the door will animate when you are inside to let you out
+        - Pro Snap Camera now takes pictures instead of shooting bullets
+        - Fish Fish Fish it is a fish that I wish! Full fishing UI, quests, and system
+        - GOOOOOOOOOOOOLD
+        - Fo76 pipboy tabs re-created from scratch
+        - Custom UI elements from Fo76 converted to Fo4. Caps notifications, script, gold, atoms, etc.
+        - Legendary Spawn System = We now spawn 1-3* legendary enemies. Works with vanilla legendary spawns. Universal
+        - Five Star Legendary Weapons/Armor/Power Armor
+        - Legendary Script = custom script ui, works for all legendary items from ANY mod
+        - Legendary Crafting (Uses script only right now, more simple system)
+        - Legendary Mutatnts = Enemies can have mutantions like exploding, extra health, and more.
+        - Legendary Perks - Unlock at level 50, perk coins for each level up.
+        - Treasury Notes
+        - Recruitable Allies - Find them in Appalachia and have them work in your settlements
+        - Power Armor 3rd Person weapon should work again.
+        - Fully Reworked + Integrated Full Screen Map
+        - I Have Become Death, Death From Above
+        - Bounty Hunters? We don't need their kind.
+        - Daily Ops - First pass getting the system in place
+        - Expeditions - Stamps
+        - Idle Poses Should no longer be spaghetti
+        - Fixed Some broken IDLE poses not aligned correctly, floating items, etc
+        - The great Wendigo purge, RIP
+        - Creatures now properly translated with leveled templates. meaner, beefier
+        - Area Looting
+        - Glowing Corpses
+        - Power Armor Frame Storage
+        - Insult Bot has arrived. (Random Encounters)
+        - MCM Integration
+        - I am not listing all the changes here, go find them ;)
+      "skyrimse:fo4":
+        - N/A
+      "fnvfo3:fo4":
+        - N/A
+      "starfield:fo4":
+        - N/A
+  - id: alpha8
+    families_by_conversion:
+      "fo76:fo4": [ALL]
+      "fnvfo3:fo4": [ALL]
+      "skyrimse:fo4": [ALL]
+      "starfield:fo4" : [ALL]
+    notes_by_conversion:
+      "fo76:fo4":
+        - Precombines
+        - Previs
+        - Pip Boy 2000 VI can now be craft/used. It's completely optional, a skin
+        - Controller Support, Hotkeys should be greatly improved. For Powergaming since he uses controller.
+        - Fixed Issues with some files corrupted on extraction
+        - Music will continue to play over cells, assuming the cell uses the same music playlist. For all worldspaces.
+        - New Ingame Settings Menu
+        - Re-written in game map
+        - Map has new effects, color blind mode, and More
+        - Map Works for all world spaces now, modded ones as well
+        - Real time topographical maps.
+        - New Dynamic Filters for Nuke Maps, works with all world spaces
+        - Reputation shown in map
+        - Full Conversion of Fallout 76 Hud elements
+        - Challenge Reward Hud
+        - Many quests should be delayed until after a new game start (except radios)
+        - Legendary Pickups now use the Fo76 quick display
+        - XP tracking display
+        - Tracks your walking accross a wasteland, and you can even play it back (inspired by Zelda)
+        - Wheel Menu now disables correctly
+        - Wheel Menu no longer crashes OG
+        - Legendary Trading no longer crashes
+        - Fixed Nuke Zone Radition Spell ignoring resistances
+        - Fixed some enemies still using creature Weapons/Armor
+        - Removed option for BA2 type, always OG now
+        - Removed Heartbeat log, which would never stop logging
+        - Fixed missing armor resists
+        - Engine Fix Inreases Shelter cell sizes
+        - Fixed Collision issues
+        - Crosshair turns red over enemies, with fo76 hit markers
+        - Fixes Weapon Animation issues
+        - Boston Bugle Be Gone
+        - FO76 alternate-start appearance menu, face presets and intro video
+        - Fixed legendary perks, they should all work now
+        - Fixed perks not always applying. Team perks now apply for companions.
+        - Weapon Crafting
+        - Armor Crafting
+        - Tinker Bench Modifying
+        - Pipboy Model Switching (can now have both)
+        - Legendary Modules added
+        - Raids can be started, but still WIP
+        - Deaths and Respawning
+        - Rename Everything
+      "skyrimse:fo4":
+        - N/A
+      "fnvfo3:fo4":
+        - N/A
+      "starfield:fo4":
+        - N/A

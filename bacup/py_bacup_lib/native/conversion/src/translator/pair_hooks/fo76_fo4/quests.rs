@@ -37,24 +37,25 @@ const PLAYER_CONNECT_AUTOSTART_FALLBACK_QUESTS: &[(u32, &str)] = &[
 const STANDING_RADIO_STATION_AUTOSTART_QUESTS: &[(u32, &str)] = &[
     (0x0069_9466, "storm_mq01_breadcrumb_radio"),
     // Overseer broadcast. Its transmitter alias fills by location-ref-type
-    // (`ALFA`/`ALRT` → `AutofillGeneric02`) rather than a forced `ALFR`, so the
-    // LCSR row in Vault76LocationExterior is what binds it — that survives
+    // (`ALFA`/`ALRT` â†’ `AutofillGeneric02`) rather than a forced `ALFR`, so the
+    // LCSR row in Vault76LocationExterior is what binds it â€” that survives
     // conversion intact; only the quest start is missing.
     (0x003F_BBB3, "w05_mq_101p_radio"),
     (0x0005_2DBF, "sfm04_organic_radio"),
-    (0x0009_210E, "ff06_feed"),
     (0x0001_8ECF, "sfl02_track_radioquest"),
 ];
 
 // Vetted and deliberately excluded, so a later sweep does not re-add them:
-//   tw006                — transmitter 04DB42 is shared by three quests, and it
+//   tw006                â€” transmitter 04DB42 is shared by three quests, and it
 //                          has no BeginOnQuestStart scene: the BS00 overlap shape.
-//   tw002                — carries no ALDN at all, so nothing can list it.
+//   tw002                â€” carries no ALDN at all, so nothing can list it.
 //   bos03, bos_radio,
-//   nwot_carnivalradio   — no BeginOnQuestStart scene, so starting the quest
+//   nwot_carnivalradio   â€” no BeginOnQuestStart scene, so starting the quest
 //                          lists a station that then broadcasts nothing.
-//   rs02_beat            — owns nine scenes; auto-starting it at load would fire
+//   rs02_beat            â€” owns nine scenes; auto-starting it at load would fire
 //                          story content early, not just open a station.
+//   ff06_feed            â€” public event "Feed the People"; 32AD1B is its distress
+//                          beacon, and autostart runs the event uninitialized.
 pub(super) const MILE_CARAVAN_INTRO_QUEST_FORM_ID: u32 = 0x0076_B107;
 const MILE_CARAVAN_INTRO_QUEST_EID: &str = "mile_caravanintro";
 const NUKE_LAUNCH_CARD_PATROL_FORM_ID: u32 = 0x003E_133F;
@@ -63,6 +64,24 @@ const NUKE_LAUNCH_CARD_PATROL_EVENT_LOCATION_ALIAS_ID: u32 = 35;
 const NUKE_LAUNCH_CARD_PATROL_EVENT_LOCATION_ALIAS_EID: &str = "EventLocation";
 const NUKE_LAUNCH_CARD_PATROL_LOCATION_REF_TYPES: &[(u32, u32)] =
     &[(1, 0x0001_F40F), (23, 0x0001_9479), (29, 0x0001_F40F)];
+const FLY_SWATTER_FORM_ID: u32 = 0x0002_9183;
+const FLY_SWATTER_EID: &str = "ffz16_swatter";
+/// `EventLocation`, a conditions-only location alias that fills natively.
+const FLY_SWATTER_EVENT_LOCATION_ALIAS_ID: u32 = 6;
+/// The vertibot's start, spawn and departure points: `VertibirdStartMarker`,
+/// `VertibirdSpawnLoc` and `VertibirdDeparturePoint`.
+const FLY_SWATTER_LOCATION_REF_TYPES: &[(u32, u32)] =
+    &[(2, 0x0001_9479), (4, 0x0002_271F), (11, 0x0001_9479)];
+const TRAP_FORM_ID: u32 = 0x0030_4A39;
+const TRAP_EID: &str = "fss01_trap";
+/// `ParentLocation`, the scope every one of the trap's markers searches inside.
+const TRAP_PARENT_LOCATION_ALIAS_ID: u32 = 16;
+/// The alias `ParentLocation` derived its location from, and which can no
+/// longer fill: `TrapLocationActual`, forced from the dropped `ALFF` search.
+const TRAP_LOCATION_ACTUAL_ALIAS_ID: u32 = 15;
+/// LCRT `fss01_traploc`, carried by the six lure sites.
+const TRAP_SITE_LOCATION_REF_TYPE: u32 = 0x003D_A755;
+const FO4_LOCATION_HAS_REF_TYPE_FUNCTION: u16 = 563;
 pub(super) const MILE_CARAVAN_CARGO_ALIAS_ID: u32 = 11;
 pub(super) const MILE_CARAVAN_DEAD_BRAHMIN_ALIAS_ID: i16 = 10;
 pub(super) const MILE_CARAVAN_BAD_CARGO_REF_FORM_ID: u32 = 0x0043_23B4;
@@ -149,7 +168,43 @@ const FO76_REPEATABLE_PUBLIC_EVENT_QUESTS: [u32; 32] = [
     0x0065_B0A8,
     0x0003_64D0,
 ];
-const FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS: [(u32, &str); 21] = [
+/// FO76 activities (smaller events renamed in The Backwoods). The server rotated
+/// them forever; FO4 refuses to restart a RunOnce quest.
+const FO76_REPEATABLE_ACTIVITY_QUESTS: [u32; 29] = [
+    0x0000_D053,
+    0x000A_73DC,
+    0x0052_BDF7,
+    0x0015_D682,
+    0x0033_1AB2,
+    0x0006_A378,
+    0x0052_808B,
+    0x002D_64EE,
+    0x0003_6191,
+    0x0001_1CCC,
+    0x0001_B46A,
+    0x0031_307F,
+    0x0000_3AF2,
+    0x0000_FFED,
+    0x0002_9183,
+    0x0025_C0F4,
+    0x0027_5BC5,
+    0x0030_4A39,
+    0x0009_5360,
+    0x0010_E200,
+    0x0002_443A,
+    0x0051_AA0B,
+    0x0005_A243,
+    0x003E_4E89,
+    0x0004_695C,
+    0x0000_418B,
+    0x0000_9179,
+    0x0056_0B13,
+    0x0034_608A,
+];
+const FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS: [(u32, &str); 24] = [
+    (0x002D_0F69, "en07_mq_fleeblast"),
+    (0x0034_43FB, "mtr07_earth"),
+    (0x007B_95E1, "fishing_bigfish"),
     (0x0013_FB17, "lookouttowerquest"),
     (0x0054_F1A4, "comp_rq_fetch"),
     (0x0056_FB76, "comp_rq_kill"),
@@ -205,6 +260,16 @@ const FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS: [(u32, &str); 21] = [
     (0x005A_272D, "comp_rq_fetch_specificaliases_legendaryarmor"),
     (0x005A_272E, "comp_rq_fetch_specificaliases_legendaryweapon"),
 ];
+/// RD01 Gleaming Depths master and its five encounter modules. FO76 re-instanced them per
+/// raid; FO4 needs RunOnce cleared so a wipe can retry and a finished raid can be rerun.
+const FO76_REPEATABLE_RAID_QUESTS: [(u32, &str); 6] = [
+    (0x0078_DA2A, "rd01_gleamingdepths"),
+    (0x0077_2A47, "rd01_enc01_bot"),
+    (0x0078_F7A1, "rd01_enc02_drill"),
+    (0x0078_B59E, "rd01_enc04_enclavesquad"),
+    (0x0078_8127, "rd01_enc05_researchlab"),
+    (0x0078_6D41, "rd01_enc06_scorchtongue"),
+];
 pub(super) const BURN_GRUNT_HUNT_FORM_ID: u32 = 0x007D_6A80;
 const BURN_GRUNT_HUNT_EID: &str = "burn_bountyhunt_grunthunt";
 pub(super) const BOSZ01_REPEATABLE_FORM_ID: u32 = 0x0010_D89F;
@@ -253,6 +318,7 @@ pub(super) fn parse_fo76_qust_data(data: &[u8]) -> Option<Fo76QuestData> {
     })
 }
 
+#[cfg(test)]
 pub(super) fn build_fo4_qust_dnam(source: Fo76QuestData) -> smallvec::SmallVec<[u8; 32]> {
     build_fo4_qust_dnam_with_daily_repeat_controller(source, true, false)
 }
@@ -361,10 +427,14 @@ fn qust_is_repeatable_event(interner: &crate::sym::StringInterner, record: &Reco
     let local = record.form_key.local & 0x00FF_FFFF;
     let eid = qust_eid_lower(interner, record);
     FO76_REPEATABLE_PUBLIC_EVENT_QUESTS.contains(&local)
+        || FO76_REPEATABLE_ACTIVITY_QUESTS.contains(&local)
         || eid.as_deref().is_some_and(|eid| {
-            FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS.iter().any(
-                |(expected_local, expected_eid)| local == *expected_local && eid == *expected_eid,
-            )
+            FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS
+                .iter()
+                .chain(FO76_REPEATABLE_RAID_QUESTS.iter())
+                .any(|(expected_local, expected_eid)| {
+                    local == *expected_local && eid == *expected_eid
+                })
         })
         || (local == BOSZ01_REPEATABLE_FORM_ID && eid.as_deref() == Some(BOSZ01_REPEATABLE_EID))
 }
@@ -503,7 +573,7 @@ fn force_qust_autostart_flags(record: &mut Record, force_flags: u16) {
 
 /// FO76 ships hundreds of developer test/debug/scratch quests (EditorID
 /// `Test*`, `Debug*`, `zz*`/`ZZZ*`) whose scenes bind aliases to test-only world content. They are
-/// never started for players in FO76 — its Story Manager / test harness drives
+/// never started for players in FO76 â€” its Story Manager / test harness drives
 /// them, and that machinery is not replicated here. Auto-starting one (whether
 /// via force-start or a faithfully-relayed start-game-enabled flag) makes FO4
 /// try to fill those aliases, resolve a bad actor handle, and CTD on load
@@ -538,13 +608,13 @@ pub(super) fn mark_qust_alias_fnam_optional(value: &mut FieldValue) {
 ///
 /// FO76 authors a script-filled reference alias as "fill type = Forced
 /// Reference, reference = NULL". FO4 encodes the same intent by emitting **no**
-/// fill subrecord at all — `Fallout4.esm` contains 0 null `ALFR` values across
+/// fill subrecord at all â€” `Fallout4.esm` contains 0 null `ALFR` values across
 /// its 11,573 QUST aliases, and 2,787 reference aliases with no fill subrecord
 /// (1,972 of them non-Optional). Carrying FO76's null `ALFR` through makes FO4
 /// attempt a forced-reference fill that can never succeed; on a non-Optional
 /// alias that aborts quest start, so every quest object the quest owns stays
 /// unprotected (and the quest never runs at all).
-fn qust_alias_forced_reference_is_null(value: &FieldValue) -> bool {
+pub(super) fn qust_alias_forced_reference_is_null(value: &FieldValue) -> bool {
     match value {
         FieldValue::FormKey(form_key) => form_key.local & 0x00FF_FFFF == 0,
         FieldValue::Bytes(bytes) => {
@@ -587,13 +657,18 @@ impl Fo76Fo4Hook {
         }
 
         Self::adapt_nuke_launch_card_patrol_location_ref_types(interner, record);
+        Self::adapt_fly_swatter_location_ref_types(interner, record);
+        Self::adapt_trap_parent_location_fill(interner, record);
+        Self::restrict_nuke_edge_marker_alias(interner, record);
+        super::enclave_events::adapt_event_center(interner, record);
         Self::repair_mile_caravan_intro_cargo_alias(interner, record);
         Self::remove_tw043_guard_startup_link(interner, record);
         strip_w05_mqs_205_shutdown_script_binding(interner, record);
         strip_rd01_enc02_dead_topic_bindings(interner, record);
+        strip_en07_invalid_code_topic_bindings(interner, record);
         let player_event_consumer_alias_ids = qust_vmad_player_event_consumer_alias_ids(record);
-        let remove_players_alias_ids = qust_vmad_remove_players_alias_ids(record);
-        let reference1_event_alias_ids = qust_reference1_event_alias_ids(record);
+        let remove_players_alias_ids = qust_vmad_remove_players_alias_ids(interner, record);
+        let reference1_event_alias_ids = qust_reference1_event_alias_ids(interner, record);
         let mut preserved_event_alias_ids = qust_preserved_event_alias_ids(interner, record);
         preserved_event_alias_ids.extend(qust_companion_event_alias_ids(interner, record));
         let mut retained: smallvec::SmallVec<[FieldEntry; 8]> = smallvec::SmallVec::new();
@@ -744,7 +819,7 @@ impl Fo76Fo4Hook {
                 }
                 // FO76's "script-filled" reference alias is `ALFR = NULL`; FO4
                 // spells that as no fill subrecord at all. Left in place, FO4
-                // runs a forced-reference fill that always fails — fatal to
+                // runs a forced-reference fill that always fails â€” fatal to
                 // quest start on a non-Optional alias.
                 if entry.sig.0 == *b"ALFR" && qust_alias_forced_reference_is_null(&entry.value) {
                     continue;
@@ -768,6 +843,56 @@ impl Fo76Fo4Hook {
         }
         drop(fields);
         record.fields = retained;
+    }
+
+    fn restrict_nuke_edge_marker_alias(interner: &crate::sym::StringInterner, record: &mut Record) {
+        if record.form_key.local != 0x002D_0F69
+            || !interner
+                .resolve(record.form_key.plugin)
+                .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO76_MASTER_NAME))
+            || qust_eid_lower(interner, record).as_deref() != Some("en07_mq_fleeblast")
+        {
+            return;
+        }
+        let Some(start) = record.fields.iter().position(|field| {
+            field.sig.0 == *b"ALST" && field_value_to_u32(&field.value) == Some(13)
+        }) else {
+            return;
+        };
+        let Some(end) = record.fields[start..]
+            .iter()
+            .position(|field| field.sig.0 == *b"ALED")
+            .map(|offset| start + offset)
+        else {
+            return;
+        };
+        let alias = &record.fields[start..end];
+        if !alias.iter().any(|field| {
+            field.sig.0 == *b"ALFF"
+                && matches!(field.value, FieldValue::FormKey(key)
+                    if key.plugin == record.form_key.plugin && key.local == 0x002D_116A)
+        }) {
+            return;
+        }
+        let Some(condition_index) = alias.iter().position(|field| field.sig.0 == *b"CTDA") else {
+            return;
+        };
+
+        // Dropping FO76's ALFF selector leaves an unlimited distance-only
+        // collection that pulls unrelated refs (including radio transmitters)
+        // into memory. FO4 can enforce the same LCRT restriction with HasRefType.
+        let mut condition = [0u8; 32];
+        condition[4..8].copy_from_slice(&1.0_f32.to_le_bytes());
+        condition[8..10].copy_from_slice(&561_u16.to_le_bytes());
+        condition[12..16].copy_from_slice(&0x002D_116A_u32.to_le_bytes());
+        condition[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        record.fields.insert(
+            start + condition_index,
+            FieldEntry {
+                sig: SubrecordSig(*b"CTDA"),
+                value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&condition)),
+            },
+        );
     }
 
     fn adapt_nuke_launch_card_patrol_location_ref_types(
@@ -901,6 +1026,167 @@ impl Fo76Fo4Hook {
         {
             record.fields.insert(next_alias_index + 1, entry);
         }
+    }
+
+    /// FO76's `AliasLocationRefType` (`ALFF`) is a scope-free ref-type search
+    /// with no FO4 counterpart, so it is dropped and the alias fills nothing.
+    ///
+    /// Fly Swatter authored its other markers as `ALFA` + `ALRT` — find a ref of
+    /// this type inside the `EventLocation` alias — and that shape converts
+    /// natively, so the three dropped aliases take it too: the survey vertibot's
+    /// start, spawn and departure points all live in the event's own location.
+    /// Without them the bot has nowhere to arrive from or leave to.
+    fn adapt_fly_swatter_location_ref_types(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.form_key.local & 0x00FF_FFFF != FLY_SWATTER_FORM_ID
+            || !interner
+                .resolve(record.form_key.plugin)
+                .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO76_MASTER_NAME))
+            || qust_eid_lower(interner, record).as_deref() != Some(FLY_SWATTER_EID)
+        {
+            return;
+        }
+        // The scope the repair points at has to exist.
+        if !record.fields.iter().any(|entry| {
+            entry.sig.0 == *b"ALLS"
+                && field_value_to_u32(&entry.value) == Some(FLY_SWATTER_EVENT_LOCATION_ALIAS_ID)
+        }) {
+            return;
+        }
+
+        let mut alias_ranges = Vec::new();
+        let mut alias_start = None;
+        for (index, entry) in record.fields.iter().enumerate() {
+            if entry.sig.0 == *b"ALST" {
+                alias_start = Some(index);
+            } else if entry.sig.0 == *b"ALED"
+                && let Some(start) = alias_start.take()
+            {
+                alias_ranges.push((start, index + 1));
+            }
+        }
+
+        let mut replacements = Vec::new();
+        for (start, end) in alias_ranges {
+            let Some(alias_id) = field_value_to_u32(&record.fields[start].value) else {
+                continue;
+            };
+            let Some(&(_, expected_ref_type)) = FLY_SWATTER_LOCATION_REF_TYPES
+                .iter()
+                .find(|&&(expected_alias_id, _)| expected_alias_id == alias_id)
+            else {
+                continue;
+            };
+            if record.fields[start + 1..end].iter().any(|entry| {
+                matches!(
+                    entry.sig.0,
+                    [b'A', b'L', b'F', b'A'] | [b'A', b'L', b'R', b'T']
+                )
+            }) {
+                return;
+            }
+            let mut alff_indices =
+                (start + 1..end).filter(|&index| record.fields[index].sig.0 == *b"ALFF");
+            let Some(alff_index) = alff_indices.next() else {
+                return;
+            };
+            if alff_indices.next().is_some() {
+                return;
+            }
+            let ref_type = match record.fields[alff_index].value {
+                FieldValue::FormKey(form_key) => form_key.local & 0x00FF_FFFF,
+                ref value => field_value_to_u32(value).unwrap_or_default() & 0x00FF_FFFF,
+            };
+            if ref_type != expected_ref_type {
+                return;
+            }
+            replacements.push((alff_index, record.fields[alff_index].value.clone()));
+        }
+        if replacements.len() != FLY_SWATTER_LOCATION_REF_TYPES.len() {
+            return;
+        }
+
+        for (alff_index, ref_type) in replacements.into_iter().rev() {
+            record.fields[alff_index] = FieldEntry {
+                sig: SubrecordSig(*b"ALFA"),
+                value: FieldValue::Uint(u64::from(FLY_SWATTER_EVENT_LOCATION_ALIAS_ID)),
+            };
+            record.fields.insert(
+                alff_index + 1,
+                FieldEntry {
+                    sig: SubrecordSig(*b"ALRT"),
+                    value: ref_type,
+                },
+            );
+        }
+    }
+
+    /// It's a Trap picks its site through a chain that starts at a dropped
+    /// `ALFF`: `TrapLocationChoice` searches the world for a lure-site ref,
+    /// forces it into `TrapLocationActual`, and `ParentLocation` takes that
+    /// ref's location. `TrapLocationActual`'s own fill is FO76's null
+    /// forced-reference idiom, so with the search gone the whole chain is empty
+    /// and every marker that searches inside `ParentLocation` fails.
+    ///
+    /// FO4 fills a location alias from conditions alone, which is how this
+    /// quest's own siblings (`FFZ16_Swatter`, `MTR05_Mother_Breach`) select
+    /// their sites: `ParentLocation` takes `LocationHasRefType` on the same
+    /// lure-site ref type, so the engine picks and reserves one of the six
+    /// sites and the marker aliases resolve inside it as authored.
+    fn adapt_trap_parent_location_fill(interner: &crate::sym::StringInterner, record: &mut Record) {
+        if record.form_key.local & 0x00FF_FFFF != TRAP_FORM_ID
+            || !interner
+                .resolve(record.form_key.plugin)
+                .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO76_MASTER_NAME))
+            || qust_eid_lower(interner, record).as_deref() != Some(TRAP_EID)
+        {
+            return;
+        }
+
+        let Some(start) = record.fields.iter().position(|entry| {
+            entry.sig.0 == *b"ALLS"
+                && field_value_to_u32(&entry.value) == Some(TRAP_PARENT_LOCATION_ALIAS_ID)
+        }) else {
+            return;
+        };
+        let Some(end) = record.fields[start..]
+            .iter()
+            .position(|entry| entry.sig.0 == *b"ALED")
+            .map(|offset| start + offset)
+        else {
+            return;
+        };
+        // Only the exact authored shape is repaired: one ALFA pointing at the
+        // alias that can no longer fill, and no conditions of its own.
+        if record.fields[start + 1..end]
+            .iter()
+            .any(|entry| entry.sig.0 == *b"CTDA")
+        {
+            return;
+        }
+        let mut alfa_indices = (start + 1..end).filter(|&index| {
+            record.fields[index].sig.0 == *b"ALFA"
+                && field_value_to_u32(&record.fields[index].value)
+                    == Some(TRAP_LOCATION_ACTUAL_ALIAS_ID)
+        });
+        let Some(alfa_index) = alfa_indices.next() else {
+            return;
+        };
+        if alfa_indices.next().is_some() {
+            return;
+        }
+
+        let mut condition = [0u8; 32];
+        condition[4..8].copy_from_slice(&1.0_f32.to_le_bytes());
+        condition[8..10].copy_from_slice(&FO4_LOCATION_HAS_REF_TYPE_FUNCTION.to_le_bytes());
+        condition[12..16].copy_from_slice(&TRAP_SITE_LOCATION_REF_TYPE.to_le_bytes());
+        condition[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        record.fields[alfa_index] = FieldEntry {
+            sig: SubrecordSig(*b"CTDA"),
+            value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&condition)),
+        };
     }
 
     pub(super) fn repair_mile_caravan_intro_cargo_alias(
@@ -1117,10 +1403,10 @@ impl Fo76Fo4Hook {
 
     /// FO76 stores QUST quest-data in a `DATA` subrecord; FO4 stores it in
     /// `DNAM` ("General"). The translation map drops FO76 `DATA`, so without this
-    /// relayout every converted QUST loses its quest-data — including the
-    /// `start_game_enabled` flag and quest type — and no quest auto-starts. That
+    /// relayout every converted QUST loses its quest-data â€” including the
+    /// `start_game_enabled` flag and quest type â€” and no quest auto-starts. That
     /// leaves alias-gated dialogue unreachable (NPCs show no Talk prompt) even
-    /// though the DIAL/INFO records convert fine. Renaming DATA→DNAM here (before
+    /// though the DIAL/INFO records convert fine. Renaming DATAâ†’DNAM here (before
     /// the map drops `DATA`) lets the translator carry the synthesized DNAM
     /// through unchanged.
     pub(super) fn convert_qust_data_to_fo4_dnam(
@@ -1240,7 +1526,7 @@ fn qust_editor_id_autostart_disable_reason(
 /// runs, so most flagged quests are invisible holotape/dialogue containers that
 /// must keep auto-starting or their tapes go dead. FO4 has no equivalent flag,
 /// and the bit is dropped by the u16 DNAM truncation. A quest that claims to be
-/// unlisted yet also carries displayable objectives contradicts itself — those
+/// unlisted yet also carries displayable objectives contradicts itself â€” those
 /// objectives can only be a dev/QA harness, and in FO4 they surface as a live,
 /// untitled Pip-Boy entry. Suppress startup for exactly that case.
 fn qust_flags_autostart_disable_reason(

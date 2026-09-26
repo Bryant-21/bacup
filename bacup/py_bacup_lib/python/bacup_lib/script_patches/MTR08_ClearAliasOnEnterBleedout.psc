@@ -1,0 +1,3 @@
+Event OnEnterBleedout()
+	Clear()
+EndEvent

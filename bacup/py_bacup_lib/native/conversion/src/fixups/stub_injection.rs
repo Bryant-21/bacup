@@ -142,21 +142,13 @@ mod tests {
         AuthoringSchema::for_game("fo4").expect("fo4 schema")
     }
 
-    fn new_target_handle(name: &str) -> Option<u64> {
-        // plugin_handle_new_native needs a Python runtime in some build configs;
-        // skip the test gracefully when unavailable.
-        plugin_handle_new_native(name, Some("fo4")).ok()
+    fn new_target_handle(name: &str) -> u64 {
+        plugin_handle_new_native(name, Some("fo4")).expect("new target plugin handle")
     }
 
-    /// Insert a single stub via `new_allocation`: source object-id is the same as
-    /// `FIRST_ALLOCATION_ID`, so the allocator picks a fresh id. The returned
-    /// target FK is registered on the mapper.
     #[test]
-    fn inject_minimal_stub_new_allocation_registers_mapping() {
-        let handle = match new_target_handle("StubInjectNewAlloc.esm") {
-            Some(h) => h,
-            None => return,
-        };
+    fn inject_minimal_stub_allocates_or_reuses_and_registers_mapping() {
+        let handle = new_target_handle("StubInjectNewAlloc.esm");
 
         let mut interner = StringInterner::new();
         let source_plugin = interner.intern("SeventySix.esm");
@@ -190,132 +182,148 @@ mod tests {
 
         // Mapping is registered.
         assert_eq!(mapper.lookup(source_fk), Some(target_fk));
-    }
 
-    /// Insert a stub via `source_id_preserved`: with `preserve_source_ids = true`
-    /// and a source object-id at/above the allocator threshold, the same id is
-    /// reused under the output plugin.
-    #[test]
-    fn inject_minimal_stub_source_id_preserved_reuses_local() {
-        let handle = match new_target_handle("StubInjectPreserved.esm") {
-            Some(h) => h,
-            None => return,
-        };
+        {
+            let handle = new_target_handle("StubInjectPreserved.esm");
 
-        let mut interner = StringInterner::new();
-        let source_plugin = interner.intern("SeventySix.esm");
-        let source_fk = FormKey {
-            local: 0x00_3456, // above FIRST_ALLOCATION_ID
-            plugin: source_plugin,
-        };
-        let sig = SigCode::from_str("AMMO").unwrap();
+            let mut interner = StringInterner::new();
+            let source_plugin = interner.intern("SeventySix.esm");
+            let source_fk = FormKey {
+                local: 0x00_3456, // above FIRST_ALLOCATION_ID
+                plugin: source_plugin,
+            };
+            let sig = SigCode::from_str("AMMO").unwrap();
 
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "StubInjectPreserved.esm".into(),
-                preserve_source_ids: true,
-                resolution_mode: ResolutionMode::DeferAndFixup,
-                ..Default::default()
-            },
-            &mut interner,
-        );
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "StubInjectPreserved.esm".into(),
+                    preserve_source_ids: true,
+                    resolution_mode: ResolutionMode::DeferAndFixup,
+                    ..Default::default()
+                },
+                &mut interner,
+            );
 
-        let schema = fo4_schema();
-        let target_fk = inject_minimal_stub(
-            handle,
-            source_fk,
-            "PreservedStub",
-            sig,
-            &mut mapper,
-            &schema,
-        )
-        .expect("inject_minimal_stub should succeed");
+            let schema = fo4_schema();
+            let target_fk = inject_minimal_stub(
+                handle,
+                source_fk,
+                "PreservedStub",
+                sig,
+                &mut mapper,
+                &schema,
+            )
+            .expect("inject_minimal_stub should succeed");
 
-        assert_eq!(
-            target_fk.local, 0x00_3456,
-            "source_id_preserved strategy must reuse the source object-id"
-        );
-        let plugin_name = mapper.interner.resolve(target_fk.plugin).unwrap();
-        assert_eq!(plugin_name, "StubInjectPreserved.esm");
+            assert_eq!(
+                target_fk.local, 0x00_3456,
+                "source_id_preserved strategy must reuse the source object-id"
+            );
+            let plugin_name = mapper.interner.resolve(target_fk.plugin).unwrap();
+            assert_eq!(plugin_name, "StubInjectPreserved.esm");
 
-        assert_eq!(mapper.lookup(source_fk), Some(target_fk));
-    }
+            assert_eq!(mapper.lookup(source_fk), Some(target_fk));
+        }
 
-    /// Empty EDID is accepted (mirrors Python's behaviour when the source has no
-    /// EDID): no EDID subrecord is emitted but the record is still inserted with
-    /// the allocated FK and the mapping is registered.
-    #[test]
-    fn inject_minimal_stub_empty_edid_omits_edid_subrecord() {
-        let handle = match new_target_handle("StubInjectEmptyEid.esm") {
-            Some(h) => h,
-            None => return,
-        };
+        {
+            let handle = new_target_handle("StubInjectEmptyEid.esm");
 
-        let mut interner = StringInterner::new();
-        let source_plugin = interner.intern("SeventySix.esm");
-        let source_fk = FormKey {
-            local: 0x00_5678,
-            plugin: source_plugin,
-        };
-        let sig = SigCode::from_str("AMMO").unwrap();
+            let mut interner = StringInterner::new();
+            let source_plugin = interner.intern("SeventySix.esm");
+            let source_fk = FormKey {
+                local: 0x00_5678,
+                plugin: source_plugin,
+            };
+            let sig = SigCode::from_str("AMMO").unwrap();
 
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "StubInjectEmptyEid.esm".into(),
-                preserve_source_ids: false,
-                ..Default::default()
-            },
-            &mut interner,
-        );
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "StubInjectEmptyEid.esm".into(),
+                    preserve_source_ids: false,
+                    ..Default::default()
+                },
+                &mut interner,
+            );
 
-        let schema = fo4_schema();
-        let target_fk = inject_minimal_stub(handle, source_fk, "", sig, &mut mapper, &schema)
-            .expect("inject_minimal_stub should succeed even with empty EDID");
+            let schema = fo4_schema();
+            let target_fk = inject_minimal_stub(handle, source_fk, "", sig, &mut mapper, &schema)
+                .expect("inject_minimal_stub should succeed even with empty EDID");
 
-        // Mapping must still be registered.
-        assert_eq!(mapper.lookup(source_fk), Some(target_fk));
-    }
+            // Mapping must still be registered.
+            assert_eq!(mapper.lookup(source_fk), Some(target_fk));
+        }
 
-    /// Calling inject_minimal_stub twice with the same source_fk must return the
-    /// same target FK on the second call (mapper short-circuits in
-    /// `allocate_or_resolve`).
-    #[test]
-    fn inject_minimal_stub_repeated_source_returns_same_target() {
-        let handle = match new_target_handle("StubInjectRepeat.esm") {
-            Some(h) => h,
-            None => return,
-        };
+        {
+            let handle = new_target_handle("StubInjectRepeat.esm");
 
-        let mut interner = StringInterner::new();
-        let source_plugin = interner.intern("SeventySix.esm");
-        let source_fk = FormKey {
-            local: 0x00_2222,
-            plugin: source_plugin,
-        };
-        let sig = SigCode::from_str("AMMO").unwrap();
+            let mut interner = StringInterner::new();
+            let source_plugin = interner.intern("SeventySix.esm");
+            let source_fk = FormKey {
+                local: 0x00_2222,
+                plugin: source_plugin,
+            };
+            let sig = SigCode::from_str("AMMO").unwrap();
 
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "StubInjectRepeat.esm".into(),
-                preserve_source_ids: false,
-                ..Default::default()
-            },
-            &mut interner,
-        );
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "StubInjectRepeat.esm".into(),
+                    preserve_source_ids: false,
+                    ..Default::default()
+                },
+                &mut interner,
+            );
 
-        let schema = fo4_schema();
-        let first = inject_minimal_stub(handle, source_fk, "A", sig, &mut mapper, &schema)
-            .expect("first inject should succeed");
-        let second = inject_minimal_stub(handle, source_fk, "A", sig, &mut mapper, &schema)
-            .expect("second inject should succeed");
+            let schema = fo4_schema();
+            let first = inject_minimal_stub(handle, source_fk, "A", sig, &mut mapper, &schema)
+                .expect("first inject should succeed");
+            let second = inject_minimal_stub(handle, source_fk, "A", sig, &mut mapper, &schema)
+                .expect("second inject should succeed");
 
-        assert_eq!(
-            first, second,
-            "repeated injection must yield the same target FK"
-        );
+            assert_eq!(
+                first, second,
+                "repeated injection must yield the same target FK"
+            );
+        }
+
+        {
+            let handle = new_target_handle("StubInjectSession.esm");
+
+            let mut interner = StringInterner::new();
+            let source_plugin = interner.intern("SeventySix.esm");
+            let source_fk = FormKey {
+                local: 0x00_7777,
+                plugin: source_plugin,
+            };
+            let sig = SigCode::from_str("AMMO").unwrap();
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "StubInjectSession.esm".into(),
+                    preserve_source_ids: false,
+                    ..Default::default()
+                },
+                &mut interner,
+            );
+            let mut session = open_session(handle, None).expect("open session");
+
+            let target_fk = inject_minimal_stub_with_session(
+                &mut session,
+                source_fk,
+                "SessionStub",
+                sig,
+                &mut mapper,
+            )
+            .expect("session injection should succeed");
+
+            assert_eq!(mapper.lookup(source_fk), Some(target_fk));
+            assert_eq!(
+                session.record(target_fk.local).unwrap().signature.as_str(),
+                "AMMO"
+            );
+        }
     }
 
     /// Insertion against a non-existent handle returns StubInjectError::Write.
@@ -342,46 +350,5 @@ mod tests {
         // Handle id 0 is never assigned to a real plugin slot.
         let result = inject_minimal_stub(0, source_fk, "X", sig, &mut mapper, &schema);
         assert!(matches!(result, Err(StubInjectError::Write(_))));
-    }
-
-    #[test]
-    fn inject_minimal_stub_with_session_uses_held_lock_path() {
-        let handle = match new_target_handle("StubInjectSession.esm") {
-            Some(h) => h,
-            None => return,
-        };
-
-        let mut interner = StringInterner::new();
-        let source_plugin = interner.intern("SeventySix.esm");
-        let source_fk = FormKey {
-            local: 0x00_7777,
-            plugin: source_plugin,
-        };
-        let sig = SigCode::from_str("AMMO").unwrap();
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "StubInjectSession.esm".into(),
-                preserve_source_ids: false,
-                ..Default::default()
-            },
-            &mut interner,
-        );
-        let mut session = open_session(handle, None).expect("open session");
-
-        let target_fk = inject_minimal_stub_with_session(
-            &mut session,
-            source_fk,
-            "SessionStub",
-            sig,
-            &mut mapper,
-        )
-        .expect("session injection should succeed");
-
-        assert_eq!(mapper.lookup(source_fk), Some(target_fk));
-        assert_eq!(
-            session.record(target_fk.local).unwrap().signature.as_str(),
-            "AMMO"
-        );
     }
 }

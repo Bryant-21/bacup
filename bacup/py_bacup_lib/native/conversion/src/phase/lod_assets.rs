@@ -525,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn append_closures_adds_existing_lod_nif() {
+    fn append_closures_adds_existing_or_sibling_lod_and_skips_absent_or_runtime_models() {
         let tmp = tempfile::tempdir().unwrap();
         write_lod(tmp.path(), "lod/architecture/foo/bar01_lod.nif");
 
@@ -544,10 +544,7 @@ mod tests {
                     .contains("lod\\architecture\\foo\\bar01_lod.nif")),
             "expected the LOD nif closure asset, got {out:?}"
         );
-    }
 
-    #[test]
-    fn append_closures_uses_skyrim_sibling_lod_convention() {
         let tmp = tempfile::tempdir().unwrap();
         write_lod(tmp.path(), "architecture/farmhouse/farmhouse01_lod.nif");
 
@@ -567,10 +564,38 @@ mod tests {
                     .source_path
                     .eq_ignore_ascii_case(r"Meshes\architecture\farmhouse\farmhouse01_lod.nif")
         }));
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path()).unwrap();
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        append_lod_closures_for_modl(
+            "Architecture\\Foo\\NoLod01.nif",
+            tmp.path(),
+            &mut seen,
+            &mut out,
+        );
+        assert!(out.is_empty());
+
+        let tmp = tempfile::tempdir().unwrap();
+        write_lod(tmp.path(), "lod/sky/clouddistant01_lod.nif");
+        write_lod(tmp.path(), "lod/effects/radstormdistantcloud_lod.nif");
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+
+        append_lod_closures_for_modl(r"Sky\CloudDistant01.nif", tmp.path(), &mut seen, &mut out);
+        append_lod_closures_for_modl(
+            r"Effects\RadStormDistantCloud.nif",
+            tmp.path(),
+            &mut seen,
+            &mut out,
+        );
+
+        assert!(out.is_empty());
     }
 
     #[test]
-    fn explicit_skyrim_mnam_scanner_keeps_minus_one_boundary_paths() {
+    fn explicit_skyrim_mnam_scanner_keeps_boundary_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let hlod = r"LOD\Farmhouse\Farmhouse01_HLOD.nif";
         let lod = r"LOD\Farmhouse\Farmhouse01_LOD.nif";
@@ -601,10 +626,7 @@ mod tests {
                 .source_path
                 .eq_ignore_ascii_case(r"Meshes\lod\farmhouse\farmhouse01_lod.nif")
         }));
-    }
 
-    #[test]
-    fn explicit_skyrim_dlc_mnam_scanner_keeps_prefixed_boundary_path() {
         let tmp = tempfile::tempdir().unwrap();
         let lod = r"DLC01\LOD\Castle\CastleWall_LOD.nif";
         write_lod(tmp.path(), "dlc01/lod/castle/castlewall_lod.nif");
@@ -624,41 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn append_closures_skips_absent_lod() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path()).unwrap();
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        append_lod_closures_for_modl(
-            "Architecture\\Foo\\NoLod01.nif",
-            tmp.path(),
-            &mut seen,
-            &mut out,
-        );
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn append_closures_skips_runtime_sky_and_weather_effect_models() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_lod(tmp.path(), "lod/sky/clouddistant01_lod.nif");
-        write_lod(tmp.path(), "lod/effects/radstormdistantcloud_lod.nif");
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-
-        append_lod_closures_for_modl(r"Sky\CloudDistant01.nif", tmp.path(), &mut seen, &mut out);
-        append_lod_closures_for_modl(
-            r"Effects\RadStormDistantCloud.nif",
-            tmp.path(),
-            &mut seen,
-            &mut out,
-        );
-
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn enumerate_over_handle_returns_lod_nif_with_resolved_path() {
+    fn enumerate_over_handle_resolves_lod_nifs_and_explicit_mnam_slots() {
         let tmp = tempfile::tempdir().unwrap();
         write_lod(tmp.path(), "dlc03/lod/architecture/barn/barn01_lod.nif");
 
@@ -711,10 +699,7 @@ mod tests {
         );
 
         plugin_handle_close_native(handle_id);
-    }
 
-    #[test]
-    fn enumerate_over_handle_uses_explicit_mnam_lod_slots() {
         let tmp = tempfile::tempdir().unwrap();
         write_lod(
             tmp.path(),

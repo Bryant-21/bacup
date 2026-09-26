@@ -53,6 +53,7 @@ Function Fragment_Stage_0180_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    CompleteAllObjectives()
     If M01C_Roboticist_End_Scene != None && !M01C_Roboticist_End_Scene.IsPlaying()
         M01C_Roboticist_End_Scene.Start()
     EndIf

@@ -104,17 +104,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_embedded_yamls_parse_without_error() {
+    fn all_embedded_yamls_parse_validate_and_are_counted() {
         let errors = validate_all_embedded();
         assert!(
             errors.is_empty(),
             "Embedded YAML validation failures:\n{}",
             errors.join("\n")
         );
+
+        // Gate test: any malformed embedded YAML surfaces here at CI.
+        let errors = validate_all_embedded();
+        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
+
+        assert_eq!(
+            embedded::ALL_YAMLS.len(),
+            29,
+            "ALL_YAMLS entry count changed — update this test"
+        );
     }
 
     #[test]
-    fn fo76_to_fo4_map_has_expected_top_level_keys() {
+    fn fo76_maps_have_expected_keys_and_condition_functions() {
         let value: serde_json::Value =
             serde_saphyr::from_str(embedded::FO76_TO_FO4).expect("fo76_to_fo4 should parse");
         let obj = value.as_object().expect("fo76_to_fo4 should be a mapping");
@@ -126,10 +136,20 @@ mod tests {
             obj.contains_key("WEAP"),
             "fo76_to_fo4 map missing WEAP record block"
         );
+
+        let count = validate_yaml_is_mapping(
+            "fo76_condition_functions",
+            embedded::FO76_CONDITION_FUNCTIONS,
+        )
+        .expect("fo76_condition_functions should be a valid YAML mapping");
+        assert_eq!(
+            count, 1,
+            "fo76_condition_functions should have one top-level key (functions)"
+        );
     }
 
     #[test]
-    fn fnv_to_fo4_map_has_skip_records() {
+    fn fnv_to_fo4_map_skips_records_including_imod() {
         let value: serde_json::Value =
             serde_saphyr::from_str(embedded::FNV_TO_FO4).expect("fnv_to_fo4 should parse");
         let obj = value.as_object().expect("fnv_to_fo4 should be a mapping");
@@ -145,10 +165,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!npc_drops.contains(&"CNTO"));
         assert!(!npc_drops.contains(&"COED"));
-    }
 
-    #[test]
-    fn fnv_to_fo4_map_skips_imod() {
         // FNV IMOD DATA is `struct:I,f` (8 bytes); FO4 OMOD DATA is `omod_data`
         // with a 28-byte minimum. Routing IMOD to OMOD made the FO4 loader read
         // an attach-parent-slot count past the end of the chunk and crash in
@@ -169,35 +186,6 @@ mod tests {
         assert!(
             !obj.contains_key("IMOD"),
             "IMOD must not carry a record block while it is skipped"
-        );
-    }
-
-    #[test]
-    fn fo76_condition_functions_parses_as_mapping() {
-        let count = validate_yaml_is_mapping(
-            "fo76_condition_functions",
-            embedded::FO76_CONDITION_FUNCTIONS,
-        )
-        .expect("fo76_condition_functions should be a valid YAML mapping");
-        assert_eq!(
-            count, 1,
-            "fo76_condition_functions should have one top-level key (functions)"
-        );
-    }
-
-    #[test]
-    fn validate_all_embedded_is_clean() {
-        // Gate test: any malformed embedded YAML surfaces here at CI.
-        let errors = validate_all_embedded();
-        assert!(errors.is_empty(), "Expected no errors, got: {errors:?}");
-    }
-
-    #[test]
-    fn embedded_map_count_matches_expected() {
-        assert_eq!(
-            embedded::ALL_YAMLS.len(),
-            29,
-            "ALL_YAMLS entry count changed — update this test"
         );
     }
 }

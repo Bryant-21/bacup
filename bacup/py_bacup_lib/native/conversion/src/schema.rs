@@ -145,6 +145,7 @@ impl IndexedRecordDef {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn subrecord_def(&self, sig: &str) -> Option<&SubrecordDef> {
         self.subrecord_positions
             .get(sig)
@@ -422,67 +423,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires SCHEMA_LOOKUP_PLUGIN, SCHEMA_LOOKUP_GAME and SCHEMA_LOOKUP_REPORT"]
-    fn indexed_subrecords_match_complete_plugin_corpus() {
-        use crate::store2::source::SourceEsm;
-        use esp_authoring_core::plugin_runtime::effective_subrecords_for_record;
-        use std::time::Instant;
-        let path = std::env::var("SCHEMA_LOOKUP_PLUGIN").unwrap();
-        let game = std::env::var("SCHEMA_LOOKUP_GAME").unwrap();
-        let schema = AuthoringSchema::for_game(&game).unwrap();
-        let source = SourceEsm::open(std::path::Path::new(&path)).unwrap();
-        let (mut old_secs, mut new_secs, mut subrecords, mut missing) = (0.0, 0.0, 0usize, 0usize);
-        for (index, entry) in source.index.iter().enumerate() {
-            let parsed = source.view_at(index).unwrap().to_parsed_record().unwrap();
-            let signature = std::str::from_utf8(&entry.sig).unwrap();
-            let rows = effective_subrecords_for_record(&parsed);
-            let old = schema.record_def(signature);
-            let new = schema.record_lookup(signature);
-            let legacy = || {
-                let started = Instant::now();
-                let values = rows
-                    .iter()
-                    .map(|row| {
-                        old.and_then(|record| record.subrecord_def(row.signature.as_str()))
-                            .map(|def| def as *const SubrecordDef)
-                    })
-                    .collect::<Vec<_>>();
-                (values, started.elapsed().as_secs_f64())
-            };
-            let indexed = || {
-                let started = Instant::now();
-                let values = rows
-                    .iter()
-                    .map(|row| {
-                        new.and_then(|record| record.subrecord_def(row.signature.as_str()))
-                            .map(|def| def as *const SubrecordDef)
-                    })
-                    .collect::<Vec<_>>();
-                (values, started.elapsed().as_secs_f64())
-            };
-            let ((before, before_secs), (after, after_secs)) = if index % 2 == 0 {
-                let after = indexed();
-                (legacy(), after)
-            } else {
-                let before = legacy();
-                (before, indexed())
-            };
-            assert_eq!(before, after, "record {index} {signature}");
-            old_secs += before_secs;
-            new_secs += after_secs;
-            subrecords += rows.len();
-            missing += before.iter().filter(|value| value.is_none()).count();
-        }
-        let report = serde_json::json!({"plugin":path,"game":game,"records":source.record_count(),"subrecords":subrecords,"unknown_definitions":missing,"identical_definition_identity":true,"legacy_seconds":old_secs,"indexed_seconds":new_secs});
-        std::fs::write(
-            std::env::var("SCHEMA_LOOKUP_REPORT").unwrap(),
-            serde_json::to_vec_pretty(&report).unwrap(),
-        )
-        .unwrap();
-        eprintln!("{report}");
-    }
-
-    #[test]
     fn parse_fo4_authoring_schema() {
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let weap = schema.record_def("WEAP").expect("WEAP record_def");
@@ -493,16 +433,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_fo4_schema_cached_is_same_arc() {
+    fn fo4_schema_is_cached_and_unknown_games_error() {
         let a = AuthoringSchema::for_game("fo4").expect("fo4 schema first call");
         let b = AuthoringSchema::for_game("fo4").expect("fo4 schema second call");
-        // Same backing Arc pointer.
         assert!(Arc::ptr_eq(&a, &b));
-    }
-
-    #[test]
-    fn unsupported_game_returns_error() {
-        let result = AuthoringSchema::for_game("nonexistent_game_xyz");
-        assert!(result.is_err());
+        assert!(AuthoringSchema::for_game("nonexistent_game_xyz").is_err());
     }
 }

@@ -46,17 +46,33 @@ EndFunction
 Function Fragment_Stage_0500_Item_00()
     SetObjectiveCompleted(400, True)
 
-    Actor playerRef = Alias_currentPlayer.GetActorReference()
     CompleteQuest()
+    If !MTNMQ_TryStartEarlyWarnings()
+        StartTimer(5.0, 500)
+    EndIf
+EndFunction
 
-    Bool fsQuestStarted = playerRef != None && FS01_MQ_Warn_QuestActiveKeyword != None && playerRef.HasKeyword(FS01_MQ_Warn_QuestActiveKeyword)
+Bool Function MTNMQ_TryStartEarlyWarnings()
+    Quest nextQuest = Game.GetFormFromFile(0x00002315, "SeventySix.esm") as Quest
+    Actor playerRef = Alias_currentPlayer.GetActorReference()
+    If playerRef == None
+        playerRef = Game.GetPlayer()
+    EndIf
+    Bool fsQuestStarted = nextQuest != None && (nextQuest.IsRunning() || nextQuest.IsCompleted())
     If !fsQuestStarted && playerRef != None && FS01_Warn_QuestStartKeyword != None
         fsQuestStarted = FS01_Warn_QuestStartKeyword.SendStoryEventAndWait(None, playerRef, playerRef)
     EndIf
-    If fsQuestStarted && FS01_MQ_Warn_StartedValue != None
-        Alias_currentPlayer.TryToSetValue(FS01_MQ_Warn_StartedValue, 1.0)
+    If fsQuestStarted && playerRef != None && FS01_MQ_Warn_StartedValue != None
+        playerRef.SetValue(FS01_MQ_Warn_StartedValue, 1.0)
     EndIf
+    Return fsQuestStarted
 EndFunction
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID == 500 && IsRunning() && IsStageDone(500) && !MTNMQ_TryStartEarlyWarnings()
+        StartTimer(5.0, 500)
+    EndIf
+EndEvent
 
 Function Fragment_Stage_0600_Item_00()
     SetObjectiveDisplayed(100, False)

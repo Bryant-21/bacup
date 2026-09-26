@@ -1503,69 +1503,94 @@ mod tests {
     }
 
     #[test]
-    fn top_level_prune_preserves_nested_property_bytes_and_opaque_tail() {
-        let mut nested_struct = 2i32.to_le_bytes().to_vec();
-        nested_struct.extend_from_slice(&write_vmad_string("Objects"));
-        nested_struct.extend_from_slice(&[11, 1]);
-        nested_struct.extend_from_slice(&object_array_value(&[0x0100_0001], 2));
-        nested_struct.extend_from_slice(&write_vmad_string("Values"));
-        nested_struct.extend_from_slice(&[13, 1]);
-        nested_struct.extend_from_slice(&int_array_value(&[7, 9]));
+    fn top_level_prune_preserves_nested_bytes_opaque_tail_and_unreadable_vmad() {
+        {
+            let mut nested_struct = 2i32.to_le_bytes().to_vec();
+            nested_struct.extend_from_slice(&write_vmad_string("Objects"));
+            nested_struct.extend_from_slice(&[11, 1]);
+            nested_struct.extend_from_slice(&object_array_value(&[0x0100_0001], 2));
+            nested_struct.extend_from_slice(&write_vmad_string("Values"));
+            nested_struct.extend_from_slice(&[13, 1]);
+            nested_struct.extend_from_slice(&int_array_value(&[7, 9]));
 
-        let mut struct_array = 1i32.to_le_bytes().to_vec();
-        struct_array.extend_from_slice(&nested_struct);
-        let dropped = VmadScriptEntry {
-            name: "BrokenScript".to_string(),
-            raw: script_with_properties(
-                "BrokenScript",
-                &[
-                    ("Nested", 7, nested_struct.clone()),
-                    ("Rows", 17, struct_array),
-                ],
-            ),
-        };
-        let kept = VmadScriptEntry {
-            name: "WorkingScript".to_string(),
-            raw: script_with_properties(
-                "WorkingScript",
-                &[("Objects", 11, object_array_value(&[0x0100_0002], 2))],
-            ),
-        };
-        let tail = b"opaque-fragment-tail".to_vec();
-        let payload = Vmad {
-            version: 6,
-            object_format: 2,
-            scripts: vec![dropped.clone(), kept.clone()],
-            fragments: tail.clone(),
-        }
-        .with_scripts(&[dropped, kept.clone()]);
-        let record = record(
-            0x0800_0800,
-            "PERK",
-            "NestedProperties",
-            vec![subrecord("VMAD", payload)],
-        );
+            let mut struct_array = 1i32.to_le_bytes().to_vec();
+            struct_array.extend_from_slice(&nested_struct);
+            let dropped = VmadScriptEntry {
+                name: "BrokenScript".to_string(),
+                raw: script_with_properties(
+                    "BrokenScript",
+                    &[
+                        ("Nested", 7, nested_struct.clone()),
+                        ("Rows", 17, struct_array),
+                    ],
+                ),
+            };
+            let kept = VmadScriptEntry {
+                name: "WorkingScript".to_string(),
+                raw: script_with_properties(
+                    "WorkingScript",
+                    &[("Objects", 11, object_array_value(&[0x0100_0002], 2))],
+                ),
+            };
+            let tail = b"opaque-fragment-tail".to_vec();
+            let payload = Vmad {
+                version: 6,
+                object_format: 2,
+                scripts: vec![dropped.clone(), kept.clone()],
+                fragments: tail.clone(),
+            }
+            .with_scripts(&[dropped, kept.clone()]);
+            let record = record(
+                0x0800_0800,
+                "PERK",
+                "NestedProperties",
+                vec![subrecord("VMAD", payload)],
+            );
 
-        let (replacement, note) = vmad_after_script_prune(
-            &record.subrecords[0].1,
-            &record,
-            &HashSet::from(["brokenscript".to_string()]),
-            false,
-        );
-        let replacement = replacement.unwrap();
-        let expected = Vmad {
-            version: 6,
-            object_format: 2,
-            scripts: vec![kept.clone()],
-            fragments: tail.clone(),
+            let (replacement, note) = vmad_after_script_prune(
+                &record.subrecords[0].1,
+                &record,
+                &HashSet::from(["brokenscript".to_string()]),
+                false,
+            );
+            let replacement = replacement.unwrap();
+            let expected = Vmad {
+                version: 6,
+                object_format: 2,
+                scripts: vec![kept.clone()],
+                fragments: tail.clone(),
+            }
+            .with_scripts(&[kept]);
+            assert_eq!(replacement, expected);
+            assert!(replacement.ends_with(&tail));
+            assert_eq!(
+                note.unwrap(),
+                "PERK 08000800 NestedProperties: dropped 1 failed binding(s) (BrokenScript); kept 1"
+            );
         }
-        .with_scripts(&[kept]);
-        assert_eq!(replacement, expected);
-        assert!(replacement.ends_with(&tail));
-        assert_eq!(
-            note.unwrap(),
-            "PERK 08000800 NestedProperties: dropped 1 failed binding(s) (BrokenScript); kept 1"
-        );
+        {
+            let record = record(
+                0x002A_F222,
+                "FURN",
+                "76CharGenFaceChair",
+                vec![subrecord(
+                    "VMAD",
+                    b"\x06\x00\x02\x00opaque VMAD payload".to_vec(),
+                )],
+            );
+            let (replacement, note) = vmad_after_script_prune(
+                &record.subrecords[0].1,
+                &record,
+                &HashSet::from(["chargenfacechairscript".to_string()]),
+                false,
+            );
+            assert_eq!(replacement.unwrap(), record.subrecords[0].1);
+            assert!(
+                note.unwrap().starts_with(
+                    "FURN 002AF222 76CharGenFaceChair: left VMAD untouched, unreadable"
+                )
+            );
+        }
     }
 
     #[test]
@@ -1609,41 +1634,41 @@ mod tests {
     }
 
     #[test]
-    fn quest_tail_names_match_authoring_traversal_order() {
-        let mut tail = vec![1];
-        tail.extend_from_slice(&1u16.to_le_bytes());
-        tail.extend_from_slice(&write_vmad_string("QuestFragmentOwner"));
-        tail.extend_from_slice(&[0, 0, 0]);
-        tail.extend_from_slice(&900u16.to_le_bytes());
-        tail.extend_from_slice(&0i16.to_le_bytes());
-        tail.extend_from_slice(&0i32.to_le_bytes());
-        tail.push(0);
-        tail.extend_from_slice(&write_vmad_string("StageFragment"));
-        tail.extend_from_slice(&write_vmad_string("Fragment_0900"));
-        tail.extend_from_slice(&1u16.to_le_bytes());
-        tail.extend_from_slice(&[0; 8]);
-        tail.extend_from_slice(&1i16.to_le_bytes());
-        tail.extend_from_slice(&2i16.to_le_bytes());
-        tail.extend_from_slice(&1u16.to_le_bytes());
-        tail.extend_from_slice(&script_entry("AliasScript"));
+    fn vmad_script_names_follow_quest_tail_traversal_and_survive_malformed_tails() {
+        {
+            let mut tail = vec![1];
+            tail.extend_from_slice(&1u16.to_le_bytes());
+            tail.extend_from_slice(&write_vmad_string("QuestFragmentOwner"));
+            tail.extend_from_slice(&[0, 0, 0]);
+            tail.extend_from_slice(&900u16.to_le_bytes());
+            tail.extend_from_slice(&0i16.to_le_bytes());
+            tail.extend_from_slice(&0i32.to_le_bytes());
+            tail.push(0);
+            tail.extend_from_slice(&write_vmad_string("StageFragment"));
+            tail.extend_from_slice(&write_vmad_string("Fragment_0900"));
+            tail.extend_from_slice(&1u16.to_le_bytes());
+            tail.extend_from_slice(&[0; 8]);
+            tail.extend_from_slice(&1i16.to_le_bytes());
+            tail.extend_from_slice(&2i16.to_le_bytes());
+            tail.extend_from_slice(&1u16.to_le_bytes());
+            tail.extend_from_slice(&script_entry("AliasScript"));
 
-        assert_eq!(
-            vmad_script_names(&vmad(&["TopScript"], &tail), "QUST"),
-            [
-                "TopScript",
-                "QuestFragmentOwner",
-                "StageFragment",
-                "AliasScript"
-            ]
-        );
-    }
-
-    #[test]
-    fn malformed_fragment_tail_keeps_top_level_script_names() {
-        assert_eq!(
-            vmad_script_names(&vmad(&["TopScript"], b"broken tail"), "QUST"),
-            ["TopScript"]
-        );
+            assert_eq!(
+                vmad_script_names(&vmad(&["TopScript"], &tail), "QUST"),
+                [
+                    "TopScript",
+                    "QuestFragmentOwner",
+                    "StageFragment",
+                    "AliasScript"
+                ]
+            );
+        }
+        {
+            assert_eq!(
+                vmad_script_names(&vmad(&["TopScript"], b"broken tail"), "QUST"),
+                ["TopScript"]
+            );
+        }
     }
 
     #[test]
@@ -1735,97 +1760,118 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_uses_inspection_snapshot_after_intermediate_target_change() {
-        let form_id = 0x0057_27BB;
-        let inspection = inspect_fixture(
-            vec![record(
-                form_id,
-                "PERK",
-                "Perk",
+    fn reconcile_uses_inspection_snapshots_retries_after_partial_write_and_counts_only_applied_updates()
+     {
+        {
+            let form_id = 0x0057_27BB;
+            let inspection = inspect_fixture(
+                vec![record(
+                    form_id,
+                    "PERK",
+                    "Perk",
+                    vec![
+                        subrecord("VMAD", vmad(&["BrokenScript", "WorkingScript"], &[])),
+                        subrecord("NAM1", b"snapshot".to_vec()),
+                    ],
+                )],
+                false,
+            );
+            let written = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&written);
+            let result = reconcile_script_references(
+                &inspection.state,
                 vec![
-                    subrecord("VMAD", vmad(&["BrokenScript", "WorkingScript"], &[])),
-                    subrecord("NAM1", b"snapshot".to_vec()),
+                    resolution("BrokenScript", "compile_failed", None),
+                    resolution("WorkingScript", "target", None),
                 ],
-            )],
-            false,
-        );
-        let written = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&written);
-        let result = reconcile_script_references(
-            &inspection.state,
-            vec![
-                resolution("BrokenScript", "compile_failed", None),
-                resolution("WorkingScript", "target", None),
-            ],
-            move |_form_id, subrecords| {
-                captured.borrow_mut().push(subrecords);
-                Ok(true)
-            },
-        )
-        .unwrap();
+                move |_form_id, subrecords| {
+                    captured.borrow_mut().push(subrecords);
+                    Ok(true)
+                },
+            )
+            .unwrap();
 
-        assert_eq!(result.changed_records, 1);
-        assert_eq!(written.borrow()[0][1].1, b"snapshot");
-        let parsed = parse_vmad(&written.borrow()[0][0].1).unwrap();
-        assert_eq!(parsed.scripts[0].name, "WorkingScript");
-    }
+            assert_eq!(result.changed_records, 1);
+            assert_eq!(written.borrow()[0][1].1, b"snapshot");
+            let parsed = parse_vmad(&written.borrow()[0][0].1).unwrap();
+            assert_eq!(parsed.scripts[0].name, "WorkingScript");
+        }
+        {
+            let inspection = inspect_fixture(
+                vec![
+                    record(
+                        0x0800,
+                        "PERK",
+                        "First",
+                        vec![subrecord("VMAD", vmad(&["Broken", "Working"], &[]))],
+                    ),
+                    record(
+                        0x0801,
+                        "PERK",
+                        "Second",
+                        vec![subrecord("VMAD", vmad(&["Broken", "Working"], &[]))],
+                    ),
+                ],
+                false,
+            );
+            let writes = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&writes);
+            let error = reconcile_script_references(
+                &inspection.state,
+                vec![
+                    resolution("Broken", "compile_failed", None),
+                    resolution("Working", "target", None),
+                ],
+                move |form_id, subrecords| {
+                    if captured.borrow().is_empty() {
+                        captured.borrow_mut().push((form_id, subrecords));
+                        Ok(true)
+                    } else {
+                        Err("second write failed".to_string())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, "second write failed");
+            assert_eq!(writes.borrow().len(), 1);
 
-    #[test]
-    fn reconcile_error_can_retry_all_snapshots_after_a_partial_write() {
-        let inspection = inspect_fixture(
-            vec![
-                record(
-                    0x0800,
-                    "PERK",
-                    "First",
-                    vec![subrecord("VMAD", vmad(&["Broken", "Working"], &[]))],
-                ),
-                record(
-                    0x0801,
-                    "PERK",
-                    "Second",
-                    vec![subrecord("VMAD", vmad(&["Broken", "Working"], &[]))],
-                ),
-            ],
-            false,
-        );
-        let writes = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&writes);
-        let error = reconcile_script_references(
-            &inspection.state,
-            vec![
-                resolution("Broken", "compile_failed", None),
-                resolution("Working", "target", None),
-            ],
-            move |form_id, subrecords| {
-                if captured.borrow().is_empty() {
+            let retry = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&retry);
+            let result = reconcile_script_references(
+                &inspection.state,
+                vec![
+                    resolution("Broken", "compile_failed", None),
+                    resolution("Working", "target", None),
+                ],
+                move |form_id, subrecords| {
                     captured.borrow_mut().push((form_id, subrecords));
                     Ok(true)
-                } else {
-                    Err("second write failed".to_string())
-                }
-            },
-        )
-        .unwrap_err();
-        assert_eq!(error, "second write failed");
-        assert_eq!(writes.borrow().len(), 1);
-
-        let retry = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&retry);
-        let result = reconcile_script_references(
-            &inspection.state,
-            vec![
-                resolution("Broken", "compile_failed", None),
-                resolution("Working", "target", None),
-            ],
-            move |form_id, subrecords| {
-                captured.borrow_mut().push((form_id, subrecords));
-                Ok(true)
-            },
-        )
-        .unwrap();
-        assert_eq!(result.changed_records, 2);
-        assert_eq!(retry.borrow().len(), 2);
+                },
+            )
+            .unwrap();
+            assert_eq!(result.changed_records, 2);
+            assert_eq!(retry.borrow().len(), 2);
+        }
+        {
+            let inspection = inspect_fixture(
+                vec![record(
+                    0x0057_27BB,
+                    "PERK",
+                    "Perk",
+                    vec![subrecord("VMAD", vmad(&["BrokenScript"], b"opaque"))],
+                )],
+                false,
+            );
+            let result = reconcile_script_references(
+                &inspection.state,
+                vec![resolution("BrokenScript", "compile_failed", None)],
+                |_form_id, _subrecords| Ok(false),
+            )
+            .unwrap();
+            assert_eq!(result.changed_records, 0);
+            assert_eq!(result.stripped_vmad, 0);
+            assert_eq!(result.vmad_notes.len(), 1);
+        }
     }
 
     #[test]
@@ -1913,118 +1959,96 @@ mod tests {
     }
 
     #[test]
-    fn failed_update_keeps_notes_but_not_change_counts() {
-        let inspection = inspect_fixture(
-            vec![record(
-                0x0057_27BB,
-                "PERK",
-                "Perk",
-                vec![subrecord("VMAD", vmad(&["BrokenScript"], b"opaque"))],
-            )],
-            false,
-        );
-        let result = reconcile_script_references(
-            &inspection.state,
-            vec![resolution("BrokenScript", "compile_failed", None)],
-            |_form_id, _subrecords| Ok(false),
-        )
-        .unwrap();
-        assert_eq!(result.changed_records, 0);
-        assert_eq!(result.stripped_vmad, 0);
-        assert_eq!(result.vmad_notes.len(), 1);
-    }
+    fn reward_attachment_is_idempotent_and_blocked_by_reward_script_parse_failure() {
+        {
+            let quest_id = 0x0754_F1A4;
+            let inspection = inspect_fixture(
+                vec![record(
+                    quest_id,
+                    "QUST",
+                    "COMP_RQ_Fetch",
+                    vec![subrecord("VMAD", vmad(&["QuestScript"], &[]))],
+                )],
+                true,
+            );
+            let writes = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&writes);
+            let result = reconcile_script_references(
+                &inspection.state,
+                vec![resolution("QuestScript", "target", None)],
+                move |_form_id, subrecords| {
+                    captured.borrow_mut().push(subrecords);
+                    Ok(true)
+                },
+            )
+            .unwrap();
+            assert_eq!(result.changed_records, 1);
+            assert_eq!(result.unreached_reward_notes.len(), 2);
+            let reward_vmad = &writes.borrow()[0][0].1;
+            assert!(
+                parse_vmad(reward_vmad)
+                    .unwrap()
+                    .scripts
+                    .iter()
+                    .any(|entry| entry.name == QUEST_REWARD_SCRIPT_NAME)
+            );
+            let (twice, note) = vmad_with_quest_reward_script(
+                reward_vmad,
+                inspection.state.candidate_records.get(&quest_id).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(twice, *reward_vmad);
+            assert!(note.is_none());
+        }
+        {
+            let quest_id = 0x0754_F1A4;
+            let inspection = inspect_fixture(
+                vec![record(
+                    quest_id,
+                    "QUST",
+                    "COMP_RQ_Fetch",
+                    vec![
+                        subrecord(
+                            "VMAD",
+                            vmad(&[QUEST_REWARD_SCRIPT_NAME, "WorkingScript"], &[]),
+                        ),
+                        subrecord("CTDA", ctda(629, quest_id)),
+                        subrecord("CIS1", b"B21:QuestRewards\0".to_vec()),
+                        subrecord("CIS2", b"::Missing_var\0".to_vec()),
+                    ],
+                )],
+                true,
+            );
+            let temp = tempfile::tempdir().unwrap();
+            let broken_pex = temp.path().join("QuestRewards.pex");
+            std::fs::write(&broken_pex, b"not a pex").unwrap();
+            let writes = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&writes);
 
-    #[test]
-    fn reward_attachment_is_idempotent_and_reports_unreached_quests() {
-        let quest_id = 0x0754_F1A4;
-        let inspection = inspect_fixture(
-            vec![record(
-                quest_id,
-                "QUST",
-                "COMP_RQ_Fetch",
-                vec![subrecord("VMAD", vmad(&["QuestScript"], &[]))],
-            )],
-            true,
-        );
-        let writes = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&writes);
-        let result = reconcile_script_references(
-            &inspection.state,
-            vec![resolution("QuestScript", "target", None)],
-            move |_form_id, subrecords| {
-                captured.borrow_mut().push(subrecords);
-                Ok(true)
-            },
-        )
-        .unwrap();
-        assert_eq!(result.changed_records, 1);
-        assert_eq!(result.unreached_reward_notes.len(), 2);
-        let reward_vmad = &writes.borrow()[0][0].1;
-        assert!(
-            parse_vmad(reward_vmad)
-                .unwrap()
-                .scripts
-                .iter()
-                .any(|entry| entry.name == QUEST_REWARD_SCRIPT_NAME)
-        );
-        let (twice, note) = vmad_with_quest_reward_script(
-            reward_vmad,
-            inspection.state.candidate_records.get(&quest_id).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(twice, *reward_vmad);
-        assert!(note.is_none());
-    }
-
-    #[test]
-    fn reward_script_parse_failure_prevents_reattachment() {
-        let quest_id = 0x0754_F1A4;
-        let inspection = inspect_fixture(
-            vec![record(
-                quest_id,
-                "QUST",
-                "COMP_RQ_Fetch",
+            let result = reconcile_script_references(
+                &inspection.state,
                 vec![
-                    subrecord(
-                        "VMAD",
-                        vmad(&[QUEST_REWARD_SCRIPT_NAME, "WorkingScript"], &[]),
-                    ),
-                    subrecord("CTDA", ctda(629, quest_id)),
-                    subrecord("CIS1", b"B21:QuestRewards\0".to_vec()),
-                    subrecord("CIS2", b"::Missing_var\0".to_vec()),
+                    resolution(QUEST_REWARD_SCRIPT_NAME, "compiled", Some(&broken_pex)),
+                    resolution("WorkingScript", "target", None),
                 ],
-            )],
-            true,
-        );
-        let temp = tempfile::tempdir().unwrap();
-        let broken_pex = temp.path().join("QuestRewards.pex");
-        std::fs::write(&broken_pex, b"not a pex").unwrap();
-        let writes = Rc::new(RefCell::new(Vec::new()));
-        let captured = Rc::clone(&writes);
+                move |_form_id, subrecords| {
+                    captured.borrow_mut().push(subrecords);
+                    Ok(true)
+                },
+            )
+            .unwrap();
 
-        let result = reconcile_script_references(
-            &inspection.state,
-            vec![
-                resolution(QUEST_REWARD_SCRIPT_NAME, "compiled", Some(&broken_pex)),
-                resolution("WorkingScript", "target", None),
-            ],
-            move |_form_id, subrecords| {
-                captured.borrow_mut().push(subrecords);
-                Ok(true)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(result.parse_failures.len(), 1);
-        assert_eq!(result.stripped_vmad, 0);
-        let payload = &writes.borrow()[0][0].1;
-        assert_eq!(vmad_script_names(payload, "QUST"), ["WorkingScript"]);
-        assert!(
-            !result
-                .vmad_notes
-                .iter()
-                .any(|note| note.contains("attached B21:QuestRewards"))
-        );
+            assert_eq!(result.parse_failures.len(), 1);
+            assert_eq!(result.stripped_vmad, 0);
+            let payload = &writes.borrow()[0][0].1;
+            assert_eq!(vmad_script_names(payload, "QUST"), ["WorkingScript"]);
+            assert!(
+                !result
+                    .vmad_notes
+                    .iter()
+                    .any(|note| note.contains("attached B21:QuestRewards"))
+            );
+        }
     }
 
     #[test]
@@ -2034,29 +2058,5 @@ mod tests {
         assert_eq!(mixed, pex_member_cache_key(Path::new("folder\\SCRIPT.PEX")));
         #[cfg(not(windows))]
         assert_ne!(mixed, pex_member_cache_key(Path::new("folder/Script.pex")));
-    }
-
-    #[test]
-    fn unreadable_vmad_is_preserved_with_existing_error_text() {
-        let record = record(
-            0x002A_F222,
-            "FURN",
-            "76CharGenFaceChair",
-            vec![subrecord(
-                "VMAD",
-                b"\x06\x00\x02\x00opaque VMAD payload".to_vec(),
-            )],
-        );
-        let (replacement, note) = vmad_after_script_prune(
-            &record.subrecords[0].1,
-            &record,
-            &HashSet::from(["chargenfacechairscript".to_string()]),
-            false,
-        );
-        assert_eq!(replacement.unwrap(), record.subrecords[0].1);
-        assert!(
-            note.unwrap()
-                .starts_with("FURN 002AF222 76CharGenFaceChair: left VMAD untouched, unreadable")
-        );
     }
 }

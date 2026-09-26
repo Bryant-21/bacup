@@ -367,10 +367,7 @@ mod tests {
             0x0719_3B93,
             0xC00
         ));
-    }
 
-    #[test]
-    fn requires_one_persistent_refr_in_the_exact_parent_cell() {
         let parent_cell = 0x0740_1116;
         let placed = 0x0753_9B8C;
         let exact = persistent_fixture(sound_marker());
@@ -404,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn adds_one_linked_ref_before_placed_data() {
+    fn adds_one_link_custom_01_edge_and_never_duplicates_or_overwrites() {
         let mut record = sound_marker();
         let keyword: u32 = 0x0005_D5E6;
         let target: u32 = 0x0753_9B8F;
@@ -429,10 +426,7 @@ mod tests {
         assert_eq!(read_form_id(xlkr.data.as_ref()), Some(keyword));
         assert_eq!(read_form_id(&xlkr.data[4..]), Some(target));
         assert!(record.raw_payload.is_none());
-    }
 
-    #[test]
-    fn does_not_duplicate_the_link_custom_01_edge() {
         let mut record = sound_marker();
         let keyword = 0x0005_D5E6;
 
@@ -453,10 +447,7 @@ mod tests {
                 .count(),
             1
         );
-    }
 
-    #[test]
-    fn does_not_overwrite_a_conflicting_link_custom_01_edge() {
         let mut record = sound_marker();
         let keyword = 0x0005_D5E6;
         let existing_target = 0x0753_9B90;
@@ -475,10 +466,7 @@ mod tests {
             .find(|subrecord| subrecord.signature.as_str() == "XLKR")
             .expect("linked ref");
         assert_eq!(read_form_id(&xlkr.data[4..]), Some(existing_target));
-    }
 
-    #[test]
-    fn rejects_duplicate_or_malformed_link_custom_01_edges() {
         let mut record = sound_marker();
         let keyword: u32 = 0x0005_D5E6;
         let target: u32 = 0x0753_9B8F;

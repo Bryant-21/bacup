@@ -89,11 +89,18 @@ EndFunction
 Function Fragment_Stage_0720_Item_00()
 	SetFrankieDiesValue(True)
 	StartSceneOnce(pCOMP_Quest_Outro_Full_Beckett_FrankieDead)
+	; Stage 800 ("Speak to Beckett" after Frankie) had no setter of its own.
+	If !IsStageDone(800)
+		SetStage(800)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0750_Item_00()
 	SetFrankieDiesValue(False)
 	StartSceneOnce(pCOMP_Quest_Outro_Full_Beckett_FrankieLives)
+	If !IsStageDone(800)
+		SetStage(800)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0755_Item_00()
@@ -105,6 +112,9 @@ EndFunction
 
 Function Fragment_Stage_0760_Item_00()
 	SetFrankieDiesValue(True)
+	If IsStageDone(700) && !IsStageDone(800)
+		SetStage(800)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()

@@ -122,112 +122,112 @@ mod tests {
     }
 
     #[test]
-    fn production_shaped_quest_dialogue_info_order_is_stable() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("FalloutNV.esm");
-        let quest_source = fk(0x130100, plugin);
-        let quest_target = fk(0x230100, plugin);
-        let dial_source = fk(0x13015B, plugin);
-        let dial_target = fk(0x23015B, plugin);
-        let mut payloads = vec![
-            PreparedLegacyRecordPayload::from_translated(
-                TranslatedRecordPayload {
-                    source_form_key: "130161:FalloutNV.esm".to_string(),
-                    signature: "INFO".to_string(),
-                    translated_record: serde_json::json!({ "fields": [] }),
-                    warnings: Vec::new(),
-                },
-                identity(
-                    "INFO",
-                    0x130161,
-                    0x230161,
-                    plugin,
-                    LegacyRecordTopology::TopicChild {
-                        source_parent: dial_source,
-                        target_parent: dial_target,
+    fn quest_dialogue_info_order_and_zero_info_topology_are_stable() {
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("FalloutNV.esm");
+            let quest_source = fk(0x130100, plugin);
+            let quest_target = fk(0x230100, plugin);
+            let dial_source = fk(0x13015B, plugin);
+            let dial_target = fk(0x23015B, plugin);
+            let mut payloads = vec![
+                PreparedLegacyRecordPayload::from_translated(
+                    TranslatedRecordPayload {
+                        source_form_key: "130161:FalloutNV.esm".to_string(),
+                        signature: "INFO".to_string(),
+                        translated_record: serde_json::json!({ "fields": [] }),
+                        warnings: Vec::new(),
                     },
-                ),
-            )
-            .unwrap(),
-            PreparedLegacyRecordPayload::from_translated(
+                    identity(
+                        "INFO",
+                        0x130161,
+                        0x230161,
+                        plugin,
+                        LegacyRecordTopology::TopicChild {
+                            source_parent: dial_source,
+                            target_parent: dial_target,
+                        },
+                    ),
+                )
+                .unwrap(),
+                PreparedLegacyRecordPayload::from_translated(
+                    TranslatedRecordPayload {
+                        source_form_key: "13015B:FalloutNV.esm".to_string(),
+                        signature: "DIAL".to_string(),
+                        translated_record: serde_json::json!({ "fields": [] }),
+                        warnings: Vec::new(),
+                    },
+                    identity(
+                        "DIAL",
+                        0x13015B,
+                        0x23015B,
+                        plugin,
+                        LegacyRecordTopology::QuestChild {
+                            source_parent: quest_source,
+                            target_parent: quest_target,
+                        },
+                    ),
+                )
+                .unwrap(),
+                PreparedLegacyRecordPayload::from_translated(
+                    TranslatedRecordPayload {
+                        source_form_key: "130100:FalloutNV.esm".to_string(),
+                        signature: "QUST".to_string(),
+                        translated_record: serde_json::json!({ "fields": [] }),
+                        warnings: Vec::new(),
+                    },
+                    identity(
+                        "QUST",
+                        0x130100,
+                        0x230100,
+                        plugin,
+                        LegacyRecordTopology::TopLevel,
+                    ),
+                )
+                .unwrap(),
+            ];
+
+            payloads.sort_by_key(PreparedLegacyRecordPayload::write_rank);
+            assert_eq!(
+                payloads
+                    .iter()
+                    .map(|payload| payload.identity.signature.as_str())
+                    .collect::<Vec<_>>(),
+                ["QUST", "DIAL", "INFO"]
+            );
+            assert_eq!(
+                payloads[1].translated_record["form_id"],
+                "23015B:FalloutNV.esm"
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("FalloutNV.esm");
+            let prepared = PreparedLegacyRecordPayload::from_translated(
                 TranslatedRecordPayload {
-                    source_form_key: "13015B:FalloutNV.esm".to_string(),
+                    source_form_key: "138A74:FalloutNV.esm".to_string(),
                     signature: "DIAL".to_string(),
                     translated_record: serde_json::json!({ "fields": [] }),
                     warnings: Vec::new(),
                 },
                 identity(
                     "DIAL",
-                    0x13015B,
-                    0x23015B,
+                    0x138A74,
+                    0x238A74,
                     plugin,
                     LegacyRecordTopology::QuestChild {
-                        source_parent: quest_source,
-                        target_parent: quest_target,
+                        source_parent: fk(0x138A00, plugin),
+                        target_parent: fk(0x238A00, plugin),
                     },
                 ),
             )
-            .unwrap(),
-            PreparedLegacyRecordPayload::from_translated(
-                TranslatedRecordPayload {
-                    source_form_key: "130100:FalloutNV.esm".to_string(),
-                    signature: "QUST".to_string(),
-                    translated_record: serde_json::json!({ "fields": [] }),
-                    warnings: Vec::new(),
-                },
-                identity(
-                    "QUST",
-                    0x130100,
-                    0x230100,
-                    plugin,
-                    LegacyRecordTopology::TopLevel,
-                ),
-            )
-            .unwrap(),
-        ];
+            .unwrap();
 
-        payloads.sort_by_key(PreparedLegacyRecordPayload::write_rank);
-        assert_eq!(
-            payloads
-                .iter()
-                .map(|payload| payload.identity.signature.as_str())
-                .collect::<Vec<_>>(),
-            ["QUST", "DIAL", "INFO"]
-        );
-        assert_eq!(
-            payloads[1].translated_record["form_id"],
-            "23015B:FalloutNV.esm"
-        );
-    }
-
-    #[test]
-    fn zero_info_dialogue_keeps_quest_child_topology() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("FalloutNV.esm");
-        let prepared = PreparedLegacyRecordPayload::from_translated(
-            TranslatedRecordPayload {
-                source_form_key: "138A74:FalloutNV.esm".to_string(),
-                signature: "DIAL".to_string(),
-                translated_record: serde_json::json!({ "fields": [] }),
-                warnings: Vec::new(),
-            },
-            identity(
-                "DIAL",
-                0x138A74,
-                0x238A74,
-                plugin,
-                LegacyRecordTopology::QuestChild {
-                    source_parent: fk(0x138A00, plugin),
-                    target_parent: fk(0x238A00, plugin),
-                },
-            ),
-        )
-        .unwrap();
-
-        assert_eq!(prepared.write_rank(), 1);
-        assert!(matches!(
-            prepared.identity.topology,
-            LegacyRecordTopology::QuestChild { .. }
-        ));
+            assert_eq!(prepared.write_rank(), 1);
+            assert!(matches!(
+                prepared.identity.topology,
+                LegacyRecordTopology::QuestChild { .. }
+            ));
+        }
     }
 }

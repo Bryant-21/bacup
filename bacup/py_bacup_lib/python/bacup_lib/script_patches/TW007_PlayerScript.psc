@@ -13,11 +13,33 @@ Event OnAliasShutdown()
 EndEvent
 
 Event OnItemAdded(Form akBaseItem, Int aiItemCount, ObjectReference akItemReference, ObjectReference akSourceContainer)
+	If RepairedID && akBaseItem == RepairedID
+		HandleRepairedID(akItemReference)
+		Return
+	EndIf
 	ReconcileFreddyClues()
 EndEvent
 
+; Crafting the repaired KidSecure ID at a tinker's bench closes the optional objective.
+Function HandleRepairedID(ObjectReference akItemReference)
+	Quest owningQuest = GetOwningQuest()
+	If owningQuest == None || !owningQuest.IsStageDone(500) || owningQuest.IsStageDone(1100)
+		Return
+	EndIf
+	If TrackerRepairedAlias && akItemReference
+		TrackerRepairedAlias.ForceRefTo(akItemReference)
+	EndIf
+	If FixedMessage
+		FixedMessage.Show()
+	EndIf
+	owningQuest.SetStage(1100)
+EndFunction
+
 Function ResetFreddyClueFilters()
 	RemoveAllInventoryEventFilters()
+	If RepairedID
+		AddInventoryEventFilter(RepairedID)
+	EndIf
 	If FreddyClues == None
 		Return
 	EndIf
@@ -53,6 +75,10 @@ Function ReconcileFreddyClues()
 		i += 1
 	EndWhile
 
+	B21:QuestVariables questVariables = owningQuest as B21:QuestVariables
+	If questVariables
+		questVariables.SetVariable("DamClueCount", Count as Float)
+	EndIf
 	If Count >= FreddyClues.Length
 		owningQuest.SetStage(FoundCluesStage)
 	EndIf

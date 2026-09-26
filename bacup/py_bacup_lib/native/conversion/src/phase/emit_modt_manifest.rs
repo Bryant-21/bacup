@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn bgsm_slot_roles_and_srgb_count() {
+    fn bgsm_and_bgem_slot_roles_and_srgb_count() {
         let mut m = BgsmData::default();
         m.DiffuseTexture = "textures\\a_d.dds".into();
         m.NormalTexture = "textures\\a_n.dds".into();
@@ -618,10 +618,7 @@ mod tests {
         );
         // diffuse, greyscale, envmap are sRGB; normal, smoothspec are linear.
         assert_eq!(srgb_count(&texs), 3);
-    }
 
-    #[test]
-    fn bgem_slot_roles_and_srgb_count() {
         let mut m = BgemData::default();
         m.BaseTexture = "textures\\b_d.dds".into();
         m.GrayscaleTexture = "textures\\b_g.dds".into();
@@ -643,7 +640,7 @@ mod tests {
     /// The per-mesh builder over in-memory material bytes (round-tripped through
     /// `bgsm::write`) — exercises extension dispatch + parse + role extraction.
     #[test]
-    fn build_entry_from_in_memory_bgsm_bytes() {
+    fn build_entry_from_in_memory_material_bytes_or_skips_mesh() {
         let mut m = BgsmData::default();
         m.header.signature = bgsm::BGSM_SIGNATURE;
         m.header.version = 2;
@@ -659,10 +656,7 @@ mod tests {
         assert_eq!(roles(&entry.textures), vec!["diffuse", "normal"]);
         assert_eq!(srgb_count(&entry.textures), 1);
         assert!(entry.addon_nodes.is_empty());
-    }
 
-    #[test]
-    fn build_entry_from_in_memory_bgem_bytes() {
         let mut m = BgemData::default();
         m.header.signature = bgem::BGEM_SIGNATURE;
         m.header.version = 20;
@@ -676,22 +670,13 @@ mod tests {
 
         assert_eq!(roles(&entry.textures), vec!["base", "envmap", "normal"]);
         assert_eq!(srgb_count(&entry.textures), 2); // base + envmap
-    }
 
-    #[test]
-    fn build_entry_skips_when_no_materials() {
         assert!(build_entry(&[], &[]).is_none());
-    }
-
-    #[test]
-    fn build_entry_skips_on_missing_material_file() {
-        // A material is referenced but none loaded (file missing) → skip whole mesh.
         let refs = vec!["materials/x.bgsm".to_string()];
-        assert!(build_entry(&refs, &[]).is_none());
-    }
-
-    #[test]
-    fn build_entry_skips_on_parse_failure() {
+        assert!(
+            build_entry(&refs, &[]).is_none(),
+            "missing material file skips mesh"
+        );
         let rel = "materials/bad.bgsm".to_string();
         let loaded = vec![(rel.clone(), vec![0u8, 1, 2, 3])];
         assert!(build_entry(&[rel], &loaded).is_none());
@@ -750,134 +735,6 @@ mod tests {
         std::fs::write(&path, b"invalid material").unwrap();
         let third = MaterialTextureCache::default();
         assert!(third.get(&path, "shared.bgsm").get().unwrap().is_none());
-    }
-
-    #[test]
-    #[ignore = "requires MODT_CORPUS_ROOT and MODT_CORPUS_REPORT"]
-    fn material_cache_matches_uncached_output_corpus() {
-        let mod_root = PathBuf::from(std::env::var("MODT_CORPUS_ROOT").unwrap());
-        let report_path = PathBuf::from(std::env::var("MODT_CORPUS_REPORT").unwrap());
-        let data_dir = mod_root.join("data");
-        let root = find_child_ci(&data_dir, "meshes").unwrap();
-        let paths = collect_nifs(&root);
-        assert!(!paths.is_empty());
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(20)
-            .build()
-            .unwrap();
-        let started = std::time::Instant::now();
-        let dependencies = OutputNifDependencies::default();
-        let uncaptured = OutputNifDependencies::default();
-        let baseline_materials = MaterialTextureCache::default();
-        let (baseline_rows, baseline_profile) = pool.install(|| {
-            paths
-                .par_iter()
-                .map(|path| {
-                    build_mesh_entry_profiled(
-                        &data_dir,
-                        &root,
-                        path,
-                        &baseline_materials,
-                        &uncaptured,
-                        Some(&dependencies),
-                    )
-                })
-                .fold(
-                    || (Vec::new(), MeshBuildProfile::default()),
-                    |(mut rows, profile), (entry, item_profile)| {
-                        if let Some(entry) = entry {
-                            rows.push(entry);
-                        }
-                        (rows, profile.merge(item_profile))
-                    },
-                )
-                .reduce(
-                    || (Vec::new(), MeshBuildProfile::default()),
-                    |(mut left_rows, left_profile), (mut right_rows, right_profile)| {
-                        left_rows.append(&mut right_rows);
-                        (left_rows, left_profile.merge(right_profile))
-                    },
-                )
-        });
-        let baseline: BTreeMap<_, _> = baseline_rows.into_iter().collect();
-        let baseline_seconds = started.elapsed().as_secs_f64();
-        let materials = MaterialTextureCache::default();
-        let started = std::time::Instant::now();
-        let (actual_rows, cached_profile) = pool.install(|| {
-            paths
-                .par_iter()
-                .map(|path| {
-                    build_mesh_entry_profiled(
-                        &data_dir,
-                        &root,
-                        path,
-                        &materials,
-                        &dependencies,
-                        None,
-                    )
-                })
-                .fold(
-                    || (Vec::new(), MeshBuildProfile::default()),
-                    |(mut rows, profile), (entry, item_profile)| {
-                        if let Some(entry) = entry {
-                            rows.push(entry);
-                        }
-                        (rows, profile.merge(item_profile))
-                    },
-                )
-                .reduce(
-                    || (Vec::new(), MeshBuildProfile::default()),
-                    |(mut left_rows, left_profile), (mut right_rows, right_profile)| {
-                        left_rows.append(&mut right_rows);
-                        (left_rows, left_profile.merge(right_profile))
-                    },
-                )
-        });
-        let actual: BTreeMap<_, _> = actual_rows.into_iter().collect();
-        let cached_seconds = started.elapsed().as_secs_f64();
-        assert_eq!(
-            serde_json::to_value(&actual).unwrap(),
-            serde_json::to_value(&baseline).unwrap()
-        );
-        let report = serde_json::json!({
-            "source": mod_root,
-            "nifs_checked": paths.len(),
-            "manifest_entries": actual.len(),
-            "material_paths_loaded": materials.entries.lock().unwrap().len(),
-            "baseline_seconds": baseline_seconds,
-            "cached_seconds": cached_seconds,
-            "manifests_identical": true,
-            "captured_hits": dependencies.counts().0,
-            "fallback_parses": dependencies.counts().1,
-            "baseline_profile": {
-                "bytes_read": baseline_profile.bytes_read,
-                "read_worker_ms": baseline_profile.read_ns / 1_000_000,
-                "lookup_worker_ms": baseline_profile.lookup_ns / 1_000_000,
-                "hash_worker_ms": baseline_profile.hash_ns / 1_000_000,
-                "parse_worker_ms": baseline_profile.parse_ns / 1_000_000,
-                "release_worker_ms": baseline_profile.release_ns / 1_000_000,
-                "material_worker_ms": baseline_profile.material_ns / 1_000_000,
-                "capture_worker_ms": baseline_profile.capture_ns / 1_000_000,
-            },
-            "cached_profile": {
-                "bytes_read": cached_profile.bytes_read,
-                "read_worker_ms": cached_profile.read_ns / 1_000_000,
-                "lookup_worker_ms": cached_profile.lookup_ns / 1_000_000,
-                "hash_worker_ms": cached_profile.hash_ns / 1_000_000,
-                "parse_worker_ms": cached_profile.parse_ns / 1_000_000,
-                "release_worker_ms": cached_profile.release_ns / 1_000_000,
-                "material_worker_ms": cached_profile.material_ns / 1_000_000,
-            },
-        });
-        if let Some(path) = std::env::var_os("MODT_CORPUS_MANIFEST") {
-            std::fs::write(
-                path,
-                serde_json::to_vec(&MeshModtManifest { meshes: actual }).unwrap(),
-            )
-            .unwrap();
-        }
-        std::fs::write(report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-        eprintln!("{report}");
     }
 
     #[test]

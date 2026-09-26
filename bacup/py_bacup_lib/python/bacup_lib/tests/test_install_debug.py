@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bacup_lib.install_debug import audit_archive_ini, repair_archive_ini
 
 _MOD_NAME = "SeventySix"
@@ -95,37 +97,21 @@ def test_repair_registers_missing_names_and_reaudit_is_clean(tmp_path: Path) -> 
     assert rows_by_name[_TEXTURES_BA2].registered is True
 
 
-def test_audit_with_no_ini_path_reports_none_and_note(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ini_name", [None, "does_not_exist.ini"])
+def test_audit_without_an_ini_reports_none_and_note(tmp_path: Path, ini_name) -> None:
     deploy_dir = _seed_deploy_dir(tmp_path)
+    ini_path = tmp_path / ini_name if ini_name else None
 
     report = audit_archive_ini(
         deploy_dir=deploy_dir,
-        ini_path=None,
+        ini_path=ini_path,
         mod_name=_MOD_NAME,
         plugin_name=_PLUGIN_NAME,
     )
 
-    assert report.note == "No INI target for this install location."
+    assert report.note == (f"INI not found: {ini_path}" if ini_path else "No INI target for this install location.")
     ba2_rows = [row for row in report.rows if row.kind == "ba2"]
     assert {row.name for row in ba2_rows} == {_MAIN_BA2, _TEXTURES_BA2}
-    assert all(row.registered is None for row in ba2_rows)
-    assert report.missing_registration == []
-    assert report.stale_registration == []
-
-
-def test_audit_with_missing_ini_file_reports_none_and_note(tmp_path: Path) -> None:
-    deploy_dir = _seed_deploy_dir(tmp_path)
-    missing_ini_path = tmp_path / "does_not_exist.ini"
-
-    report = audit_archive_ini(
-        deploy_dir=deploy_dir,
-        ini_path=missing_ini_path,
-        mod_name=_MOD_NAME,
-        plugin_name=_PLUGIN_NAME,
-    )
-
-    assert report.note == f"INI not found: {missing_ini_path}"
-    ba2_rows = [row for row in report.rows if row.kind == "ba2"]
     assert all(row.registered is None for row in ba2_rows)
     assert report.missing_registration == []
     assert report.stale_registration == []

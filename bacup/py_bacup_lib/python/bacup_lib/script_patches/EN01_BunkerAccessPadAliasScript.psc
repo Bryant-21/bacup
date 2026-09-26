@@ -7,7 +7,10 @@ Event OnActivate(ObjectReference akActionRef)
         OpenBunkerDoor()
         Return
     EndIf
-    If !EN01_MQ_Bunker.IsStageDone(5)
+    If !EN01_MQ_Bunker.IsRunning() && !EN01_MQ_Bunker.IsCompleted()
+        StartBunkerQuest(playerRef)
+    EndIf
+    If EN01_MQ_Bunker.IsRunning() && !EN01_MQ_Bunker.IsStageDone(5)
         EN01_MQ_Bunker.SetStage(5)
     EndIf
     If !bTriggerDialogue
@@ -25,6 +28,14 @@ Event OnTimer(Int aiTimerID)
         bTriggerDialogue = False
     EndIf
 EndEvent
+
+; EN01_MQ_Bunker is event-scoped, so SetStage cannot start it; FO76 let the pad start the quest (wiki "Given by").
+Function StartBunkerQuest(Actor playerRef)
+    Keyword startKeyword = Game.GetFormFromFile(0x001906D9, "SeventySix.esm") as Keyword
+    If startKeyword != None
+        startKeyword.SendStoryEventAndWait(None, playerRef, playerRef)
+    EndIf
+EndFunction
 
 Function OpenBunkerDoor()
     ObjectReference doorRef = InvisibleBunkerDoor

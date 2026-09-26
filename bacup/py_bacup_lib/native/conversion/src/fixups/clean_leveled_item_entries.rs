@@ -1098,13 +1098,20 @@ mod tests {
         )
     }
 
+    fn field_sigs(record: &Record) -> Vec<&str> {
+        record
+            .fields
+            .iter()
+            .map(|entry| entry.sig.as_str())
+            .collect()
+    }
+
     #[test]
-    fn source_chance_none_global_sets_lvld_and_keeps_lvlg() {
+    fn source_chance_none_global_sets_or_inserts_lvld_and_keeps_lvlg() {
         let interner = StringInterner::new();
-        let record_fk = make_fk("4510AF", "SeventySix.esm", &interner);
         let global_fk = make_fk("4510B1", "SeventySix.esm", &interner);
         let mut record = make_lvln(
-            record_fk,
+            make_fk("4510AF", "SeventySix.esm", &interner),
             vec![
                 uint_field("LVLD", 0),
                 uint_field("LVLM", 0),
@@ -1112,45 +1119,19 @@ mod tests {
                 uint_field("LVLF", 8),
             ],
         );
+        assert!(apply_source_chance_none_global(&mut record, Some(50)));
+        assert_eq!(field_sigs(&record), vec!["LVLD", "LVLM", "LVLG", "LVLF"]);
+        assert_eq!(record.fields[0].value, FieldValue::Uint(50));
 
-        let changed = apply_source_chance_none_global(&mut record, Some(50));
-
-        assert!(changed);
-        assert_eq!(
-            record
-                .fields
-                .iter()
-                .find(|entry| entry.sig.as_str() == "LVLD")
-                .map(|entry| &entry.value),
-            Some(&FieldValue::Uint(50))
-        );
-        assert!(
-            record
-                .fields
-                .iter()
-                .any(|entry| entry.sig.as_str() == "LVLG")
-        );
-    }
-
-    #[test]
-    fn source_chance_none_global_inserts_lvld_before_leveled_fields() {
-        let interner = StringInterner::new();
-        let record_fk = make_fk("519701", "SeventySix.esm", &interner);
-        let global_fk = make_fk("369793", "SeventySix.esm", &interner);
         let mut record = make_lvli(
-            record_fk,
-            vec![formkey_field("LVLG", global_fk), uint_field("LVLF", 3)],
+            make_fk("519701", "SeventySix.esm", &interner),
+            vec![
+                formkey_field("LVLG", make_fk("369793", "SeventySix.esm", &interner)),
+                uint_field("LVLF", 3),
+            ],
         );
-
-        let changed = apply_source_chance_none_global(&mut record, Some(25));
-
-        assert!(changed);
-        let sigs: Vec<&str> = record
-            .fields
-            .iter()
-            .map(|entry| entry.sig.as_str())
-            .collect();
-        assert_eq!(sigs, vec!["LVLD", "LVLG", "LVLF"]);
+        assert!(apply_source_chance_none_global(&mut record, Some(25)));
+        assert_eq!(field_sigs(&record), vec!["LVLD", "LVLG", "LVLF"]);
         assert_eq!(record.fields[0].value, FieldValue::Uint(25));
     }
 
@@ -1170,35 +1151,25 @@ mod tests {
     }
 
     #[test]
-    fn ensure_leveled_list_defaults_inserts_lvld_and_lvlm_before_entries() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
+    fn ensure_leveled_list_defaults_inserts_missing_and_preserves_existing() {
+        let interner = StringInterner::new();
+        let record_fk = make_fk("000800", "Mod.esp", &interner);
         let mut record = make_lvln(
             record_fk,
             vec![
                 uint_field("LVLF", 0),
                 uint_field("LLCT", 1),
-                lvlo_entry(valid_master_fk(&mut interner), &mut interner),
+                lvlo_entry(valid_master_fk(&interner), &interner),
             ],
         );
-
-        let changed = ensure_leveled_list_defaults(&mut record);
-
-        assert!(changed);
-        let sigs: Vec<&str> = record
-            .fields
-            .iter()
-            .map(|entry| entry.sig.as_str())
-            .collect();
-        assert_eq!(sigs, vec!["LVLD", "LVLM", "LVLF", "LLCT", "LVLO"]);
+        assert!(ensure_leveled_list_defaults(&mut record));
+        assert_eq!(
+            field_sigs(&record),
+            vec!["LVLD", "LVLM", "LVLF", "LLCT", "LVLO"]
+        );
         assert_eq!(record.fields[0].value, FieldValue::Uint(0));
         assert_eq!(record.fields[1].value, FieldValue::Uint(0));
-    }
 
-    #[test]
-    fn ensure_leveled_list_defaults_preserves_existing_values() {
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
         let mut record = make_lvln(
             record_fk,
             vec![
@@ -1207,181 +1178,238 @@ mod tests {
                 uint_field("LLCT", 0),
             ],
         );
-
-        let changed = ensure_leveled_list_defaults(&mut record);
-
-        assert!(!changed);
+        assert!(!ensure_leveled_list_defaults(&mut record));
         assert_eq!(record.fields[0].value, FieldValue::Uint(42));
         assert_eq!(record.fields[1].value, FieldValue::Uint(3));
     }
 
     #[test]
-    fn record_has_candidate_entries_flags_missing_leveled_defaults() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let record = make_lvln(record_fk, vec![uint_field("LLCT", 0)]);
-        let masters = target_master_names();
-        let target_masters: Vec<(String, u64)> = Vec::new();
-
-        assert!(record_has_candidate_entries(
-            &record,
-            ref_sym(&mut interner),
-            &masters,
-            "Mod.esp",
-            &target_masters,
-            &interner,
-        ));
+    fn record_has_candidate_entries_flags_suspect_records() {
+        let interner = StringInterner::new();
+        let record_fk = make_fk("000800", "Mod.esp", &interner);
+        for (name, fields, target_masters) in [
+            (
+                "missing leveled defaults",
+                vec![uint_field("LLCT", 0)],
+                Vec::new(),
+            ),
+            (
+                "output plugin entry",
+                vec![lvlo_entry(missing_output_fk(&interner), &interner)],
+                Vec::new(),
+            ),
+            (
+                "LLKC master keyword so apply_to_record gets to prune it",
+                vec![
+                    uint_field("LVLD", 1),
+                    uint_field("LVLM", 1),
+                    llkc_entry(&[make_fk("009000", "Fallout4.esm", &interner)], &interner),
+                ],
+                vec![("fallout4.esm".to_string(), 1u64)],
+            ),
+        ] {
+            let record = make_lvli(record_fk, fields);
+            assert!(
+                record_has_candidate_entries(
+                    &record,
+                    ref_sym(&interner),
+                    &target_master_names(),
+                    "Mod.esp",
+                    &target_masters,
+                    &interner,
+                ),
+                "{name}"
+            );
+        }
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_no_op_when_all_entries_valid() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let entry = lvlo_entry(valid_master_fk(&mut interner), &mut interner);
-        let mut record = make_lvli(record_fk, vec![entry]);
-
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(
-            !changed,
-            "no entries should be dropped when reference is valid"
-        );
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_drops_null_reference() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let null_entry = lvlo_entry(null_fk(&mut interner), &mut interner);
-        let mut record = make_lvli(record_fk, vec![null_entry]);
-
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "null reference entry should be dropped");
-        assert!(record.fields.is_empty(), "the entry should be removed");
+    fn pred_for(kind: &str, interner: &StringInterner) -> Box<dyn FnMut(&FormKey) -> bool> {
+        match kind {
+            "null" => null_pred(),
+            "master" => master_pred(interner),
+            "output" => output_plugin_pred(interner),
+            "any" => Box::new(|_: &FormKey| true),
+            other => panic!("unknown predicate {other}"),
+        }
     }
 
     #[test]
-    fn apply_to_record_drops_null_item_field() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let null_entry = lvlo_named_entry("item", null_fk(&mut interner), &mut interner);
-        let mut record = make_lvli(record_fk, vec![null_entry]);
-
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "null item entry should be dropped");
-        assert!(record.fields.is_empty(), "the entry should be removed");
-    }
-
-    #[test]
-    fn apply_to_record_drops_missing_master_npc_field() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let missing_fk = make_fk("009000", "Fallout4.esm", &mut interner);
-        let bad_entry = lvlo_named_entry("npc", missing_fk, &mut interner);
-        let mut record = make_lvli(record_fk, vec![bad_entry]);
-
-        let pred = master_pred(&mut interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "missing-master npc entry should be dropped");
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn apply_to_record_drops_missing_output_plugin_entry() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let bad_entry = lvlo_entry(missing_output_fk(&mut interner), &mut interner);
-        let mut record = make_lvli(record_fk, vec![bad_entry]);
-
-        let pred = output_plugin_pred(&mut interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "missing output-plugin entry should be dropped");
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn record_has_candidate_entries_flags_output_plugin_entry() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let entry = lvlo_entry(missing_output_fk(&mut interner), &mut interner);
-        let record = make_lvli(record_fk, vec![entry]);
-        let masters = target_master_names();
-        let target_masters: Vec<(String, u64)> = Vec::new();
-
-        assert!(record_has_candidate_entries(
-            &record,
-            ref_sym(&mut interner),
-            &masters,
-            "Mod.esp",
-            &target_masters,
-            &interner,
-        ));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_keeps_valid_drops_null() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let valid_entry = lvlo_entry(valid_master_fk(&mut interner), &mut interner);
-        let null_entry = lvlo_entry(null_fk(&mut interner), &mut interner);
-        let mut record = make_lvli(record_fk, vec![valid_entry, null_entry]);
-
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed);
-        assert_eq!(record.fields.len(), 1, "only the valid entry should remain");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_preserves_non_lvlo_fields() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let llct = FieldEntry {
-            sig: SubrecordSig::from_str("LLCT").unwrap(),
-            value: FieldValue::Uint(1),
+    fn apply_to_record_drops_only_dangling_lvlo_entries() {
+        let interner = StringInterner::new();
+        let record_fk = make_fk("000800", "Mod.esp", &interner);
+        let llct = || uint_field("LLCT", 1);
+        let named_null = |field: &str| lvlo_named_entry(field, null_fk(&interner), &interner);
+        let count_only = FieldEntry {
+            sig: SubrecordSig::from_str("LVLO").unwrap(),
+            value: FieldValue::Struct(vec![(interner.intern("Count"), FieldValue::Uint(1))]),
         };
-        let null_entry = lvlo_entry(null_fk(&mut interner), &mut interner);
-
-        let mut record = make_lvli(record_fk, vec![llct, null_entry]);
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed);
-        assert_eq!(record.fields.len(), 1, "LLCT should be preserved");
-        assert_eq!(record.fields[0].sig.as_str(), "LLCT");
+        let missing_master = make_fk("009000", "Fallout4.esm", &interner);
+        let cases: Vec<(&str, Vec<FieldEntry>, &str, bool, Vec<&str>)> = vec![
+            (
+                "all entries valid",
+                vec![lvlo_entry(valid_master_fk(&interner), &interner)],
+                "null",
+                false,
+                vec!["LVLO"],
+            ),
+            ("empty record", vec![], "null", false, vec![]),
+            (
+                "null Reference dropped",
+                vec![named_null("Reference")],
+                "null",
+                true,
+                vec![],
+            ),
+            (
+                "null item dropped",
+                vec![named_null("item")],
+                "null",
+                true,
+                vec![],
+            ),
+            (
+                "null Condition is not a reference",
+                vec![named_null("Condition")],
+                "null",
+                false,
+                vec!["LVLO"],
+            ),
+            (
+                "entry without reference field kept",
+                vec![count_only],
+                "null",
+                false,
+                vec!["LVLO"],
+            ),
+            (
+                "missing-master npc dropped",
+                vec![lvlo_named_entry("npc", missing_master, &interner)],
+                "master",
+                true,
+                vec![],
+            ),
+            (
+                "missing-master Reference dropped",
+                vec![lvlo_entry(missing_master, &interner)],
+                "master",
+                true,
+                vec![],
+            ),
+            (
+                "missing output-plugin entry dropped",
+                vec![lvlo_entry(missing_output_fk(&interner), &interner)],
+                "output",
+                true,
+                vec![],
+            ),
+            (
+                "valid kept, null dropped",
+                vec![
+                    lvlo_entry(valid_master_fk(&interner), &interner),
+                    lvlo_entry(null_fk(&interner), &interner),
+                ],
+                "null",
+                true,
+                vec!["LVLO"],
+            ),
+            (
+                "non-LVLO fields preserved",
+                vec![llct(), lvlo_entry(null_fk(&interner), &interner)],
+                "null",
+                true,
+                vec!["LLCT"],
+            ),
+            (
+                "existing master kept",
+                vec![lvlo_entry(valid_master_fk(&interner), &interner)],
+                "master",
+                false,
+                vec!["LVLO"],
+            ),
+            (
+                "FO4 caps kept even when the master probe flags it",
+                vec![lvlo_entry(
+                    make_fk("00000F", "Fallout4.esm", &interner),
+                    &interner,
+                )],
+                "any",
+                false,
+                vec!["LVLO"],
+            ),
+            (
+                "non-master kept",
+                vec![lvlo_entry(non_master_fk(&interner), &interner)],
+                "master",
+                false,
+                vec!["LVLO"],
+            ),
+            (
+                "mixed entries keep only the valid ones",
+                vec![
+                    lvlo_entry(non_master_fk(&interner), &interner),
+                    lvlo_entry(null_fk(&interner), &interner),
+                    lvlo_entry(missing_master, &interner),
+                    lvlo_entry(valid_master_fk(&interner), &interner),
+                ],
+                "master",
+                true,
+                vec!["LVLO", "LVLO"],
+            ),
+            (
+                "raw null dropped",
+                vec![lvlo_raw_entry(0)],
+                "null",
+                true,
+                vec![],
+            ),
+            (
+                "raw self-reference dropped",
+                vec![lvlo_raw_entry(0x0100_0800)],
+                "null",
+                true,
+                vec![],
+            ),
+            (
+                "raw missing-master dropped",
+                vec![lvlo_raw_entry(0x0000_9000)],
+                "master",
+                true,
+                vec![],
+            ),
+            (
+                "raw existing master kept",
+                vec![lvlo_raw_entry(0x0000_1234)],
+                "master",
+                false,
+                vec!["LVLO"],
+            ),
+        ];
+        for (name, fields, pred_kind, changed, remaining) in cases {
+            let mut record = make_lvli(record_fk, fields);
+            let mut pred = pred_for(pred_kind, &interner);
+            assert_eq!(
+                apply_for_test(&mut record, &interner, &mut pred),
+                changed,
+                "{name}"
+            );
+            assert_eq!(field_sigs(&record), remaining, "{name}");
+        }
     }
 
     #[test]
     fn apply_to_record_syncs_llct_after_drop() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let llct = FieldEntry {
-            sig: SubrecordSig::from_str("LLCT").unwrap(),
-            value: FieldValue::Uint(2),
-        };
-        let valid_entry = lvlo_entry(valid_master_fk(&mut interner), &mut interner);
-        let null_entry = lvlo_entry(null_fk(&mut interner), &mut interner);
-
-        let mut record = make_lvli(record_fk, vec![llct, valid_entry, null_entry]);
+        let interner = StringInterner::new();
+        let record_fk = make_fk("000800", "Mod.esp", &interner);
+        let mut record = make_lvli(
+            record_fk,
+            vec![
+                uint_field("LLCT", 2),
+                lvlo_entry(valid_master_fk(&interner), &interner),
+                lvlo_entry(null_fk(&interner), &interner),
+            ],
+        );
         let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed);
+        assert!(apply_for_test(&mut record, &interner, &mut pred));
         let llct = record
             .fields
             .iter()
@@ -1389,72 +1417,6 @@ mod tests {
             .expect("LLCT survives");
         assert_eq!(llct.value, FieldValue::Uint(1));
     }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_empty_record_no_op() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let mut record = make_lvli(record_fk, vec![]);
-
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(!changed);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_keeps_entry_with_no_reference_field() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let count_sym = interner.intern("Count");
-        let no_ref_entry = FieldEntry {
-            sig: SubrecordSig::from_str("LVLO").unwrap(),
-            value: FieldValue::Struct(vec![(count_sym, FieldValue::Uint(1))]),
-        };
-
-        let mut record = make_lvli(record_fk, vec![no_ref_entry]);
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(!changed, "entry with no Reference field should be kept");
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    //
-    // An LVLO struct with a null "Condition" FK but no "Reference" field must
-    // be kept — only the named Reference triggers a drop.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_does_not_drop_on_other_named_null_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let cond_sym = interner.intern("Condition");
-        let entry = FieldEntry {
-            sig: SubrecordSig::from_str("LVLO").unwrap(),
-            value: FieldValue::Struct(vec![(
-                cond_sym,
-                FieldValue::FormKey(null_fk(&mut interner)),
-            )]),
-        };
-
-        let mut record = make_lvli(record_fk, vec![entry]);
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(
-            !changed,
-            "null FK in 'Condition' must not trigger a drop — only 'Reference' counts"
-        );
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
 
     fn llkc_entry(keywords: &[FormKey], interner: &StringInterner) -> FieldEntry {
         let kw_sym = interner.intern("filter_keyword_chances_keyword");
@@ -1486,225 +1448,42 @@ mod tests {
     }
 
     #[test]
-    fn llkc_drops_dangling_keyword_row_keeps_valid() {
+    fn llkc_drops_dangling_keyword_rows() {
         let interner = StringInterner::new();
         let record_fk = make_fk("000800", "Mod.esp", &interner);
-        let valid = make_fk("001234", "Fallout4.esm", &interner); // < 0x8000 → valid
-        let dangling = make_fk("009000", "Fallout4.esm", &interner); // > 0x8000 → missing
-        let mut record = make_lvli(record_fk, vec![llkc_entry(&[valid, dangling], &interner)]);
-
-        let mut pred = master_pred(&interner);
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "dangling LLKC keyword row should be dropped");
-        assert_eq!(llkc_rows(&record), Some(1), "valid row kept");
-    }
-
-    #[test]
-    fn llkc_drops_whole_subrecord_when_all_rows_dangle() {
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
-        let dangling = make_fk("009000", "Fallout4.esm", &interner);
-        let mut record = make_lvli(record_fk, vec![llkc_entry(&[dangling], &interner)]);
-
-        let mut pred = master_pred(&interner);
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed);
-        assert_eq!(llkc_rows(&record), None, "empty LLKC subrecord dropped");
-    }
-
-    #[test]
-    fn llkc_inert_when_keyword_resolves() {
-        // All keywords valid in master → no drop (this is the master-less-run shape:
-        // with no masters loaded, the predicate never flags FO4 keywords).
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
+        // master_pred: Fallout4.esm locals above 0x8000 are "missing".
         let valid_a = make_fk("001234", "Fallout4.esm", &interner);
         let valid_b = make_fk("005678", "Fallout4.esm", &interner);
-        let mut record = make_lvli(record_fk, vec![llkc_entry(&[valid_a, valid_b], &interner)]);
-
-        let mut pred = master_pred(&interner);
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(!changed, "all-valid LLKC untouched");
-        assert_eq!(llkc_rows(&record), Some(2));
-    }
-
-    #[test]
-    fn record_has_candidate_entries_flags_llkc_master_keyword() {
-        // A LVLI whose only suspect subrecord is an LLKC pointing at a master must
-        // still be selected as a candidate so apply_to_record gets to prune it.
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
-        let kw = make_fk("009000", "Fallout4.esm", &interner);
-        let record = make_lvli(
-            record_fk,
-            vec![
-                uint_field("LVLD", 1),
-                uint_field("LVLM", 1),
-                llkc_entry(&[kw], &interner),
-            ],
-        );
-        let masters = vec![("fallout4.esm".to_string(), 1u64)];
-        assert!(record_has_candidate_entries(
-            &record,
-            ref_sym(&interner),
-            &target_master_names(),
-            "Mod.esp",
-            &masters,
-            &interner,
-        ));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_drops_missing_master_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        // local 0x9000 > 0x8000 → simulated predicate marks it missing from master.
-        let missing_fk = make_fk("009000", "Fallout4.esm", &mut interner);
-        let bad_entry = lvlo_entry(missing_fk, &mut interner);
-        let mut record = make_lvli(record_fk, vec![bad_entry]);
-
-        let pred = master_pred(&mut interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "entry with missing-master FK should be dropped");
-        assert!(record.fields.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_keeps_existing_master_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        // local 0x1234 < 0x8000 → predicate marks it as valid.
-        let good_entry = lvlo_entry(valid_master_fk(&mut interner), &mut interner);
-        let mut record = make_lvli(record_fk, vec![good_entry]);
-
-        let pred = master_pred(&mut interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(!changed, "entry with existing master FK should be kept");
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn apply_to_record_keeps_fo4_caps_when_master_probe_flags_invalid() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let caps = make_fk("00000F", "Fallout4.esm", &mut interner);
-        let mut record = make_lvli(record_fk, vec![lvlo_entry(caps, &mut interner)]);
-        let mut pred = Box::new(|_: &FormKey| true);
-
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-
-        assert!(
-            !changed,
-            "FO4 caps should remain a valid leveled item entry"
-        );
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_keeps_non_master_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let entry = lvlo_entry(non_master_fk(&mut interner), &mut interner);
-        let mut record = make_lvli(record_fk, vec![entry]);
-
-        let pred = master_pred(&mut interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(!changed, "entry with non-master FK should be kept");
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_mixed_multi_entry_keeps_only_valid() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        // good: non-master (SomeMod.esp) — kept by master_pred.
-        let good1 = lvlo_entry(non_master_fk(&mut interner), &mut interner);
-        // bad: null FK.
-        let bad_null = lvlo_entry(null_fk(&mut interner), &mut interner);
-        // bad: Fallout4.esm local > 0x8000 → missing from master.
-        let bad_missing = lvlo_entry(
-            make_fk("009000", "Fallout4.esm", &mut interner),
-            &mut interner,
-        );
-        // good: Fallout4.esm local < 0x8000 → kept.
-        let good2 = lvlo_entry(valid_master_fk(&mut interner), &mut interner);
-
-        let mut record = make_lvli(record_fk, vec![good1, bad_null, bad_missing, good2]);
-
-        let pred = master_pred(&mut interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed);
-        assert_eq!(
-            record.fields.len(),
-            2,
-            "only the two valid entries should survive"
-        );
-    }
-
-    #[test]
-    fn apply_to_record_drops_raw_null_reference() {
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
-        let mut record = make_lvli(record_fk, vec![lvlo_raw_entry(0)]);
-
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "raw null reference entry should be dropped");
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn apply_to_record_drops_raw_self_reference() {
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
-        let mut record = make_lvli(record_fk, vec![lvlo_raw_entry(0x0100_0800)]);
-
-        let mut pred = null_pred();
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "raw self-reference entry should be dropped");
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn apply_to_record_drops_raw_missing_master_fk() {
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
-        let mut record = make_lvli(record_fk, vec![lvlo_raw_entry(0x0000_9000)]);
-
-        let pred = master_pred(&interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(changed, "raw missing-master FK should be dropped");
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn apply_to_record_keeps_raw_existing_master_fk() {
-        let interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &interner);
-        let mut record = make_lvli(record_fk, vec![lvlo_raw_entry(0x0000_1234)]);
-
-        let pred = master_pred(&interner);
-        let mut pred = pred;
-        let changed = apply_for_test(&mut record, &interner, &mut pred);
-        assert!(!changed, "raw existing-master FK should be kept");
-        assert_eq!(record.fields.len(), 1);
+        let dangling = make_fk("009000", "Fallout4.esm", &interner);
+        for (name, keywords, changed, rows) in [
+            (
+                "dangling row dropped, valid kept",
+                vec![valid_a, dangling],
+                true,
+                Some(1),
+            ),
+            (
+                "all rows dangle drops the subrecord",
+                vec![dangling],
+                true,
+                None,
+            ),
+            (
+                "all keywords resolve",
+                vec![valid_a, valid_b],
+                false,
+                Some(2),
+            ),
+        ] {
+            let mut record = make_lvli(record_fk, vec![llkc_entry(&keywords, &interner)]);
+            let mut pred = master_pred(&interner);
+            assert_eq!(
+                apply_for_test(&mut record, &interner, &mut pred),
+                changed,
+                "{name}"
+            );
+            assert_eq!(llkc_rows(&record), rows, "{name}");
+        }
     }
 
     #[test]

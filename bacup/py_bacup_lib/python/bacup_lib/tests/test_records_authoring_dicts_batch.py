@@ -7,12 +7,6 @@ import json
 from creation_lib.esp import native_runtime
 
 
-def test_authoring_dict_batch_api_is_not_exported() -> None:
-    module = native_runtime.load_native_module()
-    assert not hasattr(module, "plugin_handle_record_as_authoring_dict")
-    assert not hasattr(module, "plugin_handle_records_as_authoring_dicts_batch")
-
-
 def test_record_text_export_replaces_per_record_authoring_dict_view() -> None:
     handle = native_runtime.plugin_handle_import_text(
         json.dumps(

@@ -1301,10 +1301,6 @@ fn asset_paths_in_record_order(
         .collect()
 }
 
-fn string_fields(record: &Record, signature: &str, interner: &StringInterner) -> Vec<String> {
-    string_fields_any(record, &[signature], interner)
-}
-
 fn string_fields_any(
     record: &Record,
     signatures: &[&str],
@@ -1400,7 +1396,7 @@ mod tests {
     use super::*;
     use crate::ids::{SigCode, SubrecordSig};
     use crate::record::{FieldEntry, Record};
-    use smallvec::{SmallVec, smallvec};
+    use smallvec::SmallVec;
 
     fn form_key(interner: &StringInterner, local: u32) -> FormKey {
         FormKey {
@@ -1486,484 +1482,414 @@ mod tests {
     }
 
     #[test]
-    fn race_project_paths_preserve_source_sex_order() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x680,
-            "DualProjectRace",
-            "Actors\\Primary\\PrimaryProject.hkx",
-        );
-        push_string(
-            &mut records[0],
-            "MODL",
-            "Actors\\Alternate\\AlternateProject.hkx",
-            &interner,
-        );
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-
-        assert_eq!(
-            plan.races[0].project_paths,
-            vec![
+    fn race_project_paths_and_spells_join_attack_dependencies() {
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x680,
+                "DualProjectRace",
                 "Actors\\Primary\\PrimaryProject.hkx",
-                "Actors\\Alternate\\AlternateProject.hkx"
-            ]
-        );
+            );
+            push_string(
+                &mut records[0],
+                "MODL",
+                "Actors\\Alternate\\AlternateProject.hkx",
+                &interner,
+            );
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+
+            assert_eq!(
+                plan.races[0].project_paths,
+                vec![
+                    "Actors\\Primary\\PrimaryProject.hkx",
+                    "Actors\\Alternate\\AlternateProject.hkx"
+                ]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x690,
+                "SpellCreatureRace",
+                "Actors\\SpellCreature\\SpellCreatureProject.hkx",
+            );
+            let spell = record(&interner, "SPEL", 0x699, "SpellCreatureAttack");
+            push_form(&mut records[0], "SPLO", spell.form_key);
+            records.push(spell);
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+
+            assert_eq!(
+                plan.races[0].attack_spells,
+                vec![form_key(&interner, 0x699)]
+            );
+        }
     }
 
     #[test]
-    fn race_spells_join_the_creature_attack_dependency_set() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x690,
-            "SpellCreatureRace",
-            "Actors\\SpellCreature\\SpellCreatureProject.hkx",
-        );
-        let spell = record(&interner, "SPEL", 0x699, "SpellCreatureAttack");
-        push_form(&mut records[0], "SPLO", spell.form_key);
-        records.push(spell);
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-
-        assert_eq!(
-            plan.races[0].attack_spells,
-            vec![form_key(&interner, 0x699)]
-        );
-    }
-
-    #[test]
-    fn attack_data_receipt_preserves_all_words_and_form_signatures() {
-        let interner = StringInterner::new();
-        let owner = form_key(&interner, 0x700);
-        let spell = record(&interner, "SHOU", 0x701, "VoiceAttack");
-        let attack_type = record(&interner, "KYWD", 0x702, "BiteAttack");
-        let records = vec![spell, attack_type];
-        let index = RecordIndex::new(&records, &interner);
-        let words = [
-            1.25_f32.to_bits(),
-            0.75_f32.to_bits(),
-            0x701,
-            0xA5A5_0001,
-            45.0_f32.to_bits(),
-            30.0_f32.to_bits(),
-            0.5_f32.to_bits(),
-            0x702,
-            0.25_f32.to_bits(),
-            1.5_f32.to_bits(),
-            2.0_f32.to_bits(),
-        ];
-        let bytes = words
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .collect::<SmallVec<[u8; 32]>>();
-        let receipt = parse_race_attack_data(
-            owner,
-            3,
-            "attackStart_Bite".to_string(),
-            &FieldValue::Bytes(bytes),
-            &index,
-            &interner,
-        )
-        .unwrap();
-
-        assert_eq!(receipt.ordinal, 3);
-        assert_eq!(receipt.event, "attackStart_Bite");
-        assert_eq!(receipt.damage_multiplier_bits, words[0]);
-        assert_eq!(receipt.attack_chance_bits, words[1]);
-        assert_eq!(receipt.attack_spell, Some(form_key(&interner, 0x701)));
-        assert_eq!(receipt.attack_spell_signature.as_deref(), Some("SHOU"));
-        assert_eq!(receipt.attack_flags, words[3]);
-        assert_eq!(receipt.attack_angle_bits, words[4]);
-        assert_eq!(receipt.strike_angle_bits, words[5]);
-        assert_eq!(receipt.stagger_bits, words[6]);
-        assert_eq!(receipt.attack_type, Some(form_key(&interner, 0x702)));
-        assert_eq!(receipt.attack_type_signature.as_deref(), Some("KYWD"));
-        assert_eq!(receipt.knockdown_bits, words[8]);
-        assert_eq!(receipt.recovery_time_bits, words[9]);
-        assert_eq!(receipt.stamina_multiplier_bits, words[10]);
-    }
-
-    #[test]
-    fn nonadjacent_attack_event_is_a_typed_catalog_issue() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x710,
-            "WolfRace",
-            "Actors\\Canine\\WolfProject.hkx",
-        );
-        let mut attack = vec![0_u8; RACE_ATTACK_DATA_LEN];
-        attack[0..4].copy_from_slice(&1.0_f32.to_le_bytes());
-        records[0].fields.insert(
-            3,
-            FieldEntry {
-                sig: SubrecordSig::from_str("ATKD").unwrap(),
-                value: FieldValue::Bytes(SmallVec::from_vec(attack)),
-            },
-        );
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-        assert!(plan.races[0].issues.iter().any(|issue| matches!(
-            issue,
-            CreatureCatalogIssue::MalformedRaceAttackData { ordinal: 1, detail }
-                if detail.contains("not followed")
-        )));
-    }
-
-    #[test]
-    fn classifier_excludes_actor_type_npc_and_curated_specials() {
-        let interner = StringInterner::new();
-        let actor_type_npc = form_key(&interner, ACTOR_TYPE_NPC_LOCAL);
-        let mut keyword = record(&interner, "KYWD", ACTOR_TYPE_NPC_LOCAL, "ActorTypeNPC");
-        keyword.form_key = actor_type_npc;
-
-        let mut humanoid = record(&interner, "RACE", 0x100, "NordRace");
-        push(
-            &mut humanoid,
-            "KWDA",
-            FieldValue::List(vec![FieldValue::FormKey(actor_type_npc)]),
-        );
-        push_string(
-            &mut humanoid,
-            "ANAM",
-            "Actors\\Character\\Skeleton.nif",
-            &interner,
-        );
-        push_string(
-            &mut humanoid,
-            "MODL",
-            "Actors\\Character\\DefaultMale.hkx",
-            &interner,
-        );
-        let special = record(&interner, "RACE", 0x200, "DefaultRace");
-        let mut records = vec![keyword, humanoid, special];
-        records.extend(complete_race_records(
-            &interner,
-            0x300,
-            "DwarvenSpiderRace",
-            "Actors\\DwarvenSpider\\DwarvenSpiderProject.hkx",
-        ));
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-        assert_eq!(plan.summary.total_race_records, 3);
-        assert_eq!(plan.summary.actor_type_npc_races, 1);
-        assert_eq!(plan.summary.curated_exclusions, 1);
-        assert_eq!(plan.summary.candidate_races, 1);
-        assert_eq!(
-            plan.races[0].editor_id.as_deref(),
-            Some("DwarvenSpiderRace")
-        );
-    }
-
-    #[test]
-    fn skin_closure_excludes_armor_addons_conditioned_for_other_races() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x400,
-            "WolfRace",
-            "Actors\\Canine\\WolfProject.hkx",
-        );
-        let unrelated_key = form_key(&interner, 0x410);
-        let unrelated_race = form_key(&interner, 0x411);
-        push_form(&mut records[1], "MODL", unrelated_key);
-        let mut unrelated = record(&interner, "ARMA", 0x410, "UnrelatedAddon");
-        push_form(&mut unrelated, "RNAM", unrelated_race);
-        push_string(
-            &mut unrelated,
-            "MOD2",
-            "Actors\\Wrong\\Wrong.nif",
-            &interner,
-        );
-        records.push(unrelated);
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-        assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x402)]);
-        assert_eq!(
-            plan.races[0].body_models,
-            vec!["Actors\\Test\\Character Assets\\Body.nif"]
-        );
-    }
-
-    #[test]
-    fn skin_closure_preserves_addons_with_the_race_in_additional_races() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x440,
-            "WolfRace",
-            "Actors\\Canine\\WolfProject.hkx",
-        );
-        let race = form_key(&interner, 0x440);
-        records[2]
-            .fields
-            .retain(|field| field.sig.as_str() != "RNAM");
-        push_form(&mut records[2], "RNAM", form_key(&interner, 0x450));
-        push_form(&mut records[2], "MODL", race);
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-
-        assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x442)]);
-        assert_eq!(
-            plan.races[0].body_models,
-            vec!["Actors\\Test\\Character Assets\\Body.nif"]
-        );
-    }
-
-    #[test]
-    fn skin_closure_falls_back_to_the_last_addon_when_none_names_the_race() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x460,
-            "MG07DogRace",
-            "Actors\\Canine\\DogProject.hkx",
-        );
-        records[2]
-            .fields
-            .retain(|field| field.sig.as_str() != "RNAM");
-        push_form(&mut records[2], "RNAM", form_key(&interner, 0x470));
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-
-        assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x462)]);
-        assert_eq!(
-            plan.races[0].body_models,
-            vec!["Actors\\Test\\Character Assets\\Body.nif"]
-        );
-        assert_eq!(plan.races[0].issues, Vec::new());
-    }
-
-    #[test]
-    fn skin_closure_fallback_prefers_the_last_of_several_unconditioned_addons() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x480,
-            "DLC1_BF_ChaurusRace",
-            "Actors\\Chaurus\\ChaurusProject.hkx",
-        );
-        records[2]
-            .fields
-            .retain(|field| field.sig.as_str() != "RNAM");
-        push_form(&mut records[2], "RNAM", form_key(&interner, 0x490));
-
-        let leftover_key = form_key(&interner, 0x491);
-        records[1]
-            .fields
-            .retain(|field| field.sig.as_str() != "MODL");
-        push_form(&mut records[1], "MODL", leftover_key);
-        push_form(&mut records[1], "MODL", form_key(&interner, 0x482));
-        let mut leftover = record(&interner, "ARMA", 0x491, "NakedCowAA");
-        push_form(&mut leftover, "RNAM", form_key(&interner, 0x492));
-        push_string(
-            &mut leftover,
-            "MOD2",
-            "Actors\\Cow\\Character Assets\\HighlandCow.nif",
-            &interner,
-        );
-        records.push(leftover);
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-
-        assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x482)]);
-        assert_eq!(
-            plan.races[0].body_models,
-            vec!["Actors\\Test\\Character Assets\\Body.nif"]
-        );
-        assert_eq!(plan.races[0].issues, Vec::new());
-    }
-
-    #[test]
-    fn skin_closure_excludes_first_person_armor_addon_models() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x420,
-            "WerewolfRace",
-            "Actors\\WerewolfBeast\\WerewolfBeastProject.hkx",
-        );
-        push_string(
-            &mut records[2],
-            "MOD3",
-            "Actors\\WerewolfBeast\\Character Assets\\FemaleBodyWerewolf_1.nif",
-            &interner,
-        );
-        push_string(
-            &mut records[2],
-            "MOD4",
-            "Actors\\Character\\Character Assets\\1stPersonMaleBody_1.nif",
-            &interner,
-        );
-        push_string(
-            &mut records[2],
-            "MOD5",
-            "Actors\\Character\\Character Assets\\1stPersonFemaleBody_1.nif",
-            &interner,
-        );
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-
-        assert_eq!(
-            plan.races[0].body_models,
-            vec![
-                "Actors\\Test\\Character Assets\\Body.nif",
-                "Actors\\WerewolfBeast\\Character Assets\\FemaleBodyWerewolf_1.nif",
-            ]
-        );
-        assert!(
-            plan.races[0]
-                .body_models
+    fn attack_data_receipt_preserves_words_and_types_nonadjacent_events() {
+        {
+            let interner = StringInterner::new();
+            let owner = form_key(&interner, 0x700);
+            let spell = record(&interner, "SHOU", 0x701, "VoiceAttack");
+            let attack_type = record(&interner, "KYWD", 0x702, "BiteAttack");
+            let records = vec![spell, attack_type];
+            let index = RecordIndex::new(&records, &interner);
+            let words = [
+                1.25_f32.to_bits(),
+                0.75_f32.to_bits(),
+                0x701,
+                0xA5A5_0001,
+                45.0_f32.to_bits(),
+                30.0_f32.to_bits(),
+                0.5_f32.to_bits(),
+                0x702,
+                0.25_f32.to_bits(),
+                1.5_f32.to_bits(),
+                2.0_f32.to_bits(),
+            ];
+            let bytes = words
                 .iter()
-                .all(|path| !path.to_ascii_lowercase().contains("1stperson"))
-        );
-    }
-
-    #[test]
-    fn traits_template_expands_through_leveled_npc_list() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x500,
-            "DwarvenCenturionRace",
-            "Actors\\DwarvenCenturion\\CenturionProject.hkx",
-        );
-        let race_key = form_key(&interner, 0x500);
-        let leaf_key = form_key(&interner, 0x510);
-        let list_key = form_key(&interner, 0x511);
-        let root_key = form_key(&interner, 0x512);
-
-        let mut leaf = record(&interner, "NPC_", 0x510, "CenturionTemplate");
-        push(&mut leaf, "ACBS", acbs(false));
-        push_form(&mut leaf, "RNAM", race_key);
-        let mut list = record(&interner, "LVLN", 0x511, "LCharCenturion");
-        push(&mut list, "LVLO", lvlo(leaf_key));
-        let mut root = record(&interner, "NPC_", 0x512, "LvlCenturionAmbush");
-        push(&mut root, "ACBS", acbs(true));
-        push_form(&mut root, "TPLT", list_key);
-        push_form(&mut root, "RNAM", form_key(&interner, 0x999));
-        records.extend([leaf, list, root]);
-
-        let plan = build_creature_corpus_plan(&records, &interner);
-        let root = plan
-            .npcs
-            .iter()
-            .find(|npc| npc.source_npc == root_key)
+                .flat_map(|word| word.to_le_bytes())
+                .collect::<SmallVec<[u8; 32]>>();
+            let receipt = parse_race_attack_data(
+                owner,
+                3,
+                "attackStart_Bite".to_string(),
+                &FieldValue::Bytes(bytes),
+                &index,
+                &interner,
+            )
             .unwrap();
-        assert_eq!(root.effective_races, vec![race_key]);
-        assert!(root.template_records.contains(&list_key));
-        assert!(root.template_records.contains(&leaf_key));
-        assert_eq!(root.readiness(), CreatureReadiness::RecordReady);
+
+            assert_eq!(receipt.ordinal, 3);
+            assert_eq!(receipt.event, "attackStart_Bite");
+            assert_eq!(receipt.damage_multiplier_bits, words[0]);
+            assert_eq!(receipt.attack_chance_bits, words[1]);
+            assert_eq!(receipt.attack_spell, Some(form_key(&interner, 0x701)));
+            assert_eq!(receipt.attack_spell_signature.as_deref(), Some("SHOU"));
+            assert_eq!(receipt.attack_flags, words[3]);
+            assert_eq!(receipt.attack_angle_bits, words[4]);
+            assert_eq!(receipt.strike_angle_bits, words[5]);
+            assert_eq!(receipt.stagger_bits, words[6]);
+            assert_eq!(receipt.attack_type, Some(form_key(&interner, 0x702)));
+            assert_eq!(receipt.attack_type_signature.as_deref(), Some("KYWD"));
+            assert_eq!(receipt.knockdown_bits, words[8]);
+            assert_eq!(receipt.recovery_time_bits, words[9]);
+            assert_eq!(receipt.stamina_multiplier_bits, words[10]);
+        }
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x710,
+                "WolfRace",
+                "Actors\\Canine\\WolfProject.hkx",
+            );
+            let mut attack = vec![0_u8; RACE_ATTACK_DATA_LEN];
+            attack[0..4].copy_from_slice(&1.0_f32.to_le_bytes());
+            records[0].fields.insert(
+                3,
+                FieldEntry {
+                    sig: SubrecordSig::from_str("ATKD").unwrap(),
+                    value: FieldValue::Bytes(SmallVec::from_vec(attack)),
+                },
+            );
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+            assert!(plan.races[0].issues.iter().any(|issue| matches!(
+                issue,
+                CreatureCatalogIssue::MalformedRaceAttackData { ordinal: 1, detail }
+                    if detail.contains("not followed")
+            )));
+        }
     }
 
     #[test]
-    fn template_cycle_is_typed_instead_of_dropped() {
-        let interner = StringInterner::new();
-        let first_key = form_key(&interner, 0x600);
-        let second_key = form_key(&interner, 0x601);
-        let mut first = record(&interner, "NPC_", 0x600, "CycleA");
-        push(&mut first, "ACBS", acbs(true));
-        push_form(&mut first, "TPLT", second_key);
-        let mut second = record(&interner, "NPC_", 0x601, "CycleB");
-        push(&mut second, "ACBS", acbs(true));
-        push_form(&mut second, "TPLT", first_key);
+    fn classifier_exclusions_and_grouping_are_deterministic() {
+        {
+            let interner = StringInterner::new();
+            let actor_type_npc = form_key(&interner, ACTOR_TYPE_NPC_LOCAL);
+            let mut keyword = record(&interner, "KYWD", ACTOR_TYPE_NPC_LOCAL, "ActorTypeNPC");
+            keyword.form_key = actor_type_npc;
 
-        let plan = build_creature_corpus_plan(&[first, second], &interner);
-        assert!(plan.readiness_ledger.iter().any(|entry| {
-            matches!(entry.subject, CreaturePlanSubject::Npc(key) if key == first_key)
-                && entry
-                    .issues
+            let mut humanoid = record(&interner, "RACE", 0x100, "NordRace");
+            push(
+                &mut humanoid,
+                "KWDA",
+                FieldValue::List(vec![FieldValue::FormKey(actor_type_npc)]),
+            );
+            push_string(
+                &mut humanoid,
+                "ANAM",
+                "Actors\\Character\\Skeleton.nif",
+                &interner,
+            );
+            push_string(
+                &mut humanoid,
+                "MODL",
+                "Actors\\Character\\DefaultMale.hkx",
+                &interner,
+            );
+            let special = record(&interner, "RACE", 0x200, "DefaultRace");
+            let mut records = vec![keyword, humanoid, special];
+            records.extend(complete_race_records(
+                &interner,
+                0x300,
+                "DwarvenSpiderRace",
+                "Actors\\DwarvenSpider\\DwarvenSpiderProject.hkx",
+            ));
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+            assert_eq!(plan.summary.total_race_records, 3);
+            assert_eq!(plan.summary.actor_type_npc_races, 1);
+            assert_eq!(plan.summary.curated_exclusions, 1);
+            assert_eq!(plan.summary.candidate_races, 1);
+            assert_eq!(
+                plan.races[0].editor_id.as_deref(),
+                Some("DwarvenSpiderRace")
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x700,
+                "WolfRace",
+                "Actors\\Canine\\WolfProject.hkx",
+            );
+            records.extend(complete_race_records(
+                &interner,
+                0x800,
+                "WolfSpiritRace",
+                "Actors\\Canine\\WolfProject.hkx",
+            ));
+            let forward = build_creature_corpus_plan(&records, &interner);
+            records.reverse();
+            let reversed = build_creature_corpus_plan(&records, &interner);
+            assert_eq!(forward.families, reversed.families);
+            assert_eq!(forward.families.len(), 1);
+            assert_eq!(forward.families[0].races.len(), 2);
+        }
+    }
+
+    #[test]
+    fn skin_closure_selects_race_conditioned_third_person_addons() {
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x400,
+                "WolfRace",
+                "Actors\\Canine\\WolfProject.hkx",
+            );
+            let unrelated_key = form_key(&interner, 0x410);
+            let unrelated_race = form_key(&interner, 0x411);
+            push_form(&mut records[1], "MODL", unrelated_key);
+            let mut unrelated = record(&interner, "ARMA", 0x410, "UnrelatedAddon");
+            push_form(&mut unrelated, "RNAM", unrelated_race);
+            push_string(
+                &mut unrelated,
+                "MOD2",
+                "Actors\\Wrong\\Wrong.nif",
+                &interner,
+            );
+            records.push(unrelated);
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+            assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x402)]);
+            assert_eq!(
+                plan.races[0].body_models,
+                vec!["Actors\\Test\\Character Assets\\Body.nif"]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x440,
+                "WolfRace",
+                "Actors\\Canine\\WolfProject.hkx",
+            );
+            let race = form_key(&interner, 0x440);
+            records[2]
+                .fields
+                .retain(|field| field.sig.as_str() != "RNAM");
+            push_form(&mut records[2], "RNAM", form_key(&interner, 0x450));
+            push_form(&mut records[2], "MODL", race);
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+
+            assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x442)]);
+            assert_eq!(
+                plan.races[0].body_models,
+                vec!["Actors\\Test\\Character Assets\\Body.nif"]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x460,
+                "MG07DogRace",
+                "Actors\\Canine\\DogProject.hkx",
+            );
+            records[2]
+                .fields
+                .retain(|field| field.sig.as_str() != "RNAM");
+            push_form(&mut records[2], "RNAM", form_key(&interner, 0x470));
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+
+            assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x462)]);
+            assert_eq!(
+                plan.races[0].body_models,
+                vec!["Actors\\Test\\Character Assets\\Body.nif"]
+            );
+            assert_eq!(plan.races[0].issues, Vec::new());
+        }
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x480,
+                "DLC1_BF_ChaurusRace",
+                "Actors\\Chaurus\\ChaurusProject.hkx",
+            );
+            records[2]
+                .fields
+                .retain(|field| field.sig.as_str() != "RNAM");
+            push_form(&mut records[2], "RNAM", form_key(&interner, 0x490));
+
+            let leftover_key = form_key(&interner, 0x491);
+            records[1]
+                .fields
+                .retain(|field| field.sig.as_str() != "MODL");
+            push_form(&mut records[1], "MODL", leftover_key);
+            push_form(&mut records[1], "MODL", form_key(&interner, 0x482));
+            let mut leftover = record(&interner, "ARMA", 0x491, "NakedCowAA");
+            push_form(&mut leftover, "RNAM", form_key(&interner, 0x492));
+            push_string(
+                &mut leftover,
+                "MOD2",
+                "Actors\\Cow\\Character Assets\\HighlandCow.nif",
+                &interner,
+            );
+            records.push(leftover);
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+
+            assert_eq!(plan.races[0].armor_addons, vec![form_key(&interner, 0x482)]);
+            assert_eq!(
+                plan.races[0].body_models,
+                vec!["Actors\\Test\\Character Assets\\Body.nif"]
+            );
+            assert_eq!(plan.races[0].issues, Vec::new());
+        }
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x420,
+                "WerewolfRace",
+                "Actors\\WerewolfBeast\\WerewolfBeastProject.hkx",
+            );
+            push_string(
+                &mut records[2],
+                "MOD3",
+                "Actors\\WerewolfBeast\\Character Assets\\FemaleBodyWerewolf_1.nif",
+                &interner,
+            );
+            push_string(
+                &mut records[2],
+                "MOD4",
+                "Actors\\Character\\Character Assets\\1stPersonMaleBody_1.nif",
+                &interner,
+            );
+            push_string(
+                &mut records[2],
+                "MOD5",
+                "Actors\\Character\\Character Assets\\1stPersonFemaleBody_1.nif",
+                &interner,
+            );
+
+            let plan = build_creature_corpus_plan(&records, &interner);
+
+            assert_eq!(
+                plan.races[0].body_models,
+                vec![
+                    "Actors\\Test\\Character Assets\\Body.nif",
+                    "Actors\\WerewolfBeast\\Character Assets\\FemaleBodyWerewolf_1.nif",
+                ]
+            );
+            assert!(
+                plan.races[0]
+                    .body_models
                     .iter()
-                    .any(|issue| matches!(issue, CreatureCatalogIssue::TemplateCycle { .. }))
-        }));
+                    .all(|path| !path.to_ascii_lowercase().contains("1stperson"))
+            );
+        }
     }
 
     #[test]
-    fn grouping_is_deterministic_and_uses_the_full_runtime_contract() {
-        let interner = StringInterner::new();
-        let mut records = complete_race_records(
-            &interner,
-            0x700,
-            "WolfRace",
-            "Actors\\Canine\\WolfProject.hkx",
-        );
-        records.extend(complete_race_records(
-            &interner,
-            0x800,
-            "WolfSpiritRace",
-            "Actors\\Canine\\WolfProject.hkx",
-        ));
-        let forward = build_creature_corpus_plan(&records, &interner);
-        records.reverse();
-        let reversed = build_creature_corpus_plan(&records, &interner);
-        assert_eq!(forward.families, reversed.families);
-        assert_eq!(forward.families.len(), 1);
-        assert_eq!(forward.families[0].races.len(), 2);
-    }
+    fn traits_templates_expand_leveled_lists_and_type_cycles() {
+        {
+            let interner = StringInterner::new();
+            let mut records = complete_race_records(
+                &interner,
+                0x500,
+                "DwarvenCenturionRace",
+                "Actors\\DwarvenCenturion\\CenturionProject.hkx",
+            );
+            let race_key = form_key(&interner, 0x500);
+            let leaf_key = form_key(&interner, 0x510);
+            let list_key = form_key(&interner, 0x511);
+            let root_key = form_key(&interner, 0x512);
 
-    #[test]
-    fn optional_live_merged_corpus_accounts_for_every_candidate() {
-        let Some(path) =
-            std::env::var_os("SKYRIMSE_CREATURE_CORPUS_PLUGIN").map(std::path::PathBuf::from)
-        else {
-            return;
-        };
-        if !path.is_file() {
-            return;
-        }
-        let handle = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
-            path.to_str().unwrap(),
-            Some("skyrimse"),
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        let interner = StringInterner::new();
-        let schema = crate::schema::AuthoringSchema::for_game("skyrimse").unwrap();
-        let mut records = Vec::new();
-        for signature in [
-            "KYWD", "RACE", "NPC_", "LVLN", "ARMO", "ARMA", "BPTD", "SPEL", "SHOU",
-        ] {
-            let sig = SigCode::from_str(signature).unwrap();
-            let form_keys =
-                crate::source_read::iter_form_keys_of_sig(handle, sig, &interner).unwrap();
-            for form_key in form_keys {
-                records.push(
-                    crate::source_read::read_record_relayout_by_form_key(
-                        handle, &form_key, &schema, &interner, None,
-                    )
-                    .unwrap(),
-                );
-            }
-        }
-        let plan = build_creature_corpus_plan(&records, &interner);
-        esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle);
+            let mut leaf = record(&interner, "NPC_", 0x510, "CenturionTemplate");
+            push(&mut leaf, "ACBS", acbs(false));
+            push_form(&mut leaf, "RNAM", race_key);
+            let mut list = record(&interner, "LVLN", 0x511, "LCharCenturion");
+            push(&mut list, "LVLO", lvlo(leaf_key));
+            let mut root = record(&interner, "NPC_", 0x512, "LvlCenturionAmbush");
+            push(&mut root, "ACBS", acbs(true));
+            push_form(&mut root, "TPLT", list_key);
+            push_form(&mut root, "RNAM", form_key(&interner, 0x999));
+            records.extend([leaf, list, root]);
 
-        let seeker = plan
-            .races
-            .iter()
-            .find(|race| race.editor_id.as_deref() == Some("DLC2SeekerRace"))
-            .expect("merged corpus must include DLC2SeekerRace");
-        assert_eq!(seeker.attack_spells.len(), 2);
-
-        assert_eq!(plan.summary.total_race_records, 161);
-        assert_eq!(plan.summary.actor_type_npc_races, 36);
-        assert_eq!(plan.summary.curated_exclusions, 4);
-        assert_eq!(plan.summary.candidate_races, 121);
-        assert_eq!(plan.races.len(), plan.summary.candidate_races);
-        assert_eq!(
-            plan.readiness_ledger
+            let plan = build_creature_corpus_plan(&records, &interner);
+            let root = plan
+                .npcs
                 .iter()
-                .filter(|entry| matches!(entry.subject, CreaturePlanSubject::Race(_)))
-                .count(),
-            125
-        );
-        assert_eq!(
-            plan.races.iter().filter(|race| race.skin.is_some()).count(),
-            121
-        );
+                .find(|npc| npc.source_npc == root_key)
+                .unwrap();
+            assert_eq!(root.effective_races, vec![race_key]);
+            assert!(root.template_records.contains(&list_key));
+            assert!(root.template_records.contains(&leaf_key));
+            assert_eq!(root.readiness(), CreatureReadiness::RecordReady);
+        }
+        {
+            let interner = StringInterner::new();
+            let first_key = form_key(&interner, 0x600);
+            let second_key = form_key(&interner, 0x601);
+            let mut first = record(&interner, "NPC_", 0x600, "CycleA");
+            push(&mut first, "ACBS", acbs(true));
+            push_form(&mut first, "TPLT", second_key);
+            let mut second = record(&interner, "NPC_", 0x601, "CycleB");
+            push(&mut second, "ACBS", acbs(true));
+            push_form(&mut second, "TPLT", first_key);
+
+            let plan = build_creature_corpus_plan(&[first, second], &interner);
+            assert!(plan.readiness_ledger.iter().any(|entry| {
+                matches!(entry.subject, CreaturePlanSubject::Npc(key) if key == first_key)
+                    && entry
+                        .issues
+                        .iter()
+                        .any(|issue| matches!(issue, CreatureCatalogIssue::TemplateCycle { .. }))
+            }));
+        }
     }
 }

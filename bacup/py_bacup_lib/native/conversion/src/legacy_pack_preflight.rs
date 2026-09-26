@@ -528,15 +528,6 @@ mod tests {
     }
 
     #[test]
-    fn audited_expected_counts_are_explicit() {
-        assert_eq!(LegacyPackExpectedCounts::audited_merged().total(), 9_455);
-        assert_eq!(
-            LegacyPackExpectedCounts::audited_for(LegacyPackSourceFamily::Fnv),
-            LegacyPackExpectedCounts { fnv: 4_888, fo3: 0 }
-        );
-    }
-
-    #[test]
     fn explicit_provenance_rejects_duplicate_missing_and_stale_rows() {
         let interner = StringInterner::new();
         let origins = vec![

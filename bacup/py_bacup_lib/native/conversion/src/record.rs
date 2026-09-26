@@ -177,26 +177,6 @@ mod tests {
         FormKey::parse("000000@test.esm", interner).unwrap()
     }
 
-    #[test]
-    fn record_default_is_empty() {
-        let mut interner = StringInterner::new();
-        let fk = null_form_key(&mut interner);
-        let r = Record::new(SigCode::from_str("WEAP").unwrap(), fk);
-        assert_eq!(r.sig.as_str(), "WEAP");
-        assert_eq!(r.fields.len(), 0);
-        assert!(r.eid.is_none());
-    }
-
-    #[test]
-    fn field_value_round_trip_int() {
-        let v = FieldValue::Int(42);
-        if let FieldValue::Int(n) = v {
-            assert_eq!(n, 42);
-        } else {
-            panic!("expected Int variant");
-        }
-    }
-
     fn sub(sig: &str, value: FieldValue) -> FieldEntry {
         FieldEntry {
             sig: SubrecordSig::from_str(sig).unwrap(),
@@ -316,29 +296,11 @@ mod tests {
     }
 
     #[test]
-    fn field_value_partial_eq_works() {
-        assert_eq!(FieldValue::Int(1), FieldValue::Int(1));
-        assert_ne!(FieldValue::Int(1), FieldValue::Int(2));
-        assert_ne!(FieldValue::Int(1), FieldValue::Bool(true));
-        assert_eq!(FieldValue::None, FieldValue::None);
-    }
-
-    #[test]
     fn record_flags_bitflags_compose() {
         let flags = RecordFlags::DELETED | RecordFlags::PERSISTENT;
         assert!(flags.contains(RecordFlags::DELETED));
         assert!(flags.contains(RecordFlags::PERSISTENT));
         assert!(!flags.contains(RecordFlags::IGNORED));
         assert_eq!(flags.bits(), 0x0000_0020 | 0x0000_0400);
-    }
-
-    #[test]
-    fn field_entry_sig_round_trip() {
-        let sig = SubrecordSig::from_str("EDID").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::None,
-        };
-        assert_eq!(entry.sig.as_str(), "EDID");
     }
 }

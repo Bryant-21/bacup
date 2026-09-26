@@ -1,7 +1,5 @@
-use super::common::struct_value;
 use crate::ids::SubrecordSig;
 use crate::record::{FieldEntry, FieldValue, Record};
-use crate::sym::StringInterner;
 
 const ARMA_MODEL_SIGS: &[[u8; 4]] = &[
     *b"MODL", *b"MOD2", *b"MOD3", *b"MOD4", *b"MOD5", *b"MODT", *b"MO2T", *b"MO3T", *b"MO4T",

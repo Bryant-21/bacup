@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_one_nif_produces_valid_output_and_correct_mesh_path_shape() {
+    fn convert_one_nif_produces_valid_output_or_fails_named_by_path() {
         let bytes = build_fo4_fixture_with_material("Materials\\Test\\Testmat.bgsm");
         let converted = convert_one_nif(&bytes, "Test/TestShape.nif").expect("conversion succeeds");
 
@@ -406,10 +406,7 @@ mod tests {
             re.is_match(mesh_rel),
             "unexpected mesh file path: {mesh_rel}"
         );
-    }
 
-    #[test]
-    fn convert_one_nif_on_garbage_bytes_fails_named_by_path() {
         let error =
             convert_one_nif(b"not a nif", "broken.nif").expect_err("garbage input must fail");
         assert!(

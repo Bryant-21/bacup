@@ -16,6 +16,11 @@
 //! cooking, brewing, cannery and tinker's recipes keep their filters, since FO4 tabs
 //! those benches the same way.
 //!
+//! Weapon and armour recipes (`CNAM` a `WEAP` or `ARMO`) at the FO76 weapon and armour
+//! benches also keep their filters. Tales' Craft mode lists them there in the tabbed
+//! recipe menu, which drops a recipe without a category. FO4's own modify menu at these
+//! benches never lists item recipes, so the filter changes nothing without Tales.
+//!
 //! Must run after `apply_fo76_workshop_catalog`, which stamps the workshop `BNAM`
 //! read here. `FNAM` is a lone `formid_array` with no paired count subrecord, so
 //! removing it needs no count fixup.
@@ -46,6 +51,18 @@ const FO4_WORKSHOP_WORKBENCH_IDS: [u32; 6] = [
 /// FO76 workbench keywords whose recipes produce or modify a worn item.
 const ITEM_CRAFTING_WORKBENCH_EDITOR_IDS: [&str; 2] =
     ["Workbench_Crafting_Armor", "Workbench_Crafting_Weapon"];
+
+const GEAR_SIGS: [&str; 2] = ["WEAP", "ARMO"];
+
+/// What decides whether a recipe loses its category.
+pub struct RecipeFilterIndex {
+    /// Workbench keywords whose recipes lose their category.
+    pub(crate) benches: FxHashSet<FormKey>,
+    /// The FO76 armour and weapon bench keywords.
+    pub(crate) gear_benches: FxHashSet<FormKey>,
+    /// Every `WEAP` and `ARMO` in the output plugin and its masters.
+    pub(crate) gear: FxHashSet<FormKey>,
+}
 
 pub struct StripCraftingRecipeFiltersFixup;
 
@@ -80,7 +97,7 @@ impl Fixup for StripCraftingRecipeFiltersFixup {
             SigCode::from_str("COBJ").map_err(|e| FixupError::SchemaError(e.to_string()))?;
 
         let mut report = FixupReport::empty();
-        let benches = collect_item_crafting_workbenches(session, mapper.interner, &mut report)?;
+        let index = collect_recipe_filter_index(session, config, mapper.interner, &mut report)?;
 
         let fks = session
             .form_keys_of_sig(cobj_sig, mapper.interner)
@@ -98,7 +115,7 @@ impl Fixup for StripCraftingRecipeFiltersFixup {
                     continue;
                 }
             };
-            if strip_recipe_filters(&mut record, &benches) {
+            if strip_recipe_filters(&mut record, &index) {
                 changed_records.push(record);
             }
         }
@@ -124,28 +141,21 @@ impl Fixup for StripCraftingRecipeFiltersFixup {
 // Gather
 // ---------------------------------------------------------------------------
 
-/// FormKeys of every workbench keyword whose recipes must not carry a category:
-/// the FO76 armour and weapon benches (matched by EditorID in the output
-/// plugin) plus FO4's own power-armour bench.
+/// The workbench keywords whose recipes must not carry a category: the FO76
+/// armour and weapon benches (matched by EditorID in the output plugin), FO4's
+/// own power-armour bench and the workshop benches. Also the weapons and armour
+/// whose recipes at the FO76 benches keep theirs.
 ///
 /// `pub(crate)`: shared with the store2 sweep visitor so both drivers gather
 /// through the identical code path.
-pub(crate) fn collect_item_crafting_workbenches(
+pub(crate) fn collect_recipe_filter_index(
     session: &mut PluginSession,
+    config: &FixupConfig,
     interner: &StringInterner,
     report: &mut FixupReport,
-) -> Result<FxHashSet<FormKey>, FixupError> {
+) -> Result<RecipeFilterIndex, FixupError> {
     let kywd_sig = SigCode::from_str("KYWD").map_err(|e| FixupError::SchemaError(e.to_string()))?;
-    let mut out = FxHashSet::default();
-    out.insert(FormKey {
-        local: FO4_POWER_ARMOR_WORKBENCH,
-        plugin: interner.intern(FO4_MASTER_PLUGIN),
-    });
-    out.extend(FO4_WORKSHOP_WORKBENCH_IDS.into_iter().map(|local| FormKey {
-        local,
-        plugin: interner.intern(FO4_MASTER_PLUGIN),
-    }));
-
+    let mut gear_benches = FxHashSet::default();
     let fks = session
         .form_keys_of_sig(kywd_sig, interner)
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
@@ -159,23 +169,53 @@ pub(crate) fn collect_item_crafting_workbenches(
             .iter()
             .any(|name| name.eq_ignore_ascii_case(eid))
         {
-            out.insert(fk);
+            gear_benches.insert(fk);
         }
     }
+
+    let mut benches = gear_benches.clone();
+    benches.insert(FormKey {
+        local: FO4_POWER_ARMOR_WORKBENCH,
+        plugin: interner.intern(FO4_MASTER_PLUGIN),
+    });
+    benches.extend(FO4_WORKSHOP_WORKBENCH_IDS.into_iter().map(|local| FormKey {
+        local,
+        plugin: interner.intern(FO4_MASTER_PLUGIN),
+    }));
 
     // Two FO76 benches plus the FO4 item and workshop benches. Fewer means a bench keyword was
     // renamed or dropped and its recipes will keep categories they should not.
     let expected_benches =
         ITEM_CRAFTING_WORKBENCH_EDITOR_IDS.len() + 1 + FO4_WORKSHOP_WORKBENCH_IDS.len();
-    if out.len() < expected_benches {
+    if benches.len() < expected_benches {
         let w = interner.intern(&format!(
             "strip_crafting_recipe_filters:resolved {} of {} item-crafting workbench keywords",
-            out.len(),
+            benches.len(),
             expected_benches
         ));
         report.warnings.push(w);
     }
-    Ok(out)
+
+    // Some FO76 recipes create a weapon or armour kept from FO4 or a DLC.
+    let mut gear = FxHashSet::default();
+    for sig in GEAR_SIGS {
+        let sig = SigCode::from_str(sig).map_err(|e| FixupError::SchemaError(e.to_string()))?;
+        gear.extend(
+            session
+                .form_keys_of_sig(sig, interner)
+                .map_err(|e| FixupError::HandleError(e.to_string()))?,
+        );
+        for &handle_id in &config.target_master_handle_ids {
+            if let Ok(fks) = session.form_keys_of_sig_in_handle(handle_id, sig, interner) {
+                gear.extend(fks);
+            }
+        }
+    }
+    Ok(RecipeFilterIndex {
+        benches,
+        gear_benches,
+        gear,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -183,19 +223,17 @@ pub(crate) fn collect_item_crafting_workbenches(
 // ---------------------------------------------------------------------------
 
 /// Remove every `FNAM` from `record` when its workbench is an item-crafting or
-/// settlement-workshop bench, or it has no workbench at all.
+/// settlement-workshop bench, or it has no workbench at all, unless it is a
+/// weapon or armour recipe at an FO76 weapon or armour bench.
 ///
 /// Returns `true` when at least one `FNAM` was removed. Idempotent: a record
 /// already free of `FNAM` is left untouched.
-pub fn strip_recipe_filters(
-    record: &mut Record,
-    item_crafting_benches: &FxHashSet<FormKey>,
-) -> bool {
+pub fn strip_recipe_filters(record: &mut Record, index: &RecipeFilterIndex) -> bool {
     let fnam_sig = SubrecordSig(*b"FNAM");
     if !record.fields.iter().any(|entry| entry.sig == fnam_sig) {
         return false;
     }
-    if !is_item_crafting_recipe(record, item_crafting_benches) {
+    if !is_item_crafting_recipe(record, &index.benches) || crafts_gear(record, index) {
         return false;
     }
     record.fields.retain(|entry| entry.sig != fnam_sig);
@@ -209,12 +247,21 @@ fn is_item_crafting_recipe(record: &Record, item_crafting_benches: &FxHashSet<Fo
     }
 }
 
+fn crafts_gear(record: &Record, index: &RecipeFilterIndex) -> bool {
+    workbench_of(record).is_some_and(|bench| index.gear_benches.contains(&bench))
+        && form_key_of(record, b"CNAM").is_some_and(|created| index.gear.contains(&created))
+}
+
 /// The recipe's workbench keyword, or `None` when `BNAM` is absent or NULL.
 fn workbench_of(record: &Record) -> Option<FormKey> {
+    form_key_of(record, b"BNAM")
+}
+
+fn form_key_of(record: &Record, sig: &[u8; 4]) -> Option<FormKey> {
     record
         .fields
         .iter()
-        .find(|entry| entry.sig.0 == *b"BNAM")
+        .find(|entry| entry.sig.0 == *sig)
         .and_then(|entry| first_form_key(&entry.value))
         .filter(|fk| fk.local != 0)
 }
@@ -276,155 +323,136 @@ mod tests {
         field("BNAM", FieldValue::FormKey(fk(local, plugin, interner)))
     }
 
-    /// The armour bench + the weapon bench + FO4's power-armour bench.
-    fn benches(interner: &StringInterner) -> FxHashSet<FormKey> {
-        let mut out: FxHashSet<FormKey> = [
+    const ARMOR: u32 = 0x0900;
+    const WEAPON: u32 = 0x004822;
+
+    /// The armour bench + the weapon bench + FO4's power-armour and workshop
+    /// benches, an FO76 armour and an FO4 weapon.
+    fn index(interner: &StringInterner) -> RecipeFilterIndex {
+        let gear_benches: FxHashSet<FormKey> = [
             fk(0x1F6062, "Output.esp", interner),
             fk(0x1F6063, "Output.esp", interner),
-            fk(FO4_POWER_ARMOR_WORKBENCH, FO4_MASTER_PLUGIN, interner),
         ]
         .into_iter()
         .collect();
-        out.extend(
+        let mut benches = gear_benches.clone();
+        benches.insert(fk(FO4_POWER_ARMOR_WORKBENCH, FO4_MASTER_PLUGIN, interner));
+        benches.extend(
             FO4_WORKSHOP_WORKBENCH_IDS
                 .into_iter()
                 .map(|local| fk(local, FO4_MASTER_PLUGIN, interner)),
         );
-        out
+        let gear = [
+            fk(ARMOR, "Output.esp", interner),
+            fk(WEAPON, FO4_MASTER_PLUGIN, interner),
+        ]
+        .into_iter()
+        .collect();
+        RecipeFilterIndex {
+            benches,
+            gear_benches,
+            gear,
+        }
     }
 
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn strips_filter_from_armor_bench_recipe() {
-        let interner = StringInterner::new();
-        // ATX_co_Armor_Backpack_HeirloomBasket: armour bench + BACKPACK filter.
-        let mut record = cobj(
-            vec![
-                bnam(0x1F6062, "Output.esp", &interner),
-                fnam(0x47EF39, &interner),
-            ],
-            &interner,
-        );
-
-        assert!(strip_recipe_filters(&mut record, &benches(&interner)));
-        assert!(!record.fields.iter().any(|e| e.sig.0 == *b"FNAM"));
-        assert!(
-            record.fields.iter().any(|e| e.sig.0 == *b"BNAM"),
-            "the workbench link must survive"
-        );
+    fn cnam(local: u32, plugin: &str, interner: &StringInterner) -> FieldEntry {
+        field("CNAM", FieldValue::FormKey(fk(local, plugin, interner)))
     }
 
     #[test]
-    fn strips_filter_from_power_armor_bench_recipe() {
+    fn strips_filters_from_item_and_workshop_benches_but_not_cooking() {
         let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![
-                bnam(FO4_POWER_ARMOR_WORKBENCH, FO4_MASTER_PLUGIN, &interner),
-                fnam(0x4EAEF1, &interner),
-            ],
-            &interner,
-        );
+        let index = index(&interner);
+        let armour_bench = || bnam(0x1F6062, "Output.esp", &interner);
+        for (name, recipe, filter_count, expected_stripped) in [
+            ("armour bench", vec![armour_bench()], 1, true),
+            (
+                "power armour bench",
+                vec![bnam(
+                    FO4_POWER_ARMOR_WORKBENCH,
+                    FO4_MASTER_PLUGIN,
+                    &interner,
+                )],
+                1,
+                true,
+            ),
+            (
+                "no workbench",
+                vec![cnam(0x537067, "Output.esp", &interner)],
+                1,
+                true,
+            ),
+            (
+                "null workbench",
+                vec![bnam(0, "Output.esp", &interner)],
+                1,
+                true,
+            ),
+            (
+                "workshop menu recipe",
+                vec![bnam(0x08280B, FO4_MASTER_PLUGIN, &interner)],
+                1,
+                true,
+            ),
+            ("every filter entry", vec![armour_bench()], 2, true),
+            (
+                "cooking bench",
+                vec![bnam(0x1F6070, "Output.esp", &interner)],
+                1,
+                false,
+            ),
+            ("no filter", vec![armour_bench()], 0, false),
+            (
+                "armour at the armour bench",
+                vec![armour_bench(), cnam(ARMOR, "Output.esp", &interner)],
+                1,
+                false,
+            ),
+            (
+                "FO4 weapon at the weapon bench",
+                vec![
+                    bnam(0x1F6063, "Output.esp", &interner),
+                    cnam(WEAPON, FO4_MASTER_PLUGIN, &interner),
+                ],
+                1,
+                false,
+            ),
+            (
+                "mod at the armour bench",
+                vec![armour_bench(), cnam(0x537067, "Output.esp", &interner)],
+                1,
+                true,
+            ),
+            (
+                "armour at the power armour bench",
+                vec![
+                    bnam(FO4_POWER_ARMOR_WORKBENCH, FO4_MASTER_PLUGIN, &interner),
+                    cnam(ARMOR, "Output.esp", &interner),
+                ],
+                1,
+                true,
+            ),
+        ] {
+            let mut fields = recipe;
+            let kept_len = fields.len();
+            fields.extend((0..filter_count).map(|index| fnam(0x47EF39 + index, &interner)));
+            let mut record = cobj(fields, &interner);
 
-        assert!(strip_recipe_filters(&mut record, &benches(&interner)));
-        assert!(!record.fields.iter().any(|e| e.sig.0 == *b"FNAM"));
-    }
-
-    #[test]
-    fn strips_filter_when_recipe_has_no_workbench() {
-        let interner = StringInterner::new();
-        // ATX_co_mod_PowerArmor_Excavator_*: OMOD recipe, no BNAM at all.
-        let mut record = cobj(
-            vec![
-                field(
-                    "CNAM",
-                    FieldValue::FormKey(fk(0x537067, "Output.esp", &interner)),
-                ),
-                fnam(0x4EAEF1, &interner),
-            ],
-            &interner,
-        );
-
-        assert!(strip_recipe_filters(&mut record, &benches(&interner)));
-        assert!(!record.fields.iter().any(|e| e.sig.0 == *b"FNAM"));
-        assert!(record.fields.iter().any(|e| e.sig.0 == *b"CNAM"));
-    }
-
-    #[test]
-    fn strips_filter_when_workbench_link_is_null() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![bnam(0, "Output.esp", &interner), fnam(0x47EF39, &interner)],
-            &interner,
-        );
-
-        assert!(strip_recipe_filters(&mut record, &benches(&interner)));
-        assert!(!record.fields.iter().any(|e| e.sig.0 == *b"FNAM"));
-    }
-
-    #[test]
-    fn strips_filter_from_workshop_recipe() {
-        let interner = StringInterner::new();
-        // apply_fo76_workshop_catalog re-pointed this at
-        // WorkshopWorkbenchTypeDecorations; its category is the FO4 menu node.
-        let mut record = cobj(
-            vec![
-                bnam(0x08280B, FO4_MASTER_PLUGIN, &interner),
-                fnam(0x0249E89, &interner),
-            ],
-            &interner,
-        );
-
-        assert!(strip_recipe_filters(&mut record, &benches(&interner)));
-        assert!(!record.fields.iter().any(|e| e.sig.0 == *b"FNAM"));
-    }
-
-    #[test]
-    fn keeps_filter_on_cooking_recipe() {
-        let interner = StringInterner::new();
-        // Workbench_Crafting_Cooking is not an item-crafting bench: FO4 tabs
-        // its chem/cooking counterpart the same way.
-        let mut record = cobj(
-            vec![
-                bnam(0x1F6070, "Output.esp", &interner),
-                fnam(0x102150, &interner),
-            ],
-            &interner,
-        );
-
-        assert!(!strip_recipe_filters(&mut record, &benches(&interner)));
-        assert_eq!(
-            record.fields.iter().filter(|e| e.sig.0 == *b"FNAM").count(),
-            1
-        );
-    }
-
-    #[test]
-    fn no_op_when_recipe_has_no_filter() {
-        let interner = StringInterner::new();
-        let mut record = cobj(vec![bnam(0x1F6062, "Output.esp", &interner)], &interner);
-
-        assert!(!strip_recipe_filters(&mut record, &benches(&interner)));
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn strips_every_filter_entry_and_is_idempotent() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![
-                bnam(0x1F6062, "Output.esp", &interner),
-                fnam(0x47EF39, &interner),
-                fnam(0x471955, &interner),
-            ],
-            &interner,
-        );
-
-        assert!(strip_recipe_filters(&mut record, &benches(&interner)));
-        assert!(!record.fields.iter().any(|e| e.sig.0 == *b"FNAM"));
-        assert!(
-            !strip_recipe_filters(&mut record, &benches(&interner)),
-            "second pass must be a no-op"
-        );
+            assert_eq!(
+                strip_recipe_filters(&mut record, &index),
+                expected_stripped,
+                "{name}"
+            );
+            let expected_len = if expected_stripped {
+                kept_len
+            } else {
+                kept_len + filter_count as usize
+            };
+            assert_eq!(record.fields.len(), expected_len, "{name}");
+            assert!(
+                !strip_recipe_filters(&mut record, &index),
+                "{name}: second pass"
+            );
+        }
     }
 }

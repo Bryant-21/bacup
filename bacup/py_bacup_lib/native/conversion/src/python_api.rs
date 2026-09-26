@@ -5,9 +5,11 @@ use crate::ids::SigCode;
 use crate::record::{FieldValue, Record};
 use crate::run::{
     LegacyMusicTrackRow, MvpRecordExceptionRow, OwnedPluginHandle, OwnedRunHandles, RunConfig,
-    RunError, RunParams, TargetMode, TargetRecordPreflightRow, TranslateStats, create_owned_run,
-    create_run, drop_run, with_run,
+    RunError, TargetMode, TargetRecordPreflightRow, TranslateStats, create_owned_run, drop_run,
+    with_run,
 };
+#[cfg(test)]
+use crate::run::{RunParams, create_run};
 use crate::source_read::{form_key_to_read_str, iter_form_keys_of_sig, read_record};
 use crate::sym::StringInterner;
 use crate::target_write::NavmeshFinalizeStats;
@@ -101,6 +103,7 @@ pub fn diagnose_navmesh_links_py<'py>(
     })
 }
 
+#[cfg(test)]
 fn diagnose_navmesh_links_for_path(
     plugin_path: &Path,
     game: &str,
@@ -2056,7 +2059,7 @@ pub fn apply_registry_mappings_py(
         let mut map: std::collections::HashMap<String, String> =
             std::collections::HashMap::with_capacity(mappings.len());
         for item in mappings.iter() {
-            let pair = item.downcast::<PyList>()?;
+            let pair = item.cast::<PyList>()?;
             if pair.len() != 2 {
                 return Err(PyValueError::new_err(
                     "each registry mapping must be [source_form_key, target_form_key]",
@@ -3141,7 +3144,9 @@ fn generate_anim_text_data_for_paths(
             )?;
             // The closure receipt validates AnimationFileData/AnimEventInfo, which this does not change.
             crate::fixups::creature::player_fear::write_selection_timing(
-                &selection_subgraphs, src_meshes_root, out_meshes_root,
+                &selection_subgraphs,
+                src_meshes_root,
+                out_meshes_root,
             )?;
             let written = serde_json::from_str::<Value>(&receipt)
                 .map_err(|error| format!("invalid native creature AnimText receipt: {error}"))?
@@ -3166,7 +3171,9 @@ fn generate_anim_text_data_for_paths(
                 &mut progress,
             )?;
             crate::fixups::creature::player_fear::write_selection_timing(
-                &inputs.subgraphs, src_meshes_root, out_meshes_root,
+                &inputs.subgraphs,
+                src_meshes_root,
+                out_meshes_root,
             )?;
             Ok((report.written, None))
         }
@@ -3313,6 +3320,72 @@ pub fn generate_anim_text_data_py(
     })
 }
 
+/// `subgraphs_json`: `[{"core_behavior": str, "sapt_chain": [str, ...]}, ...]`.
+#[pyfunction(name = "conversion_generate_subgraph_anim_text_data")]
+#[pyo3(signature = (
+    subgraphs_json,
+    src_meshes_root,
+    out_meshes_root,
+    base_meshes_root=None,
+    progress_callback=None
+))]
+pub fn generate_subgraph_anim_text_data_py(
+    py: Python<'_>,
+    subgraphs_json: &str,
+    src_meshes_root: &str,
+    out_meshes_root: &str,
+    base_meshes_root: Option<&str>,
+    progress_callback: Option<Py<PyAny>>,
+) -> PyResult<u32> {
+    run_with_panic_catch("conversion_generate_subgraph_anim_text_data", || {
+        let parsed: Vec<Value> = serde_json::from_str(subgraphs_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid subgraphs_json: {error}")))?;
+        let mut subgraphs = Vec::with_capacity(parsed.len());
+        for entry in &parsed {
+            let core_behavior = entry
+                .get("core_behavior")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| PyValueError::new_err("subgraph needs a core_behavior"))?;
+            let sapt_chain = entry
+                .get("sapt_chain")
+                .and_then(Value::as_array)
+                .and_then(|paths| {
+                    paths
+                        .iter()
+                        .map(|path| path.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .filter(|paths| !paths.is_empty())
+                .ok_or_else(|| PyValueError::new_err("subgraph needs a string sapt_chain"))?;
+            subgraphs.push(ck_native::anim_text_data::emit::SubgraphInput {
+                core_behavior: core_behavior.to_string(),
+                sapt_chain,
+                race_dir: None,
+            });
+        }
+        let src_meshes_root = PathBuf::from(src_meshes_root);
+        let out_meshes_root = PathBuf::from(out_meshes_root);
+        let base_meshes_root = base_meshes_root.map(PathBuf::from);
+        py.detach(move || {
+            crate::fixups::havok::anim_text_data_emit::generate_anim_text_data_for_subgraphs(
+                subgraphs,
+                &src_meshes_root,
+                &out_meshes_root,
+                base_meshes_root.as_deref(),
+                &mut |message| {
+                    if let Some(callback) = progress_callback.as_ref() {
+                        Python::attach(|py| {
+                            let _ = callback.call1(py, (message,));
+                        });
+                    }
+                },
+            )
+            .map_err(PyRuntimeError::new_err)
+        })
+    })
+}
+
 #[pyfunction(name = "conversion_run_synthesize_vendor_dialogue")]
 #[pyo3(signature = (run_id))]
 pub fn synthesize_vendor_dialogue_py<'py>(py: Python<'py>, run_id: u64) -> PyResult<u32> {
@@ -3437,6 +3510,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(synthesize_vendor_dialogue_py, m)?)?;
     m.add_function(wrap_pyfunction!(prepare_anim_text_data_assets_py, m)?)?;
     m.add_function(wrap_pyfunction!(generate_anim_text_data_py, m)?)?;
+    m.add_function(wrap_pyfunction!(generate_subgraph_anim_text_data_py, m)?)?;
     Ok(())
 }
 
@@ -3725,32 +3799,28 @@ mod tests {
     }
 
     #[test]
-    fn owned_plugin_handle_loads_with_explicit_game_and_closes_on_drop() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
-        let handle = OwnedPluginHandle::load(&path, "fo4", None).unwrap();
-        let handle_id = handle.id();
-        {
-            let store = esp_authoring_core::plugin_runtime::plugin_handle_store_ref()
-                .lock()
-                .unwrap();
-            assert_eq!(
-                store.get(&handle_id).unwrap().parsed.game.as_deref(),
-                Some("fo4")
-            );
-        }
-        drop(handle);
-        let store = esp_authoring_core::plugin_runtime::plugin_handle_store_ref()
-            .lock()
-            .unwrap();
-        assert!(!store.contains_key(&handle_id));
-    }
-
-    #[test]
     fn anim_text_decode_uses_retained_plugins_after_paths_are_removed() {
         let tmp = tempfile::tempdir().unwrap();
         let target = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
         let base = write_empty_plugin(tmp.path(), "Fallout4.esm", "fo4");
+
+        let owned = OwnedPluginHandle::load(&target, "fo4", None).unwrap();
+        let owned_id = owned.id();
+        assert_eq!(
+            plugin_handle_store_ref().lock().unwrap()[&owned_id]
+                .parsed
+                .game
+                .as_deref(),
+            Some("fo4")
+        );
+        drop(owned);
+        assert!(
+            !plugin_handle_store_ref()
+                .lock()
+                .unwrap()
+                .contains_key(&owned_id)
+        );
+
         let target_path = target.to_string_lossy().into_owned();
         let base_path = base.to_string_lossy().into_owned();
         let (target_handle, base_handles) =
@@ -3807,7 +3877,7 @@ mod tests {
     }
 
     #[test]
-    fn anim_text_contract_mismatch_precedes_plugin_load_and_asset_prep() {
+    fn anim_text_contract_mismatch_and_store_open_failure_release_plugins() {
         let tmp = tempfile::tempdir().unwrap();
         let target = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
         let base = write_empty_plugin(tmp.path(), "Fallout4.esm", "fo4");
@@ -3853,6 +3923,20 @@ mod tests {
         assert!(!store_contains_path(&target));
         assert!(!store_contains_path(&base));
         assert!(!preparation.target_cache_dir.exists());
+
+        let result = prepare_anim_text_data_assets_for_paths(
+            &target_path,
+            "fo4",
+            std::slice::from_ref(&base_path),
+            tmp.path(),
+            tmp.path(),
+            &tmp.path().join("missing-catalog.sqlite3"),
+            &tmp.path().join("cache"),
+            None,
+        );
+        assert!(result.is_err());
+        assert!(!store_contains_path(&target));
+        assert!(!store_contains_path(&base));
     }
 
     fn store_contains_path(path: &Path) -> bool {
@@ -3865,7 +3949,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_navmesh_path_closes_handle_after_success() {
+    fn diagnose_navmesh_path_closes_handle_after_success_and_diagnostic_error() {
         let tmp = tempfile::tempdir().unwrap();
         let path = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
 
@@ -3873,11 +3957,7 @@ mod tests {
 
         assert_eq!(stats, NavmeshFinalizeStats::default());
         assert!(!store_contains_path(&path));
-    }
 
-    #[test]
-    fn diagnose_navmesh_path_closes_handle_after_diagnostic_error() {
-        let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("Malformed.esp");
         let handle = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
             "Malformed.esp",
@@ -3915,35 +3995,6 @@ mod tests {
 
         assert!(diagnose_navmesh_links_for_path(&path, "fo4").is_err());
         assert!(!store_contains_path(&path));
-    }
-
-    #[test]
-    fn prepare_anim_text_data_assets_closes_plugins_when_store_open_fails() {
-        let tmp = tempfile::tempdir().unwrap();
-        let target = write_empty_plugin(tmp.path(), "Target.esp", "fo4");
-        let base = write_empty_plugin(tmp.path(), "Fallout4.esm", "fo4");
-        let target_path = target.to_string_lossy().into_owned();
-        let base_path = base.to_string_lossy().into_owned();
-        let result = prepare_anim_text_data_assets_for_paths(
-            &target_path,
-            "fo4",
-            std::slice::from_ref(&base_path),
-            tmp.path(),
-            tmp.path(),
-            &tmp.path().join("missing-catalog.sqlite3"),
-            &tmp.path().join("cache"),
-            None,
-        );
-        assert!(result.is_err());
-        let store = esp_authoring_core::plugin_runtime::plugin_handle_store_ref()
-            .lock()
-            .unwrap();
-        assert!(
-            store
-                .values()
-                .all(|slot| slot.parsed.file_path != target_path
-                    && slot.parsed.file_path != base_path)
-        );
     }
 
     #[test]
@@ -4079,53 +4130,19 @@ mod tests {
         });
     }
 
-    // `run_with_panic_catch` needs `Python::with_gil`, which needs pyo3's
-    // `auto-initialize` feature, incompatible with this crate's
-    // `extension-module`. These tests cover the `catch_unwind` mechanic it wraps.
     #[test]
-    fn catch_unwind_captures_str_payload() {
-        let result = catch_unwind(AssertUnwindSafe(|| -> i32 { panic!("intentional panic") }));
-        assert!(result.is_err());
-        let payload = result.unwrap_err();
-        let msg = payload
-            .downcast_ref::<&'static str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
-        assert!(msg.is_some());
-        assert!(msg.unwrap().contains("intentional panic"));
+    fn normalize_translate_form_key_accepts_plugin_first_and_legacy_hex_first_forms() {
+        for input in ["SeventySix.esm:000800", "000800:SeventySix.esm"] {
+            assert_eq!(
+                normalize_translate_form_key(input).as_deref(),
+                Some("000800@SeventySix.esm"),
+                "{input}"
+            );
+        }
     }
 
     #[test]
-    fn catch_unwind_captures_string_payload() {
-        let result = catch_unwind(AssertUnwindSafe(|| -> i32 {
-            panic!("{}", "owned string panic".to_string())
-        }));
-        assert!(result.is_err());
-        let payload = result.unwrap_err();
-        let got_str = payload.downcast_ref::<&'static str>().copied();
-        let got_owned = payload.downcast_ref::<String>().map(String::as_str);
-        let msg = got_str.or(got_owned).unwrap_or("<unknown>");
-        assert!(msg.contains("owned string panic"));
-    }
-
-    #[test]
-    fn normalize_translate_form_key_accepts_plugin_first_native_form() {
-        assert_eq!(
-            normalize_translate_form_key("SeventySix.esm:000800").as_deref(),
-            Some("000800@SeventySix.esm")
-        );
-    }
-
-    #[test]
-    fn normalize_translate_form_key_accepts_legacy_hex_first_form() {
-        assert_eq!(
-            normalize_translate_form_key("000800:SeventySix.esm").as_deref(),
-            Some("000800@SeventySix.esm")
-        );
-    }
-
-    #[test]
-    fn config_from_json_reads_full_plugin_fields() {
+    fn config_from_json_reads_full_plugin_fields_and_treats_absent_values_as_none() {
         let cfg = config_from_json(
             r#"{
                 "output_plugin_name": "SeventySix.esm",
@@ -4194,6 +4211,11 @@ mod tests {
         assert_eq!(cfg.warning_policy, WarningPolicy::WarnPlayable);
         assert_eq!(cfg.target_record_preflight.len(), 1);
         assert_eq!(cfg.target_record_preflight[0].editor_id, "Ammo10mm");
+        assert_eq!(cfg.target_record_preflight[0].signature, "AMMO");
+        assert_eq!(
+            cfg.target_record_preflight[0].form_key,
+            "01F276:Fallout4.esm"
+        );
         assert_eq!(cfg.target_master_names, vec!["Fallout4.esm".to_string()]);
         assert_eq!(cfg.legacy_pack_origins.len(), 1);
         assert_eq!(cfg.legacy_pack_origins[0].source_game, "fo3");
@@ -4223,25 +4245,7 @@ mod tests {
         assert!(cfg.asset_phases.havok);
         assert!(cfg.asset_phases.animations);
         assert!(cfg.asset_phases.sounds);
-    }
 
-    #[test]
-    fn target_record_preflight_from_json_accepts_list_rows() {
-        let cfg = config_from_json(
-            r#"{"target_record_preflight": [["Ammo10mm", "AMMO", "01F276:Fallout4.esm"]]}"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.target_record_preflight.len(), 1);
-        assert_eq!(cfg.target_record_preflight[0].editor_id, "Ammo10mm");
-        assert_eq!(cfg.target_record_preflight[0].signature, "AMMO");
-        assert_eq!(
-            cfg.target_record_preflight[0].form_key,
-            "01F276:Fallout4.esm"
-        );
-    }
-
-    #[test]
-    fn config_from_json_accepts_absent_and_null_legacy_pack_counts() {
         for config in [
             "{}",
             r#"{"legacy_pack_raw_source_counts": null, "legacy_pack_expected_counts": null}"#,
@@ -4249,6 +4253,13 @@ mod tests {
             let cfg = config_from_json(config).unwrap();
             assert_eq!(cfg.legacy_pack_raw_source_counts, None);
             assert_eq!(cfg.legacy_pack_expected_counts, None);
+        }
+
+        let value: Value =
+            serde_json::from_str(r#"{"none_path": null, "empty_path": "", "blank_path": "   "}"#)
+                .unwrap();
+        for key in ["missing_path", "none_path", "empty_path", "blank_path"] {
+            assert_eq!(optional_path(&value, key), None, "{key}");
         }
     }
 
@@ -4275,52 +4286,54 @@ mod tests {
     }
 
     #[test]
-    fn optional_path_treats_none_and_blank_as_absent() {
-        let value: Value =
-            serde_json::from_str(r#"{"none_path": null, "empty_path": "", "blank_path": "   "}"#)
-                .unwrap();
-        assert_eq!(optional_path(&value, "missing_path"), None);
-        assert_eq!(optional_path(&value, "none_path"), None);
-        assert_eq!(optional_path(&value, "empty_path"), None);
-        assert_eq!(optional_path(&value, "blank_path"), None);
-    }
-
-    #[test]
-    fn skyrim_weapon_animation_types_classify_all_melee_variants() {
-        for animation_type in [
-            "0",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "HandToHandMelee",
-            "OneHandSword",
-            "OneHandDagger",
-            "OneHandAxe",
-            "OneHandMace",
-            "TwoHandSword",
-            "TwoHandAxe",
+    fn weapon_animation_types_classify_melee_and_ranged_per_game() {
+        for (game, melee, ranged) in [
+            (
+                Game::SkyrimSe,
+                &[
+                    "0",
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "HandToHandMelee",
+                    "OneHandSword",
+                    "OneHandDagger",
+                    "OneHandAxe",
+                    "OneHandMace",
+                    "TwoHandSword",
+                    "TwoHandAxe",
+                ][..],
+                &["7", "8", "9", "Bow", "Staff", "Crossbow"][..],
+            ),
+            (
+                Game::Fnv,
+                &["0", "1", "2", "Hand to Hand", "Melee (1 Hand)"][..],
+                &["3", "6", "Pistol - Ballistic (1 Hand)"][..],
+            ),
         ] {
-            assert_eq!(
-                classify_weapon_role(animation_type, Game::SkyrimSe),
-                "melee",
-                "{animation_type}"
-            );
-        }
-        for animation_type in ["7", "8", "9", "Bow", "Staff", "Crossbow"] {
-            assert_eq!(
-                classify_weapon_role(animation_type, Game::SkyrimSe),
-                "gun",
-                "{animation_type}"
-            );
+            for animation_type in melee {
+                assert_eq!(
+                    classify_weapon_role(animation_type, game),
+                    "melee",
+                    "{game:?} {animation_type}"
+                );
+            }
+            for animation_type in ranged {
+                assert_eq!(
+                    classify_weapon_role(animation_type, game),
+                    "gun",
+                    "{game:?} {animation_type}"
+                );
+            }
         }
     }
 
     #[test]
     fn skyrim_weapon_metadata_reads_two_hand_axe_enum_as_melee() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let mut record = Record::new(
             SigCode::from_str("WEAP").unwrap(),
             crate::ids::FormKey {
@@ -4445,24 +4458,6 @@ mod tests {
         assert!(ranged_row.target_profile.is_empty());
     }
 
-    #[test]
-    fn fnv_weapon_numeric_animation_types_keep_ranged_values_out_of_melee() {
-        for animation_type in ["0", "1", "2", "Hand to Hand", "Melee (1 Hand)"] {
-            assert_eq!(
-                classify_weapon_role(animation_type, Game::Fnv),
-                "melee",
-                "{animation_type}"
-            );
-        }
-        for animation_type in ["3", "6", "Pistol - Ballistic (1 Hand)"] {
-            assert_eq!(
-                classify_weapon_role(animation_type, Game::Fnv),
-                "gun",
-                "{animation_type}"
-            );
-        }
-    }
-
     fn raw_weapon_metadata(source_game: Game, dnam: Vec<u8>) -> (String, String) {
         let interner = StringInterner::new();
         let mut record = Record::new(
@@ -4512,49 +4507,53 @@ mod tests {
     }
 
     #[test]
-    fn fnv_weapon_metadata_reads_animation_type_from_raw_204_byte_dnam() {
-        assert_eq!(
-            raw_weapon_metadata(Game::Fnv, raw_fnv_hatchet_dnam()),
-            ("melee".to_string(), "1".to_string())
-        );
-    }
+    fn raw_weapon_metadata_reads_animation_type_and_rejects_wrong_layout_or_unknown_values() {
+        let melee = |value: &str| ("melee".to_string(), value.to_string());
+        let rejected = (String::new(), String::new());
 
-    #[test]
-    fn skyrim_weapon_metadata_reads_animation_type_from_raw_100_byte_dnam() {
-        let mut dnam = vec![0_u8; SKYRIM_WEAP_DNAM_SIZE];
-        dnam[0] = 6;
-
-        assert_eq!(
-            raw_weapon_metadata(Game::SkyrimSe, dnam),
-            ("melee".to_string(), "6".to_string())
-        );
-    }
-
-    #[test]
-    fn raw_weapon_metadata_rejects_wrong_layout_and_unknown_values() {
+        let mut skyrim_battleaxe = vec![0_u8; SKYRIM_WEAP_DNAM_SIZE];
+        skyrim_battleaxe[0] = 6;
         let mut unknown_fnv = raw_fnv_hatchet_dnam();
         unknown_fnv[0..4].copy_from_slice(&14_u32.to_le_bytes());
-        assert_eq!(
-            raw_weapon_metadata(Game::Fnv, unknown_fnv),
-            (String::new(), String::new())
-        );
-        assert_eq!(
-            raw_weapon_metadata(Game::Fnv, vec![1, 0, 0]),
-            (String::new(), String::new())
-        );
-
         let mut unknown_skyrim = vec![0_u8; SKYRIM_WEAP_DNAM_SIZE];
         unknown_skyrim[0] = 10;
-        assert_eq!(
-            raw_weapon_metadata(Game::SkyrimSe, unknown_skyrim),
-            (String::new(), String::new())
-        );
-
         let mut fo3 = vec![0_u8; FO3_WEAP_DNAM_SIZE];
         fo3[0..4].copy_from_slice(&2_u32.to_le_bytes());
-        assert_eq!(
-            raw_weapon_metadata(Game::Fo3, fo3),
-            ("melee".to_string(), "2".to_string())
-        );
+
+        for (name, game, dnam, expected) in [
+            (
+                "fnv 204-byte hatchet",
+                Game::Fnv,
+                raw_fnv_hatchet_dnam(),
+                melee("1"),
+            ),
+            (
+                "skyrim 100-byte battleaxe",
+                Game::SkyrimSe,
+                skyrim_battleaxe,
+                melee("6"),
+            ),
+            ("fo3 two-hand melee", Game::Fo3, fo3, melee("2")),
+            (
+                "fnv unknown value",
+                Game::Fnv,
+                unknown_fnv,
+                rejected.clone(),
+            ),
+            (
+                "fnv wrong layout",
+                Game::Fnv,
+                vec![1, 0, 0],
+                rejected.clone(),
+            ),
+            (
+                "skyrim unknown value",
+                Game::SkyrimSe,
+                unknown_skyrim,
+                rejected.clone(),
+            ),
+        ] {
+            assert_eq!(raw_weapon_metadata(game, dnam), expected, "{name}");
+        }
     }
 }

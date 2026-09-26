@@ -3,28 +3,43 @@
 ; result, and treating it as one is the defect this replaces.
 
 Event OnAliasInit()
-    DefaultKeypadScript keypad = GetKeypad()
-    If keypad != None
-        RegisterForCustomEvent(keypad, "KeypadSuccess")
-        ; The quest owns the outcome from here: a correct code entered before
-        ; the prerequisite, or by the wrong actor, must not open the door.
-        keypad.SetCompletionDelegated(True)
-    EndIf
+    RegisterKeypad()
 EndEvent
 
 Event OnAliasShutdown()
-    DefaultKeypadScript keypad = GetKeypad()
-    If keypad != None
-        UnregisterForCustomEvent(keypad, "KeypadSuccess")
-        keypad.SetCompletionDelegated(False)
+    ; FO4 clears the alias before this event; retain the registered reference.
+    If registeredKeypad != None
+        UnregisterForCustomEvent(registeredKeypad, "KeypadSuccess")
+        registeredKeypad.UnregisterCompletionDelegate(Self)
+        registeredKeypad = None
     EndIf
 EndEvent
 
+Event OnLoad()
+    RegisterKeypad()
+EndEvent
+
+Function RegisterKeypad()
+    DefaultKeypadScript keypad = GetKeypad()
+    If registeredKeypad != None && registeredKeypad != keypad
+        UnregisterForCustomEvent(registeredKeypad, "KeypadSuccess")
+        registeredKeypad.UnregisterCompletionDelegate(Self)
+    EndIf
+    registeredKeypad = keypad
+    If keypad != None
+        RegisterForCustomEvent(keypad, "KeypadSuccess")
+        keypad.RegisterCompletionDelegate(Self)
+    EndIf
+EndFunction
+
 Event DefaultKeypadScript.KeypadSuccess(DefaultKeypadScript akSender, Var[] akArgs)
-    If akSender == None || (akSender as ObjectReference) != GetReference()
+    If akSender == None || akSender != registeredKeypad || (akSender as ObjectReference) != GetReference()
         Return
     EndIf
-    ApplyKeypadSuccess(akSender)
+    If akArgs == None || akArgs.Length < 2
+        Return
+    EndIf
+    ApplyKeypadSuccess(akSender, akArgs[1] as ObjectReference)
 EndEvent
 
 DefaultKeypadScript Function GetKeypad()
@@ -35,21 +50,25 @@ DefaultKeypadScript Function GetKeypad()
     Return aliasRef as DefaultKeypadScript
 EndFunction
 
-Function ApplyKeypadSuccess(DefaultKeypadScript akKeypad)
+Function ApplyKeypadSuccess(DefaultKeypadScript akKeypad, ObjectReference akActivator)
     Quest owningQuest = GetOwningQuest()
-    If owningQuest == None || StageToSet < 0
+    If owningQuest == None || !owningQuest.IsRunning() || StageToSet < 0
         Return
     EndIf
     If preReqStage > 0 && !owningQuest.IsStageDone(preReqStage)
         Return
     EndIf
-    If !ActivatorIsAllowed(Game.GetPlayer())
+    If !ActivatorIsAllowed(akActivator)
+        Return
+    EndIf
+    If TurnOffStage >= 0 && owningQuest.GetStage() >= TurnOffStage
         Return
     EndIf
     If !owningQuest.IsStageDone(StageToSet)
-        owningQuest.SetStage(StageToSet)
+        If owningQuest.SetStage(StageToSet)
+            akKeypad.CompleteKeypad()
+        EndIf
     EndIf
-    akKeypad.CompleteKeypad()
 EndFunction
 
 ; PlayerActivateType 0 is FO76's ANY; 1/2/3 all narrow to the active player,

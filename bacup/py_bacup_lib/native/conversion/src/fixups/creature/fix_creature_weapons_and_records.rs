@@ -61,6 +61,7 @@ const WEAP_DNAM_ANIM_TYPE_OFFSET: usize = 54;
 const WEAP_DNAM_DAMAGE_BASE_OFFSET: usize = 67;
 const WEAP_DNAM_ACCURACY_BONUS_OFFSET: usize = 105;
 const WEAP_DNAM_ACTION_POINT_COST_OFFSET: usize = 112;
+#[cfg(test)]
 const WEAP_DNAM_MIN_LEN: usize = 116; // need through action_point_cost
 
 const WEAP_ANIM_TYPE_MELEE: u8 = 1;
@@ -219,8 +220,11 @@ impl Fixup for FixCreatureWeaponsAndRecordsFixup {
                     let keep = match *sig_str {
                         "WEAP" => likely_creature_weapon_editor_id(&eid_lower),
                         "IDLE" => is_floater_combat_idle_editor_id(&eid_lower),
-                        "EXPL" => eid_lower.contains("spit") || eid_lower.contains("barf")
-                            || eid_lower == super::player_fear::EXPLOSION_EID,
+                        "EXPL" => {
+                            eid_lower.contains("spit")
+                                || eid_lower.contains("barf")
+                                || eid_lower == super::player_fear::EXPLOSION_EID
+                        }
                         _ => false,
                     };
                     if !keep {
@@ -232,8 +236,12 @@ impl Fixup for FixCreatureWeaponsAndRecordsFixup {
                     "WEAP" => apply_weap(&mut record, target_own_index, mapper.interner),
                     "IDLE" => apply_idle(&mut record, &eid_lower, mapper.interner),
                     "EXPL" if eid_lower == super::player_fear::EXPLOSION_EID => {
-                        super::player_fear::repair_explosion(&mut record, mapper.interner, config.mod_path.as_deref())
-                            .map_err(FixupError::Other)?
+                        super::player_fear::repair_explosion(
+                            &mut record,
+                            mapper.interner,
+                            config.mod_path.as_deref(),
+                        )
+                        .map_err(FixupError::Other)?
                     }
                     "EXPL" => apply_expl(&mut record, target_own_index, mapper.interner),
                     "RACE" => apply_race(&mut record, target_own_index),
@@ -1206,89 +1214,58 @@ mod tests {
                 "{eid_lower} should be idempotent"
             );
         }
-    }
 
-    #[test]
-    fn unrelated_idle_keeps_its_animation_group_section() {
-        let interner = StringInterner::new();
-        let mut record = make_record(
+        let mut unrelated = make_record(
             "IDLE",
             0x0314DE,
             "Fallout4.esm",
             Some("BloatflyFireSingle"),
             &interner,
         );
-        push_bytes(&mut record, "DATA", vec![0, 0, 0, 0, 0, 0]);
-
-        assert!(!apply_idle(&mut record, "bloatflyfiresingle", &interner));
-        assert_eq!(idle_group_section(&record, &interner), Some(0));
+        push_bytes(&mut unrelated, "DATA", vec![0, 0, 0, 0, 0, 0]);
+        assert!(!apply_idle(&mut unrelated, "bloatflyfiresingle", &interner));
+        assert_eq!(idle_group_section(&unrelated, &interner), Some(0));
     }
 
     // ── WEAP: melee AttackDelay strip ─────────────────────────────────────
 
-    /// Melee weapon with attack_delay >= 5 is reset to 0.
     #[test]
-    fn weap_melee_strips_high_attack_delay() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "WEAP",
-            0x0800,
-            "Output.esp",
-            Some("crMeleeClaw"),
-            &mut interner,
-        );
-        push_bytes(
-            &mut r,
-            "DNAM",
-            make_dnam_bytes(WEAP_ANIM_TYPE_MELEE, 7.5, 0, 0, 0.0),
-        );
-        let changed = apply_weap(&mut r, 1, &interner);
-        assert!(changed);
-        assert_eq!(read_dnam_f32(&r, WEAP_DNAM_ATTACK_DELAY_OFFSET), Some(0.0));
-    }
-
-    /// Melee weapon with low attack_delay is not touched.
-    #[test]
-    fn weap_melee_keeps_low_attack_delay() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "WEAP",
-            0x0800,
-            "Output.esp",
-            Some("crMeleeClaw"),
-            &mut interner,
-        );
-        push_bytes(
-            &mut r,
-            "DNAM",
-            make_dnam_bytes(WEAP_ANIM_TYPE_MELEE, 2.5, 0, 0, 0.0),
-        );
-        let changed = apply_weap(&mut r, 1, &interner);
-        assert!(!changed);
-        assert_eq!(read_dnam_f32(&r, WEAP_DNAM_ATTACK_DELAY_OFFSET), Some(2.5));
+    fn weap_melee_strips_only_high_attack_delay() {
+        for (delay, expected) in [(7.5_f32, 0.0_f32), (2.5, 2.5)] {
+            let interner = StringInterner::new();
+            let mut r = make_record("WEAP", 0x0800, "Output.esp", Some("crMeleeClaw"), &interner);
+            push_bytes(
+                &mut r,
+                "DNAM",
+                make_dnam_bytes(WEAP_ANIM_TYPE_MELEE, delay, 0, 0, 0.0),
+            );
+            assert_eq!(
+                apply_weap(&mut r, 1, &interner),
+                delay != expected,
+                "{delay}"
+            );
+            assert_eq!(
+                read_dnam_f32(&r, WEAP_DNAM_ATTACK_DELAY_OFFSET),
+                Some(expected),
+                "{delay}"
+            );
+        }
     }
 
     // ── WEAP: ranged defaults ─────────────────────────────────────────────
 
     /// Gun-type weapon with zero damage_base / accuracy_bonus /
-    /// action_point_cost gets FO4 defaults.
+    /// action_point_cost gets FO4 defaults; authored values are left alone.
     #[test]
-    fn weap_gun_fills_defaults() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "WEAP",
-            0x0800,
-            "Output.esp",
-            Some("crGunPlasma"),
-            &mut interner,
-        );
+    fn weap_gun_fills_only_missing_defaults() {
+        let interner = StringInterner::new();
+        let mut r = make_record("WEAP", 0x0800, "Output.esp", Some("crGunPlasma"), &interner);
         push_bytes(
             &mut r,
             "DNAM",
             make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 0, 0, 0.0),
         );
-        let changed = apply_weap(&mut r, 1, &interner);
-        assert!(changed);
+        assert!(apply_weap(&mut r, 1, &interner));
         assert_eq!(
             read_dnam_u16(&r, WEAP_DNAM_DAMAGE_BASE_OFFSET),
             Some(WEAP_DEFAULT_DAMAGE_BASE)
@@ -1299,33 +1276,25 @@ mod tests {
         );
         let ap = read_dnam_f32(&r, WEAP_DNAM_ACTION_POINT_COST_OFFSET).unwrap();
         assert!((ap - WEAP_DEFAULT_ACTION_POINT_COST).abs() < 1e-6);
-    }
 
-    /// Gun-type weapon with existing non-zero values is left alone.
-    #[test]
-    fn weap_gun_preserves_existing_values() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "WEAP",
-            0x0800,
-            "Output.esp",
-            Some("crGunPlasma"),
-            &mut interner,
-        );
+        let mut authored =
+            make_record("WEAP", 0x0801, "Output.esp", Some("crGunPlasma"), &interner);
         push_bytes(
-            &mut r,
+            &mut authored,
             "DNAM",
             make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 42, 75, 30.0),
         );
-        push_bytes(&mut r, "KSIZ", 1u32.to_le_bytes().to_vec());
+        push_bytes(&mut authored, "KSIZ", 1u32.to_le_bytes().to_vec());
         push_bytes(
-            &mut r,
+            &mut authored,
             "KWDA",
             CR_WEAPON_RANGED_LOW24.to_le_bytes().to_vec(),
         );
-        let changed = apply_weap(&mut r, 1, &interner);
-        assert!(!changed);
-        assert_eq!(read_dnam_u16(&r, WEAP_DNAM_DAMAGE_BASE_OFFSET), Some(42));
+        assert!(!apply_weap(&mut authored, 1, &interner));
+        assert_eq!(
+            read_dnam_u16(&authored, WEAP_DNAM_DAMAGE_BASE_OFFSET),
+            Some(42)
+        );
     }
 
     #[test]
@@ -1453,389 +1422,238 @@ mod tests {
     }
 
     #[test]
-    fn liberator_laser_uses_fo4_embedded_weapon_flags() {
-        let interner = StringInterner::new();
-        let mut record = make_record(
-            "WEAP",
-            0x10D80A,
-            "Output.esp",
-            Some("crLiberatorLaserGun"),
-            &interner,
-        );
-        let mut dnam = make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 10, 100, 20.0);
-        dnam[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
-            .copy_from_slice(&WEAP_FLAG_NPCS_USE_AMMO.to_le_bytes());
-        push_bytes(&mut record, "DNAM", dnam);
+    fn liberator_lasers_use_fo4_embedded_weapon_flags() {
+        for (local, eid) in [
+            (0x10D80A, "crLiberatorLaserGun"),
+            (0x85B654, "HTO_crRobot_Liberator_LaserGun"),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_record("WEAP", local, "Output.esp", Some(eid), &interner);
+            let mut dnam = make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 10, 100, 20.0);
+            dnam[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
+                .copy_from_slice(&WEAP_FLAG_NPCS_USE_AMMO.to_le_bytes());
+            push_bytes(&mut record, "DNAM", dnam);
 
-        assert!(apply_weap(&mut record, 1, &interner));
-        let flags = read_dnam_u32(&record, WEAP_DNAM_FLAGS_OFFSET).unwrap();
-        assert_eq!(flags & WEAP_FLAG_EMBEDDED_WEAPON, WEAP_FLAG_EMBEDDED_WEAPON);
-        assert_eq!(flags & WEAP_FLAG_NPCS_USE_AMMO, 0);
-    }
-
-    #[test]
-    fn hto_liberator_laser_uses_same_embedded_weapon_repair() {
-        let interner = StringInterner::new();
-        let mut record = make_record(
-            "WEAP",
-            0x85B654,
-            "Output.esp",
-            Some("HTO_crRobot_Liberator_LaserGun"),
-            &interner,
-        );
-        let mut dnam = make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 0.0, 10, 100, 20.0);
-        dnam[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
-            .copy_from_slice(&WEAP_FLAG_NPCS_USE_AMMO.to_le_bytes());
-        push_bytes(&mut record, "DNAM", dnam);
-
-        assert!(apply_weap(&mut record, 1, &interner));
-        let flags = read_dnam_u32(&record, WEAP_DNAM_FLAGS_OFFSET).unwrap();
-        assert_eq!(flags & WEAP_FLAG_EMBEDDED_WEAPON, WEAP_FLAG_EMBEDDED_WEAPON);
-        assert_eq!(flags & WEAP_FLAG_NPCS_USE_AMMO, 0);
-    }
-
-    /// Spit-eid weapon with no DNAM still routes through ranged
-    /// path via eid heuristic. (No DNAM → byte reads return None → no-ops;
-    /// just verify we don't crash and EITM swap still runs if present.)
-    #[test]
-    fn weap_spit_eid_no_dnam_eitm_swap_still_runs() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "WEAP",
-            0x0800,
-            "Output.esp",
-            Some("crSpitMirelurk"),
-            &mut interner,
-        );
-        let raw: u32 = (1u32 << 24) | 0x000123;
-        let mut eitm: Vec<u8> = Vec::new();
-        eitm.extend_from_slice(&raw.to_le_bytes());
-        push_bytes(&mut r, "EITM", eitm);
-        let changed = apply_weap(&mut r, 1, &interner);
-        assert!(changed, "spit-eid EITM swap should fire");
-        let eitm_sig = SubrecordSig::from_str("EITM").unwrap();
-        for entry in &r.fields {
-            if entry.sig == eitm_sig {
-                if let FieldValue::Bytes(data) = &entry.value {
-                    let new_raw = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    assert_eq!(new_raw, WEAP_SPIT_VANILLA_EFFECT_RAW);
-                }
-            }
+            assert!(apply_weap(&mut record, 1, &interner), "{eid}");
+            let flags = read_dnam_u32(&record, WEAP_DNAM_FLAGS_OFFSET).unwrap();
+            assert_eq!(
+                flags & WEAP_FLAG_EMBEDDED_WEAPON,
+                WEAP_FLAG_EMBEDDED_WEAPON,
+                "{eid}"
+            );
+            assert_eq!(flags & WEAP_FLAG_NPCS_USE_AMMO, 0, "{eid}");
         }
     }
 
-    /// Spit weapon with EITM pointing at Fallout4.esm (master 0)
-    /// is NOT swapped (not mod-local).
+    /// A spit-eid weapon with no DNAM still routes through the ranged path via
+    /// the eid heuristic: a mod-local EITM is swapped for the vanilla spit
+    /// effect, while one pointing at Fallout4.esm (master 0) is kept.
     #[test]
-    fn weap_spit_keeps_vanilla_eitm() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "WEAP",
-            0x0800,
-            "Output.esp",
-            Some("crSpitMirelurk"),
-            &mut interner,
-        );
-        let vanilla_raw: u32 = 0x00_00ABCD;
-        let mut eitm: Vec<u8> = Vec::new();
-        eitm.extend_from_slice(&vanilla_raw.to_le_bytes());
-        push_bytes(&mut r, "EITM", eitm);
-        let changed = apply_weap(&mut r, 1, &interner);
-        assert!(changed, "the ranged keyword contract should be added");
-        assert!(record_has_fo4_keyword(
-            &r,
-            CR_WEAPON_RANGED_LOW24,
-            &interner
-        ));
-        let eitm_sig = SubrecordSig::from_str("EITM").unwrap();
-        for entry in &r.fields {
-            if entry.sig == eitm_sig {
-                if let FieldValue::Bytes(data) = &entry.value {
-                    let raw = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    assert_eq!(raw, vanilla_raw);
-                }
-            }
+    fn weap_spit_swaps_only_mod_local_eitm() {
+        for (raw, expected) in [
+            ((1u32 << 24) | 0x000123, WEAP_SPIT_VANILLA_EFFECT_RAW),
+            (0x00_00ABCD, 0x00_00ABCD),
+        ] {
+            let interner = StringInterner::new();
+            let mut r = make_record(
+                "WEAP",
+                0x0800,
+                "Output.esp",
+                Some("crSpitMirelurk"),
+                &interner,
+            );
+            push_bytes(&mut r, "EITM", raw.to_le_bytes().to_vec());
+            assert!(apply_weap(&mut r, 1, &interner), "{raw:08X}");
+            assert!(
+                record_has_fo4_keyword(&r, CR_WEAPON_RANGED_LOW24, &interner),
+                "{raw:08X}: ranged keyword contract"
+            );
+            let eitm_sig = SubrecordSig::from_str("EITM").unwrap();
+            let entry = r.fields.iter().find(|entry| entry.sig == eitm_sig).unwrap();
+            let FieldValue::Bytes(data) = &entry.value else {
+                panic!("EITM bytes");
+            };
+            assert_eq!(
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
+                expected,
+                "{raw:08X}"
+            );
         }
     }
 
     // ── EXPL: DATA.damage default + spit EITM ─────────────────────────────
 
-    /// EXPL.DATA.damage = 0.0 gets bumped to 10.0.
+    /// EXPL.DATA.damage = 0.0 gets bumped to 10.0, and a spit eid with no
+    /// EITM gets crEnchMirelurkQueenSpit ahead of DATA.
     #[test]
-    fn expl_data_damage_default() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "EXPL",
-            0x1234,
-            "Output.esp",
-            Some("crExplFire"),
-            &mut interner,
-        );
-        push_bytes(&mut r, "DATA", vec![0u8; 32]);
-        let changed = apply_expl(&mut r, 1, &interner);
-        assert!(changed);
-        // Damage at offset 28..32 should now be 10.0.
+    fn expl_gets_default_damage_and_spit_enchantment() {
+        let eitm_sig = SubrecordSig::from_str("EITM").unwrap();
         let data_sig = SubrecordSig::from_str("DATA").unwrap();
-        for entry in &r.fields {
-            if entry.sig == data_sig {
-                if let FieldValue::Bytes(data) = &entry.value {
-                    let dmg = f32::from_le_bytes([
-                        data[EXPL_DATA_DAMAGE_OFFSET],
-                        data[EXPL_DATA_DAMAGE_OFFSET + 1],
-                        data[EXPL_DATA_DAMAGE_OFFSET + 2],
-                        data[EXPL_DATA_DAMAGE_OFFSET + 3],
-                    ]);
-                    assert!((dmg - EXPL_DEFAULT_DAMAGE).abs() < 1e-6);
-                }
+        let read_damage = |r: &Record| {
+            let entry = r.fields.iter().find(|e| e.sig == data_sig).unwrap();
+            let FieldValue::Bytes(data) = &entry.value else {
+                panic!("DATA bytes");
+            };
+            f32::from_le_bytes(
+                data[EXPL_DATA_DAMAGE_OFFSET..EXPL_DATA_DAMAGE_OFFSET + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        for (eid, damage, expect_changed, expect_eitm) in [
+            ("crExplFire", 0.0_f32, true, false),
+            ("crSpitExpl", 0.0, true, true),
+            ("crExplFire", 10.0, false, false),
+        ] {
+            let interner = StringInterner::new();
+            let mut r = make_record("EXPL", 0x1234, "Output.esp", Some(eid), &interner);
+            let mut data = vec![0u8; 32];
+            data[EXPL_DATA_DAMAGE_OFFSET..EXPL_DATA_DAMAGE_OFFSET + 4]
+                .copy_from_slice(&damage.to_le_bytes());
+            push_bytes(&mut r, "DATA", data);
+
+            assert_eq!(apply_expl(&mut r, 1, &interner), expect_changed, "{eid}");
+            assert!(
+                (read_damage(&r) - EXPL_DEFAULT_DAMAGE).abs() < 1e-6,
+                "{eid}"
+            );
+            let eitm_idx = r.fields.iter().position(|e| e.sig == eitm_sig);
+            assert_eq!(eitm_idx.is_some(), expect_eitm, "{eid}");
+            if let Some(eitm_idx) = eitm_idx {
+                let data_idx = r.fields.iter().position(|e| e.sig == data_sig).unwrap();
+                assert!(eitm_idx < data_idx, "EITM must precede DATA");
+                let FieldValue::Bytes(d) = &r.fields[eitm_idx].value else {
+                    panic!("EITM should be bytes");
+                };
+                assert_eq!(
+                    u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
+                    EXPL_SPIT_ENCHANTMENT_RAW
+                );
             }
         }
-    }
-
-    /// EXPL with spit eid and no EITM gets crEnchMirelurkQueenSpit.
-    #[test]
-    fn expl_spit_eid_inserts_eitm() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "EXPL",
-            0x1234,
-            "Output.esp",
-            Some("crSpitExpl"),
-            &mut interner,
-        );
-        push_bytes(&mut r, "DATA", vec![0u8; 32]);
-        let changed = apply_expl(&mut r, 1, &interner);
-        assert!(changed);
-        let eitm_sig = SubrecordSig::from_str("EITM").unwrap();
-        let data_sig = SubrecordSig::from_str("DATA").unwrap();
-        let eitm_idx = r.fields.iter().position(|e| e.sig == eitm_sig).unwrap();
-        let data_idx = r.fields.iter().position(|e| e.sig == data_sig).unwrap();
-        assert!(eitm_idx < data_idx, "EITM must precede DATA");
-        if let FieldValue::Bytes(d) = &r.fields[eitm_idx].value {
-            let raw = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
-            assert_eq!(raw, EXPL_SPIT_ENCHANTMENT_RAW);
-        } else {
-            panic!("EITM should be bytes");
-        }
-    }
-
-    /// EXPL without spit/barf eid does not add EITM.
-    #[test]
-    fn expl_non_spit_eid_skips_eitm() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record(
-            "EXPL",
-            0x1234,
-            "Output.esp",
-            Some("crExplFire"),
-            &mut interner,
-        );
-        // Pre-fill damage = 10.0 so apply_expl is a no-op on the damage path.
-        let mut data = vec![0u8; 32];
-        data[EXPL_DATA_DAMAGE_OFFSET..EXPL_DATA_DAMAGE_OFFSET + 4]
-            .copy_from_slice(&10.0_f32.to_le_bytes());
-        push_bytes(&mut r, "DATA", data);
-        let changed = apply_expl(&mut r, 1, &interner);
-        assert!(!changed);
-        let eitm_sig = SubrecordSig::from_str("EITM").unwrap();
-        assert!(r.fields.iter().all(|e| e.sig != eitm_sig));
     }
 
     // ── RACE.VNAM equipment-flags mask ────────────────────────────────────
 
-    /// Scorchbeast-style RACE.VNAM keeps the high FO4 creature bits while
-    /// unsupported low equipment slots remain filtered. `hand_to_hand_melee`
-    /// goes with them: no vanilla FO4 creature race sets it, and carrying it
-    /// across stops the engine ever staging a melee swing.
+    /// Body-fighting creatures keep the high FO4 creature bits while unsupported
+    /// low equipment slots are filtered; `hand_to_hand_melee` goes with them: no
+    /// vanilla FO4 creature race sets it, and carrying it across stops the engine
+    /// ever staging a melee swing. A race that carries a weapon keeps its bits
+    /// verbatim even when FO76 tags it `ActorTypeCreature` (mole miners are
+    /// humanlike; super mutants are exempted by `ActorTypeSuperMutant`).
     #[test]
-    fn race_vnam_preserves_scorchbeast_high_creature_bits_and_clears_h2h() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("RACE", 0x5678, "Output.esp", None, &mut interner);
-        // Set bits: hand_to_hand_melee(1), one_hand_sword(2), gun(512),
-        // grenade(1024), spell(4096), shield(8192), torch(16384), plus the high
-        // mask vanilla FO4 creatures carry.
-        let cur: u32 = 1 | 2 | 512 | 1024 | 4096 | 8192 | 16384 | 0xF8FF_8000;
-        let mut vnam: Vec<u8> = Vec::new();
-        vnam.extend_from_slice(&cur.to_le_bytes());
-        push_bytes(&mut r, "VNAM", vnam);
-        let changed = apply_race(&mut r, 1);
-        assert!(changed);
-        let vnam_sig = SubrecordSig::from_str("VNAM").unwrap();
-        for entry in &r.fields {
-            if entry.sig == vnam_sig {
-                if let FieldValue::Bytes(data) = &entry.value {
-                    let new_val = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    assert_eq!(new_val, 512 | 4096 | 8192 | 16384 | 0xF8FF_8000);
-                    assert_eq!(new_val & 1, 0, "body-fighting creature loses H2H");
-                }
+    fn race_vnam_equipment_flags_mask() {
+        const HIGH: u32 = 0xF8FF_8000;
+        for (name, keywords, flags, expected) in [
+            (
+                "scorchbeast",
+                vec![],
+                1 | 2 | 512 | 1024 | 4096 | 8192 | 16384 | HIGH,
+                512 | 4096 | 8192 | 16384 | HIGH,
+            ),
+            (
+                "plain_creature",
+                vec![0x00_013795],
+                1 | 2 | 512 | 1024 | 8192 | 16384 | HIGH,
+                512 | 8192 | 16384 | HIGH,
+            ),
+            (
+                "humanlike",
+                vec![0x00_013795, ACTOR_TYPE_HUMANLIKE_LOW24],
+                1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | HIGH,
+                1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | HIGH,
+            ),
+            (
+                "super_mutant",
+                vec![0x00_013795, ACTOR_TYPE_SUPER_MUTANT_LOW24],
+                1 | 32 | 64 | 512 | 1024 | 8192 | 16384 | HIGH,
+                1 | 32 | 64 | 512 | 1024 | 8192 | 16384 | HIGH,
+            ),
+            (
+                "already_clean",
+                vec![],
+                512 | 4096 | 8192 | 16384 | HIGH,
+                512 | 4096 | 8192 | 16384 | HIGH,
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let mut r = make_record("RACE", 0x5678, "Output.esp", None, &interner);
+            if !keywords.is_empty() {
+                push_bytes(
+                    &mut r,
+                    "KWDA",
+                    keywords
+                        .iter()
+                        .flat_map(|raw: &u32| raw.to_le_bytes())
+                        .collect(),
+                );
             }
+            push_bytes(&mut r, "VNAM", flags.to_le_bytes().to_vec());
+
+            assert_eq!(apply_race(&mut r, 1), flags != expected, "{name}");
+            let vnam_sig = SubrecordSig::from_str("VNAM").unwrap();
+            let stored = r
+                .fields
+                .iter()
+                .find(|e| e.sig == vnam_sig)
+                .and_then(|e| match &e.value {
+                    FieldValue::Bytes(d) if d.len() >= 4 => {
+                        Some(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
+                    }
+                    _ => None,
+                })
+                .expect("VNAM");
+            assert_eq!(stored, expected, "{name}");
         }
-    }
-
-    /// Weapon-animation-type bits survive on a race that carries a weapon, even
-    /// when FO76 tags it `ActorTypeCreature` (mole miners).
-    #[test]
-    fn race_vnam_preserves_weapon_bits_on_humanlike_race() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("RACE", 0x012E6B, "Output.esp", None, &mut interner);
-        // MoleMinerRace: ActorTypeCreature *and* ActorTypeHumanlike.
-        let mut kwda: Vec<u8> = Vec::new();
-        kwda.extend_from_slice(&0x00_013795u32.to_le_bytes());
-        kwda.extend_from_slice(&ACTOR_TYPE_HUMANLIKE_LOW24.to_le_bytes());
-        push_bytes(&mut r, "KWDA", kwda);
-        let cur: u32 = 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 0xF8FF_8000;
-        let mut vnam: Vec<u8> = Vec::new();
-        vnam.extend_from_slice(&cur.to_le_bytes());
-        push_bytes(&mut r, "VNAM", vnam);
-
-        assert!(!apply_race(&mut r, 1), "armed humanoid must not be masked");
-        let vnam_sig = SubrecordSig::from_str("VNAM").unwrap();
-        let stored = r
-            .fields
-            .iter()
-            .find(|e| e.sig == vnam_sig)
-            .and_then(|e| match &e.value {
-                FieldValue::Bytes(d) if d.len() >= 4 => {
-                    Some(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
-                }
-                _ => None,
-            })
-            .expect("VNAM");
-        assert_eq!(stored, cur, "source equipment flags survive verbatim");
-    }
-
-    /// Super mutants swing boards and super sledges but FO76 leaves them
-    /// un-humanlike, so `ActorTypeSuperMutant` has to exempt them too.
-    #[test]
-    fn race_vnam_preserves_weapon_bits_on_super_mutant_race() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("RACE", 0x5C4F6E, "Output.esp", None, &mut interner);
-        let mut kwda: Vec<u8> = Vec::new();
-        kwda.extend_from_slice(&0x00_013795u32.to_le_bytes());
-        kwda.extend_from_slice(&ACTOR_TYPE_SUPER_MUTANT_LOW24.to_le_bytes());
-        push_bytes(&mut r, "KWDA", kwda);
-        // ShieldedSuperMutantRace loses two_hand_sword/axe + grenade today.
-        let cur: u32 = 1 | 32 | 64 | 512 | 1024 | 8192 | 16384 | 0xF8FF_8000;
-        let mut vnam: Vec<u8> = Vec::new();
-        vnam.extend_from_slice(&cur.to_le_bytes());
-        push_bytes(&mut r, "VNAM", vnam);
-
-        assert!(!apply_race(&mut r, 1));
-    }
-
-    /// A beast with the same `ActorTypeCreature` tag but no humanoid marker gets
-    /// FO4's body-fighting profile: no `one_hand_sword`, and no
-    /// `hand_to_hand_melee` either.
-    #[test]
-    fn race_vnam_still_masks_plain_creature_race() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("RACE", 0x822A4D, "Output.esp", None, &mut interner);
-        let mut kwda: Vec<u8> = Vec::new();
-        kwda.extend_from_slice(&0x00_013795u32.to_le_bytes());
-        push_bytes(&mut r, "KWDA", kwda);
-        let cur: u32 = 1 | 2 | 512 | 1024 | 8192 | 16384 | 0xF8FF_8000;
-        let mut vnam: Vec<u8> = Vec::new();
-        vnam.extend_from_slice(&cur.to_le_bytes());
-        push_bytes(&mut r, "VNAM", vnam);
-
-        assert!(apply_race(&mut r, 1));
-        let vnam_sig = SubrecordSig::from_str("VNAM").unwrap();
-        let stored = r
-            .fields
-            .iter()
-            .find(|e| e.sig == vnam_sig)
-            .and_then(|e| match &e.value {
-                FieldValue::Bytes(d) if d.len() >= 4 => {
-                    Some(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
-                }
-                _ => None,
-            })
-            .expect("VNAM");
-        assert_eq!(stored, 512 | 8192 | 16384 | 0xF8FF_8000);
-        assert_eq!(stored & 1, 0, "RadHog must not keep H2H");
-    }
-
-    /// RACE.VNAM already filtered is a no-op.
-    #[test]
-    fn race_vnam_clean_is_noop() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("RACE", 0x5678, "Output.esp", None, &mut interner);
-        let cur: u32 = 512 | 4096 | 8192 | 16384 | 0xF8FF_8000;
-        let mut vnam: Vec<u8> = Vec::new();
-        vnam.extend_from_slice(&cur.to_le_bytes());
-        push_bytes(&mut r, "VNAM", vnam);
-        let changed = apply_race(&mut r, 1);
-        assert!(!changed);
     }
 
     // ── FACT.XNAM defaults ────────────────────────────────────────────────
 
-    /// FACT with no XNAM gets 5 default Relations entries.
+    /// A FACT with no usable XNAM (none, or only null-faction rows) gets five
+    /// default Relations, the last one Ally to itself; an existing relation
+    /// suppresses the defaults.
     #[test]
-    fn fact_no_xnam_gets_defaults() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("FACT", 0x0BCDEF, "Output.esp", None, &mut interner);
-        let changed = apply_fact(&mut r, 1);
-        assert!(changed);
+    fn fact_gets_default_relations_only_without_existing_ones() {
         let xnam_sig = SubrecordSig::from_str("XNAM").unwrap();
-        let xnam_count = r.fields.iter().filter(|e| e.sig == xnam_sig).count();
-        assert_eq!(xnam_count, 5, "five default Relations should be added");
-        // Verify the last entry is self (master_byte == target_own_index = 1).
-        let last_xnam = r.fields.iter().rev().find(|e| e.sig == xnam_sig).unwrap();
-        if let FieldValue::Bytes(d) = &last_xnam.value {
-            let raw = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
-            assert_eq!(
-                raw >> 24,
-                1,
-                "self FK master byte must equal target_own_index"
-            );
-            assert_eq!(raw & 0x00FF_FFFF, 0x0BCDEF, "self FK object_id");
-            let reaction = u32::from_le_bytes([d[8], d[9], d[10], d[11]]);
-            assert_eq!(reaction, 2, "self entry should be Ally (2)");
-        } else {
-            panic!("XNAM should be bytes");
+        let mut existing = Vec::new();
+        existing.extend_from_slice(&0x00_AABBCCu32.to_le_bytes());
+        existing.extend_from_slice(&0i32.to_le_bytes());
+        existing.extend_from_slice(&3u32.to_le_bytes());
+        for (name, xnam, expected_count) in [
+            ("no_xnam", None, 5),
+            ("null_xnam", Some(vec![0u8; 12]), 5),
+            ("existing_xnam", Some(existing), 1),
+        ] {
+            let interner = StringInterner::new();
+            let mut r = make_record("FACT", 0x0BCDEF, "Output.esp", None, &interner);
+            if let Some(xnam) = xnam {
+                push_bytes(&mut r, "XNAM", xnam);
+            }
+            assert_eq!(apply_fact(&mut r, 1), expected_count == 5, "{name}");
+            let count = r.fields.iter().filter(|e| e.sig == xnam_sig).count();
+            assert_eq!(count, expected_count, "{name}");
+            if expected_count == 5 {
+                let last_xnam = r.fields.iter().rev().find(|e| e.sig == xnam_sig).unwrap();
+                let FieldValue::Bytes(d) = &last_xnam.value else {
+                    panic!("XNAM should be bytes");
+                };
+                let raw = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+                assert_eq!(
+                    raw >> 24,
+                    1,
+                    "{name}: self FK master byte is target_own_index"
+                );
+                assert_eq!(raw & 0x00FF_FFFF, 0x0BCDEF, "{name}: self FK object_id");
+                let reaction = u32::from_le_bytes([d[8], d[9], d[10], d[11]]);
+                assert_eq!(reaction, 2, "{name}: self entry should be Ally (2)");
+            }
         }
-    }
-
-    /// FACT with null XNAM entries drops them and adds defaults.
-    #[test]
-    fn fact_drops_null_xnam_and_adds_defaults() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("FACT", 0x0BCDEF, "Output.esp", None, &mut interner);
-        // Add one null-faction XNAM (raw 0).
-        let mut null_xnam = vec![0u8; 12];
-        // modifier = 0, reaction = 0 (all zero is fine for null entry)
-        let _ = null_xnam.len();
-        push_bytes(&mut r, "XNAM", null_xnam);
-        let changed = apply_fact(&mut r, 1);
-        assert!(changed);
-        let xnam_sig = SubrecordSig::from_str("XNAM").unwrap();
-        let count = r.fields.iter().filter(|e| e.sig == xnam_sig).count();
-        assert_eq!(count, 5, "null XNAM dropped + 5 defaults appended");
-    }
-
-    /// FACT with an existing non-null XNAM keeps it and does NOT
-    /// add defaults.
-    #[test]
-    fn fact_keeps_existing_xnam_skips_defaults() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("FACT", 0x0BCDEF, "Output.esp", None, &mut interner);
-        let existing_faction: u32 = 0x00_AABBCC;
-        let mut xnam: Vec<u8> = Vec::new();
-        xnam.extend_from_slice(&existing_faction.to_le_bytes());
-        xnam.extend_from_slice(&0i32.to_le_bytes());
-        xnam.extend_from_slice(&3u32.to_le_bytes());
-        push_bytes(&mut r, "XNAM", xnam);
-        let changed = apply_fact(&mut r, 1);
-        assert!(!changed);
-        let xnam_sig = SubrecordSig::from_str("XNAM").unwrap();
-        assert_eq!(r.fields.iter().filter(|e| e.sig == xnam_sig).count(), 1);
     }
 
     // ── QUST DNAM (General) defaults ──────────────────────────────────────
 
-    /// QUST without DNAM gets default General flags + priority.
     #[test]
-    fn qust_missing_dnam_gets_defaults() {
+    fn qust_gets_default_general_dnam_only_when_missing() {
         let mut interner = StringInterner::new();
         let mut r = make_record("QUST", 0xABCDEF, "Output.esp", None, &mut interner);
         let changed = apply_qust(&mut r, 1);
@@ -1854,15 +1672,9 @@ mod tests {
         } else {
             panic!("DNAM should be bytes");
         }
-    }
 
-    /// QUST with existing DNAM is left alone.
-    #[test]
-    fn qust_existing_dnam_is_noop() {
-        let mut interner = StringInterner::new();
-        let mut r = make_record("QUST", 0xABCDEF, "Output.esp", None, &mut interner);
-        push_bytes(&mut r, "DNAM", vec![0x77; QUST_DNAM_LEN]);
-        let changed = apply_qust(&mut r, 1);
-        assert!(!changed);
+        let mut existing = make_record("QUST", 0xABCDF0, "Output.esp", None, &interner);
+        push_bytes(&mut existing, "DNAM", vec![0x77; QUST_DNAM_LEN]);
+        assert!(!apply_qust(&mut existing, 1));
     }
 }

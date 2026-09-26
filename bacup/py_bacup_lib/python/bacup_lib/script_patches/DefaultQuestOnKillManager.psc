@@ -23,6 +23,19 @@ Function StartTrackingKills()
 EndFunction
 
 Event OnQuestInit()
+    ; A daily runs again the next day on this same script instance and Papyrus script
+    ; variables survive the stop, so last run's overrides (Big Game Hunter 11D76B picks
+    ; new creature groups each day) and its kill count are cleared before re-arming.
+    CountVictims = 0
+    incrementLock = False
+    trackingKills = False
+    VictimsRequiredOverride = 0
+    VictimCountObjectiveOverride = -1
+    VictimKeywordOverride = None
+    VictimRaceOverride = None
+    VictimFactionOverride = None
+    WeaponKeywordOverride = None
+    UnregisterForRemoteEvent(Game.GetPlayer(), "OnKill")
     If TrackKillsImmediately
         StartTrackingKills()
     EndIf

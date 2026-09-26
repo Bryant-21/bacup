@@ -4,6 +4,10 @@ EndFunction
 
 Function Fragment_Stage_0100_Item_00()
 	Controller().SelectSceneLocation()
+	; FO76 picked the argument topic server-side; 150 dresses the couple from 101-103.
+	If !IsStageDone(101) && !IsStageDone(102) && !IsStageDone(103)
+		SetStage(101 + Utility.RandomInt(0, 2))
+	EndIf
 	SetObjectiveDisplayed(10)
 EndFunction
 
@@ -37,14 +41,23 @@ EndFunction
 
 Function Fragment_Stage_2100_Item_00()
 	SetObjectiveCompleted(10)
+	If !IsStageDone(9000)
+		SetStage(9000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_2200_Item_00()
 	SetObjectiveCompleted(10)
+	If !IsStageDone(9000)
+		SetStage(9000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_2300_Item_00()
 	SetObjectiveCompleted(10)
+	If !IsStageDone(9000)
+		SetStage(9000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()

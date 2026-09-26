@@ -885,97 +885,97 @@ mod tests {
     }
 
     #[test]
-    fn projects_minimal_localized_quest_and_deterministic_psc() {
-        let plan = fixture_plan();
-        let interner = StringInterner::new();
-        let projection = project(&plan, &interner).unwrap();
-        assert_eq!(projection.record.sig.0, *b"QUST");
-        assert_eq!(projection.localized_text.len(), 3);
-        assert_eq!(projection.psc_artifact.class_name, "B21_SkyQF_010123");
-        assert!(
-            projection
-                .psc_artifact
-                .source
-                .contains("SetObjectiveDisplayed(10, True)")
-        );
-        assert!(
-            projection
-                .record
-                .fields
-                .iter()
-                .any(|field| field.sig.0 == *b"ALFR")
-        );
-        assert!(
-            projection
-                .record
-                .fields
-                .iter()
-                .any(|field| field.sig.0 == *b"CTDA")
-        );
+    fn projects_minimal_quest_and_rejects_unsupported_shapes() {
+        {
+            let plan = fixture_plan();
+            let interner = StringInterner::new();
+            let projection = project(&plan, &interner).unwrap();
+            assert_eq!(projection.record.sig.0, *b"QUST");
+            assert_eq!(projection.localized_text.len(), 3);
+            assert_eq!(projection.psc_artifact.class_name, "B21_SkyQF_010123");
+            assert!(
+                projection
+                    .psc_artifact
+                    .source
+                    .contains("SetObjectiveDisplayed(10, True)")
+            );
+            assert!(
+                projection
+                    .record
+                    .fields
+                    .iter()
+                    .any(|field| field.sig.0 == *b"ALFR")
+            );
+            assert!(
+                projection
+                    .record
+                    .fields
+                    .iter()
+                    .any(|field| field.sig.0 == *b"CTDA")
+            );
+        }
+        {
+            let mut plan = fixture_plan();
+            let source_scene = QuestRecordKey::new("SCEN", "000999@Skyrim.esm");
+            plan.owned_records.push(source_scene.clone());
+            plan.mappings.push(SourceTargetFormMapping {
+                source: source_scene,
+                target: QuestRecordKey::new("SCEN", "010999@Output.esm"),
+            });
+            let error = project(&plan, &StringInterner::new()).unwrap_err();
+            assert!(error.contains("SCEN"), "{error}");
+        }
     }
 
     #[test]
-    fn unsupported_required_shape_rejects_the_whole_component() {
-        let mut plan = fixture_plan();
-        let source_scene = QuestRecordKey::new("SCEN", "000999@Skyrim.esm");
-        plan.owned_records.push(source_scene.clone());
-        plan.mappings.push(SourceTargetFormMapping {
-            source: source_scene,
-            target: QuestRecordKey::new("SCEN", "010999@Output.esm"),
-        });
-        let error = project(&plan, &StringInterner::new()).unwrap_err();
-        assert!(error.contains("SCEN"), "{error}");
-    }
+    fn vmad_requires_matching_fresh_compiler_evidence_and_pex() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let plan = fixture_plan();
+            let interner = StringInterner::new();
+            let projection = project(&plan, &interner).unwrap();
+            assert!(build_vmad_attachment_intent(&projection, None).is_err());
+            let mut evidence = compile_projection(root.path(), &projection);
+            evidence.source_blake3 = blake3::hash(b"stale source").to_hex().to_string();
+            assert!(
+                build_vmad_attachment_intent(&projection, Some(&evidence))
+                    .unwrap_err()
+                    .contains("stale")
+            );
+            evidence.source_blake3 = projection.psc_manifest.source_blake3.clone();
+            let intent = build_vmad_attachment_intent(&projection, Some(&evidence)).unwrap();
+            assert_eq!(intent.owner, projection.target_quest);
+            assert_eq!(intent.compiler_evidence_id, "compile-1");
+            assert_eq!(intent.payload["semantic_type"], "QUST");
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let plan = fixture_plan();
+            let interner = StringInterner::new();
+            let projection = project(&plan, &interner).unwrap();
+            let mut evidence = compile_projection(root.path(), &projection);
 
-    #[test]
-    fn vmad_requires_matching_fresh_compiler_evidence() {
-        let root = tempfile::tempdir().unwrap();
-        let plan = fixture_plan();
-        let interner = StringInterner::new();
-        let projection = project(&plan, &interner).unwrap();
-        assert!(build_vmad_attachment_intent(&projection, None).is_err());
-        let mut evidence = compile_projection(root.path(), &projection);
-        evidence.source_blake3 = blake3::hash(b"stale source").to_hex().to_string();
-        assert!(
-            build_vmad_attachment_intent(&projection, Some(&evidence))
-                .unwrap_err()
-                .contains("stale")
-        );
-        evidence.source_blake3 = projection.psc_manifest.source_blake3.clone();
-        let intent = build_vmad_attachment_intent(&projection, Some(&evidence)).unwrap();
-        assert_eq!(intent.owner, projection.target_quest);
-        assert_eq!(intent.compiler_evidence_id, "compile-1");
-        assert_eq!(intent.payload["semantic_type"], "QUST");
-    }
+            std::fs::remove_file(&evidence.pex_artifact_path).unwrap();
+            assert!(
+                build_vmad_attachment_intent(&projection, Some(&evidence))
+                    .unwrap_err()
+                    .contains("read compiled Skyrim PEX")
+            );
 
-    #[test]
-    fn vmad_rejects_missing_and_hash_mismatched_pex_artifacts() {
-        let root = tempfile::tempdir().unwrap();
-        let plan = fixture_plan();
-        let interner = StringInterner::new();
-        let projection = project(&plan, &interner).unwrap();
-        let mut evidence = compile_projection(root.path(), &projection);
-
-        std::fs::remove_file(&evidence.pex_artifact_path).unwrap();
-        assert!(
-            build_vmad_attachment_intent(&projection, Some(&evidence))
-                .unwrap_err()
-                .contains("read compiled Skyrim PEX")
-        );
-
-        let compiled = papyrus_core::compiler::compile_source(
-            &projection.psc_artifact.source,
-            &[],
-            papyrus_core::profile::Game::Fo4,
-            None,
-        );
-        let pex_bytes = compiled.pex_bytes.unwrap();
-        std::fs::write(&evidence.pex_artifact_path, pex_bytes).unwrap();
-        evidence.pex_blake3 = blake3::hash(b"not the artifact").to_hex().to_string();
-        assert!(
-            build_vmad_attachment_intent(&projection, Some(&evidence))
-                .unwrap_err()
-                .contains("does not match compiler evidence")
-        );
+            let compiled = papyrus_core::compiler::compile_source(
+                &projection.psc_artifact.source,
+                &[],
+                papyrus_core::profile::Game::Fo4,
+                None,
+            );
+            let pex_bytes = compiled.pex_bytes.unwrap();
+            std::fs::write(&evidence.pex_artifact_path, pex_bytes).unwrap();
+            evidence.pex_blake3 = blake3::hash(b"not the artifact").to_hex().to_string();
+            assert!(
+                build_vmad_attachment_intent(&projection, Some(&evidence))
+                    .unwrap_err()
+                    .contains("does not match compiler evidence")
+            );
+        }
     }
 }

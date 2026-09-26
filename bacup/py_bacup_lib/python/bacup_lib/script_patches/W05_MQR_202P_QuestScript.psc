@@ -5,29 +5,183 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
         AssignTurretWaveTargets(Turrets01Aliases, Turrets01Targets)
     ElseIf auiStageID == 1220
         AssignTurretWaveTargets(Turrets02Aliases, Turrets02Targets)
+    ElseIf auiStageID == 1501 || auiStageID == 1510
+        TryStartLastVentPeek()
     ElseIf auiStageID == DefeatedBossStage
-        StopBossVentCycle()
+        StopBossVentCycle(False)
+    ElseIf auiStageID == 930 || auiStageID == 940
+        foodMenuPending = False
+        CancelTimer(4)
     EndIf
 EndEvent
 
 Event OnTimer(Int aiTimerID)
     If aiTimerID == RaRaBossVentTimerID
         If IsStageDone(DefeatedBossStage)
-            StopBossVentCycle()
+            StopBossVentCycle(False)
         Else
             SelectNextBossVent()
         EndIf
     ElseIf aiTimerID == RaRaItemDropTimeOutTimerID
+        If !IsRunning() || IsStageDone(DefeatedBossStage)
+            Return
+        EndIf
         If W05_MQR_202P_RaRaVent_1600_BossPeekSequence != None && W05_MQR_202P_RaRaVent_1600_BossPeekSequence.IsPlaying()
             W05_MQR_202P_RaRaVent_1600_BossPeekSequence.Stop()
         EndIf
         FinishBossPeekCycle()
+    ElseIf aiTimerID == 3
+        TryMoveRaRaToExitVent()
+    ElseIf aiTimerID == 4
+        TryOpenFoodTransfer()
     EndIf
 EndEvent
 
 Event OnQuestShutdown()
     StopBossVentCycle()
+    CancelTimer(3)
+    CancelTimer(4)
+    foodMenuPending = False
+    pendingExitVent = None
+    pendingExitScene = None
 EndEvent
+
+Function RequestFoodTransfer()
+    If !IsRunning() || !IsStageDone(900) || IsStageDone(930) || IsStageDone(940)
+        Return
+    EndIf
+    If !IsStageDone(910)
+        SetStage(910)
+    EndIf
+    foodMenuPending = True
+    StartTimer(0.2, 4)
+EndFunction
+
+Function TryOpenFoodTransfer()
+    If !foodMenuPending
+        Return
+    EndIf
+    Actor raRaRef = None
+    If RaRa != None
+        raRaRef = RaRa.GetActorReference()
+    EndIf
+    If !IsRunning() || IsStageDone(930) || IsStageDone(940) || raRaRef == None
+        foodMenuPending = False
+        Return
+    EndIf
+    If raRaRef.IsTalking() || Utility.IsInMenuMode()
+        StartTimer(0.2, 4)
+        Return
+    EndIf
+    foodMenuPending = False
+    raRaRef.OpenInventory(True)
+EndFunction
+
+Function EnableRaRaEntryVent(ReferenceAlias akVent)
+    If IsRunning() && akVent != None
+        akVent.TryToEnable()
+    EndIf
+EndFunction
+
+Function HideRaRaInVent()
+    If IsRunning() && RaRa != None
+        RaRa.TryToDisable()
+    EndIf
+EndFunction
+
+Function FinishLastVentEntry()
+    If !IsRunning() || IsStageDone(RaRaUnPeekStage)
+        Return
+    EndIf
+    If IsStageDone(1501)
+        TryStartLastVentPeek()
+        Return
+    EndIf
+    HideRaRaInVent()
+    If IsRunning() && !IsStageDone(1501)
+        SetStage(1501)
+    EndIf
+    TryStartLastVentPeek()
+EndFunction
+
+Function TryStartLastVentPeek()
+    If !IsRunning() || !IsStageDone(1501) || !IsStageDone(1510) || IsStageDone(RaRaUnPeekStage)
+        Return
+    EndIf
+    If W05_MQR_202P_RaRaVent_1500_PeekSequence02 != None && !W05_MQR_202P_RaRaVent_1500_PeekSequence02.IsPlaying()
+        W05_MQR_202P_RaRaVent_1500_PeekSequence02.Start()
+        MoveRaRaToExitVent(RaRaVent1510Peek, W05_MQR_202P_RaRaVent_1500_PeekSequence02)
+    EndIf
+EndFunction
+
+Function DropEarlyPulseGrenade()
+    If !IsRunning() || pulseGrenadeDropped || PulseGrenade == None || RaRa == None
+        Return
+    EndIf
+    Actor raRaRef = RaRa.GetActorReference()
+    If raRaRef == None
+        Return
+    EndIf
+    pulseGrenadeDropped = True
+    ObjectReference droppedGrenade = raRaRef.PlaceAtMe(PulseGrenade, 1, False, False, False)
+    If droppedGrenade == None
+        pulseGrenadeDropped = False
+    EndIf
+EndFunction
+
+Function EvaluateRaRaPackage()
+    If IsRunning() && RaRa != None
+        Actor raRaRef = RaRa.GetActorReference()
+        If raRaRef != None
+            raRaRef.EvaluatePackage()
+        EndIf
+    EndIf
+EndFunction
+
+Function MoveRaRaToExitVent(ReferenceAlias akVent, Scene akSourceScene)
+    CancelTimer(3)
+    pendingExitVent = akVent
+    pendingExitScene = akSourceScene
+    TryMoveRaRaToExitVent()
+EndFunction
+
+Function TryMoveRaRaToExitVent()
+    If !IsRunning() || pendingExitVent == None || pendingExitScene == None || !pendingExitScene.IsPlaying()
+        pendingExitVent = None
+        pendingExitScene = None
+        Return
+    EndIf
+    Actor raRaRef
+    If RaRa != None
+        raRaRef = RaRa.GetActorReference()
+    EndIf
+    ReferenceAlias exitAlias = pendingExitVent
+    Scene exitScene = pendingExitScene
+    ObjectReference exitVent = exitAlias.GetReference()
+    If raRaRef != None && exitVent != None
+        exitVent.Enable()
+        If exitVent.Is3DLoaded()
+            If !raRaRef.Is3DLoaded()
+                raRaRef.Disable()
+                raRaRef.MoveTo(exitVent)
+                raRaRef.Enable()
+            EndIf
+            If !IsRunning() || pendingExitVent != exitAlias || pendingExitScene != exitScene || !exitScene.IsPlaying()
+                Return
+            EndIf
+            If raRaRef.SnapIntoInteraction(exitVent)
+                If pendingExitVent == exitAlias && pendingExitScene == exitScene
+                    pendingExitVent = None
+                    pendingExitScene = None
+                EndIf
+                Return
+            EndIf
+        EndIf
+    EndIf
+    If IsRunning() && pendingExitVent == exitAlias && pendingExitScene == exitScene && exitScene.IsPlaying()
+        StartTimer(1.0, 3)
+    EndIf
+EndFunction
 
 Function StartBossVentCycle()
     StopBossVentCycle()
@@ -38,10 +192,17 @@ Function StartBossVentCycle()
 EndFunction
 
 Function BeginBossPeek()
+    If !IsRunning() || IsStageDone(DefeatedBossStage)
+        Return
+    EndIf
     RaRaBossVentReadyToPeek = True
+    MoveRaRaToExitVent(RaRaBossCurrentVent, W05_MQR_202P_RaRaVent_1600_BossPeekSequence)
 EndFunction
 
 Function DropBossVentItem()
+    If !IsRunning() || IsStageDone(DefeatedBossStage)
+        Return
+    EndIf
     CancelTimer(RaRaItemDropTimeOutTimerID)
     StartTimer(RaRaItemDropTimerOutTimerLength, RaRaItemDropTimeOutTimerID)
     If RaRaDropCount >= RaRaDropCountMax || RaRaItemToDrop == None || RaRaItemToDrop.GetReference() != None || RaRa == None || W05_MQR_202P_LL_RaRaDropItemList == None
@@ -63,24 +224,29 @@ Function DropBossVentItem()
     RaRaDropCount += 1
     If !IsStageDone(ItemDroppedObjective)
         SetStage(ItemDroppedObjective)
+    Else
+        SetObjectiveCompleted(ItemDroppedObjective, False)
+        SetObjectiveDisplayed(ItemDroppedObjective, True, True)
     EndIf
 EndFunction
 
 Function EndBossPeek()
     RaRaBossVentReadyToPeek = False
+    EvaluateRaRaPackage()
 EndFunction
 
 Function FinishBossPeekCycle()
     RaRaBossVentReadyToPeek = False
     CancelTimer(RaRaItemDropTimeOutTimerID)
     ClearDroppedItemAlias()
-    ClearBossVentAliases()
-    If !IsStageDone(DefeatedBossStage)
+    If IsRunning() && !IsStageDone(DefeatedBossStage)
+        HideRaRaInVent()
+        ClearBossVentAliases()
         StartTimer(Utility.RandomInt(VentTimerMin, VentTimerMax), RaRaBossVentTimerID)
     EndIf
 EndFunction
 
-Function StopBossVentCycle()
+Function StopBossVentCycle(Bool abClearVent = True)
     CancelTimer(RaRaBossVentTimerID)
     CancelTimer(RaRaItemDropTimeOutTimerID)
     RaRaBossVentReadyToPeek = False
@@ -88,11 +254,13 @@ Function StopBossVentCycle()
         W05_MQR_202P_RaRaVent_1600_BossPeekSequence.Stop()
     EndIf
     ClearDroppedItemAlias()
-    ClearBossVentAliases()
+    If abClearVent
+        ClearBossVentAliases()
+    EndIf
 EndFunction
 
 Function SelectNextBossVent()
-    If BossVentData == None || BossVentData.Length == 0 || RaRaBossCurrentVent == None
+    If !IsRunning() || IsStageDone(DefeatedBossStage) || BossVentData == None || BossVentData.Length == 0 || RaRaBossCurrentVent == None
         Return
     EndIf
 

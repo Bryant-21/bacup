@@ -547,7 +547,7 @@ fn register_with_sink(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::phase::{PhaseCtx, registry};
+    use crate::phase::PhaseCtx;
     use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
     use crate::translator::Game;
     use std::sync::atomic::AtomicBool;
@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn nif_dependency_scan_finds_fnv_tall_grass_texture() {
+    fn nif_dependency_scan_finds_fnv_tall_grass_and_no_lighting_textures() {
         let temp = temp_dir("fnv_grass");
         let root = temp.join("extracted/fnv");
 
@@ -717,10 +717,7 @@ mod tests {
             Path::new(&discovery.textures[0].resolved_path),
             root.join("Textures/landscape/grass/grasswastelandcomp01.dds")
         );
-    }
 
-    #[test]
-    fn nif_dependency_scan_finds_fnv_no_lighting_texture() {
         let temp = temp_dir("fnv_no_lighting");
         let root = temp.join("extracted/fnv");
 
@@ -781,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_existing_output_is_replaced() {
+    fn existing_output_is_replaced_reused_or_removed_to_match_source() {
         let temp = temp_dir("existing");
         let source = temp.join("source.dds");
         let output = temp.join("mod/data/Textures/clutter/source.dds");
@@ -801,10 +798,7 @@ mod tests {
         assert_eq!(report.assets_written, 1);
         assert_eq!(std::fs::read(&output).unwrap(), b"source");
         let _ = std::fs::remove_dir_all(temp);
-    }
 
-    #[test]
-    fn content_equal_existing_output_is_reused() {
         let temp = temp_dir("equal_existing");
         let source = temp.join("source.dds");
         let output = temp.join("mod/data/Textures/clutter/source.dds");
@@ -826,10 +820,7 @@ mod tests {
         assert_eq!(report.items_failed, 0);
         assert_eq!(std::fs::read(&output).unwrap(), b"same bytes");
         let _ = std::fs::remove_dir_all(temp);
-    }
 
-    #[test]
-    fn missing_source_removes_stale_output() {
         let temp = temp_dir("missing_source_stale_output");
         let output = temp.join("mod/data/Textures/clutter/source.dds");
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
@@ -967,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn nif_discovery_is_order_independent_and_dedups_explicit_texture() {
+    fn nif_discovery_is_order_independent_dedups_and_never_blocks_explicit_textures() {
         for nif_first in [false, true] {
             let temp = temp_dir(if nif_first {
                 "nif_first"
@@ -1018,10 +1009,7 @@ mod tests {
             )));
             let _ = std::fs::remove_dir_all(temp);
         }
-    }
 
-    #[test]
-    fn nif_discovery_failure_does_not_block_explicit_texture() {
         let temp = temp_dir("nif_failure");
         let explicit = temp.join("explicit.dds");
         std::fs::create_dir_all(&temp).unwrap();
@@ -1054,10 +1042,5 @@ mod tests {
                 if message.contains("NIF dependency scan failed")
         )));
         let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn phase_is_registered() {
-        assert!(registry().names().contains(&"copy_textures"));
     }
 }

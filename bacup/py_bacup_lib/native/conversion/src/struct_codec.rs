@@ -314,13 +314,10 @@ mod tests {
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| panic!("Modifier missing/not-int: {map:?}"));
         assert_eq!(modifier, -7, "Modifier should round-trip as -7");
-        let group_reaction = map
-            .get("GroupCombatReaction")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_else(|| panic!("GroupCombatReaction missing/not-uint: {map:?}"));
         assert_eq!(
-            group_reaction, 2,
-            "GroupCombatReaction should round-trip as 2"
+            map.get("GroupCombatReaction").and_then(|v| v.as_str()),
+            Some("Ally"),
+            "GroupCombatReaction 2 decodes to its enum label: {map:?}"
         );
     }
 

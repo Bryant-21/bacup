@@ -463,21 +463,15 @@ fn f32_at(bytes: &[u8], offset: usize) -> f32 {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn exterior_grid_label_puts_y_in_the_low_half() {
+fn cell_labels_buckets_and_lattice_match_starfield_convention() {
     // Measured on Starfield.esm (738/738 exterior cells): the label is
     // [y_i16, x_i16] little-endian, exactly as FO4 lays it out.
     assert_eq!(encode_exterior_grid_label(3, -2), [0xFE, 0xFF, 0x03, 0x00]);
-}
 
-#[test]
-fn interior_buckets_match_the_measured_starfield_convention() {
     // 11985/11985 vanilla Starfield interior cells satisfy this.
     assert_eq!(interior_bucket_indices(0x0000_0080), (8, 2));
     assert_eq!(interior_bucket_indices(0x0000_007B), (3, 2));
-}
 
-#[test]
-fn fo4_cells_collapse_onto_the_hundred_metre_starfield_lattice() {
     // 1 FO4 cell = 4096 units = 58.52 m; 1 SF cell = 100 m. FO4 cells 0 and 1
     // share SF cell 0; FO4 cell 2's centre is the first past 100 m.
     assert_eq!(home_grid(Some((0, 0))), (0, 0));
@@ -580,7 +574,7 @@ fn placed_ref_rescale_touches_only_world_distances() {
 }
 
 #[test]
-fn xtel_with_an_unresolvable_door_is_reported_dangling() {
+fn xtel_unresolvable_doors_are_dangling_and_collapsed_transitions_zeroed() {
     let mut raw_map = HashMap::new();
     raw_map.insert(INT_DOOR_REF_ID, 0x0000_0901);
     raw_map.insert(INTERIOR_CELL_ID, 0x0000_0902);
@@ -599,10 +593,7 @@ fn xtel_with_an_unresolvable_door_is_reported_dangling() {
 
     let mut dangling = xtel_bytes(0x0000_0BAD, (0.0, 0.0, 0.0), INTERIOR_CELL_ID);
     assert!(!remap_xtel_bytes(&mut dangling, &raw_map, &emitted));
-}
 
-#[test]
-fn xtel_transition_at_a_collapsed_cell_is_zeroed_not_left_dangling() {
     // The mapper hands back a target id for every source cell it allocated,
     // including cells that collapsed into a neighbouring 100 m bucket and were
     // never written. Resolvability alone is not enough.
@@ -617,7 +608,7 @@ fn xtel_transition_at_a_collapsed_cell_is_zeroed_not_left_dangling() {
 }
 
 #[test]
-fn source_plan_collection_finds_both_worldspace_and_interior_cells() {
+fn source_plan_collection_finds_cells_and_tolerates_missing_sub_blocks() {
     let plans = collect_source_plans(&source_root_items());
     assert_eq!(plans.worlds.len(), 1);
     let world = &plans.worlds[0];
@@ -632,10 +623,7 @@ fn source_plan_collection_finds_both_worldspace_and_interior_cells() {
     assert_eq!(world.lattice_cells[1].sections[0].children.len(), 2);
     assert_eq!(plans.interiors.len(), 1);
     assert_eq!(plans.interiors[0].form_id, INTERIOR_CELL_ID);
-}
 
-#[test]
-fn collection_tolerates_a_block_group_with_no_sub_block_level() {
     // Hand-built fixture plugins (the Python vertical slice among them) nest
     // exterior cells straight under the block group. A real FO4 plugin always
     // has the sub-block level, but losing every cell on the flattened shape
@@ -714,16 +702,13 @@ fn a_gridded_cell_directly_under_world_children_is_lattice_not_persistent() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn phase_is_inert_for_other_pairs() {
+fn phase_is_inert_for_other_pairs_and_errors_without_mapper_state() {
     let fixture = Fixture::new(Game::Fo76, Game::Fo4);
     fixture.seed_mapper(true);
     let report = fixture.run_phase().unwrap();
     assert_eq!(report.records_added, 0);
     assert!(records(&fixture.target_items(), "CELL").is_empty());
-}
 
-#[test]
-fn phase_hard_errors_without_mapper_state() {
     let fixture = Fixture::new(Game::Fo4, Game::Starfield);
     fixture.seed_mapper(false);
     match fixture.run_phase() {

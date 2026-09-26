@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from bacup_lib import regen_pipeline
-from bacup_lib.models import PhaseSelection, PluginPortOptions
+from bacup_lib.models import PhaseSelection
 from bacup_lib.regen_pipeline import RegenOptions, RegenPaths, RegenResult
 
 
@@ -9,14 +9,13 @@ def test_regen_options_release_defaults():
     o = RegenOptions()
     assert o.deploy is True
     assert o.ba2_mode == "packed"
-    assert o.archive_max_bytes == 16 * 1024**3
+    assert o.archive_max_bytes == regen_pipeline.UNLIMITED_ARCHIVE_MAX_BYTES
     assert o.ba2_compression_level is None
     assert o.deploy_loose is False
     assert o.lod_mode == "hybrid-atlas"
     assert o.write_land_cache is True
     assert o.include_interior is True
     assert o.carry_interior_previs is False
-    assert o.generate_precombines is False
     assert o.records_limit is None
     assert o.memory_report is False
     assert o.validate_collision is False
@@ -39,15 +38,6 @@ def test_runtime_archive_registration_is_only_used_for_expanded_ba2s():
         )
         is False
     )
-
-
-def test_generate_precombines_defaults_off_across_option_types():
-    # Experimental gate: every option surface defaults the flag off so a standard
-    # full build never schedules the phase.
-    assert PhaseSelection().generate_precombines is False
-    assert PhaseSelection.defaults().generate_precombines is False
-    assert PluginPortOptions().generate_precombines is False
-    assert RegenOptions().generate_precombines is False
 
 
 def test_face_conversion_is_enabled_for_supported_fo4_pairs():

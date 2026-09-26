@@ -4,6 +4,7 @@ use super::*;
 enum DirectStartAliasKind {
     PlayerReference,
     ModuleLocation,
+    SpecificLocation(u32),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +44,27 @@ const fn module_location_rule(local_form_id: u32, editor_id: &'static str) -> Di
         alias_name: "ModuleLocation",
         event_data: FO4_QUEST_EVENT_LOCATION1,
         kind: DirectStartAliasKind::ModuleLocation,
+    }
+}
+
+const RD01_GLEAMING_DEPTHS_LOCATION_FORM_ID: u32 = 0x0077_0117;
+
+// FO76's QMDL records supplied each raid module its location; FO4 has no QMDL, and the
+// module is started by script with no story-event data. Unlike expedition modules the raid
+// alias must stay required: every other module alias is ALFA-anchored on it.
+const fn raid_module_location_rule(
+    local_form_id: u32,
+    editor_id: &'static str,
+    alias_id: u32,
+) -> DirectStartAliasRule {
+    DirectStartAliasRule {
+        local_form_id,
+        editor_id,
+        anchor: *b"ALLS",
+        alias_id,
+        alias_name: "ModuleLocation",
+        event_data: FO4_QUEST_EVENT_LOCATION1,
+        kind: DirectStartAliasKind::SpecificLocation(RD01_GLEAMING_DEPTHS_LOCATION_FORM_ID),
     }
 }
 
@@ -148,9 +170,14 @@ const DIRECT_START_ALIAS_RULES: &[DirectStartAliasRule] = &[
     module_location_rule(0x0064_EA14, "xpd_module_defendnpc"),
     module_location_rule(0x0064_CD4D, "xpd_module_carryandthrow"),
     module_location_rule(0x0064_C2D0, "xpd_module_objectdestruction"),
+    raid_module_location_rule(0x0077_2A47, "rd01_enc01_bot", 1),
+    raid_module_location_rule(0x0078_F7A1, "rd01_enc02_drill", 0),
+    raid_module_location_rule(0x0078_B59E, "rd01_enc04_enclavesquad", 1),
+    raid_module_location_rule(0x0078_8127, "rd01_enc05_researchlab", 0),
+    raid_module_location_rule(0x0078_6D41, "rd01_enc06_scorchtongue", 1),
 ];
 
-fn field_value_matches_zstring(
+pub(super) fn field_value_matches_zstring(
     interner: &crate::sym::StringInterner,
     value: &FieldValue,
     expected: &str,
@@ -275,6 +302,26 @@ fn adapt_module_location_alias(record: &mut Record, start: usize, end: usize) {
     mark_qust_alias_fnam_optional(&mut record.fields[flags_index].value);
 }
 
+fn force_specific_location_alias(record: &mut Record, start: usize, end: usize, location: u32) {
+    let Some(event_index) = alias_field_index(&record.fields, start..end, *b"ALFE") else {
+        return;
+    };
+    if record.fields.get(event_index + 1).map(|entry| entry.sig.0) != Some(*b"ALFD")
+        || field_value_to_u32(&record.fields[event_index].value) != Some(FO76_QUEST_EVENT_SCPT)
+    {
+        return;
+    }
+
+    record.fields[event_index] = FieldEntry {
+        sig: SubrecordSig(*b"ALFL"),
+        value: FieldValue::FormKey(FormKey {
+            local: location,
+            plugin: record.form_key.plugin,
+        }),
+    };
+    record.fields.remove(event_index + 1);
+}
+
 impl Fo76Fo4Hook {
     pub(super) fn adapt_direct_start_quest_aliases(
         interner: &crate::sym::StringInterner,
@@ -314,6 +361,9 @@ impl Fo76Fo4Hook {
                 adapt_player_alias(interner, record, start, end)
             }
             DirectStartAliasKind::ModuleLocation => adapt_module_location_alias(record, start, end),
+            DirectStartAliasKind::SpecificLocation(location) => {
+                force_specific_location_alias(record, start, end, location)
+            }
         }
     }
 }

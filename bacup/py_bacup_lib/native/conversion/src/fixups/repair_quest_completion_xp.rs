@@ -8,6 +8,12 @@ use crate::session::PluginSession;
 
 const FO76_XP_NONE_LOCAL_ID: u32 = 0x098952;
 const COMPLETE_QUEST_FLAG: u8 = 0x01;
+/// FO76 pays ordinary completion XP from a level-scaled curve table, while
+/// FO4's `QuestCompletionXP` is a flat `GLOB`. The curve has to collapse to one
+/// representative value, sampled at a mid-game player level.
+const XP_CURVE_SAMPLE_LEVEL: f32 = 50.0;
+const XP_CURVE_ROOT: &str = "misc/curvetables/json";
+const SYNTHETIC_XP_GLOBAL_PREFIX: &str = "B21_QuestCompletionXP_";
 
 pub struct RepairQuestCompletionXpFixup;
 
@@ -15,12 +21,22 @@ pub struct RepairQuestCompletionXpFixup;
 enum CompletionXpReason {
     Source,
     Reward,
+    Curve,
     Fallback,
+}
+
+/// Where a quest's ordinary completion XP comes from in the source data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SourceCompletionXp {
+    /// A `GLOB` named directly by an unconditional reward group's `NAM7`.
+    Global(FormKey),
+    /// A `CTDA`-free reward group's `XPCT` curve table.
+    Curve(FormKey),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CompletionXpChoice {
-    source_global: FormKey,
+    source: SourceCompletionXp,
     reason: CompletionXpReason,
 }
 
@@ -44,7 +60,7 @@ impl Fixup for RepairQuestCompletionXpFixup {
         &self,
         session: &mut PluginSession,
         mapper: &mut FormKeyMapper,
-        _config: &FixupConfig,
+        config: &FixupConfig,
     ) -> Result<FixupReport, FixupError> {
         let mut report = FixupReport::empty();
         let source_schema = session
@@ -93,8 +109,11 @@ impl Fixup for RepairQuestCompletionXpFixup {
             .map(|(source, target)| (target, source))
             .collect::<FxHashMap<_, _>>();
         let mut reward_xp_cache = FxHashMap::default();
+        let mut curve_globals: FxHashMap<u32, FormKey> = FxHashMap::default();
+        let mut added_globals: Vec<Record> = Vec::new();
         let mut source_choices = 0u32;
         let mut reward_choices = 0u32;
+        let mut curve_choices = 0u32;
         let mut fallback_choices = 0u32;
         let mut unresolved = 0u32;
 
@@ -141,7 +160,7 @@ impl Fixup for RepairQuestCompletionXpFixup {
                     source_form_key(value, &source_masters, &source_plugin_name, mapper.interner)
                 },
                 |reward_fk| {
-                    source_reward_xp_global(
+                    source_reward_completion_xp(
                         session,
                         source_schema.as_ref(),
                         mapper.interner,
@@ -156,14 +175,38 @@ impl Fixup for RepairQuestCompletionXpFixup {
                 unresolved += 1;
                 continue;
             };
-            let Some(target_xp_global) = target_global_for_source(
-                session,
-                target_schema.as_ref(),
-                mapper,
-                choice.source_global,
-                output_plugin,
-                glob_sig,
-            ) else {
+            let target_xp_global = match choice.source {
+                SourceCompletionXp::Global(source_global) => target_global_for_source(
+                    session,
+                    target_schema.as_ref(),
+                    mapper,
+                    source_global,
+                    output_plugin,
+                    glob_sig,
+                ),
+                SourceCompletionXp::Curve(curve_fk) => curve_table_xp(
+                    session,
+                    source_schema.as_ref(),
+                    mapper.interner,
+                    curve_fk,
+                    config.source_extracted_dir.as_deref(),
+                )
+                .map(|xp| {
+                    let rounded = xp.round().max(0.0) as u32;
+                    *curve_globals.entry(rounded).or_insert_with(|| {
+                        let synthetic = FormKey {
+                            local: 1,
+                            plugin: mapper
+                                .interner
+                                .intern(&format!("{SYNTHETIC_XP_GLOBAL_PREFIX}{rounded}")),
+                        };
+                        let fk = mapper.allocate_or_resolve(synthetic, None, glob_sig);
+                        added_globals.push(completion_xp_global(fk, rounded, mapper.interner));
+                        fk
+                    })
+                }),
+            };
+            let Some(target_xp_global) = target_xp_global else {
                 unresolved += 1;
                 continue;
             };
@@ -180,12 +223,19 @@ impl Fixup for RepairQuestCompletionXpFixup {
             match choice.reason {
                 CompletionXpReason::Source => source_choices += 1,
                 CompletionXpReason::Reward => reward_choices += 1,
+                CompletionXpReason::Curve => curve_choices += 1,
                 CompletionXpReason::Fallback => fallback_choices += 1,
             }
         }
 
+        report.records_added = added_globals.len() as u32;
+        if !added_globals.is_empty() {
+            session
+                .add_records(added_globals, target_schema.as_ref(), mapper.interner)
+                .map_err(|error| FixupError::HandleError(error.to_string()))?;
+        }
         report.message = Some(mapper.interner.intern(&format!(
-            "quest_completion_xp:source={source_choices};reward={reward_choices};fallback={fallback_choices};unresolved={unresolved}"
+            "quest_completion_xp:source={source_choices};reward={reward_choices};curve={curve_choices};fallback={fallback_choices};unresolved={unresolved}"
         )));
         Ok(report)
     }
@@ -205,15 +255,15 @@ fn verified_source_xp_none(
     (record.sig == glob_sig && editor_id == Some("XPNone")).then_some(source_fk)
 }
 
-fn source_reward_xp_global(
+fn source_reward_completion_xp(
     session: &mut PluginSession,
     source_schema: &crate::schema::AuthoringSchema,
     interner: &crate::sym::StringInterner,
     reward_fk: FormKey,
     source_masters: &[String],
     source_plugin_name: &str,
-    cache: &mut FxHashMap<FormKey, Option<FormKey>>,
-) -> Option<FormKey> {
+    cache: &mut FxHashMap<FormKey, Option<SourceCompletionXp>>,
+) -> Option<SourceCompletionXp> {
     if let Some(cached) = cache.get(&reward_fk) {
         return *cached;
     }
@@ -222,16 +272,123 @@ fn source_reward_xp_global(
         .ok()
         .filter(|record| record.sig.0 == *b"GMRW")
         .and_then(|record| {
-            first_source_form_key(
-                &record,
-                *b"NAM7",
-                source_masters,
-                source_plugin_name,
-                interner,
-            )
+            unconditional_group_xp(&record, source_masters, source_plugin_name, interner)
         });
     cache.insert(reward_fk, resolved);
     resolved
+}
+
+/// The XP payout of the first reward group that carries no condition.
+///
+/// A `GMRW` holds several groups separated by `ITME`, and only the
+/// condition-free one is paid on an ordinary completion. Taking the first
+/// `NAM7` in the record regardless of its group handed every mutated-event
+/// bonus out unconditionally -- thirteen public events were awarding
+/// `XP_MutatedEvents` for a normal run.
+fn unconditional_group_xp(
+    record: &Record,
+    source_masters: &[String],
+    source_plugin_name: &str,
+    interner: &crate::sym::StringInterner,
+) -> Option<SourceCompletionXp> {
+    let mut groups = Vec::<Vec<&FieldEntry>>::new();
+    let mut current = Vec::<&FieldEntry>::new();
+    for entry in &record.fields {
+        if entry.sig.0 == *b"ITME" {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(entry);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    for group in groups {
+        if group
+            .iter()
+            .any(|entry| matches!(&entry.sig.0, b"CTDA" | b"CIS1" | b"CIS2"))
+        {
+            continue;
+        }
+        let field = |sig: [u8; 4]| {
+            group
+                .iter()
+                .find(|entry| entry.sig.0 == sig)
+                .and_then(|entry| {
+                    source_form_key(&entry.value, source_masters, source_plugin_name, interner)
+                })
+        };
+        if let Some(global) = field(*b"NAM7") {
+            return Some(SourceCompletionXp::Global(global));
+        }
+        if let Some(curve) = field(*b"XPCT") {
+            return Some(SourceCompletionXp::Curve(curve));
+        }
+    }
+    None
+}
+
+/// The XP a FO76 curve table pays at `XP_CURVE_SAMPLE_LEVEL`.
+fn curve_table_xp(
+    session: &mut PluginSession,
+    source_schema: &crate::schema::AuthoringSchema,
+    interner: &crate::sym::StringInterner,
+    curve_fk: FormKey,
+    extracted_dir: Option<&std::path::Path>,
+) -> Option<f32> {
+    let record = session
+        .source_record_decoded(&curve_fk, source_schema, interner)
+        .ok()?;
+    let relative = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.0 == *b"JASF")
+        .and_then(|entry| match &entry.value {
+            FieldValue::Bytes(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        })
+        .map(|bytes| {
+            let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+            String::from_utf8_lossy(&bytes[..end]).replace('\\', "/")
+        })?;
+    let path = extracted_dir?.join(XP_CURVE_ROOT).join(relative);
+    sample_curve(&std::fs::read_to_string(path).ok()?, XP_CURVE_SAMPLE_LEVEL)
+}
+
+/// Linear interpolation over a `{"curve":[{"x":level,"y":xp}]}` table, clamped
+/// to the first and last point outside the sampled range.
+fn sample_curve(json: &str, level: f32) -> Option<f32> {
+    let parsed: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut points: Vec<(f32, f32)> = parsed
+        .get("curve")?
+        .as_array()?
+        .iter()
+        .filter_map(|point| {
+            Some((
+                point.get("x")?.as_f64()? as f32,
+                point.get("y")?.as_f64()? as f32,
+            ))
+        })
+        .collect();
+    points.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let first = *points.first()?;
+    let last = *points.last()?;
+    if level <= first.0 {
+        return Some(first.1);
+    }
+    if level >= last.0 {
+        return Some(last.1);
+    }
+    let upper = points.iter().position(|point| point.0 >= level)?;
+    let (x0, y0) = points[upper.saturating_sub(1)];
+    let (x1, y1) = points[upper];
+    if (x1 - x0).abs() < f32::EPSILON {
+        return Some(y1);
+    }
+    Some(y0 + (y1 - y0) * (level - x0) / (x1 - x0))
 }
 
 fn target_global_for_source(
@@ -257,31 +414,31 @@ fn choose_completion_xp(
     source_quest: &Record,
     source_xp_none: Option<FormKey>,
     mut reward_ref: impl FnMut(&FieldValue) -> Option<FormKey>,
-    mut reward_xp: impl FnMut(FormKey) -> Option<FormKey>,
+    mut reward_xp: impl FnMut(FormKey) -> Option<SourceCompletionXp>,
 ) -> Option<CompletionXpChoice> {
     if let Some(source_global) = first_form_key(source_quest, *b"XNAM") {
         return Some(CompletionXpChoice {
-            source_global,
+            source: SourceCompletionXp::Global(source_global),
             reason: CompletionXpReason::Source,
         });
     }
 
-    let reward_globals = completion_reward_refs(source_quest, &mut reward_ref)
+    let rewards = completion_reward_refs(source_quest, &mut reward_ref)
         .into_iter()
         .filter_map(&mut reward_xp)
         .collect::<FxHashSet<_>>();
-    if reward_globals.len() == 1 {
-        return reward_globals
-            .into_iter()
-            .next()
-            .map(|source_global| CompletionXpChoice {
-                source_global,
-                reason: CompletionXpReason::Reward,
-            });
+    if rewards.len() == 1 {
+        return rewards.into_iter().next().map(|source| CompletionXpChoice {
+            source,
+            reason: match source {
+                SourceCompletionXp::Global(_) => CompletionXpReason::Reward,
+                SourceCompletionXp::Curve(_) => CompletionXpReason::Curve,
+            },
+        });
     }
 
     source_xp_none.map(|source_global| CompletionXpChoice {
-        source_global,
+        source: SourceCompletionXp::Global(source_global),
         reason: CompletionXpReason::Fallback,
     })
 }
@@ -450,6 +607,115 @@ mod tests {
         }
     }
 
+    fn reward(interner: &StringInterner, local: u32, fields: Vec<FieldEntry>) -> Record {
+        Record {
+            sig: SigCode(*b"GMRW"),
+            form_key: fk(interner, local),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: fields.into_iter().collect(),
+            warnings: smallvec![],
+        }
+    }
+
+    /// `QuestReward_E01C_Tales_Dark_Stage9000_01` (6311F8): an unconditional
+    /// group paying an XP curve table, then a condition-gated group paying
+    /// `XP_MutatedEvents`. Only the first is earned by an ordinary completion.
+    #[test]
+    fn unconditional_reward_group_supplies_completion_xp() {
+        let interner = StringInterner::new();
+        let curve = fk(&interner, 0x876403);
+        let mutated_bonus = fk(&interner, 0x69FA1D);
+        let record = reward(
+            &interner,
+            0x6311F8,
+            vec![
+                field(b"XPCT", raw_form(curve.local)),
+                field(b"QRLR", raw_form(1)),
+                field(b"ITME", FieldValue::Bytes(smallvec::SmallVec::new())),
+                field(b"NAM7", raw_form(mutated_bonus.local)),
+                field(b"QRLR", raw_form(3)),
+                field(
+                    b"CTDA",
+                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0u8; 32])),
+                ),
+                field(b"ITME", FieldValue::Bytes(smallvec::SmallVec::new())),
+            ],
+        );
+
+        assert_eq!(
+            unconditional_group_xp(&record, &[], "SeventySix.esm", &interner),
+            Some(SourceCompletionXp::Curve(curve))
+        );
+
+        let global = fk(&interner, 0x005918EA);
+        let record = reward(
+            &interner,
+            0x600000,
+            vec![
+                field(b"NAM7", raw_form(global.local)),
+                field(b"XPCT", raw_form(0x876403)),
+                field(b"ITME", FieldValue::Bytes(smallvec::SmallVec::new())),
+            ],
+        );
+
+        assert_eq!(
+            unconditional_group_xp(&record, &[], "SeventySix.esm", &interner),
+            Some(SourceCompletionXp::Global(global))
+        );
+
+        let record = reward(
+            &interner,
+            0x600001,
+            vec![
+                field(b"NAM7", raw_form(0x69FA1D)),
+                field(
+                    b"CTDA",
+                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[0u8; 32])),
+                ),
+                field(b"ITME", FieldValue::Bytes(smallvec::SmallVec::new())),
+            ],
+        );
+
+        assert_eq!(
+            unconditional_group_xp(&record, &[], "SeventySix.esm", &interner),
+            None
+        );
+
+        let xp = fk(&interner, 0x556D52);
+        let reward = Record {
+            sig: SigCode(*b"GMRW"),
+            form_key: fk(&interner, 0x6313B1),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: vec![field(b"NAM7", raw_form(xp.local))]
+                .into_iter()
+                .collect(),
+            warnings: smallvec![],
+        };
+
+        assert_eq!(
+            first_source_form_key(&reward, *b"NAM7", &[], "SeventySix.esm", &interner,),
+            Some(xp)
+        );
+    }
+
+    /// `XP_Universal_Tier25` runs 140 XP at level 1 to 823 at level 100.
+    #[test]
+    fn curve_is_sampled_by_interpolating_between_surrounding_points() {
+        let json =
+            r#"{"curve":[{"x":1,"y":140},{"x":45,"y":443},{"x":56,"y":519},{"x":100,"y":823}]}"#;
+
+        assert_eq!(sample_curve(json, 45.0), Some(443.0));
+        // Half way between the level-45 and level-56 points.
+        let midpoint = sample_curve(json, 50.5).expect("sampled");
+        assert!((midpoint - 481.0).abs() < 0.5, "got {midpoint}");
+        // Outside the table the end points clamp rather than extrapolate.
+        assert_eq!(sample_curve(json, 0.0), Some(140.0));
+        assert_eq!(sample_curve(json, 999.0), Some(823.0));
+        assert_eq!(sample_curve("{}", 50.0), None);
+    }
+
     #[test]
     fn completion_rewards_only_come_from_complete_stages() {
         let interner = StringInterner::new();
@@ -500,13 +766,13 @@ mod tests {
             &record,
             Some(xp_none),
             |value| source_form_key(value, &[], "SeventySix.esm", &interner),
-            |_| Some(xp),
+            |_| Some(SourceCompletionXp::Global(xp)),
         )
         .unwrap();
         assert_eq!(
             unique,
             CompletionXpChoice {
-                source_global: xp,
+                source: SourceCompletionXp::Global(xp),
                 reason: CompletionXpReason::Reward,
             }
         );
@@ -515,36 +781,21 @@ mod tests {
             &record,
             Some(xp_none),
             |value| source_form_key(value, &[], "SeventySix.esm", &interner),
-            |reward| (reward == reward_a).then_some(xp).or(Some(other_xp)),
+            |reward| {
+                Some(SourceCompletionXp::Global(if reward == reward_a {
+                    xp
+                } else {
+                    other_xp
+                }))
+            },
         )
         .unwrap();
         assert_eq!(
             conflict,
             CompletionXpChoice {
-                source_global: xp_none,
+                source: SourceCompletionXp::Global(xp_none),
                 reason: CompletionXpReason::Fallback,
             }
-        );
-    }
-
-    #[test]
-    fn reward_xp_global_reads_fo76_raw_nam7_formid() {
-        let interner = StringInterner::new();
-        let xp = fk(&interner, 0x556D52);
-        let reward = Record {
-            sig: SigCode(*b"GMRW"),
-            form_key: fk(&interner, 0x6313B1),
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: vec![field(b"NAM7", raw_form(xp.local))]
-                .into_iter()
-                .collect(),
-            warnings: smallvec![],
-        };
-
-        assert_eq!(
-            first_source_form_key(&reward, *b"NAM7", &[], "SeventySix.esm", &interner,),
-            Some(xp)
         );
     }
 
@@ -560,7 +811,7 @@ mod tests {
         );
         let choice = choose_completion_xp(&source, None, |_| None, |_| None).unwrap();
         assert_eq!(choice.reason, CompletionXpReason::Source);
-        assert_eq!(choice.source_global, source_xp);
+        assert_eq!(choice.source, SourceCompletionXp::Global(source_xp));
 
         let mut target = quest(
             &interner,
@@ -600,4 +851,26 @@ mod tests {
             vec![&FieldValue::FormKey(target_xp)]
         );
     }
+}
+
+/// A flat `GLOB` standing in for one sampled point of a FO76 XP curve table.
+fn completion_xp_global(fk: FormKey, xp: u32, interner: &crate::sym::StringInterner) -> Record {
+    let mut record = Record::new(SigCode(*b"GLOB"), fk);
+    let eid = interner.intern(&format!("{SYNTHETIC_XP_GLOBAL_PREFIX}{xp}"));
+    record.eid = Some(eid);
+    record.fields.extend([
+        FieldEntry {
+            sig: SubrecordSig(*b"EDID"),
+            value: FieldValue::String(eid),
+        },
+        FieldEntry {
+            sig: SubrecordSig(*b"FNAM"),
+            value: FieldValue::Bytes(vec![b'f'].into()),
+        },
+        FieldEntry {
+            sig: SubrecordSig(*b"FLTV"),
+            value: FieldValue::Float(xp as f32),
+        },
+    ]);
+    record
 }

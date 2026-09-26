@@ -13,7 +13,7 @@
 //! later encounter-zone synthesis repoints placed XEZN→LCTN to the synthesized ECZN.
 
 use bytes::Bytes;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 
 use esp_authoring_core::plugin_runtime::{
@@ -49,6 +49,8 @@ pub struct PlacedNormalizeReport {
     pub empty_xown_stripped: u32,
     /// FO4 ownership payloads defaulted from owner-only XOWN to owner + No Crime.
     pub xown_no_crime_defaulted: u32,
+    /// Faction ownership stripped from placed FO76 vending-machine activators.
+    pub vendor_activator_xown_stripped: u32,
 }
 
 const RECORD_FLAG_LOD_RESPECTS_ENABLE_STATE: u32 = 0x0000_0100;
@@ -222,6 +224,9 @@ pub(crate) fn normalize_copied_placed_records_in_session(
                 let ownership_xown = normalize_ownership_xown_subrecords(raw_record);
                 report.empty_xown_stripped += ownership_xown.empty_stripped;
                 report.xown_no_crime_defaulted += ownership_xown.no_crime_defaulted;
+                let vendor_xown_stripped =
+                    strip_vendor_activator_ownership(raw_record, output_own_prefix);
+                report.vendor_activator_xown_stripped += vendor_xown_stripped;
                 // Runs AFTER remap so valid 0x00-master XLKR refs are already
                 // rebound; only genuinely-dangling own refs remain to drop.
                 let xlkr_dropped = drop_dangling_xlkr_subrecords(
@@ -230,7 +235,11 @@ pub(crate) fn normalize_copied_placed_records_in_session(
                     &target_sigs_by_encoded,
                 );
                 report.dangling_xlkr_dropped += xlkr_dropped;
-                xprm_relaid_out + remapped + ownership_xown.changed() + xlkr_dropped
+                xprm_relaid_out
+                    + remapped
+                    + ownership_xown.changed()
+                    + vendor_xown_stripped
+                    + xlkr_dropped
             };
             let raw_changed = raw_normalized > 0;
             if raw_changed {
@@ -362,6 +371,7 @@ pub(crate) struct OwnershipXownNormalizeReport {
     pub empty_stripped: u32,
     pub no_crime_defaulted: u32,
     pub xprm_relaid_out: u32,
+    pub vendor_activator_stripped: u32,
 }
 
 impl OwnershipXownNormalizeReport {
@@ -369,6 +379,7 @@ impl OwnershipXownNormalizeReport {
         self.empty_stripped
             .saturating_add(self.no_crime_defaulted)
             .saturating_add(self.xprm_relaid_out)
+            .saturating_add(self.vendor_activator_stripped)
     }
 
     fn merge(&mut self, other: Self) {
@@ -378,6 +389,9 @@ impl OwnershipXownNormalizeReport {
             .no_crime_defaulted
             .saturating_add(other.no_crime_defaulted);
         self.xprm_relaid_out = self.xprm_relaid_out.saturating_add(other.xprm_relaid_out);
+        self.vendor_activator_stripped = self
+            .vendor_activator_stripped
+            .saturating_add(other.vendor_activator_stripped);
     }
 }
 
@@ -387,10 +401,12 @@ impl OwnershipXownNormalizeReport {
 pub(crate) fn normalize_ownership_xown_payloads_in_session(
     session: &mut PluginSession,
 ) -> OwnershipXownNormalizeReport {
+    let own_prefix = (session.target_masters().len() as u32) << 24;
     let mut report = OwnershipXownNormalizeReport::default();
     let mut touched = SmallVec::<[u32; 4]>::new();
     normalize_ownership_xown_payloads_in_items(
         &mut session.target_slot_mut().parsed.root_items,
+        own_prefix,
         &mut report,
         &mut touched,
     );
@@ -402,6 +418,7 @@ pub(crate) fn normalize_ownership_xown_payloads_in_session(
 
 fn normalize_ownership_xown_payloads_in_items(
     items: &mut [ParsedItem],
+    own_prefix: u32,
     report: &mut OwnershipXownNormalizeReport,
     touched: &mut SmallVec<[u32; 4]>,
 ) {
@@ -410,6 +427,8 @@ fn normalize_ownership_xown_payloads_in_items(
             ParsedItem::Record(record) => {
                 let mut delta = normalize_ownership_xown_subrecords(record);
                 delta.xprm_relaid_out = relayout_short_fo76_xprm_subrecords(record);
+                delta.vendor_activator_stripped =
+                    strip_vendor_activator_ownership(record, own_prefix);
                 delta.records_changed = u32::from(delta.changed() > 0);
                 if delta.changed() > 0 {
                     touched.push(record.form_id);
@@ -417,7 +436,12 @@ fn normalize_ownership_xown_payloads_in_items(
                 }
             }
             ParsedItem::Group(group) => {
-                normalize_ownership_xown_payloads_in_items(&mut group.children, report, touched);
+                normalize_ownership_xown_payloads_in_items(
+                    &mut group.children,
+                    own_prefix,
+                    report,
+                    touched,
+                );
             }
         }
     }
@@ -453,11 +477,53 @@ fn normalize_ownership_xown_subrecords(record: &mut ParsedRecord) -> OwnershipXo
         empty_stripped,
         no_crime_defaulted,
         xprm_relaid_out: 0,
+        vendor_activator_stripped: 0,
     };
     if report.changed() > 0 {
         record.raw_payload = None;
     }
     report
+}
+
+/// Output-local ACTI object ids of FO76 vending machines whose placed refs are
+/// owned by their vendor faction. FO76 barters through a placed ref's faction
+/// owner; FO4 barter is actor-only (the script patch spawns a proxy actor), so
+/// the carried XOWN only makes the activator a crime for the player to use.
+const FO76_VENDOR_ACTIVATOR_LOCAL_IDS: &[u32] = &[
+    0x002A_268E, // MTRZ05VendingMachine (U-Mine-It! Vending Machine)
+];
+
+/// Strip XOWN from placed refs of `FO76_VENDOR_ACTIVATOR_LOCAL_IDS` bases.
+/// Returns the number of XOWN subrecords removed.
+fn strip_vendor_activator_ownership(record: &mut ParsedRecord, own_prefix: u32) -> u32 {
+    if record.signature.as_str() != "REFR" {
+        return 0;
+    }
+    let is_vendor_activator = record.subrecords.iter().any(|subrecord| {
+        subrecord.signature.as_str() == "NAME" && subrecord.data.len() >= 4 && {
+            let base = u32::from_le_bytes([
+                subrecord.data[0],
+                subrecord.data[1],
+                subrecord.data[2],
+                subrecord.data[3],
+            ]);
+            base & 0xFF00_0000 == own_prefix
+                && FO76_VENDOR_ACTIVATOR_LOCAL_IDS.contains(&(base & 0x00FF_FFFF))
+        }
+    });
+    if !is_vendor_activator {
+        return 0;
+    }
+
+    let before = record.subrecords.len();
+    record
+        .subrecords
+        .retain(|subrecord| subrecord.signature.as_str() != "XOWN");
+    let stripped = before.saturating_sub(record.subrecords.len()) as u32;
+    if stripped > 0 {
+        record.raw_payload = None;
+    }
+    stripped
 }
 
 /// Drop XLKR (linked-reference) subrecords whose own-plugin keyword or linked
@@ -702,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_local_ref_remap_preserves_unrelated_and_malformed_payloads() {
+    fn raw_local_ref_remap_by_subrecord_and_target_sig() {
         let own_prefix = 0x0700_0000;
         let mut target_sigs = FxHashMap::default();
         target_sigs.insert(own_prefix | 0x0012_3456, SigCode(*b"KYWD"));
@@ -749,6 +815,124 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(placed.subrecords[4].data[4..8].try_into().unwrap()),
             0x0700_0042
+        );
+
+        let own_prefix: u32 = 0x0700_0000;
+        let refr = SigCode::from_str("REFR").unwrap();
+        let kywd = SigCode::from_str("KYWD").unwrap();
+        let mut target_sigs = FxHashMap::default();
+        target_sigs.insert(own_prefix | 0x003E6572, kywd);
+        target_sigs.insert(own_prefix | 0x00467622, refr);
+        target_sigs.insert(own_prefix | 0x003D28BD, refr);
+
+        let mut xlkr = Vec::new();
+        xlkr.extend_from_slice(&0x003E6572_u32.to_le_bytes());
+        xlkr.extend_from_slice(&0x00467622_u32.to_le_bytes());
+        let mut xapr = Vec::new();
+        xapr.extend_from_slice(&0x003D28BD_u32.to_le_bytes());
+        xapr.extend_from_slice(&0.087473735_f32.to_le_bytes());
+        let mut placed = record(vec![subrecord("XLKR", xlkr), subrecord("XAPR", xapr)]);
+
+        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
+
+        assert_eq!(changed, 3);
+        assert!(placed.raw_payload.is_none());
+        let xlkr = &placed.subrecords[0].data;
+        let xapr = &placed.subrecords[1].data;
+        assert_eq!(
+            u32::from_le_bytes([xlkr[0], xlkr[1], xlkr[2], xlkr[3]]),
+            0x073E6572
+        );
+        assert_eq!(
+            u32::from_le_bytes([xlkr[4], xlkr[5], xlkr[6], xlkr[7]]),
+            0x07467622
+        );
+        assert_eq!(
+            u32::from_le_bytes([xapr[0], xapr[1], xapr[2], xapr[3]]),
+            0x073D28BD
+        );
+        assert_eq!(
+            f32::from_le_bytes([xapr[4], xapr[5], xapr[6], xapr[7]]),
+            0.087473735_f32
+        );
+
+        let mut target_sigs = FxHashMap::default();
+        target_sigs.insert(own_prefix | 0x003D28BD, refr);
+
+        let mut xlkr = Vec::new();
+        xlkr.extend_from_slice(&0x003D28BD_u32.to_le_bytes());
+        xlkr.extend_from_slice(&0x0005FE27_u32.to_le_bytes());
+        let mut placed = record(vec![subrecord("XLKR", xlkr)]);
+
+        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
+
+        assert_eq!(changed, 1);
+        let xlkr = &placed.subrecords[0].data;
+        assert_eq!(
+            u32::from_le_bytes([xlkr[0], xlkr[1], xlkr[2], xlkr[3]]),
+            0x073D28BD
+        );
+        assert_eq!(
+            u32::from_le_bytes([xlkr[4], xlkr[5], xlkr[6], xlkr[7]]),
+            0x0005FE27
+        );
+
+        let land = SigCode::from_str("LAND").unwrap();
+        let mut target_sigs = FxHashMap::default();
+        target_sigs.insert(own_prefix | 0x0039E691, refr);
+        target_sigs.insert(own_prefix | 0x00444444, land);
+
+        let mut valid = Vec::new();
+        valid.extend_from_slice(&0x0039E691_u32.to_le_bytes());
+        valid.extend_from_slice(&0u32.to_le_bytes());
+        let mut wrong_type = Vec::new();
+        wrong_type.extend_from_slice(&0x00444444_u32.to_le_bytes());
+        wrong_type.extend_from_slice(&0u32.to_le_bytes());
+        let mut placed = record(vec![
+            subrecord("XPLK", valid),
+            subrecord("XPLK", wrong_type),
+        ]);
+
+        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
+
+        assert_eq!(changed, 1);
+        assert_eq!(
+            u32::from_le_bytes(placed.subrecords[0].data[0..4].try_into().unwrap()),
+            0x0739E691
+        );
+        assert_eq!(
+            u32::from_le_bytes(placed.subrecords[1].data[0..4].try_into().unwrap()),
+            0x00444444,
+            "wrong-type output collision left for master-aware post-copy repair"
+        );
+
+        let keym = SigCode::from_str("KEYM").unwrap();
+        let refr = SigCode::from_str("REFR").unwrap();
+        let mut target_sigs = FxHashMap::default();
+        target_sigs.insert(own_prefix | 0x0055ADA7, keym);
+        target_sigs.insert(own_prefix | 0x00444444, refr);
+
+        let mut valid = vec![0, 0, 0, 0];
+        valid.extend_from_slice(&0x0055ADA7_u32.to_le_bytes());
+        valid.extend_from_slice(&[0, 0, 0, 0]);
+        let mut wrong_type = vec![0, 0, 0, 0];
+        wrong_type.extend_from_slice(&0x00444444_u32.to_le_bytes());
+        wrong_type.extend_from_slice(&[0, 0, 0, 0]);
+        let mut placed = record(vec![
+            subrecord("XLOC", valid),
+            subrecord("XLOC", wrong_type),
+        ]);
+
+        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
+
+        assert_eq!(changed, 1);
+        assert_eq!(
+            u32::from_le_bytes(placed.subrecords[0].data[4..8].try_into().unwrap()),
+            0x0755ADA7
+        );
+        assert_eq!(
+            u32::from_le_bytes(placed.subrecords[1].data[4..8].try_into().unwrap()),
+            0x00444444
         );
     }
 
@@ -859,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn relayouts_live_short_fo76_xprm_shape_for_fo4() {
+    fn short_fo76_refr_xprm_relayout_shape_scope_and_idempotence() {
         let short = hex::decode("00008045000080450000004501000000").unwrap();
         let mut placed = record(vec![subrecord("XPRM", short)]);
 
@@ -875,20 +1059,14 @@ mod tests {
         );
         assert_eq!(&xprm[12..28], &[0, 0, 128, 63].repeat(4));
         assert_eq!(&xprm[28..32], &1_u32.to_le_bytes());
-    }
 
-    #[test]
-    fn short_fo76_xprm_relayout_is_idempotent() {
         let mut placed = record(vec![subrecord("XPRM", vec![0; 16])]);
 
         assert_eq!(relayout_short_fo76_xprm_subrecords(&mut placed), 1);
         let once = placed.subrecords[0].data.clone();
         assert_eq!(relayout_short_fo76_xprm_subrecords(&mut placed), 0);
         assert_eq!(placed.subrecords[0].data, once);
-    }
 
-    #[test]
-    fn short_fo76_xprm_relayout_does_not_cross_record_or_payload_shapes() {
         let short = vec![0xAA; 16];
         let full = vec![0xBB; 32];
         let malformed = vec![0xCC; 20];
@@ -907,10 +1085,7 @@ mod tests {
         assert_eq!(placed.subrecords[2].data.as_ref(), short.as_slice());
         assert!(actor.raw_payload.is_some());
         assert!(placed.raw_payload.is_some());
-    }
 
-    #[test]
-    fn post_copy_raw_payload_walk_relayouts_projected_refr_xprm() {
         let mut items = vec![
             ParsedItem::Record(record(vec![subrecord("XPRM", vec![0x11; 16])])),
             ParsedItem::Record(record_with_sig(
@@ -921,7 +1096,12 @@ mod tests {
         let mut report = OwnershipXownNormalizeReport::default();
         let mut touched = SmallVec::<[u32; 4]>::new();
 
-        normalize_ownership_xown_payloads_in_items(&mut items, &mut report, &mut touched);
+        normalize_ownership_xown_payloads_in_items(
+            &mut items,
+            0x0700_0000,
+            &mut report,
+            &mut touched,
+        );
 
         assert_eq!(report.records_changed, 1);
         assert_eq!(report.xprm_relaid_out, 1);
@@ -937,144 +1117,9 @@ mod tests {
     }
 
     #[test]
-    fn remaps_xlkr_and_xapr_raw_zero_master_refs_to_output_when_target_exists() {
-        let own_prefix: u32 = 0x0700_0000;
-        let refr = SigCode::from_str("REFR").unwrap();
-        let kywd = SigCode::from_str("KYWD").unwrap();
-        let mut target_sigs = FxHashMap::default();
-        target_sigs.insert(own_prefix | 0x003E6572, kywd);
-        target_sigs.insert(own_prefix | 0x00467622, refr);
-        target_sigs.insert(own_prefix | 0x003D28BD, refr);
-
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x003E6572_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x00467622_u32.to_le_bytes());
-        let mut xapr = Vec::new();
-        xapr.extend_from_slice(&0x003D28BD_u32.to_le_bytes());
-        xapr.extend_from_slice(&0.087473735_f32.to_le_bytes());
-        let mut placed = record(vec![subrecord("XLKR", xlkr), subrecord("XAPR", xapr)]);
-
-        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
-
-        assert_eq!(changed, 3);
-        assert!(placed.raw_payload.is_none());
-        let xlkr = &placed.subrecords[0].data;
-        let xapr = &placed.subrecords[1].data;
-        assert_eq!(
-            u32::from_le_bytes([xlkr[0], xlkr[1], xlkr[2], xlkr[3]]),
-            0x073E6572
-        );
-        assert_eq!(
-            u32::from_le_bytes([xlkr[4], xlkr[5], xlkr[6], xlkr[7]]),
-            0x07467622
-        );
-        assert_eq!(
-            u32::from_le_bytes([xapr[0], xapr[1], xapr[2], xapr[3]]),
-            0x073D28BD
-        );
-        assert_eq!(
-            f32::from_le_bytes([xapr[4], xapr[5], xapr[6], xapr[7]]),
-            0.087473735_f32
-        );
-    }
-
-    #[test]
-    fn leaves_raw_zero_master_refs_without_output_target() {
-        let own_prefix: u32 = 0x0700_0000;
-        let refr = SigCode::from_str("REFR").unwrap();
-        let mut target_sigs = FxHashMap::default();
-        target_sigs.insert(own_prefix | 0x003D28BD, refr);
-
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x003D28BD_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x0005FE27_u32.to_le_bytes());
-        let mut placed = record(vec![subrecord("XLKR", xlkr)]);
-
-        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
-
-        assert_eq!(changed, 1);
-        let xlkr = &placed.subrecords[0].data;
-        assert_eq!(
-            u32::from_le_bytes([xlkr[0], xlkr[1], xlkr[2], xlkr[3]]),
-            0x073D28BD
-        );
-        assert_eq!(
-            u32::from_le_bytes([xlkr[4], xlkr[5], xlkr[6], xlkr[7]]),
-            0x0005FE27
-        );
-    }
-
-    #[test]
-    fn remaps_xplk_raw_zero_master_ref_only_to_valid_placed_target() {
-        let own_prefix: u32 = 0x0700_0000;
-        let refr = SigCode::from_str("REFR").unwrap();
-        let land = SigCode::from_str("LAND").unwrap();
-        let mut target_sigs = FxHashMap::default();
-        target_sigs.insert(own_prefix | 0x0039E691, refr);
-        target_sigs.insert(own_prefix | 0x00444444, land);
-
-        let mut valid = Vec::new();
-        valid.extend_from_slice(&0x0039E691_u32.to_le_bytes());
-        valid.extend_from_slice(&0u32.to_le_bytes());
-        let mut wrong_type = Vec::new();
-        wrong_type.extend_from_slice(&0x00444444_u32.to_le_bytes());
-        wrong_type.extend_from_slice(&0u32.to_le_bytes());
-        let mut placed = record(vec![
-            subrecord("XPLK", valid),
-            subrecord("XPLK", wrong_type),
-        ]);
-
-        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
-
-        assert_eq!(changed, 1);
-        assert_eq!(
-            u32::from_le_bytes(placed.subrecords[0].data[0..4].try_into().unwrap()),
-            0x0739E691
-        );
-        assert_eq!(
-            u32::from_le_bytes(placed.subrecords[1].data[0..4].try_into().unwrap()),
-            0x00444444,
-            "wrong-type output collision left for master-aware post-copy repair"
-        );
-    }
-
-    #[test]
-    fn remaps_xloc_key_only_to_output_keym() {
-        let own_prefix: u32 = 0x0700_0000;
-        let keym = SigCode::from_str("KEYM").unwrap();
-        let refr = SigCode::from_str("REFR").unwrap();
-        let mut target_sigs = FxHashMap::default();
-        target_sigs.insert(own_prefix | 0x0055ADA7, keym);
-        target_sigs.insert(own_prefix | 0x00444444, refr);
-
-        let mut valid = vec![0, 0, 0, 0];
-        valid.extend_from_slice(&0x0055ADA7_u32.to_le_bytes());
-        valid.extend_from_slice(&[0, 0, 0, 0]);
-        let mut wrong_type = vec![0, 0, 0, 0];
-        wrong_type.extend_from_slice(&0x00444444_u32.to_le_bytes());
-        wrong_type.extend_from_slice(&[0, 0, 0, 0]);
-        let mut placed = record(vec![
-            subrecord("XLOC", valid),
-            subrecord("XLOC", wrong_type),
-        ]);
-
-        let changed = remap_placed_raw_local_ref_subrecords(&mut placed, own_prefix, &target_sigs);
-
-        assert_eq!(changed, 1);
-        assert_eq!(
-            u32::from_le_bytes(placed.subrecords[0].data[4..8].try_into().unwrap()),
-            0x0755ADA7
-        );
-        assert_eq!(
-            u32::from_le_bytes(placed.subrecords[1].data[4..8].try_into().unwrap()),
-            0x00444444
-        );
-    }
-
-    #[test]
-    fn defaults_four_byte_placed_xown_to_owner_plus_no_crime() {
+    fn xown_normalization_defaults_strips_and_preserves() {
         let owner = 0x0710A3D6_u32.to_le_bytes().to_vec();
-        let mut placed = record(vec![subrecord("XOWN", owner)]);
+        let mut placed = record(vec![subrecord("XOWN", owner.clone())]);
 
         let report = normalize_ownership_xown_subrecords(&mut placed);
 
@@ -1088,11 +1133,7 @@ mod tests {
             0x0710A3D6
         );
         assert_eq!(placed.subrecords[0].data[4], 0);
-    }
 
-    #[test]
-    fn defaults_four_byte_cell_xown_to_owner_plus_no_crime() {
-        let owner = 0x0710A3D6_u32.to_le_bytes().to_vec();
         let mut cell = record_with_sig("CELL", vec![subrecord("XOWN", owner)]);
 
         let report = normalize_ownership_xown_subrecords(&mut cell);
@@ -1107,10 +1148,7 @@ mod tests {
             0x0710A3D6
         );
         assert_eq!(cell.subrecords[0].data[4], 0);
-    }
 
-    #[test]
-    fn strips_empty_ownership_xown_rows() {
         let mut placed = record(vec![subrecord("XOWN", Vec::new())]);
 
         let report = normalize_ownership_xown_subrecords(&mut placed);
@@ -1120,10 +1158,7 @@ mod tests {
         assert_eq!(report.no_crime_defaulted, 0);
         assert!(placed.raw_payload.is_none());
         assert!(placed.subrecords.is_empty());
-    }
 
-    #[test]
-    fn strips_empty_placed_xown_and_defaults_owner_formid() {
         let mut placed = record(vec![
             subrecord("XOWN", Vec::new()),
             subrecord("XOWN", 0x0710A3D6_u32.to_le_bytes().to_vec()),
@@ -1142,10 +1177,7 @@ mod tests {
             0x0710A3D6
         );
         assert_eq!(placed.subrecords[0].data[4], 0);
-    }
 
-    #[test]
-    fn preserves_existing_longer_xown_payloads() {
         let mut payload = 0x0710A3D6_u32.to_le_bytes().to_vec();
         payload.push(1);
         let mut placed = record(vec![subrecord("XOWN", payload.clone())]);
@@ -1157,35 +1189,87 @@ mod tests {
         assert_eq!(report.no_crime_defaulted, 0);
         assert!(placed.raw_payload.is_some());
         assert_eq!(placed.subrecords[0].data.as_ref(), payload.as_slice());
-    }
 
-    #[test]
-    fn keeps_xlkr_when_keyword_and_ref_exist_in_target() {
-        let own_prefix: u32 = 0x0700_0000;
-        let kywd = SigCode::from_str("KYWD").unwrap();
-        let achr = SigCode::from_str("ACHR").unwrap();
-        let mut target_sigs = FxHashMap::default();
-        target_sigs.insert(own_prefix | 0x0040B2B5, kywd); // keyword
-        target_sigs.insert(own_prefix | 0x00404505, achr); // linked ref (copied in another pass)
+        // FO4 fills location-scoped quest aliases from the REF's XLRT, not from
+        // the base's FTYP, so normalization must leave XLRT alone regardless.
+        let mut placed = record(vec![
+            subrecord("NAME", 0x0708F6B7_u32.to_le_bytes().to_vec()),
+            subrecord("XLRT", 0x073D4B0D_u32.to_le_bytes().to_vec()),
+        ]);
 
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&(own_prefix | 0x0040B2B5).to_le_bytes());
-        xlkr.extend_from_slice(&(own_prefix | 0x00404505).to_le_bytes());
-        let mut placed = record(vec![subrecord("XLKR", xlkr)]);
+        let ownership = normalize_ownership_xown_subrecords(&mut placed);
 
-        let dropped = drop_dangling_xlkr_subrecords(&mut placed, own_prefix, &target_sigs);
-
-        assert_eq!(dropped, 0);
+        assert_eq!(ownership.changed(), 0);
+        assert!(placed.raw_payload.is_some());
         assert!(
             placed
                 .subrecords
                 .iter()
-                .any(|s| s.signature.as_str() == "XLKR")
+                .any(|subrecord| subrecord.signature.as_str() == "XLRT")
         );
     }
 
     #[test]
-    fn drops_xlkr_when_linked_ref_is_genuinely_absent() {
+    fn strips_faction_ownership_from_u_mine_it_vending_machine_refs() {
+        let own_prefix = 0x0700_0000;
+        let mut xown = (own_prefix | 0x0035_8068_u32).to_le_bytes().to_vec();
+        xown.extend_from_slice(&[0; 8]);
+        let mut placed = record(vec![
+            subrecord(
+                "NAME",
+                (own_prefix | 0x002A_268E_u32).to_le_bytes().to_vec(),
+            ),
+            subrecord("XOWN", xown),
+        ]);
+
+        assert_eq!(strip_vendor_activator_ownership(&mut placed, own_prefix), 1);
+        assert!(placed.raw_payload.is_none());
+        assert_eq!(placed.subrecords.len(), 1);
+        assert_eq!(placed.subrecords[0].signature.as_str(), "NAME");
+        assert_eq!(strip_vendor_activator_ownership(&mut placed, own_prefix), 0);
+
+        let xown = (own_prefix | 0x0035_8068_u32).to_le_bytes().to_vec();
+
+        let mut merchant_chest = record(vec![
+            subrecord(
+                "NAME",
+                (own_prefix | 0x0035_8066_u32).to_le_bytes().to_vec(),
+            ),
+            subrecord("XOWN", xown.clone()),
+        ]);
+        assert_eq!(
+            strip_vendor_activator_ownership(&mut merchant_chest, own_prefix),
+            0
+        );
+        assert_eq!(merchant_chest.subrecords.len(), 2);
+        assert!(merchant_chest.raw_payload.is_some());
+
+        let mut master_base = record(vec![
+            subrecord("NAME", 0x002A_268E_u32.to_le_bytes().to_vec()),
+            subrecord("XOWN", xown.clone()),
+        ]);
+        assert_eq!(
+            strip_vendor_activator_ownership(&mut master_base, own_prefix),
+            0
+        );
+        assert_eq!(master_base.subrecords.len(), 2);
+
+        let mut actor = record_with_sig(
+            "ACHR",
+            vec![
+                subrecord(
+                    "NAME",
+                    (own_prefix | 0x002A_268E_u32).to_le_bytes().to_vec(),
+                ),
+                subrecord("XOWN", xown),
+            ],
+        );
+        assert_eq!(strip_vendor_activator_ownership(&mut actor, own_prefix), 0);
+        assert_eq!(actor.subrecords.len(), 2);
+    }
+
+    #[test]
+    fn drop_dangling_xlkr_only_for_absent_own_refs() {
         let own_prefix: u32 = 0x0700_0000;
         let kywd = SigCode::from_str("KYWD").unwrap();
         let mut target_sigs = FxHashMap::default();
@@ -1207,10 +1291,27 @@ mod tests {
                 .all(|s| s.signature.as_str() != "XLKR")
         );
         assert!(placed.raw_payload.is_none());
-    }
 
-    #[test]
-    fn keeps_xlkr_with_master_prefixed_refs() {
+        let achr = SigCode::from_str("ACHR").unwrap();
+        let mut target_sigs = FxHashMap::default();
+        target_sigs.insert(own_prefix | 0x0040B2B5, kywd); // keyword
+        target_sigs.insert(own_prefix | 0x00404505, achr); // linked ref (copied in another pass)
+
+        let mut xlkr = Vec::new();
+        xlkr.extend_from_slice(&(own_prefix | 0x0040B2B5).to_le_bytes());
+        xlkr.extend_from_slice(&(own_prefix | 0x00404505).to_le_bytes());
+        let mut placed = record(vec![subrecord("XLKR", xlkr)]);
+
+        let dropped = drop_dangling_xlkr_subrecords(&mut placed, own_prefix, &target_sigs);
+
+        assert_eq!(dropped, 0);
+        assert!(
+            placed
+                .subrecords
+                .iter()
+                .any(|s| s.signature.as_str() == "XLKR")
+        );
+
         // Master-plugin (Fallout4.esm) keyword/ref: not own-prefix, so never our
         // call to validate — leave for the engine.
         let own_prefix: u32 = 0x0700_0000;
@@ -1228,27 +1329,6 @@ mod tests {
                 .subrecords
                 .iter()
                 .any(|s| s.signature.as_str() == "XLKR")
-        );
-    }
-
-    #[test]
-    fn keeps_xlrt_even_when_base_has_forced_loc_ref_type() {
-        // FO4 fills location-scoped quest aliases from the REF's XLRT, not from
-        // the base's FTYP, so normalization must leave XLRT alone regardless.
-        let mut placed = record(vec![
-            subrecord("NAME", 0x0708F6B7_u32.to_le_bytes().to_vec()),
-            subrecord("XLRT", 0x073D4B0D_u32.to_le_bytes().to_vec()),
-        ]);
-
-        let ownership = normalize_ownership_xown_subrecords(&mut placed);
-
-        assert_eq!(ownership.changed(), 0);
-        assert!(placed.raw_payload.is_some());
-        assert!(
-            placed
-                .subrecords
-                .iter()
-                .any(|subrecord| subrecord.signature.as_str() == "XLRT")
         );
     }
 }

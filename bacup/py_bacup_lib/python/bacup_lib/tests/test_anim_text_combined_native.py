@@ -3,6 +3,68 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
+
+@pytest.mark.parametrize(
+    "source,target,havok,plan,creature_policy,expected",
+    [
+        ("fo76", "fo4", True, True, None, True),
+        ("fo76", "fo4", False, True, None, False),
+        ("fo76", "fo4", True, False, None, False),
+        ("skyrimse", "fo4", True, True, None, False),
+        ("fo76", "starfield", True, True, None, False),
+        ("fo76", "fo4", True, True, {"policy_id": "all_creatures_v1"}, False),
+    ],
+)
+def test_rebuilding_fo76_graphs_requires_fresh_animtext(
+    tmp_path, source, target, havok, plan, creature_policy, expected
+):
+    from bacup_lib.workflows.unified import _requires_fo76_behavior_animtext
+
+    if plan:
+        path = tmp_path / "debug/fo76_behaviors/plan.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"routes": []}')
+    ctx = SimpleNamespace(
+        source_game=source, target_game=target, mod_path=tmp_path,
+        mvp_creature_corpus_policy=creature_policy,
+    )
+    options = SimpleNamespace(convert_havok=havok, generate_anim_text_data=False)
+    assert _requires_fo76_behavior_animtext(ctx, options) is expected
+    assert not _requires_fo76_behavior_animtext(None, options)
+
+
+def test_fo76_animtext_stays_native_even_with_creation_kit(tmp_path, monkeypatch):
+    from bacup_lib.workflows import unified
+
+    game = tmp_path / "game"
+    (game / "Data").mkdir(parents=True)
+    (game / "CreationKit.exe").write_bytes(b"present")
+    mod = tmp_path / "mod"
+    stale = mod / "data/Meshes/AnimTextData/stale.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old graph bindings")
+    plugin = mod / "SeventySix.esm"
+    plugin.write_bytes(b"plugin")
+    calls = []
+
+    def native(ctx, runner, plugin_path, **kwargs):
+        assert not stale.exists()
+        calls.append(plugin_path)
+
+    def ck(*args, **kwargs):
+        pytest.fail("FO76 behavior graphs require the native generator")
+
+    monkeypatch.setattr(unified, "_run_anim_text_data_native", native)
+    monkeypatch.setattr(unified, "_run_anim_text_data_via_ck", ck)
+    ctx = SimpleNamespace(
+        source_game="fo76", target_game="fo4", mod_path=mod,
+        output_plugin_name=plugin.name, target_data_dir=game / "Data",
+    )
+    unified._run_anim_text_data_generation(ctx, StubRunner())
+    assert calls == [plugin]
+
 
 class StubRunner:
     def __init__(self) -> None:

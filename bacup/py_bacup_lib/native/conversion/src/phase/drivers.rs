@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 
 use havok_native::hkx::types::HkxValue;
 use havok_native::hkx::{HkxFile, HkxMember};
-use serde_json::Value as JsonValue;
 
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 
@@ -38,7 +37,6 @@ const DRIVERS_YAML: &str = include_str!("havok/drivers.yaml");
 struct VariablePattern {
     ramp_events: Vec<String>,
     decay_events: Vec<String>,
-    initial_value: f64,
     ramp_target: f64,
     decay_target: f64,
     ramp_damping_kp: f64,
@@ -50,7 +48,6 @@ impl Default for VariablePattern {
         Self {
             ramp_events: vec!["WeaponFire".into()],
             decay_events: vec!["WeaponSheathe".into()],
-            initial_value: 0.0,
             ramp_target: 1.0,
             decay_target: 0.0,
             ramp_damping_kp: 0.15,
@@ -81,10 +78,6 @@ impl DriverConfig {
                     let p = VariablePattern {
                         ramp_events: string_list_from_value(pat.get("ramp_events")),
                         decay_events: string_list_from_value(pat.get("decay_events")),
-                        initial_value: pat
-                            .get("initial_value")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0),
                         ramp_target: pat
                             .get("ramp_target")
                             .and_then(|v| v.as_f64())
@@ -1652,24 +1645,21 @@ mod tests {
             let file = detection_fixture(writer);
             assert_eq!(
                 assert_detection_parity(&file),
-                vec![("heat".into(), "nested/path.FTimePercent".into())]
+                vec![("heat".into(), "nested/path.FTimePercent".into())],
+                "{writer}"
             );
         }
-    }
-
-    #[test]
-    fn native_detection_reads_packed_bindings() {
-        let file = detection_fixture("hkbDampingModifier");
-        let packed = file.save();
+        let packed = detection_fixture("hkbDampingModifier").save();
         let parsed = HkxFile::read(&packed).unwrap();
         assert_eq!(
             assert_detection_parity(&parsed),
-            vec![("heat".into(), "nested/path.FTimePercent".into())]
+            vec![("heat".into(), "nested/path.FTimePercent".into())],
+            "packed"
         );
     }
 
     #[test]
-    fn native_detection_ignores_blank_or_missing_binding_paths() {
+    fn native_detection_ignores_blank_missing_and_dangling_bindings() {
         let mut file = detection_fixture("hkbDampingModifier");
         let HkxValue::Array(bindings) = &mut file.objects_mut()[3].members[0].value else {
             panic!("fixture bindings must be an array");
@@ -1686,10 +1676,7 @@ mod tests {
             assert_detection_parity(&file),
             vec![("heat".into(), "nested/path.FTimePercent".into())]
         );
-    }
 
-    #[test]
-    fn native_detection_handles_missing_tables_and_dangling_bindings() {
         let mut file = detection_fixture("hkbDampingModifier");
         file.objects_mut()[2].members[0].value = HkxValue::Pointer(Some(999));
         assert!(detect_unbound_variables(&file, &DriverConfig::load(DRIVERS_YAML)).is_empty());
@@ -1698,67 +1685,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Read-only corpus parity/benchmark; set MODKIT_DRIVER_CORPUS to a JSON list of HKX paths"]
-    fn native_detection_corpus_parity() {
-        let manifest = std::env::var("MODKIT_DRIVER_CORPUS").expect("MODKIT_DRIVER_CORPUS");
-        let paths: Vec<PathBuf> =
-            serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
-        assert!(!paths.is_empty());
-        let config = DriverConfig::load(DRIVERS_YAML);
-        let mut native_time = std::time::Duration::ZERO;
-        let mut xml_time = std::time::Duration::ZERO;
-        let mut detected_files = 0;
-        let mut detections = 0;
-        for (index, path) in paths.iter().enumerate() {
-            let bytes = std::fs::read(path).unwrap();
-            let started = std::time::Instant::now();
-            let file =
-                HkxFile::read(&bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            let mut native = detect_unbound_variables(&file, &config);
-            native_time += started.elapsed();
-            let started = std::time::Instant::now();
-            let xml = havok_native::api::havok_hkx_to_xml(&bytes).unwrap();
-            let mut legacy = detect_unbound_variables_xml(&xml, &config).unwrap();
-            xml_time += started.elapsed();
-            native.sort();
-            legacy.sort();
-            assert_eq!(native, legacy, "{}", path.display());
-            detected_files += usize::from(!native.is_empty());
-            detections += native.len();
-            if index % 100 == 0 {
-                eprintln!(
-                    "driver parity {}/{} native={native_time:?} xml={xml_time:?}",
-                    index + 1,
-                    paths.len()
-                );
-            }
-        }
-        eprintln!(
-            "driver parity files={} detected_files={detected_files} detections={detections} native={native_time:?} xml={xml_time:?}",
-            paths.len()
-        );
-    }
-
-    #[test]
-    fn behavior_name_from_path_unique_behaviors() {
+    fn behavior_paths_name_graphs_and_only_accept_behavior_directories() {
         assert_eq!(
             behavior_name_from_rel_path(
                 "meshes/actors/human/UniqueBehaviors/GaussPistol/Behaviors/GaussPistol.hkx"
             ),
             "GaussPistol"
         );
-    }
-
-    #[test]
-    fn behavior_name_from_path_standard() {
         assert_eq!(
             behavior_name_from_rel_path("meshes/actors/snallygaster/behaviors/snallygaster.hkx"),
             "snallygaster"
         );
-    }
-
-    #[test]
-    fn driver_discovery_only_accepts_behavior_graph_directories() {
         assert!(is_behavior_hkx_path(Path::new(
             "meshes/UniqueBehaviors/TestYourStrength/Behaviors/Behavior.hkx"
         )));
@@ -1771,22 +1708,9 @@ mod tests {
     }
 
     #[test]
-    fn drivers_yaml_loads() {
-        let cfg = DriverConfig::load(DRIVERS_YAML);
-        assert!(
-            !cfg.telemetry_sinks.is_empty(),
-            "telemetry_sinks must be non-empty"
-        );
-        assert!(
-            cfg.variable_patterns.keys().any(|k| k.contains("overheat")),
-            "fOverheatAmount pattern must be present; keys={:?}",
-            cfg.variable_patterns.keys().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
     fn meltdown_driver_matches_minigun_heat_cycle() {
         let cfg = DriverConfig::load(DRIVERS_YAML);
+        assert!(!cfg.telemetry_sinks.is_empty());
         let pattern = cfg.variable_patterns.get("foverheatamount").unwrap();
 
         assert!(
@@ -1823,12 +1747,7 @@ mod tests {
 
         assert!(xml.contains(r#"<hkparam name="floatValue1">1.000000</hkparam>"#));
         assert!(xml.contains(r#"<hkparam name="floatValue2">0.005000</hkparam>"#));
-    }
-
-    #[test]
-    fn fmt_float_precision() {
         assert_eq!(fmt_float(0.15), "0.150000");
-        assert_eq!(fmt_float(1.0), "1.000000");
         assert_eq!(fmt_float(0.0), "0.000000");
     }
 

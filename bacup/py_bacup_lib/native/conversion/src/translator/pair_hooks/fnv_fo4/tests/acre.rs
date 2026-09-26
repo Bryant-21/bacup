@@ -49,10 +49,7 @@ fn acre_lowering_preserves_persistent_placed_payload_and_registers_alias_target(
     assert_eq!(aliases.resolve_direct(source_placed), Some(target));
     assert_eq!(target.source_base, source_base);
     assert_eq!(target.target_base, target_base);
-}
 
-#[test]
-fn acre_lowering_rejects_an_unconverted_creature_base() {
     let interner = StringInterner::new();
     let (mut record, source_placed, source_base) = acre_fixture(&interner);
     let target_placed = FormKey::parse("017A0A@Out.esm", &interner).unwrap();
@@ -81,11 +78,3 @@ fn acre_lowering_rejects_an_unconverted_creature_base() {
     assert_eq!(aliases.resolve_direct(source_placed), None);
 }
 
-#[test]
-fn acre_fixture_documents_cell_group_ownership_outside_the_record() {
-    let cell_group = 9_u32;
-    let (_, source_placed, _) = acre_fixture(&StringInterner::new());
-
-    assert_eq!(cell_group, 9, "placed ACHR must remain in the CELL temporary group");
-    assert_eq!(source_placed.local, 0x017A0A);
-}

@@ -253,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_shelter_models_by_path() {
+    fn selects_shelter_and_prefab_models_by_path() {
         for model_path in [
             "SetDressing\\shelters\\Shelters_RestrictedArea\\Shelters_RestrictedArea_Hallway1.nif",
             "SetDressing\\shelters\\Shelters_RestrictedArea\\Shelters_RestrictedArea_SideTunnel.nif",
@@ -275,10 +275,7 @@ mod tests {
                 "{model_path} should not be selected"
             );
         }
-    }
 
-    #[test]
-    fn selects_prefab_models_by_path() {
         for model_path in [
             "atx\\architecture\\prefabs\\atx_haunted_belltower\\ATX_Haunted_Belltower_BellwithButton.nif",
             "Meshes/Architecture/Workshop/Prefabs/Barn/BarnComplete01.nif",
@@ -344,7 +341,7 @@ mod tests {
     #[test]
     fn adds_vanilla_workshop_stackable_property() {
         let interner = StringInterner::new();
-        let mut record = record(&interner, "Shelters_WranglerCasino_MainFloor01", vec![]);
+        let mut record = self::record(&interner, "Shelters_WranglerCasino_MainFloor01", vec![]);
 
         assert_eq!(
             ensure_workshop_stackable_property(&mut record, &interner),
@@ -358,13 +355,9 @@ mod tests {
                 1.0
             )]
         );
-    }
 
-    #[test]
-    fn preserves_existing_properties_and_is_idempotent() {
-        let interner = StringInterner::new();
         let existing = property_row(&interner, 0x123456, 0.25);
-        let mut record = record(
+        let mut record = self::record(
             &interner,
             "Shelters_RestrictedArea_MainFloor",
             vec![FieldEntry {
@@ -384,13 +377,9 @@ mod tests {
             PropertyResult::Present
         );
         assert_eq!(property_rows(&record).len(), 2);
-    }
 
-    #[test]
-    fn leaves_opaque_existing_properties_unchanged() {
-        let interner = StringInterner::new();
         let raw = smallvec![1, 2, 3, 4, 5, 6, 7, 8];
-        let mut record = record(
+        let mut record = self::record(
             &interner,
             "Shelters_RestrictedArea_MainFloor",
             vec![FieldEntry {

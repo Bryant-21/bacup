@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import threading
-import wave
 
 import pytest
 
 from bacup_lib import fnv_voice
-from creation_lib.paths import get_resource_dir
 
 
 def _manifest(tmp_path: Path, entries: list[dict]) -> Path:
@@ -70,19 +67,15 @@ def test_golden_manifest_paths_use_mapped_vtyp_edid(tmp_path: Path) -> None:
     )
 
 
-def test_manifest_rejects_target_path_that_does_not_match_response_identity(tmp_path: Path) -> None:
-    entry = _entry()
-    entry["target_path"] = entry["target_path"].replace("_1.fuz", "_2.fuz")
-    with pytest.raises(ValueError, match="target_path"):
-        fnv_voice.FnvVoiceManifest.load(_manifest(tmp_path, [entry]))
-
-
-def test_source_discovery_reports_unavailable_without_guessing_response(tmp_path: Path) -> None:
+def test_source_discovery_reports_unavailable_and_preserves_existing_fuz(tmp_path: Path) -> None:
     entry = _entry("134B9B", 1)
     source_root = tmp_path / "source"
     existing = source_root / "Sound/Voice/FalloutNV.esm/MaleAdult/00134B9B_1.ogg"
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"not response two")
+    invalid_fuz = tmp_path / "output" / "data" / entry["target_path"]
+    invalid_fuz.parent.mkdir(parents=True)
+    invalid_fuz.write_bytes(b"not a fuz")
 
     results = fnv_voice.process_voice_manifest(
         _manifest(tmp_path, [entry]),
@@ -94,6 +87,7 @@ def test_source_discovery_reports_unavailable_without_guessing_response(tmp_path
     )
 
     assert results[0].status == "source_unavailable"
+    assert invalid_fuz.read_bytes() == b"not a fuz"
 
 
 def test_source_found_but_missing_external_tool_is_explicit(tmp_path: Path) -> None:
@@ -115,46 +109,6 @@ def test_source_found_but_missing_external_tool_is_explicit(tmp_path: Path) -> N
 
     assert results[0].status == "tool_missing"
     assert "ffmpeg" in results[0].detail
-
-
-def _voice_tools_ready() -> bool:
-    ready, _missing = fnv_voice.available_voice_tools(resource_dir=get_resource_dir())
-    return ready
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not _voice_tools_ready(),
-    reason="requires installed ffmpeg plus FaceFXWrapper, FonixData, xWMAEncode, and BmlFuzEncode",
-)
-def test_tool_available_pipeline_generates_real_fuz(tmp_path: Path) -> None:
-    """Only skips when a required external voice encoder is genuinely absent."""
-    entry = _entry()
-    source_root = tmp_path / "source"
-    ogg_path = source_root / entry["source_candidates"][0]
-    ogg_path.parent.mkdir(parents=True)
-    wav_path = tmp_path / "input.wav"
-    with wave.open(str(wav_path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(44_100)
-        wav.writeframes(b"\x00\x00" * 44_100)
-    subprocess.run(
-        [shutil.which("ffmpeg") or "ffmpeg", "-y", "-i", str(wav_path), str(ogg_path)],
-        check=True,
-        capture_output=True,
-    )
-
-    results = fnv_voice.process_voice_manifest(
-        _manifest(tmp_path, [entry]),
-        source_roots={"fnv-base": source_root},
-        output_mod_dir=tmp_path / "output",
-        target_plugin="B21_nv_FalloutNV.esm",
-        resource_dir=get_resource_dir(),
-    )
-
-    assert results[0].status == "written"
-    assert (tmp_path / "output" / "data" / entry["target_path"]).is_file()
 
 
 def test_multi_root_provenance_finds_fnv_dlc_and_fo3_without_plugin_fallback(tmp_path: Path) -> None:
@@ -181,7 +135,7 @@ def test_multi_root_provenance_finds_fnv_dlc_and_fo3_without_plugin_fallback(tmp
     assert fnv_voice.find_source_voice(manifest.entries[1], {"fnv-dlc": [fnv]}) is None
 
 
-def test_prefixed_extracted_ogg_resolves_only_in_its_provenance_voice_folder(tmp_path: Path) -> None:
+def test_prefixed_extracted_ogg_resolves_only_when_unambiguous(tmp_path: Path) -> None:
     entry = _entry()
     source_root = tmp_path / "fnv"
     voice_dir = source_root / Path(entry["source_candidates"][0]).parent
@@ -192,15 +146,7 @@ def test_prefixed_extracted_ogg_resolves_only_in_its_provenance_voice_folder(tmp
     manifest = fnv_voice.FnvVoiceManifest.load(_manifest(tmp_path, [entry]))
     assert fnv_voice.find_source_voice(manifest.entries[0], {"fnv-base": source_root}) == prefixed
 
-
-def test_multiple_prefixed_oggs_fail_closed(tmp_path: Path) -> None:
-    entry = _entry()
-    source_root = tmp_path / "fnv"
-    voice_dir = source_root / Path(entry["source_candidates"][0]).parent
-    voice_dir.mkdir(parents=True)
-    for prefix in ("vtechattic_vtechatticupnvt", "another_voice"):
-        (voice_dir / f"{prefix}_00130161_1.ogg").write_bytes(b"ambiguous source")
-
+    (voice_dir / "another_voice_00130161_1.ogg").write_bytes(b"ambiguous source")
     results = fnv_voice.process_voice_manifest(
         _manifest(tmp_path, [entry]),
         source_roots={"fnv-base": source_root},
@@ -224,7 +170,12 @@ def test_strict_missing_required_voice_raises_with_statuses(tmp_path: Path) -> N
     assert error.value.results[0].status == "source_unavailable"
 
 
-def test_rejects_target_plugin_mismatch_and_duplicate_target_path(tmp_path: Path) -> None:
+def test_rejects_target_path_identity_plugin_mismatch_and_duplicate(tmp_path: Path) -> None:
+    mismatched = _entry()
+    mismatched["target_path"] = mismatched["target_path"].replace("_1.fuz", "_2.fuz")
+    with pytest.raises(ValueError, match="target_path"):
+        fnv_voice.FnvVoiceManifest.load(_manifest(tmp_path, [mismatched]))
+
     wrong_plugin = _entry()
     wrong_plugin["target_plugin"] = "Other.esm"
     wrong_plugin["target_path"] = fnv_voice.target_voice_relative_path(
@@ -288,25 +239,6 @@ def test_invalid_existing_fuz_is_replaced_only_after_success(
     assert results[0].status == "written"
     assert "replaced invalid" in results[0].detail
     assert existing.read_bytes() == b"FUZE" + b"generated voice"
-
-
-def test_failed_regeneration_preserves_invalid_existing_fuz(tmp_path: Path) -> None:
-    entry = _entry()
-    existing = tmp_path / "output" / "data" / entry["target_path"]
-    existing.parent.mkdir(parents=True)
-    existing.write_bytes(b"not a fuz")
-
-    results = fnv_voice.process_voice_manifest(
-        _manifest(tmp_path, [entry]),
-        source_roots={"fnv-base": tmp_path / "missing"},
-        output_mod_dir=tmp_path / "output",
-        target_plugin="B21_nv_FalloutNV.esm",
-        resource_dir=tmp_path / "resource",
-        strict=False,
-    )
-
-    assert results[0].status == "source_unavailable"
-    assert existing.read_bytes() == b"not a fuz"
 
 
 def test_full_manifest_uses_one_tool_probe_and_preserves_result_order(

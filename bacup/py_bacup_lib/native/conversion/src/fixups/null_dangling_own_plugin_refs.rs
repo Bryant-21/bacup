@@ -1420,265 +1420,260 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nulls_own_plugin_leaf_with_missing_target() {
-        // LCEP Ref 07854F2E: addresses the output plugin at an interior REFR that
-        // was never emitted → null.
-        let interner = StringInterner::new();
-        let r = resolver(
-            &[0x001234],
-            &[("Fallout4.esm", &[0x000010])],
-            "SeventySix.esm",
-        );
-        let leaf = fk(0x854F2E, "SeventySix.esm", &interner);
-        assert_eq!(r.resolve(&leaf, &interner), LeafResolution::Null);
-    }
+    use crate::ids::{SigCode, SubrecordSig};
+    use crate::record::{FieldEntry, Record, RecordFlags};
 
-    #[test]
-    fn keeps_own_plugin_leaf_that_was_emitted() {
-        let interner = StringInterner::new();
-        let r = resolver(&[0x854F2E], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let leaf = fk(0x854F2E, "SeventySix.esm", &interner);
-        assert_eq!(r.resolve(&leaf, &interner), LeafResolution::Keep);
-    }
-
-    #[test]
-    fn repairs_truncated_master_byte_to_output() {
-        // XTNM 00510AF5: addresses Fallout4.esm but 510AF5 isn't a FO4 record and
-        // IS emitted in the output (the converted MESG) → repair plugin sym.
-        let interner = StringInterner::new();
-        let r = resolver(
-            &[0x510AF5],
-            &[("Fallout4.esm", &[0x000010])],
-            "SeventySix.esm",
-        );
-        let leaf = fk(0x510AF5, "Fallout4.esm", &interner);
-        assert_eq!(r.resolve(&leaf, &interner), LeafResolution::RepairToOutput);
-    }
-
-    #[test]
-    fn nulls_master_leaf_resolving_nowhere() {
-        // XCZR 00552965: addresses Fallout4.esm, not a FO4 record, and the source
-        // REFR (interior) was not emitted → null (NOT repaired).
-        let interner = StringInterner::new();
-        let r = resolver(
-            &[0x001234],
-            &[("Fallout4.esm", &[0x000010])],
-            "SeventySix.esm",
-        );
-        let leaf = fk(0x552965, "Fallout4.esm", &interner);
-        assert_eq!(r.resolve(&leaf, &interner), LeafResolution::Null);
-    }
-
-    #[test]
-    fn keeps_valid_master_leaf() {
-        // A leaf that genuinely resolves in DLCCoast must never be touched
-        // (plugin-blind clobber guard).
-        let interner = StringInterner::new();
-        let r = resolver(
-            &[0x000001],
-            &[("Fallout4.esm", &[]), ("DLCCoast.esm", &[0x0247C1])],
-            "SeventySix.esm",
-        );
-        let leaf = fk(0x0247C1, "DLCCoast.esm", &interner);
-        assert_eq!(r.resolve(&leaf, &interner), LeafResolution::Keep);
-    }
-
-    #[test]
-    fn keeps_null_leaf() {
-        let interner = StringInterner::new();
-        let r = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let leaf = fk(0, "SeventySix.esm", &interner);
-        assert_eq!(r.resolve(&leaf, &interner), LeafResolution::Keep);
-    }
-
-    //
-    // In a whole-plugin FO76→FO4 worldspace run the exterior placed children
-    // (ACHR/REFR) targeted by LCTN LCUN/LCEP/ACEP arrive with the phase-6 cell-slice
-    // copy, after the pre-copy fixup. PreCopy{defer=true} leaves those refs intact;
-    // PostCopyPlacedChild keeps present targets and nulls genuine interior danglers
-    // (+LCUN row dropped). PreCopy{defer=false} resolves the class pre-copy.
-
-    fn lcep_record(local: u32, plugin: &str, interner: &StringInterner) -> Record {
-        // Minimal LCTN with one LCEP ref leaf (List<Struct>{ref}).
-        let ref_sym = interner.intern("loc_enable_parent_ref");
-        record(
-            "LCTN",
-            vec![(
-                "LCEP",
-                FieldValue::List(vec![FieldValue::Struct(vec![(
-                    ref_sym,
-                    FieldValue::FormKey(fk(local, plugin, interner)),
-                )])]),
-            )],
-            interner,
-        )
-    }
-
-    fn lcep_ref_local(rec: &Record) -> u32 {
-        let e = rec
-            .fields
-            .iter()
-            .find(|e| e.sig.as_str() == "LCEP")
-            .unwrap();
-        let FieldValue::List(rows) = &e.value else {
-            panic!()
-        };
-        let FieldValue::Struct(fields) = &rows[0] else {
-            panic!()
-        };
-        let FieldValue::FormKey(f) = &fields[0].1 else {
-            panic!()
-        };
-        f.local
-    }
-
-    #[test]
-    fn pre_copy_defers_placed_child_lcep() {
-        // Target (the not-yet-copied ACHR) absent at pre-copy time, but the class
-        // is deferred → the LCEP ref is left intact (would otherwise null).
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = lcep_record(0x7ACB4D, "SeventySix.esm", &interner);
-        let changed = apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PreCopy {
-                defer_placed_child: true,
+    fn record(sig: &str, fields: Vec<(&str, FieldValue)>, interner: &StringInterner) -> Record {
+        Record {
+            sig: SigCode::from_str(sig).unwrap(),
+            form_key: FormKey {
+                plugin: interner.intern("SeventySix.esm"),
+                local: 0x000800,
             },
-        );
-        assert!(!changed, "deferred class must be untouched pre-copy");
-        assert_eq!(lcep_ref_local(&rec), 0x7ACB4D, "ref left intact");
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: fields
+                .into_iter()
+                .map(|(s, v)| FieldEntry {
+                    sig: SubrecordSig::from_str(s).unwrap(),
+                    value: v,
+                })
+                .collect(),
+            warnings: smallvec::SmallVec::new(),
+        }
     }
 
-    #[test]
-    fn pre_copy_without_defer_nulls_placed_child_lcep() {
-        // HEAD behavior (non-worldspace pipelines): defer=false → absent target
-        // nulls in the pre-copy pass exactly as before.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = lcep_record(0x7ACB4D, "SeventySix.esm", &interner);
-        let changed = apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PreCopy {
-                defer_placed_child: false,
-            },
-        );
-        assert!(changed);
-        assert_eq!(lcep_ref_local(&rec), 0, "absent target nulled");
+    /// Default mode for the legacy per-record tests: pre-copy, no deferral (the
+    /// HEAD semantics for non-worldspace pipelines).
+    const PRE_COPY: ApplyMode = ApplyMode::PreCopy {
+        defer_placed_child: false,
+    };
+
+    /// 7 empty masters, so raw master index 7 addresses the output plugin.
+    fn resolver7(output: &[u32], first_master: &[u32]) -> LeafResolver {
+        let mut master_objids: Vec<FxHashSet<u32>> = (0..7).map(|_| FxHashSet::default()).collect();
+        master_objids[0].extend(first_master.iter().copied());
+        LeafResolver {
+            output_objids: output.iter().copied().collect(),
+            master_objids,
+            output_dial_objids: FxHashSet::default(),
+            master_dial_objids: (0..7).map(|_| FxHashSet::default()).collect(),
+            output_wrld_objids: FxHashSet::default(),
+            master_wrld_objids: (0..7).map(|_| FxHashSet::default()).collect(),
+            output_owner_objids: FxHashSet::default(),
+            master_owner_objids: (0..7).map(|_| FxHashSet::default()).collect(),
+            master_names: (0..7).map(|i| format!("M{i}.esm")).collect(),
+            output_plugin: "SeventySix.esm".to_string(),
+        }
     }
 
-    #[test]
-    fn post_copy_repair_keeps_present_placed_child_lcep() {
-        // After the copy the ACHR IS in the output → repair keeps the LCEP ref.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x7ACB4D], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = lcep_record(0x7ACB4D, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(!changed, "present target → kept");
-        assert_eq!(lcep_ref_local(&rec), 0x7ACB4D);
+    fn raw_cnto(item: u32, count: u32) -> FieldValue {
+        let mut cnto = smallvec::SmallVec::<[u8; 32]>::new();
+        cnto.extend_from_slice(&item.to_le_bytes());
+        cnto.extend_from_slice(&count.to_le_bytes());
+        FieldValue::Bytes(cnto)
     }
 
-    #[test]
-    fn post_copy_repair_nulls_genuine_dangler_lcep() {
-        // FeedFish04-style: still absent post-copy (a true interior ref) → nulled.
-        let interner = StringInterner::new();
-        let r = resolver(
-            &[0x7ACB4D],
-            &[("Fallout4.esm", &[0x000010])],
-            "SeventySix.esm",
-        );
-        let mut rec = lcep_record(0x845542, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(changed);
-        assert_eq!(lcep_ref_local(&rec), 0, "genuine dangler nulled");
+    fn raw_xown(owner: u32) -> FieldValue {
+        let mut payload = smallvec::SmallVec::<[u8; 32]>::from_slice(&owner.to_le_bytes());
+        payload.extend_from_slice(&[0; 8]);
+        FieldValue::Bytes(payload)
     }
 
-    //
-    // QUST alias Forced-Reference (ALFR) and LCTN World-Location-Marker (MNAM)
-    // point at worldspace PERSISTENT children materialized in the output only by
-    // the persistent-cell phase. Both are deferred pre-copy and resolved by the
-    // post-copy repair: target present → kept; absent (interior/test) → ALFR
-    // null-in-place, MNAM subrecord dropped.
-
-    fn qust_alfr_record(local: u32, plugin: &str, interner: &StringInterner) -> Record {
-        record(
-            "QUST",
-            vec![("ALFR", FieldValue::FormKey(fk(local, plugin, interner)))],
-            interner,
-        )
+    fn first_fk_local(value: &FieldValue) -> Option<u32> {
+        match value {
+            FieldValue::FormKey(f) => Some(f.local),
+            FieldValue::Struct(fields) => fields.iter().find_map(|(_, v)| first_fk_local(v)),
+            FieldValue::List(items) => items.iter().find_map(first_fk_local),
+            _ => None,
+        }
     }
 
-    fn alfr_local(rec: &Record) -> Option<u32> {
+    fn subrecord_fk_local(rec: &Record, sig: &str) -> Option<u32> {
         rec.fields
             .iter()
-            .find(|e| e.sig.as_str() == "ALFR")
-            .and_then(|e| match &e.value {
-                FieldValue::FormKey(f) => Some(f.local),
-                _ => None,
-            })
+            .find(|e| e.sig.as_str() == sig)
+            .and_then(|e| first_fk_local(&e.value))
     }
 
     #[test]
-    fn pre_copy_defers_qust_alfr() {
-        // Persistent target absent at pre-copy time, but the class is deferred →
-        // the ALFR ref is left intact (would otherwise null as an own-plugin
-        // leaf with a missing target).
+    fn resolves_own_plugin_and_master_leaves() {
         let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = qust_alfr_record(0x343DB5, "SeventySix.esm", &interner);
-        let changed = apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PreCopy {
-                defer_placed_child: true,
-            },
+        let fo4_with_10: &[(&str, &[u32])] = &[("Fallout4.esm", &[0x000010])];
+        for (name, output, masters, leaf, expected) in [
+            (
+                "LCEP 07854F2E own-plugin interior REFR never emitted",
+                &[0x001234][..],
+                fo4_with_10,
+                (0x854F2E, "SeventySix.esm"),
+                LeafResolution::Null,
+            ),
+            (
+                "own-plugin leaf that was emitted",
+                &[0x854F2E],
+                &[("Fallout4.esm", &[][..])][..],
+                (0x854F2E, "SeventySix.esm"),
+                LeafResolution::Keep,
+            ),
+            (
+                "XTNM 00510AF5 truncated master byte, emitted in output",
+                &[0x510AF5],
+                fo4_with_10,
+                (0x510AF5, "Fallout4.esm"),
+                LeafResolution::RepairToOutput,
+            ),
+            (
+                "XCZR 00552965 master leaf resolving nowhere is nulled, not repaired",
+                &[0x001234],
+                fo4_with_10,
+                (0x552965, "Fallout4.esm"),
+                LeafResolution::Null,
+            ),
+            (
+                "valid DLCCoast leaf is never clobbered",
+                &[0x000001],
+                &[("Fallout4.esm", &[][..]), ("DLCCoast.esm", &[0x0247C1][..])][..],
+                (0x0247C1, "DLCCoast.esm"),
+                LeafResolution::Keep,
+            ),
+            (
+                "null leaf",
+                &[],
+                &[("Fallout4.esm", &[][..])][..],
+                (0, "SeventySix.esm"),
+                LeafResolution::Keep,
+            ),
+        ] {
+            let r = resolver(output, masters, "SeventySix.esm");
+            assert_eq!(
+                r.resolve(&fk(leaf.0, leaf.1, &interner), &interner),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    // In a whole-plugin FO76→FO4 worldspace run the placed children targeted by
+    // LCTN LCEP/MNAM, QUST ALFR, REFR XTEL and FACT VENC arrive with the cell copy,
+    // after the pre-copy fixup. PreCopy{defer=true} leaves those refs intact; the
+    // post-copy repair keeps present targets and nulls (LCEP/ALFR/XTEL, whose
+    // subrecord must survive) or drops (MNAM/VENC, where FO4 forbids a NULL leaf)
+    // the genuine danglers. PreCopy{defer=false} resolves the class pre-copy.
+    #[test]
+    fn placed_child_slots_defer_pre_copy_and_resolve_post_copy() {
+        let interner = StringInterner::new();
+        let lcep = |local: u32| {
+            record(
+                "LCTN",
+                vec![(
+                    "LCEP",
+                    FieldValue::List(vec![FieldValue::Struct(vec![(
+                        interner.intern("loc_enable_parent_ref"),
+                        FieldValue::FormKey(fk(local, "SeventySix.esm", &interner)),
+                    )])]),
+                )],
+                &interner,
+            )
+        };
+        let interner_ref = &interner;
+        let single = |record_sig: &'static str, sig: &'static str| {
+            move |local: u32| {
+                record(
+                    record_sig,
+                    vec![(
+                        sig,
+                        FieldValue::FormKey(fk(local, "SeventySix.esm", interner_ref)),
+                    )],
+                    interner_ref,
+                )
+            }
+        };
+        let xtel = |local: u32| {
+            record(
+                "REFR",
+                vec![(
+                    "XTEL",
+                    FieldValue::Struct(vec![(
+                        interner.intern("door"),
+                        FieldValue::FormKey(fk(local, "SeventySix.esm", &interner)),
+                    )]),
+                )],
+                &interner,
+            )
+        };
+        let alfr = single("QUST", "ALFR");
+        let mnam = single("LCTN", "MNAM");
+        let venc = single("FACT", "VENC");
+        let slots: [(&str, &dyn Fn(u32) -> Record, u32, Option<u32>); 5] = [
+            ("LCEP", &lcep, 0x7ACB4D, Some(0)),
+            ("ALFR", &alfr, 0x343DB5, Some(0)),
+            ("XTEL", &xtel, 0x49994D, Some(0)),
+            ("MNAM", &mnam, 0x35D2A1, None),
+            ("VENC", &venc, 0x629E0C, None),
+        ];
+        let not_yet_copied = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
+        let absent = resolver(
+            &[0x111111],
+            &[("Fallout4.esm", &[0x000010])],
+            "SeventySix.esm",
         );
-        assert!(!changed, "deferred ALFR must be untouched pre-copy");
-        assert_eq!(alfr_local(&rec), Some(0x343DB5), "ref left intact");
-    }
-
-    #[test]
-    fn pre_copy_without_defer_nulls_qust_alfr() {
-        // Control for `pre_copy_defers_qust_alfr`: with defer OFF, an own-plugin
-        // ALFR whose target was not emitted nulls in place pre-copy. Removing
-        // `("QUST","ALFR")` from DEFERRED_PLACED_CHILD_SUBRECORDS makes the
-        // defer=true case behave like this one.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = qust_alfr_record(0x343DB5, "SeventySix.esm", &interner);
-        let changed = apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PreCopy {
-                defer_placed_child: false,
-            },
-        );
-        assert!(changed);
-        assert_eq!(alfr_local(&rec), Some(0), "absent target nulled");
-    }
-
-    #[test]
-    fn post_copy_repair_keeps_present_qust_alfr() {
-        // After the persistent cell lands the ALFR target IS in the output → kept.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x343DB5], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = qust_alfr_record(0x343DB5, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(!changed, "present target → kept");
-        assert_eq!(alfr_local(&rec), Some(0x343DB5));
+        for (sig, make, local, absent_value) in slots {
+            let present = resolver(&[local], &[("Fallout4.esm", &[])], "SeventySix.esm");
+            for (phase, r, mode, changed, expected) in [
+                (
+                    "pre-copy deferred",
+                    &not_yet_copied,
+                    ApplyMode::PreCopy {
+                        defer_placed_child: true,
+                    },
+                    false,
+                    Some(local),
+                ),
+                (
+                    "pre-copy without defer",
+                    &not_yet_copied,
+                    PRE_COPY,
+                    true,
+                    absent_value,
+                ),
+                (
+                    "post-copy present",
+                    &present,
+                    ApplyMode::PostCopyPlacedChild,
+                    false,
+                    Some(local),
+                ),
+                (
+                    "post-copy absent",
+                    &absent,
+                    ApplyMode::PostCopyPlacedChild,
+                    true,
+                    absent_value,
+                ),
+            ] {
+                let mut rec = make(local);
+                assert_eq!(
+                    apply_to_record(&mut rec, r, &interner, mode),
+                    changed,
+                    "{sig} {phase}"
+                );
+                assert_eq!(subrecord_fk_local(&rec, sig), expected, "{sig} {phase}");
+            }
+        }
     }
 
     #[test]
     fn post_copy_repair_keeps_builtin_player_ref_qust_alfr() {
         let interner = StringInterner::new();
         let r = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = qust_alfr_record(0x000014, "Fallout4.esm", &interner);
+        let mut rec = record(
+            "QUST",
+            vec![(
+                "ALFR",
+                FieldValue::FormKey(fk(0x000014, "Fallout4.esm", &interner)),
+            )],
+            &interner,
+        );
 
         let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
 
@@ -1686,7 +1681,7 @@ mod tests {
             !changed,
             "engine-defined PlayerRef must survive post-copy repair"
         );
-        assert_eq!(alfr_local(&rec), Some(0x000014));
+        assert_eq!(subrecord_fk_local(&rec, "ALFR"), Some(0x000014));
 
         let missing_master = resolver(&[], &[], "SeventySix.esm");
         assert_eq!(
@@ -1697,249 +1692,8 @@ mod tests {
     }
 
     #[test]
-    fn post_copy_repair_nulls_absent_qust_alfr() {
-        // Interior/test-quest forced ref still absent post-copy → null in place
-        // (NOT dropped: ALFR is repeatable-scoped, so dropping would corrupt the
-        // alias block). Matches the CK-benign state for the ~253 unresolvable.
+    fn drops_lcun_row_with_absent_actor_ref_pre_and_post_copy() {
         let interner = StringInterner::new();
-        let r = resolver(
-            &[0x111111],
-            &[("Fallout4.esm", &[0x000010])],
-            "SeventySix.esm",
-        );
-        let mut rec = qust_alfr_record(0x845542, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(changed);
-        assert_eq!(
-            alfr_local(&rec),
-            Some(0),
-            "absent forced ref nulled in place"
-        );
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "ALFR"),
-            "ALFR subrecord kept (not dropped)"
-        );
-    }
-
-    //
-    // XTEL decodes to a Struct with a `door` FormKey leaf (the persistent placed
-    // REFR teleport target). It defers pre-copy and rebinds post-copy exactly like
-    // ALFR: target present post-copy → kept; absent → door leaf nulled in place
-    // (NOT dropped — that would lose the teleport link). The transition_interior
-    // leaf is walked too but is null/absent in this exterior port.
-
-    fn xtel_record(door: u32, plugin: &str, interner: &StringInterner) -> Record {
-        let door_sym = interner.intern("door");
-        record(
-            "REFR",
-            vec![(
-                "XTEL",
-                FieldValue::Struct(vec![(
-                    door_sym,
-                    FieldValue::FormKey(fk(door, plugin, interner)),
-                )]),
-            )],
-            interner,
-        )
-    }
-
-    fn xtel_door_local(rec: &Record) -> u32 {
-        let e = rec
-            .fields
-            .iter()
-            .find(|e| e.sig.as_str() == "XTEL")
-            .unwrap();
-        let FieldValue::Struct(fields) = &e.value else {
-            panic!()
-        };
-        let FieldValue::FormKey(f) = &fields[0].1 else {
-            panic!()
-        };
-        f.local
-    }
-
-    #[test]
-    fn pre_copy_defers_refr_xtel() {
-        // Persistent door absent at pre-copy time, but XTEL is deferred → the door
-        // leaf is left intact (would otherwise null as an own-plugin missing target).
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = xtel_record(0x49994D, "SeventySix.esm", &interner);
-        let changed = apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PreCopy {
-                defer_placed_child: true,
-            },
-        );
-        assert!(!changed, "deferred XTEL must be untouched pre-copy");
-        assert_eq!(xtel_door_local(&rec), 0x49994D, "door left intact");
-    }
-
-    #[test]
-    fn post_copy_repair_keeps_present_refr_xtel() {
-        // After the persistent cell lands the door REFR IS in the output → kept.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x49994D], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = xtel_record(0x49994D, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(!changed, "present door → kept");
-        assert_eq!(xtel_door_local(&rec), 0x49994D);
-    }
-
-    #[test]
-    fn post_copy_repair_nulls_absent_refr_xtel() {
-        // Door still absent post-copy → nulled in place (subrecord kept: dropping
-        // XTEL would lose the teleport link).
-        let interner = StringInterner::new();
-        let r = resolver(
-            &[0x111111],
-            &[("Fallout4.esm", &[0x000010])],
-            "SeventySix.esm",
-        );
-        let mut rec = xtel_record(0x845542, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(changed);
-        assert_eq!(xtel_door_local(&rec), 0, "absent door nulled in place");
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "XTEL"),
-            "XTEL subrecord kept (not dropped)"
-        );
-    }
-
-    #[test]
-    fn pre_copy_defers_lctn_mnam() {
-        // MNAM is in BOTH DEFERRED and DROP_ON_NULL. With defer on, pre-copy must
-        // NOT drop it even though its persistent-marker target is absent yet.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "LCTN",
-            vec![(
-                "MNAM",
-                FieldValue::FormKey(fk(0x35D2A1, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        let changed = apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PreCopy {
-                defer_placed_child: true,
-            },
-        );
-        assert!(!changed, "deferred MNAM untouched pre-copy");
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "MNAM"),
-            "MNAM not dropped pre-copy"
-        );
-    }
-
-    #[test]
-    fn post_copy_repair_keeps_present_lctn_mnam() {
-        let interner = StringInterner::new();
-        let r = resolver(&[0x35D2A1], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "LCTN",
-            vec![(
-                "MNAM",
-                FieldValue::FormKey(fk(0x35D2A1, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(!changed, "present marker → MNAM kept");
-        assert!(rec.fields.iter().any(|e| e.sig.as_str() == "MNAM"));
-    }
-
-    #[test]
-    fn post_copy_repair_drops_absent_lctn_mnam() {
-        // Marker still absent post-copy → MNAM is a drop-on-null slot, so the
-        // subrecord is dropped (FO4 forbids a NULL MNAM leaf).
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "LCTN",
-            vec![(
-                "MNAM",
-                FieldValue::FormKey(fk(0x35D2A1, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(changed);
-        assert!(
-            rec.fields.iter().all(|e| e.sig.as_str() != "MNAM"),
-            "absent MNAM dropped"
-        );
-    }
-
-    fn fact_venc_record(container: u32, plugin: &str, interner: &StringInterner) -> Record {
-        record(
-            "FACT",
-            vec![("VENC", FieldValue::FormKey(fk(container, plugin, interner)))],
-            interner,
-        )
-    }
-
-    #[test]
-    fn pre_copy_defers_fact_venc() {
-        // Merchant container REFR absent at pre-copy time, but VENC is deferred → the
-        // FK is left intact. Without the deferral fix_invalid_target_formkeys nulls
-        // it and the type-validator strips the present-but-null VENC → every vendor
-        // loses its merchant container (the bug this reproduces).
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = fact_venc_record(0x629E0C, "SeventySix.esm", &interner);
-        let changed = apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PreCopy {
-                defer_placed_child: true,
-            },
-        );
-        assert!(!changed, "deferred FACT VENC must be untouched pre-copy");
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "VENC"),
-            "VENC not dropped pre-copy"
-        );
-    }
-
-    #[test]
-    fn post_copy_repair_keeps_present_fact_venc() {
-        // After the cell copy lands the container REFR IS in the output → VENC kept.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x629E0C], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = fact_venc_record(0x629E0C, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(!changed, "present container → VENC kept");
-        assert!(rec.fields.iter().any(|e| e.sig.as_str() == "VENC"));
-    }
-
-    #[test]
-    fn post_copy_repair_drops_absent_fact_venc() {
-        // Container still absent post-copy → VENC is a drop-on-null slot, so the
-        // subrecord is dropped (FO4 forbids a NULL VENC leaf).
-        let interner = StringInterner::new();
-        let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = fact_venc_record(0x629E0C, "SeventySix.esm", &interner);
-        let changed = apply_to_record(&mut rec, &r, &interner, ApplyMode::PostCopyPlacedChild);
-        assert!(changed);
-        assert!(
-            rec.fields.iter().all(|e| e.sig.as_str() != "VENC"),
-            "absent container → VENC dropped"
-        );
-    }
-
-    #[test]
-    fn post_copy_repair_drops_absent_lcun_row_keeps_present() {
-        // LCUN repair: the row whose actor_ref is still absent post-copy is
-        // dropped in lockstep; the row whose actor_ref is present is kept.
-        let interner = StringInterner::new();
-        let r = resolver(&[0x2B47D1], &[("Fallout4.esm", &[])], "SeventySix.esm");
         let npc = interner.intern("master_unique_npcs_npc");
         let actor = interner.intern("master_unique_npcs_actor_ref");
         let loc = interner.intern("master_unique_npcs_location");
@@ -1953,32 +1707,33 @@ mod tests {
                 (loc, FieldValue::FormKey(fk(c, "SeventySix.esm", &interner))),
             ])
         };
-        let mut rec = record(
-            "LCTN",
-            vec![(
-                "LCUN",
-                FieldValue::List(vec![
-                    row(0x35C950, 0x35C953, 0x2B47D1), // actor still absent → drop row
-                    row(0x35C950, 0x2B47D1, 0x2B47D1), // actor present → keep row
-                ]),
-            )],
-            &interner,
-        );
-        assert!(apply_to_record(
-            &mut rec,
-            &r,
-            &interner,
-            ApplyMode::PostCopyPlacedChild
-        ));
-        let e = rec
-            .fields
-            .iter()
-            .find(|e| e.sig.as_str() == "LCUN")
-            .unwrap();
-        let FieldValue::List(rows) = &e.value else {
-            panic!()
-        };
-        assert_eq!(rows.len(), 1, "absent-actor row dropped");
+        for (mode, output) in [
+            (PRE_COPY, &[0x35C950, 0x2B47D1][..]),
+            (ApplyMode::PostCopyPlacedChild, &[0x2B47D1][..]),
+        ] {
+            let r = resolver(output, &[("Fallout4.esm", &[])], "SeventySix.esm");
+            let mut rec = record(
+                "LCTN",
+                vec![(
+                    "LCUN",
+                    FieldValue::List(vec![
+                        row(0x35C950, 0x35C953, 0x2B47D1), // actor 35C953 absent → drop row
+                        row(0x35C950, 0x2B47D1, 0x2B47D1), // actor 2B47D1 emitted → keep row
+                    ]),
+                )],
+                &interner,
+            );
+            assert!(apply_to_record(&mut rec, &r, &interner, mode));
+            let e = rec
+                .fields
+                .iter()
+                .find(|e| e.sig.as_str() == "LCUN")
+                .expect("LCUN kept");
+            let FieldValue::List(rows) = &e.value else {
+                panic!()
+            };
+            assert_eq!(rows.len(), 1, "the absent-actor row must be dropped");
+        }
     }
 
     fn union_bytes(kind: i32, raw: u32) -> smallvec::SmallVec<[u8; 32]> {
@@ -1989,18 +1744,74 @@ mod tests {
         b
     }
 
+    fn union_kind_and_value(b: &[u8]) -> (i32, u32) {
+        (
+            i32::from_le_bytes(b[0..4].try_into().unwrap()),
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+        )
+    }
+
     #[test]
-    fn nulls_dangling_pack_ptda_reference() {
-        // PTDA 008A483A (FeedFish04 REFR, interior, no FO4 equiv): type-0
-        // reference, resolves nowhere → null offset-4 FK.
-        let r = resolver(
+    fn null_union_slot_handles_pack_target_kinds() {
+        let dangling = resolver(
             &[0x111111],
             &[("Fallout4.esm", &[0x000010])],
             "SeventySix.esm",
         );
-        let mut b = union_bytes(0, 0x008A483A);
-        assert!(null_union_slot(&mut b, "PTDA", &r, 7));
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0);
+        let master_combat_rifle = resolver(&[], &[("Fallout4.esm", &[0x0DF42E])], "SeventySix.esm");
+        let emitted = resolver(&[0x525F60], &[("Fallout4.esm", &[])], "SeventySix.esm");
+        let empty = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
+        for (name, sig, kind, raw, r, changed, expected) in [
+            (
+                "FeedFish04 type-0 reference resolving nowhere",
+                "PTDA",
+                0,
+                0x008A483A,
+                &dangling,
+                true,
+                0,
+            ),
+            (
+                "master-inherited type-1 object id (CombatRifle)",
+                "PTDA",
+                1,
+                0x000DF42E,
+                &master_combat_rifle,
+                false,
+                0x000DF42E,
+            ),
+            (
+                "emitted 07 PLDT reference",
+                "PLDT",
+                0,
+                0x07525F60,
+                &emitted,
+                false,
+                0x07525F60,
+            ),
+            (
+                "type-2 object_type scalar is not a FormID",
+                "PTDA",
+                2,
+                0x0000000F,
+                &empty,
+                false,
+                0x0000000F,
+            ),
+            (
+                "type-3 keyword resolving nowhere",
+                "PTDA",
+                3,
+                0x008A483A,
+                &dangling,
+                true,
+                0,
+            ),
+        ] {
+            let mut b = union_bytes(kind, raw);
+            assert_eq!(null_union_slot(&mut b, sig, r, 7), changed, "{name}");
+            assert_eq!(union_kind_and_value(&b), (kind, expected), "{name}");
+        }
     }
 
     fn pack_union_record(sig: &str, kind: i32, raw: u32, interner: &StringInterner) -> Record {
@@ -2011,8 +1822,15 @@ mod tests {
         )
     }
 
+    fn pack_union(rec: &Record) -> (i32, u32) {
+        let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
+            panic!("raw package union expected");
+        };
+        union_kind_and_value(bytes)
+    }
+
     #[test]
-    fn pre_copy_defers_pack_placed_reference_targets() {
+    fn pack_placed_reference_targets_defer_pre_copy_and_resolve_post_copy() {
         let interner = StringInterner::new();
         let r = resolver(&[0x001234], &[("Fallout4.esm", &[])], "SeventySix.esm");
 
@@ -2026,153 +1844,76 @@ mod tests {
                     defer_placed_child: true,
                 },
             ));
-            let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
-                panic!("raw package union expected");
-            };
-            assert_eq!(
-                u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                0x01405EA6
-            );
+            assert_eq!(pack_union(&rec), (0, 0x01405EA6), "{sig} deferred");
 
             let mut eager = pack_union_record(sig, 0, 0x01405EA6, &interner);
-            assert!(apply_to_record(
-                &mut eager,
-                &r,
-                &interner,
-                ApplyMode::PreCopy {
-                    defer_placed_child: false,
-                },
-            ));
-            let FieldValue::Bytes(bytes) = &eager.fields[0].value else {
-                panic!("raw package union expected");
-            };
+            assert!(apply_to_record(&mut eager, &r, &interner, PRE_COPY));
             let expected_benign_type = if sig == "PTDA" { 6 } else { 2 };
-            assert_eq!(
-                i32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-                expected_benign_type
-            );
-            assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0);
+            assert_eq!(pack_union(&eager), (expected_benign_type, 0), "{sig} eager");
         }
-    }
 
-    #[test]
-    fn post_copy_keeps_pack_target_when_placed_reference_exists() {
-        let interner = StringInterner::new();
-        let r = resolver(&[0x405EA6], &[("Fallout4.esm", &[])], "SeventySix.esm");
+        let present = resolver(&[0x405EA6], &[("Fallout4.esm", &[])], "SeventySix.esm");
         let mut rec = pack_union_record("PTDA", 0, 0x01405EA6, &interner);
-
         assert!(!apply_to_record(
             &mut rec,
-            &r,
+            &present,
             &interner,
             ApplyMode::PostCopyPlacedChild,
         ));
-        let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
-            panic!("raw package union expected");
-        };
-        assert_eq!(i32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0);
         assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            0x01405EA6
+            pack_union(&rec),
+            (0, 0x01405EA6),
+            "post-copy present target kept"
         );
     }
 
     #[test]
-    fn keeps_master_inherited_pack_ptda_object_id() {
-        // PTDA 000DF42E (CombatRifle): type-1 object_id resolving in Fallout4.esm
-        // (master-inherited) → keep byte-identical.
-        let r = resolver(&[], &[("Fallout4.esm", &[0x0DF42E])], "SeventySix.esm");
-        let mut b = union_bytes(1, 0x000DF42E);
-        assert!(!null_union_slot(&mut b, "PTDA", &r, 7));
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0x000DF42E);
-    }
-
-    #[test]
-    fn keeps_emitted_07_pack_pldt() {
-        // PLDT type-0 already remapped to an emitted 07 record → keep.
-        let r = resolver(&[0x525F60], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut b = union_bytes(0, 0x07525F60);
-        assert!(!null_union_slot(&mut b, "PLDT", &r, 7));
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0x07525F60);
-    }
-
-    #[test]
-    fn skips_pack_ptda_scalar_type2() {
-        // PTDA kind 2 = object_type (a u32 form-type code, NOT a FormID): never
-        // touched even if the offset-4 u32 collides with a dangling-looking value.
-        let r = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut b = union_bytes(2, 0x0000000F);
-        assert!(!null_union_slot(&mut b, "PTDA", &r, 7));
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0x0000000F);
-    }
-
-    #[test]
-    fn nulls_pack_ptda_keyword_type3_resolving_nowhere() {
-        // Round-8 #7: a kind-3 keyword PTDA whose target resolves in neither output
-        // nor any master → null offset-4 (the gate now admits kind 3).
-        let r = resolver(
-            &[0x111111],
-            &[("Fallout4.esm", &[0x000010])],
-            "SeventySix.esm",
-        );
-        let mut b = union_bytes(3, 0x008A483A);
-        assert!(null_union_slot(&mut b, "PTDA", &r, 7));
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0);
-    }
-
-    #[test]
-    fn benignifies_null_reference_ptda_to_self() {
-        // PTDA type-0 Reference with a null FK → CK "Package Target Reference
-        // (00000000)". Rewrite the selector to Self (type 6); value stays 0.
-        let mut b = union_bytes(PACK_UNION_REFERENCE_TYPE, 0);
-        assert!(benignify_value0_reference_union(&mut b, "PTDA"));
-        assert_eq!(
-            i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-            PACK_TARGET_SELF_TYPE
-        );
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0);
-    }
-
-    #[test]
-    fn benignifies_null_reference_pldt_and_plvd_to_near_package_start() {
-        for sig in ["PLDT", "PLVD"] {
-            let mut b = union_bytes(PACK_UNION_REFERENCE_TYPE, 0);
-            assert!(benignify_value0_reference_union(&mut b, sig), "{sig}");
-            assert_eq!(
-                i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+    fn benignifies_only_null_reference_pack_unions() {
+        for (name, sig, kind, raw, changed, expected_kind) in [
+            (
+                "null PTDA reference → Self",
+                "PTDA",
+                PACK_UNION_REFERENCE_TYPE,
+                0,
+                true,
+                PACK_TARGET_SELF_TYPE,
+            ),
+            (
+                "null PLDT reference → near package start",
+                "PLDT",
+                PACK_UNION_REFERENCE_TYPE,
+                0,
+                true,
                 PACK_LOCATION_NEAR_PACKAGE_START_TYPE,
-                "{sig}"
+            ),
+            (
+                "null PLVD reference → near package start",
+                "PLVD",
+                PACK_UNION_REFERENCE_TYPE,
+                0,
+                true,
+                PACK_LOCATION_NEAR_PACKAGE_START_TYPE,
+            ),
+            (
+                "resolvable reference untouched",
+                "PTDA",
+                PACK_UNION_REFERENCE_TYPE,
+                0x07525F60,
+                false,
+                PACK_UNION_REFERENCE_TYPE,
+            ),
+            ("non-reference selector untouched", "PTDA", 2, 0, false, 2),
+        ] {
+            let mut b = union_bytes(kind, raw);
+            assert_eq!(
+                benignify_value0_reference_union(&mut b, sig),
+                changed,
+                "{name}"
             );
+            assert_eq!(union_kind_and_value(&b), (expected_kind, raw), "{name}");
         }
-    }
 
-    #[test]
-    fn benignify_leaves_resolvable_reference_untouched() {
-        // A Reference variant whose FK is NON-null (a valid target) must not be
-        // rewritten — only null-valued references are benignified.
-        let mut b = union_bytes(PACK_UNION_REFERENCE_TYPE, 0x07525F60);
-        assert!(!benignify_value0_reference_union(&mut b, "PTDA"));
-        assert_eq!(
-            i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-            PACK_UNION_REFERENCE_TYPE
-        );
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0x07525F60);
-    }
-
-    #[test]
-    fn benignify_skips_non_reference_variant() {
-        // A non-Reference selector (e.g. PTDA type-2 object_type scalar) is left
-        // alone even with a zero value — it is not a "Reference (00000000)".
-        let mut b = union_bytes(2, 0);
-        assert!(!benignify_value0_reference_union(&mut b, "PTDA"));
-        assert_eq!(i32::from_le_bytes([b[0], b[1], b[2], b[3]]), 2);
-    }
-
-    #[test]
-    fn null_then_benignify_feedfish04_ptda() {
-        // End-to-end of the apply path on the FeedFish04 PTDA (type-0 reference,
-        // interior REFR absent everywhere): null_union_slot zeros the FK, then
-        // benignify rewrites the selector to Self → CK-clean self target.
+        // FeedFish04 end to end: null the absent interior REFR, then benignify to Self.
         let r = resolver(
             &[0x111111],
             &[("Fallout4.esm", &[0x000010])],
@@ -2181,11 +1922,7 @@ mod tests {
         let mut b = union_bytes(PACK_UNION_REFERENCE_TYPE, 0x008A483A);
         assert!(null_union_slot(&mut b, "PTDA", &r, 7));
         assert!(benignify_value0_reference_union(&mut b, "PTDA"));
-        assert_eq!(
-            i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-            PACK_TARGET_SELF_TYPE
-        );
-        assert_eq!(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), 0);
+        assert_eq!(union_kind_and_value(&b), (PACK_TARGET_SELF_TYPE, 0));
     }
 
     #[test]
@@ -2225,81 +1962,84 @@ mod tests {
         assert!(matches!(&fields[2].1, FieldValue::Bytes(b) if b.as_slice() == [1, 0, 0, 0]));
     }
 
-    use crate::ids::{SigCode, SubrecordSig};
-    use crate::record::{FieldEntry, Record, RecordFlags};
-
-    fn record(sig: &str, fields: Vec<(&str, FieldValue)>, interner: &StringInterner) -> Record {
-        Record {
-            sig: SigCode::from_str(sig).unwrap(),
-            form_key: FormKey {
-                plugin: interner.intern("SeventySix.esm"),
-                local: 0x000800,
-            },
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: fields
-                .into_iter()
-                .map(|(s, v)| FieldEntry {
-                    sig: SubrecordSig::from_str(s).unwrap(),
-                    value: v,
-                })
-                .collect(),
-            warnings: smallvec::SmallVec::new(),
-        }
-    }
-
-    /// Default mode for the legacy per-record tests: pre-copy, no deferral (the
-    /// HEAD semantics for non-worldspace pipelines).
-    const PRE_COPY: ApplyMode = ApplyMode::PreCopy {
-        defer_placed_child: false,
-    };
-
     #[test]
-    fn keeps_dlbr_with_emitted_output_dial_starting_topic() {
+    fn dlbr_starting_topic_must_be_a_resolvable_dial() {
         let interner = StringInterner::new();
-        let r = resolver_with_dials(
+        let emitted_dial = resolver_with_dials(
             &[0x0565C1],
             &[0x0565C1],
             &[("Fallout4.esm", &[], &[])],
             "SeventySix.esm",
         );
-        let mut rec = record(
-            "DLBR",
-            vec![(
-                "SNAM",
-                FieldValue::FormKey(fk(0x0565C1, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-
-        assert_eq!(
-            resolve_dlbr_starting_topic(&mut rec, &r, &interner),
-            DlbrStartingTopicResolution::Keep
-        );
-    }
-
-    #[test]
-    fn keeps_dlbr_with_valid_master_dial_starting_topic() {
-        let interner = StringInterner::new();
-        let r = resolver_with_dials(
+        let master_dial = resolver_with_dials(
             &[0x000800],
             &[],
             &[("Fallout4.esm", &[0x01A2B3], &[0x01A2B3])],
             "SeventySix.esm",
         );
-        let mut rec = record(
-            "DLBR",
-            vec![(
-                "SNAM",
-                FieldValue::FormKey(fk(0x01A2B3, "Fallout4.esm", &interner)),
-            )],
-            &interner,
+        let non_dial = resolver_with_dials(
+            &[0x0565C1],
+            &[],
+            &[("Fallout4.esm", &[], &[])],
+            "SeventySix.esm",
         );
-
-        assert_eq!(
-            resolve_dlbr_starting_topic(&mut rec, &r, &interner),
-            DlbrStartingTopicResolution::Keep
-        );
+        let snam = |local: u32, plugin: &str| {
+            record(
+                "DLBR",
+                vec![("SNAM", FieldValue::FormKey(fk(local, plugin, &interner)))],
+                &interner,
+            )
+        };
+        for (name, r, mut rec, expected) in [
+            (
+                "emitted output DIAL",
+                &emitted_dial,
+                snam(0x0565C1, "SeventySix.esm"),
+                DlbrStartingTopicResolution::Keep,
+            ),
+            (
+                "valid master DIAL",
+                &master_dial,
+                snam(0x01A2B3, "Fallout4.esm"),
+                DlbrStartingTopicResolution::Keep,
+            ),
+            (
+                "null",
+                &non_dial,
+                snam(0, "SeventySix.esm"),
+                DlbrStartingTopicResolution::Invalid,
+            ),
+            (
+                "decoded null",
+                &non_dial,
+                record("DLBR", vec![("SNAM", FieldValue::None)], &interner),
+                DlbrStartingTopicResolution::Invalid,
+            ),
+            (
+                "missing",
+                &non_dial,
+                record("DLBR", vec![], &interner),
+                DlbrStartingTopicResolution::Invalid,
+            ),
+            (
+                "dangling",
+                &non_dial,
+                snam(0x2C505F, "SeventySix.esm"),
+                DlbrStartingTopicResolution::Invalid,
+            ),
+            (
+                "wrong type",
+                &non_dial,
+                snam(0x0565C1, "SeventySix.esm"),
+                DlbrStartingTopicResolution::Invalid,
+            ),
+        ] {
+            assert_eq!(
+                resolve_dlbr_starting_topic(&mut rec, r, &interner),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -2352,67 +2092,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dlbr_with_null_missing_dangling_or_wrong_type_starting_topic() {
-        let interner = StringInterner::new();
-        let r = resolver_with_dials(
-            &[0x0565C1],
-            &[],
-            &[("Fallout4.esm", &[], &[])],
-            "SeventySix.esm",
-        );
-        let null = record(
-            "DLBR",
-            vec![(
-                "SNAM",
-                FieldValue::FormKey(fk(0, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        let decoded_null = record("DLBR", vec![("SNAM", FieldValue::None)], &interner);
-        let missing = record("DLBR", vec![], &interner);
-        let dangling = record(
-            "DLBR",
-            vec![(
-                "SNAM",
-                FieldValue::FormKey(fk(0x2C505F, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        let wrong_type = record(
-            "DLBR",
-            vec![(
-                "SNAM",
-                FieldValue::FormKey(fk(0x0565C1, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-
-        for mut rec in [null, decoded_null, missing, dangling, wrong_type] {
-            assert_eq!(
-                resolve_dlbr_starting_topic(&mut rec, &r, &interner),
-                DlbrStartingTopicResolution::Invalid
-            );
-        }
-    }
-
-    #[test]
-    fn drops_incoming_dial_branch_ref_after_dlbr_prune() {
-        let interner = StringInterner::new();
-        let r = resolver(&[0x0565C1], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "DIAL",
-            vec![(
-                "BNAM",
-                FieldValue::FormKey(fk(0x28950A, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.iter().all(|entry| entry.sig.as_str() != "BNAM"));
-    }
-
-    #[test]
     fn dedupe_records_by_form_key_keeps_last_record_in_first_position() {
         let interner = StringInterner::new();
         let mut first = record(
@@ -2457,150 +2136,318 @@ mod tests {
         assert_eq!(deduped[1].form_key.local, 0x20);
     }
 
+    fn structured_cnto(item: Option<FormKey>, interner: &StringInterner) -> FieldValue {
+        let mut fields = Vec::new();
+        if let Some(item) = item {
+            fields.push((interner.intern("Item"), FieldValue::FormKey(item)));
+        }
+        fields.push((interner.intern("Count"), FieldValue::Int(1)));
+        FieldValue::Struct(fields)
+    }
+
     #[test]
-    fn drops_null_info_dnam_subrecord() {
-        // INFO DNAM Shared-INFO whose target (an own-plugin INFO) was never emitted
-        // → drop the subrecord, don't leave a NULL leaf.
+    fn pre_copy_keeps_resolvable_and_drops_dangling_subrecords() {
         let interner = StringInterner::new();
-        let r = resolver(&[0x111111], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "INFO",
-            vec![
-                (
-                    "GNAM",
-                    FieldValue::FormKey(fk(0x111111, "SeventySix.esm", &interner)),
+        let own = |local: u32| FieldValue::FormKey(fk(local, "SeventySix.esm", &interner));
+        let xilw = |local: u32| {
+            FieldValue::Struct(vec![(
+                interner.intern("Worldspace"),
+                FieldValue::FormKey(fk(local, "Fallout4.esm", &interner)),
+            )])
+        };
+        let fo4_plain = || resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
+        let output = |ids: &[u32]| resolver(ids, &[("Fallout4.esm", &[])], "SeventySix.esm");
+        let cell_types = |output: &[u32], worldspaces: &[u32], owners: &[u32]| {
+            resolver_with_cell_types(
+                output,
+                worldspaces,
+                owners,
+                &[("Fallout4.esm", &[], &[], &[])],
+                "SeventySix.esm",
+            )
+        };
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &str,
+            LeafResolver,
+            &str,
+            Vec<(&str, FieldValue)>,
+            bool,
+            Vec<&str>,
+            Option<FieldValue>,
+        )> = vec![
+            (
+                "INFO DNAM shared-INFO never emitted is dropped, not left NULL",
+                output(&[0x111111]),
+                "INFO",
+                vec![("GNAM", own(0x111111)), ("DNAM", own(0x37F7FC))],
+                true,
+                vec!["GNAM"],
+                None,
+            ),
+            (
+                "resolvable WRLD WNAM kept",
+                output(&[0x00F7F5]),
+                "WRLD",
+                vec![("WNAM", own(0x00F7F5))],
+                false,
+                vec!["WNAM"],
+                None,
+            ),
+            (
+                "null WRLD WNAM dropped",
+                fo4_plain(),
+                "WRLD",
+                vec![("WNAM", own(0x123456))],
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "resolvable WRLD NAM3 kept",
+                output(&[0x00F7F5]),
+                "WRLD",
+                vec![("NAM3", own(0x00F7F5))],
+                false,
+                vec!["NAM3"],
+                None,
+            ),
+            (
+                "null WRLD NAM3 dropped",
+                fo4_plain(),
+                "WRLD",
+                vec![("NAM3", own(0x123456))],
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "unresolved CELL XILW struct dropped",
+                fo4_plain(),
+                "CELL",
+                vec![("XILW", xilw(0x635F96))],
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "resolvable CELL XILW struct kept",
+                resolver(&[], &[("Fallout4.esm", &[0x635F96])], "SeventySix.esm"),
+                "CELL",
+                vec![("XILW", xilw(0x635F96))],
+                false,
+                vec!["XILW"],
+                None,
+            ),
+            (
+                "CELL XILW with same-id output record of the wrong type dropped",
+                cell_types(&[0x635F96], &[], &[0x635F96]),
+                "CELL",
+                vec![(
+                    "XILW",
+                    FieldValue::FormKey(fk(0x635F96, "Fallout4.esm", &interner)),
+                )],
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "CELL XOWN with valid master owner kept",
+                resolver_with_cell_types(
+                    &[],
+                    &[],
+                    &[],
+                    &[("Fallout4.esm", &[0x01C21C], &[], &[0x01C21C])],
+                    "SeventySix.esm",
                 ),
-                (
-                    "DNAM",
-                    FieldValue::FormKey(fk(0x37F7FC, "SeventySix.esm", &interner)),
-                ), // missing
-            ],
-            &interner,
-        );
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(
-            rec.fields.iter().all(|e| e.sig.as_str() != "DNAM"),
-            "null DNAM must be dropped"
-        );
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "GNAM"),
-            "GNAM kept"
-        );
+                "CELL",
+                vec![("XOWN", raw_xown(0x0001_C21C))],
+                false,
+                vec!["XOWN"],
+                None,
+            ),
+            (
+                "CELL XOWN with same-id output record of the wrong type dropped",
+                cell_types(&[0x2744B3], &[0x2744B3], &[]),
+                "CELL",
+                vec![("XOWN", raw_xown(0x0027_44B3))],
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "CELL XOWN with missing owner dropped",
+                cell_types(&[], &[], &[]),
+                "CELL",
+                vec![("XOWN", raw_xown(0x0042_A260))],
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "null SCEN player dialogue responses dropped",
+                output(&[0x59958B]),
+                "SCEN",
+                vec![
+                    ("ANAM", FieldValue::Uint(1)),
+                    ("PTOP", FieldValue::None),
+                    ("NTOP", own(0x59958B)),
+                    ("NPOT", FieldValue::None),
+                ],
+                true,
+                vec!["ANAM", "NTOP"],
+                None,
+            ),
+            (
+                "dangling SCEN dialogue response dropped",
+                output(&[0x59958B]),
+                "SCEN",
+                vec![
+                    ("ANAM", FieldValue::Uint(1)),
+                    ("PTOP", own(0x59957F)),
+                    ("NTOP", own(0x59958B)),
+                ],
+                true,
+                vec!["ANAM", "NTOP"],
+                None,
+            ),
+            (
+                "DIAL BNAM to a pruned DLBR dropped",
+                output(&[0x0565C1]),
+                "DIAL",
+                vec![("BNAM", own(0x28950A))],
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "NPC_ CNTO FO76 Caps001 0700000F dropped with the stale COCT",
+                resolver7(&[0x222222], &[]),
+                "NPC_",
+                vec![
+                    ("COCT", FieldValue::Uint(1)),
+                    ("CNTO", raw_cnto(0x0700_000F, 1)),
+                    (
+                        "NAM8",
+                        FieldValue::Bytes(smallvec::SmallVec::from_slice(&[1, 0, 0, 0])),
+                    ),
+                ],
+                true,
+                vec!["NAM8"],
+                None,
+            ),
+            (
+                "NPC_ COCT synced after dropping some CNTO rows",
+                resolver7(&[0x000022], &[]),
+                "NPC_",
+                vec![
+                    ("COCT", FieldValue::Uint(2)),
+                    ("CNTO", raw_cnto(0x0700_000F, 1)),
+                    ("CNTO", raw_cnto(0x0700_0022, 3)),
+                ],
+                true,
+                vec!["COCT", "CNTO"],
+                Some(FieldValue::Uint(1)),
+            ),
+            (
+                "NPC_ CNTO with resolvable item kept",
+                resolver7(&[0x000022], &[]),
+                "NPC_",
+                vec![("CNTO", raw_cnto(0x0700_0022, 3))],
+                false,
+                vec!["CNTO"],
+                None,
+            ),
+            (
+                "valid raw CONT CNTO row kept",
+                output(&[0x3D7F48]),
+                "CONT",
+                vec![
+                    ("COCT", FieldValue::Uint(1)),
+                    ("CNTO", raw_cnto(0x013D_7F48, 1)),
+                ],
+                false,
+                vec!["COCT", "CNTO"],
+                Some(FieldValue::Uint(1)),
+            ),
+            (
+                "invalid CONT CNTO rows dropped and COCT synced",
+                output(&[0x000022]),
+                "CONT",
+                vec![
+                    ("COCT", FieldValue::Uint(4)),
+                    (
+                        "CNTO",
+                        structured_cnto(Some(fk(0, "SeventySix.esm", &interner)), &interner),
+                    ),
+                    (
+                        "CNTO",
+                        structured_cnto(Some(fk(0x00DEAD, "SeventySix.esm", &interner)), &interner),
+                    ),
+                    ("CNTO", structured_cnto(None, &interner)),
+                    (
+                        "CNTO",
+                        structured_cnto(Some(fk(0x000022, "SeventySix.esm", &interner)), &interner),
+                    ),
+                ],
+                true,
+                vec!["COCT", "CNTO"],
+                Some(FieldValue::Uint(1)),
+            ),
+            (
+                "valid CONT CNTO rows and matching COCT kept",
+                resolver(
+                    &[0x000022],
+                    &[("Fallout4.esm", &[0x001234])],
+                    "SeventySix.esm",
+                ),
+                "CONT",
+                vec![
+                    ("COCT", FieldValue::Uint(2)),
+                    (
+                        "CNTO",
+                        structured_cnto(Some(fk(0x000022, "SeventySix.esm", &interner)), &interner),
+                    ),
+                    (
+                        "CNTO",
+                        structured_cnto(Some(fk(0x001234, "Fallout4.esm", &interner)), &interner),
+                    ),
+                ],
+                false,
+                vec!["COCT", "CNTO", "CNTO"],
+                Some(FieldValue::Uint(2)),
+            ),
+        ];
+        for (name, r, record_sig, fields, changed, remaining, coct) in cases {
+            let mut rec = record(record_sig, fields, &interner);
+            let before = rec.fields.clone();
+            assert_eq!(
+                apply_to_record(&mut rec, &r, &interner, PRE_COPY),
+                changed,
+                "{name}"
+            );
+            let sigs: Vec<&str> = rec.fields.iter().map(|entry| entry.sig.as_str()).collect();
+            assert_eq!(sigs, remaining, "{name}");
+            if !changed {
+                assert_eq!(
+                    rec.fields, before,
+                    "{name}: unchanged record keeps its bytes"
+                );
+            }
+            if let Some(coct) = coct {
+                let actual = rec
+                    .fields
+                    .iter()
+                    .find(|e| e.sig.as_str() == "COCT")
+                    .map(|e| &e.value);
+                assert_eq!(
+                    actual,
+                    Some(&coct),
+                    "{name}: COCT must match surviving CNTO rows"
+                );
+            }
+        }
     }
-
-    #[test]
-    fn keeps_resolvable_wrld_wnam() {
-        // WRLD WNAM Parent that DOES resolve in output → kept (no drop).
-        let interner = StringInterner::new();
-        let r = resolver(&[0x00F7F5], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "WRLD",
-            vec![(
-                "WNAM",
-                FieldValue::FormKey(fk(0x00F7F5, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        assert!(!apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "WNAM"),
-            "resolvable WNAM kept"
-        );
-    }
-
-    #[test]
-    fn drops_null_wrld_wnam_subrecord() {
-        let interner = StringInterner::new();
-        let r = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "WRLD",
-            vec![(
-                "WNAM",
-                FieldValue::FormKey(fk(0x123456, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.is_empty(), "null WNAM dropped");
-    }
-
-    #[test]
-    fn drops_null_wrld_nam3_subrecord() {
-        let interner = StringInterner::new();
-        let r = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "WRLD",
-            vec![(
-                "NAM3",
-                FieldValue::FormKey(fk(0x123456, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.is_empty(), "null NAM3 dropped");
-    }
-
-    #[test]
-    fn keeps_resolvable_wrld_nam3() {
-        let interner = StringInterner::new();
-        let r = resolver(&[0x00F7F5], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "WRLD",
-            vec![(
-                "NAM3",
-                FieldValue::FormKey(fk(0x00F7F5, "SeventySix.esm", &interner)),
-            )],
-            &interner,
-        );
-        assert!(!apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "NAM3"),
-            "resolvable NAM3 kept"
-        );
-    }
-
-    #[test]
-    fn drops_null_cell_xilw_struct_subrecord() {
-        let interner = StringInterner::new();
-        let worldspace = interner.intern("Worldspace");
-        let r = resolver(&[], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "CELL",
-            vec![(
-                "XILW",
-                FieldValue::Struct(vec![(
-                    worldspace,
-                    FieldValue::FormKey(fk(0x635F96, "Fallout4.esm", &interner)),
-                )]),
-            )],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.is_empty(), "unresolved XILW struct dropped");
-    }
-
-    #[test]
-    fn keeps_resolvable_cell_xilw_struct_subrecord() {
-        let interner = StringInterner::new();
-        let worldspace = interner.intern("Worldspace");
-        let r = resolver(&[], &[("Fallout4.esm", &[0x635F96])], "SeventySix.esm");
-        let mut rec = record(
-            "CELL",
-            vec![(
-                "XILW",
-                FieldValue::Struct(vec![(
-                    worldspace,
-                    FieldValue::FormKey(fk(0x635F96, "Fallout4.esm", &interner)),
-                )]),
-            )],
-            &interner,
-        );
-
-        assert!(!apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.iter().any(|entry| entry.sig.as_str() == "XILW"));
-    }
-
     #[test]
     fn repairs_cell_xilw_to_same_id_output_worldspace_idempotently() {
         let interner = StringInterner::new();
@@ -2665,52 +2512,6 @@ mod tests {
     }
 
     #[test]
-    fn drops_cell_xilw_when_same_id_output_record_is_wrong_type() {
-        let interner = StringInterner::new();
-        let r = resolver_with_cell_types(
-            &[0x635F96],
-            &[],
-            &[0x635F96],
-            &[("Fallout4.esm", &[], &[], &[])],
-            "SeventySix.esm",
-        );
-        let mut rec = record(
-            "CELL",
-            vec![(
-                "XILW",
-                FieldValue::FormKey(fk(0x635F96, "Fallout4.esm", &interner)),
-            )],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.is_empty());
-    }
-
-    #[test]
-    fn keeps_cell_xown_with_valid_master_owner() {
-        let interner = StringInterner::new();
-        let r = resolver_with_cell_types(
-            &[],
-            &[],
-            &[],
-            &[("Fallout4.esm", &[0x01C21C], &[], &[0x01C21C])],
-            "SeventySix.esm",
-        );
-        let mut payload = smallvec::SmallVec::<[u8; 32]>::new();
-        payload.extend_from_slice(&0x0001_C21C_u32.to_le_bytes());
-        payload.extend_from_slice(&[0; 8]);
-        let mut rec = record(
-            "CELL",
-            vec![("XOWN", FieldValue::Bytes(payload.clone()))],
-            &interner,
-        );
-
-        assert!(!apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(matches!(&rec.fields[0].value, FieldValue::Bytes(bytes) if bytes == &payload));
-    }
-
-    #[test]
     fn repairs_cell_xown_to_same_id_output_owner_idempotently() {
         let interner = StringInterner::new();
         let r = resolver_with_cell_types(
@@ -2741,52 +2542,6 @@ mod tests {
     }
 
     #[test]
-    fn drops_cell_xown_when_same_id_output_record_is_wrong_type() {
-        let interner = StringInterner::new();
-        let r = resolver_with_cell_types(
-            &[0x2744B3],
-            &[0x2744B3],
-            &[],
-            &[("Fallout4.esm", &[], &[], &[])],
-            "SeventySix.esm",
-        );
-        let mut payload =
-            smallvec::SmallVec::<[u8; 32]>::from_slice(&0x0027_44B3_u32.to_le_bytes());
-        payload.extend_from_slice(&[0; 8]);
-        let mut rec = record(
-            "CELL",
-            vec![("XOWN", FieldValue::Bytes(payload))],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.is_empty());
-    }
-
-    #[test]
-    fn drops_cell_xown_with_missing_owner() {
-        let interner = StringInterner::new();
-        let r = resolver_with_cell_types(
-            &[],
-            &[],
-            &[],
-            &[("Fallout4.esm", &[], &[], &[])],
-            "SeventySix.esm",
-        );
-        let mut payload =
-            smallvec::SmallVec::<[u8; 32]>::from_slice(&0x0042_A260_u32.to_le_bytes());
-        payload.extend_from_slice(&[0; 8]);
-        let mut rec = record(
-            "CELL",
-            vec![("XOWN", FieldValue::Bytes(payload))],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.is_empty());
-    }
-
-    #[test]
     fn repairs_scen_tnam_truncated_master_byte() {
         // SCEN TNAM 0055DE1F: master byte 00 but the template SCEN was emitted in
         // output → repair plugin sym, do NOT drop.
@@ -2814,223 +2569,17 @@ mod tests {
     }
 
     #[test]
-    fn drops_null_scen_player_dialogue_response_subrecord() {
-        let interner = StringInterner::new();
-        let r = resolver(&[0x59958B], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "SCEN",
-            vec![
-                ("ANAM", FieldValue::Uint(1)),
-                ("PTOP", FieldValue::None),
-                (
-                    "NTOP",
-                    FieldValue::FormKey(fk(0x59958B, "SeventySix.esm", &interner)),
-                ),
-                ("NPOT", FieldValue::None),
-            ],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        let sigs: Vec<&str> = rec.fields.iter().map(|entry| entry.sig.as_str()).collect();
-        assert_eq!(sigs, vec!["ANAM", "NTOP"]);
-    }
-
-    #[test]
-    fn drops_dangling_scen_dialogue_response_subrecord() {
-        let interner = StringInterner::new();
-        let r = resolver(&[0x59958B], &[("Fallout4.esm", &[])], "SeventySix.esm");
-        let mut rec = record(
-            "SCEN",
-            vec![
-                ("ANAM", FieldValue::Uint(1)),
-                (
-                    "PTOP",
-                    FieldValue::FormKey(fk(0x59957F, "SeventySix.esm", &interner)),
-                ),
-                (
-                    "NTOP",
-                    FieldValue::FormKey(fk(0x59958B, "SeventySix.esm", &interner)),
-                ),
-            ],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        let sigs: Vec<&str> = rec.fields.iter().map(|entry| entry.sig.as_str()).collect();
-        assert_eq!(sigs, vec!["ANAM", "NTOP"]);
-    }
-
-    #[test]
-    fn drops_lcun_row_with_null_actor_ref() {
-        let interner = StringInterner::new();
-        let r = resolver(
-            &[0x35C950, 0x2B47D1],
-            &[("Fallout4.esm", &[])],
-            "SeventySix.esm",
-        );
-        let npc = interner.intern("master_unique_npcs_npc");
-        let actor = interner.intern("master_unique_npcs_actor_ref");
-        let loc = interner.intern("master_unique_npcs_location");
-        let row = |a: u32, b: u32, c: u32| {
-            FieldValue::Struct(vec![
-                (npc, FieldValue::FormKey(fk(a, "SeventySix.esm", &interner))),
-                (
-                    actor,
-                    FieldValue::FormKey(fk(b, "SeventySix.esm", &interner)),
-                ),
-                (loc, FieldValue::FormKey(fk(c, "SeventySix.esm", &interner))),
-            ])
-        };
-        let mut rec = record(
-            "LCTN",
-            vec![(
-                "LCUN",
-                FieldValue::List(vec![
-                    row(0x35C950, 0x35C953, 0x2B47D1), // actor 35C953 not emitted → drop row
-                    row(0x35C950, 0x2B47D1, 0x2B47D1), // actor 2B47D1 emitted → keep row
-                ]),
-            )],
-            &interner,
-        );
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        let e = rec
-            .fields
-            .iter()
-            .find(|e| e.sig.as_str() == "LCUN")
-            .expect("LCUN kept");
-        let FieldValue::List(rows) = &e.value else {
-            panic!()
-        };
-        assert_eq!(rows.len(), 1, "the null-actor row must be dropped");
-    }
-
-    #[test]
-    fn drops_npc_cnto_with_dangling_item() {
-        // NPC_ CNTO struct:I,i — item 0700000F (FO76 Caps001, no FO4 record) → drop.
-        // The raw FormID addresses the output plugin (master index 7 = number of
-        // target masters), so we model 7 masters and an output set without 00000F.
-        let interner = StringInterner::new();
-        let mut cnto = smallvec::SmallVec::<[u8; 32]>::new();
-        cnto.extend_from_slice(&(0x0700_000Fu32).to_le_bytes()); // item @ output master index 7
-        cnto.extend_from_slice(&1u32.to_le_bytes()); // count
-        let mut rec = record(
-            "NPC_",
-            vec![
-                ("COCT", FieldValue::Uint(1)),
-                ("CNTO", FieldValue::Bytes(cnto)),
-                (
-                    "NAM8",
-                    FieldValue::Bytes(smallvec::SmallVec::from_slice(&[1, 0, 0, 0])),
-                ),
-            ],
-            &interner,
-        );
-        let r7 = LeafResolver {
-            output_objids: [0x222222].into_iter().collect(),
-            master_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_dial_objids: FxHashSet::default(),
-            master_dial_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_wrld_objids: FxHashSet::default(),
-            master_wrld_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_owner_objids: FxHashSet::default(),
-            master_owner_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            master_names: (0..7).map(|i| format!("M{i}.esm")).collect(),
-            output_plugin: "SeventySix.esm".to_string(),
-        };
-        assert!(apply_to_record(&mut rec, &r7, &interner, PRE_COPY));
-        assert!(
-            rec.fields.iter().all(|e| e.sig.as_str() != "CNTO"),
-            "dangling CNTO dropped"
-        );
-        assert!(
-            rec.fields.iter().all(|e| e.sig.as_str() != "COCT"),
-            "stale inventory count dropped with the final CNTO row"
-        );
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "NAM8"),
-            "NAM8 kept"
-        );
-    }
-
-    #[test]
-    fn syncs_npc_coct_after_dropping_some_cnto_rows() {
-        let interner = StringInterner::new();
-        let mut dangling_cnto = smallvec::SmallVec::<[u8; 32]>::new();
-        dangling_cnto.extend_from_slice(&(0x0700_000Fu32).to_le_bytes());
-        dangling_cnto.extend_from_slice(&1u32.to_le_bytes());
-        let mut kept_cnto = smallvec::SmallVec::<[u8; 32]>::new();
-        kept_cnto.extend_from_slice(&(0x0700_0022u32).to_le_bytes());
-        kept_cnto.extend_from_slice(&3u32.to_le_bytes());
-        let mut rec = record(
-            "NPC_",
-            vec![
-                ("COCT", FieldValue::Uint(2)),
-                ("CNTO", FieldValue::Bytes(dangling_cnto)),
-                ("CNTO", FieldValue::Bytes(kept_cnto)),
-            ],
-            &interner,
-        );
-        let r7 = LeafResolver {
-            output_objids: [0x000022].into_iter().collect(),
-            master_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_dial_objids: FxHashSet::default(),
-            master_dial_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_wrld_objids: FxHashSet::default(),
-            master_wrld_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_owner_objids: FxHashSet::default(),
-            master_owner_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            master_names: (0..7).map(|i| format!("M{i}.esm")).collect(),
-            output_plugin: "SeventySix.esm".to_string(),
-        };
-        assert!(apply_to_record(&mut rec, &r7, &interner, PRE_COPY));
-        assert_eq!(
-            rec.fields
-                .iter()
-                .filter(|e| e.sig.as_str() == "CNTO")
-                .count(),
-            1
-        );
-        assert!(
-            matches!(
-                rec.fields
-                    .iter()
-                    .find(|e| e.sig.as_str() == "COCT")
-                    .map(|e| &e.value),
-                Some(FieldValue::Uint(1))
-            ),
-            "COCT must match surviving CNTO rows"
-        );
-    }
-
-    #[test]
     fn repairs_npc_cnto_to_matching_master_item() {
         let interner = StringInterner::new();
-        let mut cnto = smallvec::SmallVec::<[u8; 32]>::new();
-        cnto.extend_from_slice(&(0x0711_3339u32).to_le_bytes());
-        cnto.extend_from_slice(&1u32.to_le_bytes());
         let mut rec = record(
             "NPC_",
             vec![
                 ("COCT", FieldValue::Uint(1)),
-                ("CNTO", FieldValue::Bytes(cnto)),
+                ("CNTO", raw_cnto(0x0711_3339, 1)),
             ],
             &interner,
         );
-        let mut master_objids: Vec<FxHashSet<u32>> = (0..7).map(|_| FxHashSet::default()).collect();
-        master_objids[0].insert(0x113339);
-        let r7 = LeafResolver {
-            output_objids: FxHashSet::default(),
-            master_objids,
-            output_dial_objids: FxHashSet::default(),
-            master_dial_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_wrld_objids: FxHashSet::default(),
-            master_wrld_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_owner_objids: FxHashSet::default(),
-            master_owner_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            master_names: (0..7).map(|i| format!("M{i}.esm")).collect(),
-            output_plugin: "SeventySix.esm".to_string(),
-        };
+        let r7 = resolver7(&[], &[0x113339]);
 
         assert!(apply_to_record(&mut rec, &r7, &interner, PRE_COPY));
         let cnto = rec
@@ -3052,150 +2601,5 @@ mod tests {
             ),
             "COCT stays aligned with the repaired inventory row"
         );
-    }
-
-    #[test]
-    fn keeps_npc_cnto_with_resolvable_item() {
-        let interner = StringInterner::new();
-        let mut cnto = smallvec::SmallVec::<[u8; 32]>::new();
-        cnto.extend_from_slice(&(0x0700_0022u32).to_le_bytes());
-        cnto.extend_from_slice(&3u32.to_le_bytes());
-        let mut rec = record("NPC_", vec![("CNTO", FieldValue::Bytes(cnto))], &interner);
-        let r7 = LeafResolver {
-            output_objids: [0x000022].into_iter().collect(),
-            master_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_dial_objids: FxHashSet::default(),
-            master_dial_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_wrld_objids: FxHashSet::default(),
-            master_wrld_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            output_owner_objids: FxHashSet::default(),
-            master_owner_objids: (0..7).map(|_| FxHashSet::default()).collect(),
-            master_names: (0..7).map(|i| format!("M{i}.esm")).collect(),
-            output_plugin: "SeventySix.esm".to_string(),
-        };
-        assert!(!apply_to_record(&mut rec, &r7, &interner, PRE_COPY));
-        assert!(
-            rec.fields.iter().any(|e| e.sig.as_str() == "CNTO"),
-            "resolvable CNTO kept"
-        );
-    }
-
-    fn structured_cnto(item: Option<FormKey>, interner: &StringInterner) -> FieldValue {
-        let mut fields = Vec::new();
-        if let Some(item) = item {
-            fields.push((interner.intern("Item"), FieldValue::FormKey(item)));
-        }
-        fields.push((interner.intern("Count"), FieldValue::Int(1)));
-        FieldValue::Struct(fields)
-    }
-
-    #[test]
-    fn keeps_valid_raw_cont_cnto_row() {
-        let interner = StringInterner::new();
-        let mut cnto = smallvec::SmallVec::<[u8; 32]>::new();
-        cnto.extend_from_slice(&(0x013D_7F48u32).to_le_bytes());
-        cnto.extend_from_slice(&1u32.to_le_bytes());
-        let mut rec = record(
-            "CONT",
-            vec![
-                ("COCT", FieldValue::Uint(1)),
-                ("CNTO", FieldValue::Bytes(cnto)),
-            ],
-            &interner,
-        );
-        let r = resolver(&[0x3D7F48], &[("Fallout4.esm", &[])], "SeventySix.esm");
-
-        assert!(!apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert!(rec.fields.iter().any(|entry| entry.sig.as_str() == "CNTO"));
-        assert!(matches!(
-            rec.fields
-                .iter()
-                .find(|entry| entry.sig.as_str() == "COCT")
-                .map(|entry| &entry.value),
-            Some(FieldValue::Uint(1))
-        ));
-    }
-
-    #[test]
-    fn drops_invalid_cont_cnto_rows_and_syncs_coct() {
-        let interner = StringInterner::new();
-        let mut rec = record(
-            "CONT",
-            vec![
-                ("COCT", FieldValue::Uint(4)),
-                (
-                    "CNTO",
-                    structured_cnto(Some(fk(0, "SeventySix.esm", &interner)), &interner),
-                ),
-                (
-                    "CNTO",
-                    structured_cnto(Some(fk(0x00DEAD, "SeventySix.esm", &interner)), &interner),
-                ),
-                ("CNTO", structured_cnto(None, &interner)),
-                (
-                    "CNTO",
-                    structured_cnto(Some(fk(0x000022, "SeventySix.esm", &interner)), &interner),
-                ),
-            ],
-            &interner,
-        );
-        let r = resolver(&[0x000022], &[("Fallout4.esm", &[])], "SeventySix.esm");
-
-        assert!(apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert_eq!(
-            rec.fields
-                .iter()
-                .filter(|entry| entry.sig.as_str() == "CNTO")
-                .count(),
-            1
-        );
-        assert!(matches!(
-            rec.fields
-                .iter()
-                .find(|entry| entry.sig.as_str() == "COCT")
-                .map(|entry| &entry.value),
-            Some(FieldValue::Uint(1))
-        ));
-    }
-
-    #[test]
-    fn keeps_valid_cont_cnto_rows_and_matching_coct() {
-        let interner = StringInterner::new();
-        let mut rec = record(
-            "CONT",
-            vec![
-                ("COCT", FieldValue::Uint(2)),
-                (
-                    "CNTO",
-                    structured_cnto(Some(fk(0x000022, "SeventySix.esm", &interner)), &interner),
-                ),
-                (
-                    "CNTO",
-                    structured_cnto(Some(fk(0x001234, "Fallout4.esm", &interner)), &interner),
-                ),
-            ],
-            &interner,
-        );
-        let r = resolver(
-            &[0x000022],
-            &[("Fallout4.esm", &[0x001234])],
-            "SeventySix.esm",
-        );
-
-        assert!(!apply_to_record(&mut rec, &r, &interner, PRE_COPY));
-        assert_eq!(
-            rec.fields
-                .iter()
-                .filter(|entry| entry.sig.as_str() == "CNTO")
-                .count(),
-            2
-        );
-        assert!(matches!(
-            rec.fields
-                .iter()
-                .find(|entry| entry.sig.as_str() == "COCT")
-                .map(|entry| &entry.value),
-            Some(FieldValue::Uint(2))
-        ));
     }
 }

@@ -16,7 +16,7 @@ Function MTNL01_SayRoseTopic(Topic akTopic)
         roseRef = RDR_Contact_Rose
     EndIf
     If roseRef != None
-        roseRef.SayCustom(akTopic)
+        roseRef.Say(akTopic, None, True, MTNL01_GetPlayer())
     EndIf
 EndFunction
 
@@ -27,9 +27,6 @@ Function MTNL01_MoveAliasItem(ReferenceAlias akItemAlias, ObjectReference akDest
 
     ObjectReference itemRef = akItemAlias.GetReference()
     ObjectReference destinationRef = akDestination
-    If destinationRef == None
-        destinationRef = MTNL01_GetPlayer()
-    EndIf
     If itemRef != None && destinationRef != None && destinationRef.GetItemCount(itemRef) == 0
         destinationRef.AddItem(itemRef, 1, True)
     EndIf
@@ -88,10 +85,7 @@ Function Fragment_Stage_0210_Item_00()
 EndFunction
 
 Function Fragment_Stage_0211_Item_00()
-    DefaultQuestEncounterWaveScript waveController = (Self as Quest) as DefaultQuestEncounterWaveScript
-    If waveController != None
-        waveController.StartLocalEncounterWave(0)
-    EndIf
+    MTNL01_StartBossWave(0, 25, 211, 250)
 EndFunction
 
 Function Fragment_Stage_0220_Item_00()
@@ -177,10 +171,7 @@ Function Fragment_Stage_0510_Item_00()
 EndFunction
 
 Function Fragment_Stage_0511_Item_00()
-    DefaultQuestEncounterWaveScript waveController = (Self as Quest) as DefaultQuestEncounterWaveScript
-    If waveController != None
-        waveController.StartLocalEncounterWave(1)
-    EndIf
+    MTNL01_StartBossWave(1, 26, 511, 600)
 EndFunction
 
 Function Fragment_Stage_0520_Item_00()
@@ -200,11 +191,7 @@ Function Fragment_Stage_0610_Item_00()
 EndFunction
 
 Function Fragment_Stage_0611_Item_00()
-    DefaultQuestEncounterWaveScript waveController = (Self as Quest) as DefaultQuestEncounterWaveScript
-    If waveController != None
-        waveController.StartLocalEncounterWave(2)
-        waveController.StartLocalEncounterWave(3)
-    EndIf
+    MTNL01_StartBossWave(2, 35, 611, 700)
 EndFunction
 
 Function Fragment_Stage_0700_Item_00()
@@ -255,28 +242,99 @@ Function Fragment_Stage_0900_Item_00()
 EndFunction
 
 Function Fragment_Stage_0950_Item_00()
-    Actor playerRef = MTNL01_GetPlayer()
-    If playerRef == None || MTN_MQ_Missing == None || MTN_MQ_Missing_Quest_Keyword == None || MTN_MQ_Missing_QuestActive_Keyword == None
-        Return
-    EndIf
-
-    Bool missingQuestTerminal = MTN_MQ_Missing.IsCompleted() || MTN_MQ_Missing.IsStageDone(600)
-    If missingQuestTerminal
-        Return
-    EndIf
-
-    Bool missingQuestRunning = MTN_MQ_Missing.IsRunning()
-    Bool missingQuestAccepted = missingQuestRunning || playerRef.HasKeyword(MTN_MQ_Missing_QuestActive_Keyword)
-    If !missingQuestRunning && !missingQuestAccepted
-        MTN_MQ_Missing_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
-    EndIf
-
-    missingQuestRunning = MTN_MQ_Missing.IsRunning()
-    missingQuestTerminal = MTN_MQ_Missing.IsCompleted() || MTN_MQ_Missing.IsStageDone(600)
-    If !missingQuestTerminal && missingQuestRunning && !MTN_MQ_Missing.IsStageDone(300)
-        MTN_MQ_Missing.SetStage(300)
+    If !MTNL01_TryResumeMissingLink()
+        StartTimer(5.0, 950)
     EndIf
 EndFunction
+
+Bool Function MTNL01_TryResumeMissingLink()
+    If MTN_MQ_Missing == None
+        Return False
+    EndIf
+    If MTN_MQ_Missing.IsCompleted() || MTN_MQ_Missing.IsStageDone(600) || MTN_MQ_Missing.IsStageDone(300)
+        Return True
+    EndIf
+    If !MTN_MQ_Missing.IsRunning()
+        Actor playerRef = MTNL01_GetPlayer()
+        If playerRef != None && MTN_MQ_Missing_Quest_Keyword != None
+            MTN_MQ_Missing_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
+        EndIf
+    EndIf
+    If MTN_MQ_Missing.IsCompleted() || MTN_MQ_Missing.IsStageDone(300)
+        Return True
+    EndIf
+    If MTN_MQ_Missing.IsRunning()
+        Return MTN_MQ_Missing.SetStage(300)
+    EndIf
+    Return False
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID == 211 || aiTimerID == 511 || aiTimerID == 611
+        MTNL01_RestoreBossWaves()
+        Return
+    EndIf
+    If aiTimerID != 950 || !IsRunning() || !IsStageDone(950)
+        Return
+    EndIf
+    If MTNL01_TryResumeMissingLink()
+        If IsStageDone(1200)
+            Stop()
+        EndIf
+    Else
+        StartTimer(5.0, 950)
+    EndIf
+EndEvent
+
+Function MTNL01_StartBossWave(Int aiWave, Int aiBossAlias, Int aiRetryStage, Int aiStopStage)
+    If !IsRunning() || !IsStageDone(aiRetryStage) || GetStage() >= aiStopStage
+        Return
+    EndIf
+    B21:LocalEncounterMaterializer materializer = (Self as Quest) as B21:LocalEncounterMaterializer
+    If materializer != None
+        materializer.PrepareEligibleWaves()
+        If !materializer.HasPreparedWave(aiWave)
+            StartTimer(5.0, aiRetryStage)
+            Return
+        EndIf
+    EndIf
+    RefCollectionAlias bossCollection = GetAlias(aiBossAlias) as RefCollectionAlias
+    DefaultQuestEncounterWaveScript waveController = (Self as Quest) as DefaultQuestEncounterWaveScript
+    If bossCollection == None || bossCollection.GetCount() == 0 || waveController == None
+        StartTimer(5.0, aiRetryStage)
+        Return
+    EndIf
+    waveController.StartLocalEncounterWave(aiWave)
+    If aiWave == 2
+        waveController.StartLocalEncounterWave(3)
+    EndIf
+EndFunction
+
+Function MTNL01_RestoreBossWaves()
+    MTNL01_StartBossWave(0, 25, 211, 250)
+    MTNL01_StartBossWave(1, 26, 511, 600)
+    MTNL01_StartBossWave(2, 35, 611, 700)
+EndFunction
+
+Event OnQuestInit()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef != None
+        RegisterForRemoteEvent(playerRef, "OnPlayerLoadGame")
+    EndIf
+EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    If akSender == Game.GetPlayer()
+        MTNL01_RestoreBossWaves()
+    EndIf
+EndEvent
+
+Event OnQuestShutdown()
+    UnregisterForAllRemoteEvents()
+    CancelTimer(211)
+    CancelTimer(511)
+    CancelTimer(611)
+EndEvent
 
 Function Fragment_Stage_1000_Item_00()
     SetObjectiveCompleted(900, True)
@@ -285,7 +343,36 @@ Function Fragment_Stage_1000_Item_00()
     If cacheRef != None && MTNL01_RaiderCacheKeycard != None && cacheRef.GetItemCount(MTNL01_RaiderCacheKeycard) == 0
         cacheRef.AddItem(MTNL01_RaiderCacheKeycard, 1, True)
     EndIf
+    MTNL01_RegisterLaserKeycardReader()
 EndFunction
+
+; Stage 1075 (lower the laser grid; the grids' LaserGridScript also opens at
+; MTNL01_KeycardReaderValue 2) had no setter: the lasers' card reader (alias 72)
+; is a plain IDCardReaderScript with no quest stage or linked grid.
+Function MTNL01_RegisterLaserKeycardReader()
+    ReferenceAlias readerAlias = GetAlias(72) as ReferenceAlias
+    ObjectReference readerRef
+    If readerAlias != None
+        readerRef = readerAlias.GetReference()
+    EndIf
+    If readerRef != None
+        RegisterForRemoteEvent(readerRef, "OnActivate")
+    EndIf
+EndFunction
+
+Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akActionRef)
+    Actor playerRef = Game.GetPlayer()
+    If akActionRef != playerRef || IsStageDone(1075) || !IsStageDone(1000) || IsStageDone(1200)
+        Return
+    EndIf
+    ReferenceAlias readerAlias = GetAlias(72) as ReferenceAlias
+    If readerAlias == None || readerAlias.GetReference() != akSender
+        Return
+    EndIf
+    If MTNL01_RaiderCacheKeycard != None && playerRef.GetItemCount(MTNL01_RaiderCacheKeycard) > 0
+        SetStage(1075)
+    EndIf
+EndEvent
 
 Function Fragment_Stage_1050_Item_00()
     Actor playerRef = MTNL01_GetPlayer()
@@ -307,6 +394,7 @@ EndFunction
 Function Fragment_Stage_1100_Item_00()
     SetObjectiveCompleted(1000, True)
     SetObjectiveDisplayed(1100, True)
+    MTNL01_RegisterLaserKeycardReader()
 EndFunction
 
 Function Fragment_Stage_1200_Item_00()
@@ -319,5 +407,9 @@ Function Fragment_Stage_1200_Item_00()
     If !IsStageDone(1300)
         SetStage(1300)
     EndIf
-    Stop()
+    If MTNL01_TryResumeMissingLink()
+        Stop()
+    Else
+        StartTimer(5.0, 950)
+    EndIf
 EndFunction

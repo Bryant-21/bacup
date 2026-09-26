@@ -440,21 +440,44 @@ Function Fragment_Stage_1000_Item_00()
         If MTR06_TriggeredMiscValue != None
             playerRef.SetValue(MTR06_TriggeredMiscValue, 1.0)
         EndIf
-        If MTR06_QuestStarted == None || playerRef.GetValue(MTR06_QuestStarted) < 1.0
-            If MTR06_QuestStartKeyword != None
-                MTR06_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
-            EndIf
-        EndIf
         If W05_MQ_101P_Started != None && playerRef.GetValue(W05_MQ_101P_Started) > 0.0 && W05_MQ_101P_A_Started != None && playerRef.GetValue(W05_MQ_101P_A_Started) < 1.0
             If W05_MQ_101P_QuestStartKeyword != None
                 W05_MQ_101P_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
             EndIf
         EndIf
     EndIf
-    If !IsStageDone(1100)
-        SetStage(1100)
+    If RS03_TryStartBrigade()
+        If !IsStageDone(1100)
+            SetStage(1100)
+        EndIf
+    Else
+        StartTimer(5.0, 1000)
     EndIf
 EndFunction
+
+Bool Function RS03_TryStartBrigade()
+    Quest nextQuest = Game.GetFormFromFile(0x0003363B, "SeventySix.esm") as Quest
+    If nextQuest != None && (nextQuest.IsRunning() || nextQuest.IsCompleted())
+        Return True
+    EndIf
+    Actor playerRef = Game.GetPlayer()
+    If nextQuest == None || playerRef == None || MTR06_QuestStartKeyword == None
+        Return False
+    EndIf
+    Bool accepted = MTR06_QuestStartKeyword.SendStoryEventAndWait(None, playerRef, playerRef)
+    Return accepted || nextQuest.IsRunning() || nextQuest.IsCompleted()
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID != 1000 || !IsRunning() || !IsStageDone(1000) || IsStageDone(1100)
+        Return
+    EndIf
+    If RS03_TryStartBrigade()
+        SetStage(1100)
+    Else
+        StartTimer(5.0, 1000)
+    EndIf
+EndEvent
 
 Function Fragment_Stage_1100_Item_00()
     Stop()

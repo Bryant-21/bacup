@@ -737,10 +737,7 @@ mod tests {
         let partitioned = run_full_fixup(linked_ref_fixture(1_000, true), false);
         assert_eq!(repeated.0, partitioned.0);
         assert_eq!(repeated.1, partitioned.1);
-    }
 
-    #[test]
-    fn partitioned_repair_sets_match_repeated_memberships_for_every_signature() {
         let handle = plugin_handle_new_native("Output.esp", Some("fo4")).unwrap();
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
@@ -771,73 +768,55 @@ mod tests {
         assert!(plugin_handle_close_native(handle));
     }
 
-    #[test]
-    #[ignore = "representative cold whole-fixup benchmark"]
-    fn benchmark_partitioned_repair_sets_against_repeated_enumeration() {
-        const SAMPLES: usize = 6;
-        for sample in 0..SAMPLES {
-            let mut pair = Vec::new();
-            for repeated in if sample % 2 == 0 {
-                [true, false]
-            } else {
-                [false, true]
-            } {
-                let result = run_full_fixup(linked_ref_fixture(200_000, false), repeated);
-                eprintln!(
-                    "linked_ref_sets sample={} mode={} elapsed_ms={:.3} bytes={} report={}",
-                    sample + 1,
-                    if repeated { "repeated" } else { "partitioned" },
-                    result.2 * 1000.0,
-                    result.1.len(),
-                    result.0,
-                );
-                pair.push(result);
-            }
-            assert_eq!(pair[0].0, pair[1].0);
-            assert_eq!(pair[0].1, pair[1].1);
-        }
-    }
-
     fn empty_master_sigs() -> FxHashMap<u32, Option<SigCode>> {
         FxHashMap::default()
     }
 
     #[test]
-    fn repairs_reported_direct_travel_ref_slot() {
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x0763_2375_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x002C_7635_u32.to_le_bytes());
+    fn repair_xlkr_bytes_shadows_or_nulls_master_slots() {
+        let no_own = RepairSets {
+            own_load_index: 7,
+            own_linked_keyword_or_ref_ids: ids(&[]),
+            own_linked_ref_ids: ids(&[]),
+            own_spline_target_ids: ids(&[]),
+            own_key_ids: ids(&[]),
+            own_navmesh_ids: ids(&[]),
+        };
+        for (name, repair_sets, input, expected) in [
+            (
+                "direct travel ref slot",
+                sets(),
+                [0x0763_2375, 0x002C_7635],
+                Some([0x0763_2375, 0x072C_7635]),
+            ),
+            (
+                "both slots master prefixed",
+                sets(),
+                [0x0063_2375, 0x002C_7635],
+                Some([0x0763_2375, 0x072C_7635]),
+            ),
+            ("already own", sets(), [0x0763_2375, 0x072C_7635], None),
+            (
+                "no own shadow or valid master target",
+                no_own,
+                [0x0063_2375, 0x002C_7635],
+                Some([0, 0]),
+            ),
+        ] {
+            let mut xlkr: Vec<u8> = input
+                .iter()
+                .flat_map(|raw: &u32| raw.to_le_bytes())
+                .collect();
 
-        let changed = repair_xlkr_bytes(&mut xlkr, &sets(), &empty_master_sigs());
+            let changed = repair_xlkr_bytes(&mut xlkr, &repair_sets, &empty_master_sigs());
 
-        assert!(changed);
-        assert_eq!(
-            u32::from_le_bytes(xlkr[0..4].try_into().unwrap()),
-            0x0763_2375
-        );
-        assert_eq!(
-            u32::from_le_bytes(xlkr[4..8].try_into().unwrap()),
-            0x072C_7635
-        );
-    }
-
-    #[test]
-    fn repairs_keyword_and_ref_slots_when_both_are_master_prefixed() {
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x0063_2375_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x002C_7635_u32.to_le_bytes());
-
-        let changed = repair_xlkr_bytes(&mut xlkr, &sets(), &empty_master_sigs());
-
-        assert!(changed);
-        assert_eq!(
-            u32::from_le_bytes(xlkr[0..4].try_into().unwrap()),
-            0x0763_2375
-        );
-        assert_eq!(
-            u32::from_le_bytes(xlkr[4..8].try_into().unwrap()),
-            0x072C_7635
-        );
+            assert_eq!(changed, expected.is_some(), "{name}");
+            let slots = [
+                u32::from_le_bytes(xlkr[0..4].try_into().unwrap()),
+                u32::from_le_bytes(xlkr[4..8].try_into().unwrap()),
+            ];
+            assert_eq!(slots, expected.unwrap_or(input), "{name}");
+        }
     }
 
     #[test]
@@ -867,119 +846,7 @@ mod tests {
             read_formid(placed.subrecords[1].data.as_ref(), XLKR_REF_OFFSET),
             Some(0x0718_DF32)
         );
-    }
 
-    #[test]
-    fn starfield_to_fo4_rewrites_live_xndp_to_output_navmesh() {
-        let mut placed = record(vec![subrecord("XNDP", xndp(0x002F_1305, 385))]);
-        let mut master_sigs = FxHashMap::default();
-        master_sigs.insert(0x002F_1305, Some(SigCode::from_str("NAVM").unwrap()));
-
-        let changed = repair_placed_ref_record(&mut placed, &sets(), &master_sigs);
-
-        assert_eq!(changed, 1);
-        assert_eq!(
-            read_formid(placed.subrecords[0].data.as_ref(), XNDP_NAVM_OFFSET),
-            Some(0x072F_1305)
-        );
-        assert_eq!(
-            i16::from_le_bytes(placed.subrecords[0].data[4..6].try_into().unwrap()),
-            385
-        );
-    }
-
-    #[test]
-    fn starfield_to_fo4_drops_live_xndp_when_navmesh_was_not_emitted() {
-        let mut placed = record(vec![subrecord("XNDP", xndp(0x0014_122D, 154))]);
-        let mut master_sigs = FxHashMap::default();
-        master_sigs.insert(0x0014_122D, Some(SigCode::from_str("REFR").unwrap()));
-
-        let changed = repair_placed_ref_record(&mut placed, &sets(), &master_sigs);
-
-        assert_eq!(changed, 1);
-        assert!(placed.subrecords.is_empty());
-    }
-
-    #[test]
-    fn keeps_xndp_with_valid_target_master_navmesh() {
-        let mut placed = record(vec![subrecord("XNDP", xndp(0x0000_1234, 9))]);
-        let mut master_sigs = FxHashMap::default();
-        master_sigs.insert(0x0000_1234, Some(SigCode::from_str("NAVM").unwrap()));
-
-        let changed = repair_placed_ref_record(&mut placed, &sets(), &master_sigs);
-
-        assert_eq!(changed, 0);
-        assert_eq!(placed.subrecords.len(), 1);
-        assert_eq!(
-            read_formid(placed.subrecords[0].data.as_ref(), XNDP_NAVM_OFFSET),
-            Some(0x0000_1234)
-        );
-    }
-
-    #[test]
-    fn leaves_already_own_xlkr_untouched() {
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x0763_2375_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x072C_7635_u32.to_le_bytes());
-
-        let changed = repair_xlkr_bytes(&mut xlkr, &sets(), &empty_master_sigs());
-
-        assert!(!changed);
-    }
-
-    #[test]
-    fn nulls_master_ref_without_own_shadow_or_valid_master_target() {
-        let mut xlkr = Vec::new();
-        xlkr.extend_from_slice(&0x0063_2375_u32.to_le_bytes());
-        xlkr.extend_from_slice(&0x002C_7635_u32.to_le_bytes());
-        let no_own = RepairSets {
-            own_load_index: 7,
-            own_linked_keyword_or_ref_ids: ids(&[]),
-            own_linked_ref_ids: ids(&[]),
-            own_spline_target_ids: ids(&[]),
-            own_key_ids: ids(&[]),
-            own_navmesh_ids: ids(&[]),
-        };
-
-        let changed = repair_xlkr_bytes(&mut xlkr, &no_own, &empty_master_sigs());
-
-        assert!(changed);
-        assert_eq!(u32::from_le_bytes(xlkr[0..4].try_into().unwrap()), 0);
-        assert_eq!(u32::from_le_bytes(xlkr[4..8].try_into().unwrap()), 0);
-    }
-
-    #[test]
-    fn keeps_valid_master_target_without_own_shadow() {
-        let raw = 0x0000_1234;
-        let mut master_sigs = FxHashMap::default();
-        master_sigs.insert(raw, Some(SigCode::from_str("REFR").unwrap()));
-
-        assert_eq!(
-            repair_ref_slot(raw, 7, &ids(&[]), LINKED_REF_TARGET_SIGS, &master_sigs),
-            SlotRepair::Keep
-        );
-    }
-
-    #[test]
-    fn keeps_valid_master_target_when_output_object_id_collides() {
-        let raw = 0x0039_E691;
-        let mut master_sigs = FxHashMap::default();
-        master_sigs.insert(raw, Some(SigCode::from_str("REFR").unwrap()));
-
-        assert_eq!(
-            repair_ref_slot(
-                raw,
-                7,
-                &ids(&[0x39_E691]),
-                LINKED_REF_TARGET_SIGS,
-                &master_sigs,
-            ),
-            SlotRepair::Keep
-        );
-    }
-
-    #[test]
-    fn repairs_repeated_xplk_rows_and_drops_invalid_rows() {
         let mut valid = Vec::new();
         valid.extend_from_slice(&0x0039_E691_u32.to_le_bytes());
         valid.extend_from_slice(&0u32.to_le_bytes());
@@ -1001,7 +868,89 @@ mod tests {
     }
 
     #[test]
-    fn nulls_unresolved_xloc_key_without_output_key() {
+    fn xndp_rewritten_to_output_navmesh_dropped_or_kept_for_master() {
+        let mut placed = record(vec![subrecord("XNDP", xndp(0x002F_1305, 385))]);
+        let mut master_sigs = FxHashMap::default();
+        master_sigs.insert(0x002F_1305, Some(SigCode::from_str("NAVM").unwrap()));
+
+        let changed = repair_placed_ref_record(&mut placed, &sets(), &master_sigs);
+
+        assert_eq!(changed, 1);
+        assert_eq!(
+            read_formid(placed.subrecords[0].data.as_ref(), XNDP_NAVM_OFFSET),
+            Some(0x072F_1305)
+        );
+        assert_eq!(
+            i16::from_le_bytes(placed.subrecords[0].data[4..6].try_into().unwrap()),
+            385
+        );
+
+        let mut placed = record(vec![subrecord("XNDP", xndp(0x0014_122D, 154))]);
+        let mut master_sigs = FxHashMap::default();
+        master_sigs.insert(0x0014_122D, Some(SigCode::from_str("REFR").unwrap()));
+
+        let changed = repair_placed_ref_record(&mut placed, &sets(), &master_sigs);
+
+        assert_eq!(changed, 1);
+        assert!(placed.subrecords.is_empty());
+
+        let mut placed = record(vec![subrecord("XNDP", xndp(0x0000_1234, 9))]);
+        let mut master_sigs = FxHashMap::default();
+        master_sigs.insert(0x0000_1234, Some(SigCode::from_str("NAVM").unwrap()));
+
+        let changed = repair_placed_ref_record(&mut placed, &sets(), &master_sigs);
+
+        assert_eq!(changed, 0);
+        assert_eq!(placed.subrecords.len(), 1);
+        assert_eq!(
+            read_formid(placed.subrecords[0].data.as_ref(), XNDP_NAVM_OFFSET),
+            Some(0x0000_1234)
+        );
+    }
+
+    #[test]
+    fn keeps_valid_master_target_without_own_shadow() {
+        let raw = 0x0000_1234;
+        let mut master_sigs = FxHashMap::default();
+        master_sigs.insert(raw, Some(SigCode::from_str("REFR").unwrap()));
+
+        assert_eq!(
+            repair_ref_slot(raw, 7, &ids(&[]), LINKED_REF_TARGET_SIGS, &master_sigs),
+            SlotRepair::Keep
+        );
+
+        let raw = 0x0039_E691;
+        let mut master_sigs = FxHashMap::default();
+        master_sigs.insert(raw, Some(SigCode::from_str("REFR").unwrap()));
+
+        assert_eq!(
+            repair_ref_slot(
+                raw,
+                7,
+                &ids(&[0x39_E691]),
+                LINKED_REF_TARGET_SIGS,
+                &master_sigs,
+            ),
+            SlotRepair::Keep
+        );
+    }
+
+    #[test]
+    fn xloc_key_repaired_or_nulled_without_mutating_flags() {
+        let mut xloc = vec![0, 0, 0, 0];
+        xloc.extend_from_slice(&0x0055_ADA7_u32.to_le_bytes());
+        xloc.extend_from_slice(&[0, 0, 0, 0]);
+        let mut placed = record(vec![subrecord("XLOC", xloc)]);
+
+        let changed = repair_placed_ref_record(&mut placed, &sets(), &empty_master_sigs());
+
+        assert_eq!(changed, 1);
+        let data = &placed.subrecords[0].data;
+        assert_eq!(
+            u32::from_le_bytes(data[4..8].try_into().unwrap()),
+            0x0755_ADA7
+        );
+
         let mut xloc = vec![0, 0, 0, 0];
         xloc.extend_from_slice(&0x0055_ADA7_u32.to_le_bytes());
         xloc.extend_from_slice(&[0, 0, 0, 0]);
@@ -1020,10 +969,7 @@ mod tests {
         assert_eq!(changed, 1);
         let data = &placed.subrecords[0].data;
         assert_eq!(u32::from_le_bytes(data[4..8].try_into().unwrap()), 0);
-    }
 
-    #[test]
-    fn starfield_to_fo4_nulls_missing_live_xloc_key_without_mutating_flags() {
         let mut xloc = vec![0, 0, 0, 0];
         xloc.extend_from_slice(&0x003B_5D2B_u32.to_le_bytes());
         xloc.extend_from_slice(&[1, 0, 0, 0, 8, 0, 0, 0]);
@@ -1047,38 +993,7 @@ mod tests {
     }
 
     #[test]
-    fn repairs_xloc_key_when_output_key_exists() {
-        let mut xloc = vec![0, 0, 0, 0];
-        xloc.extend_from_slice(&0x0055_ADA7_u32.to_le_bytes());
-        xloc.extend_from_slice(&[0, 0, 0, 0]);
-        let mut placed = record(vec![subrecord("XLOC", xloc)]);
-
-        let changed = repair_placed_ref_record(&mut placed, &sets(), &empty_master_sigs());
-
-        assert_eq!(changed, 1);
-        let data = &placed.subrecords[0].data;
-        assert_eq!(
-            u32::from_le_bytes(data[4..8].try_into().unwrap()),
-            0x0755_ADA7
-        );
-    }
-
-    #[test]
-    fn nulls_xesp_when_master_ref_is_not_valid_and_no_output_ref_exists() {
-        let mut xesp = Vec::new();
-        xesp.extend_from_slice(&0x003F_17D4_u32.to_le_bytes());
-        xesp.extend_from_slice(&[0, 0, 0, 0]);
-        let mut placed = record(vec![subrecord("XESP", xesp)]);
-
-        let changed = repair_placed_ref_record(&mut placed, &sets(), &empty_master_sigs());
-
-        assert_eq!(changed, 1);
-        let data = &placed.subrecords[0].data;
-        assert_eq!(u32::from_le_bytes(data[0..4].try_into().unwrap()), 0);
-    }
-
-    #[test]
-    fn repairs_xesp_when_output_ref_exists() {
+    fn xesp_and_xapr_refs_repaired_or_nulled() {
         let mut xesp = Vec::new();
         xesp.extend_from_slice(&0x003F_17D5_u32.to_le_bytes());
         xesp.extend_from_slice(&[0, 0, 0, 0]);
@@ -1092,10 +1007,18 @@ mod tests {
             u32::from_le_bytes(data[0..4].try_into().unwrap()),
             0x073F_17D5
         );
-    }
 
-    #[test]
-    fn repairs_xapr_when_output_ref_exists() {
+        let mut xesp = Vec::new();
+        xesp.extend_from_slice(&0x003F_17D4_u32.to_le_bytes());
+        xesp.extend_from_slice(&[0, 0, 0, 0]);
+        let mut placed = record(vec![subrecord("XESP", xesp)]);
+
+        let changed = repair_placed_ref_record(&mut placed, &sets(), &empty_master_sigs());
+
+        assert_eq!(changed, 1);
+        let data = &placed.subrecords[0].data;
+        assert_eq!(u32::from_le_bytes(data[0..4].try_into().unwrap()), 0);
+
         let mut xapr = Vec::new();
         xapr.extend_from_slice(&0x003F_17D5_u32.to_le_bytes());
         xapr.extend_from_slice(&[0, 0, 0, 0]);

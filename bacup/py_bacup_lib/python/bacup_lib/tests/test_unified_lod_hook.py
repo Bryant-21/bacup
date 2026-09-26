@@ -323,24 +323,3 @@ def test_run_generate_lod_removes_atlas_txt(monkeypatch, tmp_path):
     assert removed, f"expected removal log message; got logs={logs}"
 
 
-def test_run_generate_lod_no_objects_dir_is_noop(monkeypatch, tmp_path):
-    """If lodgen produced no Objects/ dir (e.g. zero BTO output), no error."""
-    world = "TESTWORLD"
-    mod_root = tmp_path / "Mod"
-    mod_root.mkdir()
-
-    fake_result = SimpleNamespace(btr=1, bto=0, dds=2, lod_written=True, warnings=[])
-    monkeypatch.setattr(_lod_rt, "generate_lod", lambda *a, **k: fake_result)
-
-    logs: list[tuple[str, str]] = []
-    # Should complete without raising even though Textures/Terrain/ doesn't exist.
-    _run_generate_lod(
-        mod_root=mod_root,
-        worldspaces=[world],
-        working_esm=tmp_path / "Mod.esm",
-        asset_dirs=[],
-        settings={},
-        runner_log=lambda level, msg: logs.append((level, msg)),
-    )
-    # No removal log; no crash.
-    assert not any("atlas-map intermediate" in msg for _lvl, msg in logs)

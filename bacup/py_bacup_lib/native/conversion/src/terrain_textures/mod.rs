@@ -74,7 +74,7 @@ use crate::terrain_textures::grass_walk::{
     gcvr_land_texture_form_keys, grass_entries_for_gcvr, grass_entries_for_ltex,
 };
 use crate::terrain_textures::ltex_walk::{build_bundle, normalize_esp_form_key};
-use crate::terrain_textures::manifest::TextureManifest;
+use crate::terrain_textures::manifest::{GrassEntry, TextureManifest};
 use crate::terrain_textures::starfield_records::biome_ground_covers_for_ltexes;
 use terrain_native::authoring_emit::{AuthoringRecordPayload, AuthoringRecordValuePayload};
 
@@ -253,6 +253,17 @@ pub fn run_with_progress(
             &source_game,
             &manifest_path,
         )?;
+        let mut manifest = manifest;
+        if assign_target_grass(
+            &mut manifest,
+            &TerrainRecordRemaps::new(&opts).target_grass_by_editor_id,
+        ) > 0
+        {
+            let json = serde_json::to_string_pretty(&manifest)
+                .map_err(|e| format!("serialize manifest: {e}"))?;
+            fs::write(&manifest_path, json)
+                .map_err(|e| format!("write manifest {}: {e}", manifest_path.display()))?;
+        }
         let count = manifest.textures.len() as u32;
         (count, Some(manifest))
     } else {
@@ -569,6 +580,11 @@ pub fn run_with_progress(
     report.records_imported = records_imported;
     report.btd4_output_path = pass2
         .get("btd4_output_path")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned());
+    report.btd4_verify_path = pass2
+        .get("btd4_verify_path")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_owned());
@@ -1299,11 +1315,8 @@ pub fn build_manifest(
             if !gcvr_supports_ltex(handle_id, &gcvr_form_key, &ltex_fk, &mut gcvr_ltex_cache)? {
                 continue;
             }
-            for grass in grass_entries_for_gcvr(handle_id, &gcvr_form_key, source_game)? {
-                if seen_grass.insert(normalize_esp_form_key(&grass.source_form_key).into_owned()) {
-                    bundle.grass.push(grass);
-                }
-            }
+            let entries = grass_entries_for_gcvr(handle_id, &gcvr_form_key, source_game)?;
+            attach_gcvr_grass(&mut bundle.grass, &mut seen_grass, &gcvr_form_key, entries);
         }
         textures.push(bundle);
     }
@@ -1317,6 +1330,54 @@ pub fn build_manifest(
     fs::write(manifest_output_path, json)
         .map_err(|e| format!("write manifest {}: {e}", manifest_output_path.display()))?;
     Ok(manifest)
+}
+
+/// Marks each grass whose EditorID already names a target-game GRAS with that record, which
+/// the terrain import keeps in place of the emitted one. Returns how many were marked.
+fn assign_target_grass(
+    manifest: &mut TextureManifest,
+    target_grass_by_editor_id: &HashMap<String, FormReference>,
+) -> usize {
+    let mut assigned = 0;
+    for grass in manifest
+        .textures
+        .iter_mut()
+        .flat_map(|bundle| bundle.grass.iter_mut())
+    {
+        grass.target_form_key = target_grass_by_editor_id
+            .get(&normalized_editor_id(&grass.source_editor_id))
+            .map(|reference| format!("{}:{}", reference.object_id, reference.plugin));
+        assigned += usize::from(grass.target_form_key.is_some());
+    }
+    assigned
+}
+
+/// Merges a GCVR's grasses into an LTEX's list and records the GCVR on every grass it
+/// places (new or already listed), so the `.btd4` GCVR channel can map mask samples to grass.
+fn attach_gcvr_grass(
+    grass: &mut Vec<GrassEntry>,
+    seen_grass: &mut BTreeSet<String>,
+    gcvr_form_key: &str,
+    entries: Vec<GrassEntry>,
+) {
+    let gcvr = normalize_esp_form_key(gcvr_form_key).into_owned();
+    for mut entry in entries {
+        let key = normalize_esp_form_key(&entry.source_form_key).into_owned();
+        let target = if seen_grass.insert(key.clone()) {
+            entry.source_gcvr_form_keys.clear();
+            grass.push(entry);
+            grass.last_mut()
+        } else {
+            grass
+                .iter_mut()
+                .find(|existing| normalize_esp_form_key(&existing.source_form_key) == key)
+        };
+        if let Some(target) = target {
+            if !target.source_gcvr_form_keys.contains(&gcvr) {
+                target.source_gcvr_form_keys.push(gcvr.clone());
+            }
+        }
+    }
 }
 
 fn gcvr_supports_ltex(
@@ -1348,6 +1409,74 @@ fn gcvr_supports_ltex(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn grass_sharing_a_target_editor_id_points_at_the_target_record() {
+        let grass = |editor_id: &str| GrassEntry {
+            source_editor_id: editor_id.to_owned(),
+            ..GrassEntry::default()
+        };
+        let mut manifest = TextureManifest {
+            textures: vec![crate::terrain_textures::manifest::TextureBundle {
+                grass: vec![grass("RiverRockGrassObj01"), grass("Forest76GrassObj03A")],
+                ..crate::terrain_textures::manifest::TextureBundle::default()
+            }],
+        };
+        let targets = HashMap::from([(
+            normalized_editor_id("riverrockgrassobj01"),
+            FormReference::new("Fallout4.esm", 0x0BA520),
+        )]);
+
+        assert_eq!(assign_target_grass(&mut manifest, &targets), 1);
+        let grass = &manifest.textures[0].grass;
+        assert_eq!(
+            grass[0].target_form_key.as_deref(),
+            Some("0BA520:Fallout4.esm")
+        );
+        assert_eq!(grass[1].target_form_key, None);
+    }
+
+    #[test]
+    fn gcvr_grass_records_every_gcvr_that_places_it() {
+        let grass = |form_key: &str| GrassEntry {
+            source_form_key: form_key.to_owned(),
+            ..GrassEntry::default()
+        };
+        let mut list = vec![grass("00A000:SeventySix.esm")];
+        let mut seen = list
+            .iter()
+            .map(|entry| normalize_esp_form_key(&entry.source_form_key).into_owned())
+            .collect::<BTreeSet<_>>();
+
+        attach_gcvr_grass(
+            &mut list,
+            &mut seen,
+            "011C67:SeventySix.esm",
+            vec![
+                grass("00A000:SeventySix.esm"),
+                grass("00B000:SeventySix.esm"),
+            ],
+        );
+        attach_gcvr_grass(
+            &mut list,
+            &mut seen,
+            "081263:SeventySix.esm",
+            vec![grass("00B000:SeventySix.esm")],
+        );
+
+        assert_eq!(list.len(), 2);
+        let gcvr = |key: &str| normalize_esp_form_key(key).into_owned();
+        assert_eq!(
+            list[0].source_gcvr_form_keys,
+            vec![gcvr("011C67:SeventySix.esm")]
+        );
+        assert_eq!(
+            list[1].source_gcvr_form_keys,
+            vec![gcvr("011C67:SeventySix.esm"), gcvr("081263:SeventySix.esm")]
+        );
+        let json = serde_json::to_value(&list[1]).unwrap();
+        assert_eq!(json["source_gcvr_form_keys"].as_array().unwrap().len(), 2);
+    }
 
     #[test]
     fn instrumentation_helpers_preserve_names_and_counts() {
@@ -1553,214 +1682,210 @@ mod tests {
     }
 
     #[test]
-    fn fo76_fo4_projected_cell_editor_id_collision_gets_suffix() {
-        let opts = Options {
-            source_game: "fo76".to_owned(),
-            target_game: "fo4".to_owned(),
-            target_cell_editor_ids: vec!["RelayTower03Ext".to_owned()],
-            ..minimal_options()
-        };
-        let mut target_cell_editor_ids = target_cell_editor_id_collision_set(&opts, "fo76");
-        let mut value = json!({
-            "signature": "CELL",
-            "eid": "RelayTower03Ext",
-            "subrecords": [
-                {
-                    "signature": "EDID",
-                    "data_hex": "52656C6179546F776572303345787400"
-                },
-                {
-                    "signature": "DATA",
-                    "data_hex": "0200"
-                }
-            ],
-            "Landscape": {}
-        });
+    fn projected_cell_editor_id_suffixes_only_fo76_to_fo4_collisions() {
+        {
+            let opts = Options {
+                source_game: "fo76".to_owned(),
+                target_game: "fo4".to_owned(),
+                target_cell_editor_ids: vec!["RelayTower03Ext".to_owned()],
+                ..minimal_options()
+            };
+            let mut target_cell_editor_ids = target_cell_editor_id_collision_set(&opts, "fo76");
+            let mut value = json!({
+                "signature": "CELL",
+                "eid": "RelayTower03Ext",
+                "subrecords": [
+                    {
+                        "signature": "EDID",
+                        "data_hex": "52656C6179546F776572303345787400"
+                    },
+                    {
+                        "signature": "DATA",
+                        "data_hex": "0200"
+                    }
+                ],
+                "Landscape": {}
+            });
 
-        let rename =
-            rename_projected_cell_editor_id_collision(&mut value, &mut target_cell_editor_ids);
+            let rename =
+                rename_projected_cell_editor_id_collision(&mut value, &mut target_cell_editor_ids);
 
-        assert_eq!(
-            rename,
-            Some((
-                "RelayTower03Ext".to_owned(),
-                "RelayTower03Extfo76".to_owned()
-            ))
-        );
-        assert_eq!(
-            value.get("eid").and_then(|value| value.as_str()),
-            Some("RelayTower03Extfo76")
-        );
-        assert_eq!(
-            value
-                .get("subrecords")
-                .and_then(|value| value.as_array())
-                .and_then(|subrecords| subrecords.first())
-                .and_then(|subrecord| subrecord.get("data_hex"))
-                .and_then(|value| value.as_str()),
-            Some("52656C6179546F7765723033457874666F373600")
-        );
-        assert!(target_cell_editor_ids.contains("relaytower03extfo76"));
+            assert_eq!(
+                rename,
+                Some((
+                    "RelayTower03Ext".to_owned(),
+                    "RelayTower03Extfo76".to_owned()
+                ))
+            );
+            assert_eq!(
+                value.get("eid").and_then(|value| value.as_str()),
+                Some("RelayTower03Extfo76")
+            );
+            assert_eq!(
+                value
+                    .get("subrecords")
+                    .and_then(|value| value.as_array())
+                    .and_then(|subrecords| subrecords.first())
+                    .and_then(|subrecord| subrecord.get("data_hex"))
+                    .and_then(|value| value.as_str()),
+                Some("52656C6179546F7765723033457874666F373600")
+            );
+            assert!(target_cell_editor_ids.contains("relaytower03extfo76"));
+        }
+        {
+            let opts = Options {
+                source_game: "fo76".to_owned(),
+                target_game: "fo4".to_owned(),
+                target_cell_editor_ids: vec![
+                    "RelayTower03Ext".to_owned(),
+                    "RelayTower03Extfo76".to_owned(),
+                ],
+                ..minimal_options()
+            };
+            let mut target_cell_editor_ids = target_cell_editor_id_collision_set(&opts, "fo76");
+            let mut value = json!({
+                "signature": "CELL",
+                "editor_id": "RelayTower03Ext",
+                "Landscape": {}
+            });
+
+            let rename =
+                rename_projected_cell_editor_id_collision(&mut value, &mut target_cell_editor_ids);
+
+            assert_eq!(
+                rename,
+                Some((
+                    "RelayTower03Ext".to_owned(),
+                    "RelayTower03Extfo761".to_owned()
+                ))
+            );
+            assert_eq!(
+                value.get("editor_id").and_then(|value| value.as_str()),
+                Some("RelayTower03Extfo761")
+            );
+        }
+        {
+            let opts = Options {
+                source_game: "fo76".to_owned(),
+                target_game: "fo4".to_owned(),
+                target_cell_editor_ids: vec!["RelayTower03Ext".to_owned()],
+                ..minimal_options()
+            };
+            let mut target_cell_editor_ids = target_cell_editor_id_collision_set(&opts, "fo76");
+            let mut value = json!({
+                "signature": "CELL",
+                "eid": "RelayTower05Ext",
+                "Landscape": {}
+            });
+
+            let rename =
+                rename_projected_cell_editor_id_collision(&mut value, &mut target_cell_editor_ids);
+
+            assert_eq!(rename, None);
+            assert_eq!(
+                value.get("eid").and_then(|value| value.as_str()),
+                Some("RelayTower05Ext")
+            );
+        }
+        {
+            let opts = Options {
+                source_game: "fo76".to_owned(),
+                target_game: "skyrimse".to_owned(),
+                target_cell_editor_ids: vec!["RelayTower03Ext".to_owned()],
+                ..minimal_options()
+            };
+
+            assert!(target_cell_editor_id_collision_set(&opts, "fo76").is_empty());
+            assert!(target_cell_editor_id_collision_set(&opts, "fo4").is_empty());
+        }
     }
 
     #[test]
-    fn projected_cell_editor_id_collision_suffix_avoids_existing_fo76_name() {
-        let opts = Options {
-            source_game: "fo76".to_owned(),
-            target_game: "fo4".to_owned(),
-            target_cell_editor_ids: vec![
-                "RelayTower03Ext".to_owned(),
-                "RelayTower03Extfo76".to_owned(),
-            ],
-            ..minimal_options()
-        };
-        let mut target_cell_editor_ids = target_cell_editor_id_collision_set(&opts, "fo76");
-        let mut value = json!({
-            "signature": "CELL",
-            "editor_id": "RelayTower03Ext",
-            "Landscape": {}
-        });
-
-        let rename =
-            rename_projected_cell_editor_id_collision(&mut value, &mut target_cell_editor_ids);
-
-        assert_eq!(
-            rename,
-            Some((
-                "RelayTower03Ext".to_owned(),
-                "RelayTower03Extfo761".to_owned()
-            ))
-        );
-        assert_eq!(
-            value.get("editor_id").and_then(|value| value.as_str()),
-            Some("RelayTower03Extfo761")
-        );
-    }
-
-    #[test]
-    fn projected_cell_editor_id_is_unchanged_without_target_collision() {
-        let opts = Options {
-            source_game: "fo76".to_owned(),
-            target_game: "fo4".to_owned(),
-            target_cell_editor_ids: vec!["RelayTower03Ext".to_owned()],
-            ..minimal_options()
-        };
-        let mut target_cell_editor_ids = target_cell_editor_id_collision_set(&opts, "fo76");
-        let mut value = json!({
-            "signature": "CELL",
-            "eid": "RelayTower05Ext",
-            "Landscape": {}
-        });
-
-        let rename =
-            rename_projected_cell_editor_id_collision(&mut value, &mut target_cell_editor_ids);
-
-        assert_eq!(rename, None);
-        assert_eq!(
-            value.get("eid").and_then(|value| value.as_str()),
-            Some("RelayTower05Ext")
-        );
-    }
-
-    #[test]
-    fn target_cell_collision_set_is_only_enabled_for_fo76_to_fo4() {
-        let opts = Options {
-            source_game: "fo76".to_owned(),
-            target_game: "skyrimse".to_owned(),
-            target_cell_editor_ids: vec!["RelayTower03Ext".to_owned()],
-            ..minimal_options()
-        };
-
-        assert!(target_cell_editor_id_collision_set(&opts, "fo76").is_empty());
-        assert!(target_cell_editor_id_collision_set(&opts, "fo4").is_empty());
-    }
-
-    #[test]
-    fn terrain_record_remaps_vanilla_grass_to_target_master() {
-        let opts = Options {
-            plugin_name: "SeventySix.esm".to_owned(),
-            target_record_reuse: vec![crate::terrain_textures::options::TargetRecordReuseRef {
-                editor_id: "GrassphaltObj03".to_owned(),
+    fn terrain_record_remaps_vanilla_and_duplicate_grass() {
+        {
+            let opts = Options {
+                plugin_name: "SeventySix.esm".to_owned(),
+                target_record_reuse: vec![crate::terrain_textures::options::TargetRecordReuseRef {
+                    editor_id: "GrassphaltObj03".to_owned(),
+                    signature: "GRAS".to_owned(),
+                    form_key: "044181:Fallout4.esm".to_owned(),
+                }],
+                ..minimal_options()
+            };
+            let mut remaps = TerrainRecordRemaps::new(&opts);
+            let grass_record = terrain_native::authoring_emit::AuthoringRecordPayload {
                 signature: "GRAS".to_owned(),
-                form_key: "044181:Fallout4.esm".to_owned(),
-            }],
-            ..minimal_options()
-        };
-        let mut remaps = TerrainRecordRemaps::new(&opts);
-        let grass_record = terrain_native::authoring_emit::AuthoringRecordPayload {
-            signature: "GRAS".to_owned(),
-            relative_path: "records/GRAS/GrassphaltObj03.yaml".to_owned(),
-            yaml: String::new(),
-        };
-        let grass_value = json!({
-            "signature": "GRAS",
-            "form_id": "044181",
-            "eid": "GrassphaltObj03",
-            "fields": [],
-        });
+                relative_path: "records/GRAS/GrassphaltObj03.yaml".to_owned(),
+                yaml: String::new(),
+            };
+            let grass_value = json!({
+                "signature": "GRAS",
+                "form_id": "044181",
+                "eid": "GrassphaltObj03",
+                "fields": [],
+            });
 
-        assert!(remaps.skip_or_track(&grass_record, &grass_value));
+            assert!(remaps.skip_or_track(&grass_record, &grass_value));
 
-        let mut ltex = json!({
-            "signature": "LTEX",
-            "fields": [{
-                "Grass": {
-                    "reference": {
-                        "plugin": "SeventySix.esm",
-                        "object_id": "044181"
+            let mut ltex = json!({
+                "signature": "LTEX",
+                "fields": [{
+                    "Grass": {
+                        "reference": {
+                            "plugin": "SeventySix.esm",
+                            "object_id": "044181"
+                        }
                     }
-                }
-            }]
-        });
-        assert_eq!(remaps.rewrite_references(&mut ltex), 1);
-        let reference = &ltex["fields"][0]["Grass"]["reference"];
-        assert_eq!(reference["plugin"], "Fallout4.esm");
-        assert_eq!(reference["object_id"], "044181");
-    }
+                }]
+            });
+            assert_eq!(remaps.rewrite_references(&mut ltex), 1);
+            let reference = &ltex["fields"][0]["Grass"]["reference"];
+            assert_eq!(reference["plugin"], "Fallout4.esm");
+            assert_eq!(reference["object_id"], "044181");
+        }
+        {
+            let opts = Options {
+                plugin_name: "SeventySix.esm".to_owned(),
+                ..minimal_options()
+            };
+            let mut remaps = TerrainRecordRemaps::new(&opts);
+            let grass_record = terrain_native::authoring_emit::AuthoringRecordPayload {
+                signature: "GRAS".to_owned(),
+                relative_path: "records/GRAS/MtnRemovalRockObj02.yaml".to_owned(),
+                yaml: String::new(),
+            };
+            let first_grass = json!({
+                "signature": "GRAS",
+                "form_id": "00869F",
+                "eid": "MtnRemovalRockObj02",
+                "fields": [],
+            });
+            let duplicate_grass = json!({
+                "signature": "GRAS",
+                "form_id": "A09E26",
+                "eid": "MtnRemovalRockObj02",
+                "fields": [],
+            });
 
-    #[test]
-    fn terrain_record_remaps_duplicate_grass_to_first_output_record() {
-        let opts = Options {
-            plugin_name: "SeventySix.esm".to_owned(),
-            ..minimal_options()
-        };
-        let mut remaps = TerrainRecordRemaps::new(&opts);
-        let grass_record = terrain_native::authoring_emit::AuthoringRecordPayload {
-            signature: "GRAS".to_owned(),
-            relative_path: "records/GRAS/MtnRemovalRockObj02.yaml".to_owned(),
-            yaml: String::new(),
-        };
-        let first_grass = json!({
-            "signature": "GRAS",
-            "form_id": "00869F",
-            "eid": "MtnRemovalRockObj02",
-            "fields": [],
-        });
-        let duplicate_grass = json!({
-            "signature": "GRAS",
-            "form_id": "A09E26",
-            "eid": "MtnRemovalRockObj02",
-            "fields": [],
-        });
+            assert!(!remaps.skip_or_track(&grass_record, &first_grass));
+            assert!(remaps.skip_or_track(&grass_record, &duplicate_grass));
 
-        assert!(!remaps.skip_or_track(&grass_record, &first_grass));
-        assert!(remaps.skip_or_track(&grass_record, &duplicate_grass));
-
-        let mut ltex = json!({
-            "signature": "LTEX",
-            "fields": [{
-                "Grass": {
-                    "reference": {
-                        "plugin": "SeventySix.esm",
-                        "object_id": "A09E26"
+            let mut ltex = json!({
+                "signature": "LTEX",
+                "fields": [{
+                    "Grass": {
+                        "reference": {
+                            "plugin": "SeventySix.esm",
+                            "object_id": "A09E26"
+                        }
                     }
-                }
-            }]
-        });
-        assert_eq!(remaps.rewrite_references(&mut ltex), 1);
-        let reference = &ltex["fields"][0]["Grass"]["reference"];
-        assert_eq!(reference["plugin"], "SeventySix.esm");
-        assert_eq!(reference["object_id"], "00869F");
+                }]
+            });
+            assert_eq!(remaps.rewrite_references(&mut ltex), 1);
+            let reference = &ltex["fields"][0]["Grass"]["reference"];
+            assert_eq!(reference["plugin"], "SeventySix.esm");
+            assert_eq!(reference["object_id"], "00869F");
+        }
     }
 
     fn minimal_options() -> Options {

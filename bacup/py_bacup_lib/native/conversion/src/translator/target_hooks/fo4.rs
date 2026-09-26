@@ -77,6 +77,7 @@ const FO76_INCOMPATIBLE_FACE_BONES_ARMA_EDITOR_IDS: &[&str] = &[
 const BIPED_SLOT_33_BODY: u64 = 1 << (33 - 30);
 const BIPED_SLOT_34_LEFT_HAND: u64 = 1 << (34 - 30);
 const BIPED_SLOT_35_RIGHT_HAND: u64 = 1 << (35 - 30);
+#[cfg(test)]
 const BIPED_SLOT_54_BACKPACK: u64 = 1 << (54 - 30);
 const BIPED_SLOT_55_EYE_OF_RA: u64 = 1 << (55 - 30);
 const BIPED_SLOT_56_UNNAMED: u64 = 1 << (56 - 30);
@@ -730,432 +731,210 @@ mod tests {
             .collect()
     }
 
-    fn make_ctx(interner: &StringInterner) -> TargetCtx<'_> {
-        TargetCtx { interner }
+    fn run(record: &mut Record, interner: &StringInterner) {
+        Fo4TargetHook
+            .run(&mut TargetCtx { interner }, record)
+            .unwrap();
     }
 
-    // -----------------------------------------------------------------------
-    // IDLE: drop RELI subrecord
-    // -----------------------------------------------------------------------
+    fn sigs(record: &Record) -> Vec<&str> {
+        record
+            .fields
+            .iter()
+            .map(|entry| entry.sig.as_str())
+            .collect()
+    }
+
+    fn flag_list(record: &Record, key: Sym) -> &Vec<FieldValue> {
+        let FieldValue::Struct(fields) = &record.fields[0].value else {
+            panic!("expected Struct, got {:?}", record.fields[0].value);
+        };
+        let Some(FieldValue::List(list)) = struct_find(fields, key) else {
+            panic!("expected List flags");
+        };
+        list
+    }
+
+    fn push_mesh_model(record: &mut Record, interner: &StringInterner) {
+        push_field(
+            record,
+            "MODL",
+            FieldValue::List(vec![FieldValue::Struct(vec![(
+                interner.intern("MOD2"),
+                FieldValue::String(interner.intern("mesh.nif")),
+            )])]),
+        );
+    }
 
     #[test]
     fn idle_drops_reli_subrecord() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("IDLE", &mut interner);
+        let interner = StringInterner::new();
+        let mut record = make_record("IDLE", &interner);
         push_field(&mut record, "RELI", FieldValue::None);
         push_field(&mut record, "EDID", FieldValue::None);
+        run(&mut record, &interner);
+        assert_eq!(sigs(&record), vec!["EDID"]);
 
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(!sigs.contains(&"RELI"), "RELI should be dropped");
-        assert!(sigs.contains(&"EDID"), "EDID should be preserved");
-    }
-
-    #[test]
-    fn idle_noop_when_no_reli() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("IDLE", &mut interner);
+        let mut record = make_record("IDLE", &interner);
         push_field(&mut record, "EDID", FieldValue::None);
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(record.fields.len(), 1);
+        run(&mut record, &interner);
+        assert_eq!(sigs(&record), vec!["EDID"]);
     }
-
-    // -----------------------------------------------------------------------
-    // NPC_: DATA bool → struct marker
-    // -----------------------------------------------------------------------
 
     #[test]
     fn npc_data_bool_true_becomes_marker_struct() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("NPC_", &mut interner);
+        let interner = StringInterner::new();
+        let mut record = make_record("NPC_", &interner);
         push_field(&mut record, "DATA", FieldValue::Bool(true));
+        run(&mut record, &interner);
+        assert_eq!(
+            record.fields[0].value,
+            FieldValue::Struct(vec![(interner.intern("Marker"), FieldValue::Bool(true))])
+        );
 
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        match &record.fields[0].value {
-            FieldValue::Struct(fields) => {
-                let marker_sym = interner.intern("Marker");
-                let (_, val) = &fields[0];
-                assert_eq!(fields[0].0, marker_sym);
-                assert_eq!(*val, FieldValue::Bool(true));
-            }
-            other => panic!("expected Struct, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn npc_data_bool_false_is_not_converted() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("NPC_", &mut interner);
+        let mut record = make_record("NPC_", &interner);
         push_field(&mut record, "DATA", FieldValue::Bool(false));
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
+        run(&mut record, &interner);
         assert_eq!(record.fields[0].value, FieldValue::Bool(false));
     }
 
-    // -----------------------------------------------------------------------
-    // NPC_: Configuration flag stripping
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn npc_configuration_strips_has_base_sound_data() {
-        let mut interner = StringInterner::new();
-        let flags_sym = interner.intern("Flags");
-        let hbsd_sym = interner.intern("HasBaseSoundData");
-        let other_sym = interner.intern("Unique");
-
-        let cfg = FieldValue::Struct(vec![(
-            flags_sym,
-            FieldValue::List(vec![
-                FieldValue::String(hbsd_sym),
-                FieldValue::String(other_sym),
-            ]),
-        )]);
-        let mut record = make_record("NPC_", &mut interner);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("CNFG").unwrap(),
-            value: cfg,
-        });
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        if let FieldValue::Struct(ref fields) = record.fields[0].value {
-            let flags_val = struct_find(fields, flags_sym).unwrap();
-            if let FieldValue::List(list) = flags_val {
-                assert!(!list.contains(&FieldValue::String(hbsd_sym)));
-                assert!(list.contains(&FieldValue::String(other_sym)));
-            } else {
-                panic!("expected List for Flags");
-            }
-        } else {
-            panic!("expected Struct for CNFG");
+    fn npc_configuration_strips_fo76_only_flags() {
+        let interner = StringInterner::new();
+        for (list_key, kept, removed) in [
+            ("Flags", "Unique", "HasBaseSoundData"),
+            ("TemplateFlags", "Traits", "Spells"),
+        ] {
+            let key = interner.intern(list_key);
+            let kept = FieldValue::String(interner.intern(kept));
+            let removed = FieldValue::String(interner.intern(removed));
+            let mut record = make_record("NPC_", &interner);
+            push_field(
+                &mut record,
+                "CNFG",
+                FieldValue::Struct(vec![(
+                    key,
+                    FieldValue::List(vec![removed.clone(), kept.clone()]),
+                )]),
+            );
+            run(&mut record, &interner);
+            assert_eq!(flag_list(&record, key), &vec![kept], "{list_key}");
         }
     }
-
-    #[test]
-    fn npc_configuration_restricts_template_flags() {
-        let mut interner = StringInterner::new();
-        let tf_sym = interner.intern("TemplateFlags");
-        let allowed_sym = interner.intern("Traits");
-        let disallowed_sym = interner.intern("Spells"); // not in FO4 allowed set
-
-        let cfg = FieldValue::Struct(vec![(
-            tf_sym,
-            FieldValue::List(vec![
-                FieldValue::String(allowed_sym),
-                FieldValue::String(disallowed_sym),
-            ]),
-        )]);
-        let mut record = make_record("NPC_", &mut interner);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("CNFG").unwrap(),
-            value: cfg,
-        });
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        if let FieldValue::Struct(ref fields) = record.fields[0].value {
-            let tf_val = struct_find(fields, tf_sym).unwrap();
-            if let FieldValue::List(list) = tf_val {
-                assert!(list.contains(&FieldValue::String(allowed_sym)));
-                assert!(!list.contains(&FieldValue::String(disallowed_sym)));
-            } else {
-                panic!("expected List for TemplateFlags");
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // BOOK: remove IsRecipe from DNAM Flags
-    // -----------------------------------------------------------------------
 
     #[test]
     fn book_dnam_removes_is_recipe_flag() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let flags_sym = interner.intern("Flags");
-        let is_recipe_sym = interner.intern("IsRecipe");
-        let teach_sym = interner.intern("TeachesSpell");
-
-        let dnam = FieldValue::Struct(vec![(
-            flags_sym,
-            FieldValue::List(vec![
-                FieldValue::String(is_recipe_sym),
-                FieldValue::String(teach_sym),
-            ]),
-        )]);
-        let mut record = make_record("BOOK", &mut interner);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("DNAM").unwrap(),
-            value: dnam,
-        });
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        if let FieldValue::Struct(ref fields) = record.fields[0].value {
-            let flags_val = struct_find(fields, flags_sym).unwrap();
-            if let FieldValue::List(list) = flags_val {
-                assert!(!list.contains(&FieldValue::String(is_recipe_sym)));
-                assert!(list.contains(&FieldValue::String(teach_sym)));
-            }
-        }
+        let teach = FieldValue::String(interner.intern("TeachesSpell"));
+        let mut record = make_record("BOOK", &interner);
+        push_field(
+            &mut record,
+            "DNAM",
+            FieldValue::Struct(vec![(
+                flags_sym,
+                FieldValue::List(vec![
+                    FieldValue::String(interner.intern("IsRecipe")),
+                    teach.clone(),
+                ]),
+            )]),
+        );
+        run(&mut record, &interner);
+        assert_eq!(flag_list(&record, flags_sym), &vec![teach]);
     }
-
-    // -----------------------------------------------------------------------
-    // ENCH: EffectData TargetType Contact → Touch
-    // -----------------------------------------------------------------------
 
     #[test]
     fn ench_renames_contact_to_touch() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let tt_sym = interner.intern("TargetType");
-        let contact_sym = interner.intern("Contact");
-
-        let effect_data = FieldValue::Struct(vec![(tt_sym, FieldValue::String(contact_sym))]);
-        let mut record = make_record("ENCH", &mut interner);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("EITM").unwrap(),
-            value: effect_data,
-        });
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        let touch_sym = interner.intern("Touch");
-        if let FieldValue::Struct(ref fields) = record.fields[0].value {
-            let tt_val = struct_find(fields, tt_sym).unwrap();
-            assert_eq!(*tt_val, FieldValue::String(touch_sym));
+        for (input, expected) in [("Contact", "Touch"), ("Self", "Self")] {
+            let mut record = make_record("ENCH", &interner);
+            push_field(
+                &mut record,
+                "EITM",
+                FieldValue::Struct(vec![(tt_sym, FieldValue::String(interner.intern(input)))]),
+            );
+            run(&mut record, &interner);
+            let FieldValue::Struct(fields) = &record.fields[0].value else {
+                panic!("expected Struct for EITM");
+            };
+            assert_eq!(
+                struct_find(fields, tt_sym),
+                Some(&FieldValue::String(interner.intern(expected))),
+                "{input}"
+            );
         }
     }
 
     #[test]
-    fn ench_leaves_non_contact_target_type_unchanged() {
-        let mut interner = StringInterner::new();
-        let tt_sym = interner.intern("TargetType");
-        let self_sym = interner.intern("Self");
-
-        let effect_data = FieldValue::Struct(vec![(tt_sym, FieldValue::String(self_sym))]);
-        let mut record = make_record("ENCH", &mut interner);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("EITM").unwrap(),
-            value: effect_data,
-        });
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        if let FieldValue::Struct(ref fields) = record.fields[0].value {
-            let tt_val = struct_find(fields, tt_sym).unwrap();
-            assert_eq!(*tt_val, FieldValue::String(self_sym));
+    fn armo_normalizes_fo76_biped_template_slots() {
+        let human = Some((0x013746, "Fallout4.esm"));
+        let nonhuman = Some((0x6356DD, "SeventySix.esm"));
+        let creature = Some((0x822A4D, "SeventySix.esm"));
+        let hands: &[&str] = &["33BODY", "34LHand", "35RHand"];
+        let cases: &[(&str, Option<(u32, &str)>, &[&str], Option<u32>, &[&str])] = &[
+            ("coverall", human, &["57Coverall"], None, &["33BODY"]),
+            ("naked hands", human, &["57Coverall"], Some(0x000D6C), hands),
+            (
+                "raider gloves",
+                human,
+                &["57Coverall"],
+                Some(0x01D980),
+                hands,
+            ),
+            (
+                "preston gloves",
+                human,
+                &["57Coverall"],
+                Some(0x0316C7),
+                hands,
+            ),
+            ("backpack", human, &["54Backpack"], None, &["54Unnamed"]),
+            (
+                "nonhuman pipboy",
+                nonhuman,
+                &["33BODY", "60Pipboy", "61FX"],
+                None,
+                &["33BODY", "61FX"],
+            ),
+            ("empty", None, &[], None, &["33BODY"]),
+            ("empty creature", creature, &[], None, &[]),
+        ];
+        for (name, race, tokens, addon, expected) in cases {
+            let interner = StringInterner::new();
+            let mut record = make_record("ARMO", &interner);
+            if let Some((local, plugin)) = race {
+                push_rnam(&mut record, *local, plugin, &interner);
+            }
+            push_field(
+                &mut record,
+                "BOD2",
+                FieldValue::List(
+                    tokens
+                        .iter()
+                        .map(|token| FieldValue::String(interner.intern(token)))
+                        .collect(),
+                ),
+            );
+            if let Some(local) = addon {
+                push_field(
+                    &mut record,
+                    "MODL",
+                    FieldValue::FormKey(FormKey {
+                        local: *local,
+                        plugin: interner.intern("Fallout4.esm"),
+                    }),
+                );
+            }
+            run(&mut record, &interner);
+            assert_eq!(bod2_list_tokens(&record, &interner), *expected, "{name}");
         }
     }
 
-    // -----------------------------------------------------------------------
-    // ARMO: normalize FO76-only BipedBodyTemplate slots
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn armo_drops_fo76_coverall_slot_for_human_race() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::List(vec![FieldValue::String(interner.intern("57Coverall"))]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_list_tokens(&record, &interner), vec!["33BODY"]);
-    }
-
-    #[test]
-    fn armo_with_naked_hands_addon_keeps_hand_slots() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::List(vec![FieldValue::String(interner.intern("57Coverall"))]),
-        );
-        push_field(
-            &mut record,
-            "MODL",
-            FieldValue::FormKey(FormKey {
-                local: 0x000D6C,
-                plugin: interner.intern("Fallout4.esm"),
-            }),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            bod2_list_tokens(&record, &interner),
-            vec!["33BODY", "34LHand", "35RHand"]
-        );
-    }
-
-    #[test]
-    fn armo_with_raider_gloves_addon_keeps_hand_slots() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::List(vec![FieldValue::String(interner.intern("57Coverall"))]),
-        );
-        push_field(
-            &mut record,
-            "MODL",
-            FieldValue::FormKey(FormKey {
-                local: 0x01D980,
-                plugin: interner.intern("Fallout4.esm"),
-            }),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            bod2_list_tokens(&record, &interner),
-            vec!["33BODY", "34LHand", "35RHand"]
-        );
-    }
-
-    #[test]
-    fn armo_with_preston_gloves_addon_keeps_hand_slots() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::List(vec![FieldValue::String(interner.intern("57Coverall"))]),
-        );
-        push_field(
-            &mut record,
-            "MODL",
-            FieldValue::FormKey(FormKey {
-                local: 0x0316C7,
-                plugin: interner.intern("Fallout4.esm"),
-            }),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            bod2_list_tokens(&record, &interner),
-            vec!["33BODY", "34LHand", "35RHand"]
-        );
-    }
-
-    #[test]
-    fn armo_maps_fo76_backpack_slot_to_fo4_unnamed_slot() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::List(vec![FieldValue::String(interner.intern("54Backpack"))]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_list_tokens(&record, &interner), vec!["54Unnamed"]);
-    }
-
-    #[test]
-    fn armo_maps_nonhuman_pipboy_slot_to_fo4_fx_slot() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_rnam(&mut record, 0x6356DD, "SeventySix.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::List(vec![
-                FieldValue::String(interner.intern("33BODY")),
-                FieldValue::String(interner.intern("60Pipboy")),
-                FieldValue::String(interner.intern("61FX")),
-            ]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            bod2_list_tokens(&record, &interner),
-            vec!["33BODY".to_string(), "61FX".to_string()]
-        );
-    }
-
-    #[test]
-    fn armo_empty_biped_template_defaults_to_body() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_field(&mut record, "BOD2", FieldValue::List(vec![]));
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_list_tokens(&record, &interner), vec!["33BODY"]);
-    }
-
-    #[test]
-    fn armo_empty_creature_biped_template_stays_empty() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMO", &mut interner);
-        push_rnam(&mut record, 0x822A4D, "SeventySix.esm", &mut interner);
-        push_field(&mut record, "BOD2", FieldValue::List(vec![]));
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert!(bod2_list_tokens(&record, &interner).is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // ARMA: strip FO76-only BipedModels keys
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn arma_strips_fo76_biped_model_keys() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
+    fn arma_strips_fo76_biped_model_keys_and_face_bone_flags() {
+        let interner = StringInterner::new();
+        let mut record = make_record("ARMA", &interner);
         push_field(
             &mut record,
             "MOD2",
@@ -1163,137 +942,117 @@ mod tests {
         );
         push_field(&mut record, "XFLG", FieldValue::None);
         push_field(&mut record, "ENLT", FieldValue::None);
+        run(&mut record, &interner);
+        assert_eq!(sigs(&record), vec!["MOD2"]);
 
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record
-            .fields
-            .iter()
-            .map(|entry| entry.sig.as_str())
-            .collect();
-        assert!(sigs.contains(&"MOD2"));
-        assert!(!sigs.contains(&"XFLG"));
-        assert!(!sigs.contains(&"ENLT"));
-    }
-
-    #[test]
-    fn lost_head_mirror_arma_uses_rigid_model_in_fo4() {
-        let mut interner = StringInterner::new();
         let has_face_bones = interner.intern("HasFaceBonesModel");
-        let mut record = make_record("ARMA", &mut interner);
-        record.eid = Some(interner.intern("AAHeadwearLostHeadMirror_Storm"));
-        push_field(
-            &mut record,
-            "MOD2",
-            FieldValue::String(interner.intern("clothes/LostHeadMirror/HeadMirrorM.nif")),
-        );
-        push_field(
-            &mut record,
-            "MO2F",
-            FieldValue::List(vec![FieldValue::String(has_face_bones)]),
-        );
-        push_field(
-            &mut record,
-            "MOD3",
-            FieldValue::String(interner.intern("clothes/LostHeadMirror/HeadMirrorF.nif")),
-        );
-        push_field(
-            &mut record,
-            "MO3F",
-            FieldValue::List(vec![FieldValue::String(has_face_bones)]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record
-            .fields
-            .iter()
-            .map(|entry| entry.sig.as_str())
-            .collect();
-        assert!(sigs.contains(&"MOD2"));
-        assert!(sigs.contains(&"MOD3"));
-        assert!(!sigs.contains(&"MO2F"));
-        assert!(!sigs.contains(&"MO3F"));
-    }
-
-    #[test]
-    fn settler_work_chief_arma_uses_rigid_model_in_fo4() {
-        let mut interner = StringInterner::new();
-        let has_face_bones = interner.intern("HasFaceBonesModel");
-        let mut record = make_record("ARMA", &mut interner);
-        record.eid = Some(interner.intern("AA_HeadwearSettlerWorkChief"));
-        push_field(
-            &mut record,
-            "MOD2",
-            FieldValue::String(
-                interner.intern("clothes/Settler15_WorkChief/Settler15_Workchief_Hat_M.nif"),
+        for (eid, models) in [
+            (
+                "AAHeadwearLostHeadMirror_Storm",
+                &[
+                    ("MOD2", "MO2F", "clothes/LostHeadMirror/HeadMirrorM.nif"),
+                    ("MOD3", "MO3F", "clothes/LostHeadMirror/HeadMirrorF.nif"),
+                ][..],
             ),
-        );
-        push_field(
-            &mut record,
-            "MO2F",
-            FieldValue::List(vec![FieldValue::String(has_face_bones)]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record
-            .fields
-            .iter()
-            .map(|entry| entry.sig.as_str())
-            .collect();
-        assert!(sigs.contains(&"MOD2"));
-        assert!(!sigs.contains(&"MO2F"));
+            (
+                "AA_HeadwearSettlerWorkChief",
+                &[(
+                    "MOD2",
+                    "MO2F",
+                    "clothes/Settler15_WorkChief/Settler15_Workchief_Hat_M.nif",
+                )][..],
+            ),
+        ] {
+            let mut record = make_record("ARMA", &interner);
+            record.eid = Some(interner.intern(eid));
+            for (model, flags, path) in models {
+                push_field(
+                    &mut record,
+                    model,
+                    FieldValue::String(interner.intern(path)),
+                );
+                push_field(
+                    &mut record,
+                    flags,
+                    FieldValue::List(vec![FieldValue::String(has_face_bones)]),
+                );
+            }
+            run(&mut record, &interner);
+            let expected: Vec<&str> = models.iter().map(|(model, _, _)| *model).collect();
+            assert_eq!(sigs(&record), expected, "{eid}");
+        }
     }
 
     #[test]
-    fn arma_drops_fo76_coverall_slot_for_human_race() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
+    fn arma_normalizes_fo76_biped_template_slots() {
+        let human = Some((0x013746, "Fallout4.esm"));
+        let nonhuman = Some((0x6356DD, "SeventySix.esm"));
+        for (name, race, mask, with_mesh, expected) in [
+            (
+                "coverall",
+                human,
+                BIPED_SLOT_33_BODY | BIPED_SLOT_57_COVERALL | BIPED_SLOT_60_PIPBOY,
+                false,
+                BIPED_SLOT_33_BODY | BIPED_SLOT_60_PIPBOY,
+            ),
+            (
+                "backpack",
+                human,
+                BIPED_SLOT_54_BACKPACK,
+                false,
+                BIPED_SLOT_54_BACKPACK,
+            ),
+            (
+                "nonhuman pipboy",
+                nonhuman,
+                BIPED_SLOT_60_PIPBOY,
+                false,
+                BIPED_SLOT_61_FX,
+            ),
+            ("empty with mesh", None, 0, true, BIPED_SLOT_33_BODY),
+            ("empty without mesh", human, 0, false, 0),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_record("ARMA", &interner);
+            if let Some((local, plugin)) = race {
+                push_rnam(&mut record, local, plugin, &interner);
+            }
+            push_field(&mut record, "BOD2", FieldValue::Uint(mask));
+            if with_mesh {
+                push_mesh_model(&mut record, &interner);
+            }
+            run(&mut record, &interner);
+            assert_eq!(bod2_mask(&record), expected, "{name}");
+        }
+
+        let interner = StringInterner::new();
+        let mut record = make_record("ARMA", &interner);
+        push_rnam(&mut record, 0x013746, "Fallout4.esm", &interner);
         push_field(
             &mut record,
             "BOD2",
-            FieldValue::Uint(BIPED_SLOT_33_BODY | BIPED_SLOT_57_COVERALL | BIPED_SLOT_60_PIPBOY),
+            FieldValue::List(vec![
+                FieldValue::String(interner.intern("33BODY")),
+                FieldValue::String(interner.intern("57Coverall")),
+                FieldValue::String(interner.intern("54Backpack")),
+            ]),
+        );
+        run(&mut record, &interner);
+        assert_eq!(
+            bod2_list_tokens(&record, &interner),
+            vec!["33BODY", "54Unnamed"]
         );
 
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        let mask = bod2_mask(&record);
-        assert!(mask & BIPED_SLOT_33_BODY != 0);
-        assert!(mask & BIPED_SLOT_60_PIPBOY != 0);
-        assert_eq!(mask & BIPED_SLOT_57_COVERALL, 0);
-    }
-
-    #[test]
-    fn arma_maps_fo76_backpack_slot_to_fo4_unnamed_slot() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::Uint(BIPED_SLOT_54_BACKPACK),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_mask(&record), BIPED_SLOT_54_BACKPACK);
+        let mut record = make_record("ARMA", &interner);
+        push_field(&mut record, "BOD2", FieldValue::List(vec![]));
+        push_mesh_model(&mut record, &interner);
+        run(&mut record, &interner);
+        assert_eq!(bod2_list_tokens(&record, &interner), vec!["33BODY"]);
     }
 
     #[test]
     fn arma_backpack_fills_missing_female_model_from_male_model() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let mod2_sym = interner.intern("MOD2");
         let mo2t_sym = interner.intern("MO2T");
         let mod3_sym = interner.intern("MOD3");
@@ -1305,21 +1064,15 @@ mod tests {
             (mod2_sym, FieldValue::String(male_path)),
             (mo2t_sym, texture_payload.clone()),
         ]);
-        let mut record = make_record("ARMA", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
+        let mut record = make_record("ARMA", &interner);
+        push_rnam(&mut record, 0x013746, "Fallout4.esm", &interner);
         push_field(
             &mut record,
             "BOD2",
             FieldValue::List(vec![FieldValue::String(interner.intern("54Backpack"))]),
         );
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("MODL").unwrap(),
-            value: FieldValue::List(vec![model_entry]),
-        });
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
+        push_field(&mut record, "MODL", FieldValue::List(vec![model_entry]));
+        run(&mut record, &interner);
 
         let model_fields = record
             .fields
@@ -1343,140 +1096,20 @@ mod tests {
     }
 
     #[test]
-    fn arma_maps_nonhuman_pipboy_slot_to_fo4_fx_slot() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
-        push_rnam(&mut record, 0x6356DD, "SeventySix.esm", &mut interner);
-        push_field(&mut record, "BOD2", FieldValue::Uint(BIPED_SLOT_60_PIPBOY));
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_mask(&record), BIPED_SLOT_61_FX);
+    fn leveled_lists_preserve_lvlo_and_unhandled_records_are_untouched() {
+        let interner = StringInterner::new();
+        for sig in ["LVLI", "LVLN", "WEAP"] {
+            let mut record = make_record(sig, &interner);
+            push_field(&mut record, "LVLO", FieldValue::None);
+            push_field(&mut record, "EDID", FieldValue::None);
+            run(&mut record, &interner);
+            assert_eq!(sigs(&record), vec!["LVLO", "EDID"], "{sig}");
+        }
     }
-
-    #[test]
-    fn arma_empty_biped_template_defaults_to_body() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
-        push_field(&mut record, "BOD2", FieldValue::Uint(0));
-        push_field(
-            &mut record,
-            "MODL",
-            FieldValue::List(vec![FieldValue::Struct(vec![(
-                interner.intern("MOD2"),
-                FieldValue::String(interner.intern("mesh.nif")),
-            )])]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_mask(&record), BIPED_SLOT_33_BODY);
-    }
-
-    #[test]
-    fn arma_empty_biped_template_without_actor_mesh_stays_empty() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(&mut record, "BOD2", FieldValue::Uint(0));
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_mask(&record), 0);
-    }
-
-    #[test]
-    fn arma_normalizes_list_biped_template_tokens() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
-        push_rnam(&mut record, 0x013746, "Fallout4.esm", &mut interner);
-        push_field(
-            &mut record,
-            "BOD2",
-            FieldValue::List(vec![
-                FieldValue::String(interner.intern("33BODY")),
-                FieldValue::String(interner.intern("57Coverall")),
-                FieldValue::String(interner.intern("54Backpack")),
-            ]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            bod2_list_tokens(&record, &interner),
-            vec!["33BODY".to_string(), "54Unnamed".to_string()]
-        );
-    }
-
-    #[test]
-    fn arma_empty_list_biped_template_defaults_to_body() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ARMA", &mut interner);
-        push_field(&mut record, "BOD2", FieldValue::List(vec![]));
-        push_field(
-            &mut record,
-            "MODL",
-            FieldValue::List(vec![FieldValue::Struct(vec![(
-                interner.intern("MOD2"),
-                FieldValue::String(interner.intern("mesh.nif")),
-            )])]),
-        );
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(bod2_list_tokens(&record, &interner), vec!["33BODY"]);
-    }
-
-    // -----------------------------------------------------------------------
-    // LVLI / LVLN: LVLO is the FO4 binary subrecord.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn lvli_preserves_lvlo() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("LVLI", &mut interner);
-        push_field(&mut record, "LVLO", FieldValue::None);
-        push_field(&mut record, "EDID", FieldValue::None);
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"LVLO"));
-        assert!(!sigs.contains(&"LVLE"));
-    }
-
-    #[test]
-    fn lvln_preserves_lvlo() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("LVLN", &mut interner);
-        push_field(&mut record, "LVLO", FieldValue::None);
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(record.fields[0].sig.as_str(), "LVLO");
-    }
-
-    // -----------------------------------------------------------------------
-    // LVLI: COED CurveTablesMin/Max drop
-    // -----------------------------------------------------------------------
 
     #[test]
     fn lvli_coed_drops_curve_table_fields() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let ctmin_sym = interner.intern("CurveTablesMin");
         let ctmax_sym = interner.intern("CurveTablesMax");
         let owner_sym = interner.intern("Owner");
@@ -1486,46 +1119,19 @@ mod tests {
             (ctmin_sym, FieldValue::None),
             (ctmax_sym, FieldValue::None),
         ]);
-        let mut record = make_record("LVLI", &mut interner);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("COED").unwrap(),
-            value: coed,
-        });
+        let mut record = make_record("LVLI", &interner);
+        push_field(&mut record, "COED", coed);
+        run(&mut record, &interner);
 
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        // Find the COED entry.
         let coed_entry = record
             .fields
             .iter()
             .find(|e| e.sig.as_str() == "COED")
             .expect("COED should still exist");
-        if let FieldValue::Struct(ref fields) = coed_entry.value {
-            let keys: Vec<Sym> = fields.iter().map(|(k, _)| *k).collect();
-            assert!(!keys.contains(&ctmin_sym));
-            assert!(!keys.contains(&ctmax_sym));
-            assert!(keys.contains(&owner_sym));
-        } else {
+        let FieldValue::Struct(ref fields) = coed_entry.value else {
             panic!("expected Struct for COED");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Non-matching records: run is a no-op
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn run_is_noop_for_unhandled_record_type() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("WEAP", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-
-        let hook = Fo4TargetHook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.run(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(record.fields.len(), 1);
+        };
+        let keys: Vec<Sym> = fields.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec![owner_sym]);
     }
 }

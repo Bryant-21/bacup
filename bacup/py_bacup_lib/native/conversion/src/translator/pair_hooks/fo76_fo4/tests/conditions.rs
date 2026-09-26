@@ -1,4 +1,21 @@
 
+    #[test]
+    fn ghoul_identity_and_disguise_preserve_comparison_and_subject() {
+        let interner = StringInterner::new();
+        for (source_id, target_id) in [(10017u16, 560u16), (10016, 682)] {
+            let mut record = make_record("INFO", &interner);
+            let source = raw_condition_fixture(source_id);
+            push_field(&mut record, "CTDA", raw_bytes(&source));
+            Fo76Fo4Hook::normalize_fo76_raw_condition_functions(&mut record);
+            let FieldValue::Bytes(result) = &record.fields[0].value else { panic!("raw CTDA"); };
+            assert_eq!(&result[..8], &source[..8]);
+            assert_eq!(&result[20..], &source[20..]);
+            assert_eq!(Fo76Fo4Hook::raw_condition_function_id(result), Some(target_id));
+            assert_eq!(Fo76Fo4Hook::raw_condition_parameter_1(result),
+                Some(if source_id == 10017 { 0x79CCE5 } else { 0xDEADBEEF }));
+        }
+    }
+
     fn raw_condition_fixture(function_id: u16) -> Vec<u8> {
         let mut bytes = vec![
             0xA4, 0x11, 0x22, 0x33, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x55, 0x66, 0xEF, 0xBE,
@@ -113,7 +130,8 @@
     }
 
     #[test]
-    fn structural_lowering_preserves_exact_w05_mq001p_wayward_start_conditions() {
+    fn structural_lowering_preserves_exact_w05_mq001p_start_conditions() {
+        // Wayward, then Lacey/Isela.
         assert_story_manager_quest_start_condition_lowering(
             0x0040_5E14,
             [
@@ -122,10 +140,6 @@
                 "A00000000000000059039443145E400000000000070000000000000052330000",
             ],
         );
-    }
-
-    #[test]
-    fn structural_lowering_preserves_exact_w05_mq001p_lacey_isela_start_conditions() {
         assert_story_manager_quest_start_condition_lowering(
             0x0040_5E15,
             [
@@ -137,7 +151,7 @@
     }
 
     #[test]
-    fn story_manager_condition_shape_checks_reject_non_r3_and_wrong_operators() {
+    fn story_manager_condition_shapes_accept_equal_zero_and_reject_non_r3_or_wrong_operator() {
         let non_r3 =
             raw_ctda_from_hex("000000000000000030029443C85E4000000000000700000000000000FFFFFFFF");
         let wrong_operator =
@@ -147,10 +161,7 @@
             Fo76Fo4Hook::story_manager_completion_quest(&wrong_operator),
             None
         );
-    }
 
-    #[test]
-    fn story_manager_completion_shape_accepts_equal_zero() {
         let mut equal_zero =
             raw_ctda_from_hex("00000000000000005903944331BF560000000000070000000000000052330000");
 
@@ -188,91 +199,48 @@
     }
 
     #[test]
-    fn post_translate_remaps_get_is_player_on_acti_to_get_is_id_player() {
+    fn post_translate_remaps_get_is_player_to_get_is_id_player() {
         let interner = StringInterner::new();
-        let mut record = make_record("ACTI", &interner);
-        let source = raw_condition_fixture(FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID);
-        push_field(
-            &mut record,
-            "CTDA",
-            FieldValue::Bytes(SmallVec::from_vec(source.clone())),
-        );
-
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let ctda = record
-            .fields
-            .iter()
-            .find(|field| field.sig.0 == *b"CTDA")
-            .expect("remapped CTDA remains");
-        let FieldValue::Bytes(bytes) = &ctda.value else {
-            panic!("expected raw CTDA bytes");
-        };
-        assert_eq!(bytes.as_slice(), remapped_get_is_player_bytes(&source));
-        assert_eq!(Fo76Fo4Hook::raw_condition_run_on(bytes), Some(0));
         assert!(
             FO76_REMAPPED_CONDITION_FUNCTION_IDS
                 .contains(&FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID)
         );
+        for (record_sig, sig, function_id) in [
+            ("ACTI", "CTDA", FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID),
+            ("MGEF", "CTDT", FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID),
+            ("ACTI", "CTDA", 203),
+        ] {
+            let mut record = make_record(record_sig, &interner);
+            let source = raw_condition_fixture(function_id);
+            push_field(
+                &mut record,
+                sig,
+                FieldValue::Bytes(SmallVec::from_vec(source.clone())),
+            );
+
+            Fo76Fo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+
+            let condition = record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == sig)
+                .expect("condition remains");
+            let FieldValue::Bytes(bytes) = &condition.value else {
+                panic!("expected raw condition bytes");
+            };
+            if function_id == FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID {
+                assert_eq!(bytes.as_slice(), remapped_get_is_player_bytes(&source), "{record_sig} {sig}");
+                assert_eq!(Fo76Fo4Hook::raw_condition_run_on(bytes), Some(0), "{record_sig} {sig}");
+            } else {
+                assert_eq!(bytes.as_slice(), source, "function {function_id} unchanged");
+            }
+        }
     }
 
     #[test]
-    fn post_translate_remaps_get_is_player_ctdt_on_non_acti_record() {
-        let interner = StringInterner::new();
-        let mut record = make_record("MGEF", &interner);
-        let source = raw_condition_fixture(FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID);
-        push_field(
-            &mut record,
-            "CTDT",
-            FieldValue::Bytes(SmallVec::from_vec(source.clone())),
-        );
-
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let ctdt = record
-            .fields
-            .iter()
-            .find(|field| field.sig.0 == *b"CTDT")
-            .expect("remapped CTDT remains");
-        let FieldValue::Bytes(bytes) = &ctdt.value else {
-            panic!("expected raw CTDT bytes");
-        };
-        assert_eq!(bytes.as_slice(), remapped_get_is_player_bytes(&source));
-        assert_eq!(Fo76Fo4Hook::raw_condition_run_on(bytes), Some(0));
-    }
-
-    #[test]
-    fn post_translate_leaves_non_get_is_player_condition_bytes_unchanged() {
-        let interner = StringInterner::new();
-        let mut record = make_record("ACTI", &interner);
-        let source = raw_condition_fixture(203);
-        push_field(
-            &mut record,
-            "CTDA",
-            FieldValue::Bytes(SmallVec::from_vec(source.clone())),
-        );
-
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let ctda = record
-            .fields
-            .iter()
-            .find(|field| field.sig.0 == *b"CTDA")
-            .expect("FO4-compatible CTDA remains");
-        let FieldValue::Bytes(bytes) = &ctda.value else {
-            panic!("expected raw CTDA bytes");
-        };
-        assert_eq!(bytes.as_slice(), source);
-    }
-
-    #[test]
-    fn post_translate_scopes_wayward_gender_branches_to_player_ref() {
+    fn post_translate_scopes_only_exact_wayward_gender_branches_to_player_ref() {
         let interner = StringInterner::new();
         for (local, source, expected) in [
             (
@@ -295,6 +263,16 @@
                 "000000000000803F4600000001000000000000000100000000000000FFFFFFFF",
                 "000000000000803F4600000001000000000000000200000014000000FFFFFFFF",
             ),
+            (
+                0x56_A168,
+                "000000000000803F4600000000000000000000000100000000000000FFFFFFFF",
+                "000000000000803F4600000000000000000000000100000000000000FFFFFFFF",
+            ),
+            (
+                0x56_A169,
+                "00000000000000004600000000000000000000000100000000000000FFFFFFFF",
+                "00000000000000004600000000000000000000000100000000000000FFFFFFFF",
+            ),
         ] {
             let mut record = make_record("INFO", &interner);
             record.form_key.local = local;
@@ -307,46 +285,8 @@
             let FieldValue::Bytes(bytes) = &record.fields[0].value else {
                 panic!("expected raw CTDA bytes");
             };
-            assert_eq!(hex::encode_upper(bytes), expected);
+            assert_eq!(hex::encode_upper(bytes), expected, "{local:08X} {source}");
         }
-    }
-
-    #[test]
-    fn post_translate_does_not_retarget_unrelated_get_is_sex_target_condition() {
-        let interner = StringInterner::new();
-        let source =
-            "000000000000803F4600000000000000000000000100000000000000FFFFFFFF";
-        let mut record = make_record("INFO", &interner);
-        record.form_key.local = 0x56_A168;
-        push_field(&mut record, "CTDA", raw_ctda_from_hex(source));
-
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw CTDA bytes");
-        };
-        assert_eq!(hex::encode_upper(bytes), source);
-    }
-
-    #[test]
-    fn post_translate_does_not_retarget_changed_wayward_gender_condition_shape() {
-        let interner = StringInterner::new();
-        let source =
-            "00000000000000004600000000000000000000000100000000000000FFFFFFFF";
-        let mut record = make_record("INFO", &interner);
-        record.form_key.local = 0x56_A169;
-        push_field(&mut record, "CTDA", raw_ctda_from_hex(source));
-
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw CTDA bytes");
-        };
-        assert_eq!(hex::encode_upper(bytes), source);
     }
 
     #[test]
@@ -499,11 +439,7 @@
             !record.fields.iter().any(|field| field.sig.as_str() == "CIS1"),
             "the parameter string named the function that was replaced"
         );
-    }
 
-    #[test]
-    fn closing_a_package_gate_keeps_its_or_group_but_not_its_operator() {
-        let interner = StringInterner::new();
         let mut record = make_record("PACK", &interner);
         let mut gate = hex::decode(UNTRANSLATABLE_PACKAGE_GATE).expect("valid fixture hex");
         // OR with the next row, compared `Not equal to` (operator 1 in bits 5-7).
@@ -522,11 +458,7 @@
             "OR membership survives; an inherited `Not equal to` would have inverted \
              the closed gate into an always-true one"
         );
-    }
 
-    #[test]
-    fn untranslatable_gates_are_still_removed_outside_packages() {
-        let interner = StringInterner::new();
         let mut record = make_record("INFO", &interner);
         push_field(
             &mut record,
@@ -544,7 +476,7 @@
     }
 
     #[test]
-    fn music_tracks_map_strongest_enemy_keyword_gate_to_combat_target() {
+    fn strongest_enemy_keyword_gate_maps_to_combat_target_only_on_music_tracks() {
         let interner = StringInterner::new();
         let mut record = make_record("MUST", &interner);
         push_field(&mut record, "CITC", raw_bytes(&2u32.to_le_bytes()));
@@ -582,11 +514,7 @@
             .find(|field| field.sig.as_str() == "CITC")
             .expect("condition count remains");
         assert_eq!(citc.value, raw_bytes(&1u32.to_le_bytes()));
-    }
 
-    #[test]
-    fn non_music_records_still_drop_strongest_enemy_keyword_condition() {
-        let interner = StringInterner::new();
         let mut record = make_record("INFO", &interner);
         push_field(
             &mut record,
@@ -651,7 +579,7 @@
         push_field(&mut record, "BSIZ", raw_bytes(&2_u32.to_le_bytes()));
         // Body-text row 1: FO76-only function → CTDA and its CIS2 must both drop.
         push_field(&mut record, "BTXT", raw_bytes(&1_u32.to_le_bytes()));
-        push_field(&mut record, "CTDA", raw_ctda(10017));
+        push_field(&mut record, "CTDA", raw_ctda(12004));
         push_field(&mut record, "CIS2", raw_bytes(b"Fo76Only\0"));
         // Body-text row 2: FO4-compatible function → CTDA and its CIS2 survive.
         push_field(&mut record, "BTXT", raw_bytes(&2_u32.to_le_bytes()));
@@ -684,203 +612,76 @@
     }
 
     #[test]
-    fn post_translate_keeps_raw_ctda_with_fo4_function_id() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("MGEF", &mut interner);
-        push_field(&mut record, "CTDA", raw_ctda(560));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_remaps_fo76_is_quest_active_to_get_quest_running() {
-        // FO76 IsQuestActive (876) has no FO4 equivalent id (> 817) and would be
-        // dropped; instead it is remapped to FO4 GetQuestRunning (56), which is
-        // value-identical (`== 1`) and takes the same QUST in Parameter #1.
-        let mut interner = StringInterner::new();
-        let mut record = make_record("LSCR", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(876, 0x0000_FFED),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let ctda = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "CTDA")
-            .expect("remapped CTDA must survive the incompatibility drop");
-        let FieldValue::Bytes(bytes) = &ctda.value else {
-            panic!("expected raw CTDA bytes");
-        };
-        let function_id = u16::from_le_bytes([bytes[8], bytes[9]]);
-        assert_eq!(
-            function_id, 56,
-            "876 IsQuestActive should remap to 56 GetQuestRunning"
-        );
-        let parameter_1 = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
-        assert_eq!(
-            parameter_1, 0x0000_FFED,
-            "quest Parameter #1 must be preserved"
-        );
-    }
-
-    #[test]
-    fn post_translate_remaps_fo76_get_quest_running_unique_on_dialogue_info() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("INFO", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_from_hex(
-                "00000000000000005803E944558A5400000000000000000000000000FFFFFFFF",
+    fn post_translate_remaps_fo76_condition_functions_and_keeps_parameter_1() {
+        let interner = StringInterner::new();
+        for id in [
+            FO76_GET_QUEST_RUNNING_UNIQUE_CONDITION_FUNCTION_ID,
+            FO76_EDITOR_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID,
+        ] {
+            assert!(FO76_REMAPPED_CONDITION_FUNCTION_IDS.contains(&id), "{id}");
+        }
+        for (label, record_sig, condition, expected_function, expected_parameter_1) in [
+            // IsQuestActive (876 > FO4's 817 max) is value-identical to
+            // GetQuestRunning and takes the same QUST in Parameter #1.
+            ("IsQuestActive", "LSCR", raw_ctda_with_parameter_1(876, 0x0000_FFED), 56, 0x0000_FFED),
+            (
+                "GetQuestRunningUnique on W05_Community_BB_Quest",
+                "INFO",
+                raw_ctda_from_hex("00000000000000005803E944558A5400000000000000000000000000FFFFFFFF"),
+                FO4_GET_QUEST_RUNNING_CONDITION_FUNCTION_ID,
+                0x0054_8A55,
             ),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let ctda = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "CTDA")
-            .expect("remapped dialogue condition must survive");
-        let FieldValue::Bytes(bytes) = &ctda.value else {
-            panic!("expected raw CTDA bytes");
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[8], bytes[9]]),
-            FO4_GET_QUEST_RUNNING_CONDITION_FUNCTION_ID
-        );
-        assert_eq!(
-            u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
-            0x0054_8A55,
-            "W05_Community_BB_Quest must remain Parameter #1"
-        );
-        assert!(
-            FO76_REMAPPED_CONDITION_FUNCTION_IDS
-                .contains(&FO76_GET_QUEST_RUNNING_UNIQUE_CONDITION_FUNCTION_ID)
-        );
-    }
-
-    #[test]
-    fn post_translate_remaps_fo76_current_location_exact_to_get_in_current_location() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("LSCR", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(
-                FO76_GET_IS_CURRENT_LOCATION_EXACT_CONDITION_FUNCTION_ID,
+            (
+                "GetIsCurrentLocationExact",
+                "LSCR",
+                raw_ctda_with_parameter_1(
+                    FO76_GET_IS_CURRENT_LOCATION_EXACT_CONDITION_FUNCTION_ID,
+                    0x007A_8A73,
+                ),
+                FO4_GET_IN_CURRENT_LOCATION_CONDITION_FUNCTION_ID,
                 0x007A_8A73,
             ),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let ctda = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "CTDA")
-            .expect("remapped CTDA must survive the incompatibility drop");
-        let FieldValue::Bytes(bytes) = &ctda.value else {
-            panic!("expected raw CTDA bytes");
-        };
-        let function_id = u16::from_le_bytes([bytes[8], bytes[9]]);
-        assert_eq!(
-            function_id, FO4_GET_IN_CURRENT_LOCATION_CONDITION_FUNCTION_ID,
-            "844 GetIsCurrentLocationExact should remap to 359 GetInCurrentLocation"
-        );
-        let parameter_1 = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
-        assert_eq!(
-            parameter_1, 0x007A_8A73,
-            "location Parameter #1 must be preserved"
-        );
-    }
-
-    #[test]
-    fn post_translate_remaps_editor_location_has_keyword() {
-        let interner = StringInterner::new();
-        let mut record = make_record("NPC_", &interner);
-        let location_theme_keyword = 0x004E_8561;
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(
-                FO76_EDITOR_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID,
-                location_theme_keyword,
+            (
+                "EditorLocationHasKeyword",
+                "NPC_",
+                raw_ctda_with_parameter_1(
+                    FO76_EDITOR_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID,
+                    0x004E_8561,
+                ),
+                FO4_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID,
+                0x004E_8561,
             ),
-        );
+            (
+                "IsInInteriorAcousticSpace",
+                "SNDR",
+                raw_ctda(FO76_IS_IN_INTERIOR_ACOUSTIC_SPACE_CONDITION_FUNCTION_ID),
+                FO4_IS_IN_INTERIOR_CONDITION_FUNCTION_ID,
+                0,
+            ),
+        ] {
+            let mut record = make_record(record_sig, &interner);
+            push_field(&mut record, "CTDA", condition);
 
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
+            Fo76Fo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
 
-        let ctda = record
-            .fields
-            .iter()
-            .find(|entry| entry.sig.0 == *b"CTDA")
-            .expect("remapped CTDA survives");
-        assert_eq!(
-            Fo76Fo4Hook::condition_function_id(&interner, &ctda.value),
-            Some(FO4_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID)
-        );
-        assert_eq!(
-            Fo76Fo4Hook::condition_parameter_1(&interner, &ctda.value),
-            Some(location_theme_keyword)
-        );
-        assert!(
-            FO76_REMAPPED_CONDITION_FUNCTION_IDS
-                .contains(&FO76_EDITOR_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID)
-        );
-    }
-
-    #[test]
-    fn post_translate_drops_raw_ctda_with_fo76_function_info_parameter() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("MUST", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(FO76_FUNCTION_INFO_CONDITION_FUNCTION_ID, 0x0063_78CE),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(!sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_keeps_raw_ctda_with_fo76_function_info_without_parameter() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("MUST", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda(FO76_FUNCTION_INFO_CONDITION_FUNCTION_ID),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"));
+            let ctda = record
+                .fields
+                .iter()
+                .find(|entry| entry.sig.0 == *b"CTDA")
+                .unwrap_or_else(|| panic!("{label}: remapped CTDA must survive the incompatibility drop"));
+            assert_eq!(
+                Fo76Fo4Hook::condition_function_id(&interner, &ctda.value),
+                Some(expected_function),
+                "{label}"
+            );
+            assert_eq!(
+                Fo76Fo4Hook::condition_parameter_1(&interner, &ctda.value),
+                Some(expected_parameter_1),
+                "{label}: Parameter #1 must be preserved"
+            );
+        }
     }
 
     fn source_context_get_stage_condition(stage: u16, operator: u8) -> FieldValue {
@@ -1048,258 +849,105 @@
     }
 
     #[test]
-    fn post_translate_drops_quest_param_ctda_with_null_parameter_1() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("TERM", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        // GetStage (58) with a NULL QUST Parameter #1 → xEdit "Found NULL,
-        // expected QUST"; the condition can't be retargeted → drop it.
-        push_field(&mut record, "CTDA", raw_ctda(58));
-        push_field(&mut record, "CIS1", raw_bytes(b"alias\0"));
+    fn post_translate_keeps_or_drops_ctda_by_fo4_compatibility() {
+        let interner = StringInterner::new();
+        let alias_ref = FO4_QUEST_ALIAS_PARAMETER_1_CONDITION_FUNCTION_IDS[0];
+        let structured_function_info = FieldValue::Struct(vec![
+            (
+                interner.intern("Function"),
+                FieldValue::Uint(FO76_FUNCTION_INFO_CONDITION_FUNCTION_ID as u64),
+            ),
+            (
+                interner.intern("Parameter1"),
+                FieldValue::Struct(vec![
+                    (interner.intern("variant"), FieldValue::String(interner.intern("base_object"))),
+                    (interner.intern("value"), FieldValue::Uint(0x0063_78CE)),
+                ]),
+            ),
+        ]);
+        for (label, record_sig, condition, trailing, kept) in [
+            ("FO4 function", "MGEF", raw_ctda(560), None, true),
+            (
+                "FunctionInfo with parameter",
+                "MUST",
+                raw_ctda_with_parameter_1(FO76_FUNCTION_INFO_CONDITION_FUNCTION_ID, 0x0063_78CE),
+                None,
+                false,
+            ),
+            (
+                "FunctionInfo without parameter",
+                "MUST",
+                raw_ctda(FO76_FUNCTION_INFO_CONDITION_FUNCTION_ID),
+                None,
+                true,
+            ),
+            // GetStage with a NULL QUST Parameter #1: xEdit "Found NULL, expected QUST".
+            ("GetStage null quest", "TERM", raw_ctda(58), Some("CIS1"), false),
+            ("GetStage resolved quest", "TERM", raw_ctda_with_parameter_1(58, 0x0001_2345), None, true),
+            ("non-quest function null parameter", "TERM", raw_ctda(560), None, true),
+            // No owning quest to resolve a Quest Alias run-on against.
+            (
+                "quest-alias run-on on ACTI",
+                "ACTI",
+                raw_ctda_with_run_on(59, 500, CTDA_RUN_ON_QUEST_ALIAS),
+                Some("CIS2"),
+                false,
+            ),
+            (
+                "quest-alias run-on on QUST",
+                "QUST",
+                raw_ctda_with_run_on(58, 500, CTDA_RUN_ON_QUEST_ALIAS),
+                None,
+                true,
+            ),
+            ("subject run-on on ACTI", "ACTI", raw_ctda_with_run_on(560, 0, 0), None, true),
+            ("alias-index CTDA on INFO", "INFO", raw_ctda_with_parameter_1(alias_ref, 3), Some("CIS1"), true),
+            ("alias-index CTDA on ACTI", "ACTI", raw_ctda_with_parameter_1(alias_ref, 3), Some("CIS1"), false),
+            ("FO76-only 737 below FO4 max", "SNDR", raw_ctda(737), None, false),
+            // 596 is below FO4's max id, so only the explicit FO76-only list catches it.
+            ("FO76-only 596", "INFO", raw_ctda_with_parameter_1(596, 0x0738_08CE), None, false),
+            ("FO4-valid 699 with the same parameter", "INFO", raw_ctda_with_parameter_1(699, 0x0738_08CE), None, true),
+            (
+                "COBJ exterior-cell function without cell",
+                "COBJ",
+                raw_ctda(FO4_COBJ_EXTERIOR_CELL_REJECTED_CONDITION_FUNCTION_ID),
+                None,
+                true,
+            ),
+            (
+                "non-COBJ exterior-cell function with cell",
+                "MGEF",
+                raw_ctda_with_parameter_1(FO4_COBJ_EXTERIOR_CELL_REJECTED_CONDITION_FUNCTION_ID, 0x0000_DC58),
+                None,
+                true,
+            ),
+            (
+                "structured FO76-only function",
+                "MGEF",
+                FieldValue::Struct(vec![(interner.intern("Function"), FieldValue::Uint(10017))]),
+                None,
+                false,
+            ),
+            ("structured FunctionInfo with parameter", "MUST", structured_function_info.clone(), None, false),
+        ] {
+            let mut record = make_record(record_sig, &interner);
+            push_field(&mut record, "EDID", FieldValue::None);
+            push_field(&mut record, "CTDA", condition);
+            if let Some(trailing) = trailing {
+                push_field(&mut record, trailing, raw_bytes(b"alias\0"));
+            }
 
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
+            Fo76Fo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
 
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"EDID"));
-        assert!(!sigs.contains(&"CTDA"), "null-quest CTDA must be dropped");
-        assert!(
-            !sigs.contains(&"CIS1"),
-            "the dropped CTDA's trailing CIS1 must go with it",
-        );
-    }
-
-    #[test]
-    fn post_translate_keeps_quest_param_ctda_with_resolved_parameter_1() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("TERM", &mut interner);
-        // GetStage (58) with a non-null QUST Parameter #1 → valid, keep.
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(58, 0x0001_2345),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_keeps_non_quest_param_ctda_with_null_parameter_1() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("TERM", &mut interner);
-        // Function 560 does not take a QUST in Parameter #1, so a NULL param is
-        // not a quest-target violation → keep.
-        push_field(&mut record, "CTDA", raw_ctda(560));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_drops_quest_alias_run_on_ctda_on_non_quest_record() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ACTI", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        // GetStageDone(59) with a bogus non-zero Param1 (500) and RunOn=5
-        // "Quest Alias" on an ACTI: no owning quest to resolve the alias against
-        // -> xEdit cannot find an alias table. Drop it.
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_run_on(59, 500, CTDA_RUN_ON_QUEST_ALIAS),
-        );
-        push_field(&mut record, "CIS2", raw_bytes(b"alias\0"));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"EDID"));
-        assert!(
-            !sigs.contains(&"CTDA"),
-            "quest-alias RunOn CTDA dropped on ACTI"
-        );
-        assert!(!sigs.contains(&"CIS2"), "trailing CIS2 dropped with it");
-    }
-
-    #[test]
-    fn post_translate_keeps_quest_alias_run_on_ctda_on_quest_record() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        // FO4 supports quest aliases. On a QUST-context record, xEdit resolves
-        // the alias against the owning quest's alias table.
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_run_on(58, 500, CTDA_RUN_ON_QUEST_ALIAS),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(
-            sigs.contains(&"CTDA"),
-            "quest-context record keeps quest-alias RunOn CTDA"
-        );
-    }
-
-    #[test]
-    fn post_translate_keeps_get_is_alias_ref_ctda_on_quest_context_record() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("INFO", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(FO4_QUEST_ALIAS_PARAMETER_1_CONDITION_FUNCTION_IDS[0], 3),
-        );
-        push_field(&mut record, "CIS1", raw_bytes(b"alias\0"));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"), "alias-index CTDA is kept");
-        assert!(sigs.contains(&"CIS1"), "trailing CIS1 is kept with it");
-    }
-
-    #[test]
-    fn post_translate_drops_get_is_alias_ref_ctda_without_quest_context() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ACTI", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(FO4_QUEST_ALIAS_PARAMETER_1_CONDITION_FUNCTION_IDS[0], 3),
-        );
-        push_field(&mut record, "CIS1", raw_bytes(b"alias\0"));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(
-            !sigs.contains(&"CTDA"),
-            "contextless alias-index CTDA is dropped"
-        );
-        assert!(!sigs.contains(&"CIS1"), "trailing CIS1 dropped with it");
-    }
-
-    #[test]
-    fn post_translate_keeps_non_quest_alias_run_on_ctda_on_non_quest_record() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("ACTI", &mut interner);
-        // RunOn=0 "Subject" (not Quest Alias), non-quest function -> keep.
-        push_field(&mut record, "CTDA", raw_ctda_with_run_on(560, 0, 0));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_maps_fo76_interior_acoustic_condition_to_fo4_interior() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("SNDR", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda(FO76_IS_IN_INTERIOR_ACOUSTIC_SPACE_CONDITION_FUNCTION_ID),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let ctda = record
-            .fields
-            .iter()
-            .find(|entry| entry.sig.as_str() == "CTDA")
-            .expect("mapped CTDA remains");
-        let FieldValue::Bytes(bytes) = &ctda.value else {
-            panic!("expected raw CTDA bytes");
-        };
-        assert_eq!(
-            Fo76Fo4Hook::raw_condition_function_id(bytes),
-            Some(FO4_IS_IN_INTERIOR_CONDITION_FUNCTION_ID),
-        );
-    }
-
-    #[test]
-    fn post_translate_drops_fo76_only_raw_ctda_below_fo4_max() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("SNDR", &mut interner);
-        push_field(&mut record, "CTDA", raw_ctda(737));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(!sigs.contains(&"CTDA"));
-    }
-
-    /// FO76-only condition function 596 (below FO4's 817 max) on a dialogue INFO,
-    /// carrying the `$73808CE` Parameter #1 seen on BS01 Brotherhood topics. The
-    /// max-id guard misses it (596 < 817), so it must be caught by the explicit
-    /// FO76-only id list and the whole CTDA dropped (xEdit `<Unknown:121112782>`).
-    #[test]
-    fn post_translate_drops_fo76_only_function_596_ctda() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("INFO", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(596, 0x0738_08CE),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(!sigs.contains(&"CTDA"), "func=596 CTDA must be dropped");
-    }
-
-    /// Guard: function 699 carries the same `$73808CE` Parameter #1 on OTHER
-    /// records but is FO4-VALID (xEdit does not flag it), so it must NOT be
-    /// dropped: the drop is keyed on function 596, not the parameter.
-    #[test]
-    fn post_translate_keeps_fo4_valid_function_699_ctda() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("INFO", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(699, 0x0738_08CE),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(
-            sigs.contains(&"CTDA"),
-            "func=699 CTDA must be kept (FO4-valid)"
-        );
+            let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
+            assert!(sigs.contains(&"EDID"), "{label}");
+            assert_eq!(sigs.contains(&"CTDA"), kept, "{label}");
+            if let Some(trailing) = trailing {
+                assert_eq!(sigs.contains(&trailing), kept, "{label}: trailing {trailing} follows its CTDA");
+            }
+        }
     }
 
     fn workshop_cobj(interner: &StringInterner, eid: &str, bench: u32) -> Record {
@@ -1322,95 +970,6 @@
             }),
         );
         record
-    }
-
-    #[test]
-    fn post_translate_keeps_cobj_raw_ctda_without_cell_parameter() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("COBJ", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda(FO4_COBJ_EXTERIOR_CELL_REJECTED_CONDITION_FUNCTION_ID),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_keeps_non_cobj_raw_ctda_with_same_cell_parameter() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("MGEF", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_with_parameter_1(
-                FO4_COBJ_EXTERIOR_CELL_REJECTED_CONDITION_FUNCTION_ID,
-                0x0000_DC58,
-            ),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_drops_structured_ctda_with_fo76_only_function_id() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("MGEF", &mut interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            FieldValue::Struct(vec![(interner.intern("Function"), FieldValue::Uint(10017))]),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(!sigs.contains(&"CTDA"));
-    }
-
-    #[test]
-    fn post_translate_drops_structured_ctda_with_fo76_function_info_parameter() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("MUST", &mut interner);
-        let variant = interner.intern("variant");
-        let value = interner.intern("value");
-        push_field(
-            &mut record,
-            "CTDA",
-            FieldValue::Struct(vec![
-                (
-                    interner.intern("Function"),
-                    FieldValue::Uint(FO76_FUNCTION_INFO_CONDITION_FUNCTION_ID as u64),
-                ),
-                (
-                    interner.intern("Parameter1"),
-                    FieldValue::Struct(vec![
-                        (variant, FieldValue::String(interner.intern("base_object"))),
-                        (value, FieldValue::Uint(0x0063_78CE)),
-                    ]),
-                ),
-            ]),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(!sigs.contains(&"CTDA"));
     }
 
     #[test]
@@ -1542,7 +1101,7 @@
     }
 
     #[test]
-    fn quest_completion_count_predicates_map_to_the_right_boolean() {
+    fn quest_completion_count_predicates_map_to_a_boolean_or_are_refused() {
         // (operator, comparison) -> (GetQuestCompleted value, exact?)
         let exact_not_completed = [(4_u8, 1.0_f32), (0, 0.0), (5, 0.0)];
         let exact_completed = [(3_u8, 1.0_f32), (2, 0.0), (1, 0.0)];
@@ -1570,10 +1129,6 @@
                 "operator={operator} comparison={comparison}"
             );
         }
-    }
-
-    #[test]
-    fn count_dependent_quest_completion_predicates_are_refused_not_guessed() {
         // `count < 3` on a repeatable daily, `count <= 1`, `count < 2`: true at
         // 0 AND at some non-zero count, so no boolean is a proper superset.
         // Plus the tautology `count >= 0` and the contradiction `count < 0`.
@@ -1594,35 +1149,23 @@
     }
 
     #[test]
-    fn refused_quest_completion_shape_is_dropped_not_silently_mistranslated() {
+    fn refused_quest_completion_shapes_are_dropped_not_silently_mistranslated() {
         let interner = StringInterner::new();
-        // `GetNumTimesCompletedQuest(006FD072) < 3` — a repeatable-daily shape.
-        let mut record = info_with_conditions(
-            &interner,
-            vec![get_num_times_completed_quest_ctda(0x80, 3.0, 0x006F_D072)],
-        );
+        // `count < 3` is a repeatable-daily shape; type byte 0x04 makes the
+        // comparison a GLOB FormID with no compile-time count to map.
+        for (label, type_byte, comparison) in [("count < 3", 0x80, 3.0), ("global-backed", 0x84, 1.0)] {
+            let mut record = info_with_conditions(
+                &interner,
+                vec![get_num_times_completed_quest_ctda(type_byte, comparison, 0x006F_D072)],
+            );
 
-        Fo76Fo4Hook::drop_fo4_incompatible_conditions(&interner, &mut record);
+            Fo76Fo4Hook::drop_fo4_incompatible_conditions(&interner, &mut record);
 
-        assert!(
-            record.fields.iter().all(|entry| entry.sig.0 != *b"CTDA"),
-            "an unexpressible count predicate must be dropped, never approximated"
-        );
-    }
-
-    #[test]
-    fn global_backed_quest_completion_comparison_is_refused() {
-        let interner = StringInterner::new();
-        // Comparison-value flag 0x04 set: the comparison is a GLOB FormID, so
-        // there is no compile-time count to map.
-        let mut record = info_with_conditions(
-            &interner,
-            vec![get_num_times_completed_quest_ctda(0x84, 1.0, 0x006F_D072)],
-        );
-
-        Fo76Fo4Hook::drop_fo4_incompatible_conditions(&interner, &mut record);
-
-        assert!(record.fields.iter().all(|entry| entry.sig.0 != *b"CTDA"));
+            assert!(
+                record.fields.iter().all(|entry| entry.sig.0 != *b"CTDA"),
+                "{label}: an unexpressible count predicate must be dropped, never approximated"
+            );
+        }
     }
 
     #[test]
@@ -1672,11 +1215,6 @@
 
     /// The catalog is process-global (the pair hook sees one record at a time),
     /// so the tests that install one must not run concurrently.
-    fn condition_form_test_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
-
     fn install_condition_forms(forms: &[(u32, &[&str])]) {
         let mut catalog = ConditionFormCatalog::new(0);
         for (object_id, rows) in forms {
@@ -1730,9 +1268,7 @@
 
     #[test]
     fn condition_form_inlining_recurses_through_nested_forms() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         let interner = StringInterner::new();
         install_condition_forms(&[
             (0x0055_620D, &CNDF_ACTIVE_QUEST_TYPE_FETCH_WEAPON),
@@ -1762,39 +1298,15 @@
                 "040000000A6255000E00140080545500000000000000000000000000FFFFFFFF",
             ]
         );
-        clear_condition_form_catalog();
-    }
-
-    #[test]
-    fn condition_form_inlining_is_idempotent() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let interner = StringInterner::new();
-        install_condition_forms(&[
-            (0x0055_620D, &CNDF_ACTIVE_QUEST_TYPE_FETCH_WEAPON),
-            (0x0055_5488, &CNDF_ACTIVE_QUEST_TYPE_FETCH),
-        ]);
-        let mut record = info_with_conditions(
-            &interner,
-            vec![raw_ctda_from_hex(
-                "000000000000803F6B0300000D625500000000000000000000000000FFFFFFFF",
-            )],
-        );
-
-        Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
         let once = condition_rows_hex(&record);
         Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
-
-        assert_eq!(condition_rows_hex(&record), once);
+        assert_eq!(condition_rows_hex(&record), once, "inlining is idempotent");
         clear_condition_form_catalog();
     }
 
     #[test]
     fn condition_form_or_group_splices_verbatim_into_an_and_slot() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         let interner = StringInterner::new();
         install_condition_forms(&[(0x0057_2CCB, &CNDF_RADIANT_QUEST_RETURN_ITEM)]);
         // Verbatim CTDAs of FO76 INFO 0058C912
@@ -1835,9 +1347,7 @@
 
     #[test]
     fn negated_all_and_condition_form_becomes_a_de_morgan_or_group() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         let interner = StringInterner::new();
         install_condition_forms(&[(0x0056_F71B, &CNDF_QUEST_STAGE_ACTIVE)]);
         // `Fn875(COMP_Cond_QuestStage_Active) == 0` in an unflagged slot.
@@ -1862,62 +1372,65 @@
         );
         clear_condition_form_catalog();
     }
-
     #[test]
-    fn negating_a_condition_form_that_contains_an_or_group_is_refused() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn inexpressible_condition_form_shapes_are_refused_and_left_verbatim() {
+        let _guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         let interner = StringInterner::new();
-        // CNDF 0056F71D COMP_Cond_RadiantQuest_Available: HasKeyword AND an
-        // Or-flagged row. Negating it needs an OR of ANDs, which the flat model
-        // cannot express, so the shape is refused outright.
-        install_condition_forms(&[(
-            0x0056_F71D,
-            &[
-                "000000000000803F300214001E3B5500000000000000000000000000FFFFFFFF",
-                "850000006B9B56000E001400B02B5600000000000000000000000000FFFFFFFF",
-            ],
-        )]);
-        // Verbatim third CTDA of FO76 INFO 0058949F
-        // (GREETS__RADIANT_QuestUnavailable---ALLY_Astronaut).
-        let source = "00000000000000006B03E9441DF75600000000000000000000000000FFFFFFFF";
-        let mut record = info_with_conditions(&interner, vec![raw_ctda_from_hex(source)]);
+        let radiant_available: &[&str] = &[
+            "000000000000803F300214001E3B5500000000000000000000000000FFFFFFFF",
+            "850000006B9B56000E001400B02B5600000000000000000000000000FFFFFFFF",
+        ];
+        let cycle_a: &[&str] = &["000000000000803F6B03000000020000000000000000000000000000FFFFFFFF"];
+        let cycle_b: &[&str] = &["000000000000803F6B03000000010000000000000000000000000000FFFFFFFF"];
+        let nuke_zone: &[&str] = &["000000000000803F510314001E3B5500000000000000000000000000FFFFFFFF"];
+        for (label, forms, source) in [
+            // Negating HasKeyword AND an OR row needs an OR of ANDs (verbatim
+            // third CTDA of INFO 0058949F).
+            (
+                "negated form containing an OR group",
+                vec![(0x0056_F71D, radiant_available)],
+                "00000000000000006B03E9441DF75600000000000000000000000000FFFFFFFF",
+            ),
+            // `A || (b && c)` has no flat encoding.
+            (
+                "multi-condition form in an OR slot",
+                vec![(0x0057_2CCB, &CNDF_RADIANT_QUEST_RETURN_ITEM[..])],
+                "010000000000803F6B03E944CB2C5700000000000000000000000000FFFFFFFF",
+            ),
+            (
+                "form cycle",
+                vec![(0x0000_0100, cycle_a), (0x0000_0200, cycle_b)],
+                "000000000000803F6B03000000010000000000000000000000000000FFFFFFFF",
+            ),
+            // Inner 849 (FO76 nuke-zone check) has no FO4 slot.
+            (
+                "FO4-incompatible inner function",
+                vec![(0x0057_2CCD, nuke_zone)],
+                "000000000000803F6B03E944CD2C5700000000000000000000000000FFFFFFFF",
+            ),
+            // Run On 14 is FO76-only; the form's rows carry their own Run On.
+            (
+                "non-subject run-on",
+                vec![(0x0056_F71B, &CNDF_QUEST_STAGE_ACTIVE[..])],
+                "000000000000803F6B0300001BF75600000000000E00000000000000FFFFFFFF",
+            ),
+        ] {
+            install_condition_forms(&forms);
+            let mut record = info_with_conditions(&interner, vec![raw_ctda_from_hex(source)]);
 
-        Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
-        assert_eq!(condition_rows_hex(&record), vec![source.to_uppercase()]);
+            Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
+            assert_eq!(condition_rows_hex(&record), vec![source.to_uppercase()], "{label}");
 
-        // Refused means "left for the existing incompatible-function pass",
-        // which drops and traces it exactly as before.
-        Fo76Fo4Hook::drop_fo4_incompatible_conditions(&interner, &mut record);
-        assert!(condition_rows_hex(&record).is_empty());
-        clear_condition_form_catalog();
-    }
-
-    #[test]
-    fn positive_multi_condition_form_in_an_or_slot_is_refused() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let interner = StringInterner::new();
-        install_condition_forms(&[(0x0057_2CCB, &CNDF_RADIANT_QUEST_RETURN_ITEM)]);
-        // Same 875 row as the splice test, but Or-flagged: the slot is one
-        // alternative of a host OR group and the replacement is a conjunction.
-        // `A || (b && c)` has no flat encoding.
-        let source = "010000000000803F6B03E944CB2C5700000000000000000000000000FFFFFFFF";
-        let mut record = info_with_conditions(&interner, vec![raw_ctda_from_hex(source)]);
-
-        Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
-
-        assert_eq!(condition_rows_hex(&record), vec![source.to_uppercase()]);
+            // Refused means "left for the incompatible-function pass", which drops it.
+            Fo76Fo4Hook::drop_fo4_incompatible_conditions(&interner, &mut record);
+            assert!(condition_rows_hex(&record).is_empty(), "{label}");
+        }
         clear_condition_form_catalog();
     }
 
     #[test]
     fn single_condition_form_in_an_or_slot_keeps_the_host_or_flag() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         let interner = StringInterner::new();
         install_condition_forms(&[(
             0x0057_2CCC,
@@ -1942,74 +1455,8 @@
     }
 
     #[test]
-    fn condition_form_cycle_is_refused_instead_of_recursing_forever() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let interner = StringInterner::new();
-        install_condition_forms(&[
-            (
-                0x0000_0100,
-                &["000000000000803F6B03000000020000000000000000000000000000FFFFFFFF"],
-            ),
-            (
-                0x0000_0200,
-                &["000000000000803F6B03000000010000000000000000000000000000FFFFFFFF"],
-            ),
-        ]);
-        let source = "000000000000803F6B03000000010000000000000000000000000000FFFFFFFF";
-        let mut record = info_with_conditions(&interner, vec![raw_ctda_from_hex(source)]);
-
-        Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
-
-        assert_eq!(condition_rows_hex(&record), vec![source.to_uppercase()]);
-        clear_condition_form_catalog();
-    }
-
-    #[test]
-    fn condition_form_with_an_fo4_incompatible_inner_function_is_refused() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let interner = StringInterner::new();
-        // Inner function 849 (FO76 nuke-zone check) has no FO4 slot. Inlining
-        // would only move the drop one level down.
-        install_condition_forms(&[(
-            0x0057_2CCD,
-            &["000000000000803F510314001E3B5500000000000000000000000000FFFFFFFF"],
-        )]);
-        let source = "000000000000803F6B03E944CD2C5700000000000000000000000000FFFFFFFF";
-        let mut record = info_with_conditions(&interner, vec![raw_ctda_from_hex(source)]);
-
-        Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
-
-        assert_eq!(condition_rows_hex(&record), vec![source.to_uppercase()]);
-        clear_condition_form_catalog();
-    }
-
-    #[test]
-    fn non_subject_run_on_condition_form_is_refused() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let interner = StringInterner::new();
-        install_condition_forms(&[(0x0056_F71B, &CNDF_QUEST_STAGE_ACTIVE)]);
-        // Run On = 14 (an FO76-only scope). The form's own rows carry their own
-        // Run On values, so re-scoping them is not expressible.
-        let source = "000000000000803F6B0300001BF75600000000000E00000000000000FFFFFFFF";
-        let mut record = info_with_conditions(&interner, vec![raw_ctda_from_hex(source)]);
-
-        Fo76Fo4Hook::inline_fo76_condition_forms(&mut record);
-
-        assert_eq!(condition_rows_hex(&record), vec![source.to_uppercase()]);
-        clear_condition_form_catalog();
-    }
-
-    #[test]
     fn inlined_conditions_go_through_the_normal_fo76_function_remap() {
-        let _guard = condition_form_test_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::translator::pair_hooks::fo76_fo4::fo76_catalog_test_guard();
         let interner = StringInterner::new();
         // Inner function 876 (FO76 IsQuestActive) is remapped to FO4 56
         // (GetQuestRunning) by the shared normalization pass, so the inlined row
@@ -2148,7 +1595,7 @@
     }
 
     #[test]
-    fn get_event_data_level_selector_requires_the_increase_level_root() {
+    fn get_event_data_level_selector_requires_increase_level_root_and_exact_shape() {
         let interner = StringInterner::new();
         let mut record = make_record("SMQN", &interner);
         push_field(&mut record, "PNAM", form_key_value(&interner, 0x0002_9152));
@@ -2157,21 +1604,16 @@
             "CTDA",
             raw_ctda_from_hex("000B00000000A0414002944302005631000000000000000000000000FFFFFFFF"),
         );
-
         Fo76Fo4Hook::normalize_fo76_story_manager_level_event_data(&mut record);
-
         let FieldValue::Bytes(bytes) = &record.fields[1].value else {
             panic!("raw CTDA bytes");
         };
         assert_eq!(
             Fo76Fo4Hook::raw_condition_function_id(bytes),
-            Some(FO76_GET_EVENT_DATA_CONDITION_FUNCTION_ID)
+            Some(FO76_GET_EVENT_DATA_CONDITION_FUNCTION_ID),
+            "wrong story manager root"
         );
-    }
 
-    #[test]
-    fn get_event_data_level_selector_rejects_non_exact_shapes() {
-        let interner = StringInterner::new();
         let source =
             hex::decode("000B00000000A0414002944302005631000000000000000000000000FFFFFFFF")
                 .expect("valid source CTDA");
@@ -2233,46 +1675,27 @@
     }
 
     #[test]
-    fn story_manager_event_data_rows_fo4_can_resolve_are_left_alone() {
+    fn event_data_rows_fo4_can_resolve_or_outside_story_manager_keep_their_run_on() {
         let interner = StringInterner::new();
-        let mut record = make_record("SMQN", &interner);
-        // Run On = Event Data, member 0x3152 — a member FO4 itself uses.
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_from_hex(
-                "600000000000A041500000000000000000000000070000000000000052310000",
-            ),
-        );
+        // Member 0x3152 is one FO4 itself uses; 0x3352 is FO76-only but INFO is
+        // not a Story Manager record.
+        for (record_sig, source, parameter_3) in [
+            ("SMQN", "600000000000A041500000000000000000000000070000000000000052310000", 0x0000_3152),
+            ("INFO", "600000000000A041500000000000000000000000070000000000000052330000", 0x0000_3352),
+        ] {
+            let mut record = make_record(record_sig, &interner);
+            push_field(&mut record, "CTDA", raw_ctda_from_hex(source));
 
-        Fo76Fo4Hook::normalize_fo76_story_manager_event_data_run_on(&mut record);
+            Fo76Fo4Hook::normalize_fo76_story_manager_event_data_run_on(&mut record);
 
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("bytes");
-        };
-        assert_eq!(Fo76Fo4Hook::raw_condition_run_on(bytes), Some(7));
-        assert_eq!(
-            Fo76Fo4Hook::raw_condition_parameter_3(bytes),
-            Some(0x0000_3152)
-        );
-    }
-
-    #[test]
-    fn non_story_manager_records_keep_their_event_data_run_on() {
-        let interner = StringInterner::new();
-        let mut record = make_record("INFO", &interner);
-        push_field(
-            &mut record,
-            "CTDA",
-            raw_ctda_from_hex(
-                "600000000000A041500000000000000000000000070000000000000052330000",
-            ),
-        );
-
-        Fo76Fo4Hook::normalize_fo76_story_manager_event_data_run_on(&mut record);
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("bytes");
-        };
-        assert_eq!(Fo76Fo4Hook::raw_condition_run_on(bytes), Some(7));
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("bytes");
+            };
+            assert_eq!(Fo76Fo4Hook::raw_condition_run_on(bytes), Some(7), "{record_sig}");
+            assert_eq!(
+                Fo76Fo4Hook::raw_condition_parameter_3(bytes),
+                Some(parameter_3),
+                "{record_sig}"
+            );
+        }
     }

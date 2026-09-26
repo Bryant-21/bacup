@@ -269,9 +269,16 @@ const EXPEDITION_MODULE_LOCATION_CASES: &[(u32, &str)] = &[
 ];
 
 #[test]
-fn direct_start_allowlist_forces_only_the_exact_player_aliases() {
+fn direct_start_allowlist_adapts_only_exact_aliases_idempotently() {
     assert_eq!(EXPEDITION_PLAYER_ALIAS_CASES.len(), 26);
+    assert_eq!(EXPEDITION_MODULE_LOCATION_CASES.len(), 10);
     let interner = StringInterner::new();
+    let adapt_twice = |record: &mut Record, editor_id: &str| {
+        Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, record);
+        let once = format!("{:?}", record.fields);
+        Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, record);
+        assert_eq!(format!("{:?}", record.fields), once, "{editor_id} is idempotent");
+    };
     for &(form_id, editor_id, alias_id, alias_name, flags) in EXPEDITION_PLAYER_ALIAS_CASES {
         let mut record = make_expedition_qust(
             &interner,
@@ -283,7 +290,7 @@ fn direct_start_allowlist_forces_only_the_exact_player_aliases() {
             flags,
             FO76_QUEST_EVENT_REFERENCE3,
         );
-        Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, &mut record);
+        adapt_twice(&mut record, editor_id);
 
         assert!(forced_player_alias(&interner, &record), "{editor_id}");
         assert!(
@@ -293,12 +300,6 @@ fn direct_start_allowlist_forces_only_the_exact_player_aliases() {
         assert_eq!(qust_alias_flags(&record), vec![flags as u32], "{editor_id}");
         assert!(!qust_has_untranslatable_event_alias(&record), "{editor_id}");
     }
-}
-
-#[test]
-fn direct_start_allowlist_optionalizes_exact_module_location_aliases() {
-    assert_eq!(EXPEDITION_MODULE_LOCATION_CASES.len(), 10);
-    let interner = StringInterner::new();
     for &(form_id, editor_id) in EXPEDITION_MODULE_LOCATION_CASES {
         let mut record = make_expedition_qust(
             &interner,
@@ -310,7 +311,7 @@ fn direct_start_allowlist_optionalizes_exact_module_location_aliases() {
             0x0000_0020_0001_0308,
             FO4_QUEST_EVENT_LOCATION1,
         );
-        Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, &mut record);
+        adapt_twice(&mut record, editor_id);
 
         assert_eq!(
             qust_alias_flags(&record),
@@ -327,45 +328,7 @@ fn direct_start_allowlist_optionalizes_exact_module_location_aliases() {
         );
         assert!(!qust_has_untranslatable_event_alias(&record), "{editor_id}");
     }
-}
 
-#[test]
-fn direct_start_alias_adaptation_is_idempotent() {
-    let interner = StringInterner::new();
-    let mut player = make_expedition_qust(
-        &interner,
-        0x006B_AA3D,
-        "XPD_AC01_Mission_Tax",
-        "ALST",
-        19,
-        "ExpeditionLeader",
-        0x18,
-        FO76_QUEST_EVENT_REFERENCE3,
-    );
-    Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, &mut player);
-    let once = format!("{:?}", player.fields);
-    Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, &mut player);
-    assert_eq!(format!("{:?}", player.fields), once);
-
-    let mut module = make_expedition_qust(
-        &interner,
-        0x0064_BC52,
-        "XPD_Module_Assassination",
-        "ALLS",
-        3,
-        "ModuleLocation",
-        0x0000_0020_0001_0308,
-        FO4_QUEST_EVENT_LOCATION1,
-    );
-    Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, &mut module);
-    let once = format!("{:?}", module.fields);
-    Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, &mut module);
-    assert_eq!(format!("{:?}", module.fields), once);
-}
-
-#[test]
-fn direct_start_alias_adaptation_rejects_near_matches() {
-    let interner = StringInterner::new();
     let fixtures = [
         (
             0x006B_AA3E,
@@ -408,9 +371,10 @@ fn direct_start_alias_adaptation_rejects_near_matches() {
             &interner, form_id, editor_id, "ALST", alias_id, alias_name, 0x18, event_data,
         );
         Fo76Fo4Hook::adapt_direct_start_quest_aliases(&interner, &mut record);
-        assert!(!forced_player_alias(&interner, &record));
-        assert_eq!(qust_alias_flags(&record), vec![0x18]);
-        assert_eq!(expedition_alias_event_pair(&record).len(), 2);
+        let label = format!("{form_id:X} {editor_id} {alias_id} {alias_name} {event_data}");
+        assert!(!forced_player_alias(&interner, &record), "{label}");
+        assert_eq!(qust_alias_flags(&record), vec![0x18], "{label}");
+        assert_eq!(expedition_alias_event_pair(&record).len(), 2, "{label}");
     }
 
     let mut wrong_plugin = make_expedition_qust(
@@ -450,48 +414,11 @@ fn direct_start_alias_adaptation_rejects_near_matches() {
 }
 
 #[test]
-fn full_hook_keeps_direct_start_aliases_legal() {
+fn full_translation_keeps_direct_start_aliases_legal() {
     let interner = StringInterner::new();
+    let translator = Translator::new(Game::Fo76, Game::Fo4).expect("translator");
+
     let mut mission = make_expedition_qust(
-        &interner,
-        0x0062_74EC,
-        "XPD_Pitt01_Mission",
-        "ALST",
-        19,
-        "ExpeditionLeader",
-        0x18,
-        FO76_QUEST_EVENT_REFERENCE3,
-    );
-    Fo76Fo4Hook
-        .pre_translate(&mut make_ctx(&interner), &mut mission)
-        .expect("mission pre-translation");
-    assert!(forced_player_alias(&interner, &mission));
-    assert!(!qust_has_untranslatable_event_alias(&mission));
-
-    let mut module = make_expedition_qust(
-        &interner,
-        0x0064_C2D0,
-        "XPD_Module_ObjectDestruction",
-        "ALLS",
-        3,
-        "ModuleLocation",
-        0x0000_0020_0001_0308,
-        FO4_QUEST_EVENT_LOCATION1,
-    );
-    Fo76Fo4Hook
-        .pre_translate(&mut make_ctx(&interner), &mut module)
-        .expect("module pre-translation");
-    assert_eq!(
-        qust_alias_flags(&module),
-        vec![0x0001_0308 | QUST_ALIAS_OPTIONAL_FLAG]
-    );
-    assert!(!qust_has_untranslatable_event_alias(&module));
-}
-
-#[test]
-fn full_translation_preserves_the_forced_player_alias() {
-    let interner = StringInterner::new();
-    let mut record = make_expedition_qust(
         &interner,
         0x006B_231C,
         "XPD_AC02_Mission_Sensation",
@@ -501,15 +428,15 @@ fn full_translation_preserves_the_forced_player_alias() {
         0x18,
         FO76_QUEST_EVENT_REFERENCE3,
     );
-    let translator = Translator::new(Game::Fo76, Game::Fo4).expect("translator");
     translator
-        .pre_translate(&mut make_ctx(&interner), &mut record)
-        .expect("pre-translation");
-    let translated = match translator.translate(&record, &interner) {
+        .pre_translate(&mut make_ctx(&interner), &mut mission)
+        .expect("mission pre-translation");
+    assert!(forced_player_alias(&interner, &mission));
+    assert!(!qust_has_untranslatable_event_alias(&mission));
+    let translated = match translator.translate(&mission, &interner) {
         TranslateResult::Translated(record) => record,
         other => panic!("expected translated expedition QUST, got {other:?}"),
     };
-
     assert!(forced_player_alias(&interner, &translated));
     assert!(!qust_has_untranslatable_event_alias(&translated));
 
@@ -526,6 +453,7 @@ fn full_translation_preserves_the_forced_player_alias() {
     translator
         .pre_translate(&mut make_ctx(&interner), &mut module)
         .expect("module pre-translation");
+    assert!(!qust_has_untranslatable_event_alias(&module));
     let translated_module = match translator.translate(&module, &interner) {
         TranslateResult::Translated(record) => record,
         other => panic!("expected translated module QUST, got {other:?}"),

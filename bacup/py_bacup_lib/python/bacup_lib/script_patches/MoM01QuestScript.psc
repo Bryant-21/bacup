@@ -15,9 +15,22 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
         EndIf
     EndIf
 
-    ObjectReference raiderCorpse = RaiderCorpse.GetReference()
+    ObjectReference raiderCorpseRef = RaiderCorpse.GetReference()
     ObjectReference raiderNote = MoM01RaiderNote.GetReference()
-    If raiderCorpse != None && raiderNote != None && raiderNote.GetContainer() != raiderCorpse
-        raiderCorpse.AddItem(raiderNote, 1, True)
+    If raiderCorpseRef != None && raiderNote != None && raiderNote.GetContainer() != raiderCorpseRef
+        raiderCorpseRef.AddItem(raiderNote, 1, True)
     EndIf
 EndEvent
+Function ReconcileTerminalState()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef == None || MoM01TerminalValue == None
+        Return
+    EndIf
+    If IsStageDone(80)
+        playerRef.SetValue(MoM01TerminalValue, CONST_MoM01Value_ReadyForReport)
+    ElseIf IsStageDone(50)
+        playerRef.SetValue(MoM01TerminalValue, CONST_MoM01Value_RequestedMentor)
+    ElseIf IsStageDone(40)
+        playerRef.SetValue(MoM01TerminalValue, CONST_MoM01Value_ReadyForMentor)
+    EndIf
+EndFunction

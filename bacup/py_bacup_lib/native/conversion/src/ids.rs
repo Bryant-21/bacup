@@ -114,57 +114,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sig_code_from_4_byte_str_round_trips() {
+    fn sig_code_round_trips_four_bytes_and_rejects_other_lengths() {
         let sig = SigCode::from_str("WEAP").unwrap();
         assert_eq!(sig.as_str(), "WEAP");
+        for input in ["WEA", "WEAPS", ""] {
+            assert!(SigCode::from_str(input).is_err(), "{input:?}");
+        }
     }
 
     #[test]
-    fn sig_code_rejects_wrong_length() {
-        assert!(SigCode::from_str("WEA").is_err());
-        assert!(SigCode::from_str("WEAPS").is_err());
-        assert!(SigCode::from_str("").is_err());
-    }
-
-    #[test]
-    fn formkey_parses_canonical_form() {
+    fn formkey_parses_formats_and_compares_canonical_form() {
         let mut interner = StringInterner::new();
         let fk = FormKey::parse("000810@SeventySix.esm", &mut interner).unwrap();
         assert_eq!(fk.local, 0x810);
         assert_eq!(interner.resolve(fk.plugin), Some("SeventySix.esm"));
-    }
-
-    #[test]
-    fn formkey_format_round_trips() {
-        let mut interner = StringInterner::new();
-        let fk = FormKey::parse("000810@SeventySix.esm", &mut interner).unwrap();
         assert_eq!(fk.format(&interner), "000810@SeventySix.esm");
+        let same = FormKey::parse("000810@SeventySix.esm", &mut interner).unwrap();
+        assert_eq!(fk, same);
     }
 
     #[test]
-    fn formkey_rejects_missing_at_sign() {
+    fn formkey_rejects_malformed_strings() {
         let mut interner = StringInterner::new();
-        assert!(FormKey::parse("000810SeventySix.esm", &mut interner).is_err());
-    }
-
-    #[test]
-    fn formkey_rejects_empty_hex() {
-        let mut interner = StringInterner::new();
-        assert!(FormKey::parse("@SeventySix.esm", &mut interner).is_err());
-    }
-
-    #[test]
-    fn formkey_rejects_empty_plugin() {
-        let mut interner = StringInterner::new();
-        assert!(FormKey::parse("000810@", &mut interner).is_err());
-    }
-
-    #[test]
-    fn formkey_equal_when_local_and_plugin_match() {
-        let mut interner = StringInterner::new();
-        let a = FormKey::parse("000810@SeventySix.esm", &mut interner).unwrap();
-        let b = FormKey::parse("000810@SeventySix.esm", &mut interner).unwrap();
-        assert_eq!(a, b);
+        for (name, input) in [
+            ("missing at sign", "000810SeventySix.esm"),
+            ("empty hex", "@SeventySix.esm"),
+            ("empty plugin", "000810@"),
+        ] {
+            assert!(FormKey::parse(input, &mut interner).is_err(), "{name}");
+        }
     }
 
     #[test]

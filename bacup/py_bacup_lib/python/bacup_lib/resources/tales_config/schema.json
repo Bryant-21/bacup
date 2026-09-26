@@ -1,0 +1,357 @@
+{
+  "layout_version": 2,
+  "pages": [
+    {"title": "Interface", "icon": "", "groups": [
+      {"title": "Status HUD", "settings": [
+        {"section": "HUD", "key": "bHealthStatus", "label": "Health Status", "help": "Fallout 76 health and status presentation on the HUD.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "HUD", "key": "bWeaponCondition", "label": "Weapon Condition", "help": "Show the equipped weapon's condition bar on the HUD.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "HUD", "key": "bQuickLoot", "label": "Fallout 76 Quick Loot", "help": "Use Fallout 76's quick-loot list and button prompts. Follows HUD Color and opacity.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "HUD", "key": "bCrosshair", "label": "Fallout 76 Crosshair", "help": "Use Fallout 76's crosshair art, transitions and spread animation. Follows HUD Color and visibility settings.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "HUD", "key": "bDamageNumbers", "label": "Floating Damage Numbers", "help": "Show Fallout 76-style numbers at your hits using actual health damage. Critical, sneak and weak-point hits use the larger bonus animation. Works in power armor. Requires the converted status HUD.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"}
+      ]},
+      {"title": "HUD Rewards", "settings": [
+        {"section": "HUD", "key": "bLegendaryItemBanner", "label": "Legendary Item Announcements", "help": "Fallout 76 banner when you pick up a legendary item.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "HUD", "key": "bQuestBanner", "label": "Quest Announcements", "help": "Fallout 76 banners for quest starts, completions and rewards.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"}
+      ]},
+      {"title": "Menus", "settings": [
+        {"section": "Menus", "key": "bFavoritesWheel", "label": "Favorites Wheel", "help": "On: the Fallout 76 favorites wheel. Off: Fallout 4's stock favorites cross. Keeps your favorites and key binding.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Menus", "key": "bDynamicWeaponIcons", "label": "Dynamic Weapon Icons", "help": "Favorites wheel draws each weapon's own silhouette, attachments included, instead of a category icon. A weapon's first appearance shows the category icon while its silhouette is generated.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Menus", "key": "bPipboyTabs", "label": "Fallout 76 Pip-Boy Tabs", "help": "Fallout 76 inventory tabs in the Pip-Boy.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Menus", "key": "iNewItemCount", "label": "Items Listed on NEW", "help": "How many recent pickups the NEW tab lists.", "kind": "int", "default": "20", "min": 1, "max": 100, "step": 1, "applies": "restart"},
+        {"section": "Menus", "key": "sInspectCard", "label": "Inspect Card", "help": "Item card shown when inspecting. Equipment Condition always uses the Fallout 76 card.", "kind": "choice", "default": "fo76", "min": 0, "max": 0, "step": 0, "applies": "restart", "choices": [{"value": "stock", "label": "Fallout 4"}, {"value": "fo76", "label": "Fallout 76"}]}
+      ]}
+    ]},
+    {"title": "Pip-Boy", "icon": "", "groups": [
+      {"title": "Quick-Boy", "settings": [
+        {"section": "PipBoy", "key": "bQuickBoy", "label": "Quick-Boy", "help": "Allow the Quick-Boy overlay. Requires BACUP's Quick-Boy movie. Baka Fullscreen Pip-Boy keeps ownership when loaded.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "PipBoy", "key": "bQuickBoyView", "label": "Pip-Boy View", "help": "Use the normal Pip-Boy or the Quick-Boy overlay, including in power armor. Switching view in the Pip-Boy also saves this.", "kind": "choice", "default": "0", "min": 0, "max": 0, "step": 0, "applies": "live", "choices": [{"value": "0", "label": "Arm"}, {"value": "1", "label": "Quick-Boy"}]},
+        {"section": "PipBoy", "key": "fQuickBoyScale", "label": "Quick-Boy Size", "help": "1.0 is the source mesh size. Try 1.25 for a larger curved screen, up to 1.5. Check the edges for clipping.", "kind": "float", "default": "1.0", "min": 0.75, "max": 1.5, "step": 0.05, "applies": "next_use"},
+        {"section": "PipBoy", "key": "fQuickBoyBrightness", "label": "Quick-Boy Brightness", "help": "Brighten menu text and icons without changing your color, the background or the arm view. 1.0 is the original brightness.", "kind": "float", "default": "1.5", "min": 0.5, "max": 3, "step": 0.1, "applies": "next_use"},
+        {"section": "PipBoy", "key": "bL3SwitchesView", "label": "L3 Switches View", "help": "Reserve left stick click while the Pip-Boy has focus. Turn off if another mod uses L3.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "PipBoy", "key": "bCustomColor", "label": "Custom Quick-Boy Color", "help": "Off follows your Pip-Boy color on foot and your HUD color in power armor. On uses the color below.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "PipBoy", "key": "iColorR", "label": "Red", "help": "", "kind": "int", "default": "228", "min": 0, "max": 255, "step": 1, "applies": "live"},
+        {"section": "PipBoy", "key": "iColorG", "label": "Green", "help": "", "kind": "int", "default": "230", "min": 0, "max": 255, "step": 1, "applies": "live"},
+        {"section": "PipBoy", "key": "iColorB", "label": "Blue", "help": "", "kind": "int", "default": "164", "min": 0, "max": 255, "step": 1, "applies": "live"}
+      ]}
+    ]},
+    {"title": "Equipment", "icon": "", "groups": [
+      {"title": "Condition", "settings": [
+        {"section": "Equipment", "key": "bCondition", "label": "Equipment Condition", "help": "Wear, enemy condition, broken-item blocking, repairs and condition bars.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Equipment", "key": "fRangedWear", "label": "Ranged Wear", "help": "Condition lost per ranged shot. 1.0 is normal, 0 disables wear.", "kind": "float", "default": "1.0", "min": 0, "max": 5, "step": 0.05, "applies": "live"},
+        {"section": "Equipment", "key": "fAutomaticWear", "label": "Automatic Fire Wear", "help": "Multiplies ranged wear for automatic weapons. 0.75 means 25% less wear per shot.", "kind": "float", "default": "0.75", "min": 0, "max": 5, "step": 0.05, "applies": "live"},
+        {"section": "Equipment", "key": "fMeleeWear", "label": "Melee and Bash Wear", "help": "Condition lost per melee hit or weapon bash. 1.0 is normal, 0 disables wear.", "kind": "float", "default": "1.0", "min": 0, "max": 5, "step": 0.05, "applies": "live"},
+        {"section": "Equipment", "key": "fArmorWear", "label": "Armor Wear", "help": "Condition lost when armor or power armor takes damage. 1.0 is normal, 0 disables wear.", "kind": "float", "default": "1.0", "min": 0, "max": 5, "step": 0.05, "applies": "live"}
+      ]},
+      {"title": "Vendors", "settings": [
+        {"section": "Vendors", "key": "bSpecialtyVendorsOnly", "label": "Special Stock at Weapon Dealers Only", "help": "Restrict random legendary weapons, legendary mod boxes and improved repair kits to weapon dealers. Off allows all caps vendors.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Vendors", "key": "fLegendaryWeaponChance", "label": "Legendary Weapon Chance", "help": "Percent chance per fresh vendor weapon to gain a legendary effect. Rolled once per restock.", "kind": "float", "default": "8", "min": 0, "max": 100, "step": 1, "applies": "next_use"},
+        {"section": "Vendors", "key": "fImprovedRepairKitChance", "label": "Improved Repair Kit Chance", "help": "Percent chance of one improved repair kit per vendor restock.", "kind": "float", "default": "15", "min": 0, "max": 100, "step": 1, "applies": "next_use"},
+        {"section": "Vendors", "key": "fLegendaryModChance", "label": "Legendary Mod Box Chance", "help": "Percent chance of one usable 1-3-star legendary mod box per vendor restock.", "kind": "float", "default": "7.5", "min": 0, "max": 100, "step": 0.5, "applies": "next_use"},
+        {"section": "Vendors", "key": "fScrapToStashChance", "label": "Scrap to Stash Chance", "help": "Percent chance of one Scrap to Stash per vendor restock, at any vendor.", "kind": "float", "default": "2", "min": 0, "max": 100, "step": 0.5, "applies": "next_use"}
+      ]},
+      {"title": "Apparel", "settings": [
+        {"section": "Equipment", "key": "bOutfitsOverArmor", "label": "Outfits Over Armor", "help": "Equip outfits over underarmor and armor, for outfits from the base game and mods.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"}
+      ]},
+      {"title": "Power Armor", "settings": [
+        {"section": "Equipment", "key": "bChassisStorage", "label": "Chassis Storage", "help": "Collect a power armor frame as a Power Armor Chassis item; a frame you climb out of returns to your inventory after 60 seconds.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Equipment", "key": "iTrackedFrames", "label": "Tracked Frames", "help": "How many of your most recently used frames are watched for automatic recall.", "kind": "int", "default": "5", "min": 1, "max": 20, "step": 1, "applies": "next_use"}
+      ]}
+    ]},
+    {"title": "Legendary", "icon": "", "groups": [
+      {"title": "Legendary Enemies", "settings": [
+        {"section": "Legendary", "key": "bInjectWeapons", "label": "Legendary Weapons", "help": "Legendary enemies can carry legendary weapons.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "bInjectArmor", "label": "Legendary Armor", "help": "Legendary enemies can carry legendary armor.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "bPreferEquippedWeapon", "label": "Prefer Equipped Weapon", "help": "Make the enemy's equipped weapon the legendary drop when possible.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "bExcludeRobots", "label": "Exclude Robots", "help": "Robots never roll legendary.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "bExcludeTurrets", "label": "Exclude Turrets", "help": "Turrets never roll legendary.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "bDiscoverEffects", "label": "Discover Effects From Plugins", "help": "Also use legendary effects found in other plugins.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "iMinRankForLegendaryTypes", "label": "Minimum Rank for Legendary Types", "help": "Lowest star rank given to creatures the game already marks legendary.", "kind": "int", "default": "1", "min": 1, "max": 5, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "fBaseChance", "label": "Base Chance Multiplier", "help": "Scales the legendary chance for every enemy.", "kind": "float", "default": "1.0", "min": 0, "max": 5, "step": 0.05, "applies": "restart"},
+        {"section": "Legendary", "key": "fChancePerLevel", "label": "Chance per Enemy Level", "help": "Percent chance added per enemy level above the minimum.", "kind": "float", "default": "0.04", "min": 0, "max": 1, "step": 0.01, "applies": "restart"},
+        {"section": "Legendary", "key": "fMaxChance", "label": "Maximum Chance", "help": "Cap on an enemy's legendary chance, in percent.", "kind": "float", "default": "5.0", "min": 0, "max": 100, "step": 0.5, "applies": "restart"},
+        {"section": "Legendary", "key": "iMinEnemyLevel", "label": "Minimum Enemy Level", "help": "Enemies below this level never roll legendary.", "kind": "int", "default": "10", "min": 1, "max": 100, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "iMaxRank", "label": "Maximum Stars", "help": "Highest star rank an enemy can roll.", "kind": "int", "default": "5", "min": 1, "max": 5, "step": 1, "applies": "restart"}
+      ]},
+      {"title": "Rank Multipliers", "settings": [
+        {"section": "Legendary", "key": "fRank1Health", "label": "1-Star Health", "help": "", "kind": "float", "default": "2.0", "min": 1, "max": 10, "step": 0.1, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank2Health", "label": "2-Star Health", "help": "", "kind": "float", "default": "2.4", "min": 1, "max": 10, "step": 0.1, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank3Health", "label": "3-Star Health", "help": "", "kind": "float", "default": "3.2", "min": 1, "max": 10, "step": 0.1, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank4Health", "label": "4-Star Health", "help": "", "kind": "float", "default": "4.0", "min": 1, "max": 10, "step": 0.1, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank5Health", "label": "5-Star Health", "help": "", "kind": "float", "default": "5.0", "min": 1, "max": 10, "step": 0.1, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank1Damage", "label": "1-Star Damage", "help": "", "kind": "float", "default": "1.10", "min": 1, "max": 3, "step": 0.05, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank2Damage", "label": "2-Star Damage", "help": "", "kind": "float", "default": "1.15", "min": 1, "max": 3, "step": 0.05, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank3Damage", "label": "3-Star Damage", "help": "", "kind": "float", "default": "1.20", "min": 1, "max": 3, "step": 0.05, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank4Damage", "label": "4-Star Damage", "help": "", "kind": "float", "default": "1.25", "min": 1, "max": 3, "step": 0.05, "applies": "restart"},
+        {"section": "Legendary", "key": "fRank5Damage", "label": "5-Star Damage", "help": "", "kind": "float", "default": "1.30", "min": 1, "max": 3, "step": 0.05, "applies": "restart"}
+      ]},
+      {"title": "Names", "settings": [
+        {"section": "Legendary", "key": "sRank1Prefix", "label": "1-Star Enemy Prefix", "help": "Leave blank to keep the enemy's name.", "kind": "text", "default": "Legendary", "min": 0, "max": 0, "step": 0, "applies": "restart"},
+        {"section": "Legendary", "key": "sRank2Prefix", "label": "2-Star Enemy Prefix", "help": "", "kind": "text", "default": "Epic", "min": 0, "max": 0, "step": 0, "applies": "restart"},
+        {"section": "Legendary", "key": "sRank3Prefix", "label": "3-Star Enemy Prefix", "help": "", "kind": "text", "default": "Mythic", "min": 0, "max": 0, "step": 0, "applies": "restart"},
+        {"section": "Legendary", "key": "sRank4Prefix", "label": "4-Star Enemy Prefix", "help": "", "kind": "text", "default": "Ascendant", "min": 0, "max": 0, "step": 0, "applies": "restart"},
+        {"section": "Legendary", "key": "sRank5Prefix", "label": "5-Star Enemy Prefix", "help": "", "kind": "text", "default": "Prime", "min": 0, "max": 0, "step": 0, "applies": "restart"},
+        {"section": "Legendary", "key": "sItemPrefix", "label": "Item Name Prefix", "help": "Text put before every legendary item's name.", "kind": "text", "default": "", "min": 0, "max": 0, "step": 0, "applies": "restart"},
+        {"section": "Legendary", "key": "bEffectsInItemNames", "label": "Effects in Item Names", "help": "Name legendary items after their effects, as Fallout 76 does.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"}
+      ]},
+      {"title": "Workbench Return Chance (%)", "settings": [
+        {"section": "Legendary", "key": "iReturnChance1", "label": "1st Star", "help": "", "kind": "int", "default": "100", "min": 0, "max": 100, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "iReturnChance2", "label": "2nd Star", "help": "", "kind": "int", "default": "25", "min": 0, "max": 100, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "iReturnChance3", "label": "3rd Star", "help": "", "kind": "int", "default": "25", "min": 0, "max": 100, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "iReturnChance4", "label": "4th Star", "help": "", "kind": "int", "default": "25", "min": 0, "max": 100, "step": 1, "applies": "restart"},
+        {"section": "Legendary", "key": "iReturnChance5", "label": "5th Star", "help": "", "kind": "int", "default": "25", "min": 0, "max": 100, "step": 1, "applies": "restart"}
+      ]},
+      {"title": "Scrip Exchange", "settings": [
+        {"section": "Scrip", "key": "iWeapon1", "label": "Weapon 1-Star", "help": "", "kind": "int", "default": "5", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iWeapon2", "label": "Weapon 2-Star", "help": "", "kind": "int", "default": "15", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iWeapon3", "label": "Weapon 3-Star", "help": "", "kind": "int", "default": "40", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iWeapon4", "label": "Weapon 4-Star", "help": "", "kind": "int", "default": "52", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iWeapon5", "label": "Weapon 5-Star", "help": "", "kind": "int", "default": "58", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iArmor1", "label": "Armor 1-Star", "help": "", "kind": "int", "default": "3", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iArmor2", "label": "Armor 2-Star", "help": "", "kind": "int", "default": "9", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iArmor3", "label": "Armor 3-Star", "help": "", "kind": "int", "default": "24", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iArmor4", "label": "Armor 4-Star", "help": "", "kind": "int", "default": "31", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iArmor5", "label": "Armor 5-Star", "help": "", "kind": "int", "default": "34", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iPowerArmor1", "label": "Power Armor 1-Star", "help": "", "kind": "int", "default": "10", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iPowerArmor2", "label": "Power Armor 2-Star", "help": "", "kind": "int", "default": "20", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iPowerArmor3", "label": "Power Armor 3-Star", "help": "", "kind": "int", "default": "45", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iPowerArmor4", "label": "Power Armor 4-Star", "help": "", "kind": "int", "default": "57", "min": 0, "max": 1000, "step": 1, "applies": "restart"},
+        {"section": "Scrip", "key": "iPowerArmor5", "label": "Power Armor 5-Star", "help": "", "kind": "int", "default": "63", "min": 0, "max": 1000, "step": 1, "applies": "restart"}
+      ]}
+    ]},
+    {"title": "World", "icon": "", "groups": [
+      {"title": "Gameplay", "settings": [
+        {"section": "Gameplay", "key": "bSustenance", "label": "Fallout 76 Hunger and Thirst", "help": "Outside Survival, eating and drinking give Fallout 76's fed and hydrated buffs; empty needs cost nothing. Survival is unchanged.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"}
+      ]},
+      {"title": "Infestations", "settings": [
+        {"section": "World", "key": "bInfestations", "label": "Fallout 76 Infestations", "help": "Rotating Infestations in Appalachia regions with a fog search area, a replacement faction and an elite four-star boss. Off stops new sites; active sites still finish.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "World", "key": "iMaxInfestations", "label": "Simultaneous Infestations", "help": "At most one per region.", "kind": "int", "default": "2", "min": 1, "max": 6, "step": 1, "applies": "restart"},
+        {"section": "World", "key": "fInfestationHours", "label": "Game Hours Between Infestations", "help": "How long to wait before trying to start another Infestation.", "kind": "float", "default": "12", "min": 1, "max": 168, "step": 1, "applies": "restart"}
+      ]},
+      {"title": "Area Loot", "settings": [
+        {"section": "AreaLoot", "key": "bEnabled", "label": "Area Loot", "help": "Looting a corpse also lists the loot of every other corpse within the distance below.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "AreaLoot", "key": "bHighlight", "label": "Corpse Highlight", "help": "Dead actors that still hold loot glow like Fallout 76 corpses (orange for legendary actors).", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "AreaLoot", "key": "bPlayerKillsOnly", "label": "Only Highlight Your Kills", "help": "Only mark creatures whose death was credited to you or an active companion this session.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "AreaLoot", "key": "fDistance", "label": "Distance", "help": "Game units, for both area loot and the highlight. Fallout 76 uses 2100.", "kind": "float", "default": "2100", "min": 500, "max": 4096, "step": 100, "applies": "live"},
+        {"section": "AreaLoot", "key": "fPollSeconds", "label": "Highlight Refresh (seconds)", "help": "How often nearby corpses are rescanned. Lower reacts faster, higher costs less.", "kind": "float", "default": "0.5", "min": 0.25, "max": 2, "step": 0.25, "applies": "live"}
+      ]},
+      {"title": "Playable Ghoul", "settings": [
+        {"section": "World", "key": "bPlayableGhoul", "label": "Playable Ghoul", "help": "Requires BACUP's player_ghoul.json catalog.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "", "key": "ghoul.weathered", "label": "Weathered Appearance", "help": "Apply the converted ghoul face and skin after leaving menus, combat and power armor.", "kind": "action", "default": "", "min": 0, "max": 0, "step": 0, "applies": "live"},
+        {"section": "", "key": "ghoul.smooth", "label": "Smooth Appearance", "help": "", "kind": "action", "default": "", "min": 0, "max": 0, "step": 0, "applies": "live"},
+        {"section": "", "key": "ghoul.eyes", "label": "Next Eye Color", "help": "", "kind": "action", "default": "", "min": 0, "max": 0, "step": 0, "applies": "live"},
+        {"section": "", "key": "ghoul.original", "label": "Original Appearance", "help": "Restore the face and skin saved before ghoul customization. Ghoul gameplay remains active.", "kind": "action", "default": "", "min": 0, "max": 0, "step": 0, "applies": "live"},
+        {"section": "", "key": "ghoul.reverse", "label": "Return to Human", "help": "Return to human after closing menus, leaving combat and exiting power armor.", "kind": "action", "default": "", "min": 0, "max": 0, "step": 0, "applies": "live"}
+      ]},
+      {"title": "Music", "settings": [
+        {"section": "World", "key": "bExplorationMusicContinuity", "label": "Continuous Exploration Music", "help": "Like Fallout 76, the exploration track keeps playing through outdoor cells that have no music of their own instead of restarting with a new track.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"}
+      ]},
+      {"title": "Raids", "settings": [
+        {"section": "Raids", "key": "bEnabled", "label": "Raids", "help": "Gleaming Depths can be started from the Fissure Site marker on the map.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "bWipeRecovery", "label": "Recover at Checkpoint", "help": "Dying inside a raid encounter returns you to its checkpoint and resets the encounter.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "fXPScale", "label": "XP Scale", "help": "Fraction of Fallout 76's raid XP granted per encounter.", "kind": "float", "default": "0.25", "min": 0, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "fGuardianHealthMult", "label": "Guardian Health", "help": "", "kind": "float", "default": "0.25", "min": 0.01, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "fGuardianShieldDamageMult", "label": "Guardian Shield Damage", "help": "", "kind": "float", "default": "1", "min": 0.01, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "fCircuitHealthMult", "label": "Circuit Health", "help": "", "kind": "float", "default": "0.35", "min": 0.01, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "fDrillHealthMult", "label": "Drill Health", "help": "", "kind": "float", "default": "1", "min": 0.01, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "fSquadHealthMult", "label": "Squad Epsilon Health", "help": "", "kind": "float", "default": "0.10", "min": 0.01, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "fGeneratorHealthMult", "label": "Generator Health", "help": "", "kind": "float", "default": "1", "min": 0.01, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "fTerrorHealthMult", "label": "Ultracite Terror Health", "help": "", "kind": "float", "default": "0.10", "min": 0.01, "max": 10, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "bCapStalkerDamage", "label": "Cap Stalker Damage", "help": "The drill's stalker no longer kills in one hit.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "fStalkerDamageCap", "label": "Stalker Damage Cap", "help": "Largest fraction of your health one stalker hit can take.", "kind": "float", "default": "0.6", "min": 0.05, "max": 1, "step": 0.05, "applies": "next_use"},
+        {"section": "Raids", "key": "iDrillFuelNeeded", "label": "Drill Fuel Needed", "help": "Fallout 76 needs 15; 0 keeps its value.", "kind": "int", "default": "8", "min": 0, "max": 50, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "iDrillMaxRegular", "label": "Drill Wave Size", "help": "Solo default; 0 keeps the Fallout 76 value.", "kind": "int", "default": "6", "min": 0, "max": 30, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "iDrillMaxSuicider", "label": "Drill Suicider Cap", "help": "Solo default; 0 keeps the Fallout 76 value.", "kind": "int", "default": "2", "min": 0, "max": 20, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "fDrillWaveTime", "label": "Drill Wave Interval (seconds)", "help": "Solo default; 0 keeps the Fallout 76 value.", "kind": "float", "default": "20", "min": 0, "max": 120, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "iSquadMaxEyebots", "label": "Squad Epsilon Eyebots", "help": "Solo default; 0 keeps the Fallout 76 value.", "kind": "int", "default": "2", "min": 0, "max": 10, "step": 1, "applies": "next_use"},
+        {"section": "Raids", "key": "fSquadEyebotInterval", "label": "Eyebot Spawn Interval (seconds)", "help": "Solo default; 0 keeps the Fallout 76 value.", "kind": "float", "default": "30", "min": 0, "max": 300, "step": 1, "applies": "next_use"}
+      ]},
+      {"title": "C.A.M.P.", "settings": [
+        {"section": "Camp", "key": "bStashWeightLimit", "label": "Stash Weight Limit", "help": "Cap the weight your stash holds, as Fallout 76 does. Whatever would go over comes back to you. Scrapbox and ammo box contents don't count.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "live"},
+        {"section": "Camp", "key": "iStashWeightLimit", "label": "Stash Limit", "help": "", "kind": "choice", "default": "400", "min": 0, "max": 0, "step": 0, "applies": "live", "choices": [{"value": "100", "label": "100 lb"}, {"value": "400", "label": "400 lb"}, {"value": "800", "label": "800 lb"}, {"value": "1200", "label": "1200 lb"}]}
+      ]}
+    ]},
+    {"title": "Death", "icon": "", "groups": [
+      {"title": "Death and Respawn", "settings": [
+        {"section": "World", "key": "iRespawnMode", "label": "Fallout 76 Respawn", "help": "Move items from the enabled categories into your death container and choose a discovered map location. Off keeps Fallout 4's death flow. FO76 only applies while participating in a public event, Daily Op, or expedition mission.", "kind": "choice", "default": "1", "min": 0, "max": 0, "step": 0, "applies": "restart", "choices": [{"value": "1", "label": "On"}, {"value": "0", "label": "Off"}, {"value": "2", "label": "FO76 only"}]},
+        {"section": "World", "key": "bRespawnDropJunk", "label": "Drop Junk", "help": "Drop junk and loose crafting components. Turn every drop category off to keep all items when respawning.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "World", "key": "bRespawnDropAid", "label": "Drop Aid", "help": "Drop chems and other aid items. Food and drinks use their own toggle. Quest and favorited items stay with you.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "World", "key": "bRespawnDropFood", "label": "Drop Food and Drink", "help": "Drop food and drinks, including water and Nuka-Cola.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "World", "key": "bRespawnDropArmor", "label": "Drop Armor and Clothing", "help": "Drop unequipped armor and clothing. Equipped, favorited and quest items stay with you.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "World", "key": "bRespawnDropWeapons", "label": "Drop Weapons", "help": "Drop unequipped weapons with their attachments, names and condition. Equipped, favorited and quest items stay with you.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "World", "key": "bRespawnRandomAmount", "label": "Random Drop Amount", "help": "Choose a random quantity from zero to the full count of each eligible stack. Off drops the whole stack. Applies only to enabled categories.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "World", "key": "sRespawnContainer", "label": "Death Container", "help": "Choose a converted Fallout 76 loot-bag appearance. Contents are preserved. An unavailable style falls back to the paper bag.", "kind": "choice", "default": "365BCC", "min": 0, "max": 0, "step": 0, "applies": "restart", "choices": [{"value": "365BCC", "label": "Paper Bag"}, {"value": "581F20", "label": "Jack O'Lantern"}, {"value": "581F3A", "label": "Meat Pile"}, {"value": "584A32", "label": "Guts"}, {"value": "58972A", "label": "Gravestone"}, {"value": "591412", "label": "Raider"}, {"value": "591414", "label": "Settler"}, {"value": "59D173", "label": "Holiday Present"}, {"value": "5A4DC9", "label": "Pot o' Gold"}, {"value": "5A4E0A", "label": "Bowling Ball Bag"}, {"value": "5AD156", "label": "WWII Paratrooper Bag"}, {"value": "5B0487", "label": "Vintage Tacklebox"}, {"value": "5B68D9", "label": "Lunchpail"}, {"value": "5C8E63", "label": "Pink Purse"}, {"value": "5C8E64", "label": "Carry-On Bag"}, {"value": "5C91CF", "label": "Vault-Tec Duffel"}, {"value": "5FB424", "label": "Six Pack"}, {"value": "65DE28", "label": "Pittsburgh Signal Source"}, {"value": "66917C", "label": "Beacon Signal"}, {"value": "68E8C4", "label": "That's Mine"}, {"value": "6ADF1F", "label": "Popcorn"}, {"value": "6C1F11", "label": "Enclave Case"}, {"value": "6D6471", "label": "Army Issued Haversack"}, {"value": "7745A5", "label": "Broken Footlocker"}, {"value": "787F73", "label": "Flaming Paper Sack"}, {"value": "78DB46", "label": "Donut Box"}, {"value": "7AE85F", "label": "Mutated Guts"}, {"value": "802257", "label": "Drifter"}, {"value": "82F71B", "label": "Garrahan Lunchpail"}, {"value": "859B48", "label": "Worn Tackle Bag"}]}
+      ]}
+    ]},
+    {"title": "Progression", "icon": "", "groups": [
+      {"title": "Systems", "settings": [
+        {"section": "World", "key": "bChallenges", "label": "Challenges", "help": "Daily, weekly and lifetime challenges. While off, progress, rewards, HUD and the map panel are disabled; saved progress is kept.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "World", "key": "bPerkCards", "label": "Perk Card Rewards", "help": "Perk-card challenge rewards. Earned packs are kept while off.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "restart"},
+        {"section": "World", "key": "bRealtimeVATS", "label": "Realtime VATS", "help": "Experimental. Unverified engine adapters keep vanilla VATS.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "restart"}
+      ]}
+    ]},
+    {"title": "Controls", "icon": "", "groups": [
+      {"title": "Key Bindings", "settings": [
+        {"section": "Controls", "key": "sHealKey", "label": "Heal", "help": "Use the available item with the highest health restoration. Fishing wins if both share a key.", "kind": "key", "default": "72,0", "min": 0, "max": 0, "step": 0, "applies": "live"},
+        {"section": "Controls", "key": "sFishingKey", "label": "Start Fishing", "help": "Start fishing when the fishing prompt appears.", "kind": "key", "default": "72,0", "min": 0, "max": 0, "step": 0, "applies": "live"},
+        {"section": "Controls", "key": "sPipboyViewKey", "label": "Switch Pip-Boy View", "help": "Only while the Pip-Boy has focus.", "kind": "key", "default": "122,0", "min": 0, "max": 0, "step": 0, "applies": "live"},
+        {"section": "Controls", "key": "sPhotoModeKey", "label": "Open Photo Mode", "help": "Opens Photo Mode in gameplay.", "kind": "key", "default": "0,0", "min": 0, "max": 0, "step": 0, "applies": "next_use"},
+        {"section": "Controls", "key": "sEmoteKey", "label": "Open Emote Wheel", "help": "Opens the emote wheel in gameplay.", "kind": "key", "default": "71,0", "min": 0, "max": 0, "step": 0, "applies": "live"}
+      ]}
+    ]},
+    {"title": "Photos & Menus", "icon": "", "groups": [
+      {"title": "Photo Mode", "settings": [
+        {"section": "PhotoMode", "key": "bEnabled", "label": "Photo Mode", "help": "Adds PHOTO MODE to the pause menu.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "PhotoMode", "key": "bFreezeTime", "label": "Freeze Time", "help": "Pause the world while Photo Mode is open.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "PhotoMode", "key": "sPhotoDirectory", "label": "Photo Folder", "help": "Where confirmed photos are moved. Blank uses Fallout 4's screenshot folder; relative paths start there.", "kind": "text", "default": "", "min": 0, "max": 0, "step": 0, "applies": "next_use"}
+      ]},
+      {"title": "Main Menu", "settings": [
+        {"section": "Menus", "key": "bFO76MainMenu", "label": "Fallout 76 Main Menu", "help": "Use BACUP-converted Fallout 76 menu art and music/video.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Menus", "key": "bRandomMenuTheme", "label": "Random Menu Theme", "help": "Pick a different Fallout 76 music/video pair on each main-menu entry.", "kind": "toggle", "default": "1", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Menus", "key": "bPhotoLoadingScreens", "label": "Photo Loading Screens", "help": "Show your ProSnap or Photo Mode photos during loading.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Menus", "key": "bFO76LoadingScreens", "label": "Fallout 76 Loading Screens", "help": "Use BACUP-converted Fallout 76 loading art and layout. Photos take priority when enabled.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Menus", "key": "fMenuMusicVolume", "label": "Menu Music Volume", "help": "Zero mutes it.", "kind": "float", "default": "1.0", "min": 0, "max": 1, "step": 0.05, "applies": "next_use"},
+        {"section": "Menus", "key": "bMuteMenuMusic", "label": "Mute Menu Music", "help": "Mute without changing the volume.", "kind": "toggle", "default": "0", "min": 0, "max": 1, "step": 1, "applies": "next_use"},
+        {"section": "Menus", "key": "iMenuMusicFadeMs", "label": "Music Fade (ms)", "help": "", "kind": "int", "default": "1500", "min": 0, "max": 5000, "step": 100, "applies": "next_use"}
+      ]}
+    ]},
+    {"title": "General", "icon": "", "groups": [
+      {"title": "Logging", "settings": [
+        {"section": "General", "key": "sLogLevel", "label": "Log Level", "help": "Detail written to the Tales log in Documents/My Games/Fallout4/F4SE.", "kind": "choice", "default": "info", "min": 0, "max": 0, "step": 0, "applies": "restart", "choices": [{"value": "trace", "label": "Trace"}, {"value": "debug", "label": "Debug"}, {"value": "info", "label": "Info"}, {"value": "warn", "label": "Warnings"}, {"value": "error", "label": "Errors"}, {"value": "off", "label": "Off"}]}
+      ]},
+      {"title": "Alternate Start", "settings": [
+        {"section": "General", "key": "sNewGameStart", "label": "New Game Start", "help": "Fallout 4 plays the prewar intro and Vault 111 as normal. Fallout 76 skips it and wakes you in Vault 76 on Reclamation Day; leaving the vault starts \"Out of Time\". Read once when a new game begins; existing saves keep their start.", "kind": "choice", "default": "fo4", "min": 0, "max": 0, "step": 0, "applies": "next_use", "choices": [{"value": "fo4", "label": "Fallout 4 (Vault 111)"}, {"value": "fo76", "label": "Fallout 76 (Vault 76)"}]}
+      ]}
+    ]}
+  ],
+  "v1_renames": [
+    {"old_section": "General", "old_key": "logLevel", "new_section": "General", "new_key": "sLogLevel"},
+    {"old_section": "AlternateStart", "old_key": "start", "new_section": "General", "new_key": "sNewGameStart"},
+    {"old_section": "StatusHUD", "old_key": "bHealthStatus", "new_section": "HUD", "new_key": "bHealthStatus"},
+    {"old_section": "StatusHUD", "old_key": "bWeaponCondition", "new_section": "HUD", "new_key": "bWeaponCondition"},
+    {"old_section": "StatusHUD", "old_key": "bQuickLoot", "new_section": "HUD", "new_key": "bQuickLoot"},
+    {"old_section": "StatusHUD", "old_key": "bCrosshair", "new_section": "HUD", "new_key": "bCrosshair"},
+    {"old_section": "StatusHUD", "old_key": "bDamageNumbers", "new_section": "HUD", "new_key": "bDamageNumbers"},
+    {"old_section": "HUDRewards", "old_key": "bLegendaryItems", "new_section": "HUD", "new_key": "bLegendaryItemBanner"},
+    {"old_section": "HUDRewards", "old_key": "bQuestAnnouncements", "new_section": "HUD", "new_key": "bQuestBanner"},
+    {"old_section": "Favorites", "old_key": "iEnabled", "new_section": "Menus", "new_key": "bFavoritesWheel"},
+    {"old_section": "PipboyTabs", "old_key": "iEnabled", "new_section": "Menus", "new_key": "bPipboyTabs"},
+    {"old_section": "PipboyTabs", "old_key": "iNewItemCount", "new_section": "Menus", "new_key": "iNewItemCount"},
+    {"old_section": "Inspect", "old_key": "inspectCard", "new_section": "Menus", "new_key": "sInspectCard"},
+    {"old_section": "MenuPresentation", "old_key": "bReplaceMainMenu", "new_section": "Menus", "new_key": "bFO76MainMenu"},
+    {"old_section": "MenuPresentation", "old_key": "bRandomMedia", "new_section": "Menus", "new_key": "bRandomMenuTheme"},
+    {"old_section": "MenuPresentation", "old_key": "bPhotoLoadingScreens", "new_section": "Menus", "new_key": "bPhotoLoadingScreens"},
+    {"old_section": "MenuPresentation", "old_key": "fMusicVolume", "new_section": "Menus", "new_key": "fMenuMusicVolume"},
+    {"old_section": "MenuPresentation", "old_key": "bMuteMusic", "new_section": "Menus", "new_key": "bMuteMenuMusic"},
+    {"old_section": "MenuPresentation", "old_key": "iMusicFadeMilliseconds", "new_section": "Menus", "new_key": "iMenuMusicFadeMs"},
+    {"old_section": "QuickBoy", "old_key": "iEnabled", "new_section": "PipBoy", "new_key": "bQuickBoy"},
+    {"old_section": "QuickBoy", "old_key": "iQuickBoy", "new_section": "PipBoy", "new_key": "bQuickBoyView"},
+    {"old_section": "QuickBoy", "old_key": "iControllerToggle", "new_section": "PipBoy", "new_key": "bL3SwitchesView"},
+    {"old_section": "QuickBoy", "old_key": "iUseCustomColor", "new_section": "PipBoy", "new_key": "bCustomColor"},
+    {"old_section": "QuickBoy", "old_key": "iColorR", "new_section": "PipBoy", "new_key": "iColorR"},
+    {"old_section": "QuickBoy", "old_key": "iColorG", "new_section": "PipBoy", "new_key": "iColorG"},
+    {"old_section": "QuickBoy", "old_key": "iColorB", "new_section": "PipBoy", "new_key": "iColorB"},
+    {"old_section": "QuickBoy", "old_key": "sToggleKey", "new_section": "Controls", "new_key": "sPipboyViewKey"},
+    {"old_section": "EquipmentCondition", "old_key": "bEnabled", "new_section": "Equipment", "new_key": "bCondition"},
+    {"old_section": "EquipmentCondition", "old_key": "fRangedWearMultiplier", "new_section": "Equipment", "new_key": "fRangedWear"},
+    {"old_section": "EquipmentCondition", "old_key": "fMeleeWearMultiplier", "new_section": "Equipment", "new_key": "fMeleeWear"},
+    {"old_section": "EquipmentCondition", "old_key": "fArmorWearMultiplier", "new_section": "Equipment", "new_key": "fArmorWear"},
+    {"old_section": "EquipmentCondition", "old_key": "fAutomaticWearMultiplier", "new_section": "Equipment", "new_key": "fAutomaticWear"},
+    {"old_section": "ApparelLayer", "old_key": "bEnabled", "new_section": "Equipment", "new_key": "bOutfitsOverArmor"},
+    {"old_section": "PowerArmor", "old_key": "iChassisStorage", "new_section": "Equipment", "new_key": "bChassisStorage"},
+    {"old_section": "PowerArmor", "old_key": "iMaxTrackedFrames", "new_section": "Equipment", "new_key": "iTrackedFrames"},
+    {"old_section": "EquipmentConditionTiers", "old_key": "", "new_section": "ConditionTiers", "new_key": ""},
+    {"old_section": "EquipmentConditionFactions", "old_key": "", "new_section": "ConditionFactions", "new_key": ""},
+    {"old_section": "EquipmentEconomy", "old_key": "bSpecialtyVendorsOnly", "new_section": "Vendors", "new_key": "bSpecialtyVendorsOnly"},
+    {"old_section": "EquipmentEconomy", "old_key": "fVendorLegendaryChance", "new_section": "Vendors", "new_key": "fLegendaryWeaponChance"},
+    {"old_section": "EquipmentEconomy", "old_key": "fImprovedRepairKitChance", "new_section": "Vendors", "new_key": "fImprovedRepairKitChance"},
+    {"old_section": "EquipmentEconomy", "old_key": "fLegendaryModChance", "new_section": "Vendors", "new_key": "fLegendaryModChance"},
+    {"old_section": "EquipmentEconomy", "old_key": "fScrapToStashChance", "new_section": "Vendors", "new_key": "fScrapToStashChance"},
+    {"old_section": "LegendaryStars", "old_key": "injectWeapons", "new_section": "Legendary", "new_key": "bInjectWeapons"},
+    {"old_section": "LegendaryStars", "old_key": "injectArmor", "new_section": "Legendary", "new_key": "bInjectArmor"},
+    {"old_section": "LegendaryStars", "old_key": "autoDiscoverEffects", "new_section": "Legendary", "new_key": "bDiscoverEffects"},
+    {"old_section": "LegendaryStars", "old_key": "preferEquippedWeapon", "new_section": "Legendary", "new_key": "bPreferEquippedWeapon"},
+    {"old_section": "LegendaryStars", "old_key": "excludeRobots", "new_section": "Legendary", "new_key": "bExcludeRobots"},
+    {"old_section": "LegendaryStars", "old_key": "excludeTurrets", "new_section": "Legendary", "new_key": "bExcludeTurrets"},
+    {"old_section": "LegendaryStars", "old_key": "encTypeLegendaryMinRank", "new_section": "Legendary", "new_key": "iMinRankForLegendaryTypes"},
+    {"old_section": "LegendaryStars", "old_key": "base", "new_section": "Legendary", "new_key": "fBaseChance"},
+    {"old_section": "LegendaryStars", "old_key": "actorLevelMult", "new_section": "Legendary", "new_key": "fChancePerLevel"},
+    {"old_section": "LegendaryStars", "old_key": "maxChancePercent", "new_section": "Legendary", "new_key": "fMaxChance"},
+    {"old_section": "LegendaryStars", "old_key": "minActorLevel", "new_section": "Legendary", "new_key": "iMinEnemyLevel"},
+    {"old_section": "LegendaryStars", "old_key": "maxRank", "new_section": "Legendary", "new_key": "iMaxRank"},
+    {"old_section": "LegendaryStars", "old_key": "rank1HealthMult", "new_section": "Legendary", "new_key": "fRank1Health"},
+    {"old_section": "LegendaryStars", "old_key": "rank2HealthMult", "new_section": "Legendary", "new_key": "fRank2Health"},
+    {"old_section": "LegendaryStars", "old_key": "rank3HealthMult", "new_section": "Legendary", "new_key": "fRank3Health"},
+    {"old_section": "LegendaryStars", "old_key": "rank4HealthMult", "new_section": "Legendary", "new_key": "fRank4Health"},
+    {"old_section": "LegendaryStars", "old_key": "rank5HealthMult", "new_section": "Legendary", "new_key": "fRank5Health"},
+    {"old_section": "LegendaryStars", "old_key": "rank1OutgoingDamageMult", "new_section": "Legendary", "new_key": "fRank1Damage"},
+    {"old_section": "LegendaryStars", "old_key": "rank2OutgoingDamageMult", "new_section": "Legendary", "new_key": "fRank2Damage"},
+    {"old_section": "LegendaryStars", "old_key": "rank3OutgoingDamageMult", "new_section": "Legendary", "new_key": "fRank3Damage"},
+    {"old_section": "LegendaryStars", "old_key": "rank4OutgoingDamageMult", "new_section": "Legendary", "new_key": "fRank4Damage"},
+    {"old_section": "LegendaryStars", "old_key": "rank5OutgoingDamageMult", "new_section": "Legendary", "new_key": "fRank5Damage"},
+    {"old_section": "LegendaryStars", "old_key": "rank1NamePrefix", "new_section": "Legendary", "new_key": "sRank1Prefix"},
+    {"old_section": "LegendaryStars", "old_key": "rank2NamePrefix", "new_section": "Legendary", "new_key": "sRank2Prefix"},
+    {"old_section": "LegendaryStars", "old_key": "rank3NamePrefix", "new_section": "Legendary", "new_key": "sRank3Prefix"},
+    {"old_section": "LegendaryStars", "old_key": "rank4NamePrefix", "new_section": "Legendary", "new_key": "sRank4Prefix"},
+    {"old_section": "LegendaryStars", "old_key": "rank5NamePrefix", "new_section": "Legendary", "new_key": "sRank5Prefix"},
+    {"old_section": "LegendaryStars", "old_key": "legendaryModReturnChance1", "new_section": "Legendary", "new_key": "iReturnChance1"},
+    {"old_section": "LegendaryStars", "old_key": "legendaryModReturnChance2", "new_section": "Legendary", "new_key": "iReturnChance2"},
+    {"old_section": "LegendaryStars", "old_key": "legendaryModReturnChance3", "new_section": "Legendary", "new_key": "iReturnChance3"},
+    {"old_section": "LegendaryStars", "old_key": "legendaryModReturnChance4", "new_section": "Legendary", "new_key": "iReturnChance4"},
+    {"old_section": "LegendaryStars", "old_key": "legendaryModReturnChance5", "new_section": "Legendary", "new_key": "iReturnChance5"},
+    {"old_section": "LegendaryStars", "old_key": "itemNamePrefix", "new_section": "Legendary", "new_key": "sItemPrefix"},
+    {"old_section": "LegendaryStars", "old_key": "itemNameIncludeEffects", "new_section": "Legendary", "new_key": "bEffectsInItemNames"},
+    {"old_section": "LegendaryStars", "old_key": "fallbackRankAbilities", "new_section": "Legendary", "new_key": "sFallbackAbilities"},
+    {"old_section": "LegendaryExchange", "old_key": "WeaponStar1", "new_section": "Scrip", "new_key": "iWeapon1"},
+    {"old_section": "LegendaryExchange", "old_key": "WeaponStar2", "new_section": "Scrip", "new_key": "iWeapon2"},
+    {"old_section": "LegendaryExchange", "old_key": "WeaponStar3", "new_section": "Scrip", "new_key": "iWeapon3"},
+    {"old_section": "LegendaryExchange", "old_key": "WeaponStar4", "new_section": "Scrip", "new_key": "iWeapon4"},
+    {"old_section": "LegendaryExchange", "old_key": "WeaponStar5", "new_section": "Scrip", "new_key": "iWeapon5"},
+    {"old_section": "LegendaryExchange", "old_key": "ArmorStar1", "new_section": "Scrip", "new_key": "iArmor1"},
+    {"old_section": "LegendaryExchange", "old_key": "ArmorStar2", "new_section": "Scrip", "new_key": "iArmor2"},
+    {"old_section": "LegendaryExchange", "old_key": "ArmorStar3", "new_section": "Scrip", "new_key": "iArmor3"},
+    {"old_section": "LegendaryExchange", "old_key": "ArmorStar4", "new_section": "Scrip", "new_key": "iArmor4"},
+    {"old_section": "LegendaryExchange", "old_key": "ArmorStar5", "new_section": "Scrip", "new_key": "iArmor5"},
+    {"old_section": "LegendaryExchange", "old_key": "PowerArmorStar1", "new_section": "Scrip", "new_key": "iPowerArmor1"},
+    {"old_section": "LegendaryExchange", "old_key": "PowerArmorStar2", "new_section": "Scrip", "new_key": "iPowerArmor2"},
+    {"old_section": "LegendaryExchange", "old_key": "PowerArmorStar3", "new_section": "Scrip", "new_key": "iPowerArmor3"},
+    {"old_section": "LegendaryExchange", "old_key": "PowerArmorStar4", "new_section": "Scrip", "new_key": "iPowerArmor4"},
+    {"old_section": "LegendaryExchange", "old_key": "PowerArmorStar5", "new_section": "Scrip", "new_key": "iPowerArmor5"},
+    {"old_section": "Respawn", "old_key": "iEnabled", "new_section": "World", "new_key": "iRespawnMode"},
+    {"old_section": "Infestations", "old_key": "iEnabled", "new_section": "World", "new_key": "bInfestations"},
+    {"old_section": "Infestations", "old_key": "iMaxConcurrent", "new_section": "World", "new_key": "iMaxInfestations"},
+    {"old_section": "Infestations", "old_key": "fRotationGameHours", "new_section": "World", "new_key": "fInfestationHours"},
+    {"old_section": "PlayerGhoul", "old_key": "bEnabled", "new_section": "World", "new_key": "bPlayableGhoul"},
+    {"old_section": "Challenges", "old_key": "bEnabled", "new_section": "World", "new_key": "bChallenges"},
+    {"old_section": "PerkCards", "old_key": "bB21PerkCards", "new_section": "World", "new_key": "bPerkCards"},
+    {"old_section": "RealtimeVATS", "old_key": "bEnabled", "new_section": "World", "new_key": "bRealtimeVATS"},
+    {"old_section": "AreaLoot", "old_key": "iEnabled", "new_section": "AreaLoot", "new_key": "bEnabled"},
+    {"old_section": "AreaLoot", "old_key": "iHighlight", "new_section": "AreaLoot", "new_key": "bHighlight"},
+    {"old_section": "AreaLoot", "old_key": "iPlayerKillsOnly", "new_section": "AreaLoot", "new_key": "bPlayerKillsOnly"},
+    {"old_section": "AreaLoot", "old_key": "fDistance", "new_section": "AreaLoot", "new_key": "fDistance"},
+    {"old_section": "AreaLoot", "old_key": "fPollSeconds", "new_section": "AreaLoot", "new_key": "fPollSeconds"},
+    {"old_section": "Terrain", "old_key": "bEnabled", "new_section": "Terrain", "new_key": "bEnabled"},
+    {"old_section": "Terrain", "old_key": "bDenseAlpha", "new_section": "Terrain", "new_key": "bDenseAlpha"},
+    {"old_section": "Terrain", "old_key": "bDenseColors", "new_section": "Terrain", "new_key": "bDenseColors"},
+    {"old_section": "Terrain", "old_key": "bGcvrGrass", "new_section": "Terrain", "new_key": "bGcvrGrass"},
+    {"old_section": "Terrain", "old_key": "fMaxCollisionDeviation", "new_section": "Terrain", "new_key": "fMaxCollisionDeviation"},
+    {"old_section": "Terrain", "old_key": "iCellCache", "new_section": "Terrain", "new_key": "iCellCache"},
+    {"old_section": "Hotkeys", "old_key": "sHealKey", "new_section": "Controls", "new_key": "sHealKey"},
+    {"old_section": "Hotkeys", "old_key": "sFishingKey", "new_section": "Controls", "new_key": "sFishingKey"},
+    {"old_section": "PhotoMode", "old_key": "sToggleKey", "new_section": "Controls", "new_key": "sPhotoModeKey"},
+    {"old_section": "PhotoMode", "old_key": "sOpenEvent", "new_section": "Controls", "new_key": "sPhotoModeEvent"},
+    {"old_section": "Emotes", "old_key": "sOpenKey", "new_section": "Controls", "new_key": "sEmoteKey"},
+    {"old_section": "Emotes", "old_key": "iOpenGamepad", "new_section": "Controls", "new_key": "iEmoteGamepad"},
+    {"old_section": "Emotes", "old_key": "sOpenEvent", "new_section": "Controls", "new_key": "sEmoteEvent"},
+    {"old_section": "PhotoMode", "old_key": "bEnabled", "new_section": "PhotoMode", "new_key": "bEnabled"},
+    {"old_section": "PhotoMode", "old_key": "bFreezeTime", "new_section": "PhotoMode", "new_key": "bFreezeTime"},
+    {"old_section": "PhotoMode", "old_key": "sCaptureEvent", "new_section": "PhotoMode", "new_key": "sCaptureEvent"},
+    {"old_section": "PhotoMode", "old_key": "sExitEvent", "new_section": "PhotoMode", "new_key": "sExitEvent"},
+    {"old_section": "PhotoMode", "old_key": "sToggleEvent", "new_section": "PhotoMode", "new_key": "sToggleEvent"},
+    {"old_section": "PhotoMode", "old_key": "sResetEvent", "new_section": "PhotoMode", "new_key": "sResetEvent"},
+    {"old_section": "PhotoMode", "old_key": "sPreviousEvent", "new_section": "PhotoMode", "new_key": "sPreviousEvent"},
+    {"old_section": "PhotoMode", "old_key": "sNextEvent", "new_section": "PhotoMode", "new_key": "sNextEvent"},
+    {"old_section": "PhotoMode", "old_key": "sUpEvent", "new_section": "PhotoMode", "new_key": "sUpEvent"},
+    {"old_section": "PhotoMode", "old_key": "sDownEvent", "new_section": "PhotoMode", "new_key": "sDownEvent"},
+    {"old_section": "PhotoGallery", "old_key": "sPhotoDirectory", "new_section": "PhotoMode", "new_key": "sPhotoDirectory"}
+  ]
+}

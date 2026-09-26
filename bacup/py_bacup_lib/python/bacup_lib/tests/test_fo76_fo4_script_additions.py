@@ -8,9 +8,7 @@ from pathlib import Path
 import pytest
 
 from bacup_lib.models import PluginPortOptions, PluginPortRequest
-from bacup_lib.tests.test_terminal_fragment_script_patches import _fo4_base_source
 from bacup_lib.workflows import unified
-from creation_lib.pex.native_runtime import compile_psc
 
 
 TRIGGER_SCRIPT = "B21:StoryEventOnTriggerEnter"
@@ -22,14 +20,22 @@ MUSIC_INSTRUMENT_SCRIPT = "B21MusicInstrumentScript"
 FURNITURE_BUFF_SCRIPT = "B21:FurnitureBuff"
 HOLOTAPE_STAGE_SCRIPT = "B21:HolotapeStageOnPlay"
 COLLECTOR_SCRIPT = "B21:WorkshopCollector"
+MARCIA_NOTE_SCRIPT = "Fragments:Packages:PF_BS02_MQ02_Missing_Marci_0060E191_2"
+MANIFEST_NAMES = tuple(
+    sorted(unified._SCRIPT_ADDITION_MANIFEST[("fo76", "fo4")], key=str.lower)
+)
+# The subset the VMAD-reference fixtures below drive directly; additions the
+# conversion injects from a consumer script instead are in MANIFEST_NAMES only.
 SCRIPT_NAMES = tuple(
     sorted(
         (
             TRIGGER_SCRIPT,
             ACTIVATION_SCRIPT,
             REWARD_SCRIPT,
+            "B21:CurrencyQuestRewards",
             "B21:ExpeditionMissionRewards",
             MATERIALIZER_SCRIPT,
+            "B21:EnclaveEventSupport",
             HOLOTAPE_STAGE_SCRIPT,
             COLLECTOR_SCRIPT,
             TWO_STATE_ADAPTER_SCRIPT,
@@ -37,6 +43,10 @@ SCRIPT_NAMES = tuple(
             FURNITURE_BUFF_SCRIPT,
             "B21_PlayerFear",
             "B21:PlanLearnOnRead",
+            "B21_ActivateAliasWithRequiredItem",
+            "B21_ShowMessageOnActivateAlias",
+            "B21:KeypadNative",
+            MARCIA_NOTE_SCRIPT,
         ),
         key=str.lower,
     )
@@ -123,9 +133,9 @@ def test_script_addition_discovery_is_pair_scoped_and_namespace_correct():
     additions = unified._script_addition_sources("FO76", "FO4")
 
     assert tuple(sorted(additions)) == tuple(
-        sorted(unified._script_key(script_name) for script_name in SCRIPT_NAMES)
+        sorted(unified._script_key(script_name) for script_name in MANIFEST_NAMES)
     )
-    for script_name in SCRIPT_NAMES:
+    for script_name in MANIFEST_NAMES:
         key = unified._script_key(script_name)
         assert additions[key] == (script_name, _addition_path(script_name))
         assert additions[key][1].relative_to(
@@ -146,12 +156,12 @@ def test_script_additions_are_included_in_wheel_package_data():
 
     assert "python/bacup_lib/script_additions/**/*.psc" in wheel_includes
     assert tuple(sorted(unified._script_addition_sources("fo76", "fo4"))) == tuple(
-        sorted(unified._script_key(script_name) for script_name in SCRIPT_NAMES)
+        sorted(unified._script_key(script_name) for script_name in MANIFEST_NAMES)
     )
 
 
 def test_required_script_additions_are_exact_and_pair_scoped():
-    for script_name in SCRIPT_NAMES:
+    for script_name in MANIFEST_NAMES:
         assert unified._requires_script_addition(
             script_name,
             source_game="FO76",
@@ -170,76 +180,16 @@ def test_required_script_additions_are_exact_and_pair_scoped():
     )
 
 
-def test_two_state_adapter_uses_fo76_jump_events_for_load_reconciliation():
-    source = _addition_path(TWO_STATE_ADAPTER_SCRIPT).read_text(encoding="utf-8")
+def test_every_pair_scoped_addition_source_is_registered():
+    # The manifest is the only delivery path, so an unlisted .psc never reaches
+    # the mod: callers compile against nothing and VMAD binds a missing class.
+    pair_root = unified._SCRIPT_ADDITION_DIR / "fo76_fo4"
+    on_disk = {
+        unified._script_key(":".join(path.relative_to(pair_root).with_suffix("").parts))
+        for path in pair_root.rglob("*.psc")
+    }
 
-    assert source.startswith(
-        "Scriptname B21TwoStateActivator76 extends Default2StateActivator"
-    )
-    assert 'String Property SetClosedAnim = "JumpState01" Auto' in source
-    assert 'String Property SetOpenAnim = "JumpState02" Auto' in source
-    assert "PlayAnimation(SetOpenAnim)" in source
-    assert "PlayAnimation(SetClosedAnim)" in source
-    assert "PlayAnimationAndWait(SetOpenAnim" not in source
-    assert "PlayAnimationAndWait(SetClosedAnim" not in source
-
-
-def test_music_instrument_adapter_tracks_furniture_use_and_sound_roles():
-    source, lines = _stripped_lines(MUSIC_INSTRUMENT_SCRIPT)
-
-    assert lines[:5] == [
-        "Scriptname B21MusicInstrumentScript extends ObjectReference",
-        "Sound Property Intro Auto Const",
-        "Sound Property Rhythm Auto Const",
-        "Sound Property Lead Auto Const",
-        "Sound Property Outro Auto Const",
-    ]
-    assert "Event OnActivate(ObjectReference akActionRef)" in lines
-    assert "Event Actor.OnSit(Actor akSender, ObjectReference akFurniture)" in lines
-    assert "Event Actor.OnGetUp(Actor akSender, ObjectReference akFurniture)" in lines
-    assert 'RegisterForRemoteEvent(actionActor, "OnSit")' in lines
-    assert 'RegisterForRemoteEvent(actionActor, "OnGetUp")' in lines
-    assert "Intro.PlayAndWait(Self)" in lines
-    assert "Sound loopSound = Rhythm" in lines
-    assert "loopSound = Lead" in lines
-    assert "nextInstance = loopSound.Play(Self)" in lines
-    assert "LoopSoundInstance = nextInstance" in lines
-    assert "Sound.StopInstance(currentLoopSoundInstance)" in lines
-    assert "Outro.Play(Self)" in lines
-    assert "PlaybackGeneration != thisPlayback" in source
-
-
-def test_music_instrument_repeats_phrases_and_rejects_previous_use_timers():
-    source, lines = _stripped_lines(MUSIC_INSTRUMENT_SCRIPT)
-
-    timer = source.split("Event OnTimer(Int aiTimerID)", 1)[1].split("EndEvent", 1)[0]
-    assert timer.index("aiTimerID != PlaybackGeneration") < timer.index("PlayRhythm(aiTimerID)")
-    assert "StartTimer(2.0, aiGeneration)" in lines
-    assert "CancelTimer(PlaybackGeneration)" in lines
-    assert "PlaybackGeneration != aiGeneration" in source
-    assert "Sound.StopInstance(nextInstance)" in lines
-    assert "Sound.StopInstance(previousInstance)" in lines
-    assert "Event OnUnload()\n    FinishPlayback(False)" in source
-
-
-def test_holotape_stage_adapter_is_play_only_and_stage_guarded():
-    source, lines = _stripped_lines(HOLOTAPE_STAGE_SCRIPT)
-
-    assert lines[:4] == [
-        f"Scriptname {HOLOTAPE_STAGE_SCRIPT} Extends ObjectReference",
-        "Quest Property TargetQuest Auto Const",
-        "Int Property PrereqStage Auto Const",
-        "Int Property StageToSet Auto Const",
-    ]
-    assert "Event OnHolotapePlay(ObjectReference akTerminalRef)" in lines
-    assert "If TargetQuest == None || !TargetQuest.IsRunning()" in lines
-    assert (
-        "If !TargetQuest.IsStageDone(PrereqStage) || TargetQuest.IsStageDone(StageToSet)"
-        in lines
-    )
-    assert lines.count("TargetQuest.SetStage(StageToSet)") == 1
-    assert "OnContainerChanged" not in source
-    assert "OnItemAdded" not in source
+    assert sorted(on_disk - set(unified._script_addition_sources("fo76", "fo4"))) == []
 
 
 @pytest.mark.parametrize(
@@ -247,9 +197,6 @@ def test_holotape_stage_adapter_is_play_only_and_stage_guarded():
     (
         ("fo76", "B21:Unrelated"),
         ("fo76", "ObjectReference"),
-        ("fo76", "Actor"),
-        ("fo76", "Quest"),
-        ("fo76", "Terminal"),
         ("skyrimse", TRIGGER_SCRIPT),
     ),
 )
@@ -345,6 +292,8 @@ def test_duplicate_references_install_compile_and_report_each_addition_once(
         _ref(ACTIVATION_SCRIPT, 4),
         _ref(REWARD_SCRIPT, 5, record_sig="QUST"),
         _ref(REWARD_SCRIPT, 6, record_sig="QUST"),
+        _ref("B21:CurrencyQuestRewards", 21, record_sig="QUST"),
+        _ref("B21:CurrencyQuestRewards", 22, record_sig="QUST"),
         _ref("B21:ExpeditionMissionRewards", 9, record_sig="QUST"),
         _ref("B21:ExpeditionMissionRewards", 10, record_sig="QUST"),
         _ref(MATERIALIZER_SCRIPT, 7, record_sig="QUST"),
@@ -360,6 +309,15 @@ def test_duplicate_references_install_compile_and_report_each_addition_once(
         _ref(COLLECTOR_SCRIPT, 16, record_sig="CONT"),
         _ref("B21_PlayerFear", 19, record_sig="MGEF"),
         _ref("B21:PlanLearnOnRead", 20, record_sig="BOOK"),
+        _ref("B21_ActivateAliasWithRequiredItem", 23, record_sig="QUST"),
+        _ref("B21_ActivateAliasWithRequiredItem", 24, record_sig="QUST"),
+        _ref("B21_ShowMessageOnActivateAlias", 25, record_sig="QUST"),
+        _ref("B21_ShowMessageOnActivateAlias", 26, record_sig="QUST"),
+        _ref("B21:KeypadNative", 27, record_sig="ACTI"),
+        _ref("B21:KeypadNative", 28, record_sig="ACTI"),
+        _ref("B21:EnclaveEventSupport", 29, record_sig="QUST"),
+        _ref("B21:EnclaveEventSupport", 30, record_sig="QUST"),
+        _ref(MARCIA_NOTE_SCRIPT, 0x60E191, record_sig="PACK"),
     ]
     monkeypatch.setattr(
         runtime,
@@ -436,11 +394,21 @@ def test_duplicate_references_install_compile_and_report_each_addition_once(
     assert all(item["status"] == "compiled" for item in report["scripts"])
 
 
-def test_colossus_script_reference_includes_fear_native_interface(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("consumer", "record_sig", "addition"),
+    [
+        ("Creatures:WendigoColossusRaceScript", "MGEF", "B21_PlayerFear"),
+        ("ENz01_AboveScript", "QUST", "B21:EnclaveEventSupport"),
+        ("W05_Wayward_SwapMarkerOnCriteria", "REFR", "B21_WaywardState"),
+    ],
+)
+def test_consumer_script_reference_installs_its_shared_addition(
+    monkeypatch, tmp_path, consumer, record_sig, addition
+):
     runtime = _runtime(tmp_path, monkeypatch)
     monkeypatch.setattr(
         runtime, "_collect_script_references",
-        lambda *_args: ([_ref("Creatures:WendigoColossusRaceScript", 1, record_sig="MGEF")], 1),
+        lambda *_args: ([_ref(consumer, 1, record_sig=record_sig)], 1),
     )
     monkeypatch.setattr(
         runtime, "_reconcile_script_references",
@@ -448,15 +416,15 @@ def test_colossus_script_reference_includes_fear_native_interface(monkeypatch, t
     )
     monkeypatch.setattr(
         "creation_lib.pex.native_runtime.compile_psc",
-        lambda *_args, **_kwargs: types.SimpleNamespace(ok=True, pex_bytes=b"fear interface", diagnostics=[]),
+        lambda *_args, **_kwargs: types.SimpleNamespace(ok=True, pex_bytes=b"addition", diagnostics=[]),
     )
     ctx = _context(tmp_path)
 
     runtime._run_convert_scripts_phase(ctx, _runner())
 
-    assert (Path(ctx.mod_path) / "data/Scripts/B21_PlayerFear.pex").read_bytes() == b"fear interface"
-    assert (Path(ctx.mod_path) / "Scripts/Source/User/B21_PlayerFear.psc").read_text() == (
-        _addition_path("B21_PlayerFear").read_text()
+    assert (Path(ctx.mod_path) / "data/Scripts" / _relative_path(addition, ".pex")).read_bytes() == b"addition"
+    assert (Path(ctx.mod_path) / "Scripts/Source/User" / _relative_path(addition)).read_text() == (
+        _addition_path(addition).read_text()
     )
 
 
@@ -699,185 +667,3 @@ def test_invalid_addition_artifact_is_reported_to_native_reconciliation(
     )
 
 
-def _stripped_lines(script_name: str) -> tuple[str, list[str]]:
-    source = _addition_path(script_name).read_text(encoding="utf-8")
-    return source, [line.strip() for line in source.splitlines() if line.strip()]
-
-
-def _assert_suppressing_states(lines: list[str], event: str) -> None:
-    for state_name in ("Busy", "Done"):
-        state_index = lines.index(f"State {state_name}")
-        assert lines[state_index : state_index + 4] == [
-            f"State {state_name}",
-            event,
-            "EndEvent",
-            "EndState",
-        ]
-
-
-def test_trigger_adapter_source_contract():
-    source, lines = _stripped_lines(TRIGGER_SCRIPT)
-    event = "Event OnTriggerEnter(ObjectReference akActionRef)"
-
-    assert lines[:4] == [
-        f"Scriptname {TRIGGER_SCRIPT} extends ObjectReference",
-        "Quest Property TargetQuest Auto Const",
-        "Keyword Property StoryEventKeyword Auto Const",
-        "Int Property StageToSet Auto Const",
-    ]
-    assert lines.count(event) == 3
-    _assert_suppressing_states(lines, event)
-    assert "If akActionRef != playerRef" in lines
-    assert "If TargetQuest.IsCompleted()" in lines
-    busy_index = lines.index('GoToState("Busy")')
-    event_index = lines.index(
-        "StoryEventKeyword.SendStoryEventAndWait(None, playerRef, playerRef)"
-    )
-    running_index = lines.index("If TargetQuest.IsRunning()", event_index)
-    stage_index = lines.index("TargetQuest.SetStage(StageToSet)")
-    done_index = lines.index('GoToState("Done")', stage_index)
-    rearm_index = lines.index('GoToState("Armed")', done_index)
-
-    assert busy_index < event_index < running_index < stage_index
-    assert lines[event_index - 1] == "If !TargetQuest.IsRunning()"
-    assert lines[stage_index - 1] == "If TargetQuest.IsRunning()"
-    assert stage_index < done_index < rearm_index
-    assert lines.count("TargetQuest.SetStage(StageToSet)") == 1
-    assert "TargetQuest.Start()" not in source
-    assert "StartGameEnabled" not in source
-    assert "W05_" not in source
-    assert "405E" not in source
-
-
-def test_activation_scene_adapter_source_contract():
-    source, lines = _stripped_lines(ACTIVATION_SCRIPT)
-    event = "Event OnActivate(ObjectReference akActionRef)"
-
-    assert lines[:4] == [
-        f"Scriptname {ACTIVATION_SCRIPT} extends ObjectReference",
-        "Quest Property TargetQuest Auto Const",
-        "Keyword Property StoryEventKeyword Auto Const",
-        "Scene Property SceneToStart Auto Const",
-    ]
-    assert lines.count(event) == 3
-    _assert_suppressing_states(lines, event)
-    assert "If akActionRef != playerRef" in lines
-    assert "If TargetQuest.IsCompleted() || SceneToStart.IsPlaying()" in lines
-    busy_index = lines.index('GoToState("Busy")')
-    event_index = lines.index(
-        "StoryEventKeyword.SendStoryEventAndWait(None, playerRef, playerRef)"
-    )
-    running_index = lines.index("If TargetQuest.IsRunning()", event_index)
-    not_playing_index = lines.index("If !SceneToStart.IsPlaying()", running_index)
-    scene_start_index = lines.index("SceneToStart.Start()")
-    playing_index = lines.index("If SceneToStart.IsPlaying()", scene_start_index)
-    done_index = lines.index('GoToState("Done")', playing_index)
-    rearm_index = lines.index('GoToState("Armed")', done_index)
-
-    assert busy_index < event_index < running_index < not_playing_index
-    assert lines[event_index - 1] == "If !TargetQuest.IsRunning()"
-    assert not_playing_index < scene_start_index < playing_index
-    assert lines[scene_start_index - 1] == "If !SceneToStart.IsPlaying()"
-    assert lines[done_index - 1] == "If SceneToStart.IsPlaying()"
-    assert playing_index < done_index < rearm_index
-    assert lines.count("SceneToStart.Start()") == 1
-    assert "TargetQuest.Start()" not in source
-    assert "SetStage" not in source
-    assert "W05_" not in source
-    assert "405E" not in source
-
-
-def test_quest_reward_source_contract():
-    source, lines = _stripped_lines(REWARD_SCRIPT)
-
-    assert lines[0] == f"Scriptname {REWARD_SCRIPT} Extends Quest"
-    assert [line for line in lines if " Property " in line] == [
-        "Int[] Property XPStages Auto Const",
-        "GlobalVariable[] Property RewardXP Auto",
-        "Int[] Property CapsStages Auto Const",
-        "GlobalVariable[] Property RewardCaps Auto",
-        "MiscObject Property CapsItem Auto",
-        "Int[] Property ItemStages Auto Const",
-        "Form[] Property RewardItems Auto",
-        "Int[] Property RewardCounts Auto",
-    ]
-    assert "Event OnStageSet(Int auiStageID, Int auiItemID)" in source
-    assert "Event OnQuestInit()" in source
-    assert source.count("GrantedStages = None") == 1
-    assert "GrantRewardsForStage(auiStageID)" in source
-    assert "Int[] GrantedStages" in source
-    assert "HasGrantedStage(auiStageID)" in source
-    assert "RecordGrantedStage(auiStageID)" in source
-    assert "XPStages[index] == auiStageID" in source
-    assert "CapsStages[index] == auiStageID" in source
-    assert "ItemStages[index] == auiStageID" in source
-    grant_record_index = lines.index("RecordGrantedStage(auiStageID)")
-    xp_reward_index = lines.index("Game.RewardPlayerXP(xpAmount.GetValueInt())")
-    caps_add_index = lines.index(
-        "playerRef.AddItem(CapsItem, capsAmount.GetValueInt(), True)"
-    )
-    item_add_index = lines.index("playerRef.AddItem(rewardItem, rewardCount, True)")
-    assert grant_record_index < xp_reward_index < caps_add_index < item_add_index
-    assert "GrantedStages.Add(auiStageID)" in source
-    assert "Event OnQuestShutdown()" not in source
-    assert "OnPlayerLoadGame" not in source
-    assert source.count("Game.RewardPlayerXP(xpAmount.GetValueInt())") == 1
-    assert ".Complete(" not in source
-    assert ".Stop(" not in source
-    assert "Debug.Notification" not in source
-    source_casefold = source.casefold()
-    for forbidden in ("learnrecipe", "teachrecipe", "constructibleobject"):
-        assert forbidden not in source_casefold
-
-
-def test_quest_reward_run_guard_resets_only_when_a_new_run_initializes():
-    source, lines = _stripped_lines(REWARD_SCRIPT)
-    init_index = lines.index("Event OnQuestInit()")
-    reset_index = lines.index("GrantedStages = None")
-    init_end_index = lines.index("EndEvent", init_index)
-    grant_index = lines.index("Function GrantRewardsForStage(Int auiStageID)")
-    guard_index = lines.index(
-        "If !HasRewardForStage(auiStageID) || HasGrantedStage(auiStageID)",
-        grant_index,
-    )
-    record_index = lines.index("RecordGrantedStage(auiStageID)", guard_index)
-
-    assert init_index < reset_index < init_end_index < grant_index
-    assert guard_index < record_index
-    assert source.count("GrantedStages = None") == 1
-    assert "OnPlayerLoadGame" not in source
-
-    granted_stages: set[int] = set()
-
-    def grant_for_stage(stage: int) -> bool:
-        if stage in granted_stages:
-            return False
-        granted_stages.add(stage)
-        return True
-
-    def initialize_new_run() -> None:
-        granted_stages.clear()
-
-    assert grant_for_stage(9000)
-    assert not grant_for_stage(9000)
-    initialize_new_run()
-    assert grant_for_stage(9000)
-
-
-@pytest.mark.parametrize("script_name", SCRIPT_NAMES)
-def test_full_script_addition_compiles_with_fo4_imports(script_name: str):
-    base_source = _fo4_base_source()
-    if base_source is None:
-        pytest.skip("FO4 base Papyrus sources unavailable")
-
-    result = compile_psc(
-        _addition_path(script_name).read_text(encoding="utf-8"),
-        imports=[str(base_source)],
-        game="fo4",
-        flags=str(base_source / "Institute_Papyrus_Flags.flg"),
-        source_path=str(_relative_path(script_name)),
-    )
-
-    diagnostics = "\n".join(str(item) for item in result.diagnostics)
-    assert result.ok, diagnostics
-    assert result.pex_bytes is not None

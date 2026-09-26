@@ -119,6 +119,7 @@ impl Inventory {
         files
     }
 
+    #[cfg(test)]
     fn files_if_compatible(&mut self, root: &Path, suffixes: &[&str]) -> Option<Vec<PathBuf>> {
         self.files_if_compatible_from(root, root, suffixes)
     }

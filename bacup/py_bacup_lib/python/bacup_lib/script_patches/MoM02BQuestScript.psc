@@ -106,3 +106,34 @@ Function RecordKilledActorType(Location akActorTypeName)
         killedActorsList.Add(akActorTypeName)
     EndIf
 EndFunction
+Function ReconcileTerminalState()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef == None
+        Return
+    EndIf
+    If MoM02BTerminalValue != None
+        If IsStageDone(90)
+            playerRef.SetValue(MoM02BTerminalValue, CONST_MoM02BValue_ReadyForFabrication)
+        ElseIf IsStageDone(40)
+            playerRef.SetValue(MoM02BTerminalValue, CONST_MoM02BValue_ReadyForSwordTerminal)
+        ElseIf IsStageDone(30)
+            playerRef.SetValue(MoM02BTerminalValue, CONST_MoM02BValue_ReadyForTargets)
+        EndIf
+    EndIf
+    If MoM02BTerminalValue2 != None
+        If IsStageDone(70)
+            playerRef.SetValue(MoM02BTerminalValue2, CONST_MoM02BValue2_AttachedSwingAnalyzer)
+        ElseIf IsStageDone(32)
+            playerRef.SetValue(MoM02BTerminalValue2, CONST_MoM02BValue2_ReadyForSwingAnalyzer)
+        EndIf
+    EndIf
+    If MoM02BSwingAnalyzer_CheckpointValue != None
+        If IsStageDone(70)
+            playerRef.SetValue(MoM02BSwingAnalyzer_CheckpointValue, 70.0)
+        ElseIf IsStageDone(45)
+            playerRef.SetValue(MoM02BSwingAnalyzer_CheckpointValue, 45.0)
+        ElseIf IsStageDone(32)
+            playerRef.SetValue(MoM02BSwingAnalyzer_CheckpointValue, 32.0)
+        EndIf
+    EndIf
+EndFunction

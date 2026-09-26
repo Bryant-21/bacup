@@ -164,98 +164,32 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn apply_to_record_no_op_when_no_ctda() {
-        let mut interner = StringInterner::new();
-        let fk = make_fk("000800", "Output.esp", &mut interner);
-        let entry = full_entry(&mut interner);
-        let mut record = make_cobj(fk, Some("ATX_coSomeRecipe"), vec![entry], &mut interner);
+    fn apply_to_record_strips_every_ctda_and_keeps_other_fields() {
+        let interner = StringInterner::new();
+        let fk = make_fk("000800", "Output.esp", &interner);
+        let full = full_entry(&interner);
 
-        let changed = apply_to_record(&mut record);
-        assert!(!changed, "no CTDA entries means no change");
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_strips_single_ctda() {
-        let mut interner = StringInterner::new();
-        let fk = make_fk("000800", "Output.esp", &mut interner);
-        let mut record = make_cobj(
-            fk,
-            Some("ATX_coSomeRecipe"),
-            vec![ctda_entry()],
-            &mut interner,
-        );
-
-        let changed = apply_to_record(&mut record);
-        assert!(changed, "CTDA should be stripped");
-        assert!(record.fields.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_strips_all_ctda_entries() {
-        let mut interner = StringInterner::new();
-        let fk = make_fk("000800", "Output.esp", &mut interner);
-        let mut record = make_cobj(
-            fk,
-            Some("ATX_coSomeRecipe"),
-            vec![ctda_entry(), ctda_entry(), ctda_entry()],
-            &mut interner,
-        );
-
-        let changed = apply_to_record(&mut record);
-        assert!(changed);
-        assert!(
-            record.fields.is_empty(),
-            "all three CTDA entries should be removed"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_keeps_non_ctda_fields() {
-        let mut interner = StringInterner::new();
-        let fk = make_fk("000800", "Output.esp", &mut interner);
-        let full = full_entry(&mut interner);
-        let mut record = make_cobj(
-            fk,
-            Some("ATX_coSomeRecipe"),
-            vec![full, ctda_entry(), ctda_entry()],
-            &mut interner,
-        );
-
-        let changed = apply_to_record(&mut record);
-        assert!(changed);
-        assert_eq!(
-            record.fields.len(),
-            1,
-            "FULL should survive; both CTDA removed"
-        );
-        assert_eq!(record.fields[0].sig.as_str(), "FULL");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_empty_record_no_op() {
-        let mut interner = StringInterner::new();
-        let fk = make_fk("000800", "Output.esp", &mut interner);
-        let mut record = make_cobj(fk, Some("ATX_coSomeRecipe"), vec![], &mut interner);
-
-        let changed = apply_to_record(&mut record);
-        assert!(!changed);
-        assert!(record.fields.is_empty());
+        for (name, fields, expected, expect_changed) in [
+            ("empty record", vec![], vec![], false),
+            ("no ctda", vec![full.clone()], vec![full.clone()], false),
+            ("single ctda", vec![ctda_entry()], vec![], true),
+            (
+                "all ctda",
+                vec![ctda_entry(), ctda_entry(), ctda_entry()],
+                vec![],
+                true,
+            ),
+            (
+                "mixed",
+                vec![full.clone(), ctda_entry(), ctda_entry()],
+                vec![full.clone()],
+                true,
+            ),
+        ] {
+            let mut record = make_cobj(fk, Some("ATX_coSomeRecipe"), fields, &interner);
+            assert_eq!(apply_to_record(&mut record), expect_changed, "{name}");
+            assert_eq!(record.fields.to_vec(), expected, "{name}");
+        }
     }
 }

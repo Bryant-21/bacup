@@ -9,6 +9,7 @@
 //! # FixupReport mapping
 //! `records_changed` = files renamed + project files patched.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use havok_native::hkx::read_packfile;
@@ -61,8 +62,13 @@ pub fn normalize_spaced_asset_names_in_mod_path(
 ) -> Result<FixupReport, FixupError> {
     let mut changed = 0u32;
     for meshes_root in mesh_roots_for_mod_path(mod_path) {
-        changed += rename_spaced_files(&meshes_root);
-        changed += patch_project_references(&meshes_root);
+        let mut spaced_files = Vec::new();
+        let mut projects = BTreeSet::new();
+        collect_candidates(&meshes_root, &mut spaced_files, &mut projects);
+        changed += rename_spaced_files(&spaced_files, &mut projects);
+        for project in projects {
+            changed += u32::from(patch_one_project(&project).unwrap_or(false));
+        }
     }
     Ok(FixupReport {
         records_changed: changed,
@@ -105,17 +111,47 @@ pub(crate) fn normalized_reference(value: &str) -> Option<String> {
     Some(format!("{}{}", &value[..split], fixed))
 }
 
-fn rename_spaced_files(dir: &Path) -> u32 {
-    let mut renamed = 0u32;
+fn is_project_hkx(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with("project.hkx"))
+}
+
+fn collect_candidates(dir: &Path, spaced_files: &mut Vec<PathBuf>, projects: &mut BTreeSet<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            renamed += rename_spaced_files(&path);
+        let is_dir = entry
+            .file_type()
+            .map(|kind| {
+                if kind.is_symlink() {
+                    path.is_dir()
+                } else {
+                    kind.is_dir()
+                }
+            })
+            .unwrap_or_else(|_| path.is_dir());
+        if is_dir {
+            collect_candidates(&path, spaced_files, projects);
             continue;
         }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if trimmed_spaced_file_name(name).is_some() {
+            spaced_files.push(path.clone());
+        }
+        if is_project_hkx(&path) {
+            projects.insert(path);
+        }
+    }
+}
+
+fn rename_spaced_files(files: &[PathBuf], projects: &mut BTreeSet<PathBuf>) -> u32 {
+    let mut renamed = 0u32;
+    for path in files {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -132,6 +168,9 @@ fn rename_spaced_files(dir: &Path) -> u32 {
                     if strip_internal_spaced_name(&target, stem).unwrap_or(false) {
                         renamed += 1;
                     }
+                }
+                if is_project_hkx(&target) {
+                    projects.insert(target);
                 }
             }
         }
@@ -188,35 +227,6 @@ fn strip_spaced_stem_value(value: &mut HkxValue, trimmed_stem: &str) -> bool {
             changed
         }
         _ => false,
-    }
-}
-
-/// Rewrite spaced file references inside every `*project.hkx` under `dir`.
-fn patch_project_references(dir: &Path) -> u32 {
-    let mut patched = 0u32;
-    walk_project_hkx(dir, &mut |path| {
-        if patch_one_project(path).unwrap_or(false) {
-            patched += 1;
-        }
-    });
-    patched
-}
-
-fn walk_project_hkx(dir: &Path, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_project_hkx(&path, f);
-        } else if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.to_ascii_lowercase().ends_with("project.hkx"))
-        {
-            f(&path);
-        }
     }
 }
 
@@ -410,6 +420,60 @@ mod tests {
             !strings.iter().any(|s| s.contains(" .hkx")),
             "no spaced references may remain"
         );
+    }
+
+    #[test]
+    fn patches_renamed_projects_after_replacing_stale_outputs() {
+        let data = include_bytes!("../../test_fixtures/havok_postprocess/floaterproject.hkx");
+        for root in ["data/Meshes", "meshes"] {
+            for stale_exists in [false, true] {
+                let tmp = tempfile::tempdir().unwrap();
+                let actor = tmp.path().join(root).join("Actors/Floater");
+                std::fs::create_dir_all(&actor).unwrap();
+                let spaced = actor.join("floaterproject .HKX");
+                let target = actor.join("floaterproject.HKX");
+                std::fs::write(&spaced, data).unwrap();
+                if stale_exists {
+                    std::fs::write(&target, b"stale").unwrap();
+                }
+                let nif = actor.join("keep .nif");
+                std::fs::write(&nif, b"unchanged").unwrap();
+
+                let report = normalize_spaced_asset_names_in_mod_path(tmp.path()).unwrap();
+                assert_eq!(report.records_changed, 2);
+                assert!(!spaced.exists());
+                assert_eq!(std::fs::read(&nif).unwrap(), b"unchanged");
+                let patched = read_packfile(&std::fs::read(&target).unwrap()).unwrap();
+                let mut strings = Vec::new();
+                for obj in patched.objects() {
+                    collect_strings(&obj.members, &mut strings);
+                }
+                assert!(strings
+                    .iter()
+                    .any(|s| s.eq_ignore_ascii_case(r"Characters\FloaterCharacter.hkx")));
+                assert!(!strings.iter().any(|s| s.contains(" .hkx")));
+                assert_eq!(
+                    normalize_spaced_asset_names_in_mod_path(tmp.path()).unwrap().records_changed,
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_rename_preserves_source_and_does_not_patch_it_as_a_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let meshes = tmp.path().join("data/Meshes");
+        let target = meshes.join("floaterproject.hkx");
+        std::fs::create_dir_all(&target).unwrap();
+        let source = meshes.join("floaterproject .hkx");
+        let data = include_bytes!("../../test_fixtures/havok_postprocess/floaterproject.hkx");
+        std::fs::write(&source, data).unwrap();
+
+        let report = normalize_spaced_asset_names_in_mod_path(tmp.path()).unwrap();
+        assert_eq!(report.records_changed, 0);
+        assert_eq!(std::fs::read(&source).unwrap(), data);
+        assert!(target.is_dir());
     }
 
     #[cfg(test)]

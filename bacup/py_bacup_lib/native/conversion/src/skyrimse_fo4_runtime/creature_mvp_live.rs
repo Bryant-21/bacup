@@ -4807,165 +4807,65 @@ mod tests {
     use super::*;
     use crate::ids::{SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue};
-    use crate::skyrimse_fo4_runtime::creature_recipe::{
-        SkyrimCreatureClipRoleReceipt, SkyrimCreatureMotionRoleReceipt,
-    };
     use smallvec::SmallVec;
 
     #[test]
-    fn optional_installed_atronach_turn_preserves_bound_root_motion() {
-        let Some(data_root) = std::env::var_os("SKYRIMSE_CREATURE_DATA_DIR").map(PathBuf::from)
-        else {
-            return;
-        };
-        let source_path = data_root.join("Meshes/Actors/atronachflame/animations/turnloopingl.hkx");
-        let source = fs::read(&source_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", source_path.display()));
-        let converted = havok_native::api::havok_reemit_skyrim_2010_animation_asset_to_fo4(&source)
-            .expect("re-emit installed Flame Atronach turn clip");
-        let motion_path = data_root.join("Meshes/animationdatasinglefile.txt");
-        let motion =
-            load_skyrim_bound_motion_samples(&motion_path, "atronachflame/atronachflame.hkx", 31)
-                .expect("load installed Flame Atronach BoundAnims samples");
-        let expected_sample_count = motion.translations.len().max(motion.rotations.len());
-        let translation_delta = motion
-            .translations
-            .first()
-            .zip(motion.translations.last())
-            .map(|(first, last)| {
-                std::array::from_fn(|component| last.value[component] - first.value[component])
-            })
-            .unwrap_or([0.0; 3]);
-        let clip = SkyrimCreatureClipReceipt {
-            clip_id: "clip_actors_atronachflame_animations_turnloopingl_hkx".to_string(),
-            clip_path: "Actors\\atronachflame\\animations\\turnloopingl.hkx".to_string(),
-            family_ids: vec!["atronach_flame".to_string()],
-            role: SkyrimCreatureClipRoleReceipt::Role(SkyrimCreatureMotionRoleReceipt::TurnLeft),
-            trigger_event: Some("turnLeft".to_string()),
-            trigger_aliases: Vec::new(),
-            role_evidence: Vec::new(),
-            root_motion: SkyrimRootMotionReceipt::Sampled {
-                source: SkyrimRootMotionSourceReceipt::BoundAnims,
-                sample_count: expected_sample_count,
-                translation_delta,
-                rotation_start: motion.rotations.first().map(|sample| sample.value),
-                rotation_end: motion.rotations.last().map(|sample| sample.value),
-            },
-            root_motion_locators: vec![SkyrimRootMotionLocatorReceipt::BoundAnims {
-                source_path: motion_path.display().to_string(),
-                project_stem: "atronachflame".to_string(),
-                animation_index: 31,
-            }],
-            events: Vec::new(),
-            annotations: Vec::new(),
-            original_skeleton_name: Some("NPC Root [Root]".to_string()),
-        };
-        let output = preserve_bound_root_motion(&converted, &clip)
-            .expect("embed installed Flame Atronach BoundAnims samples");
-        let hkx = HkxFile::read(&output).expect("decode converted clip with root motion");
-        let frames = hkx
-            .objects()
-            .iter()
-            .enumerate()
-            .filter(|(_, object)| object.class_name == "hkaDefaultAnimatedReferenceFrame")
-            .collect::<Vec<_>>();
-        assert_eq!(frames.len(), 1);
-        let frame_samples = frames[0]
-            .1
-            .members
-            .iter()
-            .find(|member| member.name == "referenceFrameSamples")
-            .expect("referenceFrameSamples");
-        assert!(matches!(
-            &frame_samples.value,
-            HkxValue::Array(values) if values.len() == expected_sample_count
-        ));
-        assert!(hkx.objects().iter().any(|object| {
-            object.members.iter().any(|member| {
-                member.name == "extractedMotion"
-                    && member.value == HkxValue::Pointer(Some(frames[0].0))
-            })
-        }));
-    }
-
-    #[test]
-    fn live_member_keys_match_recipe_identity_keys() {
-        let interner = StringInterner::new();
-        let source = FormKey {
-            local: 0x0131f5,
-            plugin: interner.intern("Skyrim.esm"),
-        };
-
-        assert_eq!(
-            source_key(source, &interner),
-            source_identity(source, &interner)
-                .expect("source identity")
-                .stable_key()
-        );
-    }
-
-    #[test]
-    fn family_assets_accept_ready_candidates_carrying_catalog_family_ids() {
-        let interner = StringInterner::new();
-        let candidate = SkyrimCreatureDependencyCandidate {
-            source_race: FormKey {
-                local: 0x0131f9,
+    fn live_family_keys_assets_and_skeleton_variants_are_consistent() {
+        {
+            let interner = StringInterner::new();
+            let source = FormKey {
+                local: 0x0131f5,
                 plugin: interner.intern("Skyrim.esm"),
-            },
-            family_id: Some("skyrim-creature-family-0042".to_string()),
-            npc_sources: Vec::new(),
-            template_sources: Vec::new(),
-            seeds: Vec::new(),
-            closure: Vec::new(),
-            disposition: SkyrimCreatureDependencyCandidateDisposition::Ready,
-        };
+            };
 
-        assert!(ready_candidate(&&candidate));
+            assert_eq!(
+                source_key(source, &interner),
+                source_identity(source, &interner)
+                    .expect("source identity")
+                    .stable_key()
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let candidate = SkyrimCreatureDependencyCandidate {
+                source_race: FormKey {
+                    local: 0x0131f9,
+                    plugin: interner.intern("Skyrim.esm"),
+                },
+                family_id: Some("skyrim-creature-family-0042".to_string()),
+                npc_sources: Vec::new(),
+                template_sources: Vec::new(),
+                seeds: Vec::new(),
+                closure: Vec::new(),
+                disposition: SkyrimCreatureDependencyCandidateDisposition::Ready,
+            };
 
-        let mut blocked = candidate;
-        blocked.disposition = SkyrimCreatureDependencyCandidateDisposition::Blocked {
-            blockers: Vec::new(),
-        };
-        assert!(!ready_candidate(&&blocked));
+            assert!(ready_candidate(&&candidate));
 
-        let excluded = SkyrimCreatureDependencyCandidate {
-            family_id: None,
-            disposition: SkyrimCreatureDependencyCandidateDisposition::CuratedExclusion,
-            ..blocked
-        };
-        assert!(!ready_candidate(&&excluded));
-    }
+            let mut blocked = candidate;
+            blocked.disposition = SkyrimCreatureDependencyCandidateDisposition::Blocked {
+                blockers: Vec::new(),
+            };
+            assert!(!ready_candidate(&&blocked));
 
-    #[test]
-    fn graph_variant_requires_one_distinct_visual_skeleton() {
-        let giant = "Actors\\Giant\\Character Assets\\Skeleton.nif".to_string();
-        let benthic = "Actors\\DLC02\\BenthicLurker\\Character Assets\\Skeleton.nif".to_string();
+            let excluded = SkyrimCreatureDependencyCandidate {
+                family_id: None,
+                disposition: SkyrimCreatureDependencyCandidateDisposition::CuratedExclusion,
+                ..blocked
+            };
+            assert!(!ready_candidate(&&excluded));
+        }
+        {
+            let giant = "Actors\\Giant\\Character Assets\\Skeleton.nif".to_string();
+            let benthic =
+                "Actors\\DLC02\\BenthicLurker\\Character Assets\\Skeleton.nif".to_string();
 
-        assert_eq!(
-            single_distinct_path([&giant, &giant].into_iter()),
-            Some(&giant)
-        );
-        assert_eq!(single_distinct_path([&giant, &benthic].into_iter()), None);
-    }
-
-    #[test]
-    fn optional_boar_skeleton_filenames_describe_one_shared_rig() {
-        let Some(data_root) = std::env::var_os("SKYRIMSE_CREATURE_DATA_DIR") else {
-            return;
-        };
-        let data_root = PathBuf::from(data_root);
-        let rider = "Actors\\DLC02\\BoarRiekling\\Character Assets\\skeleton.nif".to_string();
-        let boar = "Actors\\DLC02\\BoarRiekling\\Character Assets\\SkeletonBoar.nif".to_string();
-        assert_eq!(
-            skeleton_bone_names(&data_root, &rider),
-            skeleton_bone_names(&data_root, &boar),
-            "boar and rider skeleton files should carry the same bones"
-        );
-        // Two races on SkeletonBoar, one on skeleton.nif — the majority file wins.
-        assert_eq!(
-            equivalent_visual_skeleton(&[&boar, &rider, &boar], &data_root),
-            Some(&boar)
-        );
+            assert_eq!(
+                single_distinct_path([&giant, &giant].into_iter()),
+                Some(&giant)
+            );
+            assert_eq!(single_distinct_path([&giant, &benthic].into_iter()), None);
+        }
     }
 
     #[test]
@@ -5180,146 +5080,184 @@ mod tests {
     }
 
     #[test]
-    fn actor_action_reservations_use_the_emitted_family_behavior_path() {
-        let runtime_root = skyrim_family_runtime_root("wolf");
-        assert!(runtime_root.starts_with("Actors\\B21_SkyrimCreature_"));
-        assert_eq!(
-            skyrim_family_root_behavior_path("wolf"),
-            format!("{runtime_root}\\Behaviors\\SkyrimRootBehavior.hkx")
-        );
-    }
-
-    #[test]
-    fn unsupported_skyrim_ranged_attack_uses_verified_fo4_creature_weapon() {
-        let CreatureAttackRecordProjection::RangedEquipment {
-            equipment,
-            projectile,
-            ammunition,
-        } = fo4_creature_ranged_fallback_projection()
-        else {
-            panic!("fallback must remain a ranged equipment projection");
-        };
-        assert_eq!(equipment.len(), 1);
-        assert_eq!(equipment[0].signature, "WEAP");
-        assert_eq!(
-            equipment[0].form_key,
-            TargetFormKey::new(FO4_CREATURE_RANGED_FALLBACK_WEAPON, "Fallout4.esm")
-        );
-        assert!(projectile.is_none());
-        assert!(ammunition.is_none());
-    }
-
-    #[test]
-    fn secondary_melee_attack_supplies_the_base_unarmed_identity() {
-        let weapon = TargetFormKey::new(0x812, "Output.esm");
-        let attacks = vec![
-            CreatureAttackRecordVariant {
-                id: "attack_00".to_string(),
-                event: "attackSpell".to_string(),
-                primary: true,
-                projection: fo4_creature_ranged_fallback_projection(),
-                damage_multiplier: 1.0,
-                chance: 1.0,
-                strike_angle: 0.0,
-                action_point_cost: 0.0,
-                target_data: CreatureAttackTargetData::default(),
-            },
-            CreatureAttackRecordVariant {
-                id: "attack_01".to_string(),
-                event: "attackBite".to_string(),
-                primary: false,
-                projection: CreatureAttackRecordProjection::MeleeUnarmed {
-                    weapon_form_key: weapon.clone(),
-                    weapon_editor_id: "B21_AttackBite".to_string(),
-                    damage: 10,
-                    reach: 1.0,
-                    attack_seconds: 0.5,
+    fn attack_identities_come_from_verified_weapons_and_graph_events() {
+        {
+            let runtime_root = skyrim_family_runtime_root("wolf");
+            assert!(runtime_root.starts_with("Actors\\B21_SkyrimCreature_"));
+            assert_eq!(
+                skyrim_family_root_behavior_path("wolf"),
+                format!("{runtime_root}\\Behaviors\\SkyrimRootBehavior.hkx")
+            );
+        }
+        {
+            let CreatureAttackRecordProjection::RangedEquipment {
+                equipment,
+                projectile,
+                ammunition,
+            } = fo4_creature_ranged_fallback_projection()
+            else {
+                panic!("fallback must remain a ranged equipment projection");
+            };
+            assert_eq!(equipment.len(), 1);
+            assert_eq!(equipment[0].signature, "WEAP");
+            assert_eq!(
+                equipment[0].form_key,
+                TargetFormKey::new(FO4_CREATURE_RANGED_FALLBACK_WEAPON, "Fallout4.esm")
+            );
+            assert!(projectile.is_none());
+            assert!(ammunition.is_none());
+        }
+        {
+            let weapon = TargetFormKey::new(0x812, "Output.esm");
+            let attacks = vec![
+                CreatureAttackRecordVariant {
+                    id: "attack_00".to_string(),
+                    event: "attackSpell".to_string(),
+                    primary: true,
+                    projection: fo4_creature_ranged_fallback_projection(),
+                    damage_multiplier: 1.0,
+                    chance: 1.0,
+                    strike_angle: 0.0,
+                    action_point_cost: 0.0,
+                    target_data: CreatureAttackTargetData::default(),
                 },
-                damage_multiplier: 1.0,
-                chance: 1.0,
-                strike_angle: 0.0,
-                action_point_cost: 0.0,
-                target_data: CreatureAttackTargetData::default(),
-            },
-        ];
+                CreatureAttackRecordVariant {
+                    id: "attack_01".to_string(),
+                    event: "attackBite".to_string(),
+                    primary: false,
+                    projection: CreatureAttackRecordProjection::MeleeUnarmed {
+                        weapon_form_key: weapon.clone(),
+                        weapon_editor_id: "B21_AttackBite".to_string(),
+                        damage: 10,
+                        reach: 1.0,
+                        attack_seconds: 0.5,
+                    },
+                    damage_multiplier: 1.0,
+                    chance: 1.0,
+                    strike_angle: 0.0,
+                    action_point_cost: 0.0,
+                    target_data: CreatureAttackTargetData::default(),
+                },
+            ];
 
-        assert_eq!(
-            base_unarmed_weapon_identity(&attacks, "Output.esm", "B21_Unarmed"),
-            (weapon, "B21_AttackBite".to_string())
-        );
-    }
+            assert_eq!(
+                base_unarmed_weapon_identity(&attacks, "Output.esm", "B21_Unarmed"),
+                (weapon, "B21_AttackBite".to_string())
+            );
+        }
+        {
+            let roles = vec![
+                crate::source_rig::CapabilityClipRole {
+                    role: crate::source_rig::CreatureClipRole::MeleeAttack,
+                    state_name: "Melee".to_string(),
+                    clip_name: "MeleeClip".to_string(),
+                    generator: Default::default(),
+                    trigger_event: Some("attackBite".to_string()),
+                    trigger_aliases: vec!["attackPower".to_string()],
+                    motion: Default::default(),
+                },
+                crate::source_rig::CapabilityClipRole {
+                    role: crate::source_rig::CreatureClipRole::ProjectileAttack,
+                    state_name: "Projectile".to_string(),
+                    clip_name: "ProjectileClip".to_string(),
+                    generator: Default::default(),
+                    trigger_event: Some("attackSpell".to_string()),
+                    trigger_aliases: Vec::new(),
+                    motion: Default::default(),
+                },
+            ];
 
-    #[test]
-    fn fallback_role_comes_from_the_graph_event_that_will_execute_it() {
-        let roles = vec![
-            crate::source_rig::CapabilityClipRole {
-                role: crate::source_rig::CreatureClipRole::MeleeAttack,
-                state_name: "Melee".to_string(),
-                clip_name: "MeleeClip".to_string(),
-                generator: Default::default(),
-                trigger_event: Some("attackBite".to_string()),
-                trigger_aliases: vec!["attackPower".to_string()],
-                motion: Default::default(),
-            },
-            crate::source_rig::CapabilityClipRole {
-                role: crate::source_rig::CreatureClipRole::ProjectileAttack,
-                state_name: "Projectile".to_string(),
-                clip_name: "ProjectileClip".to_string(),
-                generator: Default::default(),
-                trigger_event: Some("attackSpell".to_string()),
-                trigger_aliases: Vec::new(),
-                motion: Default::default(),
-            },
-        ];
-
-        assert_eq!(
-            graph_attack_role_for_event(&roles, "ATTACKPOWER"),
-            Some(crate::source_rig::CreatureClipRole::MeleeAttack)
-        );
-        assert_eq!(
-            graph_attack_role_for_event(&roles, "attackSpell"),
-            Some(crate::source_rig::CreatureClipRole::ProjectileAttack)
-        );
-    }
-
-    #[test]
-    fn optional_live_vampire_and_werewolf_animation_skeletons_reemit() {
-        let Some(data_root) = std::env::var_os("SKYRIMSE_CREATURE_DATA_DIR") else {
-            return;
-        };
-        let data_root = PathBuf::from(data_root);
-        for relative in [
-            "Actors\\vampirelord\\character assets\\skeleton.hkx",
-            "Actors\\werewolfbeast\\character assets\\skeleton.hkx",
-        ] {
-            let receipt = crate::phase::skeleton::convert_skyrim_source_owned_skeleton_artifact(
-                &asset_path(&data_root, relative),
-                "Actors\\B21_SkyrimEvidence\\CharacterAssets\\Skeleton.hkx",
-            )
-            .unwrap_or_else(|error| panic!("{relative}: {error}"));
-            let roots = receipt
-                .ordered_bone_names
-                .iter()
-                .zip(&receipt.parent_indices)
-                .filter_map(|(name, parent)| (*parent < 0).then_some(name))
-                .collect::<Vec<_>>();
-            assert!(
-                roots
-                    .iter()
-                    .any(|name| name.as_str() == receipt.skeleton_name),
-                "{relative}: skeleton_name={:?} roots={roots:?}",
-                receipt.skeleton_name
+            assert_eq!(
+                graph_attack_role_for_event(&roles, "ATTACKPOWER"),
+                Some(crate::source_rig::CreatureClipRole::MeleeAttack)
+            );
+            assert_eq!(
+                graph_attack_role_for_event(&roles, "attackSpell"),
+                Some(crate::source_rig::CreatureClipRole::ProjectileAttack)
             );
         }
     }
 
     #[test]
-    fn recursive_asset_references_reject_control_bytes_and_parent_traversal() {
-        assert!(valid_recursive_asset_reference(
-            "textures/effects/witchlight_n.dds"
-        ));
-        assert!(!valid_recursive_asset_reference("textures/\u{8}nor"));
-        assert!(!valid_recursive_asset_reference("textures/../outside.dds"));
+    fn raw_source_fields_decode_references_templates_counts_and_conditions() {
+        {
+            assert!(valid_recursive_asset_reference(
+                "textures/effects/witchlight_n.dds"
+            ));
+            assert!(!valid_recursive_asset_reference("textures/\u{8}nor"));
+            assert!(!valid_recursive_asset_reference("textures/../outside.dds"));
+        }
+        {
+            assert_eq!(source_field_index("CNTO[12].item", "CNTO"), Some(12));
+            assert_eq!(source_field_index("SPLO[7]", "SPLO"), Some(7));
+            assert_eq!(source_field_index("CNTO.item", "CNTO"), None);
+        }
+        {
+            let interner = StringInterner::new();
+            let npc = npc_with_acbs(&interner, vec![0_u8; 24]);
+            let mut leveled_list = Record::new(
+                SigCode::from_str("LVLN").unwrap(),
+                FormKey {
+                    local: 0x456,
+                    plugin: interner.intern("Skyrim.esm"),
+                },
+            );
+            let mut lvlo = vec![0_u8; 12];
+            lvlo[4..8].copy_from_slice(&npc.form_key.local.to_le_bytes());
+            leveled_list.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("LVLO").unwrap(),
+                value: FieldValue::Bytes(SmallVec::from_vec(lvlo)),
+            });
+            let records = [&npc, &leveled_list]
+                .into_iter()
+                .map(|record| (record.form_key, record))
+                .collect::<HashMap<_, _>>();
+
+            let resolved =
+                resolve_npc_template_target(leveled_list.form_key, &records, &interner).unwrap();
+
+            assert_eq!(resolved.form_key, npc.form_key);
+        }
+        {
+            let interner = StringInterner::new();
+            let count = interner.intern("count");
+            assert_eq!(
+                cnto_count(
+                    &FieldValue::Struct(vec![(count, FieldValue::Int(-3))]),
+                    &interner,
+                ),
+                Some(-3)
+            );
+            let mut bytes = vec![0_u8; 8];
+            bytes[4..8].copy_from_slice(&17_i32.to_le_bytes());
+            assert_eq!(
+                cnto_count(&FieldValue::Bytes(SmallVec::from_vec(bytes)), &interner),
+                Some(17)
+            );
+            assert_eq!(cnto_count(&FieldValue::List(Vec::new()), &interner), None);
+        }
+        {
+            let interner = StringInterner::new();
+            let global_or_rank = interner.intern("global_variable_required_rank");
+            let item_condition = interner.intern("item_condition");
+            assert_eq!(
+                coed_values(
+                    &FieldValue::Struct(vec![
+                        (global_or_rank, FieldValue::Uint(u64::from(u32::MAX))),
+                        (item_condition, FieldValue::Float(0.75)),
+                    ]),
+                    &interner,
+                ),
+                Some((u32::MAX, 0.75))
+            );
+            let mut bytes = vec![0_u8; 12];
+            bytes[4..8].copy_from_slice(&12_u32.to_le_bytes());
+            bytes[8..12].copy_from_slice(&0.5_f32.to_le_bytes());
+            assert_eq!(
+                coed_values(&FieldValue::Bytes(SmallVec::from_vec(bytes)), &interner),
+                Some((12, 0.5))
+            );
+        }
     }
 
     fn attack(
@@ -5360,399 +5298,323 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_acbs_stats_use_exact_offsets_and_only_reject_inherited_stats() {
-        let interner = StringInterner::new();
-        let mut bytes = vec![0_u8; 24];
-        bytes[6..8].copy_from_slice(&25_i16.to_le_bytes());
-        bytes[8..10].copy_from_slice(&12_u16.to_le_bytes());
-        bytes[20..22].copy_from_slice(&75_i16.to_le_bytes());
-        let record = npc_with_acbs(&interner, bytes.clone());
-        let stats = skyrim_npc_runtime_stats(&record, &interner).unwrap();
-        assert_eq!(stats.level, 12);
-        assert_eq!(stats.health, 125);
-        assert_eq!(stats.action_points, 75);
+    fn stats_attack_values_and_legacy_controllers_use_exact_encodings() {
+        {
+            let interner = StringInterner::new();
+            let mut bytes = vec![0_u8; 24];
+            bytes[6..8].copy_from_slice(&25_i16.to_le_bytes());
+            bytes[8..10].copy_from_slice(&12_u16.to_le_bytes());
+            bytes[20..22].copy_from_slice(&75_i16.to_le_bytes());
+            let record = npc_with_acbs(&interner, bytes.clone());
+            let stats = skyrim_npc_runtime_stats(&record, &interner).unwrap();
+            assert_eq!(stats.level, 12);
+            assert_eq!(stats.health, 125);
+            assert_eq!(stats.action_points, 75);
 
-        bytes[18..20].copy_from_slice(&0x0040_u16.to_le_bytes());
-        assert!(
-            skyrim_npc_runtime_stats(&npc_with_acbs(&interner, bytes.clone()), &interner).is_ok()
-        );
+            bytes[18..20].copy_from_slice(&0x0040_u16.to_le_bytes());
+            assert!(
+                skyrim_npc_runtime_stats(&npc_with_acbs(&interner, bytes.clone()), &interner)
+                    .is_ok()
+            );
 
-        bytes[18..20].copy_from_slice(&0x0002_u16.to_le_bytes());
-        let error = skyrim_npc_runtime_stats(&npc_with_acbs(&interner, bytes), &interner)
-            .err()
-            .unwrap();
-        assert!(error.contains("exact inherited stat flattening"));
+            bytes[18..20].copy_from_slice(&0x0002_u16.to_le_bytes());
+            let error = skyrim_npc_runtime_stats(&npc_with_acbs(&interner, bytes), &interner)
+                .err()
+                .unwrap();
+            assert!(error.contains("exact inherited stat flattening"));
+        }
+        {
+            let mut attack = attack(0, "attackBite", None);
+            attack.recovery_time_bits = f32::NAN.to_bits();
+            assert!(
+                validate_attack_target_values(&attack)
+                    .unwrap_err()
+                    .contains("non-finite recovery_time")
+            );
+        }
+        {
+            let receipt = SkyrimCreatureControllerReceipt {
+                character_path: "Actors/Canine/WolfCharacter.hkx".to_string(),
+                character_data_class: "hkbCharacterData".to_string(),
+                controller_class: Some("hkbCharacterDataCharacterControllerInfo".to_string()),
+                controller_cinfo_class: None,
+                architecture: None,
+                layout: SkyrimControllerLayoutEvidence::LegacyCharacterControllerInfo {
+                    contents_version: "hk_2010.2.0-r1".to_string(),
+                    character_data_signature: 0,
+                    controller_signature: 0,
+                },
+                collision_filter_info: Some(1),
+                rigid_body_type: None,
+                shape_type: None,
+                capsule: None,
+                axes: None,
+                model: Some(
+                    super::super::creature_recipe::SkyrimControllerModelReceipt {
+                        up_ms: [0.0, 0.0, 1.0, 0.0],
+                        forward_ms: [0.0, 1.0, 0.0, 0.0],
+                        right_ms: [1.0, 0.0, 0.0, 0.0],
+                        scale: 1.0,
+                    },
+                ),
+                disposition:
+                    super::super::creature_recipe::SkyrimControllerDispositionReceipt::Complete,
+            };
+
+            let controller = controller_decl_from_receipt(&receipt).unwrap();
+
+            assert_eq!(controller.rigid_body_type, 255);
+        }
     }
 
     #[test]
-    fn raw_lvln_template_entry_resolves_to_npc() {
-        let interner = StringInterner::new();
-        let npc = npc_with_acbs(&interner, vec![0_u8; 24]);
-        let mut leveled_list = Record::new(
-            SigCode::from_str("LVLN").unwrap(),
-            FormKey {
+    fn unarmed_attacks_reserve_distinct_weapons_in_the_record_key_plan() {
+        {
+            let interner = StringInterner::new();
+            let race = FormKey {
+                local: 0x123,
+                plugin: interner.intern("Skyrim.esm"),
+            };
+            let shout = FormKey {
                 local: 0x456,
                 plugin: interner.intern("Skyrim.esm"),
-            },
-        );
-        let mut lvlo = vec![0_u8; 12];
-        lvlo[4..8].copy_from_slice(&npc.form_key.local.to_le_bytes());
-        leveled_list.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("LVLO").unwrap(),
-            value: FieldValue::Bytes(SmallVec::from_vec(lvlo)),
-        });
-        let records = [&npc, &leveled_list]
-            .into_iter()
-            .map(|record| (record.form_key, record))
-            .collect::<HashMap<_, _>>();
+            };
+            let spell = FormKey {
+                local: 0x789,
+                plugin: interner.intern("Skyrim.esm"),
+            };
+            let catalog = CreatureCorpusPlan {
+                races: vec![CreatureRacePlan {
+                    source_race: race,
+                    source_plugin: "Skyrim.esm".to_string(),
+                    editor_id: Some("FixtureRace".to_string()),
+                    skin: None,
+                    armor_addons: Vec::new(),
+                    body_models: Vec::new(),
+                    body_model_parts: Vec::new(),
+                    body_part_data: None,
+                    project_paths: Vec::new(),
+                    skeleton_paths: Vec::new(),
+                    attack_events: Vec::new(),
+                    attack_contract: Vec::new(),
+                    attack_data: vec![
+                        super::super::creature_catalog::CreatureRaceAttackDataPlan {
+                            ordinal: 0,
+                            event: "attackBite".to_string(),
+                            damage_multiplier_bits: 1.0_f32.to_bits(),
+                            attack_chance_bits: 1.0_f32.to_bits(),
+                            attack_spell: None,
+                            attack_spell_signature: None,
+                            attack_flags: 0,
+                            attack_angle_bits: 0.0_f32.to_bits(),
+                            strike_angle_bits: 0.0_f32.to_bits(),
+                            stagger_bits: 0.0_f32.to_bits(),
+                            attack_type: None,
+                            attack_type_signature: None,
+                            knockdown_bits: 0.0_f32.to_bits(),
+                            recovery_time_bits: 0.5_f32.to_bits(),
+                            stamina_multiplier_bits: 1.0_f32.to_bits(),
+                        },
+                        super::super::creature_catalog::CreatureRaceAttackDataPlan {
+                            ordinal: 1,
+                            event: "attackShout".to_string(),
+                            damage_multiplier_bits: 1.0_f32.to_bits(),
+                            attack_chance_bits: 1.0_f32.to_bits(),
+                            attack_spell: Some(shout),
+                            attack_spell_signature: Some("SHOU".to_string()),
+                            attack_flags: 0,
+                            attack_angle_bits: 0.0_f32.to_bits(),
+                            strike_angle_bits: 0.0_f32.to_bits(),
+                            stagger_bits: 0.0_f32.to_bits(),
+                            attack_type: None,
+                            attack_type_signature: None,
+                            knockdown_bits: 0.0_f32.to_bits(),
+                            recovery_time_bits: 0.5_f32.to_bits(),
+                            stamina_multiplier_bits: 1.0_f32.to_bits(),
+                        },
+                        super::super::creature_catalog::CreatureRaceAttackDataPlan {
+                            ordinal: 2,
+                            event: "attackSpell".to_string(),
+                            damage_multiplier_bits: 1.0_f32.to_bits(),
+                            attack_chance_bits: 1.0_f32.to_bits(),
+                            attack_spell: Some(spell),
+                            attack_spell_signature: Some("SPEL".to_string()),
+                            attack_flags: 0,
+                            attack_angle_bits: 0.0_f32.to_bits(),
+                            strike_angle_bits: 0.0_f32.to_bits(),
+                            stagger_bits: 0.0_f32.to_bits(),
+                            attack_type: None,
+                            attack_type_signature: None,
+                            knockdown_bits: 0.0_f32.to_bits(),
+                            recovery_time_bits: 0.5_f32.to_bits(),
+                            stamina_multiplier_bits: 1.0_f32.to_bits(),
+                        },
+                    ],
+                    attack_spells: Vec::new(),
+                    issues: Vec::new(),
+                }],
+                ..Default::default()
+            };
+            let motion = SkyrimCreatureMotionCatalog {
+                families: Vec::new(),
+                inventories: Vec::new(),
+                clips: Vec::new(),
+                accounting: Default::default(),
+            };
 
-        let resolved =
-            resolve_npc_template_target(leveled_list.form_key, &records, &interner).unwrap();
+            let requests = enumerate_skyrim_creature_ancillary_reservation_requests(
+                &catalog, &motion, &interner,
+            )
+            .unwrap();
 
-        assert_eq!(resolved.form_key, npc.form_key);
+            assert_eq!(requests.len(), 4);
+            assert_eq!(requests[0].event, "synthetic_npc");
+            assert_eq!(
+                requests[0].kind,
+                SkyrimCreatureAncillaryRecordKind::SyntheticNpc
+            );
+            assert_eq!(requests[1].event, "attackBite");
+            assert_eq!(requests[1].ordinal, 0);
+            assert_eq!(requests[2].event, "attackShout");
+            assert_eq!(requests[2].ordinal, 1);
+            assert_eq!(requests[3].event, "attackSpell");
+            assert_eq!(requests[3].ordinal, 2);
+            assert!(
+                requests[1..]
+                    .iter()
+                    .all(|request| request.kind == SkyrimCreatureAncillaryRecordKind::Weapon)
+            );
+        }
+        {
+            let attacks = [
+                CreatureAttackRecordVariant {
+                    id: "attack_00".to_string(),
+                    event: "attackBite".to_string(),
+                    primary: true,
+                    projection: CreatureAttackRecordProjection::MeleeUnarmed {
+                        weapon_form_key: TargetFormKey::new(0x800, "Converted.esm"),
+                        weapon_editor_id: "B21_AttackBite".to_string(),
+                        damage: 10,
+                        reach: 1.0,
+                        attack_seconds: 0.5,
+                    },
+                    damage_multiplier: 1.0,
+                    chance: 1.0,
+                    strike_angle: 0.0,
+                    action_point_cost: 0.0,
+                    target_data: CreatureAttackTargetData::default(),
+                },
+                CreatureAttackRecordVariant {
+                    id: "attack_01".to_string(),
+                    event: "attackClaw".to_string(),
+                    primary: false,
+                    projection: CreatureAttackRecordProjection::MeleeUnarmed {
+                        weapon_form_key: TargetFormKey::new(0x801, "Converted.esm"),
+                        weapon_editor_id: "B21_AttackClaw".to_string(),
+                        damage: 12,
+                        reach: 1.0,
+                        attack_seconds: 0.5,
+                    },
+                    damage_multiplier: 1.0,
+                    chance: 1.0,
+                    strike_angle: 0.0,
+                    action_point_cost: 0.0,
+                    target_data: CreatureAttackTargetData::default(),
+                },
+            ];
+
+            let key_plan = melee_record_key_plan(&attacks);
+
+            assert_eq!(key_plan.len(), 2);
+            assert_eq!(key_plan[0].attack_id, "attack_00");
+            assert!(key_plan[0].primary);
+            assert_eq!(key_plan[1].attack_id, "attack_01");
+            assert!(!key_plan[1].primary);
+        }
     }
 
     #[test]
-    fn cnto_count_preserves_signed_struct_and_binary_counts() {
-        let interner = StringInterner::new();
-        let count = interner.intern("count");
-        assert_eq!(
-            cnto_count(
-                &FieldValue::Struct(vec![(count, FieldValue::Int(-3))]),
+    fn attack_and_actor_action_receipts_form_single_family_batches() {
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let spell = FormKey {
+                local: 0x456,
+                plugin,
+            };
+            let keyword = FormKey {
+                local: 0x789,
+                plugin,
+            };
+            let mut attack = attack(
+                4,
+                "attackBite",
+                Some(super::super::creature_recipe::SkyrimRaceAttackFormReceipt {
+                    source: spell.format(&interner),
+                    signature: "SPEL".to_string(),
+                }),
+            );
+            attack.attack_type = Some(super::super::creature_recipe::SkyrimRaceAttackFormReceipt {
+                source: keyword.format(&interner),
+                signature: "KYWD".to_string(),
+            });
+
+            let receipt = attack_source_data_receipt(
+                &attack,
+                CreatureAttackSpellPolicy::DirectSpell,
                 &interner,
-            ),
-            Some(-3)
-        );
-        let mut bytes = vec![0_u8; 8];
-        bytes[4..8].copy_from_slice(&17_i32.to_le_bytes());
-        assert_eq!(
-            cnto_count(&FieldValue::Bytes(SmallVec::from_vec(bytes)), &interner),
-            Some(17)
-        );
-        assert_eq!(cnto_count(&FieldValue::List(Vec::new()), &interner), None);
-    }
+            )
+            .unwrap();
 
-    #[test]
-    fn coed_values_preserve_union_bits_and_item_condition() {
-        let interner = StringInterner::new();
-        let global_or_rank = interner.intern("global_variable_required_rank");
-        let item_condition = interner.intern("item_condition");
-        assert_eq!(
-            coed_values(
-                &FieldValue::Struct(vec![
-                    (global_or_rank, FieldValue::Uint(u64::from(u32::MAX))),
-                    (item_condition, FieldValue::Float(0.75)),
-                ]),
-                &interner,
-            ),
-            Some((u32::MAX, 0.75))
-        );
-        let mut bytes = vec![0_u8; 12];
-        bytes[4..8].copy_from_slice(&12_u32.to_le_bytes());
-        bytes[8..12].copy_from_slice(&0.5_f32.to_le_bytes());
-        assert_eq!(
-            coed_values(&FieldValue::Bytes(SmallVec::from_vec(bytes)), &interner),
-            Some((12, 0.5))
-        );
-    }
+            assert_eq!(
+                receipt.damage_multiplier_bits,
+                attack.damage_multiplier_bits
+            );
+            assert_eq!(
+                receipt.stamina_multiplier_bits,
+                attack.stamina_multiplier_bits
+            );
+            assert_eq!(receipt.attack_spell.unwrap().signature, "SPEL");
+            assert!(matches!(
+                receipt.attack_type_policy,
+                CreatureAttackTypePolicy::RuntimeInertKeyword { .. }
+            ));
+            assert!(matches!(
+                receipt.stamina_multiplier_policy,
+                CreatureAttackStaminaPolicy::PreserveAsActionPointsMultiplier { .. }
+            ));
+        }
+        {
+            use crate::source_rig::{ActorActionKind, ActorActionRequirement};
 
-    #[test]
-    fn source_field_index_reads_global_subrecord_order() {
-        assert_eq!(source_field_index("CNTO[12].item", "CNTO"), Some(12));
-        assert_eq!(source_field_index("SPLO[7]", "SPLO"), Some(7));
-        assert_eq!(source_field_index("CNTO.item", "CNTO"), None);
-    }
-
-    #[test]
-    fn legacy_controller_without_rigid_body_type_uses_fo4_invalid_enum_byte() {
-        let receipt = SkyrimCreatureControllerReceipt {
-            character_path: "Actors/Canine/WolfCharacter.hkx".to_string(),
-            character_data_class: "hkbCharacterData".to_string(),
-            controller_class: Some("hkbCharacterDataCharacterControllerInfo".to_string()),
-            controller_cinfo_class: None,
-            architecture: None,
-            layout: SkyrimControllerLayoutEvidence::LegacyCharacterControllerInfo {
-                contents_version: "hk_2010.2.0-r1".to_string(),
-                character_data_signature: 0,
-                controller_signature: 0,
-            },
-            collision_filter_info: Some(1),
-            rigid_body_type: None,
-            shape_type: None,
-            capsule: None,
-            axes: None,
-            model: Some(
-                super::super::creature_recipe::SkyrimControllerModelReceipt {
-                    up_ms: [0.0, 0.0, 1.0, 0.0],
-                    forward_ms: [0.0, 1.0, 0.0, 0.0],
-                    right_ms: [1.0, 0.0, 0.0, 0.0],
-                    scale: 1.0,
+            let interner = StringInterner::new();
+            let requirement = ActorActionRequirement {
+                kind: ActorActionKind::Melee,
+                parent_editor_id: "ActionMelee".to_string(),
+                parent_form_id: 0x0130_0B,
+                behavior_path: "Actors\\B21_SkyrimCreatures\\fixture.hkx".to_string(),
+                animation_event: "attackBite".to_string(),
+            };
+            let request = CreatureActorActionReservationRequest {
+                family_id: "fixture_family".to_string(),
+                requirement: requirement.clone(),
+                editor_id: "B21_SkyrimActorAction_fixture".to_string(),
+            };
+            let receipt = CreatureActorActionReservationReceipt {
+                family_id: request.family_id.clone(),
+                requirement,
+                editor_id: request.editor_id.clone(),
+                target: FormKey {
+                    local: 0x800,
+                    plugin: interner.intern("Converted.esm"),
                 },
-            ),
-            disposition:
-                super::super::creature_recipe::SkyrimControllerDispositionReceipt::Complete,
-        };
+            };
 
-        let controller = controller_decl_from_receipt(&receipt).unwrap();
-
-        assert_eq!(controller.rigid_body_type, 255);
-    }
-
-    #[test]
-    fn source_free_and_shout_attacks_reserve_distinct_unarmed_weapons() {
-        let interner = StringInterner::new();
-        let race = FormKey {
-            local: 0x123,
-            plugin: interner.intern("Skyrim.esm"),
-        };
-        let shout = FormKey {
-            local: 0x456,
-            plugin: interner.intern("Skyrim.esm"),
-        };
-        let spell = FormKey {
-            local: 0x789,
-            plugin: interner.intern("Skyrim.esm"),
-        };
-        let catalog = CreatureCorpusPlan {
-            races: vec![CreatureRacePlan {
-                source_race: race,
-                source_plugin: "Skyrim.esm".to_string(),
-                editor_id: Some("FixtureRace".to_string()),
-                skin: None,
-                armor_addons: Vec::new(),
-                body_models: Vec::new(),
-                body_model_parts: Vec::new(),
-                body_part_data: None,
-                project_paths: Vec::new(),
-                skeleton_paths: Vec::new(),
-                attack_events: Vec::new(),
-                attack_contract: Vec::new(),
-                attack_data: vec![
-                    super::super::creature_catalog::CreatureRaceAttackDataPlan {
-                        ordinal: 0,
-                        event: "attackBite".to_string(),
-                        damage_multiplier_bits: 1.0_f32.to_bits(),
-                        attack_chance_bits: 1.0_f32.to_bits(),
-                        attack_spell: None,
-                        attack_spell_signature: None,
-                        attack_flags: 0,
-                        attack_angle_bits: 0.0_f32.to_bits(),
-                        strike_angle_bits: 0.0_f32.to_bits(),
-                        stagger_bits: 0.0_f32.to_bits(),
-                        attack_type: None,
-                        attack_type_signature: None,
-                        knockdown_bits: 0.0_f32.to_bits(),
-                        recovery_time_bits: 0.5_f32.to_bits(),
-                        stamina_multiplier_bits: 1.0_f32.to_bits(),
-                    },
-                    super::super::creature_catalog::CreatureRaceAttackDataPlan {
-                        ordinal: 1,
-                        event: "attackShout".to_string(),
-                        damage_multiplier_bits: 1.0_f32.to_bits(),
-                        attack_chance_bits: 1.0_f32.to_bits(),
-                        attack_spell: Some(shout),
-                        attack_spell_signature: Some("SHOU".to_string()),
-                        attack_flags: 0,
-                        attack_angle_bits: 0.0_f32.to_bits(),
-                        strike_angle_bits: 0.0_f32.to_bits(),
-                        stagger_bits: 0.0_f32.to_bits(),
-                        attack_type: None,
-                        attack_type_signature: None,
-                        knockdown_bits: 0.0_f32.to_bits(),
-                        recovery_time_bits: 0.5_f32.to_bits(),
-                        stamina_multiplier_bits: 1.0_f32.to_bits(),
-                    },
-                    super::super::creature_catalog::CreatureRaceAttackDataPlan {
-                        ordinal: 2,
-                        event: "attackSpell".to_string(),
-                        damage_multiplier_bits: 1.0_f32.to_bits(),
-                        attack_chance_bits: 1.0_f32.to_bits(),
-                        attack_spell: Some(spell),
-                        attack_spell_signature: Some("SPEL".to_string()),
-                        attack_flags: 0,
-                        attack_angle_bits: 0.0_f32.to_bits(),
-                        strike_angle_bits: 0.0_f32.to_bits(),
-                        stagger_bits: 0.0_f32.to_bits(),
-                        attack_type: None,
-                        attack_type_signature: None,
-                        knockdown_bits: 0.0_f32.to_bits(),
-                        recovery_time_bits: 0.5_f32.to_bits(),
-                        stamina_multiplier_bits: 1.0_f32.to_bits(),
-                    },
-                ],
-                attack_spells: Vec::new(),
-                issues: Vec::new(),
-            }],
-            ..Default::default()
-        };
-        let motion = SkyrimCreatureMotionCatalog {
-            families: Vec::new(),
-            inventories: Vec::new(),
-            clips: Vec::new(),
-            accounting: Default::default(),
-        };
-
-        let requests =
-            enumerate_skyrim_creature_ancillary_reservation_requests(&catalog, &motion, &interner)
-                .unwrap();
-
-        assert_eq!(requests.len(), 4);
-        assert_eq!(requests[0].event, "synthetic_npc");
-        assert_eq!(
-            requests[0].kind,
-            SkyrimCreatureAncillaryRecordKind::SyntheticNpc
-        );
-        assert_eq!(requests[1].event, "attackBite");
-        assert_eq!(requests[1].ordinal, 0);
-        assert_eq!(requests[2].event, "attackShout");
-        assert_eq!(requests[2].ordinal, 1);
-        assert_eq!(requests[3].event, "attackSpell");
-        assert_eq!(requests[3].ordinal, 2);
-        assert!(
-            requests[1..]
-                .iter()
-                .all(|request| request.kind == SkyrimCreatureAncillaryRecordKind::Weapon)
-        );
-    }
-
-    #[test]
-    fn attack_receipt_preserves_representable_atkd_and_keyword_policy() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let spell = FormKey {
-            local: 0x456,
-            plugin,
-        };
-        let keyword = FormKey {
-            local: 0x789,
-            plugin,
-        };
-        let mut attack = attack(
-            4,
-            "attackBite",
-            Some(super::super::creature_recipe::SkyrimRaceAttackFormReceipt {
-                source: spell.format(&interner),
-                signature: "SPEL".to_string(),
-            }),
-        );
-        attack.attack_type = Some(super::super::creature_recipe::SkyrimRaceAttackFormReceipt {
-            source: keyword.format(&interner),
-            signature: "KYWD".to_string(),
-        });
-
-        let receipt =
-            attack_source_data_receipt(&attack, CreatureAttackSpellPolicy::DirectSpell, &interner)
-                .unwrap();
-
-        assert_eq!(
-            receipt.damage_multiplier_bits,
-            attack.damage_multiplier_bits
-        );
-        assert_eq!(
-            receipt.stamina_multiplier_bits,
-            attack.stamina_multiplier_bits
-        );
-        assert_eq!(receipt.attack_spell.unwrap().signature, "SPEL");
-        assert!(matches!(
-            receipt.attack_type_policy,
-            CreatureAttackTypePolicy::RuntimeInertKeyword { .. }
-        ));
-        assert!(matches!(
-            receipt.stamina_multiplier_policy,
-            CreatureAttackStaminaPolicy::PreserveAsActionPointsMultiplier { .. }
-        ));
-    }
-
-    #[test]
-    fn multiple_unarmed_attacks_all_enter_the_record_key_plan() {
-        let attacks = [
-            CreatureAttackRecordVariant {
-                id: "attack_00".to_string(),
-                event: "attackBite".to_string(),
-                primary: true,
-                projection: CreatureAttackRecordProjection::MeleeUnarmed {
-                    weapon_form_key: TargetFormKey::new(0x800, "Converted.esm"),
-                    weapon_editor_id: "B21_AttackBite".to_string(),
-                    damage: 10,
-                    reach: 1.0,
-                    attack_seconds: 0.5,
-                },
-                damage_multiplier: 1.0,
-                chance: 1.0,
-                strike_angle: 0.0,
-                action_point_cost: 0.0,
-                target_data: CreatureAttackTargetData::default(),
-            },
-            CreatureAttackRecordVariant {
-                id: "attack_01".to_string(),
-                event: "attackClaw".to_string(),
-                primary: false,
-                projection: CreatureAttackRecordProjection::MeleeUnarmed {
-                    weapon_form_key: TargetFormKey::new(0x801, "Converted.esm"),
-                    weapon_editor_id: "B21_AttackClaw".to_string(),
-                    damage: 12,
-                    reach: 1.0,
-                    attack_seconds: 0.5,
-                },
-                damage_multiplier: 1.0,
-                chance: 1.0,
-                strike_angle: 0.0,
-                action_point_cost: 0.0,
-                target_data: CreatureAttackTargetData::default(),
-            },
-        ];
-
-        let key_plan = melee_record_key_plan(&attacks);
-
-        assert_eq!(key_plan.len(), 2);
-        assert_eq!(key_plan[0].attack_id, "attack_00");
-        assert!(key_plan[0].primary);
-        assert_eq!(key_plan[1].attack_id, "attack_01");
-        assert!(!key_plan[1].primary);
-    }
-
-    #[test]
-    fn non_finite_atkd_values_are_terminal() {
-        let mut attack = attack(0, "attackBite", None);
-        attack.recovery_time_bits = f32::NAN.to_bits();
-        assert!(
-            validate_attack_target_values(&attack)
-                .unwrap_err()
-                .contains("non-finite recovery_time")
-        );
-    }
-
-    #[test]
-    fn actor_action_receipts_form_a_single_family_record_batch() {
-        use crate::source_rig::{ActorActionKind, ActorActionRequirement};
-
-        let interner = StringInterner::new();
-        let requirement = ActorActionRequirement {
-            kind: ActorActionKind::Melee,
-            parent_editor_id: "ActionMelee".to_string(),
-            parent_form_id: 0x0130_0B,
-            behavior_path: "Actors\\B21_SkyrimCreatures\\fixture.hkx".to_string(),
-            animation_event: "attackBite".to_string(),
-        };
-        let request = CreatureActorActionReservationRequest {
-            family_id: "fixture_family".to_string(),
-            requirement: requirement.clone(),
-            editor_id: "B21_SkyrimActorAction_fixture".to_string(),
-        };
-        let receipt = CreatureActorActionReservationReceipt {
-            family_id: request.family_id.clone(),
-            requirement,
-            editor_id: request.editor_id.clone(),
-            target: FormKey {
-                local: 0x800,
-                plugin: interner.intern("Converted.esm"),
-            },
-        };
-
-        let plans = actor_action_record_plans(&[request], &[receipt], &interner).unwrap();
-        let family = plans.get("fixture_family").unwrap();
-        assert_eq!(family.len(), 1);
-        assert_eq!(family[0].editor_id, "B21_SkyrimActorAction_fixture");
-        assert_eq!(family[0].form_key.local, 0x800);
+            let plans = actor_action_record_plans(&[request], &[receipt], &interner).unwrap();
+            let family = plans.get("fixture_family").unwrap();
+            assert_eq!(family.len(), 1);
+            assert_eq!(family[0].editor_id, "B21_SkyrimActorAction_fixture");
+            assert_eq!(family[0].form_key.local, 0x800);
+        }
     }
 }

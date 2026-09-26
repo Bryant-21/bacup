@@ -26,7 +26,10 @@ Function Fragment_Stage_0400_Item_00()
                 EN05_MQ_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
             EndIf
         ElseIf EN05_IntroMisc_QuestStartKeyword != None
-            EN05_IntroMisc_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
+            EN05_IntroMisc_QuestStartKeyword.SendStoryEventAndWait(None, playerRef, playerRef)
+            If EN05_Basic != None && EN05_Basic.IsRunning() && EN05_Basic.GetStage() < 4
+                EN05_Basic.SetStage(4)
+            EndIf
         EndIf
     EndIf
 EndFunction
@@ -125,6 +128,10 @@ Function Fragment_Stage_0080_Item_00()
     ObjectReference revealRef = Alias_MODUSRevealManager.GetRef()
     If revealRef != None
         revealRef.Enable(False)
+        LC080_MODUSRevealManagerScript manager = revealRef as LC080_MODUSRevealManagerScript
+        If manager != None
+            manager.StartMODUSRevealClient()
+        EndIf
     EndIf
 EndFunction
 
@@ -167,7 +174,17 @@ Function Fragment_Stage_0170_Item_00()
 EndFunction
 
 Function Fragment_Stage_0185_Item_00()
+    If Alias_ModuleDispenserCloser != None && Alias_ModuleDispenserCloser.GetReference() == None && Alias_ModuleDispenser != None
+        ObjectReference dispenser = Alias_ModuleDispenser.GetReference()
+        If dispenser != None
+            Alias_ModuleDispenserCloser.ForceRefTo(dispenser)
+        EndIf
+    EndIf
     SetObjectiveDisplayed(185, True, True)
+EndFunction
+
+Function Fragment_Stage_0186_Item_00()
+    SetObjectiveCompleted(170, True)
 EndFunction
 
 Function Fragment_Stage_0187_Item_00()
@@ -209,9 +226,50 @@ Function Fragment_Stage_0240_Item_00()
     If klaxonRef != None && Alias_ActiveAlarmKlaxon.GetRef() == None
         Alias_ActiveAlarmKlaxon.ForceRefTo(klaxonRef)
     EndIf
+    If klaxonRef != None
+        klaxonRef.Enable(False)
+    EndIf
     EN02_MarkPlayer(Alias_PlayerCanCollectInstructions)
     SetObjectiveCompleted(210, True)
     SetObjectiveDisplayed(240, True, True)
+EndFunction
+
+Function EN02_StopAlarm()
+    If Alias_AlarmKlaxon != None && Alias_AlarmKlaxon.GetReference() != None
+        Alias_AlarmKlaxon.GetReference().Disable(False)
+    EndIf
+    If Alias_ActiveAlarmKlaxon != None
+        Alias_ActiveAlarmKlaxon.Clear()
+    EndIf
+EndFunction
+
+Function Fragment_Stage_0250_Item_00()
+    EN02_StopAlarm()
+EndFunction
+
+Function Fragment_Stage_0265_Item_00()
+    EN02_StopAlarm()
+EndFunction
+
+Function Fragment_Stage_0012_Item_00()
+    If Alias_VaultDoor == None
+        Return
+    EndIf
+    LC080_WhitespringBunkerGearDoorScript gearDoor = Alias_VaultDoor.GetReference() as LC080_WhitespringBunkerGearDoorScript
+    If gearDoor != None
+        gearDoor.SetOpen(True)
+    EndIf
+EndFunction
+
+Function EN02_SetModusState(ReferenceAlias akTerminalAlias, String asState)
+    If akTerminalAlias == None
+        Return
+    EndIf
+    DefaultMultiStateClientSideActivator terminalRef = akTerminalAlias.GetReference() as DefaultMultiStateClientSideActivator
+    If terminalRef != None
+        terminalRef.StartStateName = asState
+        terminalRef.ClientPlayAnimation(asState)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0245_Item_00()
@@ -314,4 +372,87 @@ EndFunction
 
 Function Fragment_Stage_0998_Item_00()
     Stop()
+EndFunction
+Function Fragment_Stage_0075_Item_00()
+    EN02_SetModusState(Alias_MODUSIntroTerminal, "ON")
+EndFunction
+
+Function Fragment_Stage_0081_Item_00()
+    EN02_SetModusState(Alias_MODUSIntroTerminal, "Angry")
+EndFunction
+
+Function Fragment_Stage_0082_Item_00()
+    EN02_SetModusState(Alias_MODUSIntroTerminal, "Pleased")
+EndFunction
+
+Function Fragment_Stage_0083_Item_00()
+    EN02_SetModusState(Alias_MODUSIntroTerminal, "Neutral")
+EndFunction
+
+Function Fragment_Stage_0175_Item_00()
+    EN02_SetModusState(Alias_ConfontationMODUSTerminal, "Angry")
+EndFunction
+
+Function Fragment_Stage_0180_Item_00()
+    EN02_SetModusState(Alias_ConfontationMODUSTerminal, "Neutral")
+EndFunction
+
+Function Fragment_Stage_0188_Item_00()
+    EN02_SetModusState(Alias_ConfontationMODUSTerminal, "Pleased")
+EndFunction
+
+Function Fragment_Stage_0301_Item_00()
+    EN02_SetModusState(Alias_ConfontationMODUSTerminal, "Angry")
+EndFunction
+
+Function Fragment_Stage_0302_Item_00()
+    EN02_SetModusState(Alias_ConfontationMODUSTerminal, "Neutral")
+EndFunction
+
+Function Fragment_Stage_0395_Item_00()
+    EN02_SetModusState(Alias_ConfontationMODUSTerminal, "Pleased")
+EndFunction
+
+Function Fragment_Stage_0397_Item_00()
+    EN02_SetModusState(Alias_ConfontationMODUSTerminal, "Neutral")
+EndFunction
+Function Fragment_Stage_0011_Item_00()
+    Actor player = Game.GetPlayer()
+    If player != None && LC080_SpotlightTriggerActorValue != None
+        player.SetValue(LC080_SpotlightTriggerActorValue, 1.0)
+    EndIf
+    If Alias_SpotlightManager != None
+        LC080_SpotlightManagerScript manager = Alias_SpotlightManager.GetReference() as LC080_SpotlightManagerScript
+        If manager != None
+            manager.ToggleSpotlightLightSystemClient(True, True)
+        EndIf
+    EndIf
+EndFunction
+
+Function Fragment_Stage_0317_Item_00()
+    EN02_MQ_QuestScript controller = (Self as Quest) as EN02_MQ_QuestScript
+    If controller != None
+        controller.EN02_HandleModuleStep(317)
+    EndIf
+EndFunction
+
+Function Fragment_Stage_0318_Item_00()
+    EN02_MQ_QuestScript controller = (Self as Quest) as EN02_MQ_QuestScript
+    If controller != None
+        controller.EN02_HandleModuleStep(318)
+    EndIf
+EndFunction
+
+Function Fragment_Stage_0358_Item_00()
+    EN02_MQ_QuestScript controller = (Self as Quest) as EN02_MQ_QuestScript
+    If controller != None
+        controller.CheckOrbitalRewards()
+    EndIf
+EndFunction
+
+Function Fragment_Stage_0359_Item_00()
+    EN02_MQ_QuestScript controller = (Self as Quest) as EN02_MQ_QuestScript
+    If controller != None
+        controller.CheckOrbitalRewards()
+    EndIf
 EndFunction

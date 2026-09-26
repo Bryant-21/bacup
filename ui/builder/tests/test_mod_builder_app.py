@@ -21,8 +21,10 @@ from ui.builder.mod_builder_app import (
     _mod_plugin_type_label,
     _progress_fraction_from_line,
     _plugin_ext,
+    _read_ignored_mods,
     _register_fo4_runtime_archive_ini_entries,
     _remove_fo4_archive_ini_entries,
+    _set_mod_ignored,
     _set_plugin_header_flags,
     _set_plugin_type_files,
 )
@@ -216,6 +218,58 @@ def test_mod_list_label_marks_deployed_mods():
     assert _mod_list_label("B21_Test", "ESP", deployed=False) == "B21_Test [ESP]"
 
 
+def test_mod_list_label_marks_ignored_mods():
+    assert _mod_list_label("B21_Test", "ESP", deployed=True, ignored=True) == "* B21_Test [ESP] (ignored)"
+
+
+def test_set_mod_ignored_toggles_entry_and_keeps_other_lines(tmp_path: Path):
+    ignore = tmp_path / ".ignore"
+    ignore.write_text("# hand-written\n*.log\n/B21_Old/\n", encoding="utf-8")
+
+    _set_mod_ignored(str(tmp_path), "B21_Test", True)
+    _set_mod_ignored(str(tmp_path), "B21_Test", True)
+    assert ignore.read_text(encoding="utf-8") == "# hand-written\n*.log\n/B21_Old/\n/B21_Test/\n"
+    assert _read_ignored_mods(str(tmp_path)) == {"B21_Old", "B21_Test"}
+
+    _set_mod_ignored(str(tmp_path), "B21_Old", False)
+    assert ignore.read_text(encoding="utf-8") == "# hand-written\n*.log\n/B21_Test/\n"
+    assert _read_ignored_mods(str(tmp_path)) == {"B21_Test"}
+
+
+def test_read_ignored_mods_without_file_is_empty(tmp_path: Path):
+    assert _read_ignored_mods(str(tmp_path)) == set()
+
+
+def test_mod_selector_ignore_checkbox_writes_mods_ignore(tmp_path: Path):
+    mods_dir = tmp_path / "mods"
+    mods_dir.mkdir()
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None):
+        app = ModBuilderApp()
+    app._mod_list = ["B21_Test"]
+    app._mod_kinds = ["mod"]
+    app._mod_deployed = [False]
+    app._mod_display = {"B21_Test": ("ESP", MagicMock())}
+
+    mock_imgui = MagicMock()
+    mock_imgui.get_content_region_avail.return_value = SimpleNamespace(x=400.0, y=600.0)
+    mock_imgui.get_style.return_value.item_spacing.x = 8.0
+    mock_imgui.input_text_with_hint.return_value = (False, "")
+    mock_imgui.begin_child.return_value = True
+    mock_imgui.selectable.return_value = (False, False)
+    mock_imgui.is_item_hovered.return_value = False
+    mock_imgui.button.return_value = False
+    mock_imgui.checkbox.return_value = (True, True)
+
+    with (
+        patch("ui.builder.mod_builder_app.MODS_DIR", str(mods_dir)),
+        patch("ui.builder.mod_builder_app.imgui", mock_imgui),
+    ):
+        app._draw_mod_selector()
+
+    assert (mods_dir / ".ignore").read_text(encoding="utf-8") == "/B21_Test/\n"
+    assert app._mod_ignored == {"B21_Test"}
+
+
 def test_mod_selector_uses_cached_display_metadata():
     with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None):
         app = ModBuilderApp()
@@ -233,6 +287,7 @@ def test_mod_selector_uses_cached_display_metadata():
     mock_imgui.selectable.return_value = (False, False)
     mock_imgui.is_item_hovered.return_value = False
     mock_imgui.button.return_value = False
+    mock_imgui.checkbox.return_value = (False, False)
 
     with (
         patch("ui.builder.mod_builder_app._mod_plugin_type_label", return_value="ESP (Light)") as plugin_label,

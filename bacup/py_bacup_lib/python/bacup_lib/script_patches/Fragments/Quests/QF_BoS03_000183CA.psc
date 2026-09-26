@@ -94,7 +94,9 @@ EndFunction
 
 Function Fragment_Stage_0300_Item_00()
 	SetObjectiveCompleted(200, True)
-	SetObjectiveDisplayed(300, True)
+	If !IsStageDone(500)
+		SetObjectiveDisplayed(300, True)
+	EndIf
 	Alias_CurrentTransponder.Clear()
 
 	Actor playerRef = Alias_Player.GetActorReference()
@@ -104,20 +106,43 @@ Function Fragment_Stage_0300_Item_00()
 	If pBoS03_Transponder_Radio != None && pBoS03_Transponder_Radio.IsPlaying()
 		pBoS03_Transponder_Radio.Stop()
 	EndIf
+
+	; FO76 places no rubble object to clear: the BoS03Rubble destructible is never placed,
+	; nothing references the RubblePre enable marker, and the stripped server logic was
+	; the only stage-400 setter. The corpse sits beside this transponder, so advance here.
+	If !IsStageDone(400)
+		SetStage(400)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()
 	SetObjectiveCompleted(300, True)
-	SetObjectiveDisplayed(400, True)
+	If !IsStageDone(500)
+		SetObjectiveDisplayed(400, True)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0500_Item_00()
-	SetObjectiveCompleted(400, True)
+	; The ID can be looted before every transponder is synced, so close whatever is still open.
+	Int objective = 100
+	While objective <= 400
+		If IsObjectiveDisplayed(objective) && !IsObjectiveCompleted(objective)
+			SetObjectiveCompleted(objective, True)
+		EndIf
+		objective += 100
+	EndWhile
 	SetObjectiveDisplayed(500, True)
 
 	Actor playerRef = Alias_Player.GetActorReference()
 	If playerRef != None
 		Alias_PlayerHasAccess.ForceRefTo(playerRef)
+	EndIf
+
+	; Taggerdy's quarters laser grid: FO76 lets BoS03EntryKeyword holders through via the
+	; server-only LaserGridScript.ReevaluateConditions, which is a no-op in this conversion.
+	ObjectReference quartersGrid = Game.GetFormFromFile(0x002CA05B, "SeventySix.esm") as ObjectReference
+	If quartersGrid != None && quartersGrid.IsEnabled()
+		quartersGrid.Disable()
 	EndIf
 EndFunction
 

@@ -85,9 +85,9 @@ if TYPE_CHECKING:
     from bacup_lib.runner import ConversionRunner
 
 _FO76_PIPBOY_MAP_REL = Path("textures/interface/pip-boy/papermap_city_d.dds")
-_FO76_WEB_MAP_PNG_REL = Path(
-    "PrismaUI_F4/views/B21_FullScreenMap/maps/appalachia/map.png"
-)
+# FO76 swaps to this military map while you pick a nuke target; same 4096 frame as the paper map.
+_FO76_MILITARY_MAP_REL = Path("textures/interface/pip-boy/military_map_d.dds")
+_FO76_FULLSCREEN_MAP_REL = Path("F4SE/Plugins/B21_FullScreenMap/maps/appalachia/map.dds")
 _FO4_PIPBOY_MAP_SIZE = (2048, 2048)
 _ANIM_TEXT_PROGRESS_HEARTBEAT_SECONDS = 15.0
 _CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -267,36 +267,39 @@ def _finalize_fo76_pipboy_map_texture(
 
     from PIL import Image
 
+    from bacup_lib.fullscreen_map import write_ui_dds
     from creation_lib.dds.io import load_image, save_image
 
     output_path = Path(ctx.mod_path) / "data" / _FO76_PIPBOY_MAP_REL
-    web_map_path = Path(ctx.mod_path) / _FO76_WEB_MAP_PNG_REL
-    web_manifest_path = web_map_path.with_name("map.json")
+    map_path = Path(ctx.mod_path) / _FO76_FULLSCREEN_MAP_REL
+    map_manifest_path = map_path.with_name("map.json")
     image = load_image(str(source_path), mode="RGBA")
-    web_image = image.copy()
     try:
-        web_map_path.parent.mkdir(parents=True, exist_ok=True)
-        web_image.save(web_map_path, format="PNG", optimize=True)
-        web_manifest_path.write_text(
-            json.dumps(
-                {
-                    "worldspace": "Appalachia",
-                    "title": "APPALACHIA",
-                    "image": "map.png",
-                    "discovery": "proximity",
-                    "calibration": {
-                        "mode": "survey",
-                        "centerX": 340,
-                        "centerY": 135,
-                        "maxRange": 582500,
-                        "mapPx": 4096,
-                    },
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        write_ui_dds(image, map_path, pad=True)
+        manifest = {
+            "worldspace": "Appalachia",
+            "title": "APPALACHIA",
+            "image": "map.dds",
+            "discovery": "proximity",
+            "calibration": {
+                "mode": "survey",
+                "centerX": 340,
+                "centerY": 135,
+                "maxRange": 582500,
+                "mapPx": 4096,
+            },
+        }
+        military_path = Path(source_root) / _FO76_MILITARY_MAP_REL
+        if military_path.is_file():
+            military = load_image(str(military_path), mode="RGBA")
+            try:
+                write_ui_dds(military, map_path.with_name("military.dds"), pad=True)
+            finally:
+                military.close()
+            manifest["nukeImage"] = "military.dds"
+        else:
+            _safe_emit_log(runner, "WARN", f"FO76 military map not found for nuke targeting: {military_path}")
+        map_manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
         # FO4's Pip-Boy map UI expects vanilla-style legacy DXT map textures.
         if image.size != _FO4_PIPBOY_MAP_SIZE:
@@ -312,7 +315,6 @@ def _finalize_fo76_pipboy_map_texture(
             use_gpu=False,
         )
     finally:
-        web_image.close()
         image.close()
     _safe_emit_log(
         runner,
@@ -322,8 +324,50 @@ def _finalize_fo76_pipboy_map_texture(
     _safe_emit_log(
         runner,
         "INFO",
-        f"Wrote generated Appalachia fullscreen map pack: {web_map_path.parent}",
+        f"Wrote generated Appalachia fullscreen map pack: {map_path.parent}",
     )
+    try:
+        from bacup_lib.fullscreen_map_markers import export_marker_icons
+
+        icons = export_marker_icons(
+            source_data_dir=Path(source_root),
+            source_plugin=Path(request.source_plugins[0]),
+            mod_root=Path(ctx.mod_path),
+        )
+        _safe_emit_log(runner, "INFO", f"Wrote FO76 map marker icons for the Appalachia pack: {icons}")
+    except Exception as exc:  # the map falls back to its FO4 icons
+        _safe_emit_log(runner, "WARN", f"FO76 map marker icons skipped: {exc}")
+
+
+def _restore_fo76_ui_sources(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    if ctx.source_data_dir is None:
+        return 0
+    from bacup_lib.source_reextract import restore_missing_ui_sources
+
+    result = restore_missing_ui_sources(Path(ctx.source_data_dir), ctx.source_archive_dirs)
+    if result.restored:
+        shown = ", ".join(result.restored[:10])
+        more = f" (+{len(result.restored) - 10} more)" if len(result.restored) > 10 else ""
+        _safe_emit_log(
+            runner,
+            "WARN",
+            f"Re-extracted {len(result.restored)} missing FO76 UI source file(s) "
+            f"from the game archives: {shown}{more}",
+        )
+    for rel, reason in result.failed.items():
+        _safe_emit_log(runner, "ERROR", f"Could not re-extract {rel}: {reason}")
+    if result.failed:
+        raise RuntimeError(
+            f"{len(result.failed)} FO76 UI source file(s) could not be re-extracted: "
+            + ", ".join(list(result.failed)[:5])
+        )
+    return len(result.restored)
 
 
 def _copy_fo76_vaultboy_swfs(
@@ -361,6 +405,688 @@ def _copy_fo76_vaultboy_swfs(
 
     _safe_emit_log(runner, "INFO", f"Copied {copied} FO76 VaultBoy SWF asset(s)")
     return copied
+
+
+def _merge_packaged_tales_translations(
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> None:
+    """Top up the shared translation table with bacup_lib's packaged Tales keys.
+
+    Each FO76 UI converter (legendary perks, daily ops, fishing, ...) writes
+    into the same per-DLL Scaleform table, so any one of them running to
+    completion should leave it whole. Idempotent: merging already-present
+    keys is a no-op on the resulting file.
+
+    Only these pipeline wrappers call this; a direct `convert_*_ui()` caller
+    (e.g. a standalone staging script) skips the packaged merge.
+    """
+    from bacup_lib.translations import (
+        merge_packaged_overlays, merge_ui_translations, packaged_tales_lines, translation_path,
+    )
+
+    output_data = Path(ctx.mod_path) / "data"
+    accumulator = translation_path(output_data)
+    preserved, written = merge_ui_translations(output_data, packaged_tales_lines())
+    merge_packaged_overlays(accumulator)
+    _safe_emit_log(
+        runner, "INFO",
+        f"translations: merged {written} Tales lines into {accumulator} (preserved {preserved})",
+    )
+
+
+def _convert_fo76_challenges(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.challenge_catalog import emit_challenge_catalog
+    from bacup_lib.challenge_hud_ui import convert_challenge_hud_ui
+    from bacup_lib.challenge_ui import convert_challenge_map_ui
+
+    target_data = getattr(ctx, "target_data_dir", None) or request.target_data_dir
+    if target_data is None:
+        raise ValueError("Challenge conversion requires the target Fallout 4 Data directory")
+    mod = Path(ctx.mod_path)
+    catalog = emit_challenge_catalog(
+        Path(ctx.source_plugin_path), mod, Path(target_data),
+        output_plugin_name=ctx.output_plugin_name,
+    )
+    menu_manifest = convert_challenge_map_ui(Path(ctx.source_data_dir), mod)
+    hud_manifest = convert_challenge_hud_ui(Path(ctx.source_data_dir), mod / "data")
+    count = len(menu_manifest["files"]) + len(hud_manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Generated {len(catalog['challenges'])} challenges and {count} map/HUD assets")
+    return count
+
+
+def _convert_fo76_expedition_results(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.expedition_results_ui import MENU, convert_expedition_results_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Expedition results UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_expedition_results_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted Expedition results menu and {count - 1} dependencies")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_raid_rewards_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib import raid_rewards_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / raid_rewards_ui.MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Raid rewards UI skipped: source menu has not been extracted")
+        return 0
+    manifest = raid_rewards_ui.convert_raid_rewards_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted raid rewards menu and {count - 1} dependencies")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_player_ghoul(request, ctx, runner=None) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.player_ghoul import emit_player_ghoul
+
+    mod = Path(ctx.mod_path)
+    target_data = getattr(ctx, "target_data_dir", None) or request.target_data_dir
+    catalog = emit_player_ghoul(Path(ctx.source_plugin_path), mod / ctx.output_plugin_name, mod,
+                               Path(target_data) if target_data else None)
+    _safe_emit_log(runner, "INFO", f"Player ghoul catalog: {len(catalog['cards'])} cards, {len(catalog['chems'])} chems; appearance fallback")
+    return 1
+
+
+def _convert_fo76_reputation_presentation(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.reputation_catalog import emit_reputation_catalog
+    from bacup_lib.reputation_ui import convert_reputation_ui
+    from bacup_lib.reputation_map_ui import convert_reputation_map_ui
+
+    mod = Path(ctx.mod_path)
+    catalog = emit_reputation_catalog(
+        Path(ctx.source_plugin_path), mod / ctx.output_plugin_name, mod
+    )
+    missing = catalog.get("missing_converted", [])
+    if missing:
+        _safe_emit_log(
+            runner, "WARN",
+            f"Reputation presentation is missing {len(missing)} converted form(s): {', '.join(missing)}",
+        )
+    manifest = convert_reputation_ui(Path(ctx.source_data_dir), mod / "data")
+    map_art = convert_reputation_map_ui(Path(ctx.source_data_dir), mod)
+    count = len(manifest["files"]) + len(map_art["files"])
+    _safe_emit_log(runner, "INFO", f"Converted reputation HUD, native map artwork and catalog for {len(catalog['factions'])} factions")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_respawn_map(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.respawn_ui import convert_respawn_ui
+
+    mod = Path(ctx.mod_path)
+    manifest = convert_respawn_ui(
+        Path(ctx.source_data_dir), mod,
+        source_plugin=Path(ctx.source_plugin_path),
+        converted_plugin=mod / ctx.output_plugin_name,
+    )
+    _safe_emit_log(runner, "INFO", "Generated the Tales death bag catalog and native map contract")
+    return len(manifest["files"])
+
+
+def _convert_fo76_infestations(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.infestations import CATALOG, OUTPUT, convert_infestations, summarize
+
+    mod = Path(ctx.mod_path)
+    try:
+        result = convert_infestations(
+            Path(ctx.source_data_dir), mod,
+            source_plugin=Path(ctx.source_plugin_path),
+            converted_plugin=mod / ctx.output_plugin_name,
+        )
+    except (FileNotFoundError, KeyError, ValueError) as error:
+        # Tales disables Infestations when these are absent; stale ones would describe another build.
+        (mod / CATALOG).unlink(missing_ok=True)
+        (mod / OUTPUT / "presentation.json").unlink(missing_ok=True)
+        _safe_emit_log(runner, "WARN", f"Infestations skipped: {error}")
+        return 0
+    for line in summarize(result["catalog"]):
+        _safe_emit_log(runner, "INFO", f"Infestations: {line}")
+    return len(result["presentation"]["files"]) + 1
+
+
+def _convert_fo76_quest_tabs(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.pipboy_quest_catalog import OUTPUT, emit_quest_catalog, inspect_presentation
+
+    mod = Path(ctx.mod_path)
+    try:
+        inspect_presentation(Path(ctx.source_data_dir))
+    except (FileNotFoundError, ValueError) as error:
+        (mod / OUTPUT).unlink(missing_ok=True)
+        _safe_emit_log(runner, "WARN", f"Pip-Boy quest tabs skipped: {error}")
+        return 0
+    catalog = emit_quest_catalog(
+        Path(ctx.source_plugin_path), mod / ctx.output_plugin_name,
+        Path(ctx.source_data_dir), mod,
+    )
+    _safe_emit_log(runner, "INFO", f"Pip-Boy quest catalog mapped {len(catalog['quests'])} quests")
+    return 1
+
+
+def _convert_fo76_pipboy2000_anim_text(request, ctx, runner=None) -> int:
+    """Must run after AnimTextData generation, which deletes the whole AnimTextData tree."""
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.pipboy2000_anim_text import DataSource, base_source, emit_pipboy2000_anim_text
+
+    target_data = getattr(ctx, "target_data_dir", None) or request.target_data_dir
+    if target_data is None:
+        _safe_emit_log(runner, "WARN", "Pip-Boy 2000 AnimTextData skipped: the Fallout 4 Data directory is unknown")
+        return 0
+    mod = Path(ctx.mod_path)
+    converted, base = DataSource(mod / "data"), base_source(Path(target_data))
+    try:
+        written = emit_pipboy2000_anim_text(mod, converted, base)
+    except FileNotFoundError as error:
+        _safe_emit_log(runner, "WARN", f"Pip-Boy 2000 AnimTextData skipped: {error}")
+        return 0
+    finally:
+        converted.close()
+        base.close()
+    _safe_emit_log(runner, "INFO", f"Pip-Boy 2000 AnimTextData: wrote {len(written)} file(s)")
+    return len(written)
+
+
+def _convert_fo76_casino_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.casino_ui import MENU, convert_casino_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Casino UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_casino_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted casino menu, HUD, fanfare and {count - 3} dependencies")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _copy_fo76_holotape_programs(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.holotape_programs import copy_fo76_holotape_programs
+
+    copied = copy_fo76_holotape_programs(Path(ctx.source_data_dir), Path(ctx.mod_path) / "data")
+    if not copied:
+        _safe_emit_log(runner, "WARN", "Holotape games skipped: source programs have not been extracted")
+    else:
+        _safe_emit_log(runner, "INFO", f"Copied {len(copied)} FO76 holotape game files")
+    return len(copied)
+
+
+def _convert_fo76_combat_perks(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.combat_perk_catalog import emit_combat_perk_catalog
+    from bacup_lib.combat_perk_ui import convert_combat_perk_ui
+
+    mod = Path(ctx.mod_path)
+    catalog = emit_combat_perk_catalog(
+        Path(ctx.source_plugin_path), mod / ctx.output_plugin_name, mod
+    )
+    manifest = convert_combat_perk_ui(Path(ctx.source_data_dir), mod / "data")
+    missing = catalog.get("missing_converted", [])
+    if missing:
+        _safe_emit_log(
+            runner, "WARN",
+            f"Combat perks are missing {len(missing)} converted form(s): {', '.join(missing)}",
+        )
+    missing_source = catalog.get("missing_source", [])
+    if missing_source:
+        _safe_emit_log(
+            runner, "WARN",
+            f"Combat perks are missing {len(missing_source)} source form(s): {', '.join(missing_source)}",
+        )
+    _safe_emit_log(runner, "INFO", f"Generated the combat perk catalog and HUD asset: {manifest['movie']}")
+    return 2
+
+
+def _convert_fo76_quick_boy_ui(request, ctx, runner=None) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.quick_boy_ui import convert_quick_boy_ui
+
+    manifest = convert_quick_boy_ui(Path(ctx.source_data_dir), Path(ctx.mod_path) / "data")
+    _safe_emit_log(runner, "INFO", "Converted Quick-Boy background from the installed FO76 Pip-Boy")
+    return len(manifest["files"])
+
+
+def _convert_fo76_status_hud_ui(request, ctx, runner=None) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.status_hud_ui import convert_status_hud_ui
+
+    manifest = convert_status_hud_ui(Path(ctx.source_data_dir), Path(ctx.mod_path) / "data",
+                                     source_plugin=Path(ctx.source_plugin_path))
+    _safe_emit_log(runner, "INFO", "Converted isolated health/status and condition HUD artwork")
+    return len(manifest["files"])
+
+
+def _convert_fo76_legendary_perk_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.legendary_perks_ui import MENU, convert_legendary_perk_ui
+    from bacup_lib.legendary_perk_bindings import emit_legendary_perk_bindings
+
+    bindings = emit_legendary_perk_bindings(Path(ctx.mod_path) / ctx.output_plugin_name, Path(ctx.mod_path))
+    _safe_emit_log(runner, "INFO", f"Generated {len(bindings['forms'])} legendary runtime bindings")
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Legendary perk UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_legendary_perk_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted legendary perk menu and {count - 1} dependencies")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_perk_card_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.perk_cards_ui import MENU, convert_perk_card_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Regular perk UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_perk_card_ui(source_root, Path(ctx.mod_path) / "data")
+    _safe_emit_log(runner, "INFO", f"Converted regular perk menu and {len(manifest['files']) - 1} dependencies")
+    count = len(manifest["files"])
+    from bacup_lib.special_builds_ui import MENU as SPECIAL_MENU, convert_special_builds_ui
+    if (source_root / "interface" / SPECIAL_MENU).is_file():
+        special = convert_special_builds_ui(source_root, Path(ctx.mod_path) / "data")
+        count += len(special["files"])
+        _safe_emit_log(runner, "INFO", f"Converted punch card SPECIAL menu and {len(special['files']) - 1} dependencies")
+    else:
+        _safe_emit_log(runner, "WARN", "Punch card UI skipped: source menu has not been extracted")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_keypad_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.keypad_ui import MENU, convert_keypad_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Keypad UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_keypad_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted keypad menu and {count - 1} dependencies")
+    return count
+
+
+def _convert_fo76_daily_ops_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.daily_ops_ui import MENU, convert_daily_ops_ui
+    from bacup_lib.daily_ops_voice import convert_daily_ops_voice
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Daily Ops UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_daily_ops_ui(source_root, Path(ctx.mod_path) / "data")
+    # Native presentation reads its generated catalogue loose, outside the BA2s.
+    voices = convert_daily_ops_voice(source_root, Path(ctx.mod_path))
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted Daily Ops report, HUD, radio portrait and {len(voices['topics'])} radio cues")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_currency_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.currency_ui import convert_currency_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface/hudmenu.swf").is_file():
+        _safe_emit_log(runner, "WARN", "Currency UI skipped: source HUD has not been extracted")
+        return 0
+    manifest = convert_currency_ui(source_root, Path(ctx.mod_path) / "data")
+    _safe_emit_log(runner, "INFO", "Converted currency gain notifications, icons and sound cues")
+    return len(manifest["files"])
+
+
+def _convert_fo76_xp_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.xp_ui import SOURCE, convert_xp_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / SOURCE).is_file():
+        _safe_emit_log(runner, "WARN", "Experience UI skipped: source HUD has not been extracted")
+        return 0
+    manifest = convert_xp_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"]) + len(manifest["audio"])
+    _safe_emit_log(runner, "INFO", f"Converted the experience HUD and {len(manifest['audio'])} level-up sounds")
+    return count
+
+
+def _convert_fo76_quest_area_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.quest_area_ui import SOURCE, convert_quest_area_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / SOURCE).is_file():
+        _safe_emit_log(runner, "WARN", "Quest area UI skipped: source HUD has not been extracted")
+        return 0
+    manifest = convert_quest_area_ui(source_root, Path(ctx.mod_path) / "data")
+    _safe_emit_log(runner, "INFO", "Converted the objective-area compass clip")
+    _merge_packaged_tales_translations(ctx, runner)
+    return len(manifest["files"])
+
+
+def _convert_fo76_mission_map_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.mission_map_ui import convert_mission_map_ui
+
+    if not (Path(ctx.source_data_dir) / "interface/dailyopsiconlibrary.swf").is_file():
+        _safe_emit_log(runner, "WARN", "Mission map PNGs skipped: source UI has not been extracted")
+        return 0
+    # The native map reads loose files beside its DLL; the F4SE tree is deployed outside BA2s.
+    manifest = convert_mission_map_ui(Path(ctx.source_data_dir), Path(ctx.mod_path),
+                                     source_plugin=getattr(ctx, "source_plugin_path", None))
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted {count} Daily Ops and Expeditions map assets")
+    return count
+
+
+def _convert_fo76_photo_mode_ui(request, ctx, runner=None) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.photo_mode_ui import convert_photo_mode_ui
+    result = convert_photo_mode_ui(Path(ctx.source_data_dir), Path(ctx.mod_path) / "data")
+    _merge_packaged_tales_translations(ctx, runner)
+    return len(result["files"])
+
+
+def _convert_fo76_menu_presentation(request, ctx, runner=None) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.menu_presentation_ui import MENUS, convert_menu_presentation
+
+    source_root = Path(ctx.source_data_dir)
+    if not all((source_root / "interface" / name).is_file()
+               for name in MENUS):
+        _safe_emit_log(runner, "WARN", "FO76 menu presentation skipped: source menus are missing")
+        return 0
+    source_data = next((path for path in ctx.source_archive_dirs
+                        if (path.parent / "Fallout76.ini").is_file()), None)
+    if source_data is None:
+        _safe_emit_log(runner, "WARN", "FO76 menu presentation skipped: installed source media unavailable")
+        return 0
+    result = convert_menu_presentation(source_root, source_data.parent,
+                                       Path(ctx.mod_path) / "data", ctx.target_extracted_dir,
+                                       getattr(ctx, "target_data_dir", None) or request.target_data_dir)
+    for missing in result.get("missing_media", []):
+        _safe_emit_log(runner, "WARN", f"FO76 menu media missing, skipped: {missing}")
+    from bacup_lib.character_creation_ui import convert_character_creation_ui
+    character_creation = convert_character_creation_ui(source_root, Path(ctx.mod_path) / "data")
+    _merge_packaged_tales_translations(ctx, runner)
+    return len(result["files"]) + len(character_creation["files"])
+
+
+def _convert_fo76_photo_gallery_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.photo_gallery_ui import MENU, convert_photo_gallery_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Photo gallery UI skipped: source menu has not been extracted")
+        return 0
+    convert_photo_gallery_ui(source_root, Path(ctx.mod_path))
+    _safe_emit_log(runner, "INFO", "Converted the source-preserved photo gallery menu and Prisma map presentation")
+    _merge_packaged_tales_translations(ctx, runner)
+    return 2
+
+
+def _convert_fo76_fishing_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.fishing_ui import convert_fishing_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface/fishingmenu.swf").is_file():
+        _safe_emit_log(runner, "WARN", "Fishing UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_fishing_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted fishing menu and {count - 1} dependencies")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_inspect_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.inspect_ui import MENU, convert_inspect_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Inspect UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_inspect_ui(source_root, Path(ctx.mod_path) / "data")
+    count = len(manifest["files"])
+    _safe_emit_log(runner, "INFO", f"Converted inspect item card and {count - 1} dependencies")
+    _merge_packaged_tales_translations(ctx, runner)
+    return count
+
+
+def _convert_fo76_workbench_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.workbench_ui import convert_workbench_ui
+
+    target_data = getattr(ctx, "target_data_dir", None) or request.target_data_dir
+    if target_data is None:
+        raise ValueError("Workbench conversion requires Fallout 4's target data directory")
+    convert_workbench_ui(Path(ctx.mod_path) / "data", target_data_dir=Path(target_data))
+    _safe_emit_log(runner, "INFO", "Connected condition repair to Fallout 4's workbench button bar")
+    return 1
+
+
+def _convert_fo76_barter_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.barter_ui import SOURCE, convert_barter_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / SOURCE).is_file():
+        _safe_emit_log(runner, "WARN", "Barter UI skipped: source trade menu has not been extracted")
+        return 0
+    target_data = getattr(ctx, "target_data_dir", None) or request.target_data_dir
+    if target_data is None:
+        raise ValueError("Barter conversion requires Fallout 4's target data directory")
+    manifest = convert_barter_ui(source_root, Path(ctx.mod_path) / "data", target_data_dir=Path(target_data))
+    _safe_emit_log(runner, "INFO", "Converted FO76 vendor panels and category strip around FO4's barter controller")
+    return len(manifest["files"])
+
+
+def _convert_fo76_favorites_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.favorites_ui import MENU, convert_favorites_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Favorites wheel skipped: source radial menu has not been extracted")
+        return 0
+    target_data = getattr(ctx, "target_data_dir", None) or request.target_data_dir
+    if target_data is None:
+        raise ValueError("Favorites conversion requires Fallout 4's target data directory for the stock menu")
+    manifest = convert_favorites_ui(source_root, Path(ctx.mod_path) / "data", source_plugin=Path(ctx.source_plugin_path),
+                                    target_data_dir=Path(target_data))
+    _safe_emit_log(runner, "INFO", "Converted the FO76 favorites wheel for FO4's twelve saved quickslots")
+    return len(manifest["files"])
+
+
+def _convert_fo76_emotes(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.emotes import convert_emotes
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface/radialmenu.swf").is_file():
+        _safe_emit_log(runner, "WARN", "Emotes skipped: source radial menu has not been extracted")
+        return 0
+    target_root = getattr(ctx, "target_extracted_dir", None) or request.target_extracted_dir
+    if not target_root:
+        raise ValueError("Emote conversion requires the extracted Fallout 4 behavior graph")
+    manifest = convert_emotes(source_root, Path(ctx.mod_path), source_plugin=Path(ctx.source_plugin_path),
+                              target_root=Path(target_root))
+    _safe_emit_log(runner, "INFO", f"Converted {len(manifest['entries'])} verified human emotes")
+    return len(manifest["files"]) + 1
+
+
+def _convert_fo76_realtime_vats_ui(
+    request: PluginPortRequest,
+    ctx: ConversionContext,
+    runner: "ConversionRunner | None" = None,
+) -> int:
+    if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
+        return 0
+    from bacup_lib.realtime_vats_ui import MENU, convert_realtime_vats_ui
+
+    source_root = Path(ctx.source_data_dir)
+    if not (source_root / "interface" / MENU).is_file():
+        _safe_emit_log(runner, "WARN", "Real-time VATS UI skipped: source menu has not been extracted")
+        return 0
+    manifest = convert_realtime_vats_ui(source_root, Path(ctx.mod_path) / "data")
+    _safe_emit_log(runner, "INFO", "Converted FO76 VATS presentation; native runtime activation requires verified attack adapters")
+    return len(manifest["files"])
 
 
 def _normalize_streamed_rel(rel: str) -> str:
@@ -497,7 +1223,9 @@ def finalize_sinks_for_mod(
     )
     archive_root.mkdir(parents=True, exist_ok=True)
     use_temp_outputs = not os.path.samefile(archive_root, mod_root)
+    inventory_started = time.perf_counter()
     entries = inventory_packable_entries(mod_root)
+    inventory_seconds = time.perf_counter() - inventory_started
 
     # The shard plan uses the shared archive planner so the sink join and
     # pack_mod agree on classification, ordering, and size checks.
@@ -516,6 +1244,14 @@ def finalize_sinks_for_mod(
             for planned in plans
             if _archive_label_selected(planned.label, archive_labels)
         ]
+    inventory_message = (
+        f"Archive inventory: {len(entries)} files, "
+        f"{sum(entry.size for entry in entries) / 1024**3:.1f} GiB in "
+        f"{inventory_seconds:.1f}s; packing {len(plans)} BA2 archive(s)"
+    )
+    _log.info("%s", inventory_message)
+    if pack_progress is not None:
+        pack_progress({"message": inventory_message, "completed": 0, "total": len(plans)})
     selected_rels = {
         _normalize_streamed_rel(entry.relative_path)
         for planned in plans
@@ -1017,6 +1753,7 @@ def _memory_stage(ctx: ConversionContext | None, stage: str, **fields: object):
 _TRIM_AFTER_MARKS = frozenset(
     {
         "after:masters_open",
+        "after:collect_assets",
         "after:translate",
         "after:early_source_close",
         "after:repair",
@@ -1045,6 +1782,17 @@ def _memory_mark(ctx: ConversionContext | None, label: str) -> None:
             _esp_native.trim_allocator()
         except Exception:
             pass
+
+
+def _trim_bacup_native_allocator() -> None:
+    try:
+        from bacup_lib.esp_native_runtime import load_esp_native
+
+        trim = getattr(load_esp_native(), "trim_allocator_native", None)
+        if callable(trim):
+            trim()
+    except Exception:
+        pass
 
 
 def _append_unique_strings(target: list[str], values: list[str]) -> None:
@@ -1197,15 +1945,174 @@ _SCRIPT_ADDITION_MANIFEST = {
         "B21:StoryEventOnTriggerEnter",
         "B21:StoryEventOnActivateStartScene",
         "B21:QuestRewards",
+        "B21:CurrencyQuestRewards",
         "B21:ExpeditionMissionRewards",
         "B21:LocalEncounterMaterializer",
+        "B21:EncounterWaveCatalog",
+        "B21:QuestVariables",
+        "B21:QuestTimer",
+        "B21:QuestStartKeyword",
+        "B21:ObjectiveTimers",
+        "B21:EnclaveEventSupport",
         "B21:HolotapeStageOnPlay",
         "B21:PlanLearnOnRead",
         "B21:WorkshopCollector",
+        "B21:RandomEncounterStartup",
+        "B21_ActivateAliasWithRequiredItem",
+        "B21_ShowMessageOnActivateAlias",
+        "B21:KeypadNative",
+        "B21_WaywardState",
+        "B21_W05QuestDistanceCheckScript",
+        "Fragments:Packages:PF_BS02_MQ02_Missing_Marci_0060E191_2",
+        "Fragments:Scenes:SF_W05_MQR_202P_RaRaVent_097_0056B746",
     ),
 }
 
 _FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS = {
+    _script_key("XPD_Fuel_TrainingScript"): (
+        ("Form", "B21ResultsBook"),
+        ("Int", "B21AdamThrow"),
+        ("Bool", "B21Completed"),
+    ),
+    _script_key("Burn_PublicEvent_HelperScript"): (("Int", "B21PendingTimerStage"),),
+    _script_key("Storm_E01_PartsInstallScript"): (("Int", "B21InstalledParts"),),
+    _script_key("Quests:sfs09:habitatquestscript"): (("Bool", "B21SludgeGathering"),),
+    _script_key("Quests:SFS09:TroughScript"): (("Bool", "B21Depositing"),),
+    _script_key("E08A_Moonshine_BathtubScript"): (("Bool", "B21DepositBusy"),),
+    _script_key("SFM04_Organic_QuestScript"): (("Bool", "B21NestStarting"),),
+    _script_key("MTR07_EarthQuestScript"): (("Bool", "B21WheelTimerStarted"),),
+    _script_key("MTNM04QuestScript"): (("Int", "B21ScenePollTicks"),),
+    _script_key("RSVP03_QuestScript"): (
+        ("Bool", "B21CampProgressBusy"),
+        ("Bool", "B21CampProgressDirty"),
+    ),
+    _script_key("MoMParlorSecretEntranceScript"): (
+        ("Bool", "B21PlayerInsidePod"),
+        ("Bool", "B21PodTravelBusy"),
+    ),
+    _script_key("MoMMasterQuestScript"): (
+        ("Bool", "B21ProgressBusy"),
+        ("Bool", "B21ProgressDirty"),
+    ),
+    _script_key("Default1StateSyncActivator"): (("Float", "B21SyncProgress"),),
+    _script_key("EN07_MissileSoundRefScript"): (
+        ("Bool", "B21LaunchEffectsActive"),
+        ("Bool", "B21HasSoundInstance"),
+    ),
+    _script_key("EN07_FleeSiloScript"): (
+        ("ObjectReference[]", "B21LaunchRefs"),
+        ("ObjectReference[]", "B21ShutdownDisabledRefs"),
+        ("ObjectReference[]", "B21SealedDoorRefs"),
+        ("ObjectReference[]", "B21LaunchMarkers"),
+    ),
+    _script_key("SFM04_Organic_Blooms_QuestScript"): (
+        ("ObjectReference[]", "B21HiddenPods"),
+        ("ObjectReference[]", "B21SpawnedBlooms"),
+        ("Bool", "B21GrowingBlooms"),
+        ("Bool", "B21StoppingBlooms"),
+    ),
+    _script_key("DefaultQuestEncounterWaveScript"): (
+        ("Int[]", "B21ActiveLocalWaves"),
+        ("Actor[]", "B21UncollectedActors"),
+        ("Bool[]", "B21UncollectedSpawned"),
+        ("Bool", "B21UncollectedSpawning"),
+        ("Actor[]", "B21WaveActors"),
+        ("Int[]", "B21WaveActorWaves"),
+        ("Bool[]", "B21WaveActorOwned"),
+        ("Int[]", "B21SpawningWaves"),
+        ("Int[]", "B21WaveSubwaves"),
+        ("Int[]", "B21WaveActorsSpawned"),
+        ("Float[]", "B21WaveTimeRemaining"),
+        ("Int[]", "B21WaveLegendariesSpawned"),
+        ("Bool", "B21WaveSpawning"),
+        # FO76's documented EWS custom events; listeners receive the wave index in kArgs[0].
+        ("CustomEvent", "FirstSubwaveSpawned"),
+        ("CustomEvent", "LastWave"),
+        ("CustomEvent", "WaveComplete"),
+    ),
+    _script_key("DefaultEventQuest"): (
+        ("Bool", "B21PlayerJoinedEvent"),
+        ("Bool", "B21PlayerParticipating"),
+    ),
+    _script_key("Quests:_Default:PlayMusicScript"): (("Bool[]", "B21MusicPlaying"),),
+    _script_key("Quests:_Default:WeatherOverrideScript"): (
+        ("Bool", "B21WeatherOverridden"),
+    ),
+    _script_key("Quests:RA:SpawnPartyCrasher"): (("Bool", "B21PartyCrasherRolled"),),
+    _script_key("Quests:RA:SpawnBigfootPartyCrasher"): (
+        ("Bool", "B21PartyCrasherRolled"),
+    ),
+    _script_key("DefaultForceLegendaryAlias"): (
+        ("ObjectReference", "B21LegendaryRolledRef"),
+    ),
+    _script_key("DefaultForceLegendaryCollectionAlias"): (
+        ("ObjectReference[]", "B21LegendaryRolledRefs"),
+    ),
+    _script_key("DefaultQuestGiveReputation"): (("Bool", "B21ReputationGranted"),),
+    _script_key("NWOTQuestRewardNukacadePointsScript"): (("Bool", "B21PointsGranted"),),
+    _script_key("DefaultKillObjective"): (("Actor[]", "B21CountedVictims"),),
+    _script_key("DefaultDepositItem"): (("Bool", "B21DepositBusy"),),
+    _script_key("Quests:E05_Radiation:QuestScript"): (
+        ("Actor[]", "B21Scavengers"),
+        ("ObjectReference[]", "B21OreVeins"),
+        ("ObjectReference[]", "B21HarvestedOreVeins"),
+    ),
+    _script_key("SQ_ScorchbeastMasterScript"): (
+        ("Actor[]", "B21SpawnedScorchbeasts"),
+        ("Int", "B21ScorchbeastSummonTries"),
+    ),
+    _script_key("DefaultQuestObjectiveScript"): (
+        ("Int[]", "B21RunningObjectives"),
+        ("Float[]", "B21ObjectiveRemaining"),
+        # FO76 reported a finished objective back to its owning quest script.
+        ("CustomEvent", "ObjectiveEnded"),
+    ),
+    _script_key("DeconArchScript"): (("Bool", "B21PlayerInside"),),
+    _script_key("Quests:_Default:ProgressBar:MasterScript"): (
+        ("CustomEvent", "ProgressBarFull"),
+        ("CustomEvent", "ProgressBarEmpty"),
+        ("Bool", "B21ProgressInitialized"),
+        ("Bool", "B21ProgressDisplayed"),
+        ("Bool", "B21ProgressHidden"),
+        ("Bool", "B21ProgressStarted"),
+        ("Bool", "B21ProgressFull"),
+        ("Bool", "B21ProgressEmpty"),
+        ("Float", "B21ProgressRate"),
+        ("Int", "B21ProgressObjective"),
+        ("Int", "B21ProgressFullStage"),
+        ("Int", "B21ProgressEmptyStage"),
+    ),
+    _script_key("ENz04_BotScript"): (
+        ("Int[]", "B21StartedWaves"),
+        ("Actor[]", "B21SpawnedEnemies"),
+        ("Int", "B21SiteSpecies"),
+    ),
+    _script_key("ENz01_AboveScript"): (("Actor[]", "B21SpawnedEnemies"),),
+    _script_key("ENs02_BlastQuestScript"): (
+        ("Actor[]", "B21SpawnedEnemies"),
+        ("Bool", "B21VertibotReleased"),
+    ),
+    _script_key("ENz01_ResourceDropRefScript"): (("Bool", "B21TouchdownPlayed"),),
+    _script_key("EN02_MQ_QuestScript"): (("EN02_ExamPlayerScript:TerminalDatum[]", "B21ExamAnswers"),),
+    _script_key("EN07_PosterTutorialScript"): (("EN07_Death_TutorialLightManagerScript", "B21LightManager"),),
+    _script_key("ENB_BunkerMasterScript"): (
+        ("ObjectReference[]", "B21DeconArches"),
+        ("ObjectReference[]", "B21DeconDoors"),
+    ),
+    _script_key("BoS02_DMV_SupportScript"): (
+        ("Actor[]", "B21DMVActors"),
+        ("Bool[]", "B21DMVSpawned"),
+        ("Bool", "B21DMVSpawning"),
+    ),
+    _script_key("Fragments:Quests:QF_MTNM01_Mayhem_0009732E"): (
+        ("Bool", "B21AddedCannibalPerk"),
+    ),
+    _script_key("Fragments:Quests:QF_EN05_Basic_0008C87F"): (
+        ("Bool", "B21GraduationPapersGranted"),
+    ),
+    _script_key("Fragments:Terminals:TERM_BoS_TaggerdyTerminal_0034B443"): (
+        ("Bool", "B21UltracitePlansDownloaded"),
+    ),
     _script_key("EN02_OrbitalStrikeMarkerScript"): (("Int", "remainingDelayCount"),),
     _script_key("W05_ActorNukeReactionScript"): (
         ("Bool", "bReactingToNuke"),
@@ -1220,6 +2127,7 @@ _FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS = {
     # FO76 CustomEvent declarations are lost in decompilation while the
     # SendCustomEvent/RegisterForCustomEvent call sites survive; restore them.
     _script_key("MTR02_EquipmentTerminalScript"): (("CustomEvent", "PageAccessed"),),
+    _script_key("TW002SecurityStationScript"): (("CustomEvent", "TW002GotTape"),),
     _script_key("KlaxonManagerScript"): (
         ("CustomEvent", "KlaxonManagerStateChangedClient"),
     ),
@@ -1228,17 +2136,141 @@ _FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS = {
         ("CustomEvent", "MODUSRevealStart"),
         ("CustomEvent", "MODUSRevealLoad"),
     ),
-    # FO76's keypad menu and its native success event have no FO4 equivalent, so
-    # the adapter keeps the digit-entry state here and announces the result the
-    # way the quest aliases can hear it.
+    _script_key("Nuke_MasterScript"): (
+        ("Int", "B21LocalCodeSeed"),
+        ("Int[]", "B21LocalCodeRevisions"),
+        ("Bool[]", "B21LocalCodeUsed"),
+        ("Bool", "B21StartingOfficers"),
+    ),
+    _script_key("EN07_CodeHuntQuestScript"): (("Form", "B21LocalTargetPiece"),),
+    _script_key("Nuke_CodesScript"): (("Bool", "B21RestoringOfficers"),),
+    _script_key("Nuke_CodesOfficerScript"): (("Bool", "B21LocalOfficerAssigned"),),
+    # The converted menu supplies input; quest aliases still own delegated success.
     _script_key("DefaultKeypadScript"): (
         ("CustomEvent", "KeypadSuccess"),
-        ("Bool", "bCompletionDelegated"),
+        ("ReferenceAlias[]", "completionDelegates"),
         ("Bool", "bDigitInProgress"),
         ("Bool", "bKeypadSolved"),
         ("Int", "iEntryDigit"),
         ("Int", "iEntryPosition"),
         ("Int", "iEnteredCode"),
+        ("Int", "iEntryGeneration"),
+    ),
+    _script_key("DefaultAliasSetStageOnKeypadSuccess"): (
+        ("DefaultKeypadScript", "registeredKeypad"),
+    ),
+    _script_key("W05_MQR_Vault79KeypadAliasScript"): (
+        ("DefaultKeypadScript", "registeredKeypad"),
+    ),
+    _script_key("Vault79RaRaVentSoundScript"): (("Bool", "bCrawlPlaying"),),
+    _script_key("W05_MQR_204P_QuestScript"): (("Bool", "bInformationBribePaid"),),
+    _script_key("W05_003P_ApplyPerkOnEnterRefScript"): (("Bool", "bPlayerInside"),),
+    _script_key("DefaultInstanceAliasAddItemOnCreation"): (("Bool", "creatingItem"),),
+    _script_key("W05_Wayward_SwapMarkerOnCriteria"): (
+        ("Bool", "patronAppearanceRolled"),
+        ("Bool", "patronShouldAppear"),
+        ("Float", "patronCycleStamp"),
+    ),
+    _script_key("W05_MQR_203P_QuestScript"): (
+        ("Int", "activeRound"),
+        ("Bool", "roundClockUnlimited"),
+        ("Int", "crowdTimerSerial"),
+        ("Bool", "chemClockActive"),
+        ("Float", "chemTimeRemaining"),
+    ),
+    _script_key("W05_MQR_202P_QuestScript"): (
+        ("ReferenceAlias", "pendingExitVent"),
+        ("Scene", "pendingExitScene"),
+        ("Bool", "pulseGrenadeDropped"),
+        ("Bool", "foodMenuPending"),
+    ),
+    _script_key("Quests:E05_Caravan:Master_QuestScript"): (
+        ("Bool", "B21CaravanRunActive"),
+        ("Float", "B21CaravanCooldownRemaining"),
+        ("Int", "B21CostaLastCompletedDay"),
+    ),
+    _script_key("Quests:Storm:RegionBoss:RegionBossQuestScript"): (
+        ("Int", "B21StopStage"),
+        ("Bool", "B21BossesReleased"),
+        ("Actor[]", "B21DefeatedBosses"),
+        ("ObjectReference", "B21EntranceDoor"),
+        ("Bool", "B21DoorWasLocked"),
+        ("Int", "B21DoorLockLevel"),
+    ),
+    _script_key("Quests:Storm:RegionBoss:LightningRespawnAliasScript"): (
+        ("Actor[]", "B21RespawnedActors"),
+    ),
+    _script_key("E08B_MobTargetPicker"): (
+        ("Actor[]", "B21DecidedActors"),
+        ("Actor[]", "B21CrateAttackers"),
+    ),
+    _script_key("E09C_QuestScript"): (
+        ("Int", "B21WeddingMerriment"),
+        ("Float", "B21NextCalloutTime"),
+    ),
+    _script_key("CreatureUltraciteAbominationScript"): (
+        ("Bool", "B21BossInvulnerable"),
+        ("Int", "B21TunnelState"),
+        ("Float", "B21LockedHealthPercent"),
+        ("Bool", "B21InvulnMessageCooldown"),
+    ),
+    _script_key("E09A_DestructibleCrystalsScript"): (
+        ("Float", "B21LastMeleeOnlyMessageTime"),
+    ),
+    _script_key("E09A_CrystalHengeScript"): (
+        ("Float", "B21LastMeleeOnlyMessageTime"),
+    ),
+    _script_key("E09B_Script"): (
+        ("Int", "B21WavesFailed"),
+        ("Int", "B21CappyHuntTotal"),
+        ("Int", "B21ChickensRemaining"),
+        ("ObjectReference[]", "B21CaughtChickens"),
+        ("Bool", "B21BrahminTippingActive"),
+        ("ObjectReference[]", "B21TippedBrahmin"),
+        ("Bool", "B21KeepMovingActive"),
+        ("Int", "B21KeepMovingExplosions"),
+        ("Float", "B21KeepMovingLastX"),
+        ("Float", "B21KeepMovingLastY"),
+        ("Float", "B21KeepMovingLastZ"),
+        ("Scene", "B21IntroScene"),
+    ),
+    _script_key("E09B_MobWaves"): (
+        ("Actor[]", "B21WaveActors"),
+        ("Int[]", "B21WaveActorWaves"),
+        ("Bool", "B21WaveActive"),
+        ("Bool", "B21WaveSpawning"),
+        ("Int", "B21ActiveWave"),
+        ("Int", "B21ActiveSubwaves"),
+        ("Int", "B21ActiveSpawned"),
+        ("Float", "B21ActiveTimeRemaining"),
+    ),
+    _script_key("Moon_Ambush_QuestScript"): (
+        ("ReferenceAlias", "B21TalkNPC"),
+        ("Scene", "B21TalkScene"),
+        ("Int", "B21TalkStage"),
+        ("Scene", "B21PendingScene"),
+        ("Int", "B21PendingSceneStage"),
+        ("Float", "B21PendingSceneSeconds"),
+    ),
+    _script_key("Moon_Ambush_CartScript"): (("Bool", "B21DepositBusy"),),
+    _script_key("MOON_Herd_QuestScript"): (
+        ("ReferenceAlias", "B21TalkNPC"),
+        ("Int", "B21TalkStage"),
+        ("Scene", "B21PendingScene"),
+        ("Int", "B21PendingSceneStage"),
+        ("Float", "B21PendingSceneSeconds"),
+    ),
+    _script_key("Quests:E01C_Tales:Dark:QuestScript"): (("Bool", "B21EventFinishing"),),
+    _script_key("Quests:E01C_Tales:Dark:FlatwoodsClonesScript"): (
+        ("Bool", "B21BossVulnerable"),
+    ),
+    _script_key("Quests:E01C_Tales:Dark:FlatwoodsBossScript"): (
+        ("Bool", "B21Vulnerable"),
+        ("Float", "B21LastInvulnerableMessageTime"),
+    ),
+    _script_key("Quests:E01B_Encryptid:QuestScript"): (
+        ("Bool", "B21SecondWaveStarted"),
+        ("Bool", "B21EventFinishing"),
     ),
 }
 
@@ -1465,12 +2497,13 @@ _PAPYRUS_AUTO_PROPERTY_TAIL = re.compile(
 )
 _PAPYRUS_MEMBER_START = re.compile(
     r"^\s*(?:(?P<ret>[A-Za-z_][\w:]*(?:\[\])*)\s+)?(?P<kind>Function|Event)\s+"
-    r"(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(",
+    r"(?P<name>[A-Za-z_]\w*(?::[A-Za-z_]\w*)*(?:\.[A-Za-z_]\w*)?)\s*\(",
     re.IGNORECASE,
 )
+# Deliberately looser than _PAPYRUS_MEMBER_START so an unparsed header raises instead of being dropped.
 _PAPYRUS_PATCH_MEMBER_CANDIDATE = re.compile(
     r"^\s*(?!;)(?:\S+\s+)?(?:Function|Event)\s+"
-    r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?\s*\(",
+    r"[A-Za-z_][\w:.]*\s*\(",
     re.IGNORECASE,
 )
 _PAPYRUS_REMOTE_EVENT_PSEUDO_MEMBER_START = re.compile(
@@ -1595,6 +2628,20 @@ def _without_top_level_papyrus_properties(
 
 def _augment_fo76_to_fo4_script_skeleton(script_name: str, skeleton: str) -> str:
     script_key = _script_key(script_name)
+    # These unused server metadata fields must not require FO76-only native
+    # script classes when FO4 links the otherwise functional quest scripts.
+    if script_key == _script_key("DefaultQuestEncounterWaveScript"):
+        skeleton = re.sub(
+            r"(?im)^(\s*)curvetable(\s+(?:PeakDifficultyCurve|SubwaveTimeShortCurve|SubwaveTimeCurve)\b)",
+            r"\1Form\2",
+            skeleton,
+        )
+    elif script_key == _script_key("Fragments:Quests:QF_MTNM01_Mayhem_0009732E"):
+        skeleton = re.sub(
+            r"(?im)^(\s*)perkcard(\s+Property\s+CannibalCard\b)",
+            r"\1Form\2",
+            skeleton,
+        )
     variable_additions = _FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS.get(script_key, ())
     property_additions = _FO76_TO_FO4_SCRIPT_PROPERTY_ADDITIONS.get(script_key, ())
     property_removals = _FO76_TO_FO4_SCRIPT_PROPERTY_REMOVALS.get(script_key, ())
@@ -2559,6 +3606,7 @@ def _include_all_source_scripts(source_game: str, target_game: str) -> bool:
 _FO76_TO_FO4_SCRIPT_TYPE_ALIASES = {
     "player": "Actor",
     "questinstance": "Quest",
+    "sceneinstance": "Scene",
     "region": "Form",
 }
 
@@ -3191,6 +4239,7 @@ class _UnifiedRecordRuntime:
                 target_extracted_dir=self._req.target_extracted_dir,
                 target_data_dir=self._req.target_data_dir,
                 source_data_dir=self._req.source_data_dir,
+                source_archive_dirs=tuple(dict.fromkeys(path.parent for path in self._req.source_plugins)),
                 additional_source_asset_roots=tuple(
                     Path(root) for root in self._req.additional_source_asset_roots
                 ),
@@ -5483,6 +6532,22 @@ class _UnifiedRecordRuntime:
             stats["records_dropped"] = int(stats.get("records_dropped", 0)) + int(
                 mvp_melee_report.get("records_dropped", 0) or 0
             )
+        if ctx.source_game.lower() == "fo76" and ctx.target_game.lower() == "fo4":
+            areas_report = run.run_phase("emit_objective_areas", mod_path=str(ctx.mod_path), params={})
+            runner.emit_log("INFO", f"Quest objective areas: {areas_report.get('assets_written', 0)} catalog(s), {areas_report.get('warnings', 0)} skipped entries")
+            fishing_started = time.perf_counter()
+            fishing_report = run.run_phase(
+                "emit_fishing_catalog", mod_path=str(ctx.mod_path), params={}
+            )
+            bullion_report = run.run_phase("emit_gold_bullion", mod_path=str(ctx.mod_path), params={})
+            runner.emit_log("INFO", f"Gold bullion: {bullion_report.get('assets_written', 0)} price catalog(s), {bullion_report.get('warnings', 0)} unmapped items")
+            _record_timing(ctx, "emit_fishing_catalog", fishing_started)
+            runner.emit_log(
+                "INFO", "Fishing source catalog: "
+                f"{int(fishing_report.get('assets_written', 0))} file(s) preserved",
+            )
+            perk_report = run.run_phase("emit_perk_cards", mod_path=str(ctx.mod_path), params={})
+            runner.emit_log("INFO", f"Perk cards: {perk_report.get('assets_written', 0)} catalog(s), {perk_report.get('warnings', 0)} unresolved bindings/curves")
         self._run_mvp_creature_corpus_discovery(run, ctx, runner)
         runner.emit_log(
             "INFO",
@@ -5539,6 +6604,15 @@ class _UnifiedRecordRuntime:
         ctx.summary.records_translated += stats.get("records_translated", 0)
         ctx.summary.records_vanilla_remapped += stats.get("records_vanilla_remapped", 0)
         ctx.summary.records_warnings += stats.get("records_failed", 0)
+
+    @staticmethod
+    def _emit_equipment_condition_catalog(run, ctx: ConversionContext, runner) -> None:
+        report = run.run_phase("emit_equipment_condition", mod_path=str(ctx.mod_path), params={})
+        catalog_path = Path(ctx.mod_path) / "F4SE/Plugins/B21_TalesFromAppalachia/Condition" / f"{Path(ctx.output_plugin_name).name}.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        if catalog.get("mapping_available") is not True:
+            raise RuntimeError("Equipment condition catalog has no live source-to-target mappings; conversion cannot publish this catalog")
+        runner.emit_log("INFO", f"Equipment condition catalog: {report.get('assets_written', 0)} file(s), {report.get('warnings', 0)} missing curve(s)")
 
     @staticmethod
     def _translate_stats_from_report(report: dict[str, object]) -> dict[str, int]:
@@ -6538,6 +7612,22 @@ class _UnifiedRecordRuntime:
         resolution_started = time.perf_counter()
         if fo76_to_fo4 and _script_key("Creatures:WendigoColossusRaceScript") in script_names_by_key:
             script_names_by_key[_script_key("B21_PlayerFear")] = "B21_PlayerFear"
+        if fo76_to_fo4 and any(_script_key(name) in script_names_by_key for name in (
+            "DefaultKeypadScript", "Nuke_MasterScript", "EN07_ExternalKeypadAliasScript",
+            "Nuke_CodePageRefScript", "Nuke_CodesSolutionPrinterScript", "Nuke_CodeSolutionMasterScript",
+            "EN07_TargetingComputerAliasScript", "Nuke_LaunchCardPatrolTerminalScript",
+        )):
+            script_names_by_key[_script_key("B21:KeypadNative")] = "B21:KeypadNative"
+        if fo76_to_fo4 and any(_script_key(name) in script_names_by_key for name in (
+            "ENz04_BotScript", "ENz01_AboveScript", "ENs02_BlastQuestScript",
+        )):
+            script_names_by_key[_script_key("B21:EnclaveEventSupport")] = "B21:EnclaveEventSupport"
+        if fo76_to_fo4 and any(_script_key(name) in script_names_by_key for name in (
+            "W05_MQ_TheWayward_QuestScript", "W05_Wayward_SwapMarkerOnCriteria",
+            "W05_Wayward_SetAVOnQuestlineComplete",
+            "Fragments:Quests:QF_W05_MQ_004P_Crane_0041C976",
+        )):
+            script_names_by_key[_script_key("B21_WaywardState")] = "B21_WaywardState"
         _extend_script_names_with_ancestor_closure(
             script_names_by_key,
             source_index=source_index,
@@ -7435,6 +8525,8 @@ class _UnifiedRecordRuntime:
         imports = [batch_source_root]
         if batch_source_root != psc_root:
             imports.append(psc_root)
+        if self._req.source_game == "fo76" and self._req.target_game == "fo4":
+            imports.append(Path(__file__).resolve().parents[5] / "mods/B21_TalesFromAppalachia/Scripts/Source/User")
         game_user = target_data_dir / "Scripts" / "Source" / "User"
         game_base = target_data_dir / "Scripts" / "Source" / "Base"
         if game_user.is_dir():
@@ -7675,6 +8767,8 @@ class _UnifiedRecordRuntime:
                 )
 
         imports = [psc_root]
+        if self._req.source_game == "fo76" and self._req.target_game == "fo4":
+            imports.append(Path(__file__).resolve().parents[5] / "mods/B21_TalesFromAppalachia/Scripts/Source/User")
         game_user = target_data_dir / "Scripts" / "Source" / "User"
         game_base = target_data_dir / "Scripts" / "Source" / "Base"
         if game_user.is_dir():
@@ -9352,8 +10446,14 @@ class _UnifiedRecordRuntime:
                     status=progress.status,
                 )
             runner.emit_phase_complete(progress)
-            if phase_error is not None and raise_on_error:
-                raise phase_error
+            if phase_error is not None:
+                _record_phase_failure(self._req, phase_name, phase_error)
+                if raise_on_error and not _continue_on_error(self._req):
+                    raise phase_error
+            elif progress.status == "error":
+                _record_phase_failure(
+                    self._req, phase_name, RuntimeError(progress.error or "reported an error")
+                )
 
     def _update_registry(self, ctx: ConversionContext) -> None:
         if (
@@ -10244,6 +11344,7 @@ class UnifiedDriver:
             self.signals.fixups_done.set()
 
             post_terrain_phase_offset = 0
+            condition_inputs_retained = False
             if _is_fo4_starfield(ctx):
                 post_terrain_phase_offset = self._run_fo4_starfield_record_tail(
                     ctx, orch, runner, opts, phase_offset
@@ -10394,8 +11495,10 @@ class UnifiedDriver:
                     _memory_mark(ctx, "after:masters_early_close")
                     _rust_run = getattr(ctx, "_rust_conversion_run", None)
                     if _rust_run is not None:
-                        _rust_run.release_remap_state()
-                        _rust_run.release_master_handles()
+                        condition_inputs_retained = opts.build_esp and self._req.source_game == "fo76" and self._req.target_game == "fo4"
+                        if not condition_inputs_retained:
+                            _rust_run.release_remap_state()
+                            _rust_run.release_master_handles()
                     post_terrain_phase_offset = 6
             else:
                 self._mark_terrain_done()
@@ -10510,6 +11613,35 @@ class UnifiedDriver:
                     )
                     next_phase_no += 1
 
+                if rust_run is not None:
+                    if self._req.source_game == "fo76" and self._req.target_game == "fo4":
+                        self._record_phase(
+                            next_phase_no,
+                            "Equipment Condition Catalog",
+                            lambda p: orch._emit_equipment_condition_catalog(rust_run, ctx, runner),
+                            runner,
+                            timing_ctx=ctx,
+                            raise_on_error=True,
+                        )
+                        next_phase_no += 1
+                    if condition_inputs_retained:
+                        rust_run.release_remap_state()
+                        rust_run.release_master_handles()
+                    _memory_mark(ctx, "before:native_source_release")
+                    handle_cleanup_started = time.perf_counter()
+                    source_released = rust_run.release_source_handle()
+                    if source_released:
+                        _trim_bacup_native_allocator()
+                    _memory_mark(ctx, "after:native_source_release")
+                    _record_timing(
+                        ctx,
+                        "unified_source_handle_release",
+                        handle_cleanup_started,
+                        scope="detail",
+                        parent="record_track_cleanup",
+                        released=source_released,
+                    )
+
                 def _build_esp_phase(_progress) -> None:
                     if rust_run is None:
                         raise RuntimeError("build_esp: no rust run; cannot save ESP")
@@ -10538,16 +11670,6 @@ class UnifiedDriver:
                 )
                 _memory_mark(ctx, "after:build_esp")
                 next_phase_no += 1
-                if rust_run is not None:
-                    handle_cleanup_started = time.perf_counter()
-                    rust_run.release_source_handle()
-                    _record_timing(
-                        ctx,
-                        "unified_source_handle_release",
-                        handle_cleanup_started,
-                        scope="detail",
-                        parent="record_track_cleanup",
-                    )
                 drain_started = time.perf_counter()
                 orch._drain_and_drop_rust_run(ctx)
                 _record_timing(
@@ -10845,6 +11967,16 @@ def _has_havok_postprocess(ctx, opts) -> bool:
         and _wave_plan_for(str(ctx.source_game), str(ctx.target_game)).wave_a4
         and getattr(ctx, "mvp_creature_corpus_policy", None) is None
         and _exact_mvp_creature_profile(ctx) is None
+    )
+
+
+def _requires_fo76_behavior_animtext(ctx, opts) -> bool:
+    return (
+        ctx is not None
+        and ctx.source_game == "fo76"
+        and ctx.target_game == "fo4"
+        and _has_havok_postprocess(ctx, opts)
+        and (Path(ctx.mod_path) / "debug/fo76_behaviors/plan.json").is_file()
     )
 
 
@@ -12295,7 +13427,7 @@ class AssetWaveBuilder:
                     mod_path=str(shim.mod_path),
                     source_extracted_dir=source_extracted,
                     target_extracted_dir=str(_target_havok_contract_root(shim, self.runner) or "") or None,
-                    params={},
+                    params={"source_archive_dirs": [str(path) for path in getattr(shim, "source_archive_dirs", ())]},
                     after=after,
                 )
             )
@@ -12989,11 +14121,19 @@ def run_asset_track(
         except Exception as exc:
             active_drainer._drain_once(native, exhaust=True)
             context = active_drainer.describe_active()
-            if context:
-                raise RuntimeError(
-                    f"asset wave {name} failed while {context}: {exc}"
-                ) from exc
-            raise
+            error = (
+                RuntimeError(f"asset wave {name} failed while {context}: {exc}")
+                if context
+                else exc
+            )
+            if not _continue_on_error(driver._req):
+                if error is exc:
+                    raise
+                raise error from exc
+            _record_phase_failure(driver._req, f"Asset wave {name}", error)
+            runner.emit_log("ERROR", f"asset wave {name} failed; continuing: {error}")
+            _merge_asset_failure_logs(driver.record_runtime, active_drainer)
+            return
         active_drainer._drain_once(native, exhaust=True)
         active_drainer.reconcile_pipeline_report(pipeline_report)
         runner.emit_log(
@@ -13033,7 +14173,12 @@ def run_asset_track(
         run_wave("A3", active_builder.build_wave_a3())
         run_wave("A4", active_builder.build_wave_a4())
         return runs
-    except Exception:
+    except Exception as exc:
+        if _continue_on_error(driver._req):
+            _record_phase_failure(driver._req, "Asset track", exc)
+            runner.emit_log("ERROR", f"asset track failed; continuing with records: {exc}")
+            signals.asset_a2_done.set()
+            return runs
         # A wave failure stops the record track at its next phase boundary:
         # the flag covers the pre-translate window (no native run yet), the
         # native cancel reaches a running phase once the run exists.
@@ -13093,13 +14238,26 @@ def _run_collision_validation(
         runner.emit_log("WARN", "collision validation skipped: %s" % exc)
 
 
+def _continue_on_error(request) -> bool:
+    return bool(getattr(getattr(request, "options", None), "continue_on_error", False))
+
+
+def _record_phase_failure(request, label: str, exc: BaseException) -> None:
+    failures = getattr(request, "phase_failures", None)
+    if failures is not None:
+        failures.append(f"{label}: {exc}")
+
+
 def _run_post_phase(
     label: str,
     body,
     runner: "ConversionRunner",
     *,
+    request: PluginPortRequest | None = None,
     timing_report: TimingReport | None = None,
 ) -> None:
+    if timing_report is None:
+        timing_report = getattr(request, "timing_report", None)
     progress = PhaseProgress(
         phase=0,
         phase_name=label,
@@ -13113,9 +14271,16 @@ def _run_post_phase(
         progress.status = "error"
         progress.error = str(exc)
         progress.elapsed_seconds = _elapsed_seconds(started)
-        runner.emit_log("ERROR", f"{label} failed: {exc}")
+        _record_phase_failure(request, label, exc)
+        continuing = _continue_on_error(request)
+        runner.emit_log(
+            "ERROR",
+            f"{label} failed{'; continuing' if continuing else ''}: {exc}",
+        )
+        _log.exception("Post phase %s failed", label)
         runner.emit_phase_complete(progress)
-        raise
+        if not continuing:
+            raise
     else:
         progress.status = "completed"
         progress.elapsed_seconds = _elapsed_seconds(started)
@@ -13436,6 +14601,7 @@ def _run_anim_text_data_generation(
     *,
     progress: PhaseProgress | None = None,
 ) -> None:
+    force_native = force_native or getattr(ctx, "source_game", None) == "fo76"
     if ctx.target_game != "fo4":
         raise RuntimeError(
             "AnimTextData generation is only supported for FO4 targets; "
@@ -13477,7 +14643,7 @@ def _run_anim_text_data_generation(
         if force_native and ck_exe is not None and ck_exe.is_file():
             runner.emit_log(
                 "INFO",
-                "animtext: CreationKit.exe present but --anim-text-data-native set; "
+                "animtext: CreationKit.exe present but native generation required; "
                 "using the CK-free native generator",
             )
         _run_anim_text_data_native(ctx, runner, plugin_path, progress=progress)
@@ -13856,110 +15022,6 @@ def _regenerate_modt_after_asset_waves(
     )
 
 
-def _generate_precombines_after_asset_waves(
-    driver: "UnifiedDriver",
-    runner: "ConversionRunner",
-    mod_root: Path,
-    *,
-    progress: PhaseProgress | None = None,
-) -> None:
-    """EXPERIMENTAL post-asset precombine generation (gated off by default; see
-    models.PhaseSelection.generate_precombines).
-
-    Runs in the same post-asset stage as MODT regeneration, reopening the freshly
-    built ESM to bake `*_OC.nif` and stamp CELL PCMB/XCRI + REFR VC. A phase
-    failure is logged and swallowed â€” it must NOT abort the run, and the MODT
-    results (which already saved in their own window) still stand.
-    """
-    ctx = driver.ctx
-    if (
-        ctx is None
-        or driver._req.target_game.lower() != "fo4"
-        or not driver._req.options.build_esp
-        or not getattr(driver._req.options, "generate_precombines", False)
-    ):
-        return
-
-    output_path = mod_root / ctx.output_plugin_name
-    if not output_path.is_file():
-        runner.emit_log(
-            "WARN",
-            f"generate_precombines skipped: built output plugin missing: {output_path}",
-        )
-        return
-
-    from bacup_lib.run import ConversionRun
-
-    temp_output_path: Path | None = None
-
-    def update_progress(completed_items: int, current_item: str) -> None:
-        if progress is None:
-            return
-        progress.total_items = 2
-        progress.completed_items = completed_items
-        progress.current_item = current_item
-        runner.emit_item_progress(progress)
-
-    update_progress(0, "Baking precombines")
-    try:
-        with ConversionRun.open_existing(
-            driver._req.source_game,
-            driver._req.target_game,
-            None,
-            str(output_path),
-            config=driver.record_runtime._native_run_config(ctx),
-        ) as run:
-            try:
-                report = run.run_phase(
-                    "generate_precombines",
-                    mod_path=str(mod_root),
-                    params={
-                        # TODO(precombine-v1): enrich phase params here. V1.6 makes an
-                        # empty include_cells mean "all eligible interior cells"; the
-                        # mesh source roots (mesh_extract_roots / mesh_archives) are
-                        # supplied by the runner-path work stream and must NOT be
-                        # handed to the phase from the pipeline yet.
-                        "include_cells": [],
-                    },
-                )
-            except Exception as exc:  # noqa: BLE001 â€” non-fatal by contract
-                runner.emit_log("WARN", f"generate_precombines failed: {exc}")
-                return
-            if not report.get("assets_written"):
-                runner.emit_log(
-                    "INFO",
-                    "generate_precombines: no precombines written "
-                    f"(records_changed={report.get('records_changed', 0)}, "
-                    f"warnings={report.get('warnings', 0)})",
-                )
-                return
-            update_progress(1, "Saving updated plugin")
-            temp_fd, temp_name = tempfile.mkstemp(
-                dir=output_path.parent,
-                prefix=f".{output_path.name}.",
-                suffix=".tmp",
-            )
-            temp_output_path = Path(temp_name)
-            os.close(temp_fd)
-            run.save_target(str(temp_output_path), run_nvnm_validator=False)
-        os.replace(temp_output_path, output_path)
-        temp_output_path = None
-        update_progress(2, "")
-    finally:
-        if temp_output_path is not None:
-            try:
-                temp_output_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    runner.emit_log(
-        "INFO",
-        "post-asset precombine generation: "
-        f"assets_written={report.get('assets_written', 0)} "
-        f"records_changed={report.get('records_changed', 0)}",
-    )
-
-
 def _rebuild_cell_offsets_after_build(
     driver: "UnifiedDriver",
     runner: "ConversionRunner",
@@ -14047,6 +15109,135 @@ def _rebuild_cell_offsets_after_build(
         f"worldspaces={report.get('records_changed', 0)} "
         f"warnings={report.get('warnings', 0)}",
     )
+
+
+def _build_precombines_after_build(
+    driver: "UnifiedDriver",
+    runner: "ConversionRunner",
+    mod_root: Path,
+    *,
+    progress: PhaseProgress | None = None,
+) -> None:
+    """Build precombined meshes (*_OC.NIF + geometry CSG/CDX + CELL PCMB/XCRI).
+
+    Runs before previs, which reads the combined groups for its scenes.
+    """
+    from bacup_lib.precombine_generation import PrecombineRequest, generate_precombines
+
+    ctx = driver.ctx
+    options = driver._req.options
+    if (
+        ctx is None
+        or driver._req.target_game.lower() != "fo4"
+        or not options.build_esp
+        or not getattr(options, "build_precombines", False)
+    ):
+        return
+    plugin_path = mod_root / ctx.output_plugin_name
+    if not plugin_path.is_file():
+        raise FileNotFoundError(f"precombine generation requires the built plugin: {plugin_path}")
+    target_data = getattr(ctx, "target_data_dir", None) or driver._req.target_data_dir
+    target_data = Path(target_data) if target_data else None
+    target_extracted = getattr(ctx, "target_extracted_dir", None) or driver._req.target_extracted_dir
+    archives = (
+        sorted(
+            path
+            for path in target_data.glob("*.ba2")
+            if any(token in path.name.casefold() for token in (" - meshes", " - materials"))
+        )
+        if target_data
+        else []
+    )
+
+    def report_progress(done: int, total: int, item: str) -> None:
+        if progress is None:
+            return
+        progress.total_items = total
+        progress.completed_items = done
+        progress.current_item = item
+        runner.emit_item_progress(progress)
+
+    result = generate_precombines(
+        PrecombineRequest(
+            plugin_path=plugin_path,
+            mod_data_dir=mod_root / "data",
+            master_dirs=[mod_root, *([target_data] if target_data else [])],
+            loose_roots=[mod_root / "data", *([Path(target_extracted)] if target_extracted else [])],
+            archives=archives,
+            work_dir=Path(getattr(ctx, "diagnostics_root", None) or mod_root) / "precombine",
+            workers=getattr(options, "conversion_workers", None),
+            interior_cdx_only=bool(getattr(options, "interior_cdx_only", False)),
+        ),
+        log=runner.emit_log,
+        progress=report_progress,
+    )
+    if result.patched_cells:
+        _rebuild_cell_offsets_after_build(driver, runner, mod_root)
+
+
+def _generate_previs_after_build(
+    driver: "UnifiedDriver",
+    runner: "ConversionRunner",
+    mod_root: Path,
+    *,
+    progress: PhaseProgress | None = None,
+) -> None:
+    """Generate Umbra previs (Vis/*.uvd + CELL VISI/RVIS/XPRI) on the built ESM.
+
+    The visibility solve is the clean-room Rust one. Stamping changes CELL
+    sizes, so the WRLD offset tables are rebuilt afterwards.
+    """
+    from bacup_lib.previs_generation import PrevisRequest, generate_previs
+
+    ctx = driver.ctx
+    options = driver._req.options
+    if (
+        ctx is None
+        or driver._req.target_game.lower() != "fo4"
+        or not options.build_esp
+        or not getattr(options, "generate_previs", False)
+    ):
+        return
+    plugin_path = mod_root / ctx.output_plugin_name
+    if not plugin_path.is_file():
+        raise FileNotFoundError(f"previs generation requires the built plugin: {plugin_path}")
+    target_data = getattr(ctx, "target_data_dir", None) or driver._req.target_data_dir
+    target_data = Path(target_data) if target_data else None
+    target_extracted = getattr(ctx, "target_extracted_dir", None) or driver._req.target_extracted_dir
+    archives = (
+        sorted(
+            path
+            for path in target_data.glob("*.ba2")
+            if any(token in path.name.casefold() for token in (" - meshes", " - materials"))
+        )
+        if target_data
+        else []
+    )
+
+    def report_progress(done: int, total: int, item: str) -> None:
+        if progress is None:
+            return
+        progress.total_items = total
+        progress.completed_items = done
+        progress.current_item = item
+        runner.emit_item_progress(progress)
+
+    result = generate_previs(
+        PrevisRequest(
+            plugin_path=plugin_path,
+            mod_data_dir=mod_root / "data",
+            master_dirs=[mod_root, *([target_data] if target_data else [])],
+            loose_roots=[mod_root / "data", *([Path(target_extracted)] if target_extracted else [])],
+            archives=archives,
+            work_dir=Path(getattr(ctx, "diagnostics_root", None) or mod_root) / "previs",
+            workers=getattr(options, "conversion_workers", None),
+            interior_cdx_only=bool(getattr(options, "interior_cdx_only", False)),
+        ),
+        log=runner.emit_log,
+        progress=report_progress,
+    )
+    if result.patched_cells:
+        _rebuild_cell_offsets_after_build(driver, runner, mod_root)
 
 
 def _finalize_plugin_records_after_asset_waves(
@@ -14139,6 +15330,11 @@ def _finalize_plugin_records_after_asset_waves(
                         "regenerate_modt": True,
                         "repair_term_markers": repair_term_markers,
                         "rebuild_cell_offsets": rebuild_cell_offsets,
+                        "fail_on_duplicate_form_ids": bool(
+                            getattr(
+                                driver._req.options, "fail_on_duplicate_form_ids", False
+                            )
+                        ),
                         "source_plugin_path": (
                             str(source_plugin) if repair_term_markers else None
                         ),
@@ -14336,85 +15532,66 @@ def run_unified(
         if asset_error:
             raise asset_error[0]
 
-        generate_precombines = bool(
-            request.target_game.lower() == "fo4"
-            and getattr(request.options, "generate_precombines", False)
+        _run_post_phase(
+            "Finalize Plugin Records",
+            lambda progress: _finalize_plugin_records_after_asset_waves(
+                driver,
+                runner,
+                mod_root,
+                request.source_plugins[0],
+                progress=progress,
+                nif_run=getattr(asset_runs, "nifs", None),
+            ),
+            runner,
+            request=request,
         )
-        if not generate_precombines:
+
+        if getattr(request.options, "build_precombines", False):
             _run_post_phase(
-                "Finalize Plugin Records",
-                lambda progress: _finalize_plugin_records_after_asset_waves(
+                "Build Precombines",
+                lambda progress: _build_precombines_after_build(
                     driver,
                     runner,
                     mod_root,
-                    request.source_plugins[0],
                     progress=progress,
-                    nif_run=getattr(asset_runs, "nifs", None),
                 ),
                 runner,
-                timing_report=getattr(request, "timing_report", None),
+                request=request,
             )
-        else:
-            # Precombines intentionally keep their independent checkpoint between
-            # MODT and TERM repair, including their non-fatal failure behavior.
+
+        if getattr(request.options, "generate_previs", False):
             _run_post_phase(
-                "Regenerate MODT",
-                lambda progress: _regenerate_modt_after_asset_waves(
-                    driver,
-                    runner,
-                    mod_root,
-                    progress=progress,
-                    nif_run=getattr(asset_runs, "nifs", None),
-                ),
-                runner,
-                timing_report=getattr(request, "timing_report", None),
-            )
-            _run_post_phase(
-                "Generate precombines",
-                lambda progress: _generate_precombines_after_asset_waves(
+                "Generate Previs",
+                lambda progress: _generate_previs_after_build(
                     driver,
                     runner,
                     mod_root,
                     progress=progress,
                 ),
                 runner,
-                timing_report=getattr(request, "timing_report", None),
-            )
-            if driver.ctx is not None:
-                term_repair_started = time.perf_counter()
-                driver.record_runtime._repair_term_marker_parameters_final(
-                    driver.ctx,
-                    runner,
-                    request.source_plugins[0],
-                )
-                _record_timing(
-                    request,
-                    "unified_term_marker_final_repair",
-                    term_repair_started,
-                    scope="detail",
-                    parent="run_unified",
-                )
-            _run_post_phase(
-                "Rebuild Cell Offsets",
-                lambda progress: _rebuild_cell_offsets_after_build(
-                    driver,
-                    runner,
-                    mod_root,
-                    progress=progress,
-                ),
-                runner,
-                timing_report=getattr(request, "timing_report", None),
+                request=request,
             )
 
         if driver.ctx is not None:
             pipboy_map_started = time.perf_counter()
-            _finalize_fo76_pipboy_map_texture(request, driver.ctx, runner)
+            _run_post_phase(
+                "Finalize Pip-Boy Map",
+                lambda _progress: _finalize_fo76_pipboy_map_texture(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
             _record_timing(
                 request,
                 "unified_pipboy_map_finalization",
                 pipboy_map_started,
                 scope="detail",
                 parent="run_unified",
+            )
+            _run_post_phase(
+                "Restore Missing UI Sources",
+                lambda _progress: _restore_fo76_ui_sources(request, driver.ctx, runner),
+                runner,
+                request=request,
             )
             _run_post_phase(
                 "Copy VaultBoy SWFs",
@@ -14424,7 +15601,193 @@ def run_unified(
                     runner,
                 ),
                 runner,
-                timing_report=getattr(request, "timing_report", None),
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Legendary Perk UI",
+                lambda _progress: _convert_fo76_legendary_perk_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Regular Perk UI",
+                lambda _progress: _convert_fo76_perk_card_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Daily Ops UI",
+                lambda _progress: _convert_fo76_daily_ops_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Keypad UI",
+                lambda _progress: _convert_fo76_keypad_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Mission Map UI",
+                lambda _progress: _convert_fo76_mission_map_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Photo Mode UI",
+                lambda _progress: _convert_fo76_photo_mode_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Photo Gallery UI",
+                lambda _progress: _convert_fo76_photo_gallery_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert FO76 Menu Presentation",
+                lambda _progress: _convert_fo76_menu_presentation(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Quick-Boy UI",
+                lambda _progress: _convert_fo76_quick_boy_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Currency UI",
+                lambda _progress: _convert_fo76_currency_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Experience UI",
+                lambda _progress: _convert_fo76_xp_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Quest Area UI",
+                lambda _progress: _convert_fo76_quest_area_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Fishing UI",
+                lambda _progress: _convert_fo76_fishing_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Inspect UI",
+                lambda _progress: _convert_fo76_inspect_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Workbench Repair UI",
+                lambda _progress: _convert_fo76_workbench_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Barter UI",
+                lambda _progress: _convert_fo76_barter_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Challenges",
+                lambda _progress: _convert_fo76_challenges(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Expedition Results",
+                lambda _progress: _convert_fo76_expedition_results(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Raid Rewards",
+                lambda _progress: _convert_fo76_raid_rewards_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Reputation Presentation",
+                lambda _progress: _convert_fo76_reputation_presentation(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Build Player Ghoul Rules",
+                lambda _progress: _convert_fo76_player_ghoul(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Respawn Map",
+                lambda _progress: _convert_fo76_respawn_map(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Infestations",
+                lambda _progress: _convert_fo76_infestations(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Build Pip-Boy Quest Categories",
+                lambda _progress: _convert_fo76_quest_tabs(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Casino UI",
+                lambda _progress: _convert_fo76_casino_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Copy Holotape Games",
+                lambda _progress: _copy_fo76_holotape_programs(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Combat Perks",
+                lambda _progress: _convert_fo76_combat_perks(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Favorites UI",
+                lambda _progress: _convert_fo76_favorites_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Emotes",
+                lambda _progress: _convert_fo76_emotes(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Status HUD UI",
+                lambda _progress: _convert_fo76_status_hud_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
+            )
+            _run_post_phase(
+                "Convert Real-time VATS UI",
+                lambda _progress: _convert_fo76_realtime_vats_ui(request, driver.ctx, runner),
+                runner,
+                request=request,
             )
 
         creature_policy = (
@@ -14445,16 +15808,24 @@ def run_unified(
                         progress=progress,
                     ),
                     runner,
-                    timing_report=getattr(request, "timing_report", None),
+                    request=request,
                 )
-        elif getattr(request.options, "generate_anim_text_data", False):
-            if driver.ctx is None:
-                raise RuntimeError(
-                    "AnimTextData generation requires a built conversion context"
+        elif getattr(request.options, "generate_anim_text_data", False) or (
+            _requires_fo76_behavior_animtext(driver.ctx, request.options)
+        ):
+            if not getattr(request.options, "generate_anim_text_data", False):
+                runner.emit_log(
+                    "INFO",
+                    "animtext: FO76 behavior graphs were rebuilt; regenerating native "
+                    "metadata and clip bindings before packing",
                 )
-            _run_post_phase(
-                "Generate AnimTextData",
-                lambda progress: _run_anim_text_data_generation(
+
+            def generate_anim_text_data(progress: PhaseProgress) -> None:
+                if driver.ctx is None:
+                    raise RuntimeError(
+                        "AnimTextData generation requires a built conversion context"
+                    )
+                _run_anim_text_data_generation(
                     driver.ctx,
                     runner,
                     force_native=getattr(
@@ -14463,9 +15834,21 @@ def run_unified(
                         False,
                     ),
                     progress=progress,
-                ),
+                )
+
+            _run_post_phase(
+                "Generate AnimTextData",
+                generate_anim_text_data,
                 runner,
-                timing_report=getattr(request, "timing_report", None),
+                request=request,
+            )
+
+        if driver.ctx is not None:
+            _run_post_phase(
+                "Generate Pip-Boy 2000 AnimTextData",
+                lambda _progress: _convert_fo76_pipboy2000_anim_text(request, driver.ctx, runner),
+                runner,
+                request=request,
             )
 
         if lod_hook is not None:
@@ -14475,7 +15858,7 @@ def run_unified(
                 "Generate LOD",
                 lambda _progress: lod_hook(mod_root),
                 runner,
-                timing_report=getattr(request, "timing_report", None),
+                request=request,
             )
 
         if getattr(request.options, "validate_collision", False):
@@ -14587,7 +15970,7 @@ def run_unified(
 
             _run_post_phase(
                 "Pack BA2", pack_body, runner,
-                timing_report=getattr(request, "timing_report", None),
+                request=request,
             )
             runner.emit_log(
                 "INFO", "join: wrote " + ", ".join(p.output_name for p in plans)

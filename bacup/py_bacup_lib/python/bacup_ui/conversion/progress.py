@@ -43,7 +43,8 @@ PHASE_SECONDS = {
     "convert_terrain_assets": 120,
     "convert_skeleton": 10,
     "convert_animations": 60,
-    "generate_precombines": 300,
+    "build_precombines": 120,
+    "generate_previs": 600,
     "pack": 300,
     "deploy": 120,
 }
@@ -74,8 +75,9 @@ _ASSET_PHASES = (
 )
 _POST_PHASES = (
     "regenerate_modt",
-    "generate_precombines",
     "rebuild_cell_offsets",
+    "build_precombines",
+    "generate_previs",
     "copy_vaultboy_swfs",
     "generate_anim_text_data",
     "lodgen",
@@ -90,7 +92,8 @@ def estimated_phase_weights(
     lod_mode: str = "hybrid-atlas",
     packed: bool = True,
     deploy: bool = True,
-    precombines: bool = False,
+    build_precombines: bool = False,
+    previs: bool = False,
     start_phase: str = "prepare",
 ) -> dict[str, float]:
     keys = [
@@ -135,8 +138,10 @@ def estimated_phase_weights(
         keys.remove("pack")
     if not deploy:
         keys.remove("deploy")
-    if not precombines:
-        keys.remove("generate_precombines")
+    if not build_precombines:
+        keys.remove("build_precombines")
+    if not previs:
+        keys.remove("generate_previs")
 
     asset_starts = {
         "nifs": "convert_nifs",
@@ -150,6 +155,8 @@ def estimated_phase_weights(
     post_starts = {
         "modt": "regenerate_modt",
         "offsets": "rebuild_cell_offsets",
+        "precombine": "build_precombines",
+        "previs": "generate_previs",
         "animtext": "generate_anim_text_data",
         "lodgen": "lodgen",
         "pack": "pack",

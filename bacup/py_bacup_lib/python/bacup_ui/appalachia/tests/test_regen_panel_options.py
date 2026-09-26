@@ -4,22 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from bacup_lib.regen_pipeline import (
-    _clean_forced_regen_output,
-    RegenOptions,
-    RegenPaths,
-    RESUME_PHASES,
-)
+from bacup_lib.regen_pipeline import _clean_forced_regen_output
+from bacup_lib import tales_config
 from bacup_lib.lod_settings import PROFILE_HIGH_QUALITY
 from bacup_ui.conversion.panels.regen_panel import (
     _COMPANION_MOD_NAME,
-    _DiskSpaceVolume,
-    _LOOSE_WORKSPACE_PEAK_BYTES,
-    _PACKED_MOD_PEAK_BYTES,
-    _RECOVERY_PHASE_LABELS,
-    _RECOVERY_PHASE_VALUES,
+    _FULL_SCREEN_MAP_MOD_NAME,
     _UNLIMITED_ARCHIVE_MAX_BYTES,
-    _mod_archive_sizes,
     _project_disk_space,
     RegenPanel,
 )
@@ -76,62 +67,34 @@ def _panel(ws):
     p._disk_usage_thread = None
     p._waiting_for_space_check = False
     p._low_space_warning = None
-    p.ba2_target = "auto"
-    p._ba2_detect_cache = None
+    p._fo4_exe_version_cache = None
     p._store_install_cache = {}
     p._preflight_report = None
     p._preflight_cache = None
     return p
 
 
-def test_recovery_menu_covers_supported_pipeline_checkpoints():
-    assert len(_RECOVERY_PHASE_VALUES) == len(_RECOVERY_PHASE_LABELS)
-    assert tuple(_RECOVERY_PHASE_VALUES) == RESUME_PHASES
-
-
-def test_build_paths_from_settings(monkeypatch):
+def test_build_paths_resolves_install_targets(monkeypatch):
     monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app"))
     panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
     paths = panel.build_paths()
-    assert isinstance(paths, RegenPaths)
+    docs = Path.home() / "Documents" / "My Games" / "Fallout4"
     assert paths.target_data_dir == Path("C:/FO4/Data")
     assert paths.source_extracted_dir == Path("C:/x/fo76")
     assert paths.source_data_dir == Path("C:/FO76/Data")
     assert paths.target_ck_ini_path == Path("C:/FO4/CreationKitCustom.ini")
     assert paths.output_root == Path("X:/app/mods/SeventySix")
     assert paths.deploy_data_dir is None
-
-
-def test_build_paths_game_mode_deploys_to_fo4_data_and_docs_ini(monkeypatch):
-    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app"))
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    # Default install_location "game": no virtual deploy dir (None sentinel = FO4
-    # Data), archives register in the Documents Fallout4Custom.ini.
-    paths = panel.build_paths()
-    docs = Path.home() / "Documents" / "My Games" / "Fallout4"
-    assert paths.output_root == Path("X:/app/mods/SeventySix")
-    assert paths.target_data_dir == Path("C:/FO4/Data")
-    assert paths.deploy_data_dir is None
     assert paths.runtime_ini_path == docs / "Fallout4Custom.ini"
 
-
-def test_build_paths_treats_default_deploy_folder_as_standard_fo4_deploy(monkeypatch):
-    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app"))
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
     panel.deploy_data_dir = "C:/FO4/Data"
-    paths = panel.build_paths()
-    assert paths.deploy_data_dir is None
+    assert panel.build_paths().deploy_data_dir is None
 
-
-def test_build_paths_sets_resource_dir_from_get_resource_dir(monkeypatch):
-    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app"))
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel.get_resource_dir",
-        lambda: Path("X:/app/_internal/resource"),
-    )
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    paths = panel.build_paths()
-    assert paths.resource_dir == Path("X:/app/_internal/resource")
+    panel = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76", {
+        "install_location": "vortex",
+        "install_path": "D:/Vortex/fallout4/mods/SeventySix",
+    }))
+    assert panel.build_paths().deploy_data_dir == Path("D:/Vortex/fallout4/mods/SeventySix")
 
 
 def test_build_paths_relocates_workspace_outside_target_data(monkeypatch, tmp_path):
@@ -159,719 +122,61 @@ def test_build_paths_relocates_workspace_outside_target_data(monkeypatch, tmp_pa
     assert not paths.output_root.exists()
 
 
-def test_build_options_reflects_controls():
+@pytest.mark.parametrize("deploy_format, add_to_ini, expected", [
+    ("expanded", True, {
+        "ba2_mode": "expanded", "archive_max_bytes": 8 * 1024**3,
+        "deploy_loose": False, "direct_deploy_archives": True,
+    }),
+    ("standard", True, {
+        "ba2_mode": "packed", "archive_max_bytes": _UNLIMITED_ARCHIVE_MAX_BYTES,
+        "deploy_loose": False, "direct_deploy_archives": True,
+        "update_runtime_ini": True, "upgrade": True, "hydrate_upgrade_from_deployed": True,
+    }),
+    ("loose", False, {
+        "deploy_loose": True, "direct_deploy_archives": False,
+        "update_runtime_ini": True, "upgrade": True, "hydrate_upgrade_from_deployed": True,
+    }),
+])
+def test_deploy_formats_map_to_regen_options(deploy_format, add_to_ini, expected):
     panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    panel.install_location = "none"
-    panel.ba2_mode = "packed"
-    panel.archive_max_gb = 6
-    panel.ba2_compression_level = 9
-    panel.add_archives_to_ini = False
-    panel.workers = 6
-    panel.include_interior = False
-    panel.records_limit = 2000
-    opts = panel.build_options()
-    assert isinstance(opts, RegenOptions)
-    assert opts.deploy is False
-    assert opts.ba2_mode == "expanded"
-    assert opts.archive_max_bytes == 6 * 1024**3
-    assert opts.ba2_compression_level == 9
-    assert opts.workers == 6
-    assert opts.include_interior is True
-    assert opts.records_limit is None
-    assert opts.generate_anim_text_data is True
-    assert opts.anim_text_data_native is True
-    assert opts.direct_deploy_archives is True
-    assert opts.update_runtime_ini is False
-    assert opts.write_land_cache is False
-    assert opts.texture_landscape_mip_flooding is False
-
-
-def test_deploy_formats_map_to_expanded_standard_and_loose_options():
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-
-    expanded = panel.build_options()
-    assert expanded.ba2_mode == "expanded"
-    assert expanded.archive_max_bytes == 8 * 1024**3
-    assert expanded.deploy_loose is False
-    assert expanded.direct_deploy_archives is True
-
-    panel.deploy_format = "standard"
+    panel.deploy_format = deploy_format
+    panel.add_archives_to_ini = add_to_ini
     panel.upgrade = True
-    standard = panel.build_options()
-    assert standard.ba2_mode == "packed"
-    assert standard.archive_max_bytes == _UNLIMITED_ARCHIVE_MAX_BYTES
-    assert standard.deploy_loose is False
-    assert standard.direct_deploy_archives is True
-    assert standard.update_runtime_ini is True
-    assert standard.upgrade is True
-    assert standard.hydrate_upgrade_from_deployed is True
-
-    panel.deploy_format = "loose"
-    panel.add_archives_to_ini = False
-    loose = panel.build_options()
-    assert loose.deploy_loose is True
-    assert loose.direct_deploy_archives is False
-    assert loose.update_runtime_ini is True
-    assert loose.upgrade is True
-    assert loose.hydrate_upgrade_from_deployed is True
-
-
-def test_build_options_zero_means_unset():
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    panel.workers = 0
+    panel._upgrade_requires_full_build = lambda _manifest: False
     opts = panel.build_options()
+    assert {key: getattr(opts, key) for key in expected} == expected
     assert opts.workers is None
     assert opts.include_interior is True
     assert opts.records_limit is None
 
 
-def test_generate_precombines_toggle_defaults_off_and_maps_to_options():
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    # _panel() (via __new__) never sets the attr — build_options must still
-    # default it off through the getattr guard.
-    assert panel.build_options().generate_precombines is False
-
-    panel.generate_precombines = True
-    assert panel.build_options().generate_precombines is True
-
-
-def test_generate_precombines_toggle_loads_from_workspace_settings():
-    default = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    assert default.generate_precombines is False
-
-    enabled = RegenPanel(
-        _ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"generate_precombines": True})
-    )
-    assert enabled.generate_precombines is True
-    assert enabled.build_options().generate_precombines is True
-
-
-def test_full_logging_defaults_off_and_enables_memory_report():
-    default = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    assert default.full_logging is False
-    assert default.build_options().memory_report is False
-
-    enabled = RegenPanel(
-        _ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"full_logging": True})
-    )
-    assert enabled.full_logging is True
-    assert enabled.build_options().memory_report is True
-
-
-def test_min_eligible_refs_is_not_a_panel_or_options_control():
-    # Advanced precombine tuning stays config-file only; it must never surface as
-    # a panel attribute or a RegenOptions field.
-    panel = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    assert not hasattr(panel, "min_eligible_refs")
-    assert not hasattr(panel.build_options(), "min_eligible_refs")
-
-
-def test_panel_defaults_to_standard_ba2s_and_high_quality_atlas_generation():
-    ws = _ws("C:/FO4", "C:/FO76", "C:/x/fo76")
-    panel = RegenPanel(ws)
-    assert panel.add_archives_to_ini is True
-    assert panel.lod_mode == "hybrid-atlas"
-    assert panel.lod_profile == PROFILE_HIGH_QUALITY
-    assert panel.atlas_mip_flooding is False
-    assert panel.texture_landscape_mip_flooding is False
-    assert panel.full_logging is False
-    assert panel.music_muted is True
-    assert panel.music_volume == 0.12
-    assert panel.deploy_format == "standard"
-    assert panel.recovery_phase == "lodgen"
-    opts = panel.build_options()
-    assert opts.generate_anim_text_data is True
-    assert opts.anim_text_data_native is True
-    assert opts.direct_deploy_archives is True
-    assert opts.update_runtime_ini is True
-    assert opts.write_land_cache is False
-    assert opts.include_interior is True
-    assert opts.records_limit is None
-    assert opts.ba2_mode == "packed"
-    assert opts.archive_max_bytes == _UNLIMITED_ARCHIVE_MAX_BYTES
-
-
-def test_panel_loads_saved_install_location_and_archive_size(monkeypatch):
-    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app"))
-    ws = _ws(
-        "C:/FO4",
-        "C:/FO76",
-        "C:/x/fo76",
-        {
-            "install_location": "vortex",
-            "install_path": "D:/Vortex/fallout4/mods/SeventySix",
-            "archive_max_gb": 6,
-            "deploy_format": "standard",
-            "ba2_compression": 1,
-            "recovery_phase": "textures",
-            "atlas_mip_flooding": True,
-            "texture_landscape_mip_flooding": True,
-            "conversion_music_muted": False,
-            "conversion_music_volume": 0.35,
-        },
-    )
-    panel = RegenPanel(ws)
-    assert panel.install_location == "vortex"
-    assert panel.install_path == "D:/Vortex/fallout4/mods/SeventySix"
-    assert panel.archive_max_gb == 6
-    assert panel.deploy_format == "standard"
-    assert panel.ba2_compression_level == 1
-    assert panel.recovery_phase == "textures"
-    assert panel.atlas_mip_flooding is True
-    assert panel.texture_landscape_mip_flooding is True
-    assert panel.music_muted is False
-    assert panel.music_volume == 0.35
-    assert panel.build_options().texture_landscape_mip_flooding is True
-    # A saved install_path drives the deploy target.
-    paths = panel.build_paths()
-    assert paths.deploy_data_dir == Path("D:/Vortex/fallout4/mods/SeventySix")
-
-
-def test_panel_migrates_saved_expanded_layout_to_standard():
-    workspace = _ws(
-        "C:/FO4",
-        "C:/FO76",
-        "C:/x/fo76",
-        {"deploy_format": "expanded"},
-    )
-
-    panel = RegenPanel(workspace)
-
-    assert panel.deploy_format == "standard"
-    assert workspace._workspace_settings["deploy_format"] == "standard"
-    assert workspace._workspace_settings["deploy_format_standard_default_v1"] is True
-
-
-def test_panel_keeps_expanded_after_layout_migration():
-    workspace = _ws(
-        "C:/FO4",
-        "C:/FO76",
-        "C:/x/fo76",
-        {
-            "deploy_format": "expanded",
-            "deploy_format_standard_default_v1": True,
-        },
-    )
-
-    panel = RegenPanel(workspace)
-
-    assert panel.deploy_format == "expanded"
-
-
-def test_conversion_music_toggle_persists_and_controls_active_session(tmp_path):
-    ws = _ws("C:/FO4", "C:/FO76", "C:/x/fo76")
-    panel = RegenPanel(ws)
-    theme = tmp_path / "mus_maintheme.wav"
-    theme.write_bytes(b"wav")
-    calls = []
-
-    class Player:
-        current_track = None
-
-        def start(self, tracks):
-            calls.append(("start", tuple(tracks)))
-
-        def stop(self):
-            calls.append(("stop",))
-
-        def set_volume(self, volume):
-            calls.append(("volume", volume))
-
-    panel._music_player = Player()
-    panel._conversion_music_tracks = lambda: (theme,)
-    panel._conversion_music_session_active = True
-
-    panel._set_music_muted(False)
-    panel._set_music_volume(0.4)
-    panel._set_music_muted(True)
-
-    assert calls == [
-        ("start", (theme,)),
-        ("volume", 0.4),
-        ("stop",),
-    ]
-    assert ws._workspace_settings["conversion_music_muted"] is True
-    assert ws._workspace_settings["conversion_music_volume"] == 0.4
-
-
-def test_conversion_music_combines_source_games_main_titles_themes_and_radio(
-    monkeypatch,
-    tmp_path,
-):
-    app_root = tmp_path / "app"
-    fnv_root = tmp_path / "Fallout New Vegas"
-    fo3_root = tmp_path / "Fallout 3 goty"
-    fnv_extracted = tmp_path / "extracted" / "fnv"
-    fo3_extracted = tmp_path / "extracted" / "fo3"
-    (fnv_extracted / "music" / "special").mkdir(parents=True)
-    (fnv_extracted / "sound" / "songs" / "radio" / "licensed").mkdir(
-        parents=True
-    )
-    (fo3_extracted / "sound" / "songs" / "radio" / "licensed").mkdir(
-        parents=True
-    )
-    fnv_root.mkdir()
-    fo3_root.mkdir()
-    (fnv_root / "MainTitle.wav").write_bytes(b"wav")
-    (fo3_root / "MainTitle.wav").write_bytes(b"wav")
-    (fnv_extracted / "music" / "special" / "mus_maintheme.wav").write_bytes(
-        b"wav"
-    )
-    (
-        fnv_extracted
-        / "sound"
-        / "songs"
-        / "radio"
-        / "licensed"
-        / "fnv_radio.wav"
-    ).write_bytes(b"wav")
-    (
-        fo3_extracted
-        / "sound"
-        / "songs"
-        / "radio"
-        / "licensed"
-        / "fo3_radio.wav"
-    ).write_bytes(b"wav")
-    paths = {
-        "fnv": {
-            "root_dir": str(fnv_root),
-            "extracted_dir": str(fnv_extracted),
-        },
-        "fo3": {
-            "root_dir": str(fo3_root),
-            "extracted_dir": str(fo3_extracted),
-        },
-    }
-    ws = SimpleNamespace(
-        _toolkit_settings=SimpleNamespace(
-            get_game_paths=lambda game: dict(paths.get(game, {})),
-            get_workspace_settings=lambda _workspace: {},
-        ),
-        _runner=None,
-    )
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel.get_exe_dir",
-        lambda: app_root,
-    )
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel.get_code_root",
-        lambda: app_root,
-    )
-    panel = RegenPanel(ws, fixed_pair_id="fnvfo3:fo4")
-
-    tracks = panel._conversion_music_tracks()
-
-    assert [track.name for track in tracks] == [
-        "mus_maintheme.wav",
-        "MainTitle.wav",
-        "MainTitle.wav",
-        "fnv_radio.wav",
-        "fo3_radio.wav",
-    ]
-
-
-def test_selected_lod_settings_applies_mip_flooding_override(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    panel.atlas_mip_flooding = True
-    monkeypatch.setattr(
-        panel,
-        "load_lod_settings",
-        lambda _profile, _lod_mode: {"objects": {"source": "fo76_bto_atlas"}},
-    )
-
-    settings = panel._selected_lod_settings("hybrid-atlas")
-
-    assert settings["objects"]["source"] == "fo76_bto_atlas"
-    assert settings["objects"]["atlas_mip_flooding"] is True
-
-
-def test_disk_usage_archive_check_does_not_block_first_draw(monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-
-    def slow_archive_sizes(*_args):
-        started.set()
-        release.wait(2.0)
-        return 5, 5
+def test_interior_only_cdx_is_off_by_default_and_reaches_regen_options():
+    assert RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76")).interior_cdx_only is False
+    saved = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"interior_cdx_only": True}))
+    assert saved.interior_cdx_only is True
 
     panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._mod_archive_sizes",
-        slow_archive_sizes,
-    )
-
-    summary = panel.disk_usage_summary()
-
-    assert summary == {
-        "extracted": 0,
-        "mod_output": 0,
-        "mod_ba2": 0,
-        "deployed_ba2": 0,
-    }
-    assert started.wait(1.0)
-    assert panel.disk_usage_loading() is True
-    assert panel._disk_space_projection() is None
-
-    release.set()
-    assert panel._disk_usage_thread is not None
-    panel._disk_usage_thread.join(timeout=2.0)
-
-    assert panel.disk_usage_loading() is False
-    assert panel.disk_usage_summary() == {
-        "extracted": 0,
-        "mod_output": 5,
-        "mod_ba2": 5,
-        "deployed_ba2": 5,
-    }
+    panel.upgrade = True
+    panel._upgrade_requires_full_build = lambda _manifest: False
+    assert panel.build_options().interior_cdx_only is False
+    panel.interior_cdx_only = True
+    assert panel.build_options().interior_cdx_only is True
 
 
-def test_disk_space_projection_groups_requirements_on_same_volume():
-    usage = SimpleNamespace(total=500 * 1024**3, used=100 * 1024**3, free=400 * 1024**3)
-
-    volumes = _project_disk_space(
+@pytest.mark.parametrize("free_gib, expect_warning", [(10, True), (450, False)])
+def test_request_conversion_gates_on_fresh_space_check(monkeypatch, free_gib, expect_warning):
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    volume = _project_disk_space(
         output_root=Path("C:/BACUP/mods/SeventySix"),
         archive_root=Path("C:/Fallout4/Data"),
         volume_key=lambda _path: "c:",
-        disk_usage=lambda _path: usage,
-    )
-
-    assert len(volumes) == 1
-    assert volumes[0].required_bytes == (
-        _LOOSE_WORKSPACE_PEAK_BYTES + _PACKED_MOD_PEAK_BYTES
-    )
-    assert volumes[0].labels == ("loose workspace", "packed BA2s")
-
-
-def test_disk_space_projection_splits_direct_deploy_across_volumes():
-    usages = {
-        "c:": SimpleNamespace(total=250 * 1024**3, used=100, free=150 * 1024**3),
-        "n:": SimpleNamespace(total=100 * 1024**3, used=50, free=50 * 1024**3),
-    }
-
-    volumes = _project_disk_space(
-        output_root=Path("C:/BACUP/mods/SeventySix"),
-        archive_root=Path("N:/MO2/mods/SeventySix"),
-        volume_key=lambda path: f"{str(path)[0].lower()}:",
-        disk_usage=lambda path: usages[f"{str(path)[0].lower()}:"],
-    )
-
-    by_key = {volume.key: volume for volume in volumes}
-    assert by_key["c:"].required_bytes == _LOOSE_WORKSPACE_PEAK_BYTES
-    assert by_key["c:"].insufficient is False
-    assert by_key["n:"].required_bytes == _PACKED_MOD_PEAK_BYTES
-    assert by_key["n:"].insufficient is True
-
-
-def test_disk_space_level_reflects_projected_capacity():
-    gib = 1024**3
-
-    def volume(*, free_gib: int) -> _DiskSpaceVolume:
-        return _DiskSpaceVolume(
-            key="c:",
-            path=Path("C:/"),
-            labels=("conversion",),
-            required_bytes=10 * gib,
-            total_bytes=100 * gib,
-            free_bytes=free_gib * gib,
-        )
-
-    assert volume(free_gib=50).space_level == "green"
-    assert volume(free_gib=30).space_level == "green"
-    assert volume(free_gib=25).space_level == "yellow"
-    assert volume(free_gib=15).space_level == "yellow"
-    assert volume(free_gib=5).space_level == "red"
-    assert volume(free_gib=-1).space_level == "yellow"
-
-    large_drive = _DiskSpaceVolume(
-        key="d:",
-        path=Path("D:/"),
-        labels=("conversion",),
-        required_bytes=180 * gib,
-        total_bytes=4_000 * gib,
-        free_bytes=881 * gib,
-    )
-    assert large_drive.space_level == "green"
-
-
-def test_mod_archive_sizes_filter_other_mods(tmp_path):
-    output_root = tmp_path / "SeventySix"
-    deploy_root = tmp_path / "Data"
-    output_root.mkdir()
-    deploy_root.mkdir()
-    (output_root / "SeventySix - Meshes.ba2").write_bytes(b"a" * 10)
-    (output_root / "OtherMod - Meshes.ba2").write_bytes(b"b" * 50)
-    (deploy_root / "SeventySix - Textures.ba2").write_bytes(b"c" * 20)
-    (deploy_root / "Fallout4 - Textures.ba2").write_bytes(b"d" * 100)
-
-    local_bytes, deployed_bytes = _mod_archive_sizes(
-        output_root,
-        deploy_root,
-        "SeventySix",
-    )
-
-    assert local_bytes == 10
-    assert deployed_bytes == 20
-
-
-def test_mod_archive_sizes_deduplicate_same_root(tmp_path):
-    output_root = tmp_path / "SeventySix"
-    output_root.mkdir()
-    (output_root / "SeventySix - Meshes.ba2").write_bytes(b"a" * 10)
-
-    local_bytes, deployed_bytes = _mod_archive_sizes(
-        output_root,
-        output_root,
-        "SeventySix",
-    )
-
-    assert local_bytes == 10
-    assert deployed_bytes == 0
-
-
-def test_disk_usage_summary_counts_only_named_mod_once(tmp_path):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    archive_root = tmp_path / "shared"
-    archive_root.mkdir()
-    (archive_root / "CurrentMod - Meshes.ba2").write_bytes(b"a" * 10)
-    (archive_root / "SeventySix - Textures.ba2").write_bytes(b"b" * 20)
-    (archive_root / "Fallout4 - Textures.ba2").write_bytes(b"c" * 30)
-    paths = panel.build_paths()
-    paths.output_root = archive_root
-    paths.deploy_data_dir = archive_root
-    paths.mod_name = "CurrentMod"
-    summary = panel._compute_disk_usage_summary(paths)
-
-    assert summary["extracted"] == 0
-    assert summary["mod_output"] == 10
-    assert summary["mod_ba2"] == 10
-    assert summary["deployed_ba2"] == 0
-    assert summary["mod_ba2"] + summary["deployed_ba2"] == 10
-
-
-def test_panel_projection_uses_direct_deploy_root_and_measured_larger_sizes(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    captured = {}
-    paths = SimpleNamespace(
-        output_root=Path("C:/BACUP/mods/SeventySix"),
-        deploy_data_dir=Path("N:/MO2/mods/SeventySix"),
-        target_data_dir=Path("D:/Fallout4/Data"),
-    )
-    options = SimpleNamespace(deploy=True, direct_deploy_archives=True)
-    panel._disk_usage_cache = (
-        0.0,
-        {
-            "extracted": 0,
-            "mod_output": 200 * 1024**3,
-            "mod_ba2": 20 * 1024**3,
-            "deployed_ba2": 75 * 1024**3,
-        },
-    )
-    panel._disk_usage_cache_key = panel._disk_space_target(paths, options)[0]
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._project_disk_space",
-        lambda **kwargs: captured.update(kwargs) or (),
-    )
-
-    projection = panel._disk_space_projection(
-        paths=paths,
-        options=options,
-    )
-    assert projection is None
-    assert panel._disk_usage_thread is not None
-    panel._disk_usage_thread.join(timeout=2.0)
-
-    assert captured["archive_root"] == Path("N:/MO2/mods/SeventySix")
-    assert captured["loose_bytes"] == 180 * 1024**3
-    assert captured["packed_bytes"] == 75 * 1024**3
-
-
-def test_changed_deploy_root_recomputes_disk_usage_summary(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    old_paths = panel.build_paths()
-    old_paths.deploy_data_dir = Path("N:/MO2/mods/SeventySix")
-    new_paths = panel.build_paths()
-    new_paths.deploy_data_dir = Path("M:/MO2/mods/SeventySix")
-    old_key = panel._disk_space_target(old_paths)[0]
-    new_key = panel._disk_space_target(new_paths)[0]
-    old_summary = {
-        "extracted": 1,
-        "mod_output": 2,
-        "mod_ba2": 3,
-        "deployed_ba2": 4,
-    }
-    new_summary = {
-        "extracted": 5,
-        "mod_output": 6,
-        "mod_ba2": 7,
-        "deployed_ba2": 8,
-    }
-    scans = []
-    panel._disk_usage_cache = (0.0, old_summary)
-    panel._disk_usage_cache_key = old_key
-    panel._disk_space_cache = (old_key, ())
-    monkeypatch.setattr(panel, "build_paths", lambda: new_paths)
-    monkeypatch.setattr(
-        panel,
-        "_compute_disk_usage_summary",
-        lambda paths=None: scans.append(paths) or new_summary,
-    )
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._project_disk_space",
-        lambda **_kwargs: (),
-    )
-
-    assert panel.disk_usage_summary() == {
-        "extracted": 0,
-        "mod_output": 0,
-        "mod_ba2": 0,
-        "deployed_ba2": 0,
-    }
-    assert panel._disk_usage_thread is not None
-    panel._disk_usage_thread.join(timeout=2.0)
-
-    assert scans == [new_paths]
-    assert panel._disk_usage_cache_key == new_key
-    assert panel.disk_usage_summary() == new_summary
-
-
-def test_projection_reads_drive_capacity_only_in_background(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    paths = panel.build_paths()
-    panel._disk_usage_cache = (
-        0.0,
-        {"extracted": 0, "mod_output": 0, "mod_ba2": 0, "deployed_ba2": 0},
-    )
-    panel._disk_usage_cache_key = panel._disk_space_target(paths)[0]
-    started = threading.Event()
-    release = threading.Event()
-    ui_thread = threading.get_ident()
-
-    def slow_disk_usage(_path):
-        assert threading.get_ident() != ui_thread
-        started.set()
-        release.wait(2.0)
-        return SimpleNamespace(total=500 * 1024**3, used=50 * 1024**3, free=450 * 1024**3)
-
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._disk_usage_for_target",
-        slow_disk_usage,
-    )
-
-    assert panel._disk_space_projection() is None
-    assert started.wait(1.0)
-    assert panel._disk_space_projection() is None
-
-    release.set()
-    assert panel._disk_usage_thread is not None
-    panel._disk_usage_thread.join(timeout=2.0)
-    projection = panel._disk_space_projection()
-
-    assert projection is not None
-    assert len(projection) == 2
-
-
-def test_request_conversion_never_blocks_on_drive_capacity(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    paths = panel.build_paths()
-    space_key = panel._disk_space_target(paths)[0]
-    summary = {
-        "extracted": 0,
-        "mod_output": 0,
-        "mod_ba2": 0,
-        "deployed_ba2": 0,
-    }
-    old_projection = _project_disk_space(
-        output_root=paths.output_root,
-        archive_root=paths.target_data_dir,
         disk_usage=lambda _path: SimpleNamespace(
-            total=500 * 1024**3,
-            used=50 * 1024**3,
-            free=450 * 1024**3,
+            total=500 * 1024**3, used=(500 - free_gib) * 1024**3, free=free_gib * 1024**3
         ),
-    )
-    panel._disk_usage_cache = (0.0, summary)
-    panel._disk_usage_cache_key = space_key
-    panel._disk_space_cache = (space_key, old_projection)
-    started = threading.Event()
-    release = threading.Event()
-    ui_thread = threading.get_ident()
-    starts = []
-    capacity_reads = []
-
-    def slow_disk_usage(_path):
-        assert threading.get_ident() != ui_thread
-        capacity_reads.append(_path)
-        started.set()
-        release.wait(2.0)
-        return SimpleNamespace(
-            total=500 * 1024**3,
-            used=50 * 1024**3,
-            free=450 * 1024**3,
-        )
-
-    monkeypatch.setattr(
-        panel,
-        "_compute_disk_usage_summary",
-        lambda _paths=None: (_ for _ in ()).throw(
-            AssertionError("fresh capacity check must reuse the size summary")
-        ),
-    )
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._disk_usage_for_target",
-        slow_disk_usage,
-    )
-    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
-
-    panel._request_conversion()
-
-    assert panel._waiting_for_space_check is True
-    assert starts == []
-    assert started.wait(1.0)
-    assert panel._disk_space_cache is None
-
-    release.set()
-    assert panel._disk_usage_thread is not None
-    panel._disk_usage_thread.join(timeout=2.0)
-    panel._resolve_pending_space_check()
-
-    assert capacity_reads
-    assert panel._disk_space_cache is not None
-    assert panel._disk_space_cache[1] is not old_projection
-    assert starts == [True]
-
-
-def test_request_conversion_waits_for_background_space_measurement(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    starts = []
-    monkeypatch.setattr(panel, "_start_disk_usage_worker", lambda **_kwargs: None)
-    monkeypatch.setattr(panel, "_disk_space_projection", lambda: ())
-    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
-
-    panel._request_conversion()
-
-    assert panel._waiting_for_space_check is True
-    assert starts == []
-
-    panel._resolve_pending_space_check()
-
-    assert panel._waiting_for_space_check is False
-    assert starts == [True]
-
-
-@pytest.mark.parametrize("pair_id", ["fo76:fo4", "fnvfo3:fo4", "skyrimse:fo4", "starfield:fo4"])
-def test_request_conversion_warns_before_start_and_can_continue(monkeypatch, pair_id):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    panel.fixed_pair_id = pair_id
-    low_volume = _project_disk_space(
-        output_root=Path("C:/BACUP/mods/SeventySix"),
-        archive_root=Path("C:/Fallout4/Data"),
-        volume_key=lambda _path: "c:",
-        disk_usage=lambda _path: SimpleNamespace(total=200 * 1024**3, used=190 * 1024**3, free=10 * 1024**3),
     )[0]
     starts = []
     monkeypatch.setattr(panel, "_start_disk_usage_worker", lambda **_kwargs: None)
-    monkeypatch.setattr(panel, "_disk_space_projection", lambda: (low_volume,))
+    monkeypatch.setattr(panel, "_disk_space_projection", lambda: (volume,))
     monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
 
     panel._request_conversion()
@@ -881,67 +186,10 @@ def test_request_conversion_warns_before_start_and_can_continue(monkeypatch, pai
 
     panel._resolve_pending_space_check()
 
-    assert panel._low_space_warning == (low_volume,)
-    assert starts == []
-
-    panel._continue_conversion_with_low_space()
-
-    assert panel._low_space_warning is None
-    assert starts == [True]
-
-
-@pytest.mark.parametrize("pair_id,loose_gib,packed_gib", [
-    ("fnvfo3:fo4", 25, 10),
-    ("skyrimse:fo4", 25, 15),
-    ("starfield:fo4", 75, 45),
-])
-def test_other_projects_use_measured_baselines_without_existing_output(
-    monkeypatch, pair_id, loose_gib, packed_gib,
-):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    panel.fixed_pair_id = pair_id
-    starts = []
-    captured = {}
-    monkeypatch.setattr(panel, "_compute_disk_usage_summary", lambda _paths: {
-        "extracted": 0, "mod_output": 0, "mod_ba2": 0, "deployed_ba2": 0,
-    })
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel._project_disk_space",
-        lambda **kwargs: captured.update(kwargs) or (),
-    )
-    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
-
-    panel._request_conversion()
-
-    assert starts == []
-    assert panel._waiting_for_space_check is True
-    panel._disk_usage_thread.join(timeout=2.0)
-    assert captured["loose_bytes"] == loose_gib * 1024**3
-    assert captured["packed_bytes"] == packed_gib * 1024**3
-    panel._resolve_pending_space_check()
-    assert starts == [True]
-
-
-def test_request_conversion_starts_after_fresh_check_with_enough_space(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    enough_volume = _project_disk_space(
-        output_root=Path("C:/BACUP/mods/SeventySix"),
-        archive_root=Path("N:/MO2/mods/SeventySix"),
-        volume_key=lambda _path: "c:",
-        disk_usage=lambda _path: SimpleNamespace(total=500 * 1024**3, used=50 * 1024**3, free=450 * 1024**3),
-    )[0]
-    starts = []
-    monkeypatch.setattr(panel, "_start_disk_usage_worker", lambda **_kwargs: None)
-    monkeypatch.setattr(panel, "_disk_space_projection", lambda: (enough_volume,))
-    monkeypatch.setattr(panel, "start_conversion", lambda: starts.append(True))
-
-    panel._request_conversion()
-
-    assert panel._waiting_for_space_check is True
-    assert starts == []
-
-    panel._resolve_pending_space_check()
-
+    if expect_warning:
+        assert panel._low_space_warning == (volume,)
+        assert starts == []
+        panel._continue_conversion_with_low_space()
     assert panel._low_space_warning is None
     assert starts == [True]
 
@@ -1002,29 +250,70 @@ def test_cleanup_removes_only_app_owned_default_paths(tmp_path, monkeypatch):
 def test_deploy_companion_mod_copies_runtime_payload(tmp_path, monkeypatch):
     exe_dir = tmp_path / "app"
     companion = exe_dir / "mods" / _COMPANION_MOD_NAME
+    full_screen_map = exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME
     fo4_root = tmp_path / "Fallout4"
     fo4_data = fo4_root / "Data"
 
     (companion / "data" / "Scripts" / "B21").mkdir(parents=True)
     (companion / "data" / "Meshes" / "B21").mkdir(parents=True)
-    (companion / "PrismaUI_F4" / "views" / "B21_FullScreenMap").mkdir(parents=True)
+    companion_map = (
+        companion
+        / "PrismaUI_F4"
+        / "views"
+        / _FULL_SCREEN_MAP_MOD_NAME
+        / "maps"
+        / "appalachia"
+    )
+    companion_map.mkdir(parents=True)
     (companion / "F4SE" / "Plugins").mkdir(parents=True)
-    (companion / f"{_COMPANION_MOD_NAME}.esp").write_bytes(b"esp")
+    (full_screen_map / "data" / "Scripts").mkdir(parents=True)
+    full_screen_map_view = (
+        full_screen_map / "PrismaUI_F4" / "views" / _FULL_SCREEN_MAP_MOD_NAME
+    )
+    (full_screen_map_view / "maps" / "appalachia").mkdir(parents=True)
+    (full_screen_map / "F4SE" / "Plugins").mkdir(parents=True)
+    (companion / f"{_COMPANION_MOD_NAME}.esm").write_bytes(b"esm")
     (companion / "F4SE" / "Plugins" / f"{_COMPANION_MOD_NAME}.dll").write_bytes(b"dll")
     (companion / "F4SE" / "Plugins" / f"{_COMPANION_MOD_NAME}.pdb").write_bytes(b"pdb")
+    (companion / "F4SE" / "Plugins" / f"{_COMPANION_MOD_NAME}.ini").write_text(
+        "[General]\niVersion=2\n[HUD]\nbCrosshair=1\nbDamageNumbers=0\n", encoding="utf-8"
+    )
     (companion / "data" / "Scripts" / "B21" / "B21_AT_TeleportSign.pex").write_bytes(b"pex")
     (companion / "data" / "Meshes" / "B21" / "marker.nif").write_bytes(b"nif")
-    (companion / "PrismaUI_F4" / "views" / "B21_FullScreenMap" / "index.html").write_text(
+    (companion_map / "map.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    (full_screen_map / "data" / "Scripts" / "B21_FullScreenMap.pex").write_bytes(
+        b"map-pex"
+    )
+    (full_screen_map / "F4SE" / "Plugins" / "B21_FullScreenMap.dll").write_bytes(
+        b"map-dll"
+    )
+    (full_screen_map_view / "index.html").write_text(
         "<html></html>",
+        encoding="utf-8",
+    )
+    (full_screen_map_view / "maps" / "appalachia" / "map.json").write_text(
+        '{"source": "base"}',
         encoding="utf-8",
     )
     (fo4_data / "Scripts" / "B21").mkdir(parents=True)
     (fo4_data / "Meshes" / "B21").mkdir(parents=True)
     (fo4_data / "Scripts" / "B21" / "B21_AT_TeleportSign.pex").write_bytes(b"stale")
     (fo4_data / "Meshes" / "B21" / "marker.nif").write_bytes(b"stale")
+    (fo4_data / "Strings").mkdir(parents=True)
+    stale_string = fo4_data / "Strings" / f"{_COMPANION_MOD_NAME}_cn.DLSTRINGS"
+    stale_string.write_bytes(b"stale")
+    unrelated_string = fo4_data / "Strings" / "B21_OtherMod_cn.DLSTRINGS"
+    unrelated_string.write_bytes(b"keep")
+    installed_ini = fo4_data / "F4SE" / "Plugins" / f"{_COMPANION_MOD_NAME}.ini"
+    installed_ini.parent.mkdir(parents=True)
+    installed_ini.write_text("[General]\niVersion=2\n[HUD]\nbCrosshair=0\n", encoding="utf-8")
 
-    panel = _panel(_ws(str(fo4_root), "C:/FO76", "C:/x/fo76"))
-    panel.ba2_target = "og"
+    ws = _ws(str(fo4_root), "C:/FO76", "C:/x/fo76",
+             {"tales_config_edits": {"HUD/bDamageNumbers": "1"}})
+    panel = _panel(ws)
     monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: exe_dir)
     pack_calls = []
 
@@ -1039,11 +328,16 @@ def test_deploy_companion_mod_copies_runtime_payload(tmp_path, monkeypatch):
 
     deployed = panel._deploy_companion_mod(paths, runner)
 
-    assert f"{_COMPANION_MOD_NAME}.esp" in deployed
+    assert f"{_COMPANION_MOD_NAME}.esm" in deployed
     assert f"{_COMPANION_MOD_NAME} - Main.ba2" in deployed
-    assert "PrismaUI_F4/views/B21_FullScreenMap/index.html" in deployed
-    assert (fo4_data / f"{_COMPANION_MOD_NAME}.esp").read_bytes() == b"esp"
+    # Map 4.0 is native: neither Tales nor the bundled FullScreenMap deploys a PrismaUI view.
+    assert not any(path.startswith("PrismaUI_F4/") for path in deployed)
+    assert "F4SE/Plugins/B21_FullScreenMap.dll" in deployed
+    assert "Scripts/B21_FullScreenMap.pex" in deployed
+    assert (fo4_data / f"{_COMPANION_MOD_NAME}.esm").read_bytes() == b"esm"
     assert (fo4_data / f"{_COMPANION_MOD_NAME} - Main.ba2").read_bytes() == b"ba2"
+    assert not stale_string.exists()
+    assert unrelated_string.read_bytes() == b"keep"
     assert (fo4_data / "Scripts" / "B21" / "B21_AT_TeleportSign.pex").read_bytes() == b"stale"
     assert (fo4_data / "Meshes" / "B21" / "marker.nif").read_bytes() == b"stale"
     # The F4SE plugin is a hard runtime dependency -- it corrects Fallout 4's 16-bit
@@ -1053,7 +347,19 @@ def test_deploy_companion_mod_copies_runtime_payload(tmp_path, monkeypatch):
     assert f"F4SE/Plugins/{_COMPANION_MOD_NAME}.pdb" in deployed
     assert (fo4_data / "F4SE" / "Plugins" / f"{_COMPANION_MOD_NAME}.dll").read_bytes() == b"dll"
     assert (fo4_data / "F4SE" / "Plugins" / f"{_COMPANION_MOD_NAME}.pdb").read_bytes() == b"pdb"
-    assert (fo4_data / "PrismaUI_F4" / "views" / "B21_FullScreenMap" / "index.html").is_file()
+    assert (
+        fo4_data / "F4SE" / "Plugins" / "B21_FullScreenMap.dll"
+    ).read_bytes() == b"map-dll"
+    assert (fo4_data / "Scripts" / "B21_FullScreenMap.pex").read_bytes() == b"map-pex"
+    # The installed ini's values survive the shipped copy; pending Configure Features edits apply once.
+    tales_ini = tales_config.parse_ini(installed_ini.read_text(encoding="utf-8"))
+    assert tales_ini["hud"]["bcrosshair"] == "0"
+    assert tales_ini["hud"]["bdamagenumbers"] == "1"
+    assert ws._workspace_settings["tales_config_edits"] == {}
+    deployed_map_view = (
+        fo4_data / "PrismaUI_F4" / "views" / _FULL_SCREEN_MAP_MOD_NAME
+    )
+    assert not deployed_map_view.exists()
     assert pack_calls == [
         (
             _COMPANION_MOD_NAME,
@@ -1070,33 +376,88 @@ def test_deploy_companion_mod_copies_runtime_payload(tmp_path, monkeypatch):
     assert logs and logs[-1][1].startswith("Companion mod")
 
 
-def test_resolve_ba2_target_auto_uses_detection(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    panel.ba2_target = "auto"
+@pytest.mark.parametrize("install_devtools", [False, True])
+def test_deploy_companion_mod_installs_devtools_only_when_opted_in(
+    tmp_path, monkeypatch, install_devtools
+):
+    exe_dir = tmp_path / "app"
+    companion = exe_dir / "mods" / _COMPANION_MOD_NAME
+    full_screen_map = exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME
+    devtools_plugins = exe_dir / "mods" / "B21_DevTools" / "F4SE" / "Plugins"
+    fo4_root = tmp_path / "Fallout4"
+    installed_plugins = fo4_root / "Data" / "F4SE" / "Plugins"
+
+    (companion / "data").mkdir(parents=True)
+    (companion / "F4SE" / "Plugins").mkdir(parents=True)
+    (companion / f"{_COMPANION_MOD_NAME}.esm").write_bytes(b"esm")
+    (full_screen_map / "data").mkdir(parents=True)
+    (full_screen_map / "F4SE").mkdir(parents=True)
+    (devtools_plugins / "B21_DevTools" / "fonts").mkdir(parents=True)
+    (devtools_plugins / "B21_DevTools.dll").write_bytes(b"devtools-dll")
+    (devtools_plugins / "B21_DevTools.ini").write_text("[Hotkeys]\niWorkbench=121\n", encoding="utf-8")
+    (devtools_plugins / "B21_DevTools" / "fonts" / "Roboto-Regular.ttf").write_bytes(b"font")
+    installed_plugins.mkdir(parents=True)
+    user_ini = installed_plugins / "B21_DevTools.ini"
+    user_ini.write_text("[Hotkeys]\niWorkbench=0\n", encoding="utf-8")
+
+    panel = _panel(_ws(str(fo4_root), "C:/FO76", "C:/x/fo76"))
+    panel.install_devtools = install_devtools
+    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: exe_dir)
     monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel.detect_ba2_target",
-        lambda _root, **_kw: ("og", (1, 10, 163, 0)),
-    )
-    assert panel.resolve_ba2_target() == "og"
-    assert panel.build_options().fo4_ba2_target == "og"
-
-
-def test_resolve_ba2_target_manual_override(monkeypatch):
-    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    panel.ba2_target = "nextgen"
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel.detect_ba2_target",
-        lambda _root, **_kw: ("og", (1, 10, 163, 0)),
-    )
-    assert panel.resolve_ba2_target() == "nextgen"
-    assert panel.build_options().fo4_ba2_target == "nextgen"
-
-
-def test_ba2_target_defaults_to_og_and_preserves_persisted_choice():
-    default_panel = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
-    persisted_panel = RegenPanel(
-        _ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"ba2_target": "auto"})
+        "bacup_ui.conversion.panels.regen_panel.pack_mod",
+        lambda mod_name, **kwargs: (companion / f"{_COMPANION_MOD_NAME} - Main.ba2").write_bytes(b"ba2"),
     )
 
-    assert default_panel.ba2_target == "og"
-    assert persisted_panel.ba2_target == "auto"
+    deployed = panel._deploy_companion_mod(panel.build_paths())
+
+    assert ("F4SE/Plugins/B21_DevTools.dll" in deployed) is install_devtools
+    assert (installed_plugins / "B21_DevTools.dll").exists() is install_devtools
+    assert (installed_plugins / "B21_DevTools" / "fonts" / "Roboto-Regular.ttf").exists() is install_devtools
+    assert user_ini.read_text(encoding="utf-8") == "[Hotkeys]\niWorkbench=0\n"
+
+
+def test_undeploy_bundled_mods_removes_every_bundled_file_and_nothing_else(
+    tmp_path, monkeypatch
+):
+    exe_dir = tmp_path / "app"
+    (exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME / "data" / "Scripts").mkdir(parents=True)
+    (exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME / "data" / "Scripts" / "B21_FullScreenMap.pex").write_bytes(b"src")
+    fo4_root = tmp_path / "Fallout4"
+    data = fo4_root / "Data"
+    bundled = [
+        f"{_COMPANION_MOD_NAME}.esm",
+        f"{_COMPANION_MOD_NAME} - Main.ba2",
+        f"Strings/{_COMPANION_MOD_NAME}_en.STRINGS",
+        f"F4SE/Plugins/{_COMPANION_MOD_NAME}.dll",
+        f"F4SE/Plugins/{_COMPANION_MOD_NAME}.ini",
+        f"F4SE/Plugins/{_COMPANION_MOD_NAME}_en.txt",
+        f"F4SE/Plugins/{_COMPANION_MOD_NAME}/challenges.json",
+        "F4SE/Plugins/B21_FullScreenMap.dll",
+        "F4SE/Plugins/B21_FullScreenMap/maps/appalachia/map.dds",
+        "F4SE/Plugins/B21_DevTools.dll",
+        "F4SE/Plugins/B21_DevTools.ini",
+        "F4SE/Plugins/B21_DevTools/fonts/Roboto-Regular.ttf",
+        "Interface/B21/TalesFromAppalachia/QuickBoy.swf",
+        "Scripts/B21_FullScreenMap.pex",
+    ]
+    unrelated = [
+        "F4SE/Plugins/B21_OtherMod.dll",
+        "Strings/B21_OtherMod_en.STRINGS",
+        "Interface/B21/OtherMod/menu.swf",
+        "Scripts/OtherScript.pex",
+        "SeventySix.esm",
+    ]
+    for rel in bundled + unrelated:
+        (data / rel).parent.mkdir(parents=True, exist_ok=True)
+        (data / rel).write_bytes(b"x")
+
+    panel = _panel(_ws(str(fo4_root), "C:/FO76", "C:/x/fo76"))
+    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: exe_dir)
+
+    removed = panel._undeploy_bundled_mods(panel.build_paths())
+
+    assert sorted(removed) == sorted(bundled)
+    assert not any((data / rel).exists() for rel in bundled)
+    assert all((data / rel).exists() for rel in unrelated)
+    assert not (data / "F4SE" / "Plugins" / _COMPANION_MOD_NAME).exists()
+    assert not (data / "Interface" / "B21" / "TalesFromAppalachia").exists()

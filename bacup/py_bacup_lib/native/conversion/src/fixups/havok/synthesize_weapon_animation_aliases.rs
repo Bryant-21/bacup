@@ -1354,154 +1354,138 @@ mod tests {
         assert!(!animations.join("wpnfiresingleready.hkx").exists());
     }
 
+    /// The `*ReadySlave` clip is the weapon-side half of the pair. Only the
+    /// character-side master carries `weaponFire`, which the engine turns into
+    /// TESObjectWEAP::Fire, so cloning an inert slave makes a weapon silent in
+    /// third person; an annotated vanilla donor replaces it (vanilla keeps it in
+    /// a sibling folder). The check is per-file: FO76's Gauss Pistol slave is
+    /// annotated and still cloned. With no donor the inert slave is still
+    /// copied: no binding at all T-poses the actor while firing. A clip is
+    /// authored against one skeleton, so the donor search never crosses the
+    /// actor boundary. The mod tree survives between regens, so a stale inert
+    /// master is repaired, not skipped. In a Character weapon set a stand-in in
+    /// the weapon's own folder shadows the better clip down the SAPT chain (the
+    /// .50 Cal fired from a rifle pose while `Weapon\GripHeavy` held the right
+    /// one), so nothing is planted and a stale master is removed. Repair must
+    /// not churn an annotated master or an inert one with no donor. First-person
+    /// weapon sets are skipped entirely.
     #[test]
-    fn skips_first_person_weapon_animations() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations =
-            mod_path.join("data/Meshes/Actors/Character/_1stPerson/Animations/TestWeapon");
-        std::fs::create_dir_all(target.join("Meshes")).unwrap();
-        write_file(
-            &animations.join("wpnfiresinglereadyslave.hkx"),
-            b"first-person",
-        );
+    fn fire_master_synthesis_from_slaves_and_donors() {
+        const MUTANT: &str = "Actors/Supermutant/Animations/Incinerator";
+        const M2: &str = "Actors/Character/Animations/Weapon/M2/Player";
+        const GAUSS: &str = "Actors/Character/Animations/Weapon/Gauss";
+        const SHARED: &str = "Actors/Supermutant/Animations/Shared";
+        const GRIP_HEAVY: &str = "Actors/Character/Animations/Weapon/GripHeavy";
+        const GENERIC: &str = "Actors/Character/Animations";
+        for (name, dir, slave, master, donors, expected) in [
+            (
+                "donor_replaces_inert_slave",
+                MUTANT,
+                "inert slave",
+                None,
+                vec![(SHARED, "donor weaponFire clip")],
+                Some("donor weaponFire clip"),
+            ),
+            (
+                "character_set_left_to_chain",
+                M2,
+                "inert slave",
+                None,
+                vec![(GENERIC, "generic weaponFire clip")],
+                None,
+            ),
+            (
+                "annotated_slave_cloned",
+                GAUSS,
+                "slave with weaponFire inside",
+                None,
+                vec![(GRIP_HEAVY, "donor weaponFire clip")],
+                Some("slave with weaponFire inside"),
+            ),
+            (
+                "no_donor_keeps_inert_slave",
+                MUTANT,
+                "inert slave",
+                None,
+                vec![],
+                Some("inert slave"),
+            ),
+            (
+                "donor_search_stays_in_actor",
+                MUTANT,
+                "inert slave",
+                None,
+                vec![(GRIP_HEAVY, "human weaponFire clip")],
+                Some("inert slave"),
+            ),
+            (
+                "stale_inert_master_repaired",
+                MUTANT,
+                "inert slave",
+                Some("inert slave"),
+                vec![(SHARED, "donor weaponFire clip")],
+                Some("donor weaponFire clip"),
+            ),
+            (
+                "stale_character_set_master_removed",
+                M2,
+                "inert slave",
+                Some("inert slave"),
+                vec![(GRIP_HEAVY, "donor weaponFire clip")],
+                None,
+            ),
+            (
+                "annotated_master_left_alone",
+                GAUSS,
+                "slave",
+                Some("existing weaponFire master"),
+                vec![],
+                Some("existing weaponFire master"),
+            ),
+            (
+                "inert_master_without_donor_left_alone",
+                MUTANT,
+                "inert slave",
+                Some("inert master"),
+                vec![],
+                Some("inert master"),
+            ),
+            (
+                "first_person_skipped",
+                "Actors/Character/_1stPerson/Animations/TestWeapon",
+                "first-person",
+                None,
+                vec![],
+                None,
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let mod_path = temp.path().join("mod");
+            let target = temp.path().join("target");
+            let animations = mod_path.join("data/Meshes").join(dir);
+            std::fs::create_dir_all(target.join("Meshes")).unwrap();
+            write_file(
+                &animations.join("wpnfireautoreadyslave.hkx"),
+                slave.as_bytes(),
+            );
+            if let Some(master) = master {
+                write_file(&animations.join("wpnfireautoready.hkx"), master.as_bytes());
+            }
+            for (donor_dir, content) in donors {
+                write_file(
+                    &target
+                        .join("Meshes")
+                        .join(donor_dir)
+                        .join("wpnfireautoready.hkx"),
+                    content.as_bytes(),
+                );
+            }
 
-        let report = synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-        assert_eq!(report.records_changed, 0);
-        assert!(!animations.join("wpnfiresingleready.hkx").exists());
-    }
+            synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
 
-    // The `*ReadySlave` clip is the weapon-side half of the pair. Only the character-side
-    // master carries `weaponFire`, which is what the engine turns into TESObjectWEAP::Fire,
-    // so cloning an inert slave produces a weapon that is completely silent in third person.
-    #[test]
-    fn inert_fire_slave_is_replaced_by_an_annotated_vanilla_donor() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations = mod_path.join("data/Meshes/Actors/Supermutant/Animations/Incinerator");
-        // Vanilla keeps the annotated master in a sibling folder, never in the weapon's own.
-        let vanilla = target.join("Meshes/Actors/Supermutant/Animations/Shared");
-        write_file(
-            &animations.join("wpnfireautoreadyslave.hkx"),
-            b"inert slave",
-        );
-        write_file(
-            &vanilla.join("wpnfireautoready.hkx"),
-            b"donor weaponFire clip",
-        );
-
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert_eq!(
-            std::fs::read(animations.join("wpnfireautoready.hkx")).unwrap(),
-            b"donor weaponFire clip",
-        );
-    }
-
-    // In a Character weapon set a stand-in in the weapon's own folder shadows the better
-    // clip further down the chain (the generic donor made the .50 Cal fire from a rifle
-    // pose while `Weapon\GripHeavy` held the right one), so none is planted.
-    #[test]
-    fn inert_fire_slave_in_a_character_weapon_set_is_left_to_the_chain() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations = mod_path.join("data/Meshes/Actors/Character/Animations/Weapon/M2/Player");
-        let generic = target.join("Meshes/Actors/Character/Animations");
-        write_file(
-            &animations.join("wpnfireautoreadyslave.hkx"),
-            b"inert slave",
-        );
-        write_file(
-            &generic.join("wpnfireautoready.hkx"),
-            b"generic weaponFire clip",
-        );
-
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert!(
-            !animations.join("wpnfireautoready.hkx").exists(),
-            "a generic donor must not be planted in a Character weapon set"
-        );
-    }
-
-    // FO76's Gauss Pistol slave carries the annotation, so the check is per-file and an
-    // annotated slave is still cloned.
-    #[test]
-    fn annotated_fire_slave_is_still_cloned_verbatim() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations = mod_path.join("data/Meshes/Actors/Character/Animations/Weapon/Gauss");
-        let vanilla = target.join("Meshes/Actors/Character/Animations/Weapon/GripHeavy");
-        write_file(
-            &animations.join("wpnfireautoreadyslave.hkx"),
-            b"slave with weaponFire inside",
-        );
-        write_file(
-            &vanilla.join("wpnfireautoready.hkx"),
-            b"donor weaponFire clip",
-        );
-
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert_eq!(
-            std::fs::read(animations.join("wpnfireautoready.hkx")).unwrap(),
-            b"slave with weaponFire inside",
-        );
-    }
-
-    // Vanilla stores these per weapon folder — `supermutant/animations/shared` has none — so
-    // when no donor exists the inert slave must still be copied. Leaving the graph with no
-    // binding at all T-poses the actor while firing, which is worse than a silent shot.
-    #[test]
-    fn inert_fire_slave_is_kept_when_no_donor_exists() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations = mod_path.join("data/Meshes/Actors/Supermutant/Animations/Incinerator");
-        std::fs::create_dir_all(target.join("Meshes")).unwrap();
-        write_file(
-            &animations.join("wpnfireautoreadyslave.hkx"),
-            b"inert slave",
-        );
-
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert_eq!(
-            std::fs::read(animations.join("wpnfireautoready.hkx")).unwrap(),
-            b"inert slave",
-        );
-    }
-
-    // The mod's mesh tree survives between regens, so an inert master from an earlier run
-    // must be repaired rather than skipped as "already exists".
-    #[test]
-    fn stale_inert_master_from_an_earlier_run_is_repaired() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations = mod_path.join("data/Meshes/Actors/Supermutant/Animations/Incinerator");
-        let vanilla = target.join("Meshes/Actors/Supermutant/Animations/Shared");
-        write_file(
-            &animations.join("wpnfireautoreadyslave.hkx"),
-            b"inert slave",
-        );
-        // Left behind by a previous regen, before the annotation gate existed.
-        write_file(&animations.join("wpnfireautoready.hkx"), b"inert slave");
-        write_file(
-            &vanilla.join("wpnfireautoready.hkx"),
-            b"donor weaponFire clip",
-        );
-
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert_eq!(
-            std::fs::read(animations.join("wpnfireautoready.hkx")).unwrap(),
-            b"donor weaponFire clip",
-        );
+            let written = std::fs::read(animations.join("wpnfireautoready.hkx")).ok();
+            assert_eq!(written.as_deref(), expected.map(str::as_bytes), "{name}");
+        }
     }
 
     // The masters the OLD donor path planted are annotated — they are verbatim copies of
@@ -1539,92 +1523,6 @@ mod tests {
             std::fs::read(m2.join("wpnfiresingleready.hkx")).unwrap(),
             b"converted FO76 weaponFire",
             "a converted master is not a clone and must be kept"
-        );
-    }
-
-    // In the Character weapon tree the repair is a deletion, not a rewrite: the stale master
-    // shadows the grip set's correct clip, and even a donor-repaired one reproduces the .50
-    // Cal's wrong standing fire pose.
-    #[test]
-    fn stale_inert_master_in_a_character_weapon_set_is_removed() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations = mod_path.join("data/Meshes/Actors/Character/Animations/Weapon/M2/Player");
-        let vanilla = target.join("Meshes/Actors/Character/Animations/Weapon/GripHeavy");
-        write_file(
-            &animations.join("wpnfireautoreadyslave.hkx"),
-            b"inert slave",
-        );
-        write_file(&animations.join("wpnfireautoready.hkx"), b"inert slave");
-        write_file(
-            &vanilla.join("wpnfireautoready.hkx"),
-            b"donor weaponFire clip",
-        );
-
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert!(
-            !animations.join("wpnfireautoready.hkx").exists(),
-            "stale inert master must be removed so the SAPT chain can reach GripHeavy"
-        );
-    }
-
-    // Repair must not turn into churn: an already-annotated master is left alone, and an
-    // inert one with no donor available is left alone too.
-    #[test]
-    fn existing_masters_are_left_alone_when_repair_would_not_help() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let good = mod_path.join("data/Meshes/Actors/Character/Animations/Weapon/Gauss");
-        let no_donor = mod_path.join("data/Meshes/Actors/Supermutant/Animations/Incinerator");
-        std::fs::create_dir_all(target.join("Meshes")).unwrap();
-        write_file(&good.join("wpnfireautoreadyslave.hkx"), b"slave");
-        write_file(
-            &good.join("wpnfireautoready.hkx"),
-            b"existing weaponFire master",
-        );
-        write_file(&no_donor.join("wpnfireautoreadyslave.hkx"), b"inert slave");
-        write_file(&no_donor.join("wpnfireautoready.hkx"), b"inert master");
-
-        // Not asserted on `records_changed`: the pre-written master is itself the SOURCE of
-        // the sneak/sighted aliases, so unrelated entries legitimately fire here.
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert_eq!(
-            std::fs::read(good.join("wpnfireautoready.hkx")).unwrap(),
-            b"existing weaponFire master",
-        );
-        assert_eq!(
-            std::fs::read(no_donor.join("wpnfireautoready.hkx")).unwrap(),
-            b"inert master",
-        );
-    }
-
-    // A clip is authored against one skeleton, so a human donor handed to a Super Mutant would
-    // bind to nothing. The donor search must not cross the actor boundary.
-    #[test]
-    fn donor_search_does_not_cross_actor_boundaries() {
-        let temp = tempfile::tempdir().unwrap();
-        let mod_path = temp.path().join("mod");
-        let target = temp.path().join("target");
-        let animations = mod_path.join("data/Meshes/Actors/Supermutant/Animations/Incinerator");
-        let human = target.join("Meshes/Actors/Character/Animations/Weapon/GripHeavy");
-        write_file(
-            &animations.join("wpnfireautoreadyslave.hkx"),
-            b"inert slave",
-        );
-        write_file(
-            &human.join("wpnfireautoready.hkx"),
-            b"human weaponFire clip",
-        );
-
-        synthesize_weapon_animation_aliases_in_mod_path(&mod_path, &target).unwrap();
-
-        assert_eq!(
-            std::fs::read(animations.join("wpnfireautoready.hkx")).unwrap(),
-            b"inert slave",
         );
     }
 }

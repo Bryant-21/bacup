@@ -195,9 +195,9 @@ mod tests {
     }
 
     #[test]
-    fn exact_legacy_eye_shape_requires_owner_aware_fo4_projection() {
+    fn exact_legacy_eye_and_hair_shapes_require_owner_aware_fo4_projection() {
         let interner = StringInterner::new();
-        let mut record = record("EYES", &interner);
+        let mut record = self::record("EYES", &interner);
         record.fields.extend([
             field(*b"EDID", FieldValue::String(interner.intern("EyeBlue"))),
             field(*b"FULL", FieldValue::String(interner.intern("Blue"))),
@@ -221,12 +221,9 @@ mod tests {
                 raw_flags: 1,
             }
         );
-    }
 
-    #[test]
-    fn exact_legacy_hair_shape_requires_owner_aware_fo4_projection() {
         let interner = StringInterner::new();
-        let mut record = record("HAIR", &interner);
+        let mut record = self::record("HAIR", &interner);
         record.fields.extend([
             field(*b"EDID", FieldValue::String(interner.intern("HairWavy"))),
             field(*b"FULL", FieldValue::String(interner.intern("Smooth Wave"))),
@@ -257,12 +254,9 @@ mod tests {
                 raw_flags: 5,
             }
         );
-    }
 
-    #[test]
-    fn appearance_shape_drift_is_not_hidden_by_projection_blockers() {
         let interner = StringInterner::new();
-        let mut eye = record("EYES", &interner);
+        let mut eye = self::record("EYES", &interner);
         eye.fields.push(field(
             *b"ICON",
             FieldValue::String(interner.intern("Characters\\Eyes\\EyeBlue.dds")),
@@ -272,7 +266,7 @@ mod tests {
             ["legacy_eye_field_multiplicity_unverified"]
         );
 
-        let mut hair = record("HAIR", &interner);
+        let mut hair = self::record("HAIR", &interner);
         hair.fields.push(field(*b"MODT", FieldValue::Uint(1)));
         assert_eq!(
             classify_legacy_hair(&hair).reason_codes,

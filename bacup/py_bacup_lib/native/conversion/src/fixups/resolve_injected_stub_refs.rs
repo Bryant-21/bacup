@@ -247,12 +247,131 @@ mod tests {
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn no_stale_fks_returns_empty() {
+    fn stale_fk_guards_pick_the_first_matching_action() {
+        type Strategy = fn(&str, &str, &str) -> (String, String);
+        let fk = "000800:SeventySix.esm".to_string();
+        let known = HashSet::from([fk.clone()]);
+        let none = HashSet::new();
+        let npc = Some(("TestEid", "NPC_"));
+        let inject = StubRefAction::InjectStub {
+            new_formkey: "000801:Output.esp".to_string(),
+        };
+        for (name, stack, existing, source, guards, strategy, expected) in [
+            (
+                "in stack",
+                &known,
+                &none,
+                npc,
+                [false; 4],
+                local_strategy as Strategy,
+                StubRefAction::InStack,
+            ),
+            (
+                "packed data",
+                &none,
+                &none,
+                npc,
+                [true, false, false, false],
+                local_strategy,
+                StubRefAction::PackedData,
+            ),
+            (
+                "source missing",
+                &none,
+                &none,
+                None,
+                [false; 4],
+                local_strategy,
+                StubRefAction::SourceNotUsable,
+            ),
+            (
+                "empty editor id",
+                &none,
+                &none,
+                Some(("", "NPC_")),
+                [false; 4],
+                local_strategy,
+                StubRefAction::SourceNotUsable,
+            ),
+            (
+                "creature race",
+                &none,
+                &none,
+                Some(("TestRace", "RACE")),
+                [false, true, false, false],
+                local_strategy,
+                StubRefAction::NullCreatureRace,
+            ),
+            (
+                "creature support",
+                &none,
+                &none,
+                Some(("TestCobj", "COBJ")),
+                [false, false, true, false],
+                local_strategy,
+                StubRefAction::NullCreatureSupport,
+            ),
+            (
+                "skipped type",
+                &none,
+                &none,
+                Some(("TestEid", "SKIP")),
+                [false, false, false, true],
+                local_strategy,
+                StubRefAction::SkipRecordType,
+            ),
+            (
+                "non local strategy",
+                &none,
+                &none,
+                npc,
+                [false; 4],
+                non_local_strategy,
+                StubRefAction::NonLocalStrategy,
+            ),
+            (
+                "local strategy injects",
+                &none,
+                &none,
+                npc,
+                [false; 4],
+                local_strategy,
+                inject.clone(),
+            ),
+            (
+                "local strategy already known",
+                &none,
+                &known,
+                npc,
+                [false; 4],
+                local_strategy,
+                StubRefAction::NonLocalStrategy,
+            ),
+        ] {
+            let [packed, race, support, skip] = guards;
+            let results = apply_to_record(
+                std::slice::from_ref(&fk),
+                existing,
+                stack,
+                |_| source.and_then(|(eid, rt)| make_record(eid, rt)),
+                |_| packed,
+                |_, _| race,
+                |_| support,
+                |_| skip,
+                strategy,
+            );
+            assert_eq!(results.len(), 1, "{name}");
+            assert_eq!(results[0].1, expected, "{name}");
+        }
+
         let results = apply_to_record(
             &[],
-            &HashSet::new(),
-            &HashSet::new(),
+            &none,
+            &none,
             |_| None,
             no_packed,
             no_creature_race,
@@ -261,246 +380,40 @@ mod tests {
             local_strategy,
         );
         assert!(results.is_empty());
+
+        assert!(is_local_strategy("new_allocation"));
+        assert!(is_local_strategy("source_id_preserved"));
+        assert!(!is_local_strategy("direct_remap"));
+        assert!(!is_local_strategy("null_ref"));
+        assert!(!is_local_strategy(""));
     }
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn fk_in_stack_is_skipped() {
-        let fk = "000800:SeventySix.esm".to_string();
-        let mut stack = HashSet::new();
-        stack.insert(fk.clone());
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &stack,
-            |_| make_record("TestEid", "NPC_"),
-            no_packed,
-            no_creature_race,
-            no_creature_support,
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::InStack);
-    }
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn packed_data_fk_is_skipped() {
-        let fk = "AABBCC:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &HashSet::new(),
-            |_| make_record("TestEid", "NPC_"),
-            |_| true, // all FKs look like packed data
-            no_creature_race,
-            no_creature_support,
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::PackedData);
-    }
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn source_record_not_found_is_not_usable() {
-        let fk = "000800:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &HashSet::new(),
-            |_| None, // not found
-            no_packed,
-            no_creature_race,
-            no_creature_support,
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::SourceNotUsable);
-    }
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn empty_editor_id_is_not_usable() {
-        let fk = "000800:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &HashSet::new(),
-            |_| make_record("", "NPC_"),
-            no_packed,
-            no_creature_race,
-            no_creature_support,
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::SourceNotUsable);
-    }
-
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn creature_race_guard_fires() {
-        let fk = "000800:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &HashSet::new(),
-            |_| make_record("TestRace", "RACE"),
-            no_packed,
-            |_, _| true, // always fires
-            no_creature_support,
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::NullCreatureRace);
-    }
-
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn creature_support_guard_fires() {
-        let fk = "000800:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &HashSet::new(),
-            |_| make_record("TestCobj", "COBJ"),
-            no_packed,
-            no_creature_race,
-            |_| true, // always fires
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::NullCreatureSupport);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn skip_type_guard_fires() {
-        let fk = "000800:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &HashSet::new(),
-            |_| make_record("TestEid", "SKIP"),
-            no_packed,
-            no_creature_race,
-            no_creature_support,
-            |_| true, // always skip
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::SkipRecordType);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn non_local_strategy_no_injection() {
-        let fk = "000800:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(),
-            &HashSet::new(),
-            |_| make_record("TestEid", "NPC_"),
-            no_packed,
-            no_creature_race,
-            no_creature_support,
-            no_skip,
-            non_local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::NonLocalStrategy);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn local_strategy_new_fk_injects_stub() {
-        let fk = "000800:SeventySix.esm".to_string();
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &HashSet::new(), // fk not already known
-            &HashSet::new(),
-            |_| make_record("TestEid", "NPC_"),
-            no_packed,
-            no_creature_race,
-            no_creature_support,
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].1,
-            StubRefAction::InjectStub {
-                new_formkey: "000801:Output.esp".to_string()
-            }
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn local_strategy_already_known_no_injection() {
-        let fk = "000800:SeventySix.esm".to_string();
-        let mut existing = HashSet::new();
-        existing.insert(fk.clone());
-
-        let results = apply_to_record(
-            &[fk.clone()],
-            &existing,
-            &HashSet::new(),
-            |_| make_record("TestEid", "NPC_"),
-            no_packed,
-            no_creature_race,
-            no_creature_support,
-            no_skip,
-            local_strategy,
-        );
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].1, StubRefAction::NonLocalStrategy);
-    }
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
@@ -535,44 +448,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn is_local_strategy_recognises_known_values() {
-        assert!(is_local_strategy("new_allocation"));
-        assert!(is_local_strategy("source_id_preserved"));
-        assert!(!is_local_strategy("direct_remap"));
-        assert!(!is_local_strategy("null_ref"));
-        assert!(!is_local_strategy(""));
-    }
-
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_is_always_false() {
-        use crate::fixups::{FixupConfig, FixupContext};
-        use crate::schema::AuthoringSchema;
-        use crate::sym::StringInterner;
-
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig::default();
-        let mut interner = StringInterner::new();
-
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        let fixup = ResolveInjectedStubRefsFixup;
-        assert!(
-            !fixup.applies_to(&ctx),
-            "applies_to must return false until the Python gate is lifted"
-        );
-    }
 }

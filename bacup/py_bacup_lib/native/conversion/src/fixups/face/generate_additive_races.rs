@@ -19,9 +19,10 @@ use crate::anim_namespace::{
 };
 use crate::fixups::face::build_additive_race_record::{
     SubgraphBlock, build_additive_race_record, parse_canonical_subgraphs,
-    strip_template_subgraph_fields,
 };
-use crate::fixups::face::derive_pa_subgraph_blocks::derive_pa_subgraph_blocks;
+use crate::fixups::face::derive_pa_subgraph_blocks::{
+    derive_pa_subgraph_blocks, merge_missing_bow_blocks,
+};
 use crate::fixups::face::rewrite_subgraph_block_formkeys::rewrite_subgraph_block_formkeys;
 use crate::fixups::prune_orphaned_records::is_creature_root_sig;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
@@ -274,17 +275,15 @@ fn run_additive_races_from_source(
             );
         }
 
-        let stripped_template = load_target_race_template_from_masters(
+        let template = load_target_race_template_from_masters(
             session,
             target_schema,
             mapper,
             config,
             target_base_fk,
         )
-        .map(|record| strip_template_subgraph_fields(&record))
         .unwrap_or_else(|| Record::new(race_sig, target_base_fk));
-        let mut additive =
-            build_additive_race_record(stripped_template, target_base_fk, &rewritten);
+        let mut additive = build_additive_race_record(template, target_base_fk, &rewritten);
         set_record_editor_id(&mut additive, additive_eid_sym);
 
         let synth_source_fk = synthetic_source_form_key(additive_count, mapper.interner);
@@ -347,6 +346,28 @@ fn run_additive_races_from_source(
 
         let pa_eid = human_eid.replacen("HumanRaceAdditive", "PowerArmorRaceAdditive", 1);
         if existing_race_eids.contains(&pa_eid) {
+            let keys = session
+                .form_keys_of_sig(race_sig, mapper.interner)
+                .map_err(|e| FixupError::HandleError(e.to_string()))?;
+            for fk in keys {
+                let record = session
+                    .record_decoded(&fk, target_schema, mapper.interner)
+                    .map_err(|e| FixupError::HandleError(e.to_string()))?;
+                if record_eid_string(&record, mapper.interner).as_deref() != Some(&pa_eid) {
+                    continue;
+                }
+                let mut blocks = parse_canonical_subgraphs(&record);
+                let mut bows = human_blocks.clone();
+                insert_namespaced_subgraph_paths(&mut bows, mapper.interner);
+                if merge_missing_bow_blocks(&mut blocks, &bows, mapper.interner) != 0 {
+                    let record = build_additive_race_record(record, pa_base_fk, &blocks);
+                    session
+                        .replace_record_contents(record, target_schema, mapper.interner)
+                        .map_err(|e| FixupError::HandleError(e.to_string()))?;
+                    report.records_changed += 1;
+                }
+                break;
+            }
             continue;
         }
         let pa_eid_sym = mapper.interner.intern(&pa_eid);
@@ -537,13 +558,18 @@ fn restore_generic_grips_on_unowned_weapons(
         // A weapon we emitted a block for must NOT reach the fan — that is the whole point.
         if keywords
             .iter()
-            .any(|kw| third_person_block_keywords.contains(kw))
+            .any(|kw| third_person_block_keywords.contains(kw) && !twins.contains_key(kw))
         {
             continue;
         }
         let mut restore: Vec<u32> = keywords
             .iter()
             .filter_map(|kw| twins.get(kw).copied())
+            .filter(|id| {
+                !keywords
+                    .iter()
+                    .any(|kw| kw.local == *id && is_fo4_grip_keyword(kw, mapper.interner))
+            })
             .collect();
         restore.sort_unstable();
         restore.dedup();
@@ -1095,7 +1121,7 @@ fn build_power_armor_additive_race_record(
     blocks: &[SubgraphBlock],
 ) -> Record {
     build_additive_race_record(
-        strip_template_subgraph_fields(target_power_armor_template),
+        target_power_armor_template.clone(),
         power_armor_race_fk,
         blocks,
     )
@@ -1241,162 +1267,91 @@ mod tests {
     // Applies_to gate tests
     // -----------------------------------------------------------------------
 
-    /// applies to WEAP root.
     #[test]
-    fn applies_to_weap_root() {
+    fn applies_to_weap_root_and_whole_plugin_runs_only() {
         let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let ctx = make_test_ctx(&schema, &config);
-        assert!(GenerateAdditiveRacesFixup.applies_to(&ctx));
-    }
-
-    /// does not apply to NPC_ root.
-    #[test]
-    fn does_not_apply_to_npc_root() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("NPC_").unwrap()),
-            ..Default::default()
-        };
-        let ctx = make_test_ctx(&schema, &config);
-        assert!(!GenerateAdditiveRacesFixup.applies_to(&ctx));
-    }
-
-    /// does not apply to LVLN root.
-    #[test]
-    fn does_not_apply_to_lvln_root() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("LVLN").unwrap()),
-            ..Default::default()
-        };
-        let ctx = make_test_ctx(&schema, &config);
-        assert!(!GenerateAdditiveRacesFixup.applies_to(&ctx));
-    }
-
-    /// does not apply when root_sig is None.
-    #[test]
-    fn does_not_apply_when_no_root_sig() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            root_sig: None,
-            ..Default::default()
-        };
-        let ctx = make_test_ctx(&schema, &config);
-        assert!(!GenerateAdditiveRacesFixup.applies_to(&ctx));
-    }
-
-    /// applies to whole-plugin runs with no single root.
-    #[test]
-    fn applies_to_whole_plugin_without_root_sig() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let config = FixupConfig {
-            is_whole_plugin: true,
-            root_sig: None,
-            ..Default::default()
-        };
-        let ctx = make_test_ctx(&schema, &config);
-        assert!(GenerateAdditiveRacesFixup.applies_to(&ctx));
+        for (root, whole_plugin, expected) in [
+            (Some("WEAP"), false, true),
+            (Some("NPC_"), false, false),
+            (Some("LVLN"), false, false),
+            (None, false, false),
+            (None, true, true),
+        ] {
+            let config = FixupConfig {
+                is_whole_plugin: whole_plugin,
+                root_sig: root.map(|sig| SigCode::from_str(sig).unwrap()),
+                ..Default::default()
+            };
+            let ctx = make_test_ctx(&schema, &config);
+            assert_eq!(
+                GenerateAdditiveRacesFixup.applies_to(&ctx),
+                expected,
+                "{root:?} whole_plugin={whole_plugin}"
+            );
+        }
     }
 
     #[test]
-    fn applies_to_fo76_to_fo4_session() {
-        let source = plugin_handle_new_native("SeventySixSource.esm", Some("fo76")).unwrap();
-        let target = plugin_handle_new_native("SeventySixOutput.esm", Some("fo4")).unwrap();
-        let session = open_session(target, Some(source)).unwrap();
-        let config = FixupConfig {
-            is_whole_plugin: true,
-            root_sig: None,
-            ..Default::default()
-        };
-
-        assert!(GenerateAdditiveRacesFixup.applies_to_session(&session, &config));
-    }
-
-    #[test]
-    fn does_not_apply_to_starfield_to_fo4_session() {
-        let source = plugin_handle_new_native("StarfieldSource.esm", Some("starfield")).unwrap();
-        let target = plugin_handle_new_native("StarfieldOutput.esm", Some("fo4")).unwrap();
-        let session = open_session(target, Some(source)).unwrap();
-        let config = FixupConfig {
-            is_whole_plugin: true,
-            root_sig: None,
-            ..Default::default()
-        };
-
-        assert!(!GenerateAdditiveRacesFixup.applies_to_session(&session, &config));
+    fn applies_only_to_fo76_to_fo4_sessions() {
+        for (name, source_game, expected) in [
+            ("SeventySix", "fo76", true),
+            ("Starfield", "starfield", false),
+        ] {
+            let source =
+                plugin_handle_new_native(&format!("{name}Source.esm"), Some(source_game)).unwrap();
+            let target =
+                plugin_handle_new_native(&format!("{name}Output.esm"), Some("fo4")).unwrap();
+            let session = open_session(target, Some(source)).unwrap();
+            let config = FixupConfig {
+                is_whole_plugin: true,
+                root_sig: None,
+                ..Default::default()
+            };
+            assert_eq!(
+                GenerateAdditiveRacesFixup.applies_to_session(&session, &config),
+                expected,
+                "{source_game}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
     // derive_weapon_name unit tests
     // -----------------------------------------------------------------------
 
-    /// strips `_NONPLAYABLE`.
     #[test]
-    fn derive_weapon_name_strips_nonplayable() {
-        assert_eq!(derive_weapon_name("MyGun_NONPLAYABLE"), "MyGun");
-    }
-
-    /// strips `zzz_` prefix.
-    #[test]
-    fn derive_weapon_name_strips_zzz_prefix() {
-        assert_eq!(derive_weapon_name("zzz_MyGun"), "MyGun");
-    }
-
-    /// takes last underscore segment.
-    #[test]
-    fn derive_weapon_name_takes_last_segment() {
-        assert_eq!(derive_weapon_name("Faction_Class_MyGun"), "MyGun");
-    }
-
-    /// empty fallback to "Unknown".
-    #[test]
-    fn derive_weapon_name_empty_fallback() {
-        assert_eq!(derive_weapon_name(""), "Unknown");
-    }
-
-    /// simple name passes through unchanged.
-    #[test]
-    fn derive_weapon_name_passes_through() {
-        assert_eq!(derive_weapon_name("MyGun"), "MyGun");
-    }
-
-    #[test]
-    fn animation_keyword_name_keeps_grips_for_data_dedupe() {
-        assert_eq!(
-            derive_weapon_name_from_animation_keyword("AnimsGaussPistol", "GaussPistol"),
-            Some("GaussPistol".to_string())
-        );
-        assert_eq!(
-            derive_weapon_name_from_animation_keyword("AnimsGripPistol", "GaussPistol"),
-            Some("GripPistol".to_string())
-        );
-        assert_eq!(
-            derive_weapon_name_from_animation_keyword("AnimPepperShaker", "PepperShaker"),
-            Some("PepperShaker".to_string())
-        );
-    }
-
-    #[test]
-    fn furniture_workbench_animation_keywords_are_collected_for_additive_races() {
+    fn derives_weapon_names_from_editor_ids_and_animation_keywords() {
+        for (editor_id, expected) in [
+            ("MyGun_NONPLAYABLE", "MyGun"),
+            ("zzz_MyGun", "MyGun"),
+            ("Faction_Class_MyGun", "MyGun"),
+            ("", "Unknown"),
+            ("MyGun", "MyGun"),
+        ] {
+            assert_eq!(derive_weapon_name(editor_id), expected, "{editor_id:?}");
+        }
         assert!(ANIMATION_KEYWORD_OWNER_SIGNATURES.contains(&"FURN"));
-        assert_eq!(
-            derive_weapon_name_from_animation_keyword(
+        for (keyword, fallback, expected) in [
+            ("AnimsGaussPistol", "GaussPistol", "GaussPistol"),
+            ("AnimsGripPistol", "GaussPistol", "GripPistol"),
+            ("AnimPepperShaker", "PepperShaker", "PepperShaker"),
+            (
                 "AnimFurnWorkbenchTinkersA",
-                "WorkbenchTinkersA"
+                "WorkbenchTinkersA",
+                "FurnWorkbenchTinkersA",
             ),
-            Some("FurnWorkbenchTinkersA".to_string())
-        );
-        assert_eq!(
-            derive_weapon_name_from_animation_keyword(
+            (
                 "AnimFurnWorkbenchBrewing",
-                "WorkbenchBrewing"
+                "WorkbenchBrewing",
+                "FurnWorkbenchBrewing",
             ),
-            Some("FurnWorkbenchBrewing".to_string())
-        );
+        ] {
+            assert_eq!(
+                derive_weapon_name_from_animation_keyword(keyword, fallback),
+                Some(expected.to_string()),
+                "{keyword}"
+            );
+        }
     }
 
     #[test]
@@ -1464,47 +1419,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn omod_formid_keyword_properties_supply_animation_keywords() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let mut record = Record::new(
-            SigCode::from_str("OMOD").unwrap(),
-            FormKey {
-                local: 0x8445e2,
-                plugin,
-            },
-        );
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("DATA").unwrap(),
-            value: FieldValue::Struct(vec![(
-                interner.intern("Properties"),
-                FieldValue::List(vec![
-                    FieldValue::Struct(vec![
-                        (interner.intern("ValueType"), FieldValue::Uint(4)),
-                        (interner.intern("Property"), FieldValue::Uint(31)),
-                        (interner.intern("Value1"), FieldValue::Uint(0x85780d)),
-                    ]),
-                    FieldValue::Struct(vec![
-                        (interner.intern("ValueType"), FieldValue::Uint(1)),
-                        (interner.intern("Property"), FieldValue::Uint(31)),
-                        (interner.intern("Value1"), FieldValue::Uint(0x123456)),
-                    ]),
-                ]),
-            )]),
-        });
-
-        assert_eq!(
-            collect_omod_formid_property_keywords(&record, &interner),
-            vec![FormKey {
-                local: 0x85780d,
-                plugin,
-            }]
-        );
-    }
-
     /// The production fo76 decode carries OMOD DATA as opaque bytes (the
-    /// typed-Struct shape above never occurs on real records); keyword
+    /// typed-Struct shape never occurs on real records); keyword
     /// properties must be extracted from the raw 24-byte property rows.
     /// Mirrors mod_Nitro_Grip_Base (8445E2): a non-keyword property-73 row
     /// ahead of the AnimsGripNitroPistol keyword row.
@@ -1653,7 +1569,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_fo76_combat_graphs_and_source_fallback_order() {
+    fn preserves_fo76_combat_graphs_and_drops_graphs_without_fo4_equivalent() {
         let interner = StringInterner::new();
         for graph in [
             "Actors\\Character\\Behaviors\\GunBehavior.hkx",
@@ -1666,6 +1582,7 @@ mod tests {
             "Actors\\Character\\Behaviors\\ChargeUpWrappingGunBehavior.hkx",
             "Actors\\Character\\_1stPerson\\Behaviors\\BigGunsSpinUpDown_GunWrappingBehavior.hkx",
             "Actors\\Character\\_1stPerson\\Behaviors\\InjuredBinoculars_GunWrappingBehavior.hkx",
+            "Actors\\Character\\Behaviors\\FaceGen.hkx",
         ] {
             let paths = vec![
                 interner.intern("Actors\\Creature\\Animations\\Weapon"),
@@ -1679,6 +1596,10 @@ mod tests {
                 flags_bytes: None,
             }];
             normalize_fo76_fo4_subgraph_blocks(&mut blocks, &interner);
+            if graph.ends_with("FaceGen.hkx") {
+                assert!(blocks.is_empty(), "{graph} block must be dropped");
+                continue;
+            }
             assert_eq!(interner.resolve(blocks[0].behaviour_graph), Some(graph));
             assert_eq!(blocks[0].paths, paths);
         }
@@ -1698,46 +1619,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn drops_blocks_whose_graph_has_no_fo4_equivalent() {
-        let interner = StringInterner::new();
-        let graph = "Actors\\Character\\Behaviors\\FaceGen.hkx";
-        let mut blocks = vec![SubgraphBlock {
-            behaviour_graph: interner.intern(graph),
-            paths: vec![],
-            subgraph_keywords: vec![],
-            target_keywords: vec![],
-            flags_bytes: None,
-        }];
-
-        normalize_fo76_fo4_subgraph_blocks(&mut blocks, &interner);
-
-        assert!(blocks.is_empty(), "{graph} block must be dropped");
-    }
-
     // -----------------------------------------------------------------------
-    // race_eid_normalize unit tests
+    // additive EditorID naming
     // -----------------------------------------------------------------------
 
-    /// `HumanRaceSubGraphData` normalizes to `HumanRace`.
+    /// Asset-port / bounded runs name the additive per-weapon; whole-plugin
+    /// runs share one `<Race>AdditivePluginPort` per race.
     #[test]
-    fn race_eid_normalize_subgraph_data() {
-        assert_eq!(race_eid_normalize("HumanRaceSubGraphData"), "HumanRace");
-    }
-
-    /// unknown EID passes through unchanged.
-    #[test]
-    fn race_eid_normalize_passes_through() {
-        assert_eq!(race_eid_normalize("PowerArmorRace"), "PowerArmorRace");
-    }
-
-    #[test]
-    fn race_eid_normalize_passes_through_super_mutant() {
-        assert_eq!(race_eid_normalize("SuperMutantRace"), "SuperMutantRace");
-    }
-
-    #[test]
-    fn whole_plugin_additive_eid_is_one_per_race() {
+    fn additive_editor_id_naming() {
+        for (eid, expected) in [
+            ("HumanRaceSubGraphData", "HumanRace"),
+            ("PowerArmorRace", "PowerArmorRace"),
+            ("SuperMutantRace", "SuperMutantRace"),
+        ] {
+            assert_eq!(race_eid_normalize(eid), expected, "{eid}");
+        }
         assert_eq!(
             whole_plugin_additive_eid("HumanRace"),
             "HumanRaceAdditivePluginPort"
@@ -1746,15 +1642,42 @@ mod tests {
             whole_plugin_additive_eid("SuperMutantRace"),
             "SuperMutantRaceAdditivePluginPort"
         );
+        assert_eq!(
+            AdditiveNaming::PerWeapon("GaussPistol".to_string()).additive_eid("HumanRace"),
+            "HumanRaceAdditiveGaussPistol"
+        );
+        assert_eq!(
+            AdditiveNaming::PluginPort.additive_eid("HumanRace"),
+            "HumanRaceAdditivePluginPort"
+        );
+
+        let interner = StringInterner::new();
+        let old = interner.intern("HumanRaceSubGraphData");
+        let new = interner.intern("HumanRaceAdditiveGaussPistol");
+        let mut record = Record::new(
+            SigCode::from_str("RACE").unwrap(),
+            FormKey {
+                local: 0x800,
+                plugin: interner.intern("Output.esp"),
+            },
+        );
+        record.eid = Some(old);
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("EDID").unwrap(),
+            value: FieldValue::String(old),
+        });
+        set_record_editor_id(&mut record, new);
+        assert_eq!(record.eid, Some(new));
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].value, FieldValue::String(new));
     }
 
     // -----------------------------------------------------------------------
     // FO4_ADDITIVE_PARENTS constant table
     // -----------------------------------------------------------------------
 
-    /// known EIDs resolve to expected FK strings.
     #[test]
-    fn additive_parent_known_eids() {
+    fn resolves_additive_parents() {
         assert_eq!(
             lookup_additive_parent_str("HumanRace"),
             Some("166729:Fallout4.esm")
@@ -1763,16 +1686,8 @@ mod tests {
             lookup_additive_parent_str("PowerArmorRace"),
             Some("01D31E:Fallout4.esm")
         );
-    }
-
-    /// unknown EID has no additive-parent entry.
-    #[test]
-    fn additive_parent_unknown_eid_is_none() {
         assert!(lookup_additive_parent_str("GhoulRace").is_none());
-    }
 
-    #[test]
-    fn additive_parent_super_mutant_falls_back_to_vanilla_race() {
         let mut interner = StringInterner::new();
         let plugin = interner.intern("Fallout4.esm");
         let fallback = FormKey {
@@ -1780,10 +1695,10 @@ mod tests {
             plugin,
         };
         let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut interner);
-
         assert_eq!(
             resolve_additive_parent("SuperMutantRace", fallback, &mut mapper),
-            Some(fallback)
+            Some(fallback),
+            "super mutant falls back to the vanilla race"
         );
     }
 
@@ -1862,48 +1777,180 @@ mod tests {
         assert_eq!(mapper.lookup(master_identity), Some(master_identity));
     }
 
-    // -----------------------------------------------------------------------
-    // AdditiveNaming — per-path additive EditorID composition.
-    // -----------------------------------------------------------------------
-
-    /// Asset-port / bounded runs name the additive per-weapon; whole-plugin
-    /// runs share one `<Race>AdditivePluginPort` per race.
     #[test]
-    fn additive_naming_per_path() {
-        assert_eq!(
-            AdditiveNaming::PerWeapon("GaussPistol".to_string()).additive_eid("HumanRace"),
-            "HumanRaceAdditiveGaussPistol"
-        );
-        assert_eq!(
-            AdditiveNaming::PluginPort.additive_eid("HumanRace"),
-            "HumanRaceAdditivePluginPort"
-        );
-    }
+    fn fishing_registration_is_owned_by_tales() {
+        use crate::fixups::face::build_additive_race_record::block_to_entries;
 
-    #[test]
-    fn set_record_editor_id_rewrites_edid_field() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Output.esp");
-        let old = interner.intern("HumanRaceSubGraphData");
-        let new = interner.intern("HumanRaceAdditiveGaussPistol");
-        let mut record = Record::new(
-            SigCode::from_str("RACE").unwrap(),
-            FormKey {
-                local: 0x800,
-                plugin,
+        let mut interner = StringInterner::new();
+        let source_plugin = interner.intern("FishingSource.esm");
+        let output_plugin = interner.intern("FishingOutput.esm");
+        let vanilla_plugin = interner.intern("Fallout4.esm");
+        let key = |local, plugin| FormKey { local, plugin };
+        let source_race = key(0x66CFBA, source_plugin);
+        let parent = key(0x166729, vanilla_plugin);
+        let fishing_keyword = key(0x7995A2, source_plugin);
+        let workbench_keyword = key(0x7C7006, source_plugin);
+        let actor_keyword = key(0x13794, source_plugin);
+        let player_keyword = key(0x99306, source_plugin);
+        let race_sig = SigCode::from_str("RACE").unwrap();
+        let keyword_sig = SigCode::from_str("KYWD").unwrap();
+        let source = plugin_handle_new_native("FishingSource.esm", Some("fo76")).unwrap();
+        let target = plugin_handle_new_native("FishingOutput.esm", Some("fo4")).unwrap();
+        esp_authoring_core::plugin_runtime::plugin_handle_add_master_native(
+            target,
+            "Fallout4.esm",
+            None,
+        )
+        .unwrap();
+        let vanilla_index = vec![
+            (interner.intern("humanracesubgraphdata"), parent, race_sig),
+            (
+                interner.intern("actortypenpc"),
+                key(actor_keyword.local, vanilla_plugin),
+                keyword_sig,
+            ),
+            (
+                interner.intern("playerkeyword"),
+                key(player_keyword.local, vanilla_plugin),
+                keyword_sig,
+            ),
+        ];
+        {
+            let mut session = open_session(source, None).unwrap();
+            let schema = session.schema().unwrap();
+            for (fk, eid) in [
+                (fishing_keyword, "AnimFurnFishingSpot"),
+                (workbench_keyword, "AnimFurnWorkbenchFishing"),
+                (actor_keyword, "ActorTypeNPC"),
+                (player_keyword, "PlayerKeyword"),
+            ] {
+                let mut record = Record::new(keyword_sig, fk);
+                set_record_editor_id(&mut record, interner.intern(eid));
+                session.add_record(record, &schema, &interner).unwrap();
+            }
+            let mut furniture = Record::new(
+                SigCode::from_str("FURN").unwrap(),
+                key(0x799572, source_plugin),
+            );
+            set_record_editor_id(&mut furniture, interner.intern("Fishing_NPCFishingSpot"));
+            furniture.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("KSIZ").unwrap(),
+                value: FieldValue::Uint(2),
+            });
+            furniture.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("KWDA").unwrap(),
+                value: FieldValue::List(vec![
+                    FieldValue::FormKey(fishing_keyword),
+                    FieldValue::FormKey(workbench_keyword),
+                ]),
+            });
+            session.add_record(furniture, &schema, &interner).unwrap();
+            let mut race = Record::new(race_sig, source_race);
+            set_record_editor_id(&mut race, interner.intern("DevBlue_HumanRaceSubGraphData"));
+            for (graph, path, target_keyword, subgraph_keywords) in [
+                (
+                    "WorkbenchFurnitureBehavior.hkx",
+                    "WorkbenchFishing",
+                    workbench_keyword,
+                    vec![],
+                ),
+                (
+                    "FurnitureBehavior.hkx",
+                    "Fishing",
+                    fishing_keyword,
+                    vec![actor_keyword],
+                ),
+                (
+                    "FurnitureFishingBehavior.hkx",
+                    "Fishing",
+                    fishing_keyword,
+                    vec![player_keyword, actor_keyword],
+                ),
+                (
+                    "FurnitureBehavior.hkx",
+                    "Drums",
+                    fishing_keyword,
+                    vec![actor_keyword],
+                ),
+            ] {
+                race.fields.extend(block_to_entries(&SubgraphBlock {
+                    behaviour_graph: interner
+                        .intern(&format!("Actors\\Character\\Behaviors\\{graph}")),
+                    paths: vec![
+                        interner
+                            .intern(&format!("Actors\\Character\\Animations\\Furniture\\{path}")),
+                    ],
+                    subgraph_keywords,
+                    target_keywords: vec![target_keyword],
+                    flags_bytes: Some(vec![2, 0, 0, 0].into_iter().collect()),
+                }));
+            }
+            session.add_record(race, &schema, &interner).unwrap();
+        }
+        let mut mapper = FormKeyMapper::new(
+            vanilla_index,
+            MapperOptions {
+                output_plugin_name: "FishingOutput.esm".into(),
+                ..MapperOptions::default()
             },
+            &mut interner,
         );
-        record.eid = Some(old);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("EDID").unwrap(),
-            value: FieldValue::String(old),
-        });
-
-        set_record_editor_id(&mut record, new);
-
-        assert_eq!(record.eid, Some(new));
-        assert_eq!(record.fields.len(), 1);
-        assert_eq!(record.fields[0].value, FieldValue::String(new));
+        for fk in [
+            fishing_keyword,
+            workbench_keyword,
+            key(0x799572, source_plugin),
+        ] {
+            mapper.add_mapping(fk, key(fk.local, output_plugin));
+        }
+        let mut session = open_session(target, Some(source)).unwrap();
+        let config = FixupConfig {
+            is_whole_plugin: true,
+            ..Default::default()
+        };
+        let source_schema = session.source_schema().unwrap();
+        let source_decoded = session
+            .source_record_decoded(&source_race, &source_schema, mapper.interner)
+            .unwrap();
+        assert_eq!(
+            parse_canonical_subgraphs(&source_decoded).len(),
+            4,
+            "{:?}",
+            source_decoded.fields
+        );
+        let furniture = session
+            .source_record_decoded(
+                &key(0x799572, source_plugin),
+                &source_schema,
+                mapper.interner,
+            )
+            .unwrap();
+        assert_eq!(
+            collect_form_keys_from_subrecord(&furniture, "KWDA")
+                .unwrap()
+                .len(),
+            2,
+            "{:?}",
+            furniture.fields
+        );
+        let keyword_uses =
+            collect_source_animation_keyword_uses(&mut session, &source_schema, &mut mapper)
+                .unwrap();
+        assert_eq!(keyword_uses.len(), 2);
+        let report = GenerateAdditiveRacesFixup
+            .run_with_session(&mut session, &mut mapper, &config)
+            .unwrap();
+        assert_eq!(
+            report.records_added,
+            0,
+            "{:?}",
+            report
+                .warnings
+                .iter()
+                .map(|sym| mapper.interner.resolve(*sym))
+                .collect::<Vec<_>>()
+        );
+        let keys = session.form_keys_of_sig(race_sig, mapper.interner).unwrap();
+        assert!(keys.is_empty());
     }
 
     fn fk(interner: &StringInterner, local: u32) -> FormKey {
@@ -1943,9 +1990,11 @@ mod tests {
 
     /// Only the four real grips. A `SeventySix.esm` keyword that happens to share an
     /// object id with one of them is a different record entirely — which is exactly what
-    /// the source-owned twin becomes once it is held out of the vanilla remap.
+    /// the source-owned twin becomes once it is held out of the vanilla remap. The twin
+    /// is found by NAME, because the collision rename owns the suffix and the mapper is
+    /// free to reallocate the local id.
     #[test]
-    fn only_fallout4_grip_keywords_are_recognised() {
+    fn recognises_fallout4_grip_keywords_and_their_renamed_twins() {
         let interner = StringInterner::new();
         for local in [0x01_F948, 0x01_F947, 0x04_64EF, 0x0A_A937] {
             assert!(is_fo4_grip_keyword(&fo4_fk(&interner, local), &interner));
@@ -1954,12 +2003,6 @@ mod tests {
         for local in [0x63_E33B, 0x01_866A, 0x0F_4AEA] {
             assert!(!is_fo4_grip_keyword(&fo4_fk(&interner, local), &interner));
         }
-    }
-
-    /// The twin is found by NAME, because the collision rename owns the suffix and the
-    /// mapper is free to reallocate the local id.
-    #[test]
-    fn collision_renamed_twin_is_recognised_by_name() {
         for (editor_id, base, expected) in [
             ("AnimsGripRifleStraightfo76", "AnimsGripRifleStraight", true),
             ("animsgripriflestraightFO76", "AnimsGripRifleStraight", true),
@@ -1982,7 +2025,7 @@ mod tests {
     /// A weapon with no block of its own keeps riding FO4's generic fan: the source-owned
     /// twin alone would leave it with no third-person animation at all.
     #[test]
-    fn grip_is_restored_to_a_decoded_keyword_list_and_ksiz_resyncs() {
+    fn grip_is_restored_to_decoded_and_raw_keyword_arrays_and_ksiz_resyncs() {
         let interner = StringInterner::new();
         let mut record = weapon_with_keywords(
             &interner,
@@ -2007,11 +2050,7 @@ mod tests {
             FieldValue::FormKey(added)
                 if added.local == 0x04_64EF && is_fo4_grip_keyword(added, &interner)
         )));
-    }
 
-    #[test]
-    fn grip_is_restored_to_the_raw_bytes_keyword_array() {
-        let interner = StringInterner::new();
         let mut bytes = Vec::new();
         for raw in [0x08_04_64EFu32, 0x00_0F_4AEA] {
             bytes.extend_from_slice(&raw.to_le_bytes());
@@ -2021,16 +2060,98 @@ mod tests {
             FieldValue::Bytes(smallvec::SmallVec::from_vec(bytes)),
             2,
         );
-
         assert!(add_fo4_grip_keywords(&mut record, &[0x04_64EF], &interner));
         assert_eq!(keyword_count(&record), 3);
-
-        let kwda = SubrecordSig::from_str("KWDA").unwrap();
         let FieldValue::Bytes(bytes) = &record.fields.iter().find(|e| e.sig == kwda).unwrap().value
         else {
             panic!("KWDA should still be raw bytes");
         };
         // Fallout4.esm is master index 0, so the appended row is the bare object id.
         assert_eq!(&bytes[8..12], &0x00_04_64EFu32.to_le_bytes());
+    }
+
+    #[test]
+    fn shared_source_grips_do_not_count_as_weapon_specific_routes() {
+        let interner = StringInterner::new();
+        let target = plugin_handle_new_native("GripRestore.esp", Some("fo4")).unwrap();
+        esp_authoring_core::plugin_runtime::plugin_handle_add_master_native(
+            target,
+            "Fallout4.esm",
+            None,
+        )
+        .unwrap();
+        let mut session = open_session(target, None).unwrap();
+        let schema = session.schema().unwrap();
+        let output = interner.intern("GripRestore.esp");
+        let mut mapper = FormKeyMapper::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "GripRestore.esp".into(),
+                ..Default::default()
+            },
+            &interner,
+        );
+        let mut route_keywords = FxHashSet::default();
+        let mut cases = Vec::new();
+        for (index, (grip_id, grip_name)) in FO4_GRIP_KEYWORDS.iter().enumerate() {
+            let grip = FormKey {
+                plugin: output,
+                local: 0x800 + index as u32,
+            };
+            let specific = FormKey {
+                plugin: output,
+                local: 0x810 + index as u32,
+            };
+            for (key, name) in [
+                (grip, format!("{grip_name}fo761")),
+                (specific, format!("AnimsSpecific{index}")),
+            ] {
+                let mut keyword = Record::new(SigCode::from_str("KYWD").unwrap(), key);
+                set_record_editor_id(&mut keyword, interner.intern(&name));
+                session.add_record(keyword, &schema, &interner).unwrap();
+                route_keywords.insert(key);
+            }
+            for owned in [false, true] {
+                let key = FormKey {
+                    plugin: output,
+                    local: 0x900 + index as u32 * 2 + u32::from(owned),
+                };
+                let mut keywords = vec![FieldValue::FormKey(grip)];
+                if owned {
+                    keywords.push(FieldValue::FormKey(specific));
+                }
+                let count = keywords.len() as u32;
+                let mut weapon = weapon_with_keywords(&interner, FieldValue::List(keywords), count);
+                weapon.form_key = key;
+                session.add_record(weapon, &schema, &interner).unwrap();
+                cases.push((key, *grip_id, owned));
+            }
+        }
+        let mut report = FixupReport::empty();
+        restore_generic_grips_on_unowned_weapons(
+            &mut session,
+            &schema,
+            &mut mapper,
+            &route_keywords,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.records_changed, 4);
+        for (key, grip_id, owned) in cases {
+            let record = session.record_decoded(&key, &schema, &interner).unwrap();
+            let keywords = collect_form_keys_from_subrecord(&record, "KWDA").unwrap();
+            assert_eq!(keywords.contains(&fo4_fk(&interner, grip_id)), !owned);
+            assert_eq!(keywords.len(), 2);
+        }
+        let mut repeated = FixupReport::empty();
+        restore_generic_grips_on_unowned_weapons(
+            &mut session,
+            &schema,
+            &mut mapper,
+            &route_keywords,
+            &mut repeated,
+        )
+        .unwrap();
+        assert_eq!(repeated.records_changed, 0);
     }
 }

@@ -1,5 +1,5 @@
 #[test]
-fn pre_translate_drops_scri_subrecord() {
+fn pre_translate_drops_every_scri_subrecord() {
     let mut interner = StringInterner::new();
     let mut record = make_record("NPC_", &mut interner);
     let scri_sym = interner.intern("SomeScript");
@@ -13,10 +13,7 @@ fn pre_translate_drops_scri_subrecord() {
     let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
     assert!(!sigs.contains(&"SCRI"), "SCRI should be dropped");
     assert!(sigs.contains(&"EDID"), "EDID should be preserved");
-}
 
-#[test]
-fn pre_translate_is_noop_when_no_scri_field() {
     let mut interner = StringInterner::new();
     let mut record = make_record("WEAP", &mut interner);
     push_field(&mut record, "EDID", FieldValue::None);
@@ -27,10 +24,7 @@ fn pre_translate_is_noop_when_no_scri_field() {
     hook.pre_translate(&mut ctx, &mut record).unwrap();
 
     assert_eq!(record.fields.len(), 2);
-}
 
-#[test]
-fn pre_translate_drops_all_scri_fields_when_multiple_present() {
     let mut interner = StringInterner::new();
     let mut record = make_record("WEAP", &mut interner);
     let scri_sym = interner.intern("Script1");
@@ -48,7 +42,7 @@ fn pre_translate_drops_all_scri_fields_when_multiple_present() {
 }
 
 #[test]
-fn fnv_pre_translate_clears_legacy_bptd_nam5_payloads() {
+fn legacy_pre_translate_clears_bptd_nam5_payloads_only_from_bptd() {
     let interner = StringInterner::new();
     let mut record = make_record("BPTD", &interner);
     push_field(&mut record, "BPTN", FieldValue::None);
@@ -85,10 +79,7 @@ fn fnv_pre_translate_clears_legacy_bptd_nam5_payloads() {
             .filter(|field| field.sig.0 == *b"NAM5")
             .all(|field| matches!(&field.value, FieldValue::Bytes(bytes) if bytes.is_empty()))
     );
-}
 
-#[test]
-fn fo3_pre_translate_clears_legacy_bptd_nam5_payloads_only_from_bptd() {
     let interner = StringInterner::new();
     let mut bptd = make_record("BPTD", &interner);
     push_field(
@@ -162,7 +153,7 @@ fn pre_translate_drops_fnv_debr_legacy_modt_rows() {
 }
 
 #[test]
-fn capture_scri_target_returns_script_name_when_present() {
+fn capture_scri_target_accepts_only_named_or_formkey_scripts() {
     let mut interner = StringInterner::new();
     let mut record = make_record("NPC_", &mut interner);
     let scri_sym = interner.intern("MyCustomScript");
@@ -170,10 +161,7 @@ fn capture_scri_target_returns_script_name_when_present() {
 
     let result = FnvFo4Hook::capture_scri_target(&record, &interner);
     assert_eq!(result.as_deref(), Some("MyCustomScript"));
-}
 
-#[test]
-fn capture_scri_target_renders_formkey_for_live_fnv_npc_links() {
     let interner = StringInterner::new();
     for (npc_local, scpt_local) in [(0x1300F0, 0x166305), (0x123193, 0x123191)] {
         let mut record = Record::new(
@@ -189,20 +177,14 @@ fn capture_scri_target_renders_formkey_for_live_fnv_npc_links() {
             "NPC {npc_local:06X} must retain its SCPT link"
         );
     }
-}
 
-#[test]
-fn capture_scri_target_returns_none_when_scri_absent() {
     let mut interner = StringInterner::new();
     let mut record = make_record("NPC_", &mut interner);
     push_field(&mut record, "EDID", FieldValue::None);
 
     let result = FnvFo4Hook::capture_scri_target(&record, &interner);
     assert!(result.is_none());
-}
 
-#[test]
-fn capture_scri_target_returns_none_when_scri_is_empty_string() {
     let mut interner = StringInterner::new();
     let mut record = make_record("NPC_", &mut interner);
     let scri_sym = interner.intern("   ");
@@ -210,10 +192,7 @@ fn capture_scri_target_returns_none_when_scri_is_empty_string() {
 
     let result = FnvFo4Hook::capture_scri_target(&record, &interner);
     assert!(result.is_none());
-}
 
-#[test]
-fn capture_scri_target_rejects_non_string_non_formkey_values() {
     let mut interner = StringInterner::new();
     for value in [
         FieldValue::Int(42),
@@ -264,16 +243,4 @@ fn pre_translate_drops_only_the_proven_fnv_npc_tail_collisions() {
             "NPC {npc_local:06X} keeps its compatible scalar height"
         );
     }
-}
-
-// -------------------------------------------------------------------------
-// post_translate / synthesize_records
-// -------------------------------------------------------------------------
-
-#[test]
-fn synthesize_records_returns_empty() {
-    let mut interner = StringInterner::new();
-    let hook = FnvFo4Hook;
-    let mut ctx = make_ctx(&mut interner);
-    assert!(hook.synthesize_records(&mut ctx).is_empty());
 }

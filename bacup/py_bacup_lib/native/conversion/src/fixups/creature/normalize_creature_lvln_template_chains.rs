@@ -7,6 +7,7 @@
 //! concrete entries, and directly nested creature LVLN entries are flattened.
 //! When every parent entry expands, smaller replacement groups repeat so each
 //! original branch stays equally likely instead of weighted by leaf count.
+//! Chance-bearing branches stay nested to preserve their empty outcomes.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -14,6 +15,7 @@ use crate::fixups::creature::creature_internal_fixup_applies;
 use crate::fixups::creature::creature_predicate::{
     npc_race_form_key, record_has_actor_type_creature, record_has_actor_type_npc,
 };
+use crate::fixups::rewrite_raw_object_template_formids::encode_target_form_id;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::full_plugin::FixupScope;
@@ -379,6 +381,30 @@ fn normalize_lvln_record(
         return false;
     };
 
+    let preserve_nested_chances = record.fields.iter().any(|entry| {
+        if entry.sig != lvlo_sig {
+            return false;
+        }
+        if lvlo_has_chance_none(&entry.value, interner) {
+            return true;
+        }
+        let Some(reference) =
+            lvlo_reference(&entry.value, target_masters, target_plugin_name, interner)
+        else {
+            return false;
+        };
+        if let Some(list) = lvln_records.get(&reference) {
+            return leveled_list_has_chance_none(list, interner);
+        }
+        npc_template_lvlns.get(&reference).is_some_and(|lists| {
+            lists.iter().any(|fk| {
+                lvln_records
+                    .get(fk)
+                    .is_some_and(|list| leveled_list_has_chance_none(list, interner))
+            })
+        })
+    });
+
     let mut replacement_groups = Vec::new();
     for entry in &record.fields {
         if entry.sig != lvlo_sig {
@@ -407,6 +433,24 @@ fn normalize_lvln_record(
         };
 
         if replacement_lvlns.is_empty() {
+            replacement_groups.push(None);
+            continue;
+        }
+
+        // Flattening a conditional roll into its leaves loses the chance of
+        // nothing and changes species weights when their level ranges differ.
+        if preserve_nested_chances {
+            if let [replacement] = replacement_lvlns.as_slice()
+                && *replacement != reference
+                && *replacement != record.form_key
+            {
+                let mut rewritten = entry.clone();
+                if set_lvlo_reference(&mut rewritten.value, *replacement, target_masters, interner)
+                {
+                    replacement_groups.push(Some(vec![rewritten]));
+                    continue;
+                }
+            }
             replacement_groups.push(None);
             continue;
         }
@@ -470,6 +514,64 @@ fn normalize_lvln_record(
     }
     record.fields = retained;
     changed
+}
+
+pub(super) fn leveled_list_has_chance_none(record: &Record, interner: &StringInterner) -> bool {
+    record.fields.iter().any(|entry| match entry.sig.as_str() {
+        "LVLD" => positive_chance(&entry.value),
+        "LVLG" => true,
+        "LVLO" => lvlo_has_chance_none(&entry.value, interner),
+        _ => false,
+    })
+}
+
+fn positive_chance(value: &FieldValue) -> bool {
+    match value {
+        FieldValue::Uint(value) => *value > 0,
+        FieldValue::Int(value) => *value > 0,
+        FieldValue::Float(value) => *value > 0.0,
+        FieldValue::Bytes(bytes) => bytes.first().is_some_and(|value| *value > 0),
+        _ => false,
+    }
+}
+
+fn lvlo_has_chance_none(value: &FieldValue, interner: &StringInterner) -> bool {
+    match value {
+        FieldValue::Bytes(bytes) => bytes.get(10).is_some_and(|value| *value > 0),
+        FieldValue::Struct(fields) => ["chance_none", "ChanceNone"]
+            .iter()
+            .any(|name| named_struct_value(fields, name, interner).is_some_and(positive_chance)),
+        _ => false,
+    }
+}
+
+fn set_lvlo_reference(
+    value: &mut FieldValue,
+    reference: FormKey,
+    target_masters: &[String],
+    interner: &StringInterner,
+) -> bool {
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 12 => {
+            let Some(raw) = encode_target_form_id(reference, interner, target_masters) else {
+                return false;
+            };
+            bytes[4..8].copy_from_slice(&raw.to_le_bytes());
+            true
+        }
+        FieldValue::Struct(fields) => {
+            let Some((_, value)) = fields.iter_mut().find(|(name, _)| {
+                interner.resolve(*name).is_some_and(|name| {
+                    name.eq_ignore_ascii_case("npc") || name.eq_ignore_ascii_case("reference")
+                })
+            }) else {
+                return false;
+            };
+            *value = FieldValue::FormKey(reference);
+            true
+        }
+        _ => false,
+    }
 }
 
 fn balanced_replacement_group_len(groups: &[Option<Vec<FieldEntry>>]) -> Option<usize> {
@@ -980,7 +1082,7 @@ mod tests {
 
     #[test]
     fn flattens_creature_lvln_entry_that_points_to_lvln_template_npc() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let parent_fk = fk(0x0100, "Out.esm", &interner);
         let child_fk = fk(0x0200, "Out.esm", &interner);
         let bad_npc_fk = fk(0x0300, "Out.esm", &interner);
@@ -1039,6 +1141,109 @@ mod tests {
     }
 
     #[test]
+    fn rare_encounter_unwraps_template_actor_without_flattening_its_chance() {
+        let interner = StringInterner::new();
+        let mut parent = record("LVLN", 0x100, &interner);
+        push_lvlo(&mut parent, 5, 0x200, 2);
+        let mut child = record("LVLN", 0x300, &interner);
+        child.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("LVLD").unwrap(),
+            value: FieldValue::Uint(95),
+        });
+        push_lvlo(&mut child, 10, 0x400, 1);
+        let mut lists = FxHashMap::from_iter([(parent.form_key, parent), (child.form_key, child)]);
+        let templates = FxHashMap::from_iter([(
+            fk(0x200, "Out.esm", &interner),
+            vec![fk(0x300, "Out.esm", &interner)],
+        )]);
+        let creatures = lists.keys().copied().collect();
+        assert_eq!(
+            converge_with_worklist(&mut lists, &templates, &creatures, &interner).unwrap(),
+            1
+        );
+        let parent = &lists[&fk(0x100, "Out.esm", &interner)];
+        assert_eq!(
+            lvln_entry_refs(parent, &[], "Out.esm", &interner),
+            vec![fk(0x300, "Out.esm", &interner)]
+        );
+        let entry = parent
+            .fields
+            .iter()
+            .find(|entry| entry.sig.as_str() == "LVLO")
+            .unwrap();
+        assert_eq!(lvlo_level(&entry.value, &interner), Some(5));
+        assert_eq!(lvlo_count(&entry.value, &interner), Some(2));
+        assert_eq!(
+            converge_with_worklist(&mut lists, &templates, &creatures, &interner).unwrap(),
+            0
+        );
+
+        {
+            let interner = StringInterner::new();
+            let mut parent = record("LVLN", 0x100, &interner);
+            push_lvlo(&mut parent, 1, 0x200, 1);
+            let FieldValue::Bytes(bytes) = &mut parent.fields[0].value else {
+                unreachable!()
+            };
+            bytes[10] = 95;
+            let expected = parent.clone();
+            let mut lists = FxHashMap::from_iter([(parent.form_key, parent)]);
+            let templates =
+                FxHashMap::from_iter([(fk(0x200, "Out.esm", &interner), vec![expected.form_key])]);
+            let creatures = lists.keys().copied().collect();
+            assert_eq!(
+                converge_with_worklist(&mut lists, &templates, &creatures, &interner).unwrap(),
+                0
+            );
+            assert_eq!(lists[&expected.form_key].fields, expected.fields);
+        }
+
+        {
+            let interner = StringInterner::new();
+            let mut parent = record("LVLN", 0x4FB1BA, &interner);
+            push_llct(&mut parent, 2);
+            push_lvlo(&mut parent, 1, 0x523CF7, 1);
+            push_lvlo(&mut parent, 1, 0x4FB1BE, 1);
+            let mut lists = FxHashMap::default();
+            for (branch, leaf) in [(0x523CF7, 0x00DAE1), (0x4FB1BE, 0x524C6B)] {
+                let mut child = record("LVLN", branch, &interner);
+                push_lvlo(&mut child, 1, leaf, 1);
+                let FieldValue::Bytes(bytes) = &mut child.fields[0].value else {
+                    unreachable!()
+                };
+                bytes[10] = 95;
+                lists.insert(child.form_key, child);
+            }
+            let expected = parent.clone();
+            lists.insert(parent.form_key, parent);
+            let creatures = lists.keys().copied().collect();
+            converge_with_worklist(&mut lists, &FxHashMap::default(), &creatures, &interner)
+                .unwrap();
+            assert_eq!(lists[&expected.form_key].fields, expected.fields);
+        }
+    }
+
+    #[test]
+    fn rare_encounter_detects_list_and_entry_chance_in_decoded_records() {
+        let interner = StringInterner::new();
+        for chance in [FieldValue::Uint(95), FieldValue::Bytes(vec![95].into())] {
+            let mut list = record("LVLN", 0x100, &interner);
+            list.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("LVLD").unwrap(),
+                value: chance.clone(),
+            });
+            assert!(leveled_list_has_chance_none(&list, &interner));
+            for name in ["chance_none", "ChanceNone"] {
+                list.fields[0] = FieldEntry {
+                    sig: SubrecordSig::from_str("LVLO").unwrap(),
+                    value: FieldValue::Struct(vec![(interner.intern(name), chance.clone())]),
+                };
+                assert!(leveled_list_has_chance_none(&list, &interner));
+            }
+        }
+    }
+
+    #[test]
     fn preserves_equal_weight_for_fully_nested_creature_branches() {
         let interner = StringInterner::new();
         let parent_fk = fk(0x0100, "Out.esm", &interner);
@@ -1090,42 +1295,41 @@ mod tests {
             .find(|entry| entry.sig.as_str() == "LLCT")
             .map(|entry| &entry.value);
         assert_eq!(llct, Some(&FieldValue::Uint(4)));
-    }
 
-    #[test]
-    fn keeps_template_npc_entry_when_template_is_not_lvln() {
-        let mut interner = StringInterner::new();
-        let parent_fk = fk(0x0100, "Out.esm", &interner);
-        let template_npc_fk = fk(0x0300, "Out.esm", &interner);
-        let mut parent = record("LVLN", 0x0100, &interner);
-        push_llct(&mut parent, 1);
-        push_lvlo(&mut parent, 1, 0x0100_0300, 1);
+        {
+            let interner = StringInterner::new();
+            let parent_fk = fk(0x0100, "Out.esm", &interner);
+            let template_npc_fk = fk(0x0300, "Out.esm", &interner);
+            let mut parent = record("LVLN", 0x0100, &interner);
+            push_llct(&mut parent, 1);
+            push_lvlo(&mut parent, 1, 0x0100_0300, 1);
 
-        let mut lvln_records = FxHashMap::default();
-        lvln_records.insert(parent_fk, parent.clone());
-        let npc_template_lvlns = FxHashMap::default();
-        let creature_lvlns = FxHashSet::from_iter([parent_fk]);
+            let mut lvln_records = FxHashMap::default();
+            lvln_records.insert(parent_fk, parent.clone());
+            let npc_template_lvlns = FxHashMap::default();
+            let creature_lvlns = FxHashSet::from_iter([parent_fk]);
 
-        let changed = normalize_lvln_record(
-            &mut parent,
-            &lvln_records,
-            &npc_template_lvlns,
-            &creature_lvlns,
-            &[],
-            "Out.esm",
-            &interner,
-        );
+            let changed = normalize_lvln_record(
+                &mut parent,
+                &lvln_records,
+                &npc_template_lvlns,
+                &creature_lvlns,
+                &[],
+                "Out.esm",
+                &interner,
+            );
 
-        assert!(!changed);
-        assert_eq!(
-            lvln_entry_refs(&parent, &[], "Out.esm", &interner),
-            vec![template_npc_fk]
-        );
+            assert!(!changed);
+            assert_eq!(
+                lvln_entry_refs(&parent, &[], "Out.esm", &interner),
+                vec![template_npc_fk]
+            );
+        }
     }
 
     #[test]
     fn caps_flattened_lvlo_entries_to_llct_capacity() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let parent_fk = fk(0x0100, "Out.esm", &interner);
         let child_fk = fk(0x0200, "Out.esm", &interner);
         let bad_npc_fk = fk(0x0300, "Out.esm", &interner);
@@ -1170,62 +1374,61 @@ mod tests {
             .find(|entry| entry.sig.as_str() == "LLCT")
             .map(|entry| &entry.value);
         assert_eq!(llct, Some(&FieldValue::Uint(MAX_LVLO_ENTRIES as u64)));
-    }
 
-    #[test]
-    fn flattens_struct_decoded_lvln_and_preserves_uint_level_count() {
-        let mut interner = StringInterner::new();
-        let parent_fk = fk(0x0100, "Out.esm", &interner);
-        let child_fk = fk(0x0200, "Out.esm", &interner);
-        let bad_npc_fk = fk(0x0300, "Out.esm", &interner);
-        let good_npc_fk = fk(0x0400, "Out.esm", &interner);
+        {
+            let interner = StringInterner::new();
+            let parent_fk = fk(0x0100, "Out.esm", &interner);
+            let child_fk = fk(0x0200, "Out.esm", &interner);
+            let bad_npc_fk = fk(0x0300, "Out.esm", &interner);
+            let good_npc_fk = fk(0x0400, "Out.esm", &interner);
 
-        let mut parent = record("LVLN", 0x0100, &interner);
-        push_llct(&mut parent, 1);
-        push_lvlo_struct(&mut parent, 5, bad_npc_fk, 2, &interner);
+            let mut parent = record("LVLN", 0x0100, &interner);
+            push_llct(&mut parent, 1);
+            push_lvlo_struct(&mut parent, 5, bad_npc_fk, 2, &interner);
 
-        let mut child = record("LVLN", 0x0200, &interner);
-        push_llct(&mut child, 1);
-        push_lvlo_struct(&mut child, 10, good_npc_fk, 3, &interner);
+            let mut child = record("LVLN", 0x0200, &interner);
+            push_llct(&mut child, 1);
+            push_lvlo_struct(&mut child, 10, good_npc_fk, 3, &interner);
 
-        let mut lvln_records = FxHashMap::default();
-        lvln_records.insert(parent_fk, parent.clone());
-        lvln_records.insert(child_fk, child);
-        let mut npc_template_lvlns = FxHashMap::default();
-        npc_template_lvlns.insert(bad_npc_fk, vec![child_fk]);
-        let creature_lvlns = FxHashSet::from_iter([parent_fk, child_fk]);
+            let mut lvln_records = FxHashMap::default();
+            lvln_records.insert(parent_fk, parent.clone());
+            lvln_records.insert(child_fk, child);
+            let mut npc_template_lvlns = FxHashMap::default();
+            npc_template_lvlns.insert(bad_npc_fk, vec![child_fk]);
+            let creature_lvlns = FxHashSet::from_iter([parent_fk, child_fk]);
 
-        let changed = normalize_lvln_record(
-            &mut parent,
-            &lvln_records,
-            &npc_template_lvlns,
-            &creature_lvlns,
-            &[],
-            "Out.esm",
-            &interner,
-        );
+            let changed = normalize_lvln_record(
+                &mut parent,
+                &lvln_records,
+                &npc_template_lvlns,
+                &creature_lvlns,
+                &[],
+                "Out.esm",
+                &interner,
+            );
 
-        assert!(changed);
-        assert_eq!(
-            lvln_entry_refs(&parent, &[], "Out.esm", &interner),
-            vec![good_npc_fk]
-        );
-        let lvlo = parent
-            .fields
-            .iter()
-            .find(|entry| entry.sig.as_str() == "LVLO")
-            .expect("flattened LVLO");
-        let FieldValue::Struct(fields) = &lvlo.value else {
-            panic!("expected structured LVLO");
-        };
-        assert_eq!(
-            named_struct_value(fields, "Level", &interner),
-            Some(&FieldValue::Uint(10))
-        );
-        assert_eq!(
-            named_struct_value(fields, "Count", &interner),
-            Some(&FieldValue::Uint(6))
-        );
+            assert!(changed);
+            assert_eq!(
+                lvln_entry_refs(&parent, &[], "Out.esm", &interner),
+                vec![good_npc_fk]
+            );
+            let lvlo = parent
+                .fields
+                .iter()
+                .find(|entry| entry.sig.as_str() == "LVLO")
+                .expect("flattened LVLO");
+            let FieldValue::Struct(fields) = &lvlo.value else {
+                panic!("expected structured LVLO");
+            };
+            assert_eq!(
+                named_struct_value(fields, "Level", &interner),
+                Some(&FieldValue::Uint(10))
+            );
+            assert_eq!(
+                named_struct_value(fields, "Count", &interner),
+                Some(&FieldValue::Uint(6))
+            );
+        }
     }
 
     #[test]
@@ -1278,51 +1481,50 @@ mod tests {
                 vec![concrete_npc_fk]
             );
         }
-    }
 
-    #[test]
-    fn worklist_returns_convergence_failure_for_three_node_cycle() {
-        let interner = StringInterner::new();
-        let a_fk = fk(0x0100, "Out.esm", &interner);
-        let b_fk = fk(0x0200, "Out.esm", &interner);
-        let c_fk = fk(0x0300, "Out.esm", &interner);
+        {
+            let interner = StringInterner::new();
+            let a_fk = fk(0x0100, "Out.esm", &interner);
+            let b_fk = fk(0x0200, "Out.esm", &interner);
+            let c_fk = fk(0x0300, "Out.esm", &interner);
 
-        let mut a = record("LVLN", a_fk.local, &interner);
-        push_lvlo(&mut a, 1, 0x0100_0200, 1);
-        let mut b = record("LVLN", b_fk.local, &interner);
-        push_lvlo(&mut b, 1, 0x0100_0300, 1);
-        let mut c = record("LVLN", c_fk.local, &interner);
-        push_lvlo(&mut c, 1, 0x0100_0100, 1);
+            let mut a = record("LVLN", a_fk.local, &interner);
+            push_lvlo(&mut a, 1, 0x0100_0200, 1);
+            let mut b = record("LVLN", b_fk.local, &interner);
+            push_lvlo(&mut b, 1, 0x0100_0300, 1);
+            let mut c = record("LVLN", c_fk.local, &interner);
+            push_lvlo(&mut c, 1, 0x0100_0100, 1);
 
-        let mut lvln_records = FxHashMap::from_iter([(a_fk, a), (b_fk, b), (c_fk, c)]);
-        let npc_template_lvlns = FxHashMap::default();
-        let creature_lvlns = FxHashSet::from_iter([a_fk, b_fk, c_fk]);
-        let mut applied_waves = 0usize;
+            let mut lvln_records = FxHashMap::from_iter([(a_fk, a), (b_fk, b), (c_fk, c)]);
+            let npc_template_lvlns = FxHashMap::default();
+            let creature_lvlns = FxHashSet::from_iter([a_fk, b_fk, c_fk]);
+            let mut applied_waves = 0usize;
 
-        let result = converge_lvln_worklist(
-            "normalize_creature_lvln_template_chains",
-            &mut lvln_records,
-            &npc_template_lvlns,
-            &creature_lvlns,
-            &[],
-            "Out.esm",
-            &interner,
-            |_changed_fks, changed_records, lvln_records| {
-                applied_waves += 1;
-                let records_changed = changed_records.len();
-                for record in changed_records {
-                    lvln_records.insert(record.form_key, record);
-                }
-                Ok(records_changed)
-            },
-        );
+            let result = converge_lvln_worklist(
+                "normalize_creature_lvln_template_chains",
+                &mut lvln_records,
+                &npc_template_lvlns,
+                &creature_lvlns,
+                &[],
+                "Out.esm",
+                &interner,
+                |_changed_fks, changed_records, lvln_records| {
+                    applied_waves += 1;
+                    let records_changed = changed_records.len();
+                    for record in changed_records {
+                        lvln_records.insert(record.form_key, record);
+                    }
+                    Ok(records_changed)
+                },
+            );
 
-        assert!(matches!(
-            result,
-            Err(FixupError::ConvergenceFailure(
-                "normalize_creature_lvln_template_chains"
-            ))
-        ));
-        assert_eq!(applied_waves, MAX_CONVERGENCE_WAVES + 1);
+            assert!(matches!(
+                result,
+                Err(FixupError::ConvergenceFailure(
+                    "normalize_creature_lvln_template_chains"
+                ))
+            ));
+            assert_eq!(applied_waves, MAX_CONVERGENCE_WAVES + 1);
+        }
     }
 }

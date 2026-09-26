@@ -18,8 +18,6 @@
 
 use std::path::Path;
 
-use serde_json::Value as JsonValue;
-
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 
 pub struct BuildEspPhase;

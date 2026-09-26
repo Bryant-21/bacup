@@ -2,9 +2,6 @@ Event OnAliasInit()
     PlayerRef = GetActorReference()
     BigFishQuestInstance = BigFishInASmallPond
     RemoveAllInventoryEventFilters()
-    If isAFish != None
-        AddInventoryEventFilter(isAFish)
-    EndIf
     If PlayerRef != None
         chosenRegionInt = PlayerRef.GetValue(chosenRegionAV) as Int
         fishCaught = PlayerRef.GetValue(FishCaughtAV)
@@ -16,29 +13,37 @@ Event OnAliasShutdown()
 EndEvent
 
 Event OnItemAdded(Form akBaseItem, Int aiItemCount, ObjectReference akItemReference, ObjectReference akSourceContainer)
+EndEvent
+
+Event OnPlayerLoadGame()
+    RemoveAllInventoryEventFilters()
+EndEvent
+
+Function OnFishingCatch(Int aiItemCount, Int aiRegionMask)
     If PlayerRef == None
         PlayerRef = GetActorReference()
     EndIf
     If BigFishQuestInstance == None
         BigFishQuestInstance = BigFishInASmallPond
     EndIf
-    If PlayerRef == None || BigFishQuestInstance == None || akBaseItem == None || isAFish == None
+    If PlayerRef == None || BigFishQuestInstance == None || !BigFishQuestInstance.IsRunning() || aiItemCount <= 0
         Return
     EndIf
     If BigFishQuestInstance.GetStage() < canFishNowStage || BigFishQuestInstance.IsStageDone(allFishCaughtStage)
         Return
     EndIf
-    If !akBaseItem.HasKeyword(isAFish)
-        Return
-    EndIf
-
     chosenRegionInt = PlayerRef.GetValue(chosenRegionAV) as Int
     If chosenRegionInt < 0 || regionHierarchyKeywords == None || chosenRegionInt >= regionHierarchyKeywords.Length
         Return
     EndIf
 
-    Location currentLocation = PlayerRef.GetCurrentLocation()
-    If currentLocation == None || regionHierarchyKeywords[chosenRegionInt] == None || !currentLocation.HasKeyword(regionHierarchyKeywords[chosenRegionInt])
+    Int regionBit = 1
+    Int index = 0
+    While index < chosenRegionInt
+        regionBit *= 2
+        index += 1
+    EndWhile
+    If (aiRegionMask / regionBit) % 2 == 0
         Return
     EndIf
 
@@ -47,4 +52,4 @@ Event OnItemAdded(Form akBaseItem, Int aiItemCount, ObjectReference akItemRefere
     If fishCaught >= totalRequiredFish
         BigFishQuestInstance.SetStage(allFishCaughtStage)
     EndIf
-EndEvent
+EndFunction

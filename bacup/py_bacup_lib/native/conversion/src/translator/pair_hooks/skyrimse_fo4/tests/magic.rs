@@ -337,7 +337,7 @@ fn jzargo_assert_form(value: &FieldValue, local: u32, plugin: &str, interner: &S
 }
 
 #[test]
-fn exact_source_fixture_matches_authoritative_aimed_concentration_shape() {
+fn source_fixtures_match_shape_and_scroll_lowers_to_aid() {
     let interner = StringInterner::new();
     let inner_spell = jzargo_inner_spell_source(&interner);
     let inner_effect = jzargo_inner_effect_source(&interner);
@@ -364,10 +364,7 @@ fn exact_source_fixture_matches_authoritative_aimed_concentration_shape() {
         "Skyrim.esm",
         &interner,
     );
-}
 
-#[test]
-fn lowers_scroll_fixture_to_one_effect_fo4_aid_consumable() {
     let interner = StringInterner::new();
     let mut record = jzargo_scroll_source(&interner);
 
@@ -508,7 +505,7 @@ fn lowers_fixture_spell_and_effect_chain_to_fo4_delivery() {
 }
 
 #[test]
-fn default_pair_hook_lowers_supported_magic_before_generic_translation() {
+fn default_pair_hook_lowers_supported_magic_like_direct_lowering() {
     let interner = StringInterner::new();
     let mut record = jzargo_scroll_source(&interner);
     jzargo_push(
@@ -529,10 +526,7 @@ fn default_pair_hook_lowers_supported_magic_before_generic_translation() {
         &interner,
     );
     assert!(record.fields.iter().any(|field| field.sig.0 == *b"VMAD"));
-}
 
-#[test]
-fn default_pair_hook_matches_direct_lowering_for_every_supported_magic_shape() {
     let interner = StringInterner::new();
     let sources = [
         jzargo_scroll_source(&interner),
@@ -558,7 +552,7 @@ fn default_pair_hook_matches_direct_lowering_for_every_supported_magic_shape() {
 }
 
 #[test]
-fn routes_unclassified_skyrim_spells_through_safe_fallback() {
+fn routes_unclassified_spells_scrolls_and_shouts_safely() {
     let interner = StringInterner::new();
     let mut record = jzargo_record(&interner, "SPEL", 0x012345, "UnrelatedSpell");
     jzargo_push(
@@ -581,10 +575,7 @@ fn routes_unclassified_skyrim_spells_through_safe_fallback() {
         &FieldValue::Uint(1)
     );
     assert!(record.fields.iter().any(|field| field.sig.0 == *b"VMAD"));
-}
 
-#[test]
-fn routes_unclassified_scrolls_and_shouts_to_fo4_record_types() {
     let interner = StringInterner::new();
     let mut scroll = jzargo_scroll_source(&interner);
     let second_effect = jzargo_source_form(&scroll, 0x012345);

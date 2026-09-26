@@ -222,6 +222,7 @@ fn fo4_dalc_yplus(profile: WeatherProfile) -> &'static [[u8; 3]; 8] {
 }
 
 fn weather_profile(editor_id: &str) -> WeatherProfile {
+    let has_clear_word = contains_word_start(editor_id, "clear");
     let editor_id = editor_id.to_ascii_lowercase();
     if editor_id.contains("off") {
         WeatherProfile::None
@@ -235,10 +236,12 @@ fn weather_profile(editor_id: &str) -> WeatherProfile {
         WeatherProfile::Fog
     } else if contains_any(&editor_id, &["misty", "pollen", "mothman"]) {
         WeatherProfile::Misty
-    } else if contains_any(
-        &editor_id,
-        &["clear", "fireworks", "fallfoliage", "bigbloom", "aurora"],
-    ) {
+    } else if has_clear_word
+        || contains_any(
+            &editor_id,
+            &["fireworks", "fallfoliage", "bigbloom", "aurora"],
+        )
+    {
         WeatherProfile::Clear
     } else if contains_any(&editor_id, &["overcast", "storm", "snow"]) {
         WeatherProfile::Overcast
@@ -249,6 +252,16 @@ fn weather_profile(editor_id: &str) -> WeatherProfile {
 
 fn contains_any(value: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| value.contains(needle))
+}
+
+/// EditorIDs are CamelCase, so a word starts at an uppercase letter or after a
+/// non-letter; this keeps "Clear" from matching inside "Nuclear".
+fn contains_word_start(editor_id: &str, word: &str) -> bool {
+    let bytes = editor_id.as_bytes();
+    let lower = editor_id.to_ascii_lowercase();
+    lower.match_indices(word).any(|(at, _)| {
+        at == 0 || bytes[at].is_ascii_uppercase() || !bytes[at - 1].is_ascii_alphabetic()
+    })
 }
 
 fn fo4_height_ranges(profile: WeatherProfile) -> Option<HeightRanges> {
@@ -376,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn replaces_only_fo76_green_dalc_yplus_from_fo4_profile_donor() {
+    fn fo76_green_dalc_yplus_replaced_from_profile_donor() {
         let mut sunrise = vec![0; 32];
         sunrise[8..11].copy_from_slice(&[100, 100, 100]);
         let mut day = sunrise.clone();
@@ -389,10 +402,7 @@ mod tests {
         assert_eq!(&record.subrecords[2].data[8..11], &[82, 96, 111]);
         assert!(record.raw_payload.is_none());
         assert!(!normalize_weather_record(&mut record));
-    }
 
-    #[test]
-    fn selects_dalc_donor_by_weather_profile() {
         for (profile, expected) in [
             (WeatherProfile::None, [82, 96, 111]),
             (WeatherProfile::Clear, [82, 96, 111]),
@@ -410,10 +420,16 @@ mod tests {
             assert!(normalize_dalc_yplus(&mut dalc, profile, 1));
             assert_eq!(&dalc[8..11], &expected);
         }
+
+        let mut record = weather("ATX_Weather_Clear", vec![0; 28], &[6_000.0; 6]);
+        record.subrecords[2].data = Bytes::from(vec![0; 15]);
+
+        assert!(!normalize_weather_record(&mut record));
+        assert!(record.raw_payload.is_some());
     }
 
     #[test]
-    fn floors_only_clear_weather_near_and_far_distances() {
+    fn clear_weather_fog_distances_are_floored_never_lowered() {
         let mut record = weather(
             "NewWeatherClear_i",
             vec![0; 29],
@@ -425,10 +441,7 @@ mod tests {
             fog_values(&record),
             vec![6_000.0, 600_000.0, 6_000.0, 600_000.0, 1.0, 0.5]
         );
-    }
 
-    #[test]
-    fn clear_weather_floors_never_lower_existing_distances() {
         let mut record = weather(
             "Shelters_Weather_Flatlands_Clear",
             vec![0; 29],
@@ -455,15 +468,6 @@ mod tests {
             fog_values(&record),
             vec![450.0, 4_500.0, 450.0, 4_500.0, 1.0, 0.5]
         );
-    }
-
-    #[test]
-    fn ignores_short_dalc_and_fnam_payloads() {
-        let mut record = weather("ATX_Weather_Clear", vec![0; 28], &[6_000.0; 6]);
-        record.subrecords[2].data = Bytes::from(vec![0; 15]);
-
-        assert!(!normalize_weather_record(&mut record));
-        assert!(record.raw_payload.is_some());
     }
 
     #[test]

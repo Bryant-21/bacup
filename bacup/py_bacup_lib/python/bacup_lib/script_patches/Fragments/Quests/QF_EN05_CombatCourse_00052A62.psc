@@ -15,11 +15,73 @@ EndFunction
 ; The wave data lives on the sibling DefaultQuestEncounterWaveScript bound to
 ; this same quest; each wave is started explicitly from its stage.
 Function EN05CBTF_StartWave(Int aiWaveIndex)
-    DefaultQuestEncounterWaveScript waves = (Self as Quest) as DefaultQuestEncounterWaveScript
-    If waves != None
-        waves.StartLocalEncounterWave(aiWaveIndex)
+    Int startStage = 20
+    Int stopStage = 30
+    If aiWaveIndex == 1
+        startStage = 32
+        stopStage = 40
+    ElseIf aiWaveIndex == 2
+        startStage = 42
+        stopStage = 100
     EndIf
+    If !IsRunning() || !IsStageDone(startStage) || GetStage() >= stopStage
+        CancelTimer(8760 + aiWaveIndex)
+        Return
+    EndIf
+    B21:LocalEncounterMaterializer materializer = (Self as Quest) as B21:LocalEncounterMaterializer
+    If materializer != None
+        materializer.PrepareEligibleWaves()
+    EndIf
+    If materializer == None || !materializer.HasPreparedWave(aiWaveIndex)
+        StartTimer(5.0, 8760 + aiWaveIndex)
+        Return
+    EndIf
+    If aiWaveIndex == 2 && !materializer.HasPreparedWave(3)
+        StartTimer(5.0, 8760 + aiWaveIndex)
+        Return
+    EndIf
+    RefCollectionAlias enemies = GetAlias(6) as RefCollectionAlias
+    RefCollectionAlias boss = GetAlias(13) as RefCollectionAlias
+    DefaultQuestEncounterWaveScript waves = (Self as Quest) as DefaultQuestEncounterWaveScript
+    If enemies == None || enemies.GetCount() == 0 || waves == None
+        StartTimer(5.0, 8760 + aiWaveIndex)
+        Return
+    EndIf
+    If aiWaveIndex == 2 && (boss == None || boss.GetCount() == 0)
+        StartTimer(5.0, 8760 + aiWaveIndex)
+        Return
+    EndIf
+    waves.StartLocalEncounterWave(aiWaveIndex)
+    CancelTimer(8760 + aiWaveIndex)
 EndFunction
+
+Event OnQuestInit()
+    RegisterForRemoteEvent(Game.GetPlayer(), "OnPlayerLoadGame")
+EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    Int stageID = GetStage()
+    If stageID >= 42 && stageID < 100
+        EN05CBTF_StartWave(2)
+    ElseIf stageID >= 32 && stageID < 40
+        EN05CBTF_StartWave(1)
+    ElseIf stageID >= 20 && stageID < 30
+        EN05CBTF_StartWave(0)
+    EndIf
+EndEvent
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID >= 8760 && aiTimerID <= 8762
+        EN05CBTF_StartWave(aiTimerID - 8760)
+    EndIf
+EndEvent
+
+Event OnQuestShutdown()
+    CancelTimer(8760)
+    CancelTimer(8761)
+    CancelTimer(8762)
+    UnregisterForAllRemoteEvents()
+EndEvent
 
 Function Fragment_Stage_0010_Item_00()
     SetObjectiveDisplayed(10)

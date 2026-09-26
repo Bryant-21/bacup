@@ -299,18 +299,59 @@ Function Fragment_Stage_0700_Item_00()
 	FS01_SetMajorCheckpoint(700)
 	SetObjectiveCompleted(600, True)
 	SetObjectiveDisplayed(700, True, True)
+	FS01_RegisterSDSTerminal()
 EndFunction
 
-Function Fragment_Stage_0800_Item_00()
-	Actor playerRef = FS01_GetPlayer()
-	SetObjectiveCompleted(700, True)
-	Quest reassembly = Game.GetFormFromFile(0x004E0719, "SeventySix.esm") as Quest
-	If playerRef != None && FS02_MQ_Overdue_QuestStartKeyword != None
-		If reassembly == None || (!reassembly.IsRunning() && !reassembly.GetStageDone(1000))
-			FS02_MQ_Overdue_QuestStartKeyword.SendStoryEventAndWait(None, playerRef, playerRef)
-		EndIf
+; Objective 700 asks for ">>Motors Upgraded" (menu item 2) on the Scorched
+; Detection terminal, but the SDS alias only maps item 1 (stage 220) and the TERM
+; carries no fragment, so selecting it did nothing.
+Function FS01_RegisterSDSTerminal()
+	ReferenceAlias sdsAlias = GetAlias(55) as ReferenceAlias
+	ObjectReference sdsRef
+	If sdsAlias != None
+		sdsRef = sdsAlias.GetReference()
+	EndIf
+	If sdsRef != None && sdsRef.GetBaseObject() as Terminal != None
+		RegisterForRemoteEvent(sdsRef.GetBaseObject() as Terminal, "OnMenuItemRun")
 	EndIf
 EndFunction
+
+Event Terminal.OnMenuItemRun(Terminal akSender, Int auiMenuItemID, ObjectReference akTerminalRef)
+	If auiMenuItemID != 2 || !IsStageDone(700) || IsStageDone(800)
+		Return
+	EndIf
+	ReferenceAlias sdsAlias = GetAlias(55) as ReferenceAlias
+	If sdsAlias == None || sdsAlias.GetReference() != akTerminalRef
+		Return
+	EndIf
+	SetStage(800)
+EndEvent
+
+Function Fragment_Stage_0800_Item_00()
+	SetObjectiveCompleted(700, True)
+	If !FS01_TryStartReassembly()
+		StartTimer(5.0, 800)
+	EndIf
+EndFunction
+
+Bool Function FS01_TryStartReassembly()
+	Quest reassembly = Game.GetFormFromFile(0x004E0719, "SeventySix.esm") as Quest
+	If reassembly != None && (reassembly.IsRunning() || reassembly.IsCompleted())
+		Return True
+	EndIf
+	Actor playerRef = FS01_GetPlayer()
+	If reassembly == None || playerRef == None || FS02_MQ_Overdue_QuestStartKeyword == None
+		Return False
+	EndIf
+	Bool accepted = FS02_MQ_Overdue_QuestStartKeyword.SendStoryEventAndWait(None, playerRef, playerRef)
+	Return accepted || reassembly.IsRunning() || reassembly.IsCompleted()
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+	If aiTimerID == 800 && IsRunning() && GetStageDone(800) && !GetStageDone(1000) && !FS01_TryStartReassembly()
+		StartTimer(5.0, 800)
+	EndIf
+EndEvent
 
 Function Fragment_Stage_1000_Item_00()
 	FS01_SetPlayerValue(FS01_Warn_QuestCompletedValue, 1.0)

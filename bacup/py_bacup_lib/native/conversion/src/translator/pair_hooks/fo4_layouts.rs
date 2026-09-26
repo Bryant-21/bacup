@@ -1397,10 +1397,15 @@ fn default_fo4_watr_dnam() -> Vec<u8> {
         (52, 0.402_199_98),         // normal magnitude
         (56, 1.0),                  // shallow normal falloff
         (60, 0.997_394),            // deep normal falloff
+        (64, 0.206_5),              // reflectivity amount
+        (68, 0.061_6),              // fresnel amount
         (72, 0.996_331_3),          // surface effect falloff
+        (100, 2430.0),              // sun specular power
         (104, 4.858_999_7),         // sun specular magnitude
         (108, 10000.0),             // sun sparkle power
         (112, 3.626_999_9),         // sun sparkle magnitude
+        (116, 10000.0),             // interior specular radius
+        (120, 10.0),                // interior specular brightness
         (124, 211.0),               // interior specular power
         // Layer UV scales stay vanilla: they are calibrated to the noise
         // texture, and NAM2..NAM4 below ship FO4's textures, not the legacy
@@ -1416,6 +1421,7 @@ fn default_fo4_watr_dnam() -> Vec<u8> {
     ] {
         out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
+    out[96..99].copy_from_slice(&[64, 85, 79]); // reflection colour
     out[192..195].copy_from_slice(&[106, 82, 64]); // silt light colour
     out[196..199].copy_from_slice(&[53, 49, 36]); // silt dark colour
     out[200] = 1; // screen space reflections
@@ -1581,6 +1587,146 @@ pub(crate) fn normalize_legacy_watr(record: &mut Record, interner: &StringIntern
     }
 }
 
+/// FO76 `WATR.DNAM` is 148 bytes in a layout of its own, not a prefix of
+/// FO4's 201: shallow and deep colours are float RGB; the colour/alpha depth
+/// ranges, reflectivity, fresnel, reflection colour, the specular block and
+/// silt are absent; a fog density (offset 28) and a trailing constant
+/// (offset 144) have no FO4 slot. Carried verbatim, FO4 reads fresnel 0.85,
+/// sun specular power ~0.01 and zero UV scales out of it — a white sheen on
+/// every converted water. Calibrated on the two waters both games ship at the
+/// same FormID (`1643CE ExtTroughWater`, `1E61E8 IntTroughWater`), where every
+/// float mapped below is bit-identical across the pair.
+const FO76_WATR_DNAM_SIZE: usize = 148;
+
+/// `(fo76_offset, fo4_offset)` for floats with the same meaning in both.
+const FO76_TO_FO4_WATR_FLOATS: &[(usize, usize)] = &[
+    (0, 0),     // fog depth amount
+    (36, 40),   // under-water fog amount
+    (40, 44),   // under-water near fog
+    (44, 48),   // under-water far fog
+    (48, 52),   // normal magnitude
+    (52, 56),   // shallow normal falloff
+    (56, 60),   // deep normal falloff
+    (60, 72),   // surface effect falloff
+    (64, 76),   // displacement simulator force
+    (68, 80),   // displacement simulator velocity
+    (72, 84),   // displacement simulator falloff
+    (76, 88),   // displacement simulator dampener
+    (80, 92),   // displacement simulator starting size
+    (84, 128),  // noise layer 1 wind direction
+    (88, 132),  // noise layer 2 wind direction
+    (92, 136),  // noise layer 3 wind direction
+    (96, 140),  // noise layer 1 wind speed
+    (100, 144), // noise layer 2 wind speed
+    (104, 148), // noise layer 3 wind speed
+    (108, 152), // noise layer 1 amplitude scale
+    (112, 156), // noise layer 2 amplitude scale
+    (116, 160), // noise layer 3 amplitude scale
+    (120, 164), // noise layer 1 uv scale
+    (124, 168), // noise layer 2 uv scale
+    (128, 172), // noise layer 3 uv scale
+    (132, 176), // noise layer 1 noise falloff
+    (136, 180), // noise layer 2 noise falloff
+    (140, 184), // noise layer 3 noise falloff
+];
+
+fn float_rgb_to_bytes(
+    source: &[u8],
+    source_offset: usize,
+    target: &mut [u8],
+    target_offset: usize,
+) {
+    for channel in 0..3 {
+        let Some(value) = read_f32(source, source_offset + channel * 4) else {
+            return;
+        };
+        target[target_offset + channel] = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    }
+}
+
+fn build_fo4_watr_dnam_from_fo76(source: Option<&[u8]>) -> Vec<u8> {
+    let mut target = default_fo4_watr_dnam();
+    let Some(source) = source.filter(|bytes| bytes.len() == FO76_WATR_DNAM_SIZE) else {
+        return target;
+    };
+
+    for &(source_offset, target_offset) in FO76_TO_FO4_WATR_FLOATS {
+        if let Some(value) = read_f32(source, source_offset) {
+            write_f32(&mut target, target_offset, value);
+        }
+    }
+
+    // FO76 tunes its float colours against the fog density at offset 28, which
+    // FO4 has no slot for; scaling them straight to bytes keeps each water's
+    // tint and lands in the range vanilla FO4 waters use.
+    float_rgb_to_bytes(source, 4, &mut target, 4); // shallow colour
+    float_rgb_to_bytes(source, 16, &mut target, 8); // deep colour
+    copy_rgb(source, 32, &mut target, 36); // under-water colour, bytes in both
+    // FO76 has no reflection colour; the under-water tint keeps blood red and
+    // toxic water orange instead of one shared constant.
+    copy_rgb(source, 32, &mut target, 96);
+
+    target
+}
+
+/// FO4's water shader reads its three noise layers as RGB tangent-space normal
+/// maps with a Z channel: every vanilla map is R8G8B8A8 with B≈246 and A=255.
+/// FO76 points the same slots at its `_n` maps, which ship as two-channel BC5
+/// with no Z, so each slot is re-pointed at FO4's stock map of the same name;
+/// a map FO4 does not ship falls back to `DefaultWater`.
+const FO4_STOCK_WATER_NOISE_MAPS: [&str; 3] =
+    ["DefaultWater", "DefaultWaterTile", "ChurningWaterTile"];
+
+fn fo4_water_noise_path(source: &str) -> String {
+    let file = source.rsplit(['\\', '/']).next().unwrap_or(source);
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    let stem = stem
+        .strip_suffix("_n")
+        .or_else(|| stem.strip_suffix("_N"))
+        .unwrap_or(stem);
+    let name = FO4_STOCK_WATER_NOISE_MAPS
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(stem))
+        .unwrap_or(&FO4_STOCK_WATER_NOISE_MAPS[0]);
+    format!("data\\Textures\\Water\\{name}.dds")
+}
+
+fn string_value<'a>(value: &'a FieldValue, interner: &'a StringInterner) -> Option<&'a str> {
+    let text = match value {
+        FieldValue::String(sym) => interner.resolve(*sym)?,
+        FieldValue::Bytes(bytes) => std::str::from_utf8(bytes).ok()?,
+        _ => return None,
+    };
+    Some(text.trim_matches('\0'))
+}
+
+/// Rebuild an FO76 `WATR` into Fallout 4's contract.
+pub(crate) fn normalize_fo76_watr(record: &mut Record, interner: &StringInterner) {
+    if record.sig.0 != *b"WATR" {
+        return;
+    }
+    if let Some(entry) = record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"DNAM")
+    {
+        // Already-FO4-shaped input (re-run) must not be rebuilt from its own
+        // output.
+        if !matches!(raw(&entry.value), Some(bytes) if bytes.len() == FO4_WATR_DNAM_SIZE) {
+            entry.value = raw_value(build_fo4_watr_dnam_from_fo76(raw(&entry.value)));
+        }
+    }
+    for entry in &mut record.fields {
+        if !matches!(entry.sig.0, sig if sig == *b"NAM2" || sig == *b"NAM3" || sig == *b"NAM4") {
+            continue;
+        }
+        let Some(source) = string_value(&entry.value, interner) else {
+            continue;
+        };
+        entry.value = FieldValue::String(interner.intern(&fo4_water_noise_path(source)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1625,7 +1771,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_txst_gains_spec_slot_derived_from_the_normal() {
+    fn txst_smooth_spec_slot_follows_source_family() {
         let interner = StringInterner::new();
         let mut txst = txst_with_slots(
             &interner,
@@ -1642,10 +1788,7 @@ mod tests {
             Some("architecture\\suburban\\suburbanrubble01_s.dds"),
             "FO4 reads the smooth/spec map from TX07, not TX02"
         );
-    }
 
-    #[test]
-    fn legacy_txst_drops_the_env_mask_that_never_ships() {
         // FNV/FO3 env masks are baked into `_s.R` by the texture engine and are
         // never written as standalone textures, so carrying TX02 through leaves
         // a dangling ref in an unrelated FO4 slot.
@@ -1666,10 +1809,7 @@ mod tests {
             slot(&txst, *b"TX07", &interner),
             Some("weapons\\2handhandle\\gatlinglaser_s.dds")
         );
-    }
 
-    #[test]
-    fn skyrim_txst_keeps_its_own_spec_map_and_env_mask() {
         let interner = StringInterner::new();
         let mut txst = txst_with_slots(
             &interner,
@@ -1693,10 +1833,7 @@ mod tests {
             Some("actors\\character\\female\\femalebody_1_sk.dds"),
             "Skyrim env masks do ship; only the legacy Fallout ones are dropped"
         );
-    }
 
-    #[test]
-    fn model_space_normals_yield_no_spec_slot() {
         // `_msn` carries no `_n` token, so there is no `_s` sibling to name.
         let interner = StringInterner::new();
         let mut txst = txst_with_slots(
@@ -1870,10 +2007,7 @@ mod tests {
         assert_eq!(&dnam[12..15], &[10, 20, 30]);
         assert_eq!(&dnam[16..20], &1.25_f32.to_le_bytes());
         assert_eq!(u32::from_le_bytes(dnam[145..149].try_into().unwrap()), 0x35);
-    }
 
-    #[test]
-    fn efsh_fo3_224_builds_the_same_complete_fo4_contract() {
         let interner = StringInterner::new();
         let mut source = vec![0_u8; 224];
         source[4..8].copy_from_slice(&5_u32.to_le_bytes());
@@ -2066,13 +2200,10 @@ mod tests {
     }
 
     #[test]
-    fn wthr_fnv_rebuilds_complete_fo4_required_contract() {
+    fn legacy_wthr_rebuilds_complete_fo4_required_contract() {
         let interner = StringInterner::new();
         assert_legacy_wthr_rebuild(legacy_wthr_fixture(&interner, 240), &interner);
-    }
 
-    #[test]
-    fn wthr_fo3_rebuilds_complete_fo4_required_contract() {
         let interner = StringInterner::new();
         assert_legacy_wthr_rebuild(legacy_wthr_fixture(&interner, 160), &interner);
     }
@@ -2145,7 +2276,7 @@ mod tests {
     }
 
     #[test]
-    fn wthr_fnv_reads_six_periods_per_cloud_layer() {
+    fn legacy_wthr_reads_source_period_counts() {
         let interner = StringInterner::new();
         let mut wthr = legacy_wthr_fixture(&interner, 240);
         set_field(&mut wthr, *b"PNAM", legacy_pnam(24));
@@ -2154,10 +2285,7 @@ mod tests {
 
         assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
         assert_four_layers_expand_to_fo4_periods(&wthr);
-    }
 
-    #[test]
-    fn wthr_fo3_reads_four_periods_per_cloud_layer() {
         let interner = StringInterner::new();
         let mut wthr = legacy_wthr_fixture(&interner, 160);
         set_field(&mut wthr, *b"PNAM", legacy_pnam(16));
@@ -2166,10 +2294,7 @@ mod tests {
 
         assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
         assert_four_layers_expand_to_fo4_periods(&wthr);
-    }
 
-    #[test]
-    fn wthr_fnv_reads_six_periods_per_weather_colour() {
         let interner = StringInterner::new();
         let mut wthr = legacy_wthr_fixture(&interner, 240);
         set_field(&mut wthr, *b"NAM0", legacy_nam0(24));
@@ -2178,10 +2303,7 @@ mod tests {
 
         assert_wthr_contract(&wthr, DEFAULT_CLOUD_ROWS);
         assert_ten_colours_expand_to_fo4_periods(&wthr);
-    }
 
-    #[test]
-    fn wthr_fo3_reads_four_periods_per_weather_colour() {
         let interner = StringInterner::new();
         let mut wthr = legacy_wthr_fixture(&interner, 160);
         set_field(&mut wthr, *b"NAM0", legacy_nam0(16));
@@ -2193,7 +2315,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_wthr_carries_cloud_layer_textures_and_disables_unused_layers() {
+    fn legacy_wthr_cloud_layers_carry_textures_and_neutral_defaults() {
         let interner = StringInterner::new();
         let mut wthr = legacy_wthr_fixture(&interner, 240);
         for (sig, path) in [
@@ -2224,10 +2346,7 @@ mod tests {
             u32::from_le_bytes(bytes(&wthr, b"NAM1").try_into().unwrap()),
             !0b1111_u32
         );
-    }
 
-    #[test]
-    fn legacy_wthr_defaults_clouds_to_visible_and_still() {
         let interner = StringInterner::new();
         let mut wthr = legacy_wthr_fixture(&interner, 240);
         wthr.fields
@@ -2365,7 +2484,7 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_proj_rebuilds_dnam_and_drops_legacy_nam2() {
+    fn skyrim_proj_rebuilds_dnam() {
         let interner = StringInterner::new();
         let mut source = vec![0_u8; 92];
         source[0..2].copy_from_slice(&0xffff_u16.to_le_bytes());
@@ -2395,10 +2514,7 @@ mod tests {
         }
         assert_eq!(u32::from_le_bytes(dnam[89..93].try_into().unwrap()), 0);
         assert!(!proj.fields.iter().any(|entry| entry.sig.0 == *b"NAM2"));
-    }
 
-    #[test]
-    fn skyrim_proj_preserves_shared_extended_types_aim_flag_and_sndr_refs() {
         let interner = StringInterner::new();
         for projectile_type in [16_u16, 32, 64] {
             let mut source = vec![0_u8; 92];
@@ -2445,6 +2561,16 @@ mod tests {
         normalize_efsh(&mut stat, SourceFamily::LegacyFallout, &interner);
         normalize_legacy_wthr(&mut stat, &interner);
         normalize_skyrim_proj(&mut stat);
+
+        assert_eq!(stat.fields, before);
+
+        let interner = StringInterner::new();
+        let mut stat = record("STAT", &interner);
+        push(&mut stat, *b"DNAM", vec![0_u8; FO76_WATR_DNAM_SIZE]);
+        push_str(&mut stat, *b"NAM2", "x_n.dds", &interner);
+        let before = stat.fields.clone();
+
+        normalize_fo76_watr(&mut stat, &interner);
 
         assert_eq!(stat.fields, before);
     }
@@ -2504,7 +2630,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_watr_dnam_relayouts_colours_out_of_the_float_slots() {
+    fn legacy_watr_dnam_relayouts_nv_clean_water() {
         let interner = StringInterner::new();
         assert_eq!(NV_CLEAN_WATER_DNAM.len(), LEGACY_WATR_DNAM_SIZE);
         let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
@@ -2522,10 +2648,7 @@ mod tests {
         // Under-water colour is seeded from the legacy deep colour so each
         // water keeps its tint rather than taking one shared constant.
         assert_eq!(&dnam[36..39], &[22, 41, 34], "under-water colour");
-    }
 
-    #[test]
-    fn legacy_watr_underwater_fog_is_no_longer_denormal() {
         let interner = StringInterner::new();
         let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
 
@@ -2538,10 +2661,7 @@ mod tests {
         assert_eq!(f32_at(dnam, 44), -2500.0, "under-water near fog");
         assert_eq!(f32_at(dnam, 48), 5500.0, "under-water far fog");
         assert!(f32_at(dnam, 52).is_normal(), "normal magnitude");
-    }
 
-    #[test]
-    fn legacy_watr_carries_shared_scalar_fields_to_fo4_offsets() {
         let interner = StringInterner::new();
         let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
 
@@ -2556,7 +2676,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_watr_gains_the_fo4_subrecord_contract() {
+    fn legacy_watr_gains_the_fo4_subrecord_contract_idempotently() {
         let interner = StringInterner::new();
         let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
 
@@ -2596,10 +2716,7 @@ mod tests {
             slot(&watr, *b"NAM3", &interner),
             Some("data\\Textures\\Water\\ChurningWaterTile.dds")
         );
-    }
 
-    #[test]
-    fn legacy_watr_normalization_is_idempotent() {
         let interner = StringInterner::new();
         let mut watr = legacy_watr(&interner, NV_CLEAN_WATER_DNAM);
 
@@ -2611,7 +2728,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_watr_without_usable_dnam_still_emits_the_fo4_shape() {
+    fn legacy_watr_degenerate_dnam_still_emits_the_fo4_shape() {
         let interner = StringInterner::new();
         // A malformed/absent source DNAM must still yield valid FO4 water
         // rather than a zeroed struct, which renders as invisible flat water.
@@ -2623,10 +2740,7 @@ mod tests {
         assert_eq!(dnam.len(), FO4_WATR_DNAM_SIZE);
         assert_eq!(f32_at(dnam, 24), 1.0, "deep alpha");
         assert_eq!(dnam[200], 1, "screen space reflections");
-    }
 
-    #[test]
-    fn legacy_watr_short_dnam_maps_what_is_present() {
         let interner = StringInterner::new();
         // 184-byte records exist in FalloutNV.esm: the three trailing
         // amplitude scales are absent and must not be read out of bounds.
@@ -2640,10 +2754,7 @@ mod tests {
         // Layer 1 amplitude (legacy offset 184) is past the end; the vanilla
         // default of 0.0 is left in place rather than reading garbage.
         assert_eq!(f32_at(dnam, 152), 0.0, "absent amplitude stays default");
-    }
 
-    #[test]
-    fn legacy_watr_clamps_a_positive_near_fog_plane() {
         let interner = StringInterner::new();
         let mut source = NV_CLEAN_WATER_DNAM.to_vec();
         // A few legacy records store a positive near plane, which inverts the
@@ -2654,5 +2765,187 @@ mod tests {
         normalize_legacy_watr(&mut watr, &interner);
 
         assert_eq!(f32_at(bytes(&watr, b"DNAM"), 44), 0.0);
+    }
+
+    /// The real 148-byte `DNAM` of `SeventySix.esm:3865FA ExtClearWaterPuddle`,
+    /// the water under the puddle reported with a white sheen. Carried verbatim
+    /// into FO4's 201-byte layout it reads as fresnel 0.85 (offset 68), sun
+    /// specular power 0.0145 (offset 100) and zero UV scales (offset 164).
+    const FO76_CLEAR_PUDDLE_DNAM: &[u8] = b"\
+        \xff\xff\xab\x42\x8f\xc2\x75\x3e\xec\x51\x38\x3e\xcd\xcc\x4c\x3e\
+        \x96\x43\x0b\x3c\x0a\xd7\xa3\x3b\x99\xbb\x96\x3a\x14\xae\xe7\x3f\
+        \x50\x54\x3f\x00\x00\x00\x80\x3f\x00\x00\xc8\xc5\x00\x80\xa2\x44\
+        \xd3\x4d\x62\x3e\x00\x00\x80\x3f\x66\x66\x66\x3f\xa4\x70\x7d\x3f\
+        \xcd\xcc\xcc\x3d\x9a\x99\x59\x3f\xcd\xcc\x4c\x3f\x48\xe1\x7a\x3f\
+        \xcd\xcc\x4c\x3d\xb6\x73\x7a\x43\x6e\x92\x65\x43\x35\xde\x8c\x43\
+        \x68\x91\x6d\x3c\x68\x91\x6d\x3c\xa9\x13\xd0\x3c\x2a\x18\x55\x3f\
+        \xdf\xbe\x1e\x3f\x2b\x65\xd9\x3e\x00\x80\x35\x44\x00\x80\x8b\x43\
+        \x00\x00\x28\x43\x00\x00\x80\x45\x00\x00\x80\x45\x00\x00\x80\x45\
+        \x00\x00\x80\x3f";
+
+    /// Mirrors the field order of `SeventySix.esm:3865FA`.
+    fn fo76_watr(interner: &StringInterner, dnam: &[u8]) -> Record {
+        let mut watr = record("WATR", interner);
+        push(&mut watr, *b"ANAM", vec![100]);
+        push(&mut watr, *b"FNAM", vec![0]);
+        push(&mut watr, *b"DATA", Vec::new());
+        push(&mut watr, *b"DNAM", dnam.to_vec());
+        push(&mut watr, *b"GNAM", vec![0_u8; 12]);
+        push(&mut watr, *b"NAM0", vec![0_u8; 12]);
+        push(&mut watr, *b"NAM1", vec![0_u8; 12]);
+        push_str(
+            &mut watr,
+            *b"NAM2",
+            "data\\Textures\\Water\\DefaultWater_n.DDS",
+            interner,
+        );
+        push_str(
+            &mut watr,
+            *b"NAM3",
+            "data\\Textures\\Water\\ChurningWaterTile_n.DDS",
+            interner,
+        );
+        push_str(
+            &mut watr,
+            *b"NAM4",
+            "data\\Textures\\Water\\OceanWaves_n.DDS",
+            interner,
+        );
+        watr
+    }
+
+    #[test]
+    fn fo76_watr_dnam_relayouts_clear_puddle() {
+        let interner = StringInterner::new();
+        assert_eq!(FO76_CLEAR_PUDDLE_DNAM.len(), FO76_WATR_DNAM_SIZE);
+        let mut watr = fo76_watr(&interner, FO76_CLEAR_PUDDLE_DNAM);
+
+        normalize_fo76_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        assert_eq!(dnam.len(), FO4_WATR_DNAM_SIZE);
+        assert_eq!(f32_at(dnam, 0), 85.99999237060547, "fog depth amount");
+        assert_eq!(f32_at(dnam, 40), 1.0, "under-water fog amount");
+        assert_eq!(f32_at(dnam, 44), -6400.0, "under-water near fog");
+        assert_eq!(f32_at(dnam, 48), 1300.0, "under-water far fog");
+        assert_eq!(f32_at(dnam, 52), 0.22100000083446503, "normal magnitude");
+        assert_eq!(f32_at(dnam, 56), 1.0, "shallow normal falloff");
+        assert_eq!(f32_at(dnam, 60), 0.8999999761581421, "deep normal falloff");
+        assert_eq!(
+            f32_at(dnam, 72),
+            0.9900000095367432,
+            "surface effect falloff"
+        );
+        assert_eq!(f32_at(dnam, 76), 0.10000000149011612, "displacement force");
+        assert_eq!(
+            f32_at(dnam, 92),
+            0.05000000074505806,
+            "displacement start size"
+        );
+        assert_eq!(
+            f32_at(dnam, 128),
+            250.45199584960938,
+            "layer 1 wind direction"
+        );
+        assert_eq!(
+            f32_at(dnam, 136),
+            281.7359924316406,
+            "layer 3 wind direction"
+        );
+        assert_eq!(
+            f32_at(dnam, 140),
+            0.014499999582767487,
+            "layer 1 wind speed"
+        );
+        assert_eq!(f32_at(dnam, 152), 0.8323999643325806, "layer 1 amplitude");
+        assert_eq!(f32_at(dnam, 164), 726.0, "layer 1 uv scale");
+        assert_eq!(f32_at(dnam, 172), 168.0, "layer 3 uv scale");
+        assert_eq!(f32_at(dnam, 176), 4096.0, "layer 1 noise falloff");
+        assert_eq!(f32_at(dnam, 184), 4096.0, "layer 3 noise falloff");
+
+        let interner = StringInterner::new();
+        let mut watr = fo76_watr(&interner, FO76_CLEAR_PUDDLE_DNAM);
+
+        normalize_fo76_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        // The bug: FO4 read these three straight out of the FO76 bytes.
+        assert_ne!(
+            f32_at(dnam, 68),
+            0.8500000238418579,
+            "fresnel was FO76 disp velocity"
+        );
+        assert_eq!(f32_at(dnam, 68), 0.06159999966621399, "fresnel");
+        assert_ne!(
+            f32_at(dnam, 100),
+            0.014499999582767487,
+            "sun power was FO76 wind speed"
+        );
+        assert_eq!(f32_at(dnam, 100), 2430.0, "sun specular power");
+        assert_eq!(f32_at(dnam, 64), 0.20649999380111694, "reflectivity");
+        assert_eq!(f32_at(dnam, 116), 10000.0, "interior specular radius");
+        assert_eq!(f32_at(dnam, 120), 10.0, "interior specular brightness");
+        assert_eq!(f32_at(dnam, 12), 1.0, "colour shallow range");
+        assert_eq!(f32_at(dnam, 24), 1.0, "deep alpha");
+        assert_eq!(f32_at(dnam, 188), 1.0, "silt amount");
+        assert_eq!(dnam[200], 1, "screen space reflections");
+
+        let interner = StringInterner::new();
+        let mut watr = fo76_watr(&interner, FO76_CLEAR_PUDDLE_DNAM);
+
+        normalize_fo76_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        // FO76 stores shallow (0.24, 0.18, 0.2) and deep (0.0085, 0.005,
+        // 0.00115) as float RGB; FO4 read the shallow floats' bytes as the
+        // colours (143,194,117) and (236,81,56).
+        assert_eq!(&dnam[4..8], &[61, 46, 51, 0], "shallow colour");
+        assert_eq!(&dnam[8..12], &[2, 1, 0, 0], "deep colour");
+        // FO76 keeps the under-water colour as bytes at offset 32.
+        assert_eq!(&dnam[36..40], &[80, 84, 63, 0], "under-water colour");
+        // FO76 has no reflection colour; seed it from the under-water tint.
+        assert_eq!(&dnam[96..100], &[80, 84, 63, 0], "reflection colour");
+    }
+
+    #[test]
+    fn fo76_watr_stock_textures_idempotence_and_bad_dnam_size() {
+        let interner = StringInterner::new();
+        let mut watr = fo76_watr(&interner, FO76_CLEAR_PUDDLE_DNAM);
+
+        normalize_fo76_watr(&mut watr, &interner);
+
+        assert_eq!(
+            slot(&watr, *b"NAM2", &interner),
+            Some("data\\Textures\\Water\\DefaultWater.dds")
+        );
+        assert_eq!(
+            slot(&watr, *b"NAM3", &interner),
+            Some("data\\Textures\\Water\\ChurningWaterTile.dds")
+        );
+        // OceanWaves has no FO4 twin.
+        assert_eq!(
+            slot(&watr, *b"NAM4", &interner),
+            Some("data\\Textures\\Water\\DefaultWater.dds")
+        );
+
+        let interner = StringInterner::new();
+        let mut watr = fo76_watr(&interner, FO76_CLEAR_PUDDLE_DNAM);
+
+        normalize_fo76_watr(&mut watr, &interner);
+        let once = watr.fields.clone();
+        normalize_fo76_watr(&mut watr, &interner);
+
+        assert_eq!(watr.fields, once, "second pass must not rebuild output");
+
+        let interner = StringInterner::new();
+        let mut watr = fo76_watr(&interner, &[0_u8; 24]);
+
+        normalize_fo76_watr(&mut watr, &interner);
+
+        let dnam = bytes(&watr, b"DNAM");
+        assert_eq!(dnam.len(), FO4_WATR_DNAM_SIZE);
+        assert_eq!(f32_at(dnam, 24), 1.0, "deep alpha");
+        assert_eq!(f32_at(dnam, 100), 2430.0, "sun specular power");
+        assert_eq!(dnam[200], 1, "screen space reflections");
     }
 }

@@ -125,75 +125,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fnv1_32_pinned_value() {
-        assert_eq!(fnv1_32("fallout4_sf"), 3768386522);
+    fn fnv1_32_is_pinned_and_case_insensitive() {
+        {
+            assert_eq!(fnv1_32("fallout4_sf"), 3768386522);
+        }
+        {
+            assert_eq!(fnv1_32("Fallout4_SF"), fnv1_32("fallout4_sf"));
+        }
     }
 
     #[test]
-    fn fnv1_32_is_case_insensitive() {
-        assert_eq!(fnv1_32("Fallout4_SF"), fnv1_32("fallout4_sf"));
+    fn sanitize_event_name_uppercases_with_fixed_prefix() {
+        {
+            assert_eq!(
+                sanitize_event_name("music/Track 01.xwm"),
+                "FO4SF_MUSIC_TRACK_01_XWM"
+            );
+        }
+        {
+            let name = sanitize_event_name("123beep.wav");
+            assert!(name.starts_with("FO4SF_"));
+            assert!(!name.chars().next().unwrap().is_ascii_digit());
+        }
     }
 
     #[test]
-    fn sanitize_event_name_maps_non_alnum_to_underscore_and_uppercases() {
-        assert_eq!(
-            sanitize_event_name("music/Track 01.xwm"),
-            "FO4SF_MUSIC_TRACK_01_XWM"
-        );
+    fn guid_string_to_bytes_roundtrips_and_rejects_malformed() {
+        {
+            // WwiseEvent_AMB_RL083_MovingRailHook Start decodes to this GUID.
+            let bytes: [u8; 16] = [42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 143];
+            // Round-trip through the string form must reproduce the same bytes.
+            let hi = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+            let lo = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+            let s = format!("{hi:016X}{lo:016X}");
+            let guid = format!(
+                "{}-{}-{}-{}-{}",
+                &s[0..8],
+                &s[8..12],
+                &s[12..16],
+                &s[16..20],
+                &s[20..32]
+            );
+            assert_eq!(guid_string_to_bytes(&guid).unwrap(), bytes);
+        }
+        {
+            let a = guid_string_to_bytes("E563D9FB-C52A-492A-8FF7-6623CB5CDC31").unwrap();
+            let b = guid_string_to_bytes("{E563D9FB-C52A-492A-8FF7-6623CB5CDC31}").unwrap();
+            assert_eq!(a, b);
+        }
+        {
+            assert!(guid_string_to_bytes("not-a-guid").is_err());
+        }
     }
 
     #[test]
-    fn sanitize_event_name_never_leads_with_digit_due_to_fixed_prefix() {
-        let name = sanitize_event_name("123beep.wav");
-        assert!(name.starts_with("FO4SF_"));
-        assert!(!name.chars().next().unwrap().is_ascii_digit());
-    }
-
-    #[test]
-    fn guid_roundtrip_matches_r6_worked_example() {
-        // WwiseEvent_AMB_RL083_MovingRailHook Start decodes to this GUID.
-        let bytes: [u8; 16] = [42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 143];
-        // Round-trip through the string form must reproduce the same bytes.
-        let hi = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-        let lo = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-        let s = format!("{hi:016X}{lo:016X}");
-        let guid = format!(
-            "{}-{}-{}-{}-{}",
-            &s[0..8],
-            &s[8..12],
-            &s[12..16],
-            &s[16..20],
-            &s[20..32]
-        );
-        assert_eq!(guid_string_to_bytes(&guid).unwrap(), bytes);
-    }
-
-    #[test]
-    fn guid_string_to_bytes_accepts_braces_and_dashes() {
-        let a = guid_string_to_bytes("E563D9FB-C52A-492A-8FF7-6623CB5CDC31").unwrap();
-        let b = guid_string_to_bytes("{E563D9FB-C52A-492A-8FF7-6623CB5CDC31}").unwrap();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn guid_string_to_bytes_rejects_malformed_input() {
-        assert!(guid_string_to_bytes("not-a-guid").is_err());
-    }
-
-    #[test]
-    fn substitute_template_replaces_both_placeholders() {
-        let cmd = vec![
-            "tool.exe".to_string(),
-            "{in}".to_string(),
-            "{out}".to_string(),
-        ];
-        let out = substitute_template(&cmd, Path::new("a.xwm"), Path::new("b.wav"));
-        assert_eq!(out, vec!["tool.exe", "a.xwm", "b.wav"]);
-    }
-
-    #[test]
-    fn ensure_tool_exists_names_missing_tool() {
-        let err = ensure_tool_exists("Z:\\does\\not\\exist\\tool.exe").unwrap_err();
-        assert!(err.contains("Z:\\does\\not\\exist\\tool.exe"), "{err}");
+    fn tool_templates_substitute_paths_and_name_missing_tools() {
+        {
+            let cmd = vec![
+                "tool.exe".to_string(),
+                "{in}".to_string(),
+                "{out}".to_string(),
+            ];
+            let out = substitute_template(&cmd, Path::new("a.xwm"), Path::new("b.wav"));
+            assert_eq!(out, vec!["tool.exe", "a.xwm", "b.wav"]);
+        }
+        {
+            let err = ensure_tool_exists("Z:\\does\\not\\exist\\tool.exe").unwrap_err();
+            assert!(err.contains("Z:\\does\\not\\exist\\tool.exe"), "{err}");
+        }
     }
 }

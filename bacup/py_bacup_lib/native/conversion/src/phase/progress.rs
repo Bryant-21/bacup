@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn emits_on_percent_boundary_not_every_item() {
+    fn emits_on_percent_boundary_and_never_for_zero_total() {
         let (tx, rx) = unbounded();
         // total=100, 2% step => emit at 2,4,6,...; first inc to 1 should NOT emit.
         let reporter = ProgressReporter::new("convert_textures_v2", 100, tx);
@@ -124,6 +124,13 @@ mod tests {
         let (n_after_2, last) = count_progress(&rx);
         assert_eq!(n_after_2, 1, "2/100 must emit exactly once");
         assert_eq!(last, Some((2, 100)));
+
+        let (tx, rx) = unbounded();
+        let reporter = ProgressReporter::new("convert_textures_v2", 0, tx);
+        reporter.inc(1);
+        reporter.finish();
+        let (n, _) = count_progress(&rx);
+        assert_eq!(n, 0);
     }
 
     #[test]
@@ -140,15 +147,5 @@ mod tests {
             }
         }
         assert_eq!(last, Some((3, 3)));
-    }
-
-    #[test]
-    fn zero_total_never_panics_and_never_emits() {
-        let (tx, rx) = unbounded();
-        let reporter = ProgressReporter::new("convert_textures_v2", 0, tx);
-        reporter.inc(1);
-        reporter.finish();
-        let (n, _) = count_progress(&rx);
-        assert_eq!(n, 0);
     }
 }

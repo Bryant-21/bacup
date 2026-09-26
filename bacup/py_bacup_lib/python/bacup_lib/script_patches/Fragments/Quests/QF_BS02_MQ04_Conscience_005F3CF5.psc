@@ -90,6 +90,11 @@ Function Fragment_Stage_0450_Item_00()
     If playerRef
         playerRef.SetValue(WoodsPresent_AV, 0.0)
     EndIf
+    ; Woods dies at the end of the survivor conversation; 500 closes that objective and
+    ; points the player at the signal terminal.
+    If !IsStageDone(500)
+        SetStage(500)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0500_Item_00()
@@ -326,6 +331,9 @@ Function Fragment_Stage_1300_Item_00()
     If cryoDoor
         cryoDoor.Unlock()
         cryoDoor.SetOpen(True)
+    EndIf
+    If !IsStageDone(1400)
+        SetStage(1400)
     EndIf
 EndFunction
 

@@ -78,6 +78,14 @@ pub struct GrassEntry {
     pub flags: Vec<String>,
     #[serde(default)]
     pub position_range_normalized: bool,
+    /// Source GCVR records that place this grass. The `.btd4` GCVR channel maps each
+    /// GCVR mask sample to its grasses through this list; empty for LTEX-direct grass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_gcvr_form_keys: Vec<String>,
+    /// Target-game GRAS with the same EditorID (`0BA520:Fallout4.esm`). The terrain import
+    /// drops the emitted GRAS for it, so the `.btd4` sidecar must reference this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_form_key: Option<String>,
     /// Populated by grass-asset conversion; ignored by terrain_native bridge.
     #[serde(default)]
     pub assets: Vec<GrassAsset>,

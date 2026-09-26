@@ -2,10 +2,14 @@ Scriptname B21:WorkshopCollector Extends ObjectReference
 
 LeveledItem Property Produce Auto Const
 GlobalVariable Property IntervalHours Auto Const
-Int Property MaxStored = 10 Auto Const
+Int Property MaxStoredItems = 50 Auto Const
+
+Int ProductionTimerID = 1
 
 Float fLastProduced = -1.0
-Int iStored = 0
+; Power is only observable while the reference is loaded, so time spent unloaded
+; is credited according to the state it was last seen in.
+Bool bPowered = false
 
 Event OnInit()
     fLastProduced = Utility.GetCurrentGameTime()
@@ -13,21 +17,58 @@ EndEvent
 
 Event OnLoad()
     Accrue()
+    bPowered = IsPowered()
+    StartProductionTimer()
+EndEvent
+
+Event OnPowerOn(ObjectReference akPowerGenerator)
+    Accrue()
+    bPowered = true
+EndEvent
+
+Event OnPowerOff()
+    Accrue()
+    bPowered = false
+EndEvent
+
+Event OnUnload()
+    CancelTimerGameTime(ProductionTimerID)
+EndEvent
+
+Event OnTimerGameTime(int aiTimerID)
+    If aiTimerID != ProductionTimerID
+        Return
+    EndIf
+    Accrue()
+    If Is3DLoaded()
+        bPowered = IsPowered()
+        StartProductionTimer()
+    EndIf
 EndEvent
 
 Event OnActivate(ObjectReference akActionRef)
     Accrue()
+    bPowered = IsPowered()
 EndEvent
 
-Event OnItemRemoved(Form akBaseItem, int aiItemCount, ObjectReference akItemReference, ObjectReference akDestContainer)
-    iStored -= aiItemCount
-    If iStored < 0
-        iStored = 0
+Function StartProductionTimer()
+    If IntervalHours == None
+        Return
     EndIf
-EndEvent
+    Float hours = IntervalHours.GetValue()
+    If hours > 0.0
+        StartTimerGameTime(hours, ProductionTimerID)
+    EndIf
+EndFunction
+
+; Extractors need power; beehives and other passive collectors carry no power keyword.
+Bool Function NeedsPower()
+    Keyword canBePowered = Game.GetFormFromFile(0x0003037E, "Fallout4.esm") as Keyword
+    Return canBePowered && HasKeyword(canBePowered)
+EndFunction
 
 Function Accrue()
-    If Produce == None || IntervalHours == None || MaxStored <= 0
+    If Produce == None || IntervalHours == None || MaxStoredItems <= 0
         Return
     EndIf
 
@@ -51,14 +92,14 @@ Function Accrue()
     ; Consume every whole interval even when the container is full, so time spent
     ; at capacity does not accrue a burst that lands the moment it is emptied.
     fLastProduced += (elapsedIntervals as Float) * intervalDays
-
-    Int room = MaxStored - iStored
-    If room <= 0
+    If !bPowered && NeedsPower()
         Return
     EndIf
-    If elapsedIntervals > room
-        elapsedIntervals = room
-    EndIf
-    AddItem(Produce, elapsedIntervals, true)
-    iStored += elapsedIntervals
+
+    ; Capacity comes from the live contents: FO4 only delivers inventory events
+    ; through an inventory filter, so a removal-tracked counter never drains.
+    While elapsedIntervals > 0 && GetItemCount(None) < MaxStoredItems
+        AddItem(Produce, 1, true)
+        elapsedIntervals -= 1
+    EndWhile
 EndFunction

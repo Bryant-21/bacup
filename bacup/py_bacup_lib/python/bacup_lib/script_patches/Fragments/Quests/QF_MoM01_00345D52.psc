@@ -92,6 +92,7 @@ Function Fragment_Stage_0090_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
+    CompleteQuest()
     SetObjectiveCompleted(90)
 
     Actor player = Alias_ActivePlayer.GetActorReference()
@@ -114,5 +115,9 @@ Function Fragment_Stage_0100_Item_00()
     EndIf
 
     CompleteAllObjectives()
+    Stop()
+EndFunction
+
+Function Fragment_Stage_0255_Item_00()
     Stop()
 EndFunction

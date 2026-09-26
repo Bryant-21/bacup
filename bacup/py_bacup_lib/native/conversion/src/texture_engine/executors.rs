@@ -83,6 +83,7 @@ fn bc7_via_service<'a>(
     move |images, srgb| gpu.encode_bc7_shared(images, srgb, gpu_min_pixels)
 }
 
+#[cfg(test)]
 pub(crate) fn execute_per_texel(
     input: &TexturePathInput,
     output: &TexturePathOutput,
@@ -867,154 +868,154 @@ mod tests {
     }
 
     #[test]
-    fn legacy_specgloss_writes_a_two_channel_bc5_normal_from_a_dxt5_source() {
-        // Skyrim ships 100% DXT5 normals and FNV 82%; mapping the output format
-        // from the source would land on BC7 and keep the source's blue channel,
-        // which is what makes a converted normal read blue instead of yellow.
-        let tmp = std::env::temp_dir().join("exec_legacy_specgloss_normal_bc5");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "crate01_n.dds", 16, 16, "BC3_UNORM", true);
+    fn legacy_specgloss_and_residue_report_shared_stages() {
+        {
+            // Skyrim ships 100% DXT5 normals and FNV 82%; mapping the output format
+            // from the source would land on BC7 and keep the source's blue channel,
+            // which is what makes a converted normal read blue instead of yellow.
+            let tmp = std::env::temp_dir().join("exec_legacy_specgloss_normal_bc5");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "crate01_n.dds", 16, 16, "BC3_UNORM", true);
 
-        let normal = TexturePathInput {
-            role: "normal".to_string(),
-            path: tmp.join("crate01_n.dds"),
-        };
-        let out_normal = TexturePathOutput {
-            role: "normal".to_string(),
-            path: tmp.join("out").join("crate01_n.dds"),
-            format: "BC5_UNORM".to_string(),
-        };
-        let out_specular = TexturePathOutput {
-            role: "specular".to_string(),
-            path: tmp.join("out").join("crate01_s.dds"),
-            format: "BC5_UNORM".to_string(),
-        };
+            let normal = TexturePathInput {
+                role: "normal".to_string(),
+                path: tmp.join("crate01_n.dds"),
+            };
+            let out_normal = TexturePathOutput {
+                role: "normal".to_string(),
+                path: tmp.join("out").join("crate01_n.dds"),
+                format: "BC5_UNORM".to_string(),
+            };
+            let out_specular = TexturePathOutput {
+                role: "specular".to_string(),
+                path: tmp.join("out").join("crate01_s.dds"),
+                format: "BC5_UNORM".to_string(),
+            };
 
-        let gpu = GpuService::start_cpu_only();
-        execute_legacy_specgloss(
-            &normal,
-            None,
-            Some(&out_normal),
-            &out_specular,
-            0.8,
-            &gpu,
-            false,
-            u32::MAX,
-            None,
-        )
-        .unwrap();
-
-        let probe = directxtex_native::read_dds_probe(&out_normal.path).unwrap();
-        assert_eq!(probe.dxgi_format, 83, "FO4 normals are BC5_UNORM");
-
-        let decoded = directxtex_native::read_dds_float_rgba_image(&out_normal.path).unwrap();
-        let max_blue = decoded
-            .rgba
-            .chunks_exact(4)
-            .map(|texel| texel[2])
-            .fold(0.0f32, f32::max);
-        assert_eq!(max_blue, 0.0, "BC5 leaves no blue for FO4 to misread");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn pass_through_output_is_byte_identical_to_source() {
-        let tmp = std::env::temp_dir().join("exec_pass_through");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "rock_d.dds", 16, 16, "BC7_UNORM", true);
-        let input = TexturePathInput {
-            role: "diffuse".to_string(),
-            path: tmp.join("rock_d.dds"),
-        };
-        let output = TexturePathOutput {
-            role: "diffuse".to_string(),
-            path: tmp.join("out").join("sub").join("rock_d.dds"),
-            format: "BC7_UNORM".to_string(),
-        };
-
-        execute_pass_through(&input, &output, None).unwrap();
-
-        let src = std::fs::read(&input.path).unwrap();
-        let out = std::fs::read(&output.path).unwrap();
-        assert_eq!(out, src, "PassThrough must be a byte copy");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn legacy_residue_reports_shared_decode_material_encode_and_write() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_tex(tmp.path(), "normal_n.dds", 16, 16, "BC7_UNORM", true);
-        let input = TexturePathInput {
-            role: "normal".into(),
-            path: tmp.path().join("normal_n.dds"),
-        };
-        let output = TexturePathOutput {
-            role: "normal".into(),
-            path: tmp.path().join("out.dds"),
-            format: "BC7_UNORM".into(),
-        };
-        let (result, timings) = directxtex_native::profiling::capture(|| {
-            execute_residue(
-                &input,
-                &output,
-                TextureConversionParamsPayload::default(),
+            let gpu = GpuService::start_cpu_only();
+            execute_legacy_specgloss(
+                &normal,
+                None,
+                Some(&out_normal),
+                &out_specular,
+                0.8,
+                &gpu,
                 false,
                 u32::MAX,
+                None,
             )
-        });
-        assert_eq!(result.unwrap().converted.len(), 1);
-        assert!(timings.read_ns > 0);
-        assert!(timings.decode_ns > 0);
-        assert!(timings.material_ns > 0);
-        assert!(timings.encode_ns > 0);
-        assert!(timings.write_ns > 0);
-        assert_eq!(timings.gpu_wait_ns, 0);
+            .unwrap();
+
+            let probe = directxtex_native::read_dds_probe(&out_normal.path).unwrap();
+            assert_eq!(probe.dxgi_format, 83, "FO4 normals are BC5_UNORM");
+
+            let decoded = directxtex_native::read_dds_float_rgba_image(&out_normal.path).unwrap();
+            let max_blue = decoded
+                .rgba
+                .chunks_exact(4)
+                .map(|texel| texel[2])
+                .fold(0.0f32, f32::max);
+            assert_eq!(max_blue, 0.0, "BC5 leaves no blue for FO4 to misread");
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            write_tex(tmp.path(), "normal_n.dds", 16, 16, "BC7_UNORM", true);
+            let input = TexturePathInput {
+                role: "normal".into(),
+                path: tmp.path().join("normal_n.dds"),
+            };
+            let output = TexturePathOutput {
+                role: "normal".into(),
+                path: tmp.path().join("out.dds"),
+                format: "BC7_UNORM".into(),
+            };
+            let (result, timings) = directxtex_native::profiling::capture(|| {
+                execute_residue(
+                    &input,
+                    &output,
+                    TextureConversionParamsPayload::default(),
+                    false,
+                    u32::MAX,
+                )
+            });
+            assert_eq!(result.unwrap().converted.len(), 1);
+            assert!(timings.read_ns > 0);
+            assert!(timings.decode_ns > 0);
+            assert!(timings.material_ns > 0);
+            assert!(timings.encode_ns > 0);
+            assert!(timings.write_ns > 0);
+            assert_eq!(timings.gpu_wait_ns, 0);
+        }
     }
 
     #[test]
-    fn pass_through_sink_streams_source_bytes_without_loose_rewrite() {
-        let tmp = std::env::temp_dir().join("exec_pass_through_sink_direct");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "crate_d.dds", 16, 16, "BC7_UNORM", true);
-        let mod_root = tmp.join("mod");
-        let data_root = mod_root.join("data");
-        let input = TexturePathInput {
-            role: "diffuse".to_string(),
-            path: tmp.join("crate_d.dds"),
-        };
-        let output = TexturePathOutput {
-            role: "diffuse".to_string(),
-            path: data_root.join("Textures").join("Props").join("crate_d.dds"),
-            format: "BC7_UNORM".to_string(),
-        };
-        let sink = crate::sinks::SinkSet {
-            ba2: Some(crate::sinks::Ba2ShardWriter::new(tmp.join("spill")).unwrap()),
-            loose: crate::sinks::LooseSink {
-                enabled: false,
-                mod_root,
-            },
-            terrain: crate::sinks::TerrainSidecarSink::default(),
-        };
-        let writer = TextureOutputSink {
-            data_root: &data_root,
-            sink: &sink,
-        };
+    fn pass_through_output_and_sink_stream_source_bytes() {
+        {
+            let tmp = std::env::temp_dir().join("exec_pass_through");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "rock_d.dds", 16, 16, "BC7_UNORM", true);
+            let input = TexturePathInput {
+                role: "diffuse".to_string(),
+                path: tmp.join("rock_d.dds"),
+            };
+            let output = TexturePathOutput {
+                role: "diffuse".to_string(),
+                path: tmp.join("out").join("sub").join("rock_d.dds"),
+                format: "BC7_UNORM".to_string(),
+            };
 
-        execute_pass_through(&input, &output, Some(&writer)).unwrap();
+            execute_pass_through(&input, &output, None).unwrap();
 
-        assert!(
-            !output.path.exists(),
-            "no-loose sink should not write {}",
-            output.path.display()
-        );
-        assert_eq!(
-            sink.ba2.as_ref().unwrap().streamed_rel_paths(),
-            vec!["textures/props/crate_d.dds".to_string()]
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
+            let src = std::fs::read(&input.path).unwrap();
+            let out = std::fs::read(&output.path).unwrap();
+            assert_eq!(out, src, "PassThrough must be a byte copy");
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("exec_pass_through_sink_direct");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "crate_d.dds", 16, 16, "BC7_UNORM", true);
+            let mod_root = tmp.join("mod");
+            let data_root = mod_root.join("data");
+            let input = TexturePathInput {
+                role: "diffuse".to_string(),
+                path: tmp.join("crate_d.dds"),
+            };
+            let output = TexturePathOutput {
+                role: "diffuse".to_string(),
+                path: data_root.join("Textures").join("Props").join("crate_d.dds"),
+                format: "BC7_UNORM".to_string(),
+            };
+            let sink = crate::sinks::SinkSet {
+                ba2: Some(crate::sinks::Ba2ShardWriter::new(tmp.join("spill")).unwrap()),
+                loose: crate::sinks::LooseSink {
+                    enabled: false,
+                    mod_root,
+                },
+                terrain: crate::sinks::TerrainSidecarSink::default(),
+            };
+            let writer = TextureOutputSink {
+                data_root: &data_root,
+                sink: &sink,
+            };
+
+            execute_pass_through(&input, &output, Some(&writer)).unwrap();
+
+            assert!(
+                !output.path.exists(),
+                "no-loose sink should not write {}",
+                output.path.display()
+            );
+            assert_eq!(
+                sink.ba2.as_ref().unwrap().streamed_rel_paths(),
+                vec!["textures/props/crate_d.dds".to_string()]
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     fn read_mips(p: &Path) -> directxtex_native::DdsMipsRgba8 {
@@ -1035,129 +1036,197 @@ mod tests {
     }
 
     #[test]
-    fn per_texel_normal_zeroes_blue_and_preserves_mip_count() {
-        let tmp = std::env::temp_dir().join("exec_per_texel_normal");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "armor_n.dds", 32, 32, "BC7_UNORM", true); // BC7 normal -> PerTexel
-        let input = TexturePathInput {
-            role: "normal".to_string(),
-            path: tmp.join("armor_n.dds"),
-        };
-        let output = TexturePathOutput {
-            role: "normal".to_string(),
-            path: tmp.join("out").join("armor_n.dds"),
-            format: "BC5_UNORM".to_string(), // request fallback; target_format overrides it
-        };
-        let svc = GpuService::start_cpu_only();
+    fn per_texel_normal_and_format_change_preserve_mips() {
+        {
+            let tmp = std::env::temp_dir().join("exec_per_texel_normal");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "armor_n.dds", 32, 32, "BC7_UNORM", true); // BC7 normal -> PerTexel
+            let input = TexturePathInput {
+                role: "normal".to_string(),
+                path: tmp.join("armor_n.dds"),
+            };
+            let output = TexturePathOutput {
+                role: "normal".to_string(),
+                path: tmp.join("out").join("armor_n.dds"),
+                format: "BC5_UNORM".to_string(), // request fallback; target_format overrides it
+            };
+            let svc = GpuService::start_cpu_only();
 
-        execute_per_texel(&input, &output, "BC7_UNORM", true, &svc, 512 * 512, None).unwrap();
+            execute_per_texel(&input, &output, "BC7_UNORM", true, &svc, 512 * 512, None).unwrap();
 
-        let src = read_mips(&input.path);
-        let out = read_mips(&output.path);
-        assert_eq!(
-            out.mips.len(),
-            src.mips.len(),
-            "mip count preserved, never regenerated"
-        );
-        for (_, _, px) in &out.mips {
-            // BC7 is lossy; B was exactly 0 pre-encode so reconstruction stays tiny.
-            assert!(
-                px.chunks_exact(4).all(|p| p[2] <= 4),
-                "blue channel must be ~0"
+            let src = read_mips(&input.path);
+            let out = read_mips(&output.path);
+            assert_eq!(
+                out.mips.len(),
+                src.mips.len(),
+                "mip count preserved, never regenerated"
             );
+            for (_, _, px) in &out.mips {
+                // BC7 is lossy; B was exactly 0 pre-encode so reconstruction stays tiny.
+                assert!(
+                    px.chunks_exact(4).all(|p| p[2] <= 4),
+                    "blue channel must be ~0"
+                );
+            }
+            svc.shutdown();
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        svc.shutdown();
-        let _ = std::fs::remove_dir_all(&tmp);
+        {
+            let tmp = std::env::temp_dir().join("exec_per_texel_bc3");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "wall_d.dds", 16, 16, "BC3_UNORM", true);
+            let input = TexturePathInput {
+                role: "diffuse".to_string(),
+                path: tmp.join("wall_d.dds"),
+            };
+            let output = TexturePathOutput {
+                role: "diffuse".to_string(),
+                path: tmp.join("out").join("wall_d.dds"),
+                format: "BC7_UNORM".to_string(),
+            };
+            let svc = GpuService::start_cpu_only();
+            execute_per_texel(&input, &output, "BC7_UNORM", false, &svc, 512 * 512, None).unwrap();
+            svc.shutdown();
+            let probe = directxtex_native::read_dds_probe(&output.path).unwrap();
+            assert_eq!(probe.dxgi_format, 98, "BC7_UNORM output");
+            assert_eq!(probe.mip_levels, 5);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
-    fn per_texel_mip0_byte_matches_legacy_and_deep_mips_rmse_pass() {
-        // Legacy: decode base -> f32 kernel -> u8 -> regen mips -> encode.
-        // Engine: decode source mips -> u8 kernel -> encode.
-        // Mip 0 inputs are identical, encoder identical => decoded mip 0 EXACT.
-        // Deeper mips intentionally differ (source mips vs box regen) => RMSE.
-        let tmp = std::env::temp_dir().join("exec_per_texel_vs_legacy");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "armor_n.dds", 32, 32, "BC7_UNORM", true);
-        let input = TexturePathInput {
-            role: "normal".to_string(),
-            path: tmp.join("armor_n.dds"),
-        };
+    fn per_texel_mips_match_legacy_or_demote_divergent_sources() {
+        {
+            // Legacy: decode base -> f32 kernel -> u8 -> regen mips -> encode.
+            // Engine: decode source mips -> u8 kernel -> encode.
+            // Mip 0 inputs are identical, encoder identical => decoded mip 0 EXACT.
+            // Deeper mips intentionally differ (source mips vs box regen) => RMSE.
+            let tmp = std::env::temp_dir().join("exec_per_texel_vs_legacy");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "armor_n.dds", 32, 32, "BC7_UNORM", true);
+            let input = TexturePathInput {
+                role: "normal".to_string(),
+                path: tmp.join("armor_n.dds"),
+            };
 
-        // Legacy single-pair conversion (use_gpu=false for determinism).
-        let legacy_out = TexturePathOutput {
-            role: "normal".to_string(),
-            path: tmp.join("legacy").join("armor_n.dds"),
-            format: "BC5_UNORM".to_string(),
-        };
-        convert_texture_set_paths(TextureSetPathRequest {
-            source_game: "fo76".to_string(),
-            target_game: "fo4".to_string(),
-            inputs: vec![input.clone()],
-            outputs: vec![legacy_out.clone()],
-            params: TextureConversionParamsPayload::default(),
-            use_gpu: false,
-            gpu_min_pixels: 0,
-            parallel_compression: false,
-        })
-        .unwrap();
+            // Legacy single-pair conversion (use_gpu=false for determinism).
+            let legacy_out = TexturePathOutput {
+                role: "normal".to_string(),
+                path: tmp.join("legacy").join("armor_n.dds"),
+                format: "BC5_UNORM".to_string(),
+            };
+            convert_texture_set_paths(TextureSetPathRequest {
+                source_game: "fo76".to_string(),
+                target_game: "fo4".to_string(),
+                inputs: vec![input.clone()],
+                outputs: vec![legacy_out.clone()],
+                params: TextureConversionParamsPayload::default(),
+                use_gpu: false,
+                gpu_min_pixels: 0,
+                parallel_compression: false,
+            })
+            .unwrap();
 
-        let engine_out = TexturePathOutput {
-            role: "normal".to_string(),
-            path: tmp.join("new").join("armor_n.dds"),
-            format: "BC5_UNORM".to_string(),
-        };
-        let svc = GpuService::start_cpu_only();
-        execute_per_texel(
-            &input,
-            &engine_out,
-            "BC7_UNORM",
-            true,
-            &svc,
-            512 * 512,
-            None,
-        )
-        .unwrap();
-        svc.shutdown();
+            let engine_out = TexturePathOutput {
+                role: "normal".to_string(),
+                path: tmp.join("new").join("armor_n.dds"),
+                format: "BC5_UNORM".to_string(),
+            };
+            let svc = GpuService::start_cpu_only();
+            execute_per_texel(
+                &input,
+                &engine_out,
+                "BC7_UNORM",
+                true,
+                &svc,
+                512 * 512,
+                None,
+            )
+            .unwrap();
+            svc.shutdown();
 
-        let legacy = read_mips(&legacy_out.path);
-        let ours = read_mips(&engine_out.path);
-        assert_eq!(ours.mips.len(), legacy.mips.len());
-        assert_eq!(
-            ours.mips[0].2, legacy.mips[0].2,
-            "mip 0 must decode identically"
-        );
-        for k in 1..ours.mips.len() {
-            let e = rmse(&ours.mips[k].2, &legacy.mips[k].2);
-            assert!(e <= 24.0, "mip {k} RMSE {e} exceeds tolerance");
+            let legacy = read_mips(&legacy_out.path);
+            let ours = read_mips(&engine_out.path);
+            assert_eq!(ours.mips.len(), legacy.mips.len());
+            assert_eq!(
+                ours.mips[0].2, legacy.mips[0].2,
+                "mip 0 must decode identically"
+            );
+            for k in 1..ours.mips.len() {
+                let e = rmse(&ours.mips[k].2, &legacy.mips[k].2);
+                assert!(e <= 24.0, "mip {k} RMSE {e} exceeds tolerance");
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
+        {
+            // Source whose deep mips are NOT box-downscales of mip0 (authored
+            // chains: facecustomization tint _l, some decals). Preserving them
+            // would diverge from legacy beyond the parity gate — the executor
+            // must fall back to the legacy path (byte-identical output).
+            let tmp = std::env::temp_dir().join("exec_divergent_mips");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            let mip0: Vec<u8> = (0..32usize * 32 * 4)
+                .map(|i| (i * 31 % 256) as u8)
+                .collect();
+            let mut chain = vec![(32u32, 32u32, mip0)];
+            let (mut w, mut h) = (16u32, 16u32);
+            loop {
+                chain.push((w, h, vec![255u8; (w as usize) * (h as usize) * 4]));
+                if w == 1 && h == 1 {
+                    break;
+                }
+                w = (w / 2).max(1);
+                h = (h / 2).max(1);
+            }
+            let bytes =
+                directxtex_native::encode_dds_from_rgba8_chain(&chain, "BC3_UNORM", false, None)
+                    .unwrap();
+            std::fs::write(tmp.join("weird_d.dds"), bytes).unwrap();
+            let names = ["weird_d.dds"];
 
-    #[test]
-    fn per_texel_identity_format_change_bc3_to_bc7() {
-        let tmp = std::env::temp_dir().join("exec_per_texel_bc3");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "wall_d.dds", 16, 16, "BC3_UNORM", true);
-        let input = TexturePathInput {
-            role: "diffuse".to_string(),
-            path: tmp.join("wall_d.dds"),
-        };
-        let output = TexturePathOutput {
-            role: "diffuse".to_string(),
-            path: tmp.join("out").join("wall_d.dds"),
-            format: "BC7_UNORM".to_string(),
-        };
-        let svc = GpuService::start_cpu_only();
-        execute_per_texel(&input, &output, "BC7_UNORM", false, &svc, 512 * 512, None).unwrap();
-        svc.shutdown();
-        let probe = directxtex_native::read_dds_probe(&output.path).unwrap();
-        assert_eq!(probe.dxgi_format, 98, "BC7_UNORM output");
-        assert_eq!(probe.mip_levels, 5);
-        let _ = std::fs::remove_dir_all(&tmp);
+            let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
+            convert_texture_set_paths(legacy_req.clone()).unwrap();
+
+            let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
+            let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
+            assert!(
+                matches!(
+                    tasks[0],
+                    TextureTask::Single {
+                        class: TriageClass::PerTexel,
+                        ..
+                    }
+                ),
+                "header looks fine — triage must still classify PerTexel"
+            );
+            let svc = GpuService::start_cpu_only();
+            let mut demoted_count = 0u32;
+            for task in &tasks {
+                let (_, _, demoted) = execute_task(
+                    task,
+                    TextureConversionParamsPayload::default(),
+                    &svc,
+                    false,
+                    0,
+                    None,
+                )
+                .unwrap();
+                if demoted {
+                    demoted_count += 1;
+                }
+            }
+            svc.shutdown();
+            assert_eq!(
+                demoted_count, 1,
+                "divergent-mip PerTexel must demote to residue"
+            );
+            assert_outputs_byte_equal(&legacy_req, &ours_req);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     use crate::phase::textures::{build_request, game_texture_suffixes, group_textures};
@@ -1212,38 +1281,151 @@ mod tests {
     }
 
     #[test]
-    fn bundle_outputs_byte_match_legacy_converter() {
-        let tmp = std::env::temp_dir().join("exec_bundle_golden");
+    fn lone_lighting_glow_is_the_alpha_mask_not_the_packed_rgb() {
+        // RobCoDispenser02_l.dds has no _d/_r sibling. FO76 packs gloss/AO in
+        // `_l` RGB and the emissive mask in alpha; carrying the RGB into `_g`
+        // makes nearly the whole surface glow.
+        let tmp = std::env::temp_dir().join("exec_lone_lighting_glow");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        // Varied formats: diffuse BC7, reflectivity RGBA8, lighting BC7 (alpha
-        // present -> glow output emitted by build_request's bundle branch).
-        write_tex(&tmp, "kit_d.dds", 16, 16, "BC7_UNORM", true);
-        write_tex(&tmp, "kit_r.dds", 8, 8, "R8G8B8A8_UNORM", true); // resized by the math
-        write_tex(&tmp, "kit_l.dds", 16, 16, "BC7_UNORM", true);
-        let names = ["kit_d.dds", "kit_r.dds", "kit_l.dds"];
+        let lighting = [128u8, 240, 0, 64].repeat(16 * 16);
+        directxtex_native::write_dds_rgba_image(
+            &tmp.join("panel_l.dds"),
+            16,
+            16,
+            &lighting,
+            "R8G8B8A8_UNORM",
+            true,
+        )
+        .unwrap();
 
-        let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
-        convert_texture_set_paths(legacy_req.clone()).unwrap();
-
-        let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
-        let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
+        let request = fo76_request(&tmp, &["panel_l.dds"], &tmp.join("out"));
+        let tasks = crate::texture_engine::triage_request(&request, &HashMap::new(), false);
+        assert_eq!(tasks.len(), 1);
         let svc = GpuService::start_cpu_only();
-        for task in &tasks {
-            execute_task(
-                task,
-                TextureConversionParamsPayload::default(),
-                &svc,
-                false,
-                0,
-                None,
-            )
-            .unwrap();
-        }
+        execute_task(
+            &tasks[0],
+            TextureConversionParamsPayload::default(),
+            &svc,
+            false,
+            0,
+            None,
+        )
+        .unwrap();
         svc.shutdown();
 
-        assert_outputs_byte_equal(&legacy_req, &ours_req);
+        let glow =
+            directxtex_native::read_dds_rgba_image(&tmp.join("out").join("panel_g.dds")).unwrap();
+        for texel in glow.rgba.chunks_exact(4) {
+            assert!(
+                texel[..3].iter().all(|channel| channel.abs_diff(64) <= 2),
+                "glow texel {texel:?} must be the `_l` alpha mask"
+            );
+        }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bundle_specgloss_and_residue_outputs_byte_match_legacy_converter() {
+        {
+            let tmp = std::env::temp_dir().join("exec_bundle_golden");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            // Varied formats: diffuse BC7, reflectivity RGBA8, lighting BC7 (alpha
+            // present -> glow output emitted by build_request's bundle branch).
+            write_tex(&tmp, "kit_d.dds", 16, 16, "BC7_UNORM", true);
+            write_tex(&tmp, "kit_r.dds", 8, 8, "R8G8B8A8_UNORM", true); // resized by the math
+            write_tex(&tmp, "kit_l.dds", 16, 16, "BC7_UNORM", true);
+            let names = ["kit_d.dds", "kit_r.dds", "kit_l.dds"];
+
+            let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
+            convert_texture_set_paths(legacy_req.clone()).unwrap();
+
+            let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
+            let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
+            let svc = GpuService::start_cpu_only();
+            for task in &tasks {
+                execute_task(
+                    task,
+                    TextureConversionParamsPayload::default(),
+                    &svc,
+                    false,
+                    0,
+                    None,
+                )
+                .unwrap();
+            }
+            svc.shutdown();
+
+            assert_outputs_byte_equal(&legacy_req, &ours_req);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("exec_specgloss_golden");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "pipe_r.dds", 16, 16, "BC7_UNORM", true);
+            write_tex(&tmp, "pipe_l.dds", 8, 8, "BC7_UNORM", true); // lighting resized to refl dims
+            let names = ["pipe_r.dds", "pipe_l.dds"];
+
+            let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
+            convert_texture_set_paths(legacy_req.clone()).unwrap();
+
+            let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
+            let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
+            assert!(
+                tasks
+                    .iter()
+                    .any(|t| matches!(t, TextureTask::SpecGloss { .. }))
+            );
+            let svc = GpuService::start_cpu_only();
+            for task in &tasks {
+                execute_task(
+                    task,
+                    TextureConversionParamsPayload::default(),
+                    &svc,
+                    false,
+                    0,
+                    None,
+                )
+                .unwrap();
+            }
+            svc.shutdown();
+
+            assert_outputs_byte_equal(&legacy_req, &ours_req);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            // Mipless source -> triage demotes to SingleResidue -> legacy code path.
+            let tmp = std::env::temp_dir().join("exec_residue_golden");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "odd_d.dds", 16, 16, "BC7_UNORM", false);
+            let names = ["odd_d.dds"];
+
+            let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
+            convert_texture_set_paths(legacy_req.clone()).unwrap();
+
+            let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
+            let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
+            assert!(matches!(tasks[0], TextureTask::SingleResidue { .. }));
+            let svc = GpuService::start_cpu_only();
+            for task in &tasks {
+                execute_task(
+                    task,
+                    TextureConversionParamsPayload::default(),
+                    &svc,
+                    false,
+                    0,
+                    None,
+                )
+                .unwrap();
+            }
+            svc.shutdown();
+
+            assert_outputs_byte_equal(&legacy_req, &ours_req);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
@@ -1300,144 +1482,6 @@ mod tests {
                 "{role} fallback must retain legacy bytes"
             );
         }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn specgloss_pair_byte_matches_legacy_converter() {
-        let tmp = std::env::temp_dir().join("exec_specgloss_golden");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "pipe_r.dds", 16, 16, "BC7_UNORM", true);
-        write_tex(&tmp, "pipe_l.dds", 8, 8, "BC7_UNORM", true); // lighting resized to refl dims
-        let names = ["pipe_r.dds", "pipe_l.dds"];
-
-        let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
-        convert_texture_set_paths(legacy_req.clone()).unwrap();
-
-        let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
-        let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
-        assert!(
-            tasks
-                .iter()
-                .any(|t| matches!(t, TextureTask::SpecGloss { .. }))
-        );
-        let svc = GpuService::start_cpu_only();
-        for task in &tasks {
-            execute_task(
-                task,
-                TextureConversionParamsPayload::default(),
-                &svc,
-                false,
-                0,
-                None,
-            )
-            .unwrap();
-        }
-        svc.shutdown();
-
-        assert_outputs_byte_equal(&legacy_req, &ours_req);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn residue_single_byte_matches_legacy_converter() {
-        // Mipless source -> triage demotes to SingleResidue -> legacy code path.
-        let tmp = std::env::temp_dir().join("exec_residue_golden");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "odd_d.dds", 16, 16, "BC7_UNORM", false);
-        let names = ["odd_d.dds"];
-
-        let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
-        convert_texture_set_paths(legacy_req.clone()).unwrap();
-
-        let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
-        let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
-        assert!(matches!(tasks[0], TextureTask::SingleResidue { .. }));
-        let svc = GpuService::start_cpu_only();
-        for task in &tasks {
-            execute_task(
-                task,
-                TextureConversionParamsPayload::default(),
-                &svc,
-                false,
-                0,
-                None,
-            )
-            .unwrap();
-        }
-        svc.shutdown();
-
-        assert_outputs_byte_equal(&legacy_req, &ours_req);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn per_texel_divergent_source_mips_demote_to_residue_bytes() {
-        // Source whose deep mips are NOT box-downscales of mip0 (authored
-        // chains: facecustomization tint _l, some decals). Preserving them
-        // would diverge from legacy beyond the parity gate — the executor
-        // must fall back to the legacy path (byte-identical output).
-        let tmp = std::env::temp_dir().join("exec_divergent_mips");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let mip0: Vec<u8> = (0..32usize * 32 * 4)
-            .map(|i| (i * 31 % 256) as u8)
-            .collect();
-        let mut chain = vec![(32u32, 32u32, mip0)];
-        let (mut w, mut h) = (16u32, 16u32);
-        loop {
-            chain.push((w, h, vec![255u8; (w as usize) * (h as usize) * 4]));
-            if w == 1 && h == 1 {
-                break;
-            }
-            w = (w / 2).max(1);
-            h = (h / 2).max(1);
-        }
-        let bytes =
-            directxtex_native::encode_dds_from_rgba8_chain(&chain, "BC3_UNORM", false, None)
-                .unwrap();
-        std::fs::write(tmp.join("weird_d.dds"), bytes).unwrap();
-        let names = ["weird_d.dds"];
-
-        let legacy_req = fo76_request(&tmp, &names, &tmp.join("legacy"));
-        convert_texture_set_paths(legacy_req.clone()).unwrap();
-
-        let ours_req = fo76_request(&tmp, &names, &tmp.join("new"));
-        let tasks = crate::texture_engine::triage_request(&ours_req, &HashMap::new(), false);
-        assert!(
-            matches!(
-                tasks[0],
-                TextureTask::Single {
-                    class: TriageClass::PerTexel,
-                    ..
-                }
-            ),
-            "header looks fine — triage must still classify PerTexel"
-        );
-        let svc = GpuService::start_cpu_only();
-        let mut demoted_count = 0u32;
-        for task in &tasks {
-            let (_, _, demoted) = execute_task(
-                task,
-                TextureConversionParamsPayload::default(),
-                &svc,
-                false,
-                0,
-                None,
-            )
-            .unwrap();
-            if demoted {
-                demoted_count += 1;
-            }
-        }
-        svc.shutdown();
-        assert_eq!(
-            demoted_count, 1,
-            "divergent-mip PerTexel must demote to residue"
-        );
-        assert_outputs_byte_equal(&legacy_req, &ours_req);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

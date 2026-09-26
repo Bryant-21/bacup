@@ -427,6 +427,7 @@ fn synthesize_in_items(
     }
 }
 
+#[cfg(test)]
 fn synthesize_record(
     record: &mut ParsedRecord,
     mod_path: &Path,
@@ -1437,6 +1438,7 @@ fn fill_missing_lod_slots(slots: &mut [Option<String>; 4]) {
     }
 }
 
+#[cfg(test)]
 fn generated_proxy_candidate(
     record: &ParsedRecord,
     modl: &str,
@@ -2489,7 +2491,7 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_source_mnam_is_preserved_for_fo4_lodgen() {
+    fn skyrim_source_mnam_is_preserved_and_recovers_slot_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let lod = r"LOD\Architecture\Whiterun\WRWallGate_LOD.nif";
         write_mnam_source_file(tmp.path(), lod);
@@ -2524,6 +2526,47 @@ mod tests {
             .find(|subrecord| subrecord.signature.as_str() == "MNAM")
             .expect("target MNAM");
         assert_eq!(raw_mnam_slots(&mnam.data), expected_slots);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let lod1 = r"LOD\Landscape\Trees\Chargen\TreeMaplePW03Or_LOD_1.nif";
+        let lod2 = r"LOD\Landscape\Trees\Chargen\TreeMaplePW03Or_LOD_2.nif";
+        let lod3 = r"LOD\Landscape\Trees\Chargen\TreeMaplePW03Or_LOD_3.nif";
+        for path in [lod1, lod2, lod3] {
+            write_mnam_source_file(tmp.path(), path);
+        }
+
+        let mut data = vec![0u8; MNAM_SLOT * 4];
+        write_mnam_test_path(&mut data, 0, lod1);
+        write_mnam_test_path(&mut data, MNAM_SLOT, lod1);
+        write_mnam_test_path(&mut data, MNAM_SLOT * 2 - 1, lod2);
+        write_mnam_test_path(&mut data, MNAM_SLOT * 3 - 1, lod3);
+
+        let slots = slots_from_mnam_bytes(&data, tmp.path()).expect("recovered source MNAM");
+
+        assert_eq!(slots[0].as_deref(), Some(lod1));
+        assert_eq!(slots[1].as_deref(), Some(lod1));
+        assert_eq!(slots[2].as_deref(), Some(lod2));
+        assert_eq!(slots[3].as_deref(), Some(lod3));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let hlod = r"LOD\Farmhouse\Farmhouse01_HLOD.nif";
+        let lod = r"LOD\Farmhouse\Farmhouse01_LOD.nif";
+        for path in [hlod, lod] {
+            write_mnam_source_file(tmp.path(), path);
+        }
+
+        let mut data = vec![0u8; MNAM_SLOT * 4];
+        write_mnam_test_path(&mut data, 0, hlod);
+        write_mnam_test_path(&mut data, MNAM_SLOT, hlod);
+        write_mnam_test_path(&mut data, MNAM_SLOT * 2 - 1, hlod);
+        write_mnam_test_path(&mut data, MNAM_SLOT * 3 - 1, lod);
+
+        let slots = slots_from_mnam_bytes(&data, tmp.path()).expect("recovered source MNAM");
+
+        assert_eq!(slots[0].as_deref(), Some(hlod));
+        assert_eq!(slots[1].as_deref(), Some(hlod));
+        assert_eq!(slots[2].as_deref(), Some(hlod));
+        assert_eq!(slots[3].as_deref(), Some(lod));
     }
 
     #[test]
@@ -2573,7 +2616,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_proxy_candidate_writes_decimated_proxy_assets() {
+    fn generated_proxy_candidate_writes_decimated_assets_and_rejects_bad_indices() {
         let tmp = tempfile::tempdir().unwrap();
         write_full_model_fixture(tmp.path(), r"Architecture\SkiResort\SkiResort.nif", 8);
         let record = stat_record(0x0000_bc2a, r"Architecture\SkiResort\SkiResort.nif");
@@ -2594,10 +2637,7 @@ mod tests {
         for output in &candidate.outputs {
             assert!(mnam_abs_path_from_mod_root(tmp.path(), &output.mnam).is_file());
         }
-    }
 
-    #[test]
-    fn generated_proxy_candidate_rejects_out_of_range_triangle_indices() {
         let tmp = tempfile::tempdir().unwrap();
         let model = r"Architecture\SkiResort\InvalidTriangles.nif";
         let source = write_full_model_fixture(tmp.path(), model, 2);
@@ -2632,6 +2672,41 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("out-of-range triangle indices")),
             "{result:?}"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source = write_full_model_fixture(tmp.path(), r"Landscape\Trees\Stump01.nif", 24);
+        let record = stat_record(0x0004_0208, r"Landscape\Trees\Stump01.nif");
+        let candidate = generated_proxy_candidate(&record, r"Landscape\Trees\Stump01.nif", true)
+            .expect("candidate");
+
+        let result =
+            generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path(), Game::Fo76);
+
+        assert_eq!(result.assets_written, 4, "{result:?}");
+        let source_tris = total_inline_triangles(&source);
+        let lod0 = total_inline_triangles(&mnam_abs_path_from_mod_root(
+            tmp.path(),
+            candidate.outputs[0].mnam.as_str(),
+        ));
+        let lod1 = total_inline_triangles(&mnam_abs_path_from_mod_root(
+            tmp.path(),
+            candidate.outputs[1].mnam.as_str(),
+        ));
+        let lod3 = total_inline_triangles(&mnam_abs_path_from_mod_root(
+            tmp.path(),
+            candidate.outputs[3].mnam.as_str(),
+        ));
+
+        assert!(
+            lod0 < source_tris,
+            "LOD0 should be a proxy, not the source mesh"
+        );
+        assert!(lod1 < lod0, "LOD1 should be cheaper than LOD0");
+        assert!(lod3 < lod1, "LOD3 should be cheaper than LOD1");
+        assert!(
+            lod3 <= PROXY_MAX_TRIANGLES_PER_SHAPE[3],
+            "LOD3 should stay stump/shrub-scale, got {lod3}"
         );
     }
 
@@ -2674,7 +2749,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_proxy_candidate_falls_back_to_source_extracted_model() {
+    fn generated_proxy_candidate_falls_back_to_source_model_and_ignores_scol_parent() {
         let tmp = tempfile::tempdir().unwrap();
         let source_root = tmp.path().join("source");
         let mod_root = tmp.path().join("mod");
@@ -2700,6 +2775,18 @@ mod tests {
             assert!(output_path.is_file());
             assert_fo4_header(&output_path);
         }
+
+        let record = base_record(
+            "SCOL",
+            0x0084_274b,
+            r"SCOL\SeventySix.esm\CM0084274B.NIF",
+            0,
+        );
+
+        assert!(
+            generated_proxy_candidate(&record, r"SCOL\SeventySix.esm\CM0084274B.NIF", true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -2737,107 +2824,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_proxy_candidate_decimates_all_slots_and_keeps_lod3_small() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source = write_full_model_fixture(tmp.path(), r"Landscape\Trees\Stump01.nif", 24);
-        let record = stat_record(0x0004_0208, r"Landscape\Trees\Stump01.nif");
-        let candidate = generated_proxy_candidate(&record, r"Landscape\Trees\Stump01.nif", true)
-            .expect("candidate");
-
-        let result =
-            generate_proxy_candidate_assets(&candidate, tmp.path(), tmp.path(), Game::Fo76);
-
-        assert_eq!(result.assets_written, 4, "{result:?}");
-        let source_tris = total_inline_triangles(&source);
-        let lod0 = total_inline_triangles(&mnam_abs_path_from_mod_root(
-            tmp.path(),
-            candidate.outputs[0].mnam.as_str(),
-        ));
-        let lod1 = total_inline_triangles(&mnam_abs_path_from_mod_root(
-            tmp.path(),
-            candidate.outputs[1].mnam.as_str(),
-        ));
-        let lod3 = total_inline_triangles(&mnam_abs_path_from_mod_root(
-            tmp.path(),
-            candidate.outputs[3].mnam.as_str(),
-        ));
-
-        assert!(
-            lod0 < source_tris,
-            "LOD0 should be a proxy, not the source mesh"
-        );
-        assert!(lod1 < lod0, "LOD1 should be cheaper than LOD0");
-        assert!(lod3 < lod1, "LOD3 should be cheaper than LOD1");
-        assert!(
-            lod3 <= PROXY_MAX_TRIANGLES_PER_SHAPE[3],
-            "LOD3 should stay stump/shrub-scale, got {lod3}"
-        );
-    }
-
-    #[test]
-    fn generated_proxy_candidate_ignores_scol_parent() {
-        let record = base_record(
-            "SCOL",
-            0x0084_274b,
-            r"SCOL\SeventySix.esm\CM0084274B.NIF",
-            0,
-        );
-
-        assert!(
-            generated_proxy_candidate(&record, r"SCOL\SeventySix.esm\CM0084274B.NIF", true)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn source_mnam_recovers_misaligned_far_tree_slots() {
-        let tmp = tempfile::tempdir().unwrap();
-        let lod1 = r"LOD\Landscape\Trees\Chargen\TreeMaplePW03Or_LOD_1.nif";
-        let lod2 = r"LOD\Landscape\Trees\Chargen\TreeMaplePW03Or_LOD_2.nif";
-        let lod3 = r"LOD\Landscape\Trees\Chargen\TreeMaplePW03Or_LOD_3.nif";
-        for path in [lod1, lod2, lod3] {
-            write_mnam_source_file(tmp.path(), path);
-        }
-
-        let mut data = vec![0u8; MNAM_SLOT * 4];
-        write_mnam_test_path(&mut data, 0, lod1);
-        write_mnam_test_path(&mut data, MNAM_SLOT, lod1);
-        write_mnam_test_path(&mut data, MNAM_SLOT * 2 - 1, lod2);
-        write_mnam_test_path(&mut data, MNAM_SLOT * 3 - 1, lod3);
-
-        let slots = slots_from_mnam_bytes(&data, tmp.path()).expect("recovered source MNAM");
-
-        assert_eq!(slots[0].as_deref(), Some(lod1));
-        assert_eq!(slots[1].as_deref(), Some(lod1));
-        assert_eq!(slots[2].as_deref(), Some(lod2));
-        assert_eq!(slots[3].as_deref(), Some(lod3));
-    }
-
-    #[test]
-    fn skyrim_farmhouse_mnam_recovers_plain_paths_before_slot_boundaries() {
-        let tmp = tempfile::tempdir().unwrap();
-        let hlod = r"LOD\Farmhouse\Farmhouse01_HLOD.nif";
-        let lod = r"LOD\Farmhouse\Farmhouse01_LOD.nif";
-        for path in [hlod, lod] {
-            write_mnam_source_file(tmp.path(), path);
-        }
-
-        let mut data = vec![0u8; MNAM_SLOT * 4];
-        write_mnam_test_path(&mut data, 0, hlod);
-        write_mnam_test_path(&mut data, MNAM_SLOT, hlod);
-        write_mnam_test_path(&mut data, MNAM_SLOT * 2 - 1, hlod);
-        write_mnam_test_path(&mut data, MNAM_SLOT * 3 - 1, lod);
-
-        let slots = slots_from_mnam_bytes(&data, tmp.path()).expect("recovered source MNAM");
-
-        assert_eq!(slots[0].as_deref(), Some(hlod));
-        assert_eq!(slots[1].as_deref(), Some(hlod));
-        assert_eq!(slots[2].as_deref(), Some(hlod));
-        assert_eq!(slots[3].as_deref(), Some(lod));
-    }
-
-    #[test]
-    fn skyrim_sibling_lod_is_used_without_proxy_generation() {
+    fn skyrim_trees_use_sibling_or_flat_lod_or_generate_a_proxy() {
         let tmp = tempfile::tempdir().unwrap();
         let model = r"Architecture\Farmhouse\Farmhouse01.nif";
         let sibling = r"architecture/farmhouse/farmhouse01_lod.nif";
@@ -2871,10 +2858,7 @@ mod tests {
                 Some(r"Architecture\Farmhouse\Farmhouse01_LOD.nif".to_string())
             })
         );
-    }
 
-    #[test]
-    fn unflagged_skyrim_tree_generates_object_lod_proxy() {
         let tmp = tempfile::tempdir().unwrap();
         let model = r"Landscape\Trees\TreePineForest01.nif";
         let form_id = 0x0001_3000;
@@ -2900,10 +2884,7 @@ mod tests {
         assert_eq!(pending[0].signature, "TREE");
         assert_eq!(pending[0].form_id, form_id);
         assert!(pending[0].set_base_flag);
-    }
 
-    #[test]
-    fn skyrim_tree_uses_flat_lod_sibling() {
         let tmp = tempfile::tempdir().unwrap();
         let model = r"Landscape\Trees\TreePineForest01.nif";
         let flat_lod = r"Landscape\Trees\TreePineForest01_LOD_FLAT.nif";
@@ -3123,7 +3104,7 @@ mod tests {
     }
 
     #[test]
-    fn non_stat_lod_bases_never_receive_illegal_mnam() {
+    fn non_stat_lod_bases_get_no_mnam_and_exact_placed_overlays() {
         let tmp = tempfile::tempdir().unwrap();
         write_lod_fixture(tmp.path(), "lod/architecture/foo/activator_lod.nif");
         write_lod_fixture(tmp.path(), "lod/architecture/foo/movable_lod.nif");
@@ -3152,10 +3133,7 @@ mod tests {
         }
 
         plugin_handle_close_native(handle_id);
-    }
 
-    #[test]
-    fn non_stat_lod_overlay_is_exact_to_the_placed_reference() {
         let base_form_id = 0x0000_bbf9;
         let reference_form_id = 0x0001_2345;
         let items = vec![
@@ -3195,10 +3173,7 @@ mod tests {
         assert_eq!(entry.base_signature, "ACTI");
         assert_eq!(entry.lod_models, slots);
         assert!(!entry.force_visible);
-    }
 
-    #[test]
-    fn non_stat_lod_overlay_excludes_deleted_reference_and_base() {
         let base_form_id = 0x0000_bbf9;
         let reference_form_id = 0x0001_2345;
         let virtual_base = GeneratedProxyMnam {
@@ -3250,7 +3225,7 @@ mod tests {
     }
 
     #[test]
-    fn scol_overlay_targets_only_the_non_stat_component() {
+    fn scol_overlay_targets_only_live_non_stat_components() {
         let scol_form_id = 0x0000_4000_u32;
         let component_form_id = 0x0000_4001_u32;
         let reference_form_id = 0x0000_5000_u32;
@@ -3301,10 +3276,7 @@ mod tests {
         assert_eq!(entry.component_base_form_id, Some(component_form_id));
         assert_eq!(entry.base_signature, "MSTT");
         assert!(entry.force_visible);
-    }
 
-    #[test]
-    fn scol_overlay_excludes_deleted_component_base() {
         let scol_form_id = 0x0000_4000_u32;
         let component_form_id = 0x0000_4001_u32;
         let mut scol = base_record("SCOL", scol_form_id, r"SCOL\Composite.nif", 0);
@@ -3348,7 +3320,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_scol_ref_generates_overlay_for_unflagged_component() {
+    fn visible_scol_ref_generates_overlay_or_synthesizes_unflagged_components() {
         let temp = tempfile::tempdir().unwrap();
         write_lod_fixture(temp.path(), "lod/architecture/foo/movable_lod.nif");
         let scol_form_id = 0x0000_4000_u32;
@@ -3412,10 +3384,7 @@ mod tests {
             Some(component_form_id)
         );
         assert!(overlay.entries[0].force_visible);
-    }
 
-    #[test]
-    fn visible_scol_ref_synthesizes_unflagged_stat_component_without_global_flag() {
         let temp = tempfile::tempdir().unwrap();
         write_lod_fixture(temp.path(), "lod/architecture/foo/static_lod.nif");
         let scol_form_id = 0x0000_4100_u32;
@@ -3573,7 +3542,7 @@ mod tests {
     }
 
     #[test]
-    fn source_xalg_visible_distant_uses_full_model_proxy_when_no_lod_mesh() {
+    fn source_xalg_visible_distant_uses_full_model_proxy_or_skips_runtime_sky() {
         const XALG_VISIBLE_DISTANT: u64 = 0x0000_0200;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3616,11 +3585,6 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
-    }
-
-    #[test]
-    fn source_xalg_visible_distant_skips_runtime_sky_proxy() {
-        const XALG_VISIBLE_DISTANT: u64 = 0x0000_0200;
 
         let tmp = tempfile::tempdir().unwrap();
         write_full_model_fixture(tmp.path(), r"Sky\Cloud_ValleyFog01_circle.nif", 8);
@@ -3655,7 +3619,7 @@ mod tests {
     }
 
     #[test]
-    fn source_refr_xalg_visible_distant_skips_runtime_effect_proxy() {
+    fn source_refr_visible_distant_and_multiref_lod_use_proxy_without_global_flag() {
         const XALG_VISIBLE_DISTANT: u64 = 0x0000_0200;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3689,11 +3653,6 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
-    }
-
-    #[test]
-    fn source_refr_xalg_visible_distant_uses_proxy_without_global_base_flag() {
-        const XALG_VISIBLE_DISTANT: u64 = 0x0000_0200;
 
         let tmp = tempfile::tempdir().unwrap();
         write_full_model_fixture(tmp.path(), r"Architecture\SkiResort\SkiResort.nif", 8);
@@ -3733,10 +3692,7 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
-    }
 
-    #[test]
-    fn source_refr_multiref_lod_uses_proxy_without_global_base_flag() {
         let tmp = tempfile::tempdir().unwrap();
         write_full_model_fixture(tmp.path(), r"Architecture\HighTech_Mansions\Wall01.nif", 8);
         let source_handle_id = plugin_handle_new_native("SourceRefrMultirefLod.esm", Some("fo76"))
@@ -3775,7 +3731,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_sky_model_clears_stale_generated_proxy_mnam() {
+    fn stale_generated_proxy_mnam_is_cleared_for_runtime_unmarked_and_scol_sources() {
         const XALG_VISIBLE_DISTANT: u64 = 0x0000_0200;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3818,10 +3774,7 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
-    }
 
-    #[test]
-    fn unmarked_source_clears_stale_generated_proxy_mnam() {
         let tmp = tempfile::tempdir().unwrap();
         let source_handle_id =
             plugin_handle_new_native("SourceUnmarked.esm", Some("fo76")).expect("new source");
@@ -3862,10 +3815,7 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
-    }
 
-    #[test]
-    fn stale_generated_scol_mnam_is_removed() {
         let tmp = tempfile::tempdir().unwrap();
         let source_handle_id =
             plugin_handle_new_native("SourceScol.esm", Some("fo76")).expect("new source");
@@ -3915,7 +3865,7 @@ mod tests {
     }
 
     #[test]
-    fn source_header_distant_lod_flag_uses_full_model_proxy_when_target_flag_was_stripped() {
+    fn distant_lod_flags_use_full_model_proxy_when_no_lod_mesh() {
         let tmp = tempfile::tempdir().unwrap();
         write_full_model_fixture(tmp.path(), r"Architecture\SkiResort\SkiResort.nif", 8);
         let source_handle_id =
@@ -3957,6 +3907,39 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
+
+        let tmp = tempfile::tempdir().unwrap();
+        write_full_model_fixture(tmp.path(), r"architecture\bunkers\BunExtMidTower02.nif", 8);
+        let handle_id = plugin_handle_new_native("OutputFlag.esm", Some("fo4")).expect("new");
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle_id).unwrap();
+            esp_authoring_core::plugin_runtime::insert_parsed_record_in_slot(
+                slot,
+                stat_record_with_flags(
+                    0x003b_f623,
+                    r"architecture\bunkers\BunExtMidTower02.nif",
+                    FLAG_HAS_DISTANT_LOD,
+                ),
+            );
+        }
+
+        let report = run_phase_on(handle_id, tmp.path());
+        assert_eq!(report.records_changed, 1);
+
+        let (mnam, flags) = mnam_and_flags(handle_id, 0x003b_f623);
+        let mnam = mnam.expect("distant flag should keep the record in object LOD");
+        assert_ne!(flags & FLAG_HAS_DISTANT_LOD, 0);
+        assert_eq!(
+            read_zstring(&mnam[..MNAM_SLOT]),
+            r"LOD\Generated\FO76\STAT\3BF623_LOD_0.nif"
+        );
+        assert_eq!(
+            read_zstring(&mnam[MNAM_SLOT * 3..MNAM_SLOT * 4]),
+            r"LOD\Generated\FO76\STAT\3BF623_LOD_3.nif"
+        );
+
+        plugin_handle_close_native(handle_id);
     }
 
     #[test]
@@ -3997,43 +3980,7 @@ mod tests {
     }
 
     #[test]
-    fn has_distant_lod_flag_uses_full_model_proxy_when_no_lod_mesh() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_full_model_fixture(tmp.path(), r"architecture\bunkers\BunExtMidTower02.nif", 8);
-        let handle_id = plugin_handle_new_native("OutputFlag.esm", Some("fo4")).expect("new");
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle_id).unwrap();
-            esp_authoring_core::plugin_runtime::insert_parsed_record_in_slot(
-                slot,
-                stat_record_with_flags(
-                    0x003b_f623,
-                    r"architecture\bunkers\BunExtMidTower02.nif",
-                    FLAG_HAS_DISTANT_LOD,
-                ),
-            );
-        }
-
-        let report = run_phase_on(handle_id, tmp.path());
-        assert_eq!(report.records_changed, 1);
-
-        let (mnam, flags) = mnam_and_flags(handle_id, 0x003b_f623);
-        let mnam = mnam.expect("distant flag should keep the record in object LOD");
-        assert_ne!(flags & FLAG_HAS_DISTANT_LOD, 0);
-        assert_eq!(
-            read_zstring(&mnam[..MNAM_SLOT]),
-            r"LOD\Generated\FO76\STAT\3BF623_LOD_0.nif"
-        );
-        assert_eq!(
-            read_zstring(&mnam[MNAM_SLOT * 3..MNAM_SLOT * 4]),
-            r"LOD\Generated\FO76\STAT\3BF623_LOD_3.nif"
-        );
-
-        plugin_handle_close_native(handle_id);
-    }
-
-    #[test]
-    fn source_xalg_never_visible_distant_suppresses_full_model_proxy() {
+    fn source_xalg_never_visible_distant_suppresses_proxy_and_header_flags() {
         let tmp = tempfile::tempdir().unwrap();
         let source_handle_id =
             plugin_handle_new_native("SourceNeverXalg.esm", Some("fo76")).expect("new source");
@@ -4064,10 +4011,7 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
-    }
 
-    #[test]
-    fn source_xalg_never_visible_distant_suppresses_source_header_flag() {
         let tmp = tempfile::tempdir().unwrap();
         let source_handle_id =
             plugin_handle_new_native("SourceNeverHeader.esm", Some("fo76")).expect("new source");
@@ -4102,10 +4046,7 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
-    }
 
-    #[test]
-    fn source_xalg_never_visible_distant_clears_target_header_flag() {
         let tmp = tempfile::tempdir().unwrap();
         write_full_model_fixture(tmp.path(), r"Landscape\Trees\MtnTopRedPineStump01.nif", 8);
         let source_handle_id = plugin_handle_new_native("SourceNeverTargetFlag.esm", Some("fo76"))

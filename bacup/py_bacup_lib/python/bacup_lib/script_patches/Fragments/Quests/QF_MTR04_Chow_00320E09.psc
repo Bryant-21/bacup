@@ -5,7 +5,12 @@ EndFunction
 Function Fragment_Stage_0200_Item_00()
 	SetObjectiveCompleted(100, True)
 	SetObjectiveDisplayed(200, True)
-	BoothWelcome.Start()
+	Quests:MTR04:Chow chowQuest = (Self as Quest) as Quests:MTR04:Chow
+	If chowQuest != None
+		chowQuest.EvaluateBoothWelcome()
+	ElseIf BoothWelcome != None
+		BoothWelcome.Start()
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0201_Item_00()
@@ -38,6 +43,7 @@ Function Fragment_Stage_0900_Item_00()
 	Quests:MTR04:Chow chowQuest = (Self as Quest) as Quests:MTR04:Chow
 	If chowQuest != None
 		chowQuest.FinishEating()
+		chowQuest.ScheduleShutdown()
 	EndIf
 	ChowFailure.Start()
 EndFunction
@@ -47,10 +53,14 @@ Function Fragment_Stage_1000_Item_00()
 	Quests:MTR04:Chow chowQuest = (Self as Quest) as Quests:MTR04:Chow
 	If chowQuest != None
 		chowQuest.FinishEating()
+		chowQuest.ScheduleShutdown()
 	EndIf
 	ChowSuccess.Start()
 EndFunction
 
 Function Fragment_Stage_1500_Item_00()
-	Return
+	Actor playerRef = Alias_Player.GetActorReference()
+	If playerRef != None && CanEatHotdog != None
+		playerRef.SetValue(CanEatHotdog, 0.0)
+	EndIf
 EndFunction

@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn repairs_consume_spell_and_keeps_valid_contact() {
+    fn consume_spell_is_repointed_to_drinking_unless_valid_and_missing_contact_stripped() {
         // XNAM (ConsumeSpell) → ALCH is FO4-invalid; instead of stripping it we
         // repoint it at the paired FO4 drinking spell. YNAM (ContactSpell) → SPEL
         // is valid and left alone.
@@ -339,10 +339,7 @@ mod tests {
         assert_eq!(xnam.local, WATER_RADIATION_DRINKING);
         assert_eq!(interner.resolve(xnam.plugin), Some("Fallout4.esm"));
         assert_eq!(field_fk(&record, "YNAM").unwrap().local, 0x0200);
-    }
 
-    #[test]
-    fn repairs_consume_spell_and_strips_missing_contact() {
         // XNAM unresolvable → repaired to drinking; YNAM unresolvable → stripped.
         let interner = StringInterner::new();
         let mut record = water_record(&interner);
@@ -356,38 +353,23 @@ mod tests {
             field_fk(&record, "XNAM").unwrap().local,
             WATER_RADIATION_DRINKING
         );
-    }
 
-    #[test]
-    fn pairs_high_hazard_contact_to_high_drinking() {
-        let interner = StringInterner::new();
-        let mut record = watr(
-            &interner,
-            vec![
-                field(
-                    "XNAM",
-                    FieldValue::FormKey(fk(0x0100, "Output.esm", &interner)),
-                ),
-                field(
-                    "YNAM",
-                    FieldValue::FormKey(fk(WATER_RADIATION_HIGH_HAZARD, "Fallout4.esm", &interner)),
-                ),
-            ],
-        );
+        let mut record = water_record(&interner);
 
         let changed = repair_water_spell_refs(&mut record, &interner, &mut |fk| match fk.local {
-            WATER_RADIATION_HIGH_HAZARD => Some("SPEL".to_string()),
+            0x0100 => Some("SPEL".to_string()),
+            0x0200 => Some("SPEL".to_string()),
             _ => None,
         });
 
-        assert_eq!(changed, 1);
+        assert_eq!(changed, 0);
         let xnam = field_fk(&record, "XNAM").unwrap();
-        assert_eq!(xnam.local, WATER_RADIATION_HIGH_DRINKING);
-        assert_eq!(interner.resolve(xnam.plugin), Some("Fallout4.esm"));
+        assert_eq!(xnam.local, 0x0100);
+        assert_eq!(interner.resolve(xnam.plugin), Some("Output.esm"));
     }
 
     #[test]
-    fn inserts_consume_spell_when_absent_with_valid_contact() {
+    fn consume_spell_pairs_with_the_contact_hazard() {
         // Earlier passes removed XNAM entirely; a valid ContactSpell remains → the
         // paired drinking spell is inserted before YNAM.
         let interner = StringInterner::new();
@@ -417,22 +399,29 @@ mod tests {
             field_fk(&record, "XNAM").unwrap().local,
             WATER_RADIATION_DRINKING
         );
-    }
 
-    #[test]
-    fn keeps_valid_consume_spell() {
-        let interner = StringInterner::new();
-        let mut record = water_record(&interner);
+        let mut record = watr(
+            &interner,
+            vec![
+                field(
+                    "XNAM",
+                    FieldValue::FormKey(fk(0x0100, "Output.esm", &interner)),
+                ),
+                field(
+                    "YNAM",
+                    FieldValue::FormKey(fk(WATER_RADIATION_HIGH_HAZARD, "Fallout4.esm", &interner)),
+                ),
+            ],
+        );
 
         let changed = repair_water_spell_refs(&mut record, &interner, &mut |fk| match fk.local {
-            0x0100 => Some("SPEL".to_string()),
-            0x0200 => Some("SPEL".to_string()),
+            WATER_RADIATION_HIGH_HAZARD => Some("SPEL".to_string()),
             _ => None,
         });
 
-        assert_eq!(changed, 0);
+        assert_eq!(changed, 1);
         let xnam = field_fk(&record, "XNAM").unwrap();
-        assert_eq!(xnam.local, 0x0100);
-        assert_eq!(interner.resolve(xnam.plugin), Some("Output.esm"));
+        assert_eq!(xnam.local, WATER_RADIATION_HIGH_DRINKING);
+        assert_eq!(interner.resolve(xnam.plugin), Some("Fallout4.esm"));
     }
 }

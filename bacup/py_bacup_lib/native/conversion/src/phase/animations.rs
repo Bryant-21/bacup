@@ -56,6 +56,7 @@ use crate::source_rig::{ClipBinding, ClipDecl};
 // Embedded weapon-family table
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 const WEAPON_FAMILY_YAML: &str = include_str!("animations/weapon_family_table.yaml");
 
 // ---------------------------------------------------------------------------
@@ -489,6 +490,7 @@ pub(crate) struct StagedFnvKfArtifact {
     pub(crate) receipt: FnvKfArtifactReceipt,
 }
 
+#[cfg(test)]
 pub(crate) fn convert_kf_to_hkx(
     kf_path: &Path,
     out_path: &Path,
@@ -845,9 +847,6 @@ struct AnimationKeyframe {
     /// Quaternion (x,y,z,w) for rotation; (x,y,z) for translation; (s,) for scale.
     value: Vec<f64>,
     interpolation: Interpolation,
-    forward: Option<Vec<f64>>,
-    backward: Option<Vec<f64>>,
-    tbc: Option<(f64, f64, f64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -873,7 +872,6 @@ impl Interpolation {
 #[derive(Debug, Clone)]
 struct BoneChannel {
     bone_name: String,
-    priority: u32,
     rotations: Vec<AnimationKeyframe>,
     translations: Vec<AnimationKeyframe>,
     scales: Vec<AnimationKeyframe>,
@@ -883,9 +881,6 @@ struct BoneChannel {
 struct FloatChannel {
     slot_name: String,
     target_name: String,
-    property_type: String,
-    controller_type: String,
-    controller_id: String,
     keyframes: Vec<AnimationKeyframe>,
 }
 
@@ -1677,15 +1672,6 @@ pub(crate) struct FnvKfSequenceCatalogEntry {
     block_index: usize,
 }
 
-pub(crate) fn catalog_fnv_kf_sequences(
-    bytes: &[u8],
-    source_path: &str,
-) -> Result<Vec<FnvKfSequenceCatalogEntry>, KfParseError> {
-    let nif = NifFile::from_bytes(bytes, None)
-        .map_err(|e| KfParseError::Message(format!("NIF parse failed ({source_path}): {e}")))?;
-    Ok(catalog_fnv_kf_sequences_from_nif(&nif))
-}
-
 fn catalog_fnv_kf_sequences_from_nif(nif: &NifFile) -> Vec<FnvKfSequenceCatalogEntry> {
     nif.blocks
         .iter()
@@ -1936,7 +1922,6 @@ fn parse_kf_sequence(
         let node_name = cb.string_or("Node Name", "");
         let ctrl_type = cb.string_or("Controller Type", "");
         let ctrl_id = cb.string_or("Controller ID", "");
-        let priority = cb.u32_or("Priority", 26);
         let prop_type = cb.string_or("Property Type", "");
 
         if interp_ref < 0 {
@@ -1979,16 +1964,7 @@ fn parse_kf_sequence(
                     ));
                     continue;
                 }
-                let ch = read_transform_channel(nif, interp, &node_name, priority, &mut warnings)
-                    .map_err(|source| KfParseError::Channel {
-                    target_name: node_name.clone(),
-                    interpolator_type: interp.type_name.clone(),
-                    source,
-                })?;
-                bone_channels.push(ch);
-            }
-            "NiBSplineTransformInterpolator" => {
-                let ch = read_spline_transform_channel(nif, interp, &node_name, priority).map_err(
+                let ch = read_transform_channel(nif, interp, &node_name, &mut warnings).map_err(
                     |source| KfParseError::Channel {
                         target_name: node_name.clone(),
                         interpolator_type: interp.type_name.clone(),
@@ -1997,23 +1973,34 @@ fn parse_kf_sequence(
                 )?;
                 bone_channels.push(ch);
             }
-            "NiBSplineCompTransformInterpolator" => {
-                let ch = read_compact_spline_transform_channel(nif, interp, &node_name, priority)
-                    .map_err(|source| KfParseError::CompactSpline {
-                    bone_name: node_name.clone(),
-                    source,
-                })?;
-                bone_channels.push(ch);
-            }
-            "BSTreadTransfInterpolator" => {
-                let channels =
-                    read_tread_transform_channels(nif, interp, priority).map_err(|source| {
+            "NiBSplineTransformInterpolator" => {
+                let ch =
+                    read_spline_transform_channel(nif, interp, &node_name).map_err(|source| {
                         KfParseError::Channel {
                             target_name: node_name.clone(),
                             interpolator_type: interp.type_name.clone(),
                             source,
                         }
                     })?;
+                bone_channels.push(ch);
+            }
+            "NiBSplineCompTransformInterpolator" => {
+                let ch = read_compact_spline_transform_channel(nif, interp, &node_name).map_err(
+                    |source| KfParseError::CompactSpline {
+                        bone_name: node_name.clone(),
+                        source,
+                    },
+                )?;
+                bone_channels.push(ch);
+            }
+            "BSTreadTransfInterpolator" => {
+                let channels = read_tread_transform_channels(nif, interp).map_err(|source| {
+                    KfParseError::Channel {
+                        target_name: node_name.clone(),
+                        interpolator_type: interp.type_name.clone(),
+                        source,
+                    }
+                })?;
                 bone_channels.extend(channels);
             }
             "NiFloatInterpolator" | "NiBoolInterpolator" | "NiBoolTimelineInterpolator" => {
@@ -2209,11 +2196,9 @@ fn read_compact_spline_transform_channel(
     nif: &NifFile,
     interp: &nif_core_native::model::NifBlock,
     bone_name: &str,
-    priority: u32,
 ) -> Result<BoneChannel, CompactSplineError> {
     let mut channel = BoneChannel {
         bone_name: bone_name.to_string(),
-        priority,
         rotations: Vec::new(),
         translations: Vec::new(),
         scales: Vec::new(),
@@ -2317,7 +2302,6 @@ fn read_spline_transform_channel(
     nif: &NifFile,
     interp: &nif_core_native::model::NifBlock,
     bone_name: &str,
-    priority: u32,
 ) -> Result<BoneChannel, ChannelDecodeError> {
     let spline_ref = interp
         .block_ref_field("Spline Data")
@@ -2342,7 +2326,6 @@ fn read_spline_transform_channel(
 
     let mut channel = BoneChannel {
         bone_name: bone_name.to_string(),
-        priority,
         translations: read_float_spline_vector_channel(
             interp,
             &float_points,
@@ -2403,7 +2386,6 @@ fn read_spline_transform_channel(
 fn read_tread_transform_channels(
     nif: &NifFile,
     interp: &nif_core_native::model::NifBlock,
-    priority: u32,
 ) -> Result<Vec<BoneChannel>, ChannelDecodeError> {
     let data_ref = interp
         .block_ref_field("Data")
@@ -2494,7 +2476,6 @@ fn read_tread_transform_channels(
             };
             Ok(BoneChannel {
                 bone_name,
-                priority,
                 rotations,
                 translations,
                 scales,
@@ -2697,9 +2678,6 @@ fn read_compact_spline_float_channel(
             None,
         ),
         target_name: target_name.to_string(),
-        property_type: property_type.to_string(),
-        controller_type: controller_type.to_string(),
-        controller_id: controller_id.to_string(),
         keyframes,
     })
 }
@@ -2796,9 +2774,6 @@ fn read_point3_channels(
                     time: key.f64_or("Time", 0.0),
                     value,
                     interpolation,
-                    forward: None,
-                    backward: None,
-                    tbc: None,
                 })
             })
             .collect::<Result<Vec<_>, ChannelDecodeError>>()?
@@ -2858,9 +2833,6 @@ fn split_point3_float_channels(
                     Some(component),
                 ),
                 target_name: target_name.to_string(),
-                property_type: property_type.to_string(),
-                controller_type: controller_type.to_string(),
-                controller_id: controller_id.to_string(),
                 keyframes,
             })
         })
@@ -3193,9 +3165,6 @@ fn linear_keyframe(time: f64, value: Vec<f64>) -> AnimationKeyframe {
         time,
         value,
         interpolation: Interpolation::Linear,
-        forward: None,
-        backward: None,
-        tbc: None,
     }
 }
 
@@ -3203,13 +3172,11 @@ fn read_transform_channel(
     nif: &NifFile,
     interp: &nif_core_native::model::NifBlock,
     bone_name: &str,
-    priority: u32,
     warnings: &mut Vec<String>,
 ) -> Result<BoneChannel, ChannelDecodeError> {
     let start = interp.f64_field("Start Time").unwrap_or(0.0);
     let mut channel = BoneChannel {
         bone_name: bone_name.to_string(),
-        priority,
         rotations: compact_base_rotation(interp)
             .map(|value| vec![linear_keyframe(start, value)])
             .unwrap_or_default(),
@@ -3305,19 +3272,10 @@ fn read_rotation_keys(
         let x = val.as_ref().map_or(0.0, |v| v.f64_or("x", 0.0));
         let y = val.as_ref().map_or(0.0, |v| v.f64_or("y", 0.0));
         let z = val.as_ref().map_or(0.0, |v| v.f64_or("z", 0.0));
-        let tbc = if interp == Interpolation::Tbc {
-            qk.struct_field("TBC")
-                .map(|t| (t.f64_or("t", 0.0), t.f64_or("b", 0.0), t.f64_or("c", 0.0)))
-        } else {
-            None
-        };
         keyframes.push(AnimationKeyframe {
             time,
             value: vec![x, y, z, w],
             interpolation: interp,
-            forward: None,
-            backward: None,
-            tbc,
         });
     }
     keyframes
@@ -3364,9 +3322,6 @@ fn read_xyz_rotation_keys(
                 time: t,
                 value: vec![qx, qy, qz, qw],
                 interpolation: Interpolation::Linear,
-                forward: None,
-                backward: None,
-                tbc: None,
             }
         })
         .collect()
@@ -3396,31 +3351,10 @@ fn read_translation_keys(data: &nif_core_native::model::NifBlock) -> Vec<Animati
             let x = val.as_ref().map_or(0.0, |v| v.f64_or("x", 0.0));
             let y = val.as_ref().map_or(0.0, |v| v.f64_or("y", 0.0));
             let z = val.as_ref().map_or(0.0, |v| v.f64_or("z", 0.0));
-            let forward = if interp == Interpolation::Quadratic {
-                k.struct_field("Forward")
-                    .map(|f| vec![f.f64_or("x", 0.0), f.f64_or("y", 0.0), f.f64_or("z", 0.0)])
-            } else {
-                None
-            };
-            let backward = if interp == Interpolation::Quadratic {
-                k.struct_field("Backward")
-                    .map(|b| vec![b.f64_or("x", 0.0), b.f64_or("y", 0.0), b.f64_or("z", 0.0)])
-            } else {
-                None
-            };
-            let tbc = if interp == Interpolation::Tbc {
-                k.struct_field("TBC")
-                    .map(|t| (t.f64_or("t", 0.0), t.f64_or("b", 0.0), t.f64_or("c", 0.0)))
-            } else {
-                None
-            };
             AnimationKeyframe {
                 time,
                 value: vec![x, y, z],
                 interpolation: interp,
-                forward,
-                backward,
-                tbc,
             }
         })
         .collect()
@@ -3447,21 +3381,10 @@ fn read_scale_keys(data: &nif_core_native::model::NifBlock) -> Vec<AnimationKeyf
         .map(|k| {
             let time = k.f64_or("Time", 0.0);
             let val = k.f64_or("Value", 1.0);
-            let forward = k.f64_opt("Forward").map(|f| vec![f]);
-            let backward = k.f64_opt("Backward").map(|b| vec![b]);
-            let tbc = if interp == Interpolation::Tbc {
-                k.struct_field("TBC")
-                    .map(|t| (t.f64_or("t", 0.0), t.f64_or("b", 0.0), t.f64_or("c", 0.0)))
-            } else {
-                None
-            };
             AnimationKeyframe {
                 time,
                 value: vec![val],
                 interpolation: interp,
-                forward,
-                backward,
-                tbc,
             }
         })
         .collect()
@@ -3551,9 +3474,6 @@ fn read_float_channel(
             None,
         ),
         target_name: target_name.to_string(),
-        property_type: prop.to_string(),
-        controller_type: controller_type.to_string(),
-        controller_id: controller_id.to_string(),
         keyframes,
     })
 }
@@ -3572,30 +3492,10 @@ fn linear_or_tangent_keyframe(
     interpolation: Interpolation,
     value: Vec<f64>,
 ) -> AnimationKeyframe {
-    let forward = (interpolation == Interpolation::Quadratic)
-        .then(|| key.f64_opt("Forward").map(|value| vec![value]))
-        .flatten();
-    let backward = (interpolation == Interpolation::Quadratic)
-        .then(|| key.f64_opt("Backward").map(|value| vec![value]))
-        .flatten();
-    let tbc = (interpolation == Interpolation::Tbc)
-        .then(|| {
-            key.struct_field("TBC").map(|tbc| {
-                (
-                    tbc.f64_or("t", 0.0),
-                    tbc.f64_or("b", 0.0),
-                    tbc.f64_or("c", 0.0),
-                )
-            })
-        })
-        .flatten();
     AnimationKeyframe {
         time: key.f64_or("Time", 0.0),
         value,
         interpolation,
-        forward,
-        backward,
-        tbc,
     }
 }
 
@@ -4029,6 +3929,7 @@ fn quaternion_to_euler(value: (f64, f64, f64, f64)) -> (f64, f64, f64) {
     (roll, pitch, yaw)
 }
 
+#[cfg(test)]
 fn clip_to_havok_xml(
     clip: &AnimationClip,
     declaration: &ClipDecl,
@@ -4308,6 +4209,7 @@ struct WeaponFamilyTable {
 }
 
 impl WeaponFamilyTable {
+    #[cfg(test)]
     fn load(yaml_text: &str) -> Self {
         let val: serde_json::Value = match serde_saphyr::from_str(yaml_text) {
             Ok(v) => v,
@@ -4386,6 +4288,7 @@ impl WeaponFamilyTable {
         }
     }
 
+    #[cfg(test)]
     fn empty() -> Self {
         Self {
             families: HashMap::new(),
@@ -4617,50 +4520,6 @@ mod tests {
         .unwrap()
     }
 
-    fn fnv_animation_fixture(relative_path: &str) -> Option<PathBuf> {
-        legacy_animation_fixture("fnv", relative_path)
-    }
-
-    fn fo3_animation_fixture(relative_path: &str) -> Option<PathBuf> {
-        legacy_animation_fixture("fo3", relative_path)
-    }
-
-    fn legacy_animation_fixture(game: &str, relative_path: &str) -> Option<PathBuf> {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| path.join("extracted").join(game).is_dir())?;
-        let path = repo_root.join("extracted").join(game).join(relative_path);
-        path.is_file().then_some(path)
-    }
-
-    fn recursive_kf_paths(root: &Path) -> Vec<PathBuf> {
-        let mut pending = vec![root.to_path_buf()];
-        let mut paths = Vec::new();
-        while let Some(directory) = pending.pop() {
-            let Ok(entries) = std::fs::read_dir(directory) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("kf"))
-                {
-                    paths.push(path);
-                }
-            }
-        }
-        paths.sort();
-        paths
-    }
-
-    fn ordered_fixture_skeleton_names(bytes: &[u8]) -> Vec<String> {
-        let nif = NifFile::from_bytes(bytes, None).unwrap();
-        ordered_named_nif_nodes(&nif)
-    }
-
     fn binding_test_clip(track_names: &[&str]) -> AnimationClip {
         AnimationClip {
             name: "Idle".to_string(),
@@ -4675,153 +4534,12 @@ mod tests {
                 .iter()
                 .map(|name| BoneChannel {
                     bone_name: (*name).to_string(),
-                    priority: 0,
                     rotations: Vec::new(),
                     translations: Vec::new(),
                     scales: Vec::new(),
                 })
                 .collect(),
             ..Default::default()
-        }
-    }
-
-    fn compact_track_names(bytes: &[u8]) -> HashSet<String> {
-        let nif = NifFile::from_bytes(bytes, None).unwrap();
-        let sequence = nif
-            .blocks
-            .iter()
-            .find(|block| block.type_name == "NiControllerSequence")
-            .unwrap();
-        sequence
-            .array_of_structs("Controlled Blocks")
-            .into_iter()
-            .filter_map(|controlled| {
-                let reference = controlled.block_ref_or("Interpolator", -1);
-                let block = (reference >= 0)
-                    .then(|| nif.blocks.get(reference as usize))
-                    .flatten()?;
-                (block.type_name == "NiBSplineCompTransformInterpolator")
-                    .then(|| controlled.string_or("Node Name", ""))
-            })
-            .collect()
-    }
-
-    fn malformed_compact_kf_bytes(relative_path: &str) -> Option<(Vec<u8>, String)> {
-        let path = fnv_animation_fixture(relative_path)?;
-        let mut nif = NifFile::from_bytes(&std::fs::read(path).unwrap(), None).unwrap();
-        let sequence = nif
-            .blocks
-            .iter()
-            .find(|block| block.type_name == "NiControllerSequence")?;
-        let (interpolator_index, bone_name) = sequence
-            .array_of_structs("Controlled Blocks")
-            .into_iter()
-            .find_map(|controlled| {
-                let reference = controlled.block_ref_or("Interpolator", -1);
-                let interpolator = (reference >= 0)
-                    .then(|| nif.blocks.get(reference as usize))
-                    .flatten()?;
-                (interpolator.type_name == "NiBSplineCompTransformInterpolator")
-                    .then(|| (reference as usize, controlled.string_or("Node Name", "")))
-            })?;
-        let basis_index = nif.blocks[interpolator_index].block_ref_field("Basis Data")?;
-        nif.blocks[basis_index].set_field("Num Control Points", NifValue::UInt(3));
-        Some((nif.to_bytes().unwrap(), bone_name))
-    }
-
-    fn assert_clip_samples(clip: &AnimationClip, compact_names: &HashSet<String>) {
-        assert!(clip.duration.is_finite() && clip.duration > 0.0);
-        assert!(
-            clip.warnings.is_empty(),
-            "unexpected KF parse warnings: {:?}",
-            clip.warnings
-        );
-
-        let unique_names: HashSet<&str> = clip
-            .channels
-            .iter()
-            .map(|channel| channel.bone_name.as_str())
-            .collect();
-        assert_eq!(unique_names.len(), clip.channels.len());
-        assert!(unique_names.iter().all(|name| !name.is_empty()));
-
-        for channel in &clip.channels {
-            if compact_names.contains(&channel.bone_name) {
-                assert!(
-                    !channel.rotations.is_empty()
-                        || !channel.translations.is_empty()
-                        || !channel.scales.is_empty(),
-                    "compact track '{}' produced no transform samples",
-                    channel.bone_name
-                );
-            }
-            for keys in [&channel.rotations, &channel.translations, &channel.scales] {
-                for key in keys {
-                    assert!(key.time.is_finite());
-                    assert!(key.time >= -1.0e-6 && key.time <= clip.duration + 1.0e-5);
-                    assert!(key.value.iter().all(|value| value.is_finite()));
-                }
-            }
-            if compact_names.contains(&channel.bone_name) {
-                for key in &channel.rotations {
-                    let norm = key
-                        .value
-                        .iter()
-                        .map(|value| value * value)
-                        .sum::<f64>()
-                        .sqrt();
-                    assert!(
-                        (norm - 1.0).abs() < 1.0e-6,
-                        "compact rotation key for '{}' has norm {norm}",
-                        channel.bone_name
-                    );
-                }
-            }
-
-            for time in [0.0, clip.duration * 0.5, clip.duration] {
-                let translation = sample_translation(&channel.translations, time);
-                assert!(
-                    [translation.0, translation.1, translation.2]
-                        .iter()
-                        .all(|value| value.is_finite())
-                );
-                let rotation = sample_rotation(&channel.rotations, time);
-                let rotation_norm = (rotation.0 * rotation.0
-                    + rotation.1 * rotation.1
-                    + rotation.2 * rotation.2
-                    + rotation.3 * rotation.3)
-                    .sqrt();
-                assert!((rotation_norm - 1.0).abs() < 1.0e-6);
-                assert!(sample_scale_val(&channel.scales, time).is_finite());
-            }
-        }
-    }
-
-    fn assert_packed_fo4_animation_signatures(
-        packed: &havok_native::hkx::HkxFile,
-        expect_reference_frame: bool,
-    ) {
-        for (class_name, expected_signature) in [
-            ("hkRootLevelContainer", 0x2772_c11e),
-            ("hkaAnimationContainer", 0x2685_9f4c),
-            ("hkaInterleavedUncompressedAnimation", 0xa5ef_f3f2),
-            ("hkaAnimationBinding", 0x0faf_9150),
-        ] {
-            let object = packed
-                .objects()
-                .iter()
-                .find(|object| object.class_name == class_name)
-                .unwrap_or_else(|| panic!("packed HKX missing {class_name}"));
-            assert_eq!(object.signature, expected_signature, "{class_name}");
-        }
-        let reference_frame = packed
-            .objects()
-            .iter()
-            .find(|object| object.class_name == "hkaDefaultAnimatedReferenceFrame");
-        if expect_reference_frame {
-            assert_eq!(reference_frame.unwrap().signature, 0x60f8_e0b8);
-        } else {
-            assert!(reference_frame.is_none());
         }
     }
 
@@ -4871,6 +4589,9 @@ mod tests {
         for weights in &sampling.weights {
             assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1.0e-12);
         }
+        assert!((decompress_compact(i16::MIN + 1, 2.0, 1.5) - 0.5).abs() < 1.0e-12);
+        assert!((decompress_compact(0, 2.0, 1.5) - 2.0).abs() < 1.0e-12);
+        assert!((decompress_compact(i16::MAX, 2.0, 1.5) - 3.5).abs() < 1.0e-12);
     }
 
     #[test]
@@ -4886,21 +4607,6 @@ mod tests {
                 stop: 1.0
             })
         ));
-    }
-
-    #[test]
-    fn compact_short_decompression_uses_offset_and_half_range() {
-        assert!((decompress_compact(i16::MIN + 1, 2.0, 1.5) - 0.5).abs() < 1.0e-12);
-        assert!((decompress_compact(0, 2.0, 1.5) - 2.0).abs() < 1.0e-12);
-        assert!((decompress_compact(i16::MAX, 2.0, 1.5) - 3.5).abs() < 1.0e-12);
-    }
-
-    #[test]
-    fn fnv_cycle_type_matches_nif_schema() {
-        assert_eq!(fnv_cycle_type(0), Some("loop"));
-        assert_eq!(fnv_cycle_type(1), Some("reverse"));
-        assert_eq!(fnv_cycle_type(2), Some("clamp"));
-        assert_eq!(fnv_cycle_type(3), None);
     }
 
     #[test]
@@ -5177,17 +4883,11 @@ mod tests {
                 time: 0.0,
                 value: vec![0.0, 0.0, 0.0],
                 interpolation: Interpolation::Linear,
-                forward: None,
-                backward: None,
-                tbc: None,
             },
             AnimationKeyframe {
                 time: 1.0,
                 value: vec![0.0, 0.0, 10.0],
                 interpolation: Interpolation::Linear,
-                forward: None,
-                backward: None,
-                tbc: None,
             },
         ];
         let declaration = bind_fnv_kf_clip(
@@ -5211,554 +4911,6 @@ mod tests {
             error,
             FnvKfConversionError::UnsupportedVerticalRootMotion { track: 0, .. }
         ));
-    }
-
-    #[test]
-    fn malformed_real_compact_track_is_typed_fatal_and_writes_nothing() {
-        let relative_path = "meshes/creatures/nvgecko/mtidle.kf";
-        let Some((malformed_bytes, expected_bone)) = malformed_compact_kf_bytes(relative_path)
-        else {
-            return;
-        };
-        let parse_error = parse_kf_bytes(&malformed_bytes, relative_path).unwrap_err();
-        assert!(matches!(
-            parse_error,
-            KfParseError::CompactSpline {
-                bone_name: ref actual_bone,
-                source: CompactSplineError::InvalidControlPointCount(3),
-            } if actual_bone == &expected_bone
-        ));
-        assert!(matches!(
-            parse_fnv_creature_kf(&malformed_bytes, relative_path, None, None),
-            Err(KfParseError::CompactSpline {
-                bone_name: ref actual_bone,
-                source: CompactSplineError::InvalidControlPointCount(3),
-            }) if actual_bone == &expected_bone
-        ));
-        assert!(matches!(
-            stage_fnv_creature_kf(
-                &malformed_bytes,
-                FnvKfStageRequest {
-                    source_kf: relative_path,
-                    output_clip_path: "Actors/Test/Animations/Malformed.hkx",
-                    sequence_index: None,
-                    skeleton: FnvKfSkeletonContract {
-                        skeleton_path: "Actors/Test/CharacterAssets/Skeleton.hkx",
-                        ordered_bone_names: &[],
-                        ordered_float_slot_names: &[],
-                    },
-                    original_skeleton_name: "Test",
-                    event_map: &HashMap::new(),
-                    target_sample_rate_hz: None,
-                    extracted_motion_policy: FnvExtractedMotionPolicy::RejectNonzero,
-                }
-            ),
-            Err(FnvKfConversionError::CompactSplineDecode {
-                bone_name: ref actual_bone,
-                source: CompactSplineError::InvalidControlPointCount(3),
-                ..
-            }) if actual_bone == &expected_bone
-        ));
-
-        let Some(skeleton_path) = fnv_animation_fixture("meshes/creatures/nvgecko/skeleton.nif")
-        else {
-            return;
-        };
-        let temp = tempfile::tempdir().unwrap();
-        let malformed_path = temp.path().join("malformed-mtidle.kf");
-        let output_path = temp.path().join("Idle.hkx");
-        std::fs::write(&malformed_path, malformed_bytes).unwrap();
-        let conversion_error = convert_kf_to_hkx(
-            &malformed_path,
-            &output_path,
-            &HashMap::new(),
-            relative_path,
-            "Actors/B21_FNVGecko/Animations/Idle.hkx",
-            None,
-            Some(&skeleton_path),
-            Some("Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"),
-            Some("NVGecko"),
-            None,
-            FnvExtractedMotionPolicy::RejectNonzero,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            conversion_error,
-            FnvKfConversionError::CompactSplineDecode {
-                bone_name: ref actual_bone,
-                source: CompactSplineError::InvalidControlPointCount(3),
-                ..
-            } if actual_bone == &expected_bone
-        ));
-        assert!(!output_path.exists());
-    }
-
-    #[test]
-    fn real_fnv_human_attack_decodes_all_compact_tracks() {
-        let Some(path) = fnv_animation_fixture("meshes/characters/_male/1hmattackpower.kf") else {
-            return;
-        };
-        let Some(skeleton_path) = fnv_animation_fixture("meshes/characters/_male/skeleton.nif")
-        else {
-            return;
-        };
-        let bytes = std::fs::read(&path).unwrap();
-        let skeleton_names =
-            ordered_fixture_skeleton_names(&std::fs::read(&skeleton_path).unwrap());
-        let compact_names = compact_track_names(&bytes);
-        let clip = parse_kf_bytes(&bytes, "characters/_male/1hmattackpower.kf").unwrap();
-        let duration = clip.duration;
-        let events: Vec<(f64, String)> = clip
-            .events
-            .iter()
-            .map(|event| (event.time, event.text.clone()))
-            .collect();
-        let binding_error = bind_fnv_kf_transform_tracks(&skeleton_names, &clip).unwrap_err();
-        assert_eq!(
-            binding_error,
-            FnvKfBindingError::UnsupportedOverlayChannel {
-                track: 56,
-                name: "##batonhandle".to_string(),
-            }
-        );
-
-        let overlay_targets: Vec<(usize, &str)> = clip
-            .channels
-            .iter()
-            .enumerate()
-            .filter(|(_, channel)| channel.bone_name.starts_with("##"))
-            .map(|(index, channel)| (index, channel.bone_name.as_str()))
-            .collect();
-        assert_eq!(
-            overlay_targets,
-            vec![(56, "##batonhandle"), (57, "##BatonShaft"), (58, "##Latch"),]
-        );
-        assert!(
-            overlay_targets
-                .iter()
-                .all(|(_, name)| !compact_names.contains(*name))
-        );
-        let mut skeletal_clip = clip.clone();
-        skeletal_clip
-            .channels
-            .retain(|channel| !channel.bone_name.starts_with("##"));
-        let mapping = bind_fnv_kf_transform_tracks(&skeleton_names, &skeletal_clip).unwrap();
-
-        eprintln!(
-            "FNV human 1hmattackpower: total={} skeletal={} overlay={} compact={}",
-            clip.channels.len(),
-            mapping.len(),
-            overlay_targets.len(),
-            compact_names.len()
-        );
-        assert_eq!(clip.channels.len(), 63);
-        assert_eq!(compact_names.len(), 42);
-        assert_eq!(skeleton_names.len(), 65);
-        assert!(!compact_names.contains("##batonhandle"));
-        assert!((clip.duration - 1.2).abs() < 1.0e-5);
-        assert!(clip.events.iter().any(|event| event.text == "hit"));
-        assert_eq!(skeletal_clip.channels.len(), 60);
-        assert_eq!(mapping.len(), 60);
-        assert_eq!(mapping.iter().copied().collect::<HashSet<_>>().len(), 60);
-        assert!(mapping.iter().all(|index| *index < skeleton_names.len()));
-        assert_eq!(clip.duration, duration);
-        assert_eq!(
-            clip.events
-                .iter()
-                .map(|event| (event.time, event.text.clone()))
-                .collect::<Vec<_>>(),
-            events
-        );
-        assert_clip_samples(&clip, &compact_names);
-    }
-
-    #[test]
-    fn real_fnv_gecko_idle_decodes_all_compact_tracks() {
-        let Some(path) = fnv_animation_fixture("meshes/creatures/nvgecko/mtidle.kf") else {
-            return;
-        };
-        let Some(skeleton_path) = fnv_animation_fixture("meshes/creatures/nvgecko/skeleton.nif")
-        else {
-            return;
-        };
-        let bytes = std::fs::read(&path).unwrap();
-        let skeleton_names =
-            ordered_fixture_skeleton_names(&std::fs::read(&skeleton_path).unwrap());
-        let compact_names = compact_track_names(&bytes);
-        let clip = parse_kf_bytes(&bytes, "creatures/nvgecko/mtidle.kf").unwrap();
-        let duration = clip.duration;
-        let events: Vec<(f64, String)> = clip
-            .events
-            .iter()
-            .map(|event| (event.time, event.text.clone()))
-            .collect();
-        let declaration = bind_fnv_kf_clip(
-            &skeleton_names,
-            &clip,
-            "Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx",
-            "Actors\\B21_FNVGecko\\Animations\\Idle.hkx",
-            "NVGecko",
-            &[],
-        )
-        .unwrap();
-
-        eprintln!(
-            "FNV Gecko mtidle: total={} compact={}",
-            clip.channels.len(),
-            compact_names.len()
-        );
-        assert_eq!(clip.channels.len(), 84);
-        assert_eq!(compact_names.len(), 44);
-        assert!((clip.duration - 13.333_334).abs() < 1.0e-5);
-        assert_eq!(skeleton_names.len(), 87);
-        assert_eq!(declaration.binding.declared_transform_tracks, 84);
-        assert_eq!(
-            declaration.path,
-            "Actors\\B21_FNVGecko\\Animations\\Idle.hkx"
-        );
-        assert_eq!(
-            declaration.binding.skeleton_path,
-            "Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"
-        );
-        assert_eq!(
-            declaration.binding.transform_track_to_bone_indices.len(),
-            84
-        );
-        assert_eq!(
-            declaration
-                .binding
-                .transform_track_to_bone_indices
-                .iter()
-                .copied()
-                .collect::<HashSet<_>>()
-                .len(),
-            84
-        );
-        assert!(
-            declaration
-                .binding
-                .transform_track_to_bone_indices
-                .iter()
-                .all(|index| *index < skeleton_names.len())
-        );
-        assert_ne!(
-            declaration.binding.transform_track_to_bone_indices,
-            (0..84).collect::<Vec<_>>(),
-            "binding must follow canonical bone names, not KF track position"
-        );
-        assert_eq!(clip.duration, duration);
-        assert_eq!(
-            clip.events
-                .iter()
-                .map(|event| (event.time, event.text.clone()))
-                .collect::<Vec<_>>(),
-            events
-        );
-        assert_clip_samples(&clip, &compact_names);
-
-        let temp = tempfile::tempdir().unwrap();
-        let rejected_extract_path = temp.path().join("mtidle-extract.hkx");
-        let rejected_extract = convert_kf_to_hkx(
-            &path,
-            &rejected_extract_path,
-            &HashMap::new(),
-            "Meshes/creatures/nvgecko/mtidle.kf",
-            "Actors/B21_FNVGecko/Animations/Idle.hkx",
-            None,
-            Some(&skeleton_path),
-            Some("Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"),
-            Some("NVGecko"),
-            None,
-            FnvExtractedMotionPolicy::ExtractPlanarReferenceFrame,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            rejected_extract,
-            FnvKfConversionError::MissingAccumRootTrack { ref name } if name == "Bip01"
-        ));
-        assert!(!rejected_extract_path.exists());
-
-        let output_path = temp.path().join("mtidle.hkx");
-        let conversion_outcome = convert_kf_to_hkx(
-            &path,
-            &output_path,
-            &HashMap::new(),
-            "Meshes/creatures/nvgecko/mtidle.kf",
-            "Actors/B21_FNVGecko/Animations/Idle.hkx",
-            None,
-            Some(&skeleton_path),
-            Some("Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"),
-            Some("NVGecko"),
-            None,
-            FnvExtractedMotionPolicy::RejectNonzero,
-        )
-        .unwrap();
-        assert!(conversion_outcome.warnings.is_empty());
-        assert_eq!(conversion_outcome.motion, FnvClipMotion::InPlace);
-        assert_eq!(
-            conversion_outcome.output_clip_path,
-            "Actors\\B21_FNVGecko\\Animations\\Idle.hkx"
-        );
-
-        let packed_bytes = std::fs::read(&output_path).unwrap();
-        let packed = havok_native::hkx::HkxFile::read(&packed_bytes).unwrap();
-        assert_eq!(packed.class_version(), 11);
-        assert_eq!(packed.contents_version(), "hk_2014.1.0-r1");
-        assert_eq!(packed.packfile().header.pointer_size, 8);
-        assert_packed_fo4_animation_signatures(&packed, false);
-
-        let roundtrip_xml = havok_native::api::havok_hkx_to_xml(&packed_bytes).unwrap();
-        let roundtrip_clip =
-            havok_native::animation::clip::extract_clip(&roundtrip_xml, None).unwrap();
-        assert!((roundtrip_clip.duration - clip.duration as f32).abs() < 1.0e-4);
-        assert_eq!(
-            roundtrip_clip.original_skeleton_name.as_deref(),
-            Some("NVGecko")
-        );
-        assert_eq!(roundtrip_clip.channels.len(), 84);
-        assert!(roundtrip_clip.extracted_motion_ref.is_empty());
-        assert_eq!(roundtrip_clip.channels[0].translations.len(), 401);
-        assert_eq!(target_sample_count(clip.duration, 30.0), 401);
-        assert_eq!(
-            roundtrip_clip.track_to_bone_indices,
-            declaration
-                .binding
-                .transform_track_to_bone_indices
-                .iter()
-                .map(|index| *index as u32)
-                .collect::<Vec<_>>()
-        );
-        assert_ne!(
-            roundtrip_clip.track_to_bone_indices,
-            (0..84).collect::<Vec<_>>()
-        );
-
-        let endpoint_track = clip
-            .channels
-            .iter()
-            .position(|channel| !channel.translations.is_empty())
-            .unwrap();
-        let source_start = sample_translation(&clip.channels[endpoint_track].translations, 0.0);
-        let source_end =
-            sample_translation(&clip.channels[endpoint_track].translations, clip.duration);
-        let emitted = &roundtrip_clip.channels[endpoint_track].translations;
-        for (actual, expected) in
-            emitted[0]
-                .value
-                .iter()
-                .zip([source_start.0, source_start.1, source_start.2])
-        {
-            assert!((*actual as f64 - expected).abs() < 1.0e-4);
-        }
-        for (actual, expected) in
-            emitted
-                .last()
-                .unwrap()
-                .value
-                .iter()
-                .zip([source_end.0, source_end.1, source_end.2])
-        {
-            assert!((*actual as f64 - expected).abs() < 1.0e-4);
-        }
-    }
-
-    #[test]
-    fn real_fnv_gecko_motion_extracts_planar_reference_frame() {
-        let Some(skeleton_path) = fnv_animation_fixture("meshes/creatures/nvgecko/skeleton.nif")
-        else {
-            return;
-        };
-        let skeleton_names = load_ordered_source_skeleton_names(&skeleton_path).unwrap();
-        assert_eq!(skeleton_names.len(), 87);
-
-        for (
-            relative_path,
-            output_clip_path,
-            expected_tracks,
-            expected_cycle,
-            expected_samples,
-            expected_end_y,
-        ) in [
-            (
-                "meshes/creatures/nvgecko/swimmtforward.kf",
-                "Actors/B21_FNVGecko/Animations/WalkForward.hkx",
-                85,
-                "loop",
-                49,
-                232.454_22,
-            ),
-            (
-                "meshes/creatures/nvgecko/h2hattackforwardpower.kf",
-                "Actors/B21_FNVGecko/Animations/Attack1.hkx",
-                86,
-                "clamp",
-                52,
-                374.279_013,
-            ),
-        ] {
-            let Some(path) = fnv_animation_fixture(relative_path) else {
-                return;
-            };
-            let bytes = std::fs::read(&path).unwrap();
-            let clip = parse_kf_bytes(&bytes, relative_path).unwrap();
-            assert_eq!(clip.channels.len(), expected_tracks);
-            assert_eq!(clip.cycle_type, expected_cycle);
-            let event_map = if output_clip_path.ends_with("Attack1.hkx") {
-                assert!(clip.events.iter().any(|event| event.text == "Hit"));
-                HashMap::from([("Hit".to_string(), "HitFrame".to_string())])
-            } else {
-                HashMap::new()
-            };
-            let declaration = bind_fnv_kf_clip(
-                &skeleton_names,
-                &clip,
-                "Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx",
-                &output_clip_path.replace('/', "\\"),
-                "NVGecko",
-                &[],
-            )
-            .unwrap();
-            assert_ne!(
-                declaration.binding.transform_track_to_bone_indices,
-                (0..expected_tracks).collect::<Vec<_>>()
-            );
-            assert_eq!(declaration.path, output_clip_path.replace('/', "\\"));
-            assert_eq!(
-                declaration.binding.skeleton_path,
-                "Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"
-            );
-
-            let root_track_index = clip
-                .channels
-                .iter()
-                .position(|channel| {
-                    normalize_fnv_bone_name(&channel.bone_name)
-                        == normalize_fnv_bone_name(&clip.accum_root)
-                })
-                .unwrap();
-            let root_bone_index =
-                declaration.binding.transform_track_to_bone_indices[root_track_index];
-            let root_channel = &clip.channels[root_track_index];
-            let source_start = sample_translation(&root_channel.translations, 0.0);
-            let source_end = sample_translation(&root_channel.translations, clip.duration);
-            let expected_end = [source_end.0 - source_start.0, source_end.1 - source_start.1];
-            assert!(expected_end[0].hypot(expected_end[1]) > 1.0);
-            assert!((expected_end[1] - expected_end_y).abs() < 1.0e-2);
-            assert!((source_end.2 - source_start.2).abs() <= 1.0e-4);
-
-            let temp = tempfile::tempdir().unwrap();
-            let blocked_path = temp.path().join("blocked.hkx");
-            let blocked = convert_kf_to_hkx(
-                &path,
-                &blocked_path,
-                &event_map,
-                relative_path,
-                output_clip_path,
-                None,
-                Some(&skeleton_path),
-                Some("Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"),
-                Some("NVGecko"),
-                None,
-                FnvExtractedMotionPolicy::RejectNonzero,
-            )
-            .unwrap_err();
-            assert!(matches!(
-                blocked,
-                FnvKfConversionError::ExtractPlanarReferenceFramePolicyRequired
-            ));
-            assert!(!blocked_path.exists());
-
-            let output_path = temp.path().join("motion.hkx");
-            let outcome = convert_kf_to_hkx(
-                &path,
-                &output_path,
-                &event_map,
-                relative_path,
-                output_clip_path,
-                None,
-                Some(&skeleton_path),
-                Some("Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"),
-                Some("NVGecko"),
-                None,
-                FnvExtractedMotionPolicy::ExtractPlanarReferenceFrame,
-            )
-            .unwrap();
-            assert!(outcome.warnings.is_empty());
-            assert_eq!(
-                outcome.output_clip_path,
-                output_clip_path.replace('/', "\\")
-            );
-            let sample_count = target_sample_count(clip.duration, 30.0);
-            assert_eq!(sample_count, expected_samples);
-            eprintln!(
-                "{relative_path}: tracks={expected_tracks} samples={sample_count} end=({:.6},{:.6})",
-                expected_end[0], expected_end[1]
-            );
-            assert_eq!(
-                outcome.motion,
-                FnvClipMotion::ExtractedPlanar {
-                    root_track_index,
-                    root_bone_index,
-                    sample_count,
-                    end_displacement: expected_end,
-                }
-            );
-
-            let packed_bytes = std::fs::read(&output_path).unwrap();
-            let packed = havok_native::hkx::HkxFile::read(&packed_bytes).unwrap();
-            assert_eq!(packed.class_version(), 11);
-            assert_eq!(packed.contents_version(), "hk_2014.1.0-r1");
-            assert_eq!(packed.packfile().header.pointer_size, 8);
-            assert_packed_fo4_animation_signatures(&packed, true);
-
-            let roundtrip_xml = havok_native::api::havok_hkx_to_xml(&packed_bytes).unwrap();
-            if output_clip_path.ends_with("Attack1.hkx") {
-                let document = roxmltree::Document::parse(&roundtrip_xml).unwrap();
-                let annotation_texts = document
-                    .descendants()
-                    .filter(|node| {
-                        node.has_tag_name("hkparam") && node.attribute("name") == Some("text")
-                    })
-                    .filter_map(|node| node.text())
-                    .collect::<Vec<_>>();
-                assert!(annotation_texts.contains(&"HitFrame"));
-                assert!(!annotation_texts.contains(&"Hit"));
-            }
-            let roundtrip_clip =
-                havok_native::animation::clip::extract_clip(&roundtrip_xml, None).unwrap();
-            assert!(!roundtrip_clip.extracted_motion_ref.is_empty());
-            assert_eq!(
-                roundtrip_clip.track_to_bone_indices,
-                declaration
-                    .binding
-                    .transform_track_to_bone_indices
-                    .iter()
-                    .map(|index| *index as u32)
-                    .collect::<Vec<_>>()
-            );
-            let emitted_root = &roundtrip_clip.channels[root_track_index];
-            assert_eq!(emitted_root.translations.len(), sample_count);
-            assert!(
-                emitted_root
-                    .translations
-                    .iter()
-                    .all(|key| { key.value[0].abs() < 1.0e-5 && key.value[1].abs() < 1.0e-5 })
-            );
-
-            let (reference_duration, reference_samples) = reference_frame_samples(&roundtrip_xml);
-            assert!((reference_duration - clip.duration).abs() < 1.0e-4);
-            assert_eq!(reference_samples.len(), sample_count);
-            assert!(
-                reference_samples[0]
-                    .iter()
-                    .all(|value| value.abs() < 1.0e-6)
-            );
-            let reference_end = reference_samples.last().unwrap();
-            assert!((reference_end[0] - expected_end[0]).abs() < 1.0e-4);
-            assert!((reference_end[1] - expected_end[1]).abs() < 1.0e-4);
-            assert!(reference_end[2].abs() < 1.0e-6);
-            assert!(reference_end[3].abs() < 1.0e-6);
-        }
     }
 
     #[test]
@@ -5823,78 +4975,6 @@ mod tests {
 
         assert_eq!(report.assets_written, 0);
         assert_eq!(report.warnings, 1);
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn malformed_compact_phase_counts_failure_without_output_or_registration() {
-        use crate::sinks::{Ba2ShardWriter, LooseSink, SinkSet, TerrainSidecarSink};
-
-        let Some((malformed_bytes, _)) =
-            malformed_compact_kf_bytes("meshes/creatures/nvgecko/mtidle.kf")
-        else {
-            return;
-        };
-        let Some(skeleton_path) = fnv_animation_fixture("meshes/creatures/nvgecko/skeleton.nif")
-        else {
-            return;
-        };
-        let temp = tempfile::tempdir().unwrap();
-        let source_path = temp
-            .path()
-            .join("source/meshes/creatures/nvgecko/mtidle.kf");
-        std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
-        std::fs::write(&source_path, malformed_bytes).unwrap();
-        let mod_dir = temp.path().join("mod");
-        let sink = Arc::new(SinkSet {
-            ba2: Some(Ba2ShardWriter::new(temp.path().join("spill")).unwrap()),
-            loose: LooseSink {
-                enabled: false,
-                mod_root: mod_dir.clone(),
-            },
-            terrain: TerrainSidecarSink::default(),
-        });
-
-        let id = make_run();
-        let report = with_run(id, |run| -> Result<PhaseReport, RunError> {
-            run.output_sink = Some(sink.clone());
-            let cancel = Arc::new(AtomicBool::new(false));
-            let params = serde_json::json!({
-                "animations": [{
-                    "source_path": "meshes/creatures/nvgecko/mtidle.kf",
-                    "resolved_path": source_path.to_string_lossy(),
-                    "output_clip_path": "Actors/B21_FNVGecko/Animations/Idle.hkx",
-                    "source_skeleton_path": skeleton_path.to_string_lossy(),
-                    "runtime_skeleton_path": "Actors/B21_FNVGecko/CharacterAssets/Skeleton.hkx",
-                    "original_skeleton_name": "NVGecko",
-                    "extracted_motion_policy": "reject_nonzero"
-                }]
-            });
-            let source_dir = temp.path().join("source");
-            let mut ctx = PhaseCtx {
-                run,
-                mod_path: &mod_dir,
-                source_extracted_dir: &source_dir,
-                target_extracted_dir: None,
-                target_data_dir: None,
-                params: &params,
-                cancel: &cancel,
-            };
-            ConvertAnimationsPhase
-                .run(&mut ctx)
-                .map_err(|error| RunError::InvalidConfig(error.to_string()))
-        })
-        .unwrap();
-
-        assert_eq!(report.assets_written, 0);
-        assert_eq!(report.warnings, 1);
-        assert_eq!(report.items_failed, 1);
-        assert!(
-            !mod_dir
-                .join("data/Meshes/Actors/B21_FNVGecko/Animations/Idle.hkx")
-                .exists()
-        );
-        assert!(sink.ba2.as_ref().unwrap().streamed_rel_paths().is_empty());
         drop_run(id).unwrap();
     }
 
@@ -6009,10 +5089,6 @@ mod tests {
             output_clip_deploy_path(base, &runtime),
             Path::new("/mod/data/Meshes/Actors/B21_FNVGecko/Animations/Idle.hkx")
         );
-    }
-
-    #[test]
-    fn output_clip_path_rejects_non_hkx_prefixes_and_traversal() {
         for invalid in [
             "",
             "../Idle.hkx",
@@ -6032,33 +5108,6 @@ mod tests {
     }
 
     #[test]
-    fn euler_to_quat_identity() {
-        let (x, y, z, w) = euler_to_quat(0.0, 0.0, 0.0);
-        assert!(x.abs() < 1e-9);
-        assert!(y.abs() < 1e-9);
-        assert!(z.abs() < 1e-9);
-        assert!((w - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn sample_at_time_interpolates() {
-        let pairs = vec![(0.0f64, 0.0f64), (1.0, 10.0)];
-        let v = sample_at_time(&pairs, 0.5);
-        assert!((v - 5.0).abs() < 1e-6, "expected 5.0, got {v}");
-    }
-
-    #[test]
-    fn weapon_family_table_loads() {
-        let table = WeaponFamilyTable::load(WEAPON_FAMILY_YAML);
-        assert!(!table.families.is_empty(), "families must be non-empty");
-        assert!(!table.weapons.is_empty(), "weapons must be non-empty");
-        assert!(
-            table.families.contains_key("PipeGun"),
-            "PipeGun family must be present"
-        );
-    }
-
-    #[test]
     fn weapon_family_classify() {
         let table = WeaponFamilyTable::load(WEAPON_FAMILY_YAML);
         let fam = table.classify("WeapNV10mmPistol", "");
@@ -6068,713 +5117,11 @@ mod tests {
     }
 
     #[test]
-    fn real_fnv_requested_channel_families_decode_without_warnings() {
-        let fixtures = [
-            (
-                "meshes/characters/_1stperson/1hpattack3.kf",
-                "NiBSplineCompFloatInterpolator",
-            ),
-            (
-                "meshes/creatures/nvmrhouse/idleanims/wakeup.kf",
-                "NiBSplineCompPoint3Interpolator",
-            ),
-            (
-                "meshes/characters/_male/idleanims/dynamicidle_nvdieingsoldier.kf",
-                "NiBSplineTransformInterpolator",
-            ),
-            (
-                "meshes/creatures/nvmrhouse/idleanims/wakeup.kf",
-                "NiBoolTimelineInterpolator",
-            ),
-            (
-                "meshes/characters/_1stperson/2hmattackspin.kf",
-                "BSRotAccumTransfInterpolator",
-            ),
-        ];
-        for (relative_path, expected_type) in fixtures {
-            let Some(path) = fnv_animation_fixture(relative_path) else {
-                return;
-            };
-            let bytes = std::fs::read(path).unwrap();
-            let nif = NifFile::from_bytes(&bytes, None).unwrap();
-            assert!(
-                nif.blocks
-                    .iter()
-                    .any(|block| block.type_name == expected_type),
-                "fixture {relative_path} lost {expected_type}"
-            );
-            let clip = parse_kf_bytes(&bytes, relative_path).unwrap();
-            assert!(
-                clip.warnings.is_empty(),
-                "{relative_path}: {:?}",
-                clip.warnings
-            );
-            assert!(clip.duration.is_finite() && clip.duration >= 0.0);
-            for channel in &clip.float_channels {
-                assert!(!channel.slot_name.is_empty());
-                assert!(!channel.keyframes.is_empty());
-                assert!(channel.keyframes.iter().all(|key| {
-                    key.time.is_finite() && key.value.len() == 1 && key.value[0].is_finite()
-                }));
-            }
-            if matches!(
-                expected_type,
-                "NiBSplineCompPoint3Interpolator"
-                    | "NiBSplineCompFloatInterpolator"
-                    | "NiBoolTimelineInterpolator"
-            ) {
-                assert!(!clip.float_channels.is_empty(), "{relative_path}");
-            }
-            if relative_path == "meshes/creatures/nvmrhouse/idleanims/wakeup.kf" {
-                assert_eq!(clip.float_channels.len(), 53);
-                assert_eq!(
-                    bind_fnv_kf_float_tracks(None, &clip.float_channels),
-                    Err(FnvKfFloatBindingError::MissingFloatSlots { track_count: 53 })
-                );
-                let slots = clip
-                    .float_channels
-                    .iter()
-                    .map(|channel| channel.slot_name.clone())
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    bind_fnv_kf_float_tracks(Some(&slots), &clip.float_channels).unwrap(),
-                    (0..53).collect::<Vec<_>>()
-                );
-            }
-            if expected_type == "BSRotAccumTransfInterpolator" {
-                let saw = clip
-                    .channels
-                    .iter()
-                    .find(|channel| channel.bone_name == "##SawBlade")
-                    .unwrap();
-                assert!(!saw.rotations.is_empty());
-            }
-        }
-    }
-
-    #[test]
-    fn real_chimera_empty_rot_accum_channel_is_ignored() {
-        let relative_path = "meshes/dlcanch/creatures/chimera/1hpattackright.kf";
-        let Some(path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let bytes = std::fs::read(path).unwrap();
-        let clip = parse_kf_bytes(&bytes, relative_path).unwrap();
-        assert!(
-            clip.warnings
-                .iter()
-                .any(|warning| warning.contains("ignored empty BSRotAccumTransfInterpolator"))
-        );
-        assert!(
-            clip.channels
-                .iter()
-                .all(|channel| channel.bone_name != "Bip01 L Foot")
-        );
-        assert!(
-            clip.channels
-                .iter()
-                .any(|channel| channel.bone_name == "Bip01 R Foot")
-        );
-    }
-
-    #[test]
-    fn real_evolved_centaur_omits_absent_weapon_attachment_track() {
-        let relative_path = "meshes/creatures/centaur/h2hattackleft.kf";
-        let Some(kf_path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let Some(skeleton_path) =
-            fnv_animation_fixture("meshes/creatures/centaur/skeletonevolved.nif")
-        else {
-            return;
-        };
-        let bytes = std::fs::read(kf_path).unwrap();
-        let raw = parse_kf_bytes(&bytes, relative_path).unwrap();
-        assert!(
-            raw.channels
-                .iter()
-                .any(|channel| channel.bone_name == "Weapon")
-        );
-        let float_slots = raw
-            .float_channels
-            .iter()
-            .map(|channel| channel.slot_name.clone())
-            .collect::<Vec<_>>();
-        let bone_names = load_ordered_source_skeleton_names(&skeleton_path).unwrap();
-        let contract = FnvKfSkeletonContract {
-            skeleton_path: "Actors/B21_FNVCentaurEvolved/CharacterAssets/Skeleton.hkx",
-            ordered_bone_names: &bone_names,
-            ordered_float_slot_names: &float_slots,
-        };
-        let parsed = parse_fnv_creature_kf(&bytes, relative_path, None, Some(contract)).unwrap();
-        assert_eq!(
-            parsed.binding.compatibility,
-            FnvKfBindingCompatibility::Verified
-        );
-        assert!(
-            !parsed
-                .binding
-                .target_names
-                .iter()
-                .any(|name| name == "Weapon")
-        );
-        let staged = stage_fnv_creature_kf(
-            &bytes,
-            FnvKfStageRequest {
-                source_kf: relative_path,
-                output_clip_path: "Actors/B21_FNVCentaurEvolved/Animations/Melee.hkx",
-                sequence_index: None,
-                skeleton: contract,
-                original_skeleton_name: "FNVCentaurEvolved",
-                event_map: &HashMap::new(),
-                target_sample_rate_hz: None,
-                extracted_motion_policy: FnvExtractedMotionPolicy::RejectNonzero,
-            },
-        )
-        .unwrap();
-        assert!(
-            staged
-                .receipt
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("Weapon attachment track"))
-        );
-    }
-
-    #[test]
-    fn real_fnv_stage_returns_validated_artifact_receipt_without_writing() {
-        let relative_path = "meshes/creatures/nvgecko/mtidle.kf";
-        let Some(kf_path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let Some(skeleton_path) = fnv_animation_fixture("meshes/creatures/nvgecko/skeleton.nif")
-        else {
-            return;
-        };
-        let bytes = std::fs::read(kf_path).unwrap();
-        let bone_names = load_ordered_source_skeleton_names(&skeleton_path).unwrap();
-        let staged = stage_fnv_creature_kf(
-            &bytes,
-            FnvKfStageRequest {
-                source_kf: relative_path,
-                output_clip_path: "Actors/B21_FNVGecko/Animations/Idle.hkx",
-                sequence_index: None,
-                skeleton: FnvKfSkeletonContract {
-                    skeleton_path: "Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx",
-                    ordered_bone_names: &bone_names,
-                    ordered_float_slot_names: &[],
-                },
-                original_skeleton_name: "NVGecko",
-                event_map: &HashMap::new(),
-                target_sample_rate_hz: None,
-                extracted_motion_policy: FnvExtractedMotionPolicy::RejectNonzero,
-            },
-        )
-        .unwrap();
-
-        assert!(!staged.hkx_bytes.is_empty());
-        assert_eq!(staged.receipt.sequence_index, 0);
-        assert_eq!(staged.receipt.sequence_name, "Idle");
-        assert_eq!(staged.receipt.transform_track_count, 84);
-        assert_eq!(staged.receipt.binding.declared_transform_tracks, 84);
-        assert_eq!(
-            staged.receipt.binding.transform_track_to_bone_indices.len(),
-            84
-        );
-        assert_eq!(staged.receipt.float_track_count, 0);
-        assert_eq!(staged.receipt.sample_count, 401);
-        assert_eq!(
-            staged.receipt.output_clip_path,
-            "Actors\\B21_FNVGecko\\Animations\\Idle.hkx"
-        );
-        assert_eq!(
-            staged.receipt.runtime_skeleton_path,
-            "Actors\\B21_FNVGecko\\CharacterAssets\\Skeleton.hkx"
-        );
-        assert_eq!(staged.receipt.original_skeleton_name, "NVGecko");
-        assert_eq!(staged.receipt.motion, FnvClipMotion::InPlace);
-    }
-
-    #[test]
-    fn real_fnv_stationary_scene_idle_requires_float_slots_then_stages() {
-        let relative_path = "meshes/creatures/nvmrhouse/idleanims/wakeup.kf";
-        let Some(kf_path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let Some(skeleton_path) = fnv_animation_fixture("meshes/creatures/nvmrhouse/skeleton.nif")
-        else {
-            return;
-        };
-        let bytes = std::fs::read(kf_path).unwrap();
-        let clip = parse_kf_bytes(&bytes, relative_path).unwrap();
-        let float_slots = clip
-            .float_channels
-            .iter()
-            .map(|channel| channel.slot_name.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(float_slots.len(), 53);
-        let bone_names = load_ordered_source_skeleton_names(&skeleton_path).unwrap();
-        let event_map = HashMap::new();
-        let stage = |ordered_float_slot_names| {
-            stage_fnv_creature_kf(
-                &bytes,
-                FnvKfStageRequest {
-                    source_kf: relative_path,
-                    output_clip_path: "Actors/B21_FNVMrHouse/Animations/Wakeup.hkx",
-                    sequence_index: None,
-                    skeleton: FnvKfSkeletonContract {
-                        skeleton_path: "Actors\\B21_FNVMrHouse\\CharacterAssets\\Skeleton.hkx",
-                        ordered_bone_names: &bone_names,
-                        ordered_float_slot_names,
-                    },
-                    original_skeleton_name: "NVMrHouse",
-                    event_map: &event_map,
-                    target_sample_rate_hz: None,
-                    extracted_motion_policy: FnvExtractedMotionPolicy::ExtractPlanarReferenceFrame,
-                },
-            )
-        };
-
-        let missing_slots_error = stage(&[]).unwrap_err();
-        assert!(
-            matches!(
-                &missing_slots_error,
-                FnvKfConversionError::FloatBinding(
-                    FnvKfFloatBindingError::MissingFloatTrackTarget { .. }
-                )
-            ),
-            "{missing_slots_error:?}"
-        );
-        let staged = stage(&float_slots).unwrap();
-        assert!(
-            staged
-                .receipt
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("stationary scene-controller"))
-        );
-        assert!(staged.receipt.transform_track_count > 0);
-        assert_eq!(staged.receipt.float_track_count, 53);
-    }
-
-    #[test]
-    fn real_stationary_scene_creature_idles_bind_and_stage() {
-        let fixtures = [
-            (
-                "meshes/creatures/nvmrhouse/mtidle.kf",
-                "meshes/creatures/nvmrhouse/skeleton.nif",
-                "Actors/B21_FNVMrHouse/Animations/Idle.hkx",
-                "FNVMrHouse",
-            ),
-            (
-                "meshes/creatures/nvpenthouemaincomputer/mtidle.kf",
-                "meshes/creatures/nvpenthouemaincomputer/skeleton.nif",
-                "Actors/B21_FNVPenthouseComputer/Animations/Idle.hkx",
-                "FNVPenthouseComputer",
-            ),
-            (
-                "meshes/nvdlc03/creatures/braintank/mtidle.kf",
-                "meshes/nvdlc03/creatures/braintank/skeleton.nif",
-                "Actors/B21_FNVBrainTank/Animations/Idle.hkx",
-                "FNVBrainTank",
-            ),
-        ];
-        for (relative_path, relative_skeleton, output_path, skeleton_name) in fixtures {
-            let Some(kf_path) = fnv_animation_fixture(relative_path) else {
-                return;
-            };
-            let Some(skeleton_path) = fnv_animation_fixture(relative_skeleton) else {
-                return;
-            };
-            let bytes = std::fs::read(kf_path).unwrap();
-            let raw = parse_kf_bytes(&bytes, relative_path).unwrap();
-            let float_slots = raw
-                .float_channels
-                .iter()
-                .map(|channel| channel.slot_name.clone())
-                .collect::<Vec<_>>();
-            let bone_names = load_ordered_source_skeleton_names(&skeleton_path).unwrap();
-            let contract = FnvKfSkeletonContract {
-                skeleton_path: output_path,
-                ordered_bone_names: &bone_names,
-                ordered_float_slot_names: &float_slots,
-            };
-            let parsed =
-                parse_fnv_creature_kf(&bytes, relative_path, None, Some(contract)).unwrap();
-            assert_eq!(
-                parsed.binding.compatibility,
-                FnvKfBindingCompatibility::Verified,
-                "{relative_path}"
-            );
-            let staged = stage_fnv_creature_kf(
-                &bytes,
-                FnvKfStageRequest {
-                    source_kf: relative_path,
-                    output_clip_path: output_path,
-                    sequence_index: None,
-                    skeleton: contract,
-                    original_skeleton_name: skeleton_name,
-                    event_map: &HashMap::new(),
-                    target_sample_rate_hz: None,
-                    extracted_motion_policy: FnvExtractedMotionPolicy::RejectNonzero,
-                },
-            )
-            .unwrap();
-            assert!(
-                staged
-                    .receipt
-                    .warnings
-                    .iter()
-                    .any(|warning| warning.contains("stationary scene-controller"))
-            );
-        }
-    }
-
-    #[test]
-    fn real_fo3_stage_applies_event_map_and_reports_planar_motion() {
-        let relative_path = "meshes/creatures/mirelurk/locomotion/mtforward.kf";
-        let Some(kf_path) = fo3_animation_fixture(relative_path) else {
-            return;
-        };
-        let Some(skeleton_path) = fo3_animation_fixture("meshes/creatures/mirelurk/skeleton.nif")
-        else {
-            return;
-        };
-        let bytes = std::fs::read(kf_path).unwrap();
-        let bone_names = load_ordered_source_skeleton_names(&skeleton_path).unwrap();
-        let event_map = HashMap::from([("m:R".to_string(), "FootRight".to_string())]);
-        let staged = stage_fnv_creature_kf(
-            &bytes,
-            FnvKfStageRequest {
-                source_kf: relative_path,
-                output_clip_path: "Actors/B21_FO3Mirelurk/Animations/WalkForward.hkx",
-                sequence_index: Some(0),
-                skeleton: FnvKfSkeletonContract {
-                    skeleton_path: "Actors\\B21_FO3Mirelurk\\CharacterAssets\\Skeleton.hkx",
-                    ordered_bone_names: &bone_names,
-                    ordered_float_slot_names: &[],
-                },
-                original_skeleton_name: "Mirelurk",
-                event_map: &event_map,
-                target_sample_rate_hz: None,
-                extracted_motion_policy: FnvExtractedMotionPolicy::ExtractPlanarReferenceFrame,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(staged.receipt.event_count, 6);
-        assert!(
-            staged
-                .receipt
-                .events
-                .iter()
-                .any(|event| event.text == "FootRight")
-        );
-        assert!(
-            !staged
-                .receipt
-                .events
-                .iter()
-                .any(|event| event.text == "m:R")
-        );
-        assert!(matches!(
-            staged.receipt.motion,
-            FnvClipMotion::ExtractedPlanar { .. } | FnvClipMotion::ExtractedPlanarYaw { .. }
-        ));
-        let roundtrip = havok_native::api::havok_hkx_to_xml(&staged.hkx_bytes).unwrap();
-        assert!(roundtrip.contains(">FootRight</hkparam>"));
-        assert!(!roundtrip.contains(">m:R</hkparam>"));
-    }
-
-    #[test]
-    fn real_compact_float_requires_explicit_slots_then_packs_nonidentity_mapping() {
-        let relative_path = "meshes/characters/_1stperson/1hpattack3.kf";
-        let Some(path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let mut clip = parse_kf_bytes(&std::fs::read(path).unwrap(), relative_path).unwrap();
-        assert!(!clip.float_channels.is_empty());
-        clip.channels = vec![BoneChannel {
-            bone_name: "Root".to_string(),
-            priority: 0,
-            rotations: Vec::new(),
-            translations: Vec::new(),
-            scales: Vec::new(),
-        }];
-        clip.accum_root.clear();
-        assert!(matches!(
-            bind_fnv_kf_float_tracks(None, &clip.float_channels),
-            Err(FnvKfFloatBindingError::MissingFloatSlots { .. })
-        ));
-        let slots = clip
-            .float_channels
-            .iter()
-            .rev()
-            .map(|channel| channel.slot_name.clone())
-            .collect::<Vec<_>>();
-        let mapping = bind_fnv_kf_float_tracks(Some(&slots), &clip.float_channels).unwrap();
-        assert_eq!(
-            mapping,
-            (0..slots.len()).rev().collect::<Vec<_>>(),
-            "explicit slot order must drive the binding"
-        );
-        let declaration = bind_fnv_kf_clip(
-            &["Root".to_string()],
-            &clip,
-            "Actors\\Test\\CharacterAssets\\Skeleton.hkx",
-            "Actors\\Test\\Animations\\Clip.hkx",
-            "TestSkeleton",
-            &mapping,
-        )
-        .unwrap();
-        assert_eq!(declaration.binding.original_skeleton_name, "TestSkeleton");
-        assert_eq!(declaration.binding.declared_float_tracks, mapping.len());
-        assert_eq!(
-            declaration.binding.float_track_to_float_slot_indices,
-            mapping
-        );
-        let (xml, motion) = clip_to_havok_xml_with_float_tracks(
-            &clip,
-            &declaration,
-            &mapping,
-            "TestSkeleton",
-            30.0,
-            FnvExtractedMotionPolicy::RejectNonzero,
-        )
-        .unwrap();
-        assert_eq!(motion, FnvClipMotion::InPlace);
-        let packed_bytes = havok_native::api::havok_xml_to_hkx(&xml).unwrap();
-        let packed = havok_native::hkx::HkxFile::read(&packed_bytes).unwrap();
-        assert_packed_fo4_animation_signatures(&packed, false);
-        let roundtrip = havok_native::api::havok_hkx_to_xml(&packed_bytes).unwrap();
-        let document = roxmltree::Document::parse(&roundtrip).unwrap();
-        let parameter = |name| {
-            document
-                .descendants()
-                .find(|node| node.has_tag_name("hkparam") && node.attribute("name") == Some(name))
-                .unwrap()
-        };
-        assert_eq!(
-            parameter("numberOfFloatTracks")
-                .text()
-                .unwrap()
-                .trim()
-                .parse::<usize>()
-                .unwrap(),
-            clip.float_channels.len()
-        );
-        let reread_mapping = parameter("floatTrackToFloatSlotIndices")
-            .text()
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(|value| value.parse::<usize>().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(reread_mapping, mapping);
-        let expected_samples = target_sample_count(clip.duration, 30.0) * clip.float_channels.len();
-        assert_eq!(
-            parameter("floats")
-                .attribute("numelements")
-                .unwrap()
-                .parse::<usize>()
-                .unwrap(),
-            expected_samples
-        );
-    }
-
-    #[test]
-    fn malformed_compact_float_is_typed_fatal_before_output() {
-        let relative_path = "meshes/characters/_1stperson/1hpattack3.kf";
-        let Some(path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let mut nif = NifFile::from_bytes(&std::fs::read(&path).unwrap(), None).unwrap();
-        let interpolator_index = nif
-            .blocks
-            .iter()
-            .position(|block| block.type_name == "NiBSplineCompFloatInterpolator")
-            .unwrap();
-        nif.blocks[interpolator_index].set_field("Handle", NifValue::UInt(65_000));
-        let malformed = nif.to_bytes().unwrap();
-        assert!(matches!(
-            parse_kf_bytes(&malformed, relative_path),
-            Err(KfParseError::Channel {
-                source: ChannelDecodeError::Spline(CompactSplineError::ControlPointRange {
-                    channel: "float",
-                    handle: 65_000,
-                    ..
-                }),
-                ..
-            })
-        ));
-
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("malformed.kf");
-        let output = temp.path().join("must_not_exist.hkx");
-        std::fs::write(&source, malformed).unwrap();
-        let error = convert_kf_to_hkx_with_channels(
-            &source,
-            &output,
-            &HashMap::new(),
-            relative_path,
-            "Actors/Test/Animations/Malformed.hkx",
-            Some(&["Root".to_string()]),
-            Some(&[]),
-            None,
-            Some("Actors/Test/CharacterAssets/Skeleton.hkx"),
-            Some("TestSkeleton"),
-            None,
-            FnvExtractedMotionPolicy::RejectNonzero,
-            None,
-        )
-        .unwrap_err();
-        assert!(matches!(error, FnvKfConversionError::ChannelDecode { .. }));
-        assert!(!output.exists());
-    }
-
-    #[test]
-    fn real_point_scalar_and_bool_tracks_pack_all_53_slots() {
-        let relative_path = "meshes/creatures/nvmrhouse/idleanims/wakeup.kf";
-        let Some(path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let mut clip = parse_kf_bytes(&std::fs::read(path).unwrap(), relative_path).unwrap();
-        assert_eq!(clip.float_channels.len(), 53);
-        assert!(
-            clip.float_channels
-                .iter()
-                .flat_map(|channel| &channel.keyframes)
-                .any(|key| key.interpolation == Interpolation::Constant)
-        );
-        clip.channels = vec![BoneChannel {
-            bone_name: "Root".to_string(),
-            priority: 0,
-            rotations: Vec::new(),
-            translations: Vec::new(),
-            scales: Vec::new(),
-        }];
-        clip.accum_root.clear();
-        let slots = clip
-            .float_channels
-            .iter()
-            .map(|channel| channel.slot_name.clone())
-            .collect::<Vec<_>>();
-        let mapping = bind_fnv_kf_float_tracks(Some(&slots), &clip.float_channels).unwrap();
-        assert_eq!(mapping, (0..53).collect::<Vec<_>>());
-        let declaration = bind_fnv_kf_clip(
-            &["Root".to_string()],
-            &clip,
-            "Actors\\Test\\CharacterAssets\\Skeleton.hkx",
-            "Actors\\Test\\Animations\\Wakeup.hkx",
-            "MrHouse",
-            &mapping,
-        )
-        .unwrap();
-        let (xml, motion) = clip_to_havok_xml_with_float_tracks(
-            &clip,
-            &declaration,
-            &mapping,
-            "MrHouse",
-            2.0,
-            FnvExtractedMotionPolicy::RejectNonzero,
-        )
-        .unwrap();
-        assert_eq!(motion, FnvClipMotion::InPlace);
-        let packed = havok_native::api::havok_xml_to_hkx(&xml).unwrap();
-        let roundtrip = havok_native::api::havok_hkx_to_xml(&packed).unwrap();
-        let document = roxmltree::Document::parse(&roundtrip).unwrap();
-        let float_count = document
-            .descendants()
-            .find(|node| {
-                node.has_tag_name("hkparam")
-                    && node.attribute("name") == Some("numberOfFloatTracks")
-            })
-            .unwrap()
-            .text()
-            .unwrap()
-            .trim()
-            .parse::<usize>()
-            .unwrap();
-        assert_eq!(float_count, 53);
-        let binding_count = document
-            .descendants()
-            .find(|node| {
-                node.has_tag_name("hkparam")
-                    && node.attribute("name") == Some("floatTrackToFloatSlotIndices")
-            })
-            .unwrap()
-            .attribute("numelements")
-            .unwrap()
-            .parse::<usize>()
-            .unwrap();
-        assert_eq!(binding_count, 53);
-    }
-
-    #[test]
-    fn multi_sequence_kf_is_cataloged_and_requires_explicit_index() {
-        let relative_path = "meshes/characters/_male/idleanims/1stp_stooldynamicidle.kf";
-        let Some(path) = fnv_animation_fixture(relative_path) else {
-            return;
-        };
-        let bytes = std::fs::read(path).unwrap();
-        let catalog = catalog_fnv_kf_sequences(&bytes, relative_path).unwrap();
-        assert_eq!(catalog.len(), 2);
-        assert_eq!(
-            catalog.iter().map(|entry| entry.index).collect::<Vec<_>>(),
-            vec![0, 1]
-        );
-        assert!(catalog.iter().all(|entry| !entry.name.is_empty()));
-        assert!(matches!(
-            parse_kf_bytes(&bytes, relative_path),
-            Err(KfParseError::MultipleSequences { count: 2, .. })
-        ));
-        assert!(matches!(
-            parse_fnv_creature_kf(&bytes, relative_path, None, None),
-            Err(KfParseError::MultipleSequences { count: 2, .. })
-        ));
-        assert!(matches!(
-            stage_fnv_creature_kf(
-                &bytes,
-                FnvKfStageRequest {
-                    source_kf: relative_path,
-                    output_clip_path: "Actors/Test/Animations/Multi.hkx",
-                    sequence_index: None,
-                    skeleton: FnvKfSkeletonContract {
-                        skeleton_path: "Actors/Test/CharacterAssets/Skeleton.hkx",
-                        ordered_bone_names: &[],
-                        ordered_float_slot_names: &[],
-                    },
-                    original_skeleton_name: "Test",
-                    event_map: &HashMap::new(),
-                    target_sample_rate_hz: None,
-                    extracted_motion_policy: FnvExtractedMotionPolicy::RejectNonzero,
-                }
-            ),
-            Err(FnvKfConversionError::MultipleSequences { count: 2, .. })
-        ));
-        let selected = parse_fnv_creature_kf(&bytes, relative_path, Some(1), None).unwrap();
-        assert_eq!(selected.sequence_index, 1);
-        assert_eq!(selected.sequence_name, catalog[1].name);
-        assert!(parse_kf_sequence_bytes(&bytes, relative_path, 0).is_ok());
-        assert!(parse_kf_sequence_bytes(&bytes, relative_path, 1).is_ok());
-        assert!(matches!(
-            parse_kf_sequence_bytes(&bytes, relative_path, 2),
-            Err(KfParseError::SequenceIndexOutOfRange {
-                index: 2,
-                count: 2,
-                ..
-            })
-        ));
-    }
-
-    #[test]
     fn planar_yaw_root_motion_roundtrips_and_zeroes_root_yaw() {
         let key = |time, value| AnimationKeyframe {
             time,
             value,
             interpolation: Interpolation::Linear,
-            forward: None,
-            backward: None,
-            tbc: None,
         };
         let mut clip = binding_test_clip(&["Root"]);
         clip.duration = 1.0;
@@ -6842,9 +5189,6 @@ mod tests {
             time,
             value,
             interpolation: Interpolation::Linear,
-            forward: None,
-            backward: None,
-            tbc: None,
         };
         let mut clip = binding_test_clip(&["Root"]);
         clip.duration = 1.0;
@@ -6888,66 +5232,21 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bounded manual FNV creatures corpus audit; extracted assets are optional"]
-    fn fnv_creature_kf_corpus_has_no_silent_channel_warnings() {
-        let Some(sample) = fnv_animation_fixture("meshes/creatures/nvgecko/mtidle.kf") else {
-            return;
-        };
-        let root = sample.ancestors().nth(2).unwrap();
-        let mut parsed_sequences = 0usize;
-        let mut failures = Vec::new();
-        for path in recursive_kf_paths(root) {
-            let bytes = std::fs::read(&path).unwrap();
-            let relative = path.strip_prefix(root).unwrap().to_string_lossy();
-            let catalog = match catalog_fnv_kf_sequences(&bytes, &relative) {
-                Ok(catalog) => catalog,
-                Err(error) => {
-                    failures.push(format!("{}: {error}", path.display()));
-                    continue;
-                }
-            };
-            for entry in catalog {
-                match parse_kf_sequence_bytes(&bytes, &relative, entry.index) {
-                    Ok(clip) if clip.warnings.is_empty() => parsed_sequences += 1,
-                    Ok(clip) => failures.push(format!(
-                        "{}[{}]: warnings {:?}",
-                        path.display(),
-                        entry.index,
-                        clip.warnings
-                    )),
-                    Err(error) => {
-                        failures.push(format!("{}[{}]: {error}", path.display(), entry.index))
-                    }
-                }
-            }
-        }
-        assert!(parsed_sequences > 0);
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
-
-    #[test]
-    fn interp_keyframes_single() {
-        let keys = vec![AnimationKeyframe {
+    fn keyframe_sampling_interpolates_holds_and_uses_shortest_rotation() {
+        let pairs = vec![(0.0f64, 0.0f64), (1.0, 10.0)];
+        let v = sample_at_time(&pairs, 0.5);
+        assert!((v - 5.0).abs() < 1e-6, "expected 5.0, got {v}");
+        let single = vec![AnimationKeyframe {
             time: 0.0,
             value: vec![1.0, 2.0, 3.0],
             interpolation: Interpolation::Linear,
-            forward: None,
-            backward: None,
-            tbc: None,
         }];
-        let v = interp_keyframes(&keys, 5.0);
-        assert_eq!(v, vec![1.0, 2.0, 3.0]);
-    }
+        assert_eq!(interp_keyframes(&single, 5.0), vec![1.0, 2.0, 3.0]);
 
-    #[test]
-    fn sample_rotation_uses_shortest_quaternion_hemisphere() {
         let key = |time, value| AnimationKeyframe {
             time,
             value,
             interpolation: Interpolation::Linear,
-            forward: None,
-            backward: None,
-            tbc: None,
         };
         let rotation = sample_rotation(
             &[

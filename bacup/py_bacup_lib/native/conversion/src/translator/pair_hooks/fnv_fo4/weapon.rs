@@ -1,4 +1,6 @@
-use crate::ids::{FormKey, SubrecordSig};
+use crate::ids::FormKey;
+#[cfg(test)]
+use crate::ids::SubrecordSig;
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::sym::StringInterner;
 use crate::target_fo4_melee::{
@@ -645,6 +647,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
+#[cfg(test)]
 fn field(signature: &str, value: FieldValue) -> FieldEntry {
     FieldEntry {
         sig: SubrecordSig::from_str(signature).expect("valid subrecord signature"),
@@ -652,6 +655,7 @@ fn field(signature: &str, value: FieldValue) -> FieldEntry {
     }
 }
 
+#[cfg(test)]
 fn form_key_field(signature: &str, plugin: crate::sym::Sym, local: u32) -> FieldEntry {
     field(signature, FieldValue::FormKey(FormKey { local, plugin }))
 }
@@ -745,27 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_hatchet_and_owb_float_variant_admit() {
-        let interner = StringInterner::new();
-        let exact = source_hatchet(&interner);
-        assert!(classify_hatchet(&exact, &interner).is_some());
-
-        let mut owb = exact;
-        let FieldValue::Bytes(bytes) = &mut owb
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .unwrap()
-            .value
-        else {
-            panic!("DNAM fixture");
-        };
-        bytes[88..92].copy_from_slice(&OWB_ATTACK_SHOTS_SEC_BITS.to_le_bytes());
-        assert!(classify_hatchet(&owb, &interner).is_some());
-    }
-
-    #[test]
-    fn creature_weapon_classifier_reports_exact_unlowered_legacy_semantics() {
+    fn creature_weapon_classifier_admits_only_exact_target_valid_shapes() {
         let interner = StringInterner::new();
         let support = classify_legacy_creature_weapon(&source_hatchet(&interner), &interner);
 
@@ -781,10 +765,7 @@ mod tests {
                 "legacy_weapon_vats_attack_semantics_unrepresented",
             ]
         );
-    }
 
-    #[test]
-    fn creature_weapon_classifier_accepts_only_a_fully_target_valid_shape() {
         let interner = StringInterner::new();
         let source_plugin = interner.intern("FalloutNV.esm");
         let fallout4 = interner.intern("Fallout4.esm");
@@ -815,6 +796,23 @@ mod tests {
         ]);
 
         assert!(classify_legacy_creature_weapon(&record, &interner).is_ready());
+
+        let interner = StringInterner::new();
+        let exact = source_hatchet(&interner);
+        assert!(classify_hatchet(&exact, &interner).is_some());
+
+        let mut owb = exact;
+        let FieldValue::Bytes(bytes) = &mut owb
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.as_str() == "DNAM")
+            .unwrap()
+            .value
+        else {
+            panic!("DNAM fixture");
+        };
+        bytes[88..92].copy_from_slice(&OWB_ATTACK_SHOTS_SEC_BITS.to_le_bytes());
+        assert!(classify_hatchet(&owb, &interner).is_some());
     }
 
     #[test]

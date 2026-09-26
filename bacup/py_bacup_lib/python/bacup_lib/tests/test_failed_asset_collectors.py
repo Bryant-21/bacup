@@ -8,14 +8,14 @@ def test_failed_paths_collects_warn_not_found():
         "[INFO] NIF: unrelated",
     ]
     result = _UnifiedRecordRuntime._failed_paths(lines, "NIF")
-    assert "Meshes/a.nif: source path did not resolve" in result
+    assert "Meshes/a.nif" in result
     assert any(item.startswith("Meshes/b.nif") for item in result)
 
 
 def test_failed_paths_still_collects_legacy_error_not_found():
     lines = ["[ERROR] Texture not found: Textures/x.dds: missing"]
     result = _UnifiedRecordRuntime._failed_paths(lines, "Texture")
-    assert "Textures/x.dds: missing" in result
+    assert result == ["Textures/x.dds"]
 
 
 def test_failed_material_paths_collects_warn_not_found():

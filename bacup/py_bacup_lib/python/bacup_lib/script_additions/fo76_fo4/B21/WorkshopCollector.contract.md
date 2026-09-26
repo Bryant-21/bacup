@@ -27,32 +27,36 @@ fixup's diagnostics rather than bound to a half-filled script.
 
 ## Behavior
 
-Production is accrued lazily rather than driven by a timer, so a collector the
-player has not visited still fills while its cell is unloaded — the FO76 symptom
-this repairs is a container that is still empty after a day.
+Production is accrued from elapsed game time, so a collector the player has not
+visited still fills while its cell is unloaded — the FO76 symptom this repairs
+is a container that is still empty after a day. While loaded, a game-time timer
+also accrues every interval.
 
 - `OnInit` stamps `fLastProduced`, so a freshly built collector does not
   immediately dump a full load.
-- `OnLoad` and `OnActivate` evaluate `Accrue()`.
-- `Accrue()` grants one `AddItem(Produce, ...)` roll per whole elapsed interval,
-  clamped to the remaining room under `MaxStored`. Whole intervals are consumed
-  even while at capacity, so an emptied collector does not immediately refill
-  from time that passed while it was full.
-- `OnItemRemoved` decrements the stored counter. The counter is tracked in the
-  script rather than read back with `GetItemCount`, because `Produce` is a
-  leveled list and not the concrete item that lands in the container.
+- `OnLoad`, `OnActivate`, the production timer and the power events evaluate
+  `Accrue()`.
+- `Accrue()` grants one `AddItem(Produce, ...)` roll per whole elapsed interval
+  while `GetItemCount(None)` is under `MaxStoredItems`. Whole intervals are
+  consumed even while at capacity or unpowered, so an emptied or re-powered
+  collector does not burst-fill from time it could not produce.
+- **Power.** A collector carrying `WorkshopCanBePowered` (`Fallout4.esm:03037E`
+  — every FO76 extractor; beehives and other passive collectors do not) only
+  produces while powered. Power is only observable while loaded, so `bPowered`
+  is refreshed on `OnLoad`, `OnActivate`, the timer and
+  `OnPowerOn`/`OnPowerOff`, and unloaded time is credited according to the last
+  state seen. The converter keeps the FO76 `PowerRequired` (`000330`) `PRPS`
+  row so extractors actually draw power.
 
-## Assumptions
+## Capacity
 
-`MaxStored` is **not** derived from the source data and defaults to 10. FO76
-stores no per-collector capacity in the client plugin: every resource `AVIF`
-ships `DURL = "No Limit"` with ±FLT_MAX bounds, so the real cap was server-side.
-The `PRPS` `CarryWeight` row is left alone — on an FO4 container that value is
-native workshop-storage capacity, and there is no evidence it meant a collector
-cap in FO76.
+FO76 stores no per-collector cap on the resource: every resource `AVIF` ships
+`DURL = "No Limit"`. The cap is the collector's `PRPS` `CarryWeight` read as
+pounds of stored items, which matches every published fill time (Oil 0.5 lb of
+0.1 lb oil = 5 items × 3 min = 15 min; Acid 10 items = 30 min; Steel 20 × 1.8
+min = 36 min; Concrete/Wood 40 × 1.8 min = 72 min).
 
-The produced count assumes one item per leveled-list roll, which holds for the
-converted collector lists (single `LVLO` entry, count 1, flagged
-`CalculateForEachItemInCount`). A list that yields more per roll would leave
-`iStored` slightly under the true contents, which only makes the collector
-generous rather than stuck.
+Papyrus without F4SE cannot read inventory weight, so the fixup converts that
+weight into an item count — `CarryWeight / average weight of the Produce
+list's items` — and binds it as `MaxStoredItems`. When the weight inputs are
+missing the property is left unbound and the script default of 50 applies.

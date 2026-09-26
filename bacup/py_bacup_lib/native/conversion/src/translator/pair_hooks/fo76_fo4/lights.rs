@@ -13,6 +13,7 @@ pub(super) const FO4_LIGH_DATA_EXPONENT_OFFSET: usize = 48;
 /// either 10.0 or nothing. The FO76 colour is already baked into the `DATA` RGB,
 /// so the Kelvin carries no information FO4 needs and is simply cleared.
 pub(super) const FO4_LIGH_DATA_GOD_RAYS_NEAR_CLIP_OFFSET: usize = 52;
+#[cfg(test)]
 pub(super) const FO4_LIGH_DATA_VALUE_OFFSET: usize = 56;
 pub(super) const FO4_LIGH_DATA_WEIGHT_OFFSET: usize = 60;
 pub(super) const FO4_LIGH_DATA_LEN: usize = FO4_LIGH_DATA_WEIGHT_OFFSET + 4;

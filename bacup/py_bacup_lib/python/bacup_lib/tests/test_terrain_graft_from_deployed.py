@@ -11,6 +11,8 @@ FO4 output handle, and driving it needs a live ConversionRun with FO4 fixtures.
 """
 from pathlib import Path
 
+import pytest
+
 from bacup_lib.models import PluginPortOptions
 from bacup_lib.regen_pipeline import (
     RegenOptions,
@@ -28,20 +30,12 @@ class _StubRunner:
         self.logs.append((level, message))
 
 
-def test_non_upgrade_reuse_off_preserves_legacy():
-    plan = _resolve_terrain_graft(RegenOptions(re_use_land=False), None, _StubRunner())
+@pytest.mark.parametrize("reuse", [False, True])
+def test_non_upgrade_preserves_legacy_cache_block(reuse):
+    plan = _resolve_terrain_graft(RegenOptions(re_use_land=reuse), None, _StubRunner())
     assert plan.graft_esm is None
-    assert plan.reuse_terrain_navmesh is False
-    assert plan.run_land_cache_block is False
-    assert plan.force_convert_terrain is False
-
-
-def test_non_upgrade_reuse_on_runs_cache_block():
-    plan = _resolve_terrain_graft(RegenOptions(re_use_land=True), None, _StubRunner())
-    assert plan.graft_esm is None
-    assert plan.reuse_terrain_navmesh is True
-    # Legacy --re-use-land path is untouched: the cache block still runs.
-    assert plan.run_land_cache_block is True
+    assert plan.reuse_terrain_navmesh is reuse
+    assert plan.run_land_cache_block is reuse
     assert plan.force_convert_terrain is False
 
 
@@ -59,39 +53,27 @@ def test_upgrade_readable_esm_grafts_and_skips_cache(tmp_path):
     assert runner.logs == []
 
 
-def test_upgrade_missing_esm_falls_back_to_full_regen(tmp_path):
-    missing = tmp_path / "does_not_exist.esm"
+@pytest.mark.parametrize("content", [None, b""], ids=["missing", "empty"])
+def test_upgrade_unreadable_esm_falls_back_to_full_regen(tmp_path, content):
+    deployed = tmp_path / "SeventySix.esm"
+    if content is not None:
+        deployed.write_bytes(content)
     runner = _StubRunner()
 
-    plan = _resolve_terrain_graft(RegenOptions(re_use_land=True), missing, runner)
+    plan = _resolve_terrain_graft(RegenOptions(re_use_land=True), deployed, runner)
 
     assert plan.graft_esm is None
     assert plan.reuse_terrain_navmesh is False
     assert plan.run_land_cache_block is False
     assert plan.force_convert_terrain is True  # regenerate rather than hard-fail
-    assert [lvl for lvl, _ in runner.logs] == ["WARN"]
+    if content is None:
+        assert [lvl for lvl, _ in runner.logs] == ["WARN"]
 
 
-def test_upgrade_empty_esm_is_treated_as_unreadable(tmp_path):
-    empty = tmp_path / "SeventySix.esm"
-    empty.write_bytes(b"")
-    runner = _StubRunner()
-
-    plan = _resolve_terrain_graft(RegenOptions(re_use_land=True), empty, runner)
-
-    assert plan.force_convert_terrain is True
-    assert plan.graft_esm is None
-
-
-def test_graft_source_defaults_to_run_local_cache():
-    opts = PluginPortOptions()
-    assert _terrain_graft_source(opts, "/mod/root") == Path("/mod/root/.regen_land_cache.esm")
-
-
-def test_graft_source_repoints_to_deployed_esm(tmp_path):
+def test_graft_source_defaults_to_cache_and_repoints_to_deployed_esm(tmp_path):
+    assert _terrain_graft_source(PluginPortOptions(), "/mod/root") == Path("/mod/root/.regen_land_cache.esm")
     deployed = tmp_path / "SeventySix.esm"
     opts = PluginPortOptions(terrain_graft_esm=deployed)
-    # Upgrade source wins over the run-local cache regardless of mod_path.
     assert _terrain_graft_source(opts, "/mod/root") == deployed
 
 

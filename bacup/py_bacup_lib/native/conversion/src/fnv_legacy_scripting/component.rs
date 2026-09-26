@@ -681,6 +681,7 @@ fn vtech_synthetic_records() -> BTreeSet<QuestRecordKey> {
     ])
 }
 
+#[cfg(test)]
 fn is_synthetic_intent(record: &QuestRecordKey) -> bool {
     record.form_key.starts_with("intent:fnv:")
 }
@@ -940,367 +941,378 @@ mod tests {
     }
 
     #[test]
-    fn exact_slice_has_unique_two_three_five_four_four_ownership() {
-        let mappings = exact_mappings();
-        let plans = admit_exact_fnv_quest_slice(
-            &exact_selection(),
-            "FalloutNV.esm",
-            &mappings,
-            &exact_topology(&mappings),
-        )
-        .unwrap();
+    fn exact_slice_ownership_admission_and_receipts_are_deterministic() {
+        {
+            let mappings = exact_mappings();
+            let plans = admit_exact_fnv_quest_slice(
+                &exact_selection(),
+                "FalloutNV.esm",
+                &mappings,
+                &exact_topology(&mappings),
+            )
+            .unwrap();
 
-        let counts = plans
-            .iter()
-            .flat_map(|plan| &plan.owned_records)
-            .filter(|record| !is_synthetic_intent(record))
-            .fold(BTreeMap::<&str, usize>::new(), |mut counts, record| {
-                *counts.entry(&record.signature).or_default() += 1;
-                counts
-            });
-        assert_eq!(counts.get("QUST"), Some(&2));
-        assert_eq!(counts.get("DIAL"), Some(&3));
-        assert_eq!(counts.get("INFO"), Some(&5));
-        assert_eq!(counts.get("SCPT"), Some(&4));
-        assert_eq!(counts.get("PACK"), Some(&4));
-        assert!(plans.iter().all(|plan| {
-            plan.scripts
+            let counts = plans
                 .iter()
-                .all(|script| plan.owned_records.contains(&script.owner))
-        }));
-        assert!(plans.iter().all(|plan| {
-            matches!(plan.start_disposition, Some(StartDisposition::Autostart))
-                && plan.inbound_producers.is_empty()
-                && plan.expected_receipt.routes.iter().all(|route| {
-                    route.route_id.starts_with("fnvfo3:start:fnv:")
-                        && route.producer_evidence_id.starts_with("autostart:")
-                        && route.node_chain.is_empty()
-                })
-        }));
-        assert!(validate_component_plans(&plans).is_empty());
-    }
-
-    #[test]
-    fn exact_slice_admission_and_receipts_are_deterministic() {
-        let selected = exact_selection();
-        let mappings = exact_mappings();
-        let topology = exact_topology(&mappings);
-        let first =
-            admit_exact_fnv_quest_slice(&selected, "FalloutNV.esm", &mappings, &topology).unwrap();
-        let second =
-            admit_exact_fnv_quest_slice(&selected, "FalloutNV.esm", &mappings, &topology).unwrap();
-
-        assert_eq!(first, second);
-        assert_eq!(
-            serde_json::to_string(&first).unwrap(),
-            serde_json::to_string(&second).unwrap()
-        );
-    }
-
-    #[test]
-    fn collision_remapped_fo3_provenance_routes_with_canonical_owner() {
-        let mappings = exact_mappings();
-        let mut plans = admit_exact_fnv_quest_slice(
-            &exact_selection(),
-            "FalloutNV.esm",
-            &mappings,
-            &exact_topology(&mappings),
-        )
-        .unwrap();
-        let origins = mappings
-            .keys()
-            .map(|record| crate::merge_sources::LegacyRuntimeOriginRow {
-                signature: record.signature.clone(),
-                merged_form_key: record.form_key.clone(),
-                source_game: "fo3".to_string(),
-                source_plugin: "Fallout3.esm".to_string(),
-                source_form_key: format!("{:08X}@Fallout3.esm", local_id(record)),
-                contributing_plugin: "ThePitt.esm".to_string(),
-                source_parent_form_key: None,
-                merged_parent_form_key: None,
-                child_group_type: None,
-            })
-            .collect::<Vec<_>>();
-
-        apply_runtime_origin_provenance(&mut plans, &origins).unwrap();
-        apply_fnv_start_routes(&mut plans).unwrap();
-
-        assert!(plans.iter().all(|plan| {
-            plan.provenance.game == QuestSourceGame::Fo3
-                && plan.provenance.source_plugin == "Fallout3.esm"
-                && plan.provenance.graft.as_ref().is_some_and(|graft| {
-                    graft.source_plugin == "ThePitt.esm"
-                        && graft
-                            .graft_form_key
-                            .to_ascii_lowercase()
-                            .ends_with("falloutnv.esm")
-                })
-                && plan.expected_receipt.routes.iter().all(|route| {
-                    route.route_id.starts_with("fnvfo3:start:fo3:fallout3.esm:")
-                        && route.node_chain.is_empty()
-                })
-        }));
-        assert!(validate_component_plans(&plans).is_empty());
-    }
-
-    #[test]
-    fn missing_mapping_rejects_with_a_stable_reason() {
-        let mut mappings = exact_mappings();
-        mappings.remove(&key("INFO", 0x130161, "FalloutNV.esm"));
-        let topology = exact_topology(&mappings);
-
-        let error =
-            admit_exact_fnv_quest_slice(&exact_selection(), "FalloutNV.esm", &mappings, &topology)
-                .unwrap_err();
-
-        assert_eq!(
-            error,
-            "fnv_exact_slice_component_rejected:fnv:falloutnv.esm:11f935:incomplete_closure"
-        );
-    }
-
-    #[test]
-    fn selected_identity_and_expected_receipt_match_legacy_contract() {
-        let mappings = exact_mappings();
-        let plans = admit_exact_fnv_quest_slice(
-            &exact_selection(),
-            "FalloutNV.esm",
-            &mappings,
-            &exact_topology(&mappings),
-        )
-        .unwrap();
-        let mapped_sources = plans
-            .iter()
-            .flat_map(|plan| plan.mappings.iter().map(|mapping| mapping.source.clone()))
-            .collect::<BTreeSet<_>>();
-        let mut expected_sources = required_slice_keys("FalloutNV.esm");
-        expected_sources.extend(standalone_external_owner_keys("FalloutNV.esm"));
-        expected_sources.extend(vtech_synthetic_records());
-        assert_eq!(mapped_sources, expected_sources);
-
-        let emitted = plans
-            .iter()
-            .flat_map(|plan| plan.expected_receipt.emitted_records.iter().cloned())
-            .collect::<BTreeSet<_>>();
-        let mut expected_emitted = required_slice_keys("FalloutNV.esm")
-            .iter()
-            .filter(|source| source.signature != "SCPT")
-            .map(|source| mappings[source].clone())
-            .collect::<BTreeSet<_>>();
-        expected_emitted.extend(vtech_synthetic_records());
-        assert_eq!(emitted, expected_emitted);
-        assert_eq!(
-            plans
-                .iter()
-                .flat_map(|plan| plan.expected_receipt.scripts.iter())
-                .map(|receipt| receipt.class_name.as_str())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([
-                "FNV_FO3_FnvSliceCompat",
-                "FNV_FO3_S_11FC64",
-                "FNV_FO3_S_123191",
-                "FNV_FO3_S_134491",
-                "FNV_FO3_S_166305",
-                "QF_FNV_FO3_06136D",
-                "QF_FNV_FO3_11F935",
-                "TIF__130161",
-                "TIF__134B9B",
-            ])
-        );
-    }
-
-    #[test]
-    fn placed_receipts_preserve_exact_cell_child_topology() {
-        let mappings = exact_mappings();
-        let topology = exact_topology(&mappings);
-        let plans =
-            admit_exact_fnv_quest_slice(&exact_selection(), "FalloutNV.esm", &mappings, &topology)
-                .unwrap();
-
-        let source_placements = plans
-            .iter()
-            .flat_map(|plan| plan.source_topology.iter())
-            .filter(|placement| is_placed_record(&placement.record))
-            .map(|placement| (placement.record.clone(), placement.group_path.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let target_placements = plans
-            .iter()
-            .flat_map(|plan| plan.expected_receipt.placements.iter())
-            .filter(|placement| is_placed_record(&placement.record))
-            .map(|placement| (placement.record.clone(), placement.group_path.clone()))
-            .collect::<BTreeMap<_, _>>();
-
-        assert_eq!(source_placements, topology.source);
-        assert_eq!(target_placements, topology.target);
-        assert_eq!(source_placements.len(), 4);
-        assert_eq!(target_placements.len(), 4);
-        for path in source_placements.values().chain(target_placements.values()) {
-            assert_eq!(path.first().map(String::as_str), Some("GRUP:CELL"));
-            assert!(
-                path.iter()
-                    .any(|segment| segment.starts_with("GRUP:type=6:"))
-            );
-            assert!(path.iter().any(|segment| {
-                segment.starts_with("GRUP:type=8:") || segment.starts_with("GRUP:type=9:")
-            }));
-            assert!(
-                !path
+                .flat_map(|plan| &plan.owned_records)
+                .filter(|record| !is_synthetic_intent(record))
+                .fold(BTreeMap::<&str, usize>::new(), |mut counts, record| {
+                    *counts.entry(&record.signature).or_default() += 1;
+                    counts
+                });
+            assert_eq!(counts.get("QUST"), Some(&2));
+            assert_eq!(counts.get("DIAL"), Some(&3));
+            assert_eq!(counts.get("INFO"), Some(&5));
+            assert_eq!(counts.get("SCPT"), Some(&4));
+            assert_eq!(counts.get("PACK"), Some(&4));
+            assert!(plans.iter().all(|plan| {
+                plan.scripts
                     .iter()
-                    .any(|segment| { segment == "GRUP:ACHR" || segment == "GRUP:REFR" })
+                    .all(|script| plan.owned_records.contains(&script.owner))
+            }));
+            assert!(plans.iter().all(|plan| {
+                matches!(plan.start_disposition, Some(StartDisposition::Autostart))
+                    && plan.inbound_producers.is_empty()
+                    && plan.expected_receipt.routes.iter().all(|route| {
+                        route.route_id.starts_with("fnvfo3:start:fnv:")
+                            && route.producer_evidence_id.starts_with("autostart:")
+                            && route.node_chain.is_empty()
+                    })
+            }));
+            assert!(validate_component_plans(&plans).is_empty());
+        }
+        {
+            let selected = exact_selection();
+            let mappings = exact_mappings();
+            let topology = exact_topology(&mappings);
+            let first =
+                admit_exact_fnv_quest_slice(&selected, "FalloutNV.esm", &mappings, &topology)
+                    .unwrap();
+            let second =
+                admit_exact_fnv_quest_slice(&selected, "FalloutNV.esm", &mappings, &topology)
+                    .unwrap();
+
+            assert_eq!(first, second);
+            assert_eq!(
+                serde_json::to_string(&first).unwrap(),
+                serde_json::to_string(&second).unwrap()
             );
         }
     }
 
     #[test]
-    fn expected_vmad_receipts_cover_the_full_live_attachment_inventory() {
-        let mappings = exact_mappings();
-        let plans = admit_exact_fnv_quest_slice(
-            &exact_selection(),
-            "FalloutNV.esm",
-            &mappings,
-            &exact_topology(&mappings),
-        )
-        .unwrap();
-        let actual = plans
-            .iter()
-            .flat_map(|plan| plan.expected_receipt.vmad_attachments.iter())
-            .map(|attachment| {
-                (
-                    attachment.owner.clone(),
-                    attachment.script_class.clone(),
-                    attachment.property_names.clone(),
-                )
-            })
-            .collect::<BTreeSet<_>>();
-        let mapped = |signature, local| mappings[&key(signature, local, "FalloutNV.esm")].clone();
-        let expected = BTreeSet::from([
-            (
-                mapped("QUST", 0x06136D),
-                "QF_FNV_FO3_06136D".to_owned(),
-                BTreeSet::from(["FNVSliceCompat".to_owned()]),
-            ),
-            (
-                mapped("QUST", 0x06136D),
-                "FNV_FO3_FnvSliceCompat".to_owned(),
-                BTreeSet::new(),
-            ),
-            (
-                mapped("QUST", 0x11F935),
-                "QF_FNV_FO3_11F935".to_owned(),
-                BTreeSet::from(["FNVSliceCompat".to_owned()]),
-            ),
-            (
-                mapped("QUST", 0x11F935),
-                "FNV_FO3_FnvSliceCompat".to_owned(),
-                BTreeSet::new(),
-            ),
-            (
-                mapped("QUST", 0x11F935),
-                "FNV_FO3_S_11FC64".to_owned(),
-                BTreeSet::new(),
-            ),
-            (
-                mapped("NPC_", 0x123193),
-                "FNV_FO3_S_123191".to_owned(),
-                BTreeSet::from([
-                    "TecMineHostageEscapeData".to_owned(),
-                    "TecMineHostageFreedGreeting".to_owned(),
-                ]),
-            ),
-            (
-                mapped("ACTI", 0x133F41),
-                "FNV_FO3_S_134491".to_owned(),
-                BTreeSet::from(["TechaticupNCRRenoldsDialoguePackageData".to_owned()]),
-            ),
-            (
-                mapped("NPC_", 0x1300F0),
-                "FNV_FO3_S_166305".to_owned(),
-                BTreeSet::new(),
-            ),
-            (
-                mapped("INFO", 0x130161),
-                "TIF__130161".to_owned(),
-                BTreeSet::from(["VTechatticup".to_owned()]),
-            ),
-            (
-                mapped("INFO", 0x134B9B),
-                "TIF__134B9B".to_owned(),
-                BTreeSet::from(["VTechatticup".to_owned()]),
-            ),
-        ]);
+    fn collision_remapped_provenance_routes_and_missing_mapping_rejects() {
+        {
+            let mappings = exact_mappings();
+            let mut plans = admit_exact_fnv_quest_slice(
+                &exact_selection(),
+                "FalloutNV.esm",
+                &mappings,
+                &exact_topology(&mappings),
+            )
+            .unwrap();
+            let origins = mappings
+                .keys()
+                .map(|record| crate::merge_sources::LegacyRuntimeOriginRow {
+                    signature: record.signature.clone(),
+                    merged_form_key: record.form_key.clone(),
+                    source_game: "fo3".to_string(),
+                    source_plugin: "Fallout3.esm".to_string(),
+                    source_form_key: format!("{:08X}@Fallout3.esm", local_id(record)),
+                    contributing_plugin: "ThePitt.esm".to_string(),
+                    source_parent_form_key: None,
+                    merged_parent_form_key: None,
+                    child_group_type: None,
+                })
+                .collect::<Vec<_>>();
 
-        assert_eq!(actual, expected);
+            apply_runtime_origin_provenance(&mut plans, &origins).unwrap();
+            apply_fnv_start_routes(&mut plans).unwrap();
+
+            assert!(plans.iter().all(|plan| {
+                plan.provenance.game == QuestSourceGame::Fo3
+                    && plan.provenance.source_plugin == "Fallout3.esm"
+                    && plan.provenance.graft.as_ref().is_some_and(|graft| {
+                        graft.source_plugin == "ThePitt.esm"
+                            && graft
+                                .graft_form_key
+                                .to_ascii_lowercase()
+                                .ends_with("falloutnv.esm")
+                    })
+                    && plan.expected_receipt.routes.iter().all(|route| {
+                        route.route_id.starts_with("fnvfo3:start:fo3:fallout3.esm:")
+                            && route.node_chain.is_empty()
+                    })
+            }));
+            assert!(validate_component_plans(&plans).is_empty());
+        }
+        {
+            let mut mappings = exact_mappings();
+            mappings.remove(&key("INFO", 0x130161, "FalloutNV.esm"));
+            let topology = exact_topology(&mappings);
+
+            let error = admit_exact_fnv_quest_slice(
+                &exact_selection(),
+                "FalloutNV.esm",
+                &mappings,
+                &topology,
+            )
+            .unwrap_err();
+
+            assert_eq!(
+                error,
+                "fnv_exact_slice_component_rejected:fnv:falloutnv.esm:11f935:incomplete_closure"
+            );
+        }
     }
 
     #[test]
-    fn generated_scene_and_dedicated_runtime_records_are_not_omitted() {
-        let mappings = exact_mappings();
-        let plans = admit_exact_fnv_quest_slice(
-            &exact_selection(),
-            "FalloutNV.esm",
-            &mappings,
-            &exact_topology(&mappings),
-        )
-        .unwrap();
-        let vtech = plans
-            .iter()
-            .find(|plan| local_id(&plan.root_quest) == VTECHATTICUP_QUEST)
-            .unwrap();
-        let emitted = &vtech.expected_receipt.emitted_records;
-
-        assert!(vtech_synthetic_records().is_subset(emitted));
-        assert!(
-            vtech
-                .expected_receipt
-                .placements
-                .iter()
-                .filter(|placement| is_synthetic_intent(&placement.record))
-                .map(|placement| placement.record.clone())
-                .collect::<BTreeSet<_>>()
-                == vtech_synthetic_records()
-        );
-
-        let dedicated_runtime = BTreeSet::from([
-            QuestRecordKey::new("KYWD", DEDICATED_GREETING_KEYWORD_INTENT),
-            QuestRecordKey::new("DIAL", DEDICATED_GREETING_TOPIC_INTENT),
-            mappings[&key("INFO", 0x15734B, "FalloutNV.esm")].clone(),
-            mappings[&key("INFO", 0x15734C, "FalloutNV.esm")].clone(),
-            mappings[&key("INFO", 0x15734D, "FalloutNV.esm")].clone(),
-        ]);
-        assert_eq!(dedicated_runtime.len(), 5);
-        assert!(dedicated_runtime.is_subset(emitted));
-
-        let scene_runtime = BTreeSet::from([
-            QuestRecordKey::new("SCEN", VTECH_SCENE_INTENT),
-            QuestRecordKey::new("DLBR", VTECH_DIALOGUE_BRANCH_INTENT),
-            mappings[&key("DIAL", 0x13015B, "FalloutNV.esm")].clone(),
-            mappings[&key("DIAL", 0x134B9A, "FalloutNV.esm")].clone(),
-            mappings[&key("DIAL", 0x138A74, "FalloutNV.esm")].clone(),
-        ]);
-        assert_eq!(scene_runtime.len(), 5);
-        assert!(scene_runtime.is_subset(emitted));
-
-        let resolved = [
-            FnvQuestSyntheticIntent::Scene,
-            FnvQuestSyntheticIntent::DialogueBranch,
-            FnvQuestSyntheticIntent::DedicatedGreetingKeyword,
-            FnvQuestSyntheticIntent::DedicatedGreetingTopic,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, intent)| {
-            (
-                intent.record_key(),
-                intent.target_key(format!("{:06X}:Converted.esm", 0x700000 + index)),
+    fn selected_identity_and_placed_receipts_match_legacy_contract() {
+        {
+            let mappings = exact_mappings();
+            let plans = admit_exact_fnv_quest_slice(
+                &exact_selection(),
+                "FalloutNV.esm",
+                &mappings,
+                &exact_topology(&mappings),
             )
-        })
-        .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            resolved.keys().cloned().collect::<BTreeSet<_>>(),
-            vtech_synthetic_records()
-        );
-        assert!(resolved.iter().all(|(intent, target)| {
-            intent.signature == target.signature && !is_synthetic_intent(target)
-        }));
+            .unwrap();
+            let mapped_sources = plans
+                .iter()
+                .flat_map(|plan| plan.mappings.iter().map(|mapping| mapping.source.clone()))
+                .collect::<BTreeSet<_>>();
+            let mut expected_sources = required_slice_keys("FalloutNV.esm");
+            expected_sources.extend(standalone_external_owner_keys("FalloutNV.esm"));
+            expected_sources.extend(vtech_synthetic_records());
+            assert_eq!(mapped_sources, expected_sources);
+
+            let emitted = plans
+                .iter()
+                .flat_map(|plan| plan.expected_receipt.emitted_records.iter().cloned())
+                .collect::<BTreeSet<_>>();
+            let mut expected_emitted = required_slice_keys("FalloutNV.esm")
+                .iter()
+                .filter(|source| source.signature != "SCPT")
+                .map(|source| mappings[source].clone())
+                .collect::<BTreeSet<_>>();
+            expected_emitted.extend(vtech_synthetic_records());
+            assert_eq!(emitted, expected_emitted);
+            assert_eq!(
+                plans
+                    .iter()
+                    .flat_map(|plan| plan.expected_receipt.scripts.iter())
+                    .map(|receipt| receipt.class_name.as_str())
+                    .collect::<BTreeSet<_>>(),
+                BTreeSet::from([
+                    "FNV_FO3_FnvSliceCompat",
+                    "FNV_FO3_S_11FC64",
+                    "FNV_FO3_S_123191",
+                    "FNV_FO3_S_134491",
+                    "FNV_FO3_S_166305",
+                    "QF_FNV_FO3_06136D",
+                    "QF_FNV_FO3_11F935",
+                    "TIF__130161",
+                    "TIF__134B9B",
+                ])
+            );
+        }
+        {
+            let mappings = exact_mappings();
+            let topology = exact_topology(&mappings);
+            let plans = admit_exact_fnv_quest_slice(
+                &exact_selection(),
+                "FalloutNV.esm",
+                &mappings,
+                &topology,
+            )
+            .unwrap();
+
+            let source_placements = plans
+                .iter()
+                .flat_map(|plan| plan.source_topology.iter())
+                .filter(|placement| is_placed_record(&placement.record))
+                .map(|placement| (placement.record.clone(), placement.group_path.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let target_placements = plans
+                .iter()
+                .flat_map(|plan| plan.expected_receipt.placements.iter())
+                .filter(|placement| is_placed_record(&placement.record))
+                .map(|placement| (placement.record.clone(), placement.group_path.clone()))
+                .collect::<BTreeMap<_, _>>();
+
+            assert_eq!(source_placements, topology.source);
+            assert_eq!(target_placements, topology.target);
+            assert_eq!(source_placements.len(), 4);
+            assert_eq!(target_placements.len(), 4);
+            for path in source_placements.values().chain(target_placements.values()) {
+                assert_eq!(path.first().map(String::as_str), Some("GRUP:CELL"));
+                assert!(
+                    path.iter()
+                        .any(|segment| segment.starts_with("GRUP:type=6:"))
+                );
+                assert!(path.iter().any(|segment| {
+                    segment.starts_with("GRUP:type=8:") || segment.starts_with("GRUP:type=9:")
+                }));
+                assert!(
+                    !path
+                        .iter()
+                        .any(|segment| { segment == "GRUP:ACHR" || segment == "GRUP:REFR" })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vmad_receipts_and_generated_records_cover_the_live_inventory() {
+        {
+            let mappings = exact_mappings();
+            let plans = admit_exact_fnv_quest_slice(
+                &exact_selection(),
+                "FalloutNV.esm",
+                &mappings,
+                &exact_topology(&mappings),
+            )
+            .unwrap();
+            let actual = plans
+                .iter()
+                .flat_map(|plan| plan.expected_receipt.vmad_attachments.iter())
+                .map(|attachment| {
+                    (
+                        attachment.owner.clone(),
+                        attachment.script_class.clone(),
+                        attachment.property_names.clone(),
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            let mapped =
+                |signature, local| mappings[&key(signature, local, "FalloutNV.esm")].clone();
+            let expected = BTreeSet::from([
+                (
+                    mapped("QUST", 0x06136D),
+                    "QF_FNV_FO3_06136D".to_owned(),
+                    BTreeSet::from(["FNVSliceCompat".to_owned()]),
+                ),
+                (
+                    mapped("QUST", 0x06136D),
+                    "FNV_FO3_FnvSliceCompat".to_owned(),
+                    BTreeSet::new(),
+                ),
+                (
+                    mapped("QUST", 0x11F935),
+                    "QF_FNV_FO3_11F935".to_owned(),
+                    BTreeSet::from(["FNVSliceCompat".to_owned()]),
+                ),
+                (
+                    mapped("QUST", 0x11F935),
+                    "FNV_FO3_FnvSliceCompat".to_owned(),
+                    BTreeSet::new(),
+                ),
+                (
+                    mapped("QUST", 0x11F935),
+                    "FNV_FO3_S_11FC64".to_owned(),
+                    BTreeSet::new(),
+                ),
+                (
+                    mapped("NPC_", 0x123193),
+                    "FNV_FO3_S_123191".to_owned(),
+                    BTreeSet::from([
+                        "TecMineHostageEscapeData".to_owned(),
+                        "TecMineHostageFreedGreeting".to_owned(),
+                    ]),
+                ),
+                (
+                    mapped("ACTI", 0x133F41),
+                    "FNV_FO3_S_134491".to_owned(),
+                    BTreeSet::from(["TechaticupNCRRenoldsDialoguePackageData".to_owned()]),
+                ),
+                (
+                    mapped("NPC_", 0x1300F0),
+                    "FNV_FO3_S_166305".to_owned(),
+                    BTreeSet::new(),
+                ),
+                (
+                    mapped("INFO", 0x130161),
+                    "TIF__130161".to_owned(),
+                    BTreeSet::from(["VTechatticup".to_owned()]),
+                ),
+                (
+                    mapped("INFO", 0x134B9B),
+                    "TIF__134B9B".to_owned(),
+                    BTreeSet::from(["VTechatticup".to_owned()]),
+                ),
+            ]);
+
+            assert_eq!(actual, expected);
+        }
+        {
+            let mappings = exact_mappings();
+            let plans = admit_exact_fnv_quest_slice(
+                &exact_selection(),
+                "FalloutNV.esm",
+                &mappings,
+                &exact_topology(&mappings),
+            )
+            .unwrap();
+            let vtech = plans
+                .iter()
+                .find(|plan| local_id(&plan.root_quest) == VTECHATTICUP_QUEST)
+                .unwrap();
+            let emitted = &vtech.expected_receipt.emitted_records;
+
+            assert!(vtech_synthetic_records().is_subset(emitted));
+            assert!(
+                vtech
+                    .expected_receipt
+                    .placements
+                    .iter()
+                    .filter(|placement| is_synthetic_intent(&placement.record))
+                    .map(|placement| placement.record.clone())
+                    .collect::<BTreeSet<_>>()
+                    == vtech_synthetic_records()
+            );
+
+            let dedicated_runtime = BTreeSet::from([
+                QuestRecordKey::new("KYWD", DEDICATED_GREETING_KEYWORD_INTENT),
+                QuestRecordKey::new("DIAL", DEDICATED_GREETING_TOPIC_INTENT),
+                mappings[&key("INFO", 0x15734B, "FalloutNV.esm")].clone(),
+                mappings[&key("INFO", 0x15734C, "FalloutNV.esm")].clone(),
+                mappings[&key("INFO", 0x15734D, "FalloutNV.esm")].clone(),
+            ]);
+            assert_eq!(dedicated_runtime.len(), 5);
+            assert!(dedicated_runtime.is_subset(emitted));
+
+            let scene_runtime = BTreeSet::from([
+                QuestRecordKey::new("SCEN", VTECH_SCENE_INTENT),
+                QuestRecordKey::new("DLBR", VTECH_DIALOGUE_BRANCH_INTENT),
+                mappings[&key("DIAL", 0x13015B, "FalloutNV.esm")].clone(),
+                mappings[&key("DIAL", 0x134B9A, "FalloutNV.esm")].clone(),
+                mappings[&key("DIAL", 0x138A74, "FalloutNV.esm")].clone(),
+            ]);
+            assert_eq!(scene_runtime.len(), 5);
+            assert!(scene_runtime.is_subset(emitted));
+
+            let resolved = [
+                FnvQuestSyntheticIntent::Scene,
+                FnvQuestSyntheticIntent::DialogueBranch,
+                FnvQuestSyntheticIntent::DedicatedGreetingKeyword,
+                FnvQuestSyntheticIntent::DedicatedGreetingTopic,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, intent)| {
+                (
+                    intent.record_key(),
+                    intent.target_key(format!("{:06X}:Converted.esm", 0x700000 + index)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                resolved.keys().cloned().collect::<BTreeSet<_>>(),
+                vtech_synthetic_records()
+            );
+            assert!(resolved.iter().all(|(intent, target)| {
+                intent.signature == target.signature && !is_synthetic_intent(target)
+            }));
+        }
     }
 }

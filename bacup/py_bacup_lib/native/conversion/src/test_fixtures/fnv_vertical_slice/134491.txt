@@ -1,0 +1,8 @@
+scn NVTechatticupRenoldsDialogueScript
+
+Begin OnTriggerEnter Player
+	
+	If GetStage VTechatticup < 10
+		NVTecNCRRenoldsREF.AddScriptPackage TechaticupNCRRenoldsDialoguePackage
+	Endif
+End

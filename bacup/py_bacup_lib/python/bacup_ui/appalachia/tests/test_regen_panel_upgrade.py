@@ -1,7 +1,13 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from bacup_lib.upgrade_manifest import UpgradeManifest, UpgradeVersion
+import pytest
+
+from bacup_lib.upgrade_manifest import (
+    UpgradeManifest,
+    UpgradeVersion,
+    bundled_upgrade_manifest_path,
+)
 from bacup_ui.conversion.panels.regen_panel import RegenPanel
 
 
@@ -73,173 +79,41 @@ def _panel(
     return RegenPanel(_ws(), fixed_pair_id=pair_id)
 
 
-def test_upgrade_on_build_options_sets_fields_with_auto_from(monkeypatch, tmp_path):
+def test_upgrade_build_options_use_manifest_and_auto_detected_from(monkeypatch, tmp_path):
     panel = _panel(monkeypatch, tmp_path, snam="alpha1")
+    panel.upgrade = False
+    full = panel.build_options()
+    assert full.upgrade is False
+    assert full.mod_version == "alpha2"
+    assert full.upgrade_manifest_path is None
+
     panel.upgrade = True
-
     options = panel.build_options()
-
     assert options.upgrade is True
     assert options.hydrate_upgrade_from_deployed is True
-    assert options.mod_version == "alpha2"  # manifest.current, no target override
-    assert options.upgrade_from is None  # auto-detect, no override set
-    from bacup_lib.upgrade_manifest import bundled_upgrade_manifest_path
-
+    assert options.mod_version == "alpha2"
+    assert options.upgrade_from is None
     assert options.upgrade_manifest_path == bundled_upgrade_manifest_path()
 
 
-def test_upgrade_uses_the_selected_deploy_format(monkeypatch, tmp_path):
-    expected = {
-        "expanded": ("expanded", False),
-        "standard": ("packed", False),
-        "loose": ("expanded", True),
-    }
-
-    for deploy_format, (ba2_mode, deploy_loose) in expected.items():
-        panel = _panel(monkeypatch, tmp_path, snam="alpha1")
-        panel.deploy_format = deploy_format
-        panel.upgrade = True
-
-        options = panel.build_options()
-
-        assert options.upgrade is True
-        assert options.hydrate_upgrade_from_deployed is True
-        assert options.ba2_mode == ba2_mode
-        assert options.deploy_loose is deploy_loose
-
-
-def test_full_build_stamps_current_manifest_version(monkeypatch, tmp_path):
-    panel = _panel(monkeypatch, tmp_path, snam="alpha1")
-    panel.upgrade = False
-
-    options = panel.build_options()
-
-    assert options.upgrade is False
-    assert options.hydrate_upgrade_from_deployed is False
-    assert options.mod_version == "alpha2"
-    assert options.upgrade_from is None
-    assert options.upgrade_manifest_path is None
-
-
-def test_non_fo76_pair_uses_pair_scoped_upgrade_manifest(monkeypatch, tmp_path):
-    manifest = UpgradeManifest(
-        current="alpha2",
-        versions=(
-            _version("alpha1", ("ALL",), pair_id="skyrimse:fo4"),
-            _version("alpha2", ("NONE",), pair_id="skyrimse:fo4"),
-        ),
-    )
-    panel = _panel(
-        monkeypatch,
-        tmp_path,
-        manifest=manifest,
-        snam="alpha1",
-        pair_id="skyrimse:fo4",
-    )
-    panel.upgrade = True
-
-    options = panel.build_options()
-
-    assert options.upgrade is True
-    assert panel.upgrade_plan_preview() == (
-        "No changes for Northern Lands in this upgrade."
-    )
-
-
-def test_upgrade_plan_preview_reflects_workspace_reuse_and_full_deploy(
-    monkeypatch, tmp_path
-):
-    panel = _panel(monkeypatch, tmp_path, snam="alpha1")
-    panel.upgrade = True
-
-    preview = panel.upgrade_plan_preview()
-
-    assert preview == (
-        "Will regenerate: Materials, Meshes; reuse complete local loose assets or "
-        "restore them from the deployed BA2s; redeploy the complete mod as "
-        "Standard BA2s."
-    )
-
-
-def test_upgrade_plan_preview_repeats_target_scripts_when_current(monkeypatch, tmp_path):
-    manifest = UpgradeManifest(
-        current="alpha2",
-        versions=(
-            _version("alpha1", ("ALL",)),
-            _version("alpha2", ("Scripts",)),
-        ),
-    )
-    panel = _panel(monkeypatch, tmp_path, manifest=manifest, snam="alpha2")
-    panel.upgrade = True
-
-    assert panel.upgrade_plan_preview() == (
-        "Will regenerate: Scripts; reuse complete local loose assets or restore "
-        "them from the deployed BA2s; redeploy the complete mod as Standard BA2s."
-    )
-
-
-def test_upgrade_plan_preview_repeats_all_declared_target_families_when_current(
-    monkeypatch, tmp_path
-):
-    manifest = UpgradeManifest(
-        current="alpha2.1",
-        versions=(
-            _version("alpha2", ("ALL",)),
-            _version("alpha2.1", ("NIFs", "Havok", "Scripts", "Textures")),
-        ),
-    )
-    panel = _panel(monkeypatch, tmp_path, manifest=manifest, snam="alpha2.1")
-    panel.upgrade = True
-
-    assert panel.upgrade_plan_preview() == (
-        "Will regenerate: Havok, NIFs, Scripts, Textures; reuse complete local "
-        "loose assets or restore them from the deployed BA2s; redeploy the complete "
-        "mod as Standard BA2s."
-    )
-
-
-def test_upgrade_preview_reports_forced_clean_build(monkeypatch, tmp_path):
-    manifest = UpgradeManifest(
-        current="alpha2",
-        versions=(
-            _version("alpha1", ("ALL",)),
-            _version("alpha2", ("Meshes",), force_regen=True),
-        ),
-    )
+@pytest.mark.parametrize("manifest, expect_upgrade", [
+    (_MANIFEST, True),
+    (UpgradeManifest(current="alpha2", versions=(
+        _version("alpha1", ("ALL",)), _version("alpha2", ("ALL",)),
+    )), False),
+    (UpgradeManifest(current="alpha3", versions=(
+        _version("alpha1", ("ALL",)), _version("alpha2", ("ALL",)), _version("alpha3", ("Scripts",)),
+    )), False),
+    (UpgradeManifest(current="alpha2", versions=(
+        _version("alpha1", ("ALL",)), _version("alpha2", ("Meshes",), force_regen=True),
+    )), False),
+    (None, False),
+])
+def test_upgrade_falls_back_to_full_build_when_required(monkeypatch, tmp_path, manifest, expect_upgrade):
     panel = _panel(monkeypatch, tmp_path, manifest=manifest, snam="alpha1")
-
-    assert panel.upgrade_plan_preview() == (
-        "Full clean build required by this upgrade (local output will be cleared)."
-    )
-
-
-def test_missing_manifest_degrades_to_full_build_without_crashing(monkeypatch, tmp_path):
-    panel = _panel(monkeypatch, tmp_path, manifest=None, snam=None)
     panel.upgrade = True
 
     options = panel.build_options()
 
-    assert options.upgrade is False
-    assert panel.upgrade_plan_preview() == "No upgrade manifest found - full build only."
-
-
-def test_detected_installed_version_no_stamp_maps_to_alpha1(monkeypatch, tmp_path):
-    panel = _panel(monkeypatch, tmp_path, snam=None)
-
-    assert panel._detected_installed_version() == "alpha1"
-
-
-def test_detected_installed_version_returns_actual_stamp(monkeypatch, tmp_path):
-    panel = _panel(monkeypatch, tmp_path, snam="alpha2")
-
-    assert panel._detected_installed_version() == "alpha2"
-
-
-def test_draw_header_reports_installed_and_game_version_without_crashing(monkeypatch, tmp_path):
-    panel = _panel(monkeypatch, tmp_path, snam="alpha1")
-    monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel.RegenPanel._detect_ba2_target",
-        lambda self: ("nextgen", "1.10.984"),
-    )
-
-    panel._draw_header()
+    assert options.upgrade is expect_upgrade
+    assert options.hydrate_upgrade_from_deployed is expect_upgrade

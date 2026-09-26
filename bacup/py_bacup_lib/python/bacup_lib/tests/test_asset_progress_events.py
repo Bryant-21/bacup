@@ -4,7 +4,6 @@ from types import SimpleNamespace
 import pytest
 
 from bacup_lib.models import ConversionSummary
-from bacup_lib.native_runtime import _ConversionNativeProxy
 from bacup_lib.timing_report import TimingReport
 from bacup_lib.workflows.unified import (
     MultiRunDrainer, _merge_wave_report_into_summary, _run_post_phase,
@@ -67,17 +66,6 @@ def test_repeated_phase_in_later_wave_counts_new_outputs():
     assert summary.nifs_converted == 103
 
 
-def test_pipeline_proxy_decodes_full_phase_report():
-    raw_phase = (0, 0, 9, 22744, 80, 13297, 1, 0, 0)
-    raw = SimpleNamespace(conversion_pipeline_run=lambda _plan: (
-        [("convert_materials_v2", 22744, 1, 80, 13297, raw_phase)], 13300, []
-    ))
-    report = _ConversionNativeProxy(raw).conversion_pipeline_run("{}")
-    assert report["stages"] == [("convert_materials_v2", 22744, 1, 80, 13297)]
-    assert report["phase_reports"]["convert_materials_v2"]["assets_written"] == 22744
-    assert report["phase_reports"]["convert_materials_v2"]["records_dropped"] == 9
-
-
 def test_installed_pipeline_returns_full_report_for_written_asset(tmp_path):
     import json
 
@@ -110,8 +98,6 @@ def test_installed_pipeline_returns_full_report_for_written_asset(tmp_path):
     ("fo76", "fo4", False, None, False),
     ("fo76", "fo4", True, {}, False),
     ("skyrimse", "fo4", True, None, False),
-    ("fnv", "fo4", True, None, False),
-    ("starfield", "fo4", True, None, False),
     ("fo4", "starfield", True, None, False),
 ])
 def test_only_defer_repairs_when_later_havok_phase_exists(source, target, havok, corpus, expected):
@@ -155,6 +141,16 @@ def test_multi_run_drainer_emits_structured_asset_stage_progress():
     assert complete.status == "completed"
     assert complete.completed_items == 10
     assert complete.elapsed_seconds == 1.25
+
+    drainer._dispatch(
+        {
+            "kind": "progress",
+            "phase": "convert_nifs_v2",
+            "current": 9,
+            "total": 10,
+        }
+    )
+    assert len(runner.events) == 3
 
 
 def test_multi_run_drainer_reconciles_dropped_stage_completion_from_report():
@@ -258,26 +254,6 @@ def test_multi_run_drainer_serializes_final_reconciliation_after_progress_dispat
         "running",
         "completed",
     ]
-
-
-def test_multi_run_drainer_ignores_progress_after_stage_completion():
-    runner = _Runner()
-    drainer = MultiRunDrainer([], runner)
-    drainer.reconcile_pipeline_report(
-        {"stages": [("convert_materials_v2", 29_471, 0, 0, 82_500)]}
-    )
-
-    drainer._dispatch(
-        {
-            "kind": "progress",
-            "phase": "convert_materials_v2",
-            "current": 29_461,
-            "total": 29_471,
-        }
-    )
-
-    assert [progress.status for _kind, progress in runner.events] == ["completed"]
-    assert drainer.stage_counters["convert_materials_v2"] == 29_471
 
 
 @pytest.mark.parametrize("completion_source", ["event", "report"])

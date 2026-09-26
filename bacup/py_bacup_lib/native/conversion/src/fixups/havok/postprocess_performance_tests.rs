@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use havok_native::hkx::descriptors::DescriptorRegistry;
 use havok_native::hkx::types::HkxValue;
@@ -76,50 +75,23 @@ impl PassReports {
     }
 }
 
-#[derive(Debug)]
-struct PassTimings {
-    strip: Duration,
-    hitframe: Duration,
-    attack_stop: Duration,
-    reload: Duration,
-}
-
-fn run_passes(corpus: &Path, baseline: bool) -> (PassReports, PassTimings) {
-    let strip_started = Instant::now();
+fn run_passes(corpus: &Path, baseline: bool) -> PassReports {
     let stripped = if baseline {
         strip_source_game_events_without_prefilter_in_mod_path(corpus)
     } else {
         strip_source_game_events_in_mod_path(corpus)
     }
     .unwrap();
-    let strip = strip_started.elapsed();
-
-    let hitframe_started = Instant::now();
     let hitframes = inject_hitframe_events_in_mod_path(corpus).unwrap();
-    let hitframe = hitframe_started.elapsed();
-
-    let attack_stop_started = Instant::now();
     let attack_stops = inject_attack_stop_events_in_mod_path(corpus).unwrap();
-    let attack_stop = attack_stop_started.elapsed();
-
-    let reload_started = Instant::now();
     let reloads = retime_reload_complete_events_in_mod_path(corpus).unwrap();
-    let reload = reload_started.elapsed();
 
-    (
-        PassReports {
-            strip: ReportSnapshot::from(&stripped),
-            hitframe: ReportSnapshot::from(&hitframes),
-            attack_stop: ReportSnapshot::from(&attack_stops),
-            reload: ReportSnapshot::from(&reloads),
-        },
-        PassTimings {
-            strip,
-            hitframe,
-            attack_stop,
-            reload,
-        },
-    )
+    PassReports {
+        strip: ReportSnapshot::from(&stripped),
+        hitframe: ReportSnapshot::from(&hitframes),
+        attack_stop: ReportSnapshot::from(&attack_stops),
+        reload: ReportSnapshot::from(&reloads),
+    }
 }
 
 fn annotation(time: f32, text: &str) -> HkxValue {
@@ -227,8 +199,8 @@ fn prefilters_preserve_positive_fixture_reports_and_bytes() {
     write_positive_corpus(baseline.path());
     write_positive_corpus(optimized.path());
 
-    let (baseline_reports, _) = run_passes(baseline.path(), true);
-    let (optimized_reports, _) = run_passes(optimized.path(), false);
+    let baseline_reports = run_passes(baseline.path(), true);
+    let optimized_reports = run_passes(optimized.path(), false);
     assert_eq!(baseline_reports, optimized_reports);
     let baseline_counts = baseline_reports.counts();
     assert_eq!(
@@ -265,26 +237,5 @@ fn prefilter_preserves_public_report_for_malformed_irrelevant_file() {
     assert_eq!(
         std::fs::read(baseline.path().join(relative)).unwrap(),
         std::fs::read(optimized.path().join(relative)).unwrap()
-    );
-}
-
-#[test]
-#[ignore = "requires isolated baseline and optimized postprocessed mod trees"]
-fn benchmark_annotation_postprocess_passes() {
-    let baseline = std::env::var("BACUP_HAVOK_BENCH_BASELINE_CORPUS")
-        .expect("set BACUP_HAVOK_BENCH_BASELINE_CORPUS");
-    let optimized = std::env::var("BACUP_HAVOK_BENCH_OPTIMIZED_CORPUS")
-        .expect("set BACUP_HAVOK_BENCH_OPTIMIZED_CORPUS");
-    let baseline = Path::new(&baseline);
-    let optimized = Path::new(&optimized);
-
-    let (baseline_reports, baseline_timings) = run_passes(baseline, true);
-    let (optimized_reports, optimized_timings) = run_passes(optimized, false);
-    assert_eq!(baseline_reports, optimized_reports);
-    assert_corpora_equal(baseline, optimized);
-    let baseline_counts = baseline_reports.counts();
-
-    eprintln!(
-        "havok_annotation_benchmark baseline={baseline_timings:?} optimized={optimized_timings:?} counts={baseline_counts:?}"
     );
 }

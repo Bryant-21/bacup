@@ -36,6 +36,8 @@ EndFunction
 Event OnStageSet(Int auiStageID, Int auiItemID)
     If auiStageID == 50
         SetObjectiveDisplayed(10)
+        CancelTimer(1)
+        StartTimer(3.0, 1)
     ElseIf auiStageID == 100
         SelectScenario()
         SetObjectiveCompleted(10)
@@ -51,6 +53,7 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
             SetObjectiveDisplayed(chosenScenario.RetrieveItemObjective)
         EndIf
     ElseIf auiStageID == 205
+        SetObjectiveCompleted(50)
         SetObjectiveDisplayed(60)
         If chosenScenario.RetrieveItemObjective >= 0
             SetObjectiveDisplayed(chosenScenario.RetrieveItemObjective)
@@ -67,10 +70,52 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
             SetStage(9000)
         EndIf
     ElseIf auiStageID == 8000
+        CancelTimer(1)
         Stop()
     ElseIf auiStageID == 9000
+        CancelTimer(1)
         CompleteAllObjectives()
     ElseIf auiStageID == 10000
         Stop()
     EndIf
 EndEvent
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID != 1 || !IsRunning()
+        Return
+    EndIf
+    CheckClinicHandover()
+    If IsRunning() && !IsStageDone(9000)
+        StartTimer(3.0, 1)
+    EndIf
+EndEvent
+
+Event OnQuestShutdown()
+    CancelTimer(1)
+EndEvent
+
+Bool Function PlayerIsBeside(Int aiAliasID)
+    If myPlayer == None
+        myPlayer = Alias_Player.GetActorReference()
+    EndIf
+    ReferenceAlias target = GetAlias(aiAliasID) as ReferenceAlias
+    If myPlayer == None || target == None
+        Return False
+    EndIf
+    ObjectReference ref = target.GetReference()
+    Return ref != None && myPlayer.GetDistance(ref) <= 384.0
+EndFunction
+
+; The converted Rucker and Responder Medic dialogue cannot run, so standing with
+; them stands in for accepting the assignment and for handing the records in.
+Function CheckClinicHandover()
+    If !IsStageDone(100)
+        If PlayerIsBeside(2)
+            SetStage(100)
+        EndIf
+    ElseIf IsStageDone(210) && !IsStageDone(500)
+        If PlayerIsBeside(28)
+            SetStage(500)
+        EndIf
+    EndIf
+EndFunction

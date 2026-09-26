@@ -543,51 +543,64 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_master_byte_door_to_own_when_partner_exists() {
-        let resolver = resolver(&[0x6295D2], &[&[]]);
-        assert_eq!(
-            resolver.resolve(0x0062_95D2),
-            RefResolution::Repair(0x0162_95D2),
-        );
-    }
-
-    #[test]
-    fn leaves_already_own_ref_untouched() {
-        let resolver = resolver(&[0x6295D2], &[&[]]);
-        assert_eq!(resolver.resolve(0x0162_95D2), RefResolution::Keep);
-    }
-
-    #[test]
-    fn leaves_valid_master_ref_even_with_own_shadow() {
-        let resolver = resolver(&[0x6295D2], &[&[0x6295D2]]);
-        assert_eq!(resolver.resolve(0x0062_95D2), RefResolution::Keep);
-    }
-
-    #[test]
-    fn source_own_ref_prefers_output_when_master_has_same_object_id() {
-        let resolver = resolver(&[0x6295D2], &[&[0x6295D2]]);
-        assert_eq!(
-            resolver.resolve_source_own(0x0062_95D2),
-            RefResolution::Repair(0x0162_95D2),
-        );
-    }
-
-    #[test]
-    fn marks_null_and_missing_targets_dangling() {
-        let resolver = resolver(&[0x111111], &[&[0x000010]]);
-        assert_eq!(resolver.resolve(0), RefResolution::Dangling);
-        assert_eq!(resolver.resolve(0x0062_95D2), RefResolution::Dangling);
-        assert_eq!(resolver.resolve(0x0162_95D2), RefResolution::Dangling);
-    }
-
-    #[test]
-    fn preserves_unscanned_declared_master() {
-        let resolver = FinalRefResolver {
+    fn final_ref_resolver_repairs_keeps_or_dangles() {
+        let unscanned_master = FinalRefResolver {
             output_objids: FxHashSet::default(),
             master_objids: Vec::new(),
             output_master_index: 1,
         };
-        assert_eq!(resolver.resolve(0x0000_ABCD), RefResolution::Keep);
+        for (name, resolver, raw, expected) in [
+            (
+                "master byte door with own partner",
+                resolver(&[0x6295D2], &[&[]]),
+                0x0062_95D2,
+                RefResolution::Repair(0x0162_95D2),
+            ),
+            (
+                "already own",
+                resolver(&[0x6295D2], &[&[]]),
+                0x0162_95D2,
+                RefResolution::Keep,
+            ),
+            (
+                "valid master ref with own shadow",
+                resolver(&[0x6295D2], &[&[0x6295D2]]),
+                0x0062_95D2,
+                RefResolution::Keep,
+            ),
+            (
+                "null",
+                resolver(&[0x111111], &[&[0x000010]]),
+                0,
+                RefResolution::Dangling,
+            ),
+            (
+                "missing master target",
+                resolver(&[0x111111], &[&[0x000010]]),
+                0x0062_95D2,
+                RefResolution::Dangling,
+            ),
+            (
+                "missing own target",
+                resolver(&[0x111111], &[&[0x000010]]),
+                0x0162_95D2,
+                RefResolution::Dangling,
+            ),
+            (
+                "unscanned declared master",
+                unscanned_master,
+                0x0000_ABCD,
+                RefResolution::Keep,
+            ),
+        ] {
+            assert_eq!(resolver.resolve(raw), expected, "{name}");
+        }
+
+        assert_eq!(
+            resolver(&[0x6295D2], &[&[0x6295D2]]).resolve_source_own(0x0062_95D2),
+            RefResolution::Repair(0x0162_95D2),
+            "source-own ref prefers the output over a same-id master record"
+        );
     }
 
     fn field(sig: &str, bytes: Vec<u8>) -> FieldEntry {

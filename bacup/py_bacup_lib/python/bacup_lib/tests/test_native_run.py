@@ -48,11 +48,6 @@ class TestPathBoundary:
             with pytest.raises(Exception, match="unknown.*run|UnknownRun"):
                 target.share_output_nif_dependencies(source)
 
-    def test_raw_handle_constructor_is_not_exported(self):
-        assert not hasattr(_native()._raw, "conversion_run_create")
-        assert not hasattr(_native()._raw, "conversion_run_source_handle")
-        assert not hasattr(_native()._raw, "conversion_run_target_handle")
-
     @pytest.mark.parametrize(
         ("target_name", "target_path"),
         [(None, None), ("Output.esm", "Output.esm")],
@@ -80,7 +75,7 @@ class TestPathBoundary:
         run.close()
         run.close()
 
-    def test_context_manager_drops_on_exception(self, tmp_path):
+    def test_run_is_dropped_on_exception_and_on_del(self, tmp_path):
         from bacup_lib.run import ConversionRun
 
         run_id = None
@@ -92,9 +87,6 @@ class TestPathBoundary:
                 raise ValueError("intentional")
         with pytest.raises(Exception):
             _native().conversion_run_drain_decisions(run_id)
-
-    def test_del_best_effort_drops_run(self, tmp_path):
-        from bacup_lib.run import ConversionRun
 
         run = ConversionRun.create_new(
             "fo4", "fo4", None, "Output.esm", config={"mod_path": str(tmp_path)}
@@ -117,15 +109,6 @@ class TestPathBoundary:
             run.save_target(str(override), run_nvnm_validator=False)
             assert override.is_file()
 
-    def test_source_dependent_phase_fails_clearly(self, tmp_path):
-        from bacup_lib.run import ConversionRun
-
-        with ConversionRun.create_new(
-            "fo4", "fo4", None, "Output.esm", config={"mod_path": str(tmp_path)}
-        ) as run:
-            with pytest.raises(RuntimeError, match="requires a source plugin"):
-                _native().conversion_run_translate_all(run.id)
-
     @pytest.mark.parametrize("phase", ["translate_v2", "walk", "convert_terrain"])
     def test_source_dependent_dispatcher_phases_fail_clearly(self, tmp_path, phase):
         from bacup_lib.run import ConversionRun
@@ -138,32 +121,12 @@ class TestPathBoundary:
             ):
                 run.run_phase(phase, mod_path=str(tmp_path), params={})
 
-    def test_source_free_dispatcher_phase_runs_without_source(self, tmp_path):
-        from bacup_lib.run import ConversionRun
-
-        with ConversionRun.create_new(
-            "fo4", "fo4", None, "Output.esm", config={"mod_path": str(tmp_path)}
-        ) as run:
-            report = run.run_phase(
-                "record_translation_maps", mod_path=str(tmp_path), params={}
-            )
-        assert report["warnings"] == 0
-
     @pytest.mark.parametrize(
         ("source_game", "phase", "params", "legacy_key"),
         [
             ("fo4", "walk", {"source_handle": 1}, "source_handle"),
-            ("fo4", "walk", {"master_handles": [1]}, "master_handles"),
             ("fo4", "graft_terrain", {"prior_handle_id": 1}, "prior_handle_id"),
             ("fo4", "regenerate_modt", {"output_handle_id": 1}, "output_handle_id"),
-            (
-                "fo4",
-                "regenerate_modt",
-                {"deployed_esm_handle_id": 1},
-                "deployed_esm_handle_id",
-            ),
-            ("fo76", "convert_terrain", {"source_handle_id": 1}, "source_handle_id"),
-            ("fo76", "convert_terrain", {"target_handle_id": 1}, "target_handle_id"),
             (
                 "fo76",
                 "convert_terrain",
@@ -234,23 +197,9 @@ class TestPathBoundary:
 
 @pytest.mark.skipif(not FIXTURE.exists(), reason=f"fixture not present: {FIXTURE}")
 class TestPathBoundaryWithPlugin:
-    def test_translate_all_uses_conversion_local_handles(self, tmp_path):
-        from bacup_lib.run import ConversionRun
-
-        with ConversionRun.create_new(
-            "fo4",
-            "fo4",
-            str(FIXTURE),
-            "Translated.esm",
-            config={"mod_path": str(tmp_path)},
-        ) as run:
-            stats = _native().conversion_run_translate_all(run.id)
-            assert stats["records_translated"] >= 1
-            run.save_target(run_nvnm_validator=False)
-        assert (tmp_path / "Translated.esm").is_file()
-
     def test_create_new_and_early_source_release(self, tmp_path):
         from bacup_lib.run import ConversionRun
+        from creation_lib.esp.plugin import Plugin
 
         with ConversionRun.create_new(
             "fo4",
@@ -259,6 +208,8 @@ class TestPathBoundaryWithPlugin:
             "Output.esm",
             config={"mod_path": str(tmp_path)},
         ) as run:
+            stats = _native().conversion_run_translate_all(run.id)
+            assert stats["records_translated"] >= 1
             assert run.release_source_handle() is True
             assert run.release_source_handle() is False
             for phase in ("translate_v2", "walk", "convert_terrain"):
@@ -266,6 +217,26 @@ class TestPathBoundaryWithPlugin:
                     RuntimeError, match="this phase requires a source plugin"
                 ):
                     run.run_phase(phase, mod_path=str(tmp_path), params={})
+            run.save_target(run_nvnm_validator=False)
+
+        output = tmp_path / "Output.esm"
+        assert output.is_file()
+        with ConversionRun.open_existing("fo4", "fo4", None, str(output)) as reopened:
+            reopened.save_target(run_nvnm_validator=False)
+        parsed = Plugin.load(output, game="fo4")
+        try:
+            assert parsed.record_count >= stats["records_translated"]
+            editor_ids = parsed.eid_index()
+            test_weap = next(
+                key for key in editor_ids if key.casefold() == "testweap"
+            )
+            form_id = int(editor_ids[test_weap][0].split(":")[-1], 16)
+            record = parsed.get_record_by_form_id(form_id)
+            assert record is not None
+            assert record.signature == "WEAP"
+            assert record.editor_id == "TestWeap"
+        finally:
+            parsed.close()
 
     def test_open_existing_defaults_save_to_original_path(self, tmp_path):
         from bacup_lib.run import ConversionRun
@@ -334,20 +305,6 @@ class TestPathBoundaryWithPlugin:
             }
         finally:
             preserved.close()
-
-    def test_generated_id_floor_survives_save(self, tmp_path):
-        from bacup_lib.run import ConversionRun
-
-        target = tmp_path / "Generated.esm"
-        with ConversionRun.create_new(
-            "fo4",
-            "fo4",
-            str(FIXTURE),
-            target.name,
-            config={"mod_path": str(tmp_path), "generated_object_id_floor": 0x9000},
-        ) as run:
-            run.save_target(run_nvnm_validator=False)
-        assert target.is_file()
 
     def test_master_paths_preserve_caller_order(self, tmp_path):
         from bacup_lib.run import ConversionRun

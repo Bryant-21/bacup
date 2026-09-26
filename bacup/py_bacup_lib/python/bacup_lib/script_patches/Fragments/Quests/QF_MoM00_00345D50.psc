@@ -26,7 +26,12 @@ Function Fragment_Stage_0060_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
+    CompleteQuest()
     SetObjectiveCompleted(60)
     CompleteAllObjectives()
+    Stop()
+EndFunction
+
+Function Fragment_Stage_0255_Item_00()
     Stop()
 EndFunction

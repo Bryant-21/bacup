@@ -13,6 +13,7 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::fixups::validate_reference_target_types::FO4_HARDCODED_AVIF_LOCAL_IDS;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::full_plugin::FullPluginRunState;
@@ -433,8 +434,10 @@ fn resolve_target_fk_with_known_ref_sets(
     TargetFkResolution::Null
 }
 
+/// Caps (`00000F`) and the engine-hardcoded actor values are runtime forms with
+/// no record in Fallout4.esm, so a record lookup would wrongly call them dangling.
 fn is_known_valid_target_fk(fk: &FormKey, interner: &StringInterner) -> bool {
-    fk.local == 0x00000F
+    (fk.local == 0x00000F || FO4_HARDCODED_AVIF_LOCAL_IDS.contains(&fk.local))
         && interner
             .resolve(fk.plugin)
             .is_some_and(|plugin| plugin.eq_ignore_ascii_case("Fallout4.esm"))
@@ -936,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn known_valid_target_fk_keeps_fo4_caps() {
+    fn known_valid_target_fks_are_caps_and_hardcoded_actor_values() {
         let mut interner = StringInterner::new();
         let caps = make_fk("00000F", "Fallout4.esm", &mut interner);
         let source_caps = make_fk("00000F", "SeventySix.esm", &mut interner);
@@ -945,10 +948,19 @@ mod tests {
         assert!(is_known_valid_target_fk(&caps, &interner));
         assert!(!is_known_valid_target_fk(&source_caps, &interner));
         assert!(!is_known_valid_target_fk(&other_fo4, &interner));
+
+        let mut interner = StringInterner::new();
+        let power_required = make_fk("000330", "Fallout4.esm", &mut interner);
+        let unknown_low_id = make_fk("00038A", "Fallout4.esm", &mut interner);
+        let other_plugin = make_fk("000330", "SomeMod.esp", &mut interner);
+
+        assert!(is_known_valid_target_fk(&power_required, &interner));
+        assert!(!is_known_valid_target_fk(&unknown_low_id, &interner));
+        assert!(!is_known_valid_target_fk(&other_plugin, &interner));
     }
 
     #[test]
-    fn full_plugin_invalid_target_worklist_deduplicates_referenced_fks() {
+    fn full_plugin_invalid_target_worklist_dedups_and_adds_supplemental_owners() {
         let interner = StringInterner::new();
         let output = interner.intern("Output.esm");
         let fallout4 = interner.intern("Fallout4.esm");
@@ -991,13 +1003,7 @@ mod tests {
             invalid_target_worklist_owners(&state, &invalid_refs, Vec::new()),
             vec![owner_a, owner_b]
         );
-    }
 
-    #[test]
-    fn full_plugin_invalid_target_worklist_includes_supplemental_owners() {
-        let interner = StringInterner::new();
-        let output = interner.intern("Output.esm");
-        let fallout4 = interner.intern("Fallout4.esm");
         let owner = FormKey {
             plugin: output,
             local: 0x800,
@@ -1032,141 +1038,112 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn apply_to_record_no_op_when_all_fks_valid() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let field = simple_fk_field("DNAM", valid_master_fk(&mut interner));
-        let mut record = make_record_with_fields(record_fk, vec![field]);
-
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(!changed, "no FK should be nullified when all are valid");
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_ne!(fk.local, 0, "valid FK must not be nullified");
-        } else {
-            panic!("expected FormKey field");
+    fn apply_to_record_nullifies_only_invalid_master_fks_and_converges() {
+        fn locals(value: &FieldValue) -> Vec<u32> {
+            match value {
+                FieldValue::FormKey(fk) => vec![fk.local],
+                FieldValue::Struct(fields) => fields.iter().flat_map(|(_, v)| locals(v)).collect(),
+                FieldValue::List(items) => items.iter().flat_map(locals).collect(),
+                _ => Vec::new(),
+            }
         }
-    }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_nullifies_invalid_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let bad_field = simple_fk_field("DNAM", invalid_master_fk(&mut interner));
-        let mut record = make_record_with_fields(record_fk, vec![bad_field]);
-
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(changed, "invalid FK should be nullified");
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0, "nullified FK must have local=0");
-        } else {
-            panic!("expected FormKey field");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_nullifies_only_invalid_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let good_field = simple_fk_field("DNAM", valid_master_fk(&mut interner));
-        let bad_field = simple_fk_field("ZNAM", invalid_master_fk(&mut interner));
-        let mut record = make_record_with_fields(record_fk, vec![good_field, bad_field]);
-
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(changed, "one FK was nullified");
-        // First field (DNAM, valid) must be unchanged.
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_ne!(fk.local, 0, "valid FK must remain");
-        }
-        // Second field (ZNAM, invalid) must be zeroed.
-        if let FieldValue::FormKey(fk) = &record.fields[1].value {
-            assert_eq!(fk.local, 0, "invalid FK must be nullified");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_skips_already_null_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let null_field = simple_fk_field("DNAM", null_fk(&mut interner));
-        let mut record = make_record_with_fields(record_fk, vec![null_field]);
-
-        // Predicate returns false for local=0 (already null), so no change.
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(!changed, "already-null FK must not trigger a change");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_nullifies_struct_nested_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let inner_sym = interner.intern("InnerRef");
-        let struct_field = FieldEntry {
+        let interner = StringInterner::new();
+        let record_fk = make_fk("000800", "Mod.esp", &interner);
+        let valid = valid_master_fk(&interner);
+        let invalid = invalid_master_fk(&interner);
+        let pred = master_invalid_pred(&interner);
+        let dnam = |value| FieldEntry {
             sig: SubrecordSig::from_str("DNAM").unwrap(),
-            value: FieldValue::Struct(vec![(
-                inner_sym,
-                FieldValue::FormKey(invalid_master_fk(&mut interner)),
-            )]),
+            value,
         };
-        let mut record = make_record_with_fields(record_fk, vec![struct_field]);
 
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(changed, "struct-nested invalid FK should be nullified");
-        if let FieldValue::Struct(fields) = &record.fields[0].value {
-            if let FieldValue::FormKey(fk) = &fields[0].1 {
-                assert_eq!(fk.local, 0, "nested FK must be nullified");
-            }
+        for (name, fields, expected_changed, expected_locals) in [
+            (
+                "all valid",
+                vec![simple_fk_field("DNAM", valid)],
+                false,
+                vec![vec![0x1234]],
+            ),
+            (
+                "invalid",
+                vec![simple_fk_field("DNAM", invalid)],
+                true,
+                vec![vec![0]],
+            ),
+            (
+                "only the invalid one",
+                vec![
+                    simple_fk_field("DNAM", valid),
+                    simple_fk_field("ZNAM", invalid),
+                ],
+                true,
+                vec![vec![0x1234], vec![0]],
+            ),
+            (
+                "already null",
+                vec![simple_fk_field("DNAM", null_fk(&interner))],
+                false,
+                vec![vec![0]],
+            ),
+            (
+                "struct nested",
+                vec![dnam(FieldValue::Struct(vec![(
+                    interner.intern("InnerRef"),
+                    FieldValue::FormKey(invalid),
+                )]))],
+                true,
+                vec![vec![0]],
+            ),
+            (
+                "list nested",
+                vec![dnam(FieldValue::List(vec![
+                    FieldValue::FormKey(valid),
+                    FieldValue::FormKey(invalid),
+                ]))],
+                true,
+                vec![vec![0x1234, 0]],
+            ),
+            (
+                "non master",
+                vec![simple_fk_field("DNAM", non_master_fk(&interner))],
+                false,
+                vec![vec![0x1234]],
+            ),
+            ("empty record", vec![], false, vec![]),
+        ] {
+            let mut record = make_record_with_fields(record_fk, fields);
+            assert_eq!(
+                apply_to_record(&mut record, None, &pred),
+                expected_changed,
+                "{name}"
+            );
+            let actual: Vec<Vec<u32>> = record.fields.iter().map(|f| locals(&f.value)).collect();
+            assert_eq!(actual, expected_locals, "{name}");
+            assert!(
+                !apply_to_record(&mut record, None, &pred),
+                "{name}: second pass"
+            );
         }
     }
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn apply_to_record_nullifies_list_nested_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let list_field = FieldEntry {
-            sig: SubrecordSig::from_str("DNAM").unwrap(),
-            value: FieldValue::List(vec![
-                FieldValue::FormKey(valid_master_fk(&mut interner)),
-                FieldValue::FormKey(invalid_master_fk(&mut interner)),
-            ]),
-        };
-        let mut record = make_record_with_fields(record_fk, vec![list_field]);
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(changed, "list-nested invalid FK should be nullified");
-        if let FieldValue::List(items) = &record.fields[0].value {
-            assert_eq!(items.len(), 2);
-            if let FieldValue::FormKey(fk) = &items[0] {
-                assert_ne!(fk.local, 0, "valid list item must remain");
-            }
-            if let FieldValue::FormKey(fk) = &items[1] {
-                assert_eq!(fk.local, 0, "invalid list item must be nullified");
-            }
-        }
-    }
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
 
     #[test]
-    fn apply_to_record_drops_invalid_formid_array_items() {
+    fn apply_to_record_drops_invalid_formid_array_and_repeatable_items() {
         let mut interner = StringInterner::new();
         let schema = crate::schema::AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let record_fk = make_fk("000800", "Mod.esp", &mut interner);
@@ -1192,10 +1169,7 @@ mod tests {
         assert!(
             matches!(&items[1], FieldValue::FormKey(fk) if interner.resolve(fk.plugin) == Some("SomeMod.esp"))
         );
-    }
 
-    #[test]
-    fn apply_to_record_drops_invalid_repeatable_scalar_formids() {
         let mut interner = StringInterner::new();
         let schema = crate::schema::AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let record_fk = make_fk("000800", "Mod.esp", &mut interner);
@@ -1292,53 +1266,12 @@ mod tests {
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn apply_to_record_keeps_non_master_fk() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let field = simple_fk_field("DNAM", non_master_fk(&mut interner));
-        let mut record = make_record_with_fields(record_fk, vec![field]);
-
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(!changed, "non-master FK must not be nullified");
-    }
-
     // -----------------------------------------------------------------------
     // A second pass after nulling is a no-op (the convergent() guarantee).
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn apply_to_record_converges_after_one_pass() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let bad_field = simple_fk_field("DNAM", invalid_master_fk(&mut interner));
-        let mut record = make_record_with_fields(record_fk, vec![bad_field]);
-
-        let pred = master_invalid_pred(&mut interner);
-
-        // First pass: should make a change.
-        let changed_1 = apply_to_record(&mut record, None, &pred);
-        assert!(changed_1, "first pass must nullify the invalid FK");
-
-        // Second pass: already null → predicate returns false → no change.
-        let changed_2 = apply_to_record(&mut record, None, &pred);
-        assert!(!changed_2, "second pass must be a no-op (convergence)");
-    }
-
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_empty_record_no_op() {
-        let mut interner = StringInterner::new();
-        let record_fk = make_fk("000800", "Mod.esp", &mut interner);
-        let mut record = make_record_with_fields(record_fk, vec![]);
-
-        let pred = master_invalid_pred(&mut interner);
-        let changed = apply_to_record(&mut record, None, &pred);
-        assert!(!changed, "empty record must be a no-op");
-    }
 
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
@@ -1416,31 +1349,39 @@ mod tests {
     }
 
     #[test]
-    fn lctn_lcep_placed_child_nulled_when_not_deferred() {
-        // defer=false: the LCEP ref is nulled.
+    fn placed_child_targets_are_nulled_unless_deferred() {
         let interner = StringInterner::new();
-        let leaf = make_fk("7ACB4D", "Output.esm", &interner);
-        let mut rec = lctn_lcep_record(leaf, &interner);
-        let changed =
-            apply_to_record_with_resolution(&mut rec, None, &null_everything, None, false);
-        assert!(changed, "without deferral the placed-child ref is nulled");
-        assert_eq!(lcep_leaf_local(&rec), 0);
-    }
+        let lcep_leaf = make_fk("7ACB4D", "Output.esm", &interner);
+        let venc_leaf = make_fk("629E0C", "Output.esm", &interner);
+        type LeafLocal = fn(&Record) -> u32;
+        for (name, record, leaf_local, original) in [
+            (
+                "LCTN LCEP enable parent",
+                lctn_lcep_record(lcep_leaf, &interner),
+                lcep_leaf_local as LeafLocal,
+                0x7ACB4D,
+            ),
+            (
+                "FACT VENC merchant container",
+                fact_venc_record(venc_leaf, &interner),
+                venc_leaf_local as LeafLocal,
+                0x629E0C,
+            ),
+        ] {
+            let mut nulled = record.clone();
+            assert!(
+                apply_to_record_with_resolution(&mut nulled, None, &null_everything, None, false),
+                "{name}"
+            );
+            assert_eq!(leaf_local(&nulled), 0, "{name}");
 
-    #[test]
-    fn lctn_lcep_placed_child_deferred_left_intact() {
-        // defer=true: the placed-ref-target class is skipped, so the LCEP ref
-        // survives for the post-copy repair.
-        let interner = StringInterner::new();
-        let leaf = make_fk("7ACB4D", "Output.esm", &interner);
-        let mut rec = lctn_lcep_record(leaf, &interner);
-        let changed = apply_to_record_with_resolution(&mut rec, None, &null_everything, None, true);
-        assert!(!changed, "deferred class must be untouched pre-copy");
-        assert_eq!(
-            lcep_leaf_local(&rec),
-            0x7ACB4D,
-            "ref left intact for repair"
-        );
+            let mut deferred = record;
+            assert!(
+                !apply_to_record_with_resolution(&mut deferred, None, &null_everything, None, true),
+                "{name}: deferred"
+            );
+            assert_eq!(leaf_local(&deferred), original, "{name}: deferred");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1471,36 +1412,5 @@ mod tests {
             panic!()
         };
         f.local
-    }
-
-    #[test]
-    fn fact_venc_merchant_container_nulled_when_not_deferred() {
-        // defer=false: this pass nulls the merchant-container FK.
-        let interner = StringInterner::new();
-        let leaf = make_fk("629E0C", "Output.esm", &interner);
-        let mut rec = fact_venc_record(leaf, &interner);
-        let changed =
-            apply_to_record_with_resolution(&mut rec, None, &null_everything, None, false);
-        assert!(
-            changed,
-            "without deferral the merchant container ref is nulled"
-        );
-        assert_eq!(venc_leaf_local(&rec), 0);
-    }
-
-    #[test]
-    fn fact_venc_merchant_container_deferred_left_intact() {
-        // defer=true: VENC is in the placed-child-target class, so it survives
-        // for the post-copy repair, where the container REFR is present.
-        let interner = StringInterner::new();
-        let leaf = make_fk("629E0C", "Output.esm", &interner);
-        let mut rec = fact_venc_record(leaf, &interner);
-        let changed = apply_to_record_with_resolution(&mut rec, None, &null_everything, None, true);
-        assert!(!changed, "deferred FACT VENC must be untouched pre-copy");
-        assert_eq!(
-            venc_leaf_local(&rec),
-            0x629E0C,
-            "VENC left intact for repair"
-        );
     }
 }

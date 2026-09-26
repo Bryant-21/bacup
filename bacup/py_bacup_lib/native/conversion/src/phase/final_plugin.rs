@@ -2,7 +2,11 @@
 
 use std::time::Instant;
 
-use esp_authoring_core::plugin_runtime::plugin_handle_repair_term_marker_parameters_from_source_no_py;
+use esp_authoring_core::plugin_runtime::{
+    ParsedItem, plugin_handle_repair_term_marker_parameters_from_source_no_py,
+    plugin_handle_store_ref,
+};
+use rustc_hash::FxHashMap;
 
 use crate::phase::rebuild_cell_offsets::RebuildCellOffsetsPhase;
 use crate::phase::regenerate_modt::RegenerateModtPhase;
@@ -157,6 +161,66 @@ fn repair_term_markers(ctx: &mut PhaseCtx<'_>) -> Result<TermReport, PhaseError>
     })
 }
 
+/// `(form_id, signatures)` for every FormID carried by more than one record.
+fn duplicate_form_ids(items: &[ParsedItem]) -> Vec<(u32, Vec<String>)> {
+    fn walk(items: &[ParsedItem], seen: &mut FxHashMap<u32, Vec<String>>) {
+        for item in items {
+            match item {
+                ParsedItem::Record(record) => seen
+                    .entry(record.form_id)
+                    .or_default()
+                    .push(record.signature.as_str().to_owned()),
+                ParsedItem::Group(group) => walk(&group.children, seen),
+            }
+        }
+    }
+    let mut seen = FxHashMap::default();
+    walk(items, &mut seen);
+    let mut duplicates: Vec<_> = seen
+        .into_iter()
+        .filter(|(_, sigs)| sigs.len() > 1)
+        .collect();
+    duplicates.sort_unstable_by_key(|(form_id, _)| *form_id);
+    duplicates
+}
+
+/// The CK and the game resolve a duplicated FormID to one record, so the other
+/// is silently shadowed (a NAVM whose id resolves to a LAND crashes the CK).
+/// Failing here, before the Python driver saves, keeps the old ESM in place.
+fn check_no_duplicate_form_ids(ctx: &PhaseCtx<'_>) -> Result<(), PhaseError> {
+    let duplicates = {
+        let store = plugin_handle_store_ref()
+            .lock()
+            .map_err(|_| PhaseError::Internal("plugin handle store poisoned".into()))?;
+        let slot = store.get(&ctx.run.target_handle_id).ok_or_else(|| {
+            PhaseError::BadParams(format!(
+                "unknown target handle: {}",
+                ctx.run.target_handle_id
+            ))
+        })?;
+        duplicate_form_ids(&slot.parsed.root_items)
+    };
+    if duplicates.is_empty() {
+        return Ok(());
+    }
+    const SHOWN: usize = 25;
+    let listed: Vec<String> = duplicates
+        .iter()
+        .take(SHOWN)
+        .map(|(form_id, sigs)| format!("{form_id:08X} [{}]", sigs.join(",")))
+        .collect();
+    Err(PhaseError::Internal(format!(
+        "finalize_plugin_records: {} duplicate FormID(s) in output: {}{}",
+        duplicates.len(),
+        listed.join("; "),
+        if duplicates.len() > SHOWN {
+            "; ..."
+        } else {
+            ""
+        }
+    )))
+}
+
 pub struct FinalizePluginRecordsPhase;
 
 impl Phase for FinalizePluginRecordsPhase {
@@ -204,6 +268,9 @@ impl Phase for FinalizePluginRecordsPhase {
             repair_term_markers,
             |ctx| RebuildCellOffsetsPhase.run(ctx),
         )?;
+        if selected(ctx.params, "fail_on_duplicate_form_ids", false) {
+            check_no_duplicate_form_ids(ctx)?;
+        }
         let manifest_entries = manifest_entry_count(ctx.params)
             .map(|count| count.to_string())
             .unwrap_or_else(|| "unknown".to_string());
@@ -766,5 +833,25 @@ mod tests {
         let candidate_bytes = std::fs::read(&candidate_path).unwrap();
         assert_eq!(candidate_bytes, baseline_bytes);
         assert_offset_lands_on_cell(&candidate_bytes);
+    }
+
+    #[test]
+    fn duplicate_form_ids_are_found_across_groups() {
+        let items = vec![
+            group(0, *b"CELL", vec![record("CELL", 0x08B2_5AAD, Vec::new())]),
+            group(
+                1,
+                0x0825_DA15u32.to_le_bytes(),
+                vec![
+                    record("LAND", 0x08B2_5AAD, Vec::new()),
+                    record("LAND", 0x08B2_5AAE, Vec::new()),
+                ],
+            ),
+        ];
+
+        assert_eq!(
+            duplicate_form_ids(&items),
+            vec![(0x08B2_5AAD, vec!["CELL".to_string(), "LAND".to_string()])]
+        );
     }
 }

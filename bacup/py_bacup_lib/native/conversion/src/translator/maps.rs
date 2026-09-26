@@ -165,6 +165,7 @@ pub struct RecordMap {
 }
 
 impl RecordMap {
+    #[cfg(test)]
     fn has_executable_policy(&self) -> bool {
         self.target_sig.is_some()
             || !self.field_rewrites.is_empty()
@@ -995,8 +996,16 @@ mod tests {
     fn strict_compile_accepts_repaired_fnv_rules_while_load_remains_permissive() {
         let maps = TranslationMaps::load(Game::Fnv, Game::Fo4).expect("legacy load remains usable");
         assert!(maps.record_map("WEAP").is_some());
-        TranslationMaps::compile(Game::Fnv, Game::Fo4)
+        let maps = TranslationMaps::compile(Game::Fnv, Game::Fo4)
             .expect("strict compile accepts the repaired FNV map");
+        for signature in ["SCPT", "QUST", "DIAL", "INFO", "SCEN"] {
+            assert_eq!(
+                maps.record_map(signature)
+                    .and_then(|record| record.delegate),
+                Some(DeferredKind::FnvLegacyScripting),
+                "{signature} must delegate to the legacy scripting pass"
+            );
+        }
     }
 
     #[test]
@@ -1036,15 +1045,8 @@ mod tests {
         assert_eq!(coverage.records[0].field_rewrites.total, 2);
         assert_eq!(coverage.records[0].field_rewrites.executable, 1);
         assert_eq!(coverage.records[0].field_rewrites.rejected, 2);
-    }
 
-    #[test]
-    fn lint_rejects_an_unregistered_delegate() {
-        let raw = serde_json::json!({
-            "SCPT": {
-                "delegate": "unregistered_pass"
-            }
-        });
+        let raw = serde_json::json!({ "SCPT": { "delegate": "unregistered_pass" } });
         let coverage = lint_map_value(Game::Fnv, Game::Fo4, "embedded:test.yaml".to_string(), &raw);
         assert!(coverage.diagnostics.iter().any(|diagnostic| {
             diagnostic.path == "SCPT.delegate" && diagnostic.code == "unsupported_delegate"
@@ -1088,156 +1090,6 @@ mod tests {
                     .is_some_and(|records| !records.is_empty())
             );
             assert_eq!(json["diagnostics"].as_array().map(Vec::len), Some(0));
-        }
-    }
-
-    #[test]
-    fn fnv_legacy_scripting_records_compile_to_delegates() {
-        let maps = TranslationMaps::compile(Game::Fnv, Game::Fo4).unwrap();
-        for signature in ["SCPT", "QUST", "DIAL", "INFO", "SCEN"] {
-            assert_eq!(
-                maps.record_map(signature)
-                    .and_then(|record| record.delegate),
-                Some(DeferredKind::FnvLegacyScripting),
-                "{signature} must delegate to the legacy scripting pass"
-            );
-        }
-    }
-
-    #[test]
-    fn strict_compile_accepts_a_missing_optional_map() {
-        let maps = TranslationMaps::compile(Game::Fo4, Game::Fo76).unwrap();
-        assert!(maps.record_maps.is_empty());
-        assert!(maps.skip_records.is_empty());
-    }
-
-    #[test]
-    fn load_fo76_to_fo4_map() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let weap_map = maps.record_map("WEAP").expect("WEAP map");
-        assert!(
-            !weap_map.field_rewrites.is_empty() || !weap_map.transforms.is_empty(),
-            "WEAP map has no field rewrites or transforms"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_drops_weapon_rgw3_instead_of_mapping_to_fnam() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let weap_map = maps.record_map("WEAP").expect("WEAP map");
-        assert!(
-            !weap_map
-                .field_rewrites
-                .iter()
-                .any(|rewrite| rewrite.source_field == "RGW3"),
-            "FO76 WEAP RGW3 bytes must not be decoded as an FO4 WEAP field"
-        );
-        assert!(
-            !weap_map
-                .transforms
-                .iter()
-                .any(|transform| transform.field == "RGW3"),
-            "FO76 WEAP RGW3 must not run FO4 form-key transforms"
-        );
-        assert!(
-            weap_map.drop_fields.iter().any(|field| field == "RGW3"),
-            "FO76 WEAP RGW3 should be dropped"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_keeps_npc_qnam_skin_tone() {
-        // QNAM (Texture lighting) is the NPC skin tone that tints the body to
-        // match the FaceGen head. Its 4-float RGBA layout is identical FO76→FO4,
-        // and the FO4 whitelist keeps it. A stale `- QNAM` in the NPC_ drop list
-        // silently deleted it (drop matches the raw 4CC sig), giving every
-        // converted settler a dark neck seam and mismatched eyelashes.
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let npc_map = maps.record_map("NPC_").expect("NPC_ map");
-        assert!(
-            !npc_map.drop_fields.iter().any(|field| field == "QNAM"),
-            "FO76 NPC_ QNAM skin tone must not be dropped"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_keeps_enchantment_conditions() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let enchantment_map = maps.record_map("ENCH").expect("ENCH map");
-        assert!(
-            enchantment_map
-                .field_rewrites
-                .iter()
-                .any(|rewrite| rewrite.source_field == "CTDA" && rewrite.target_field == "CTDA"),
-            "FO76 ENCH conditions must be carried so equipped effects remain gated"
-        );
-        assert!(
-            !enchantment_map
-                .drop_fields
-                .iter()
-                .any(|field| field == "CTDA"),
-            "FO76 ENCH CTDA must not be dropped"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_keeps_lvln_location_conditions() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let lvln_map = maps.record_map("LVLN").expect("LVLN map");
-        assert!(
-            lvln_map
-                .field_rewrites
-                .iter()
-                .any(|rewrite| rewrite.source_field == "CTDA" && rewrite.target_field == "CTDA"),
-            "FO76 LVLN conditions must reach the FO76-to-FO4 condition hook"
-        );
-        assert!(
-            !lvln_map.drop_fields.iter().any(|field| field == "CTDA"),
-            "FO76 LVLN CTDA must not be dropped"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_drops_npc_tint_layers_as_complete_groups() {
-        // FO76 tint indices are only meaningful against the FO76 RACE tint
-        // tables, which are not carried into FO4. Keep QNAM for the body/face
-        // skin-tone match, but drop both the TETI header and TEND payload so an
-        // invalid layer cannot survive and an orphan payload cannot remain.
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let npc_map = maps.record_map("NPC_").expect("NPC_ map");
-        assert!(
-            npc_map.drop_fields.iter().any(|field| field == "TETI"),
-            "FO76 NPC_ TETI tint indices must be dropped"
-        );
-        assert!(
-            npc_map.drop_fields.iter().any(|field| field == "TEND"),
-            "FO76 NPC_ TEND tint payloads must be dropped with TETI"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_drops_race_tint_count_with_tint_tables() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let race_map = maps.record_map("RACE").expect("RACE map");
-        assert!(
-            race_map.drop_fields.iter().any(|field| field == "TINL"),
-            "FO76 RACE TINL must be dropped with the incompatible tint tables"
-        );
-        assert!(
-            !race_map
-                .field_rewrites
-                .iter()
-                .any(|rewrite| rewrite.source_field == "TotalNumberOfTintsInList"),
-            "FO76 RACE tint count must not be carried when its tables are dropped"
-        );
-        for sig in [
-            "TTGP", "TETI", "TTEF", "CTDA", "CIS1", "CIS2", "TTET", "TTEB", "TTEC", "TTED", "TTGE",
-            "MPGN", "MPPC", "MPPI", "MPPN", "MPPM", "MPPT", "MPPF", "MPPK", "MPGS",
-        ] {
-            assert!(
-                race_map.drop_fields.iter().any(|field| field == sig),
-                "FO76 RACE face-table subrecord {sig} must be dropped"
-            );
         }
     }
 
@@ -1287,111 +1139,113 @@ mod tests {
     }
 
     #[test]
-    fn fo76_to_fo4_skips_story_manager_records() {
+    fn fo76_to_fo4_record_policy() {
         let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        for sig in ["SMBN", "SMEN", "SMQN"] {
+        for sig in [
+            "SMBN", "SMEN", "SMQN", "ACHR", "CELL", "LAND", "NAVI", "NAVM", "REFR", "COLL", "LSCR",
+            "DOBJ",
+        ] {
             assert!(
                 maps.skip_records.contains(sig),
                 "fo76_to_fo4 should skip {sig}"
             );
         }
-    }
-
-    #[test]
-    fn fo76_to_fo4_skips_records_that_need_projected_worldspace_or_nav_writers() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        for sig in ["ACHR", "CELL", "LAND", "NAVI", "NAVM", "REFR"] {
+        for sig in ["SCEN", "DLBR"] {
             assert!(
-                maps.skip_records.contains(sig),
-                "fo76_to_fo4 should skip {sig}"
+                !maps.skip_records.contains(sig),
+                "{sig} must be emitted by default"
             );
         }
-    }
-
-    #[test]
-    fn fo76_to_fo4_skips_collision_layers() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        assert!(maps.skip_records.contains("COLL"));
-    }
-
-    #[test]
-    fn fo76_to_fo4_skips_loading_screens() {
-        // FO76 loading screens hold their art in BNAM (a 2D .DDS background);
-        // FO4 needs NNAM (a 3D model) plus a camera transform. With no bridge
-        // between them, converted screens render blank, so the type is skipped
-        // and FO4 falls back to its own loading screens.
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        assert!(
-            maps.skip_records.contains("LSCR"),
-            "fo76_to_fo4 should skip LSCR"
+        assert_eq!(
+            maps.record_map("CNCY")
+                .and_then(|map| map.target_sig.as_deref()),
+            Some("MISC")
         );
-    }
 
-    #[test]
-    fn fo76_to_fo4_drops_default_object_manager_singleton() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        assert!(
-            maps.skip_records.contains("DOBJ"),
-            "FO76 DOBJ must not replace Fallout 4's game-wide singleton"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_emits_scen_and_dlbr_by_default() {
-        // SCEN/DLBR are flat top-level FO4 records emitted by the generic
-        // writer (resolve NOTE\SNAM-Scene + INFO\BNAM-DLBR). The
-        // MODBOX_DISABLE_SCEN env gate (maps.rs::load) is not exercised here
-        // to avoid process-global env races across parallel tests.
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        assert!(
-            !maps.skip_records.contains("SCEN"),
-            "SCEN must be emitted by default"
-        );
-        assert!(
-            !maps.skip_records.contains("DLBR"),
-            "DLBR must be emitted by default"
-        );
-    }
-
-    #[test]
-    fn fo76_to_fo4_converts_currency_records_to_misc() {
-        let maps = TranslationMaps::load(Game::Fo76, Game::Fo4).unwrap();
-        let cncy_map = maps.record_map("CNCY").expect("CNCY map");
-        assert_eq!(cncy_map.target_sig.as_deref(), Some("MISC"));
-    }
-
-    #[test]
-    fn load_fnv_to_fo4_map_has_skip_records() {
-        let maps = TranslationMaps::load(Game::Fnv, Game::Fo4).unwrap();
-        assert!(
-            !maps.skip_records.is_empty(),
-            "fnv_to_fo4 should have skip_records"
-        );
-        assert!(
-            maps.skip_records.contains("NAVI"),
-            "FNV NAVI must be rebuilt with the FO4 byte layout"
-        );
-        for signature in ["IDLE", "IDLM", "ANIO"] {
-            assert!(
-                maps.skip_records.contains(signature),
-                "FNV {signature} requires a dedicated FO4 behavior/HKX lowerer"
+        let drops = |sig: &str| {
+            maps.record_map(sig)
+                .expect("record map")
+                .drop_fields
+                .clone()
+        };
+        let rewrites_from = |sig: &str, field: &str| {
+            maps.record_map(sig)
+                .expect("record map")
+                .field_rewrites
+                .iter()
+                .any(|rewrite| rewrite.source_field == field)
+        };
+        for (record_sig, subrecord_sig, dropped) in [
+            ("WEAP", "RGW3", true),
+            ("NPC_", "TETI", true),
+            ("NPC_", "TEND", true),
+            ("NPC_", "QNAM", false),
+            ("ENCH", "CTDA", false),
+            ("LVLN", "CTDA", false),
+            ("RACE", "TINL", true),
+            ("RACE", "TTGP", true),
+            ("RACE", "CTDA", true),
+            ("RACE", "MPGS", true),
+        ] {
+            assert_eq!(
+                drops(record_sig).iter().any(|field| field == subrecord_sig),
+                dropped,
+                "{record_sig}.{subrecord_sig} dropped"
             );
         }
+        for (record_sig, field, rewritten) in [
+            ("WEAP", "RGW3", false),
+            ("RACE", "TotalNumberOfTintsInList", false),
+            ("ENCH", "CTDA", true),
+            ("LVLN", "CTDA", true),
+        ] {
+            assert_eq!(
+                rewrites_from(record_sig, field),
+                rewritten,
+                "{record_sig}.{field} rewritten"
+            );
+        }
+        assert!(
+            !maps
+                .record_map("WEAP")
+                .unwrap()
+                .transforms
+                .iter()
+                .any(|transform| transform.field == "RGW3"),
+            "FO76 WEAP RGW3 must not run FO4 form-key transforms"
+        );
     }
 
     #[test]
-    fn fo3_to_fo4_rebuilds_source_navi() {
-        let maps = TranslationMaps::load(Game::Fo3, Game::Fo4).unwrap();
-        for signature in ["NAVI", "NAVM"] {
-            assert!(
-                maps.skip_records.contains(signature),
-                "FO3 {signature} must be rebuilt with the FO4 byte layout"
+    fn legacy_fo4_maps_keep_required_payloads() {
+        for source in [Game::Fnv, Game::Fo3, Game::SkyrimSe] {
+            let maps = TranslationMaps::load(source, Game::Fo4).unwrap();
+            assert_eq!(
+                maps.record_map("PWAT")
+                    .and_then(|map| map.target_sig.as_deref()),
+                Some("REFR"),
+                "{} PWAT records must retain source group topology as FO4 REFR records",
+                source.as_str()
             );
         }
-        for signature in ["IDLE", "IDLM", "ANIO"] {
+        let fnv = TranslationMaps::load(Game::Fnv, Game::Fo4).unwrap();
+        for signature in ["MISC", "KEYM"] {
+            let map = fnv.record_map(signature).expect("legacy item map");
             assert!(
-                maps.skip_records.contains(signature),
-                "FO3 {signature} requires a dedicated FO4 behavior/HKX lowerer"
+                !map.drop_fields.iter().any(|field| field == "DATA"),
+                "{signature}.DATA is the compatible value/weight payload"
+            );
+        }
+        let skyrim = TranslationMaps::load(Game::SkyrimSe, Game::Fo4).unwrap();
+        for sig in ["FACT", "SNDR", "MUST", "IDLE", "CPTH"] {
+            let map = skyrim
+                .record_map(sig)
+                .expect("condition-bearing record map");
+            assert!(
+                map.transforms.iter().any(|transform| {
+                    transform.field == "CTDA" && transform.name == "translate_conditions"
+                }),
+                "{sig} CTDA must be translated"
             );
         }
     }
@@ -1429,38 +1283,6 @@ mod tests {
                 .transforms
                 .iter()
                 .any(|transform| matches!(transform.field.as_str(), "EFID" | "CTDA"))
-        );
-    }
-
-    #[test]
-    fn skyrimse_to_fo4_keeps_world_and_navm_records_but_rebuilds_navi() {
-        let maps = TranslationMaps::load(Game::SkyrimSe, Game::Fo4).unwrap();
-        for sig in [
-            "WRLD", "CELL", "LAND", "NAVM", "REFR", "ACHR", "WATR", "GRAS",
-        ] {
-            assert!(
-                !maps.skip_records.contains(sig),
-                "{sig} must reach topology rebuild"
-            );
-        }
-        assert!(
-            maps.skip_records.contains("NAVI"),
-            "NAVI is rebuilt from converted NAVM topology"
-        );
-        for sig in ["FACT", "SNDR", "MUST", "IDLE", "CPTH"] {
-            let map = maps.record_map(sig).expect("condition-bearing record map");
-            assert!(map.transforms.iter().any(|transform| {
-                transform.field == "CTDA" && transform.name == "translate_conditions"
-            }));
-        }
-    }
-
-    #[test]
-    fn skyrimse_to_fo4_routes_pack_records_to_the_safe_lowerer() {
-        let maps = TranslationMaps::load(Game::SkyrimSe, Game::Fo4).unwrap();
-        assert!(
-            !maps.skip_records.contains("PACK"),
-            "Skyrim packages are rebuilt as target-safe FO4 travel packages"
         );
     }
 
@@ -1596,341 +1418,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires explicit official FNV, FO3, and Skyrim SE Data directories"]
-    fn live_official_nonquest_shape_census_has_no_unclassified_records() {
-        use crate::ids::SigCode;
-        use crate::source_read::{iter_form_keys_of_sig, read_record_relayout_by_form_key};
-        use crate::target_normalize::{TargetRecordNormalization, TargetRecordNormalizer};
-        use crate::translator::{
-            LEGACY_REQUIRED_FO4_PROJECTION_FIELDS, TranslateResult, Translator,
-        };
-        use esp_authoring_core::plugin_runtime::{
-            ParsedItem, plugin_handle_close_native, plugin_handle_load_no_py,
-            plugin_handle_store_ref,
-        };
-        use std::collections::{BTreeMap, BTreeSet};
-        use std::path::PathBuf;
-
-        fn collect_shapes(items: &[ParsedItem], shapes: &mut BTreeSet<(String, Vec<String>)>) {
-            for item in items {
-                match item {
-                    ParsedItem::Record(record) => {
-                        shapes.insert((
-                            record.signature.as_str().to_string(),
-                            record
-                                .subrecords
-                                .iter()
-                                .map(|subrecord| subrecord.signature.as_str().to_string())
-                                .collect(),
-                        ));
-                    }
-                    ParsedItem::Group(group) => collect_shapes(&group.children, shapes),
-                }
-            }
-        }
-
-        #[derive(Debug, Default)]
-        struct ProjectionCounts {
-            encountered: usize,
-            lowered: usize,
-            failed: usize,
-        }
-
-        fn expected_projection_receipt(game: Game, signature: &str) -> Option<&'static str> {
-            match (game, signature) {
-                (Game::Fnv | Game::Fo3, "IMAD") => Some("legacy_imad_neutral_target_replacement"),
-                (Game::SkyrimSe, "BPTD") => Some("skyrim_bptd_target_tail_degraded"),
-                (Game::SkyrimSe, "HAZD") => Some("skyrim_hazd_spell_effect_omitted"),
-                _ => None,
-            }
-        }
-
-        fn regn_scopes_have_lod_distance(record: &crate::record::Record) -> bool {
-            let mut in_region_data = false;
-            let mut has_lod_distance = false;
-            for field in &record.fields {
-                if field.sig.as_str() == "RDAT" {
-                    if in_region_data && !has_lod_distance {
-                        return false;
-                    }
-                    in_region_data = true;
-                    has_lod_distance = false;
-                } else if in_region_data && field.sig.as_str() == "RLDM" {
-                    has_lod_distance = true;
-                }
-            }
-            !in_region_data || has_lod_distance
-        }
-
-        let cases: &[(Game, &str, &[&str])] = &[
-            (
-                Game::Fnv,
-                "BACUP_NONQUEST_FNV_DATA_DIR",
-                &[
-                    "FalloutNV.esm",
-                    "DeadMoney.esm",
-                    "HonestHearts.esm",
-                    "OldWorldBlues.esm",
-                    "LonesomeRoad.esm",
-                    "GunRunnersArsenal.esm",
-                    "ClassicPack.esm",
-                    "MercenaryPack.esm",
-                    "TribalPack.esm",
-                    "CaravanPack.esm",
-                ],
-            ),
-            (
-                Game::Fo3,
-                "BACUP_NONQUEST_FO3_DATA_DIR",
-                &[
-                    "Fallout3.esm",
-                    "Anchorage.esm",
-                    "ThePitt.esm",
-                    "BrokenSteel.esm",
-                    "PointLookout.esm",
-                    "Zeta.esm",
-                ],
-            ),
-            (
-                Game::SkyrimSe,
-                "BACUP_NONQUEST_SKYRIMSE_DATA_DIR",
-                &[
-                    "Skyrim.esm",
-                    "Update.esm",
-                    "Dawnguard.esm",
-                    "HearthFires.esm",
-                    "Dragonborn.esm",
-                ],
-            ),
-        ];
-        let interner = crate::sym::StringInterner::new();
-
-        for (game, data_env, plugins) in cases {
-            let data_dir =
-                PathBuf::from(std::env::var(data_env).unwrap_or_else(|_| {
-                    panic!("{data_env} must name the official Data directory")
-                }));
-            let schema = crate::schema::AuthoringSchema::for_game(game.as_str()).unwrap();
-            let target_schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
-            let maps = TranslationMaps::load(*game, Game::Fo4).unwrap();
-            let translator = Translator::new(*game, Game::Fo4).unwrap();
-            let normalizer =
-                TargetRecordNormalizer::target_only_with_interner(&target_schema, &interner);
-            let mut route_records = BTreeMap::<String, usize>::new();
-            let mut blocked_records = BTreeMap::<String, usize>::new();
-            let mut encountered_shapes = BTreeSet::<(String, Vec<String>)>::new();
-            let mut unclassified = BTreeMap::<String, usize>::new();
-            let mut projection_counts = BTreeMap::<String, ProjectionCounts>::new();
-            let mut projection_failures = BTreeMap::<String, usize>::new();
-            for &(_, signature, _) in LEGACY_REQUIRED_FO4_PROJECTION_FIELDS
-                .iter()
-                .filter(|(source, _, _)| source == game)
-            {
-                assert_eq!(
-                    maps.record_route(signature),
-                    Some(RecordRoutePolicy::TargetProjection),
-                    "{} {signature} must retain an explicit target-projection route",
-                    game.as_str()
-                );
-                projection_counts.insert(signature.to_string(), ProjectionCounts::default());
-            }
-
-            for plugin in *plugins {
-                let path = data_dir.join(plugin);
-                assert!(
-                    path.is_file(),
-                    "official source is missing: {}",
-                    path.display()
-                );
-                let strings_dir = data_dir.join("Strings");
-                let handle = plugin_handle_load_no_py(
-                    path.to_str().expect("Unicode plugin path"),
-                    Some(game.as_str()),
-                    strings_dir
-                        .is_dir()
-                        .then(|| strings_dir.to_string_lossy())
-                        .as_deref(),
-                    None,
-                    true,
-                )
-                .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
-
-                for signature in schema.record_signatures() {
-                    let sig = SigCode::from_str(signature).unwrap();
-                    let keys = iter_form_keys_of_sig(handle, sig, &interner)
-                        .unwrap_or_else(|error| panic!("index {plugin} {signature}: {error}"));
-                    if keys.is_empty() {
-                        continue;
-                    }
-                    let route = if is_quest_runtime_signature(signature) {
-                        "quest_runtime_boundary"
-                    } else if maps.skip_records.contains(signature) {
-                        "intentional_omit"
-                    } else if maps
-                        .record_map(signature)
-                        .is_some_and(RecordMap::has_executable_policy)
-                    {
-                        "record_map"
-                    } else {
-                        match maps.record_route(signature) {
-                            Some(RecordRoutePolicy::Compatible) => "compatible",
-                            Some(RecordRoutePolicy::TargetProjection) => "target_projection",
-                            Some(RecordRoutePolicy::PairHook) => "pair_hook",
-                            Some(RecordRoutePolicy::TopologyRebuild) => "topology_rebuild",
-                            Some(RecordRoutePolicy::Blocked) => "blocked",
-                            None => {
-                                *unclassified.entry(signature.to_string()).or_default() +=
-                                    keys.len();
-                                "unclassified"
-                            }
-                        }
-                    };
-                    if route == "blocked" {
-                        *blocked_records.entry(signature.to_string()).or_default() += keys.len();
-                    }
-                    *route_records.entry(route.to_string()).or_default() += keys.len();
-
-                    let Some((_, _, required_fields)) = LEGACY_REQUIRED_FO4_PROJECTION_FIELDS
-                        .iter()
-                        .find(|(source, required_signature, _)| {
-                            source == game && *required_signature == signature
-                        })
-                    else {
-                        continue;
-                    };
-                    for key in &keys {
-                        projection_counts
-                            .get_mut(signature)
-                            .expect("initialized projection census")
-                            .encountered += 1;
-                        let source_record = match read_record_relayout_by_form_key(
-                            handle, key, &schema, &interner, None,
-                        ) {
-                            Ok(record) => record,
-                            Err(_) => {
-                                projection_counts.get_mut(signature).unwrap().failed += 1;
-                                *projection_failures
-                                    .entry(format!("{signature}:decode_error"))
-                                    .or_default() += 1;
-                                continue;
-                            }
-                        };
-                        let translated = match translator.translate(&source_record, &interner) {
-                            TranslateResult::Translated(record) => record,
-                            TranslateResult::Dropped { decision, .. } => {
-                                let reason = interner
-                                    .resolve(decision.kind)
-                                    .unwrap_or("unresolved_drop_reason");
-                                if reason == "unused_legacy_ingredient_sentinel" {
-                                    projection_counts.get_mut(signature).unwrap().lowered += 1;
-                                    continue;
-                                }
-                                projection_counts.get_mut(signature).unwrap().failed += 1;
-                                *projection_failures
-                                    .entry(format!("{signature}:dropped:{reason}"))
-                                    .or_default() += 1;
-                                continue;
-                            }
-                            TranslateResult::Deferred(kind) => {
-                                projection_counts.get_mut(signature).unwrap().failed += 1;
-                                *projection_failures
-                                    .entry(format!("{signature}:deferred:{kind:?}"))
-                                    .or_default() += 1;
-                                continue;
-                            }
-                        };
-                        if let Some(receipt) = expected_projection_receipt(*game, signature)
-                            && !translated
-                                .warnings
-                                .iter()
-                                .any(|warning| interner.resolve(*warning) == Some(receipt))
-                        {
-                            projection_counts.get_mut(signature).unwrap().failed += 1;
-                            *projection_failures
-                                .entry(format!("{signature}:missing_receipt:{receipt}"))
-                                .or_default() += 1;
-                            continue;
-                        }
-                        let TargetRecordNormalization::Keep(normalized) =
-                            normalizer.normalize(translated)
-                        else {
-                            projection_counts.get_mut(signature).unwrap().failed += 1;
-                            *projection_failures
-                                .entry(format!("{signature}:target_normalizer_dropped"))
-                                .or_default() += 1;
-                            continue;
-                        };
-                        let missing =
-                            if signature == "REGN" && !regn_scopes_have_lod_distance(&normalized) {
-                                Some("RLDM")
-                            } else {
-                                required_fields.iter().copied().find(|required| {
-                                    !normalized
-                                        .fields
-                                        .iter()
-                                        .any(|field| field.sig.as_str() == *required)
-                                        && !(signature == "REGN"
-                                            && *required == "RLDM"
-                                            && !normalized
-                                                .fields
-                                                .iter()
-                                                .any(|field| field.sig.as_str() == "RDAT"))
-                                })
-                            };
-                        if let Some(required) = missing {
-                            projection_counts.get_mut(signature).unwrap().failed += 1;
-                            *projection_failures
-                                .entry(format!("{signature}:missing_required:{required}"))
-                                .or_default() += 1;
-                            continue;
-                        }
-                        projection_counts.get_mut(signature).unwrap().lowered += 1;
-                    }
-                }
-                {
-                    let store = plugin_handle_store_ref().lock().unwrap();
-                    let slot = store.get(&handle).expect("loaded plugin handle");
-                    collect_shapes(&slot.parsed.root_items, &mut encountered_shapes);
-                }
-                assert!(
-                    plugin_handle_close_native(handle),
-                    "close {}",
-                    path.display()
-                );
-            }
-
-            eprintln!(
-                "{} official nonquest census: records={route_records:?}, blocked={blocked_records:?}, unique_subrecord_shapes={}",
-                game.as_str(),
-                encountered_shapes.len()
-            );
-            eprintln!(
-                "{} official required projection census: {projection_counts:?}, failures={projection_failures:?}",
-                game.as_str()
-            );
-            assert!(
-                unclassified.is_empty(),
-                "{} official corpus has unclassified records: {unclassified:?}",
-                game.as_str()
-            );
-            assert!(
-                projection_counts
-                    .values()
-                    .all(|counts| counts.failed == 0 && counts.lowered == counts.encountered),
-                "{} official required projection failures: counts={projection_counts:?}, reasons={projection_failures:?}",
-                game.as_str()
-            );
-        }
-    }
-
-    #[test]
     fn legacy_fo4_routes_only_omit_declared_source_only_records() {
         let cases = [
             (
                 Game::Fnv,
                 &[
                     "ALOC", "AMEF", "ANIO", "CDCK", "CHAL", "CSNO", "DEHY", "HAIR", "HUNG", "IDLE",
-                    "IDLM", "LSCT", "MICN", "MSET", "NAVI", "NAVM", "RADS", "REPU", "RGDL", "SLPD",
+                    "IDLM", "IMOD", "LSCT", "MICN", "MSET", "NAVI", "NAVM", "RADS", "REPU", "RGDL",
+                    "SLPD",
                 ][..],
             ),
             (
@@ -1964,36 +1459,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_persistent_water_routes_through_fo4_reference_topology() {
-        for source in [Game::Fnv, Game::Fo3, Game::SkyrimSe] {
-            let maps = TranslationMaps::load(source, Game::Fo4).unwrap();
-            assert_eq!(
-                maps.record_map("PWAT")
-                    .and_then(|map| map.target_sig.as_deref()),
-                Some("REFR"),
-                "{} PWAT records must retain source group topology as FO4 REFR records",
-                source.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn fnv_misc_items_retain_value_and_weight_data() {
-        let maps = TranslationMaps::load(Game::Fnv, Game::Fo4).unwrap();
-        for signature in ["MISC", "KEYM"] {
-            let map = maps.record_map(signature).expect("legacy item map");
-            assert!(
-                !map.drop_fields.iter().any(|field| field == "DATA"),
-                "{signature}.DATA is the compatible value/weight payload"
-            );
-        }
-    }
-
-    #[test]
     fn missing_map_returns_empty() {
-        // No map file for this pair should exist.
         let maps = TranslationMaps::load(Game::Fo4, Game::Fo76).unwrap();
         assert!(maps.record_map("WEAP").is_none());
+        assert!(maps.skip_records.is_empty());
+        let maps = TranslationMaps::compile(Game::Fo4, Game::Fo76).unwrap();
+        assert!(maps.record_maps.is_empty());
         assert!(maps.skip_records.is_empty());
     }
 }

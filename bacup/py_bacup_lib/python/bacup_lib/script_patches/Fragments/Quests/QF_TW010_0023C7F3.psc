@@ -8,6 +8,28 @@ Event Scene.OnEnd(Scene akSender)
 	EndIf
 EndEvent
 
+Event OnStageSet(Int auiStageID, Int auiItemID)
+	; Stage 600 carries no fragment binding in the source record, so the vegetable-grill
+	; objective has no other way to reach the Pip-Boy once the tato count is met.
+	If auiStageID == 600
+		Fragment_Stage_0600_Item_00()
+	EndIf
+EndEvent
+
+Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akActionRef)
+	ReferenceAlias chefAlias = GetAlias(3) as ReferenceAlias
+	If chefAlias == None || akSender != chefAlias.GetReference() || akActionRef != Game.GetPlayer()
+		Return
+	EndIf
+	If IsStageDone(700) && !IsStageDone(1000)
+		SetStage(1000)
+	ElseIf IsStageDone(400) && !IsStageDone(500)
+		SetStage(500)
+	ElseIf IsStageDone(100) && !IsStageDone(150)
+		SetStage(150)
+	EndIf
+EndEvent
+
 Function Fragment_Stage_0040_Item_00()
 	SetObjectiveDisplayed(120, True)
 EndFunction
@@ -29,6 +51,18 @@ Function Fragment_Stage_0065_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
+	; This quest lost its Player alias fill rule in conversion, and every inventory-turn-in
+	; stage (50/55/60/65/300/600) is driven by alias scripts that only run once it is filled.
+	If Alias_Player != None && Alias_Player.GetReference() == None
+		Alias_Player.ForceRefTo(Game.GetPlayer())
+	EndIf
+
+	; Stages 150/500/1000 were set by the cook's FO76 dialogue, which does not survive conversion.
+	ReferenceAlias chefAlias = GetAlias(3) as ReferenceAlias
+	If chefAlias != None && chefAlias.GetReference() != None
+		RegisterForRemoteEvent(chefAlias.GetReference(), "OnActivate")
+	EndIf
+
 	If TW010_Intro != None
 		RegisterForRemoteEvent(TW010_Intro, "OnEnd")
 	EndIf
@@ -169,6 +203,10 @@ EndFunction
 
 Function Fragment_Stage_1000_Item_00()
 	SetObjectiveCompleted(400, True)
+	ReferenceAlias chefAlias = GetAlias(3) as ReferenceAlias
+	If chefAlias != None && chefAlias.GetReference() != None
+		UnregisterForRemoteEvent(chefAlias.GetReference(), "OnActivate")
+	EndIf
 	If Alias_MeatEnableMarker != None && Alias_MeatEnableMarker.GetReference() != None
 		Alias_MeatEnableMarker.GetReference().Disable()
 	EndIf

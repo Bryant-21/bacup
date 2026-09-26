@@ -882,58 +882,53 @@ mod tests {
     }
 
     #[test]
-    fn missing_parent_is_rejected() {
-        let mut plan = valid_story_plan("missing_parent", "000400:Skyrim.esm");
-        plan.nodes[0].parent = Some(key("SMBN", "00DEAD:Skyrim.esm"));
-        assert!(issue_codes(&plan).contains(&StoryGraphValidationCode::MissingParent));
-    }
+    fn invalid_story_graph_topology_and_ownership_are_rejected() {
+        {
+            let mut plan = valid_story_plan("missing_parent", "000400:Skyrim.esm");
+            plan.nodes[0].parent = Some(key("SMBN", "00DEAD:Skyrim.esm"));
+            assert!(issue_codes(&plan).contains(&StoryGraphValidationCode::MissingParent));
+        }
+        {
+            let mut plan = valid_story_plan("cycle", "000400:Skyrim.esm");
+            let branch = key("SMBN", "000200:Skyrim.esm");
+            let quest_node = key("SMQN", "000300:Skyrim.esm");
+            plan.nodes[0].children.insert(branch.clone());
+            plan.nodes[2].parent = Some(quest_node);
+            assert!(issue_codes(&plan).contains(&StoryGraphValidationCode::ParentCycle));
+        }
+        {
+            let mut unsupported_event = valid_story_plan("event", "000400:Skyrim.esm");
+            unsupported_event.nodes[1]
+                .event_root
+                .as_mut()
+                .unwrap()
+                .supported = false;
+            assert!(
+                issue_codes(&unsupported_event)
+                    .contains(&StoryGraphValidationCode::UnsupportedEvent)
+            );
 
-    #[test]
-    fn parent_cycle_is_rejected() {
-        let mut plan = valid_story_plan("cycle", "000400:Skyrim.esm");
-        let branch = key("SMBN", "000200:Skyrim.esm");
-        let quest_node = key("SMQN", "000300:Skyrim.esm");
-        plan.nodes[0].children.insert(branch.clone());
-        plan.nodes[2].parent = Some(quest_node);
-        assert!(issue_codes(&plan).contains(&StoryGraphValidationCode::ParentCycle));
-    }
-
-    #[test]
-    fn unsupported_root_and_event_are_rejected() {
-        let mut unsupported_event = valid_story_plan("event", "000400:Skyrim.esm");
-        unsupported_event.nodes[1]
-            .event_root
-            .as_mut()
-            .unwrap()
-            .supported = false;
-        assert!(
-            issue_codes(&unsupported_event).contains(&StoryGraphValidationCode::UnsupportedEvent)
-        );
-
-        let mut unsupported_root = valid_story_plan("root", "000400:Skyrim.esm");
-        unsupported_root.nodes[1].parent = Some(key("SMEN", "00DEAD:Skyrim.esm"));
-        assert!(
-            issue_codes(&unsupported_root).contains(&StoryGraphValidationCode::UnsupportedRoot)
-        );
-    }
-
-    #[test]
-    fn duplicate_quest_ownership_is_rejected() {
-        let first = valid_story_plan("first", "000400:Skyrim.esm");
-        let second = valid_story_plan("second", "000400:Skyrim.esm");
-        let issues = validate_story_graph_plans(&[first, second]);
-        assert!(issues.iter().any(|issue| {
-            issue.code == StoryGraphValidationCode::DuplicateQuestOwnership
-                && issue.graph_id == "second"
-                && issue.subject.as_deref() == Some("first")
-        }));
-    }
-
-    #[test]
-    fn absent_producer_is_rejected() {
-        let mut plan = valid_story_plan("absent_producer", "000400:Skyrim.esm");
-        plan.producers.clear();
-        assert!(issue_codes(&plan).contains(&StoryGraphValidationCode::MissingProvenProducer));
+            let mut unsupported_root = valid_story_plan("root", "000400:Skyrim.esm");
+            unsupported_root.nodes[1].parent = Some(key("SMEN", "00DEAD:Skyrim.esm"));
+            assert!(
+                issue_codes(&unsupported_root).contains(&StoryGraphValidationCode::UnsupportedRoot)
+            );
+        }
+        {
+            let first = valid_story_plan("first", "000400:Skyrim.esm");
+            let second = valid_story_plan("second", "000400:Skyrim.esm");
+            let issues = validate_story_graph_plans(&[first, second]);
+            assert!(issues.iter().any(|issue| {
+                issue.code == StoryGraphValidationCode::DuplicateQuestOwnership
+                    && issue.graph_id == "second"
+                    && issue.subject.as_deref() == Some("first")
+            }));
+        }
+        {
+            let mut plan = valid_story_plan("absent_producer", "000400:Skyrim.esm");
+            plan.producers.clear();
+            assert!(issue_codes(&plan).contains(&StoryGraphValidationCode::MissingProvenProducer));
+        }
     }
 
     #[test]

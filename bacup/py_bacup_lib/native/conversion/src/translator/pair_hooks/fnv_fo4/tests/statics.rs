@@ -22,6 +22,25 @@ fn post_translate_retargets_unshipped_old_world_blues_urban_statue_model() {
         interner.resolve(model),
         Some("Architecture\\Urban\\Statues\\UrbanStatue01.NIF")
     );
+
+    let interner = StringInterner::new();
+    let mut record = make_record("STAT", &interner);
+    record.eid = Some(interner.intern("UnrelatedStatic"));
+    let source = "Architecture\\Test\\Unrelated.nif";
+    push_field(
+        &mut record,
+        "MODL",
+        FieldValue::String(interner.intern(source)),
+    );
+
+    FnvFo4Hook
+        .post_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    let FieldValue::String(model) = record.fields[0].value else {
+        panic!("STAT MODL must remain a string");
+    };
+    assert_eq!(interner.resolve(model), Some(source));
 }
 
 #[test]
@@ -48,24 +67,3 @@ fn fo3_post_translate_adds_model_to_placed_house_chimney_static() {
     );
 }
 
-#[test]
-fn post_translate_leaves_unrelated_static_models_unchanged() {
-    let interner = StringInterner::new();
-    let mut record = make_record("STAT", &interner);
-    record.eid = Some(interner.intern("UnrelatedStatic"));
-    let source = "Architecture\\Test\\Unrelated.nif";
-    push_field(
-        &mut record,
-        "MODL",
-        FieldValue::String(interner.intern(source)),
-    );
-
-    FnvFo4Hook
-        .post_translate(&mut make_ctx(&interner), &mut record)
-        .unwrap();
-
-    let FieldValue::String(model) = record.fields[0].value else {
-        panic!("STAT MODL must remain a string");
-    };
-    assert_eq!(interner.resolve(model), Some(source));
-}

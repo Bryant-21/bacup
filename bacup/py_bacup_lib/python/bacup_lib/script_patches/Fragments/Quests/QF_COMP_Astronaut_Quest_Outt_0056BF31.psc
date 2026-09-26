@@ -23,6 +23,12 @@ Function Fragment_Stage_1000_Item_00()
 	DisplayObjectiveOnce(1000)
 EndFunction
 
+Function Fragment_Stage_1050_Item_00()
+	; Both instanced travel-to-ATHENA packages are conditioned on GetStageDone(1050).
+	EvaluateInstancedActor(Alias_Emerson_Instanced)
+	EvaluateInstancedActor(Alias_Astronaut_Instanced)
+EndFunction
+
 Function Fragment_Stage_2000_Item_00()
 	If COMP_Astronaut_Quest_Outtro_CHOICE && !COMP_Astronaut_Quest_Outtro_CHOICE.IsPlaying()
 		COMP_Astronaut_Quest_Outtro_CHOICE.Start()
@@ -120,6 +126,11 @@ Function Fragment_Stage_4100_Item_00()
 	DisplayObjectiveOnce(6000)
 EndFunction
 
+Function Fragment_Stage_4200_Item_00()
+	; The instanced Astronaut's exit package (AstronautToATHENA-EXITmarkerEND) is conditioned on 4200.
+	EvaluateInstancedActor(Alias_Astronaut_Instanced)
+EndFunction
+
 Function Fragment_Stage_5000_Item_00()
 	SetChoiceValues(True)
 	OpenLocalWrapUp()
@@ -185,6 +196,13 @@ Actor Function GetPlayerActor()
 		EndIf
 	EndIf
 	Return player
+EndFunction
+
+Function EvaluateInstancedActor(ReferenceAlias instancedAlias)
+	Actor instancedActor = instancedAlias.GetActorReference()
+	If instancedActor
+		instancedActor.EvaluatePackage()
+	EndIf
 EndFunction
 
 Function DisplayObjectiveOnce(Int objective)

@@ -2,14 +2,12 @@
 
 use std::any::Any;
 
-use rustc_hash::FxHashSet;
-
 use crate::fixups::strip_crafting_recipe_filters::{
-    collect_item_crafting_workbenches, strip_recipe_filters,
+    RecipeFilterIndex, collect_recipe_filter_index, strip_recipe_filters,
 };
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
-use crate::ids::{FormKey, SigCode};
+use crate::ids::SigCode;
 use crate::record::Record;
 use crate::session::PluginSession;
 use crate::store2::visitor::{
@@ -36,16 +34,16 @@ impl RecordVisitor for StripCraftingRecipeFiltersVisitor {
         &self,
         session: &mut PluginSession,
         mapper: &FormKeyMapper,
-        _config: &FixupConfig,
+        config: &FixupConfig,
         _master_cache: &mut MasterScanCache,
     ) -> Result<GatherOutput, FixupError> {
         let mut report = FixupReport::empty();
-        let benches = collect_item_crafting_workbenches(session, mapper.interner, &mut report)?;
+        let index = collect_recipe_filter_index(session, config, mapper.interner, &mut report)?;
         Ok(GatherOutput {
             candidate_sigs: vec![
                 SigCode::from_str("COBJ").map_err(|e| FixupError::SchemaError(e.to_string()))?,
             ],
-            index: Some(Box::new(benches)),
+            index: Some(Box::new(index)),
             warnings: report.warnings,
         })
     }
@@ -57,10 +55,10 @@ impl RecordVisitor for StripCraftingRecipeFiltersVisitor {
         _cx: &SweepCtx<'_>,
         _warnings: &mut Vec<Sym>,
     ) -> VisitOutcome {
-        let benches = index
-            .and_then(|i| i.downcast_ref::<FxHashSet<FormKey>>())
-            .expect("item-crafting workbench index");
-        if strip_recipe_filters(record, benches) {
+        let index = index
+            .and_then(|i| i.downcast_ref::<RecipeFilterIndex>())
+            .expect("recipe filter index");
+        if strip_recipe_filters(record, index) {
             VisitOutcome::Changed
         } else {
             VisitOutcome::Unchanged
@@ -72,7 +70,7 @@ impl RecordVisitor for StripCraftingRecipeFiltersVisitor {
 mod tests {
     use super::*;
     use crate::fixups::strip_crafting_recipe_filters::StripCraftingRecipeFiltersFixup;
-    use crate::ids::SubrecordSig;
+    use crate::ids::{FormKey, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, RecordFlags};
     use crate::store2::test_util::assert_handles_equal;
     use crate::store2::visitors::port_test_util::*;
@@ -80,6 +78,7 @@ mod tests {
 
     const ARMOR_BENCH: u32 = 0x1F6062;
     const COOKING_BENCH: u32 = 0x1F6070;
+    const BACKPACK: u32 = 0x810;
 
     fn field(sig: &str, value: FieldValue) -> FieldEntry {
         FieldEntry {
@@ -124,6 +123,16 @@ mod tests {
         )
     }
 
+    fn created(local: u32, interner: &crate::sym::StringInterner) -> FieldEntry {
+        field(
+            "CNAM",
+            FieldValue::FormKey(FormKey {
+                local,
+                plugin: interner.intern("CraftFilter.esp"),
+            }),
+        )
+    }
+
     fn category(local: u32, interner: &crate::sym::StringInterner) -> FieldEntry {
         field(
             "FNAM",
@@ -135,8 +144,8 @@ mod tests {
     }
 
     /// Fixture: the armour bench keyword the gather resolves by EditorID, a
-    /// cooking bench it must not, plus one recipe on each and one with no
-    /// bench at all (the OMOD case).
+    /// cooking bench it must not, an armour recipe and a mod recipe on the
+    /// armour bench, a cooking recipe and one with no bench at all (the OMOD case).
     #[test]
     fn visitor_matches_legacy_fixup() {
         let (h_old, h_new) = seed_twin("CraftFilter.esp", |session, schema, interner| {
@@ -163,10 +172,29 @@ mod tests {
                     interner,
                 ),
                 rec(
+                    "ARMO",
+                    BACKPACK,
+                    "ATX_Armor_Backpack_HeirloomBasket",
+                    vec![],
+                    interner,
+                ),
+                rec(
                     "COBJ",
                     0x801,
                     "ATX_co_Armor_Backpack_HeirloomBasket",
                     vec![
+                        created(BACKPACK, interner),
+                        bench_link(ARMOR_BENCH, interner),
+                        category(0x47EF39, interner),
+                    ],
+                    interner,
+                ),
+                rec(
+                    "COBJ",
+                    0x804,
+                    "co_mod_Backpack_Pocketed",
+                    vec![
+                        created(0x811, interner),
                         bench_link(ARMOR_BENCH, interner),
                         category(0x47EF39, interner),
                     ],
@@ -207,7 +235,7 @@ mod tests {
         assert_changed_parity(&legacy, &v2);
         assert_eq!(
             v2[0].1.records_changed, 2,
-            "armour-bench and bench-less recipes stripped; the cooking recipe kept"
+            "armour-bench mod and bench-less recipes stripped; armour and cooking recipes kept"
         );
         assert_handles_equal(h_old, h_new);
     }

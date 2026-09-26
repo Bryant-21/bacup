@@ -198,48 +198,7 @@ mod tests {
             unreachable!();
         };
         assert!(record.raw_payload.is_none());
-    }
 
-    #[test]
-    fn clears_protected_from_frenzied_actor() {
-        let mut items = vec![npc(0x0800_0001, ACBS_FLAG_PROTECTED, 3)];
-        let mut changed_ids = SmallVec::<[u32; 4]>::new();
-
-        assert_eq!(clear_protected_from_items(&mut items, &mut changed_ids), 1);
-        assert_eq!(npc_flags(&items[0]), 0);
-    }
-
-    #[test]
-    fn keeps_protected_on_settlers_and_quest_npcs() {
-        // Unaggressive (a settler) and Aggressive (a quest NPC that fights its
-        // faction's enemies but not the player) both keep the bit.
-        let mut items = vec![
-            npc(0x0800_0002, ACBS_FLAG_PROTECTED, 0),
-            npc(0x0800_0003, ACBS_FLAG_PROTECTED, 1),
-        ];
-        let mut changed_ids = SmallVec::<[u32; 4]>::new();
-
-        assert_eq!(clear_protected_from_items(&mut items, &mut changed_ids), 0);
-        assert_eq!(npc_flags(&items[0]), ACBS_FLAG_PROTECTED);
-        assert_eq!(npc_flags(&items[1]), ACBS_FLAG_PROTECTED);
-        assert!(changed_ids.is_empty());
-    }
-
-    #[test]
-    fn leaves_unprotected_hostiles_untouched() {
-        let mut items = vec![npc(
-            0x0800_0004,
-            AUTO_CALC_STATS,
-            AGGRESSION_VERY_AGGRESSIVE,
-        )];
-        let mut changed_ids = SmallVec::<[u32; 4]>::new();
-
-        assert_eq!(clear_protected_from_items(&mut items, &mut changed_ids), 0);
-        assert_eq!(npc_flags(&items[0]), AUTO_CALC_STATS);
-    }
-
-    #[test]
-    fn ignores_actors_without_aidt() {
         let mut items = vec![ParsedItem::Record(ParsedRecord {
             signature: SmolStr::new("NPC_"),
             form_id: 0x0800_0005,
@@ -255,10 +214,7 @@ mod tests {
 
         assert_eq!(clear_protected_from_items(&mut items, &mut changed_ids), 0);
         assert_eq!(npc_flags(&items[0]), ACBS_FLAG_PROTECTED);
-    }
 
-    #[test]
-    fn descends_into_top_level_groups() {
         let mut items = vec![ParsedItem::Group(ParsedGroup {
             label: *b"NPC_",
             group_type: 0,
@@ -276,5 +232,38 @@ mod tests {
             unreachable!();
         };
         assert_eq!(npc_flags(&group.children[0]), 0);
+    }
+
+    #[test]
+    fn protected_is_cleared_only_from_protected_actors_hostile_to_the_player() {
+        for (name, flags, aggression, expected_flags) in [
+            ("frenzied", ACBS_FLAG_PROTECTED, 3, 0),
+            (
+                "unaggressive settler",
+                ACBS_FLAG_PROTECTED,
+                0,
+                ACBS_FLAG_PROTECTED,
+            ),
+            (
+                "aggressive quest npc",
+                ACBS_FLAG_PROTECTED,
+                1,
+                ACBS_FLAG_PROTECTED,
+            ),
+            (
+                "unprotected hostile",
+                AUTO_CALC_STATS,
+                AGGRESSION_VERY_AGGRESSIVE,
+                AUTO_CALC_STATS,
+            ),
+        ] {
+            let mut items = vec![npc(0x0800_0001, flags, aggression)];
+            let mut changed_ids = SmallVec::<[u32; 4]>::new();
+
+            let changed = clear_protected_from_items(&mut items, &mut changed_ids);
+            assert_eq!(changed, u32::from(flags != expected_flags), "{name}");
+            assert_eq!(npc_flags(&items[0]), expected_flags, "{name}");
+            assert_eq!(changed_ids.len(), changed as usize, "{name}");
+        }
     }
 }

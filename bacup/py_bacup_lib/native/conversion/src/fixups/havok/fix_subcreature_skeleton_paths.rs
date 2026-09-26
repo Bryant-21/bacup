@@ -382,328 +382,217 @@ mod tests {
         }
     }
 
-    /// Create a temporary extracted-dir layout with `skeleton.nif` for the
-    /// given (parent, sub) pairs under `meshes/actors/<parent>/<sub>/`.
-    fn make_extracted_tree(parent: &str, subs: &[&str]) -> tempfile::TempDir {
+    #[test]
+    fn applies_only_with_a_source_extracted_dir() {
         let dir = tempfile::tempdir().unwrap();
-        for sub in subs {
-            let nif_dir = dir
-                .path()
-                .join("meshes")
-                .join("actors")
-                .join(parent)
-                .join(sub);
-            std::fs::create_dir_all(&nif_dir).unwrap();
-            std::fs::write(nif_dir.join("skeleton.nif"), b"").unwrap();
-        }
-        dir
-    }
-
-    #[test]
-    fn does_not_apply_without_source_extracted_dir() {
-        let config = FixupConfig::default();
-        let target_handle = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
-            "SubcreatureNoExtracted.esp",
-            Some("fo4"),
-        )
-        .expect("test plugin handle");
-        let session = crate::session::open_session(target_handle, None).expect("open session");
-        assert!(!FixSubcreatureSkeletonPathsFixup.applies_to_session(&session, &config));
-    }
-
-    #[test]
-    fn applies_when_source_extracted_dir_present() {
-        let mut config = FixupConfig::default();
-        let dir = tempfile::tempdir().unwrap();
-        config.source_extracted_dir = Some(dir.path().to_path_buf());
-        let target_handle = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
-            "SubcreatureWithExtracted.esp",
-            Some("fo4"),
-        )
-        .expect("test plugin handle");
-        let session = crate::session::open_session(target_handle, None).expect("open session");
-        assert!(FixSubcreatureSkeletonPathsFixup.applies_to_session(&session, &config));
-    }
-
-    #[test]
-    fn rewrites_subcreature_skeleton_when_disk_exists() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("MegaSloth", &["Variant"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            Some("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif"),
-            &["Variant"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(changed, "fixup should mutate the record");
-
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        assert_eq!(male_str, "Actors\\MegaSloth\\Variant\\skeleton.nif");
-
-        let female_idx = find_anam_after_marker(&record, "FNAM", &interner).unwrap();
-        let female_str = string_value(&record.fields[female_idx].value, &interner).unwrap();
-        assert_eq!(female_str, "Actors\\MegaSloth\\Variant\\skeleton.nif");
-    }
-
-    #[test]
-    fn no_op_when_disk_skeleton_missing() {
-        let mut interner = StringInterner::new();
-        let dir = tempfile::tempdir().unwrap(); // empty tree
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            Some("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif"),
-            &["Variant"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, dir.path(), &mut interner);
-        assert!(!changed);
-
-        // Male still points to the parent skeleton.
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        assert_eq!(male_str, "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif");
-    }
-
-    #[test]
-    fn no_op_when_male_not_characterassets() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("MegaSloth", &["Variant"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\Variant\\skeleton.nif", // already child-pointed
-            Some("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif"),
-            &["Variant"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(!changed);
-    }
-
-    #[test]
-    fn female_left_alone_when_not_characterassets() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("MegaSloth", &["Variant"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            Some("Actors\\Molerat\\CharacterAssets\\skeleton.nif"),
-            &["Variant"],
-            &mut interner,
-        );
-        // Mark female with a different (non-marker) ending — but in the schema
-        // female still ends with /characterassets/skeleton.nif. We instead point
-        // it at a wholly-different path so the marker test fails:
-        let female_idx = find_anam_after_marker(&record, "FNAM", &interner).unwrap();
-        record.fields[female_idx].value =
-            FieldValue::String(interner.intern("Actors\\Molerat\\Variant\\skeleton.nif"));
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(changed);
-
-        // Male was rewritten.
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        assert_eq!(male_str, "Actors\\MegaSloth\\Variant\\skeleton.nif");
-
-        // Female untouched (did not end in CharacterAssets marker).
-        let female_idx = find_anam_after_marker(&record, "FNAM", &interner).unwrap();
-        let female_str = string_value(&record.fields[female_idx].value, &interner).unwrap();
-        assert_eq!(female_str, "Actors\\Molerat\\Variant\\skeleton.nif");
-    }
-
-    #[test]
-    fn ambush_candidate_preserves_parent_characterassets() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("Sheepsquatch", &["Ambush_Burrow"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "Sheepsquatch",
-            "Actors\\Sheepsquatch\\CharacterAssets\\skeleton.nif",
-            Some("Actors\\Deathclaw\\CharacterAssets\\skeleton.nif"),
-            &["Ambush_Burrow"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(!changed);
-
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        assert_eq!(
-            male_str,
-            "Actors\\Sheepsquatch\\CharacterAssets\\skeleton.nif"
-        );
-
-        let female_idx = find_anam_after_marker(&record, "FNAM", &interner).unwrap();
-        let female_str = string_value(&record.fields[female_idx].value, &interner).unwrap();
-        assert_eq!(
-            female_str,
-            "Actors\\Deathclaw\\CharacterAssets\\skeleton.nif"
-        );
-    }
-
-    #[test]
-    fn ogua_preserves_parent_megasloth_skeleton() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("MegaSloth", &["Ogua"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            Some("Actors\\MegaSloth\\CharacterAssets\\skeleton.nif"),
-            &["Ogua"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(!changed);
-
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        assert_eq!(male_str, "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif");
-
-        let female_idx = find_anam_after_marker(&record, "FNAM", &interner).unwrap();
-        let female_str = string_value(&record.fields[female_idx].value, &interner).unwrap();
-        assert_eq!(
-            female_str,
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif"
-        );
-    }
-
-    #[test]
-    fn picks_first_existing_candidate() {
-        let mut interner = StringInterner::new();
-        // Only the second candidate (Variant) has a skeleton on disk.
-        let extracted = make_extracted_tree("MegaSloth", &["Variant"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            None,
-            &["Ghost", "Variant"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(changed);
-
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        assert_eq!(male_str, "Actors\\MegaSloth\\Variant\\skeleton.nif");
-    }
-
-    #[test]
-    fn no_op_when_no_path_candidates() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("MegaSloth", &["Variant"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            None,
-            &[], // no SAPT entries
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(!changed);
-    }
-
-    #[test]
-    fn preserves_parent_casing_from_existing_path() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("MegaSloth", &["Variant"]);
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth", // SAPT entries use this casing
-            // Male path uses a different parent casing than the SAPT tree.
-            "Actors\\MEGASLOTH\\CharacterAssets\\skeleton.nif",
-            None,
-            &["Variant"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(changed);
-
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        // Parent casing comes from the existing male path ("MEGASLOTH"), not SAPT.
-        assert_eq!(male_str, "Actors\\MEGASLOTH\\Variant\\skeleton.nif");
-    }
-
-    #[test]
-    fn probes_no_meshes_prefix_layout() {
-        let mut interner = StringInterner::new();
-        // Create an extracted tree where skeleton.nif lives at
-        // <extracted>/actors/<parent>/<sub>/skeleton.nif (no meshes/ prefix).
-        let dir = tempfile::tempdir().unwrap();
-        let nif_dir = dir.path().join("actors").join("MegaSloth").join("Variant");
-        std::fs::create_dir_all(&nif_dir).unwrap();
-        std::fs::write(nif_dir.join("skeleton.nif"), b"").unwrap();
-
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            None,
-            &["Variant"],
-            &mut interner,
-        );
-
-        let changed = rewrite_subcreature_paths(&mut record, dir.path(), &mut interner);
-        assert!(changed);
-
-        let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
-        let male_str = string_value(&record.fields[male_idx].value, &interner).unwrap();
-        assert_eq!(male_str, "Actors\\MegaSloth\\Variant\\skeleton.nif");
-    }
-
-    #[test]
-    fn rejects_nested_path_tail() {
-        let mut interner = StringInterner::new();
-        let extracted = make_extracted_tree("MegaSloth", &["Variant"]);
-        // Build a record manually so SAPT includes a deeper path.
-        let mut record = make_race(
-            0x000800,
-            "Output.esp",
-            "MegaSloth",
-            "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif",
-            None,
-            &[],
-            &mut interner,
-        );
-        let sapt_sig = SubrecordSig::from_str("SAPT").unwrap();
-        // Path with nested directory → must be ignored.
-        record.fields.push(FieldEntry {
-            sig: sapt_sig,
-            value: FieldValue::String(
-                interner.intern("Actors\\MegaSloth\\Animations\\Variant\\Sub"),
+        for (name, extracted, expected) in [
+            ("SubcreatureNoExtracted.esp", None, false),
+            (
+                "SubcreatureWithExtracted.esp",
+                Some(dir.path().to_path_buf()),
+                true,
             ),
-        });
+        ] {
+            let config = FixupConfig {
+                source_extracted_dir: extracted,
+                ..Default::default()
+            };
+            let target_handle =
+                esp_authoring_core::plugin_runtime::plugin_handle_new_native(name, Some("fo4"))
+                    .expect("test plugin handle");
+            let session = crate::session::open_session(target_handle, None).expect("open session");
+            assert_eq!(
+                FixSubcreatureSkeletonPathsFixup.applies_to_session(&session, &config),
+                expected,
+                "{name}"
+            );
+        }
+    }
 
-        let changed = rewrite_subcreature_paths(&mut record, extracted.path(), &mut interner);
-        assert!(!changed, "nested tail must not match a candidate");
+    /// Only a CharacterAssets skeleton is retargeted, only to the first SAPT
+    /// sub-folder with a skeleton on disk (with or without a `meshes/` prefix),
+    /// keeping the parent casing of the existing path. Ambush and Ogua folders
+    /// are not subcreatures, and a nested SAPT tail is not a candidate.
+    #[test]
+    fn rewrites_subcreature_skeletons_to_existing_disk_variants() {
+        const CA: &str = "Actors\\MegaSloth\\CharacterAssets\\skeleton.nif";
+        const VARIANT: &str = "Actors\\MegaSloth\\Variant\\skeleton.nif";
+        const MOLERAT_VARIANT: &str = "Actors\\Molerat\\Variant\\skeleton.nif";
+        for (
+            name,
+            parent,
+            disk,
+            meshes_prefix,
+            male,
+            female,
+            sapt,
+            expected_male,
+            expected_female,
+        ) in [
+            (
+                "rewrites",
+                "MegaSloth",
+                &["Variant"][..],
+                true,
+                CA,
+                Some(CA),
+                &["Variant"][..],
+                VARIANT,
+                Some(VARIANT),
+            ),
+            (
+                "disk_missing",
+                "MegaSloth",
+                &[][..],
+                true,
+                CA,
+                Some(CA),
+                &["Variant"][..],
+                CA,
+                Some(CA),
+            ),
+            (
+                "male_not_characterassets",
+                "MegaSloth",
+                &["Variant"][..],
+                true,
+                VARIANT,
+                Some(CA),
+                &["Variant"][..],
+                VARIANT,
+                Some(CA),
+            ),
+            (
+                "female_not_characterassets",
+                "MegaSloth",
+                &["Variant"][..],
+                true,
+                CA,
+                Some(MOLERAT_VARIANT),
+                &["Variant"][..],
+                VARIANT,
+                Some(MOLERAT_VARIANT),
+            ),
+            (
+                "ambush",
+                "Sheepsquatch",
+                &["Ambush_Burrow"][..],
+                true,
+                "Actors\\Sheepsquatch\\CharacterAssets\\skeleton.nif",
+                Some("Actors\\Deathclaw\\CharacterAssets\\skeleton.nif"),
+                &["Ambush_Burrow"][..],
+                "Actors\\Sheepsquatch\\CharacterAssets\\skeleton.nif",
+                Some("Actors\\Deathclaw\\CharacterAssets\\skeleton.nif"),
+            ),
+            (
+                "ogua",
+                "MegaSloth",
+                &["Ogua"][..],
+                true,
+                CA,
+                Some(CA),
+                &["Ogua"][..],
+                CA,
+                Some(CA),
+            ),
+            (
+                "first_existing_candidate",
+                "MegaSloth",
+                &["Variant"][..],
+                true,
+                CA,
+                None,
+                &["Ghost", "Variant"][..],
+                VARIANT,
+                None,
+            ),
+            (
+                "no_candidates",
+                "MegaSloth",
+                &["Variant"][..],
+                true,
+                CA,
+                None,
+                &[][..],
+                CA,
+                None,
+            ),
+            (
+                "parent_casing",
+                "MegaSloth",
+                &["Variant"][..],
+                true,
+                "Actors\\MEGASLOTH\\CharacterAssets\\skeleton.nif",
+                None,
+                &["Variant"][..],
+                "Actors\\MEGASLOTH\\Variant\\skeleton.nif",
+                None,
+            ),
+            (
+                "no_meshes_prefix",
+                "MegaSloth",
+                &["Variant"][..],
+                false,
+                CA,
+                None,
+                &["Variant"][..],
+                VARIANT,
+                None,
+            ),
+            (
+                "nested_tail",
+                "MegaSloth",
+                &["Variant"][..],
+                true,
+                CA,
+                None,
+                &["Variant\\Sub"][..],
+                CA,
+                None,
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let dir = tempfile::tempdir().unwrap();
+            let root = if meshes_prefix {
+                dir.path().join("meshes")
+            } else {
+                dir.path().to_path_buf()
+            };
+            for sub in disk {
+                let nif_dir = root.join("actors").join(parent).join(sub);
+                std::fs::create_dir_all(&nif_dir).unwrap();
+                std::fs::write(nif_dir.join("skeleton.nif"), b"").unwrap();
+            }
+            let mut record = make_race(
+                0x000800,
+                "Output.esp",
+                parent,
+                male,
+                female,
+                sapt,
+                &interner,
+            );
+
+            let changed = rewrite_subcreature_paths(&mut record, dir.path(), &interner);
+            assert_eq!(
+                changed,
+                expected_male != male || expected_female != female,
+                "{name}"
+            );
+            let male_idx = find_anam_after_marker(&record, "MNAM", &interner).unwrap();
+            assert_eq!(
+                string_value(&record.fields[male_idx].value, &interner).as_deref(),
+                Some(expected_male),
+                "{name}"
+            );
+            if let Some(expected_female) = expected_female {
+                let female_idx = find_anam_after_marker(&record, "FNAM", &interner).unwrap();
+                assert_eq!(
+                    string_value(&record.fields[female_idx].value, &interner).as_deref(),
+                    Some(expected_female),
+                    "{name}"
+                );
+            }
+        }
     }
 }

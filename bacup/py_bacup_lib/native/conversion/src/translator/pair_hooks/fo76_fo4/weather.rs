@@ -224,104 +224,66 @@ mod tests {
     }
 
     #[test]
-    fn rain_weather_gets_fo4_camera_mist_visual_effect() {
-        let mut interner = StringInterner::new();
-        let mut weather =
-            weather_with_visual_effect(&mut interner, "NewWeatherRain", FieldValue::None);
-
-        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
-
-        let FieldValue::FormKey(effect) = weather.fields[0].value else {
-            panic!("rain NNAM must be a FormKey");
-        };
-        assert_eq!(effect.local, FO4_RFCT_CAMERA_MIST);
-        assert_eq!(interner.resolve(effect.plugin), Some("Fallout4.esm"));
-    }
-
-    #[test]
-    fn dusty_weather_gets_fo4_camera_dust_visual_effect() {
-        let mut interner = StringInterner::new();
-        let mut weather =
-            weather_with_visual_effect(&mut interner, "Burn_Weather_DesertSand", FieldValue::None);
-
-        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
-
-        assert!(matches!(
-            weather.fields[0].value,
-            FieldValue::FormKey(FormKey {
-                local: FO4_RFCT_CAMERA_DUST,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn overcast_weather_keeps_null_visual_effect() {
-        let mut interner = StringInterner::new();
-        let mut weather =
-            weather_with_visual_effect(&mut interner, "NewWeatherStorm_Overcast", FieldValue::None);
-
-        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
-
-        assert_eq!(weather.fields[0].value, FieldValue::None);
-    }
-
-    #[test]
-    fn existing_weather_visual_effect_is_preserved() {
+    fn weather_visual_effect_is_filled_from_fo4_donors_only_when_null() {
         let mut interner = StringInterner::new();
         let source_effect = FormKey::parse("123456@SeventySix.esm", &mut interner).unwrap();
-        let mut weather = weather_with_visual_effect(
-            &mut interner,
-            "NewWeatherRain",
-            FieldValue::FormKey(source_effect),
-        );
-
-        super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
-
-        assert_eq!(weather.fields[0].value, FieldValue::FormKey(source_effect));
+        let fo4_effect = |local| FormKey {
+            local,
+            plugin: interner.intern("Fallout4.esm"),
+        };
+        for (editor_id, visual_effect, expected) in [
+            (
+                "NewWeatherRain",
+                FieldValue::None,
+                FieldValue::FormKey(fo4_effect(FO4_RFCT_CAMERA_MIST)),
+            ),
+            (
+                "Burn_Weather_DesertSand",
+                FieldValue::None,
+                FieldValue::FormKey(fo4_effect(FO4_RFCT_CAMERA_DUST)),
+            ),
+            (
+                "NewWeatherStorm_Overcast",
+                FieldValue::None,
+                FieldValue::None,
+            ),
+            (
+                "NewWeatherRain",
+                FieldValue::FormKey(source_effect),
+                FieldValue::FormKey(source_effect),
+            ),
+        ] {
+            let mut weather = weather_with_visual_effect(&mut interner, editor_id, visual_effect);
+            super::super::Fo76Fo4Hook::translate_weather_visual_effect(&mut interner, &mut weather);
+            assert_eq!(weather.fields[0].value, expected, "{editor_id}");
+        }
     }
 
     #[test]
-    fn weather_hnam_becomes_fo4_wgdr() {
+    fn weather_hnam_becomes_fo4_wgdr_unless_wgdr_exists() {
         let mut interner = StringInterner::new();
-        let mut weather = Record::new(
-            SigCode(*b"WTHR"),
-            FormKey::parse("4398AE@SeventySix.esm", &mut interner).unwrap(),
-        );
-        weather.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"HNAM"),
-            value: FieldValue::Bytes(SmallVec::from_vec(vec![0; 32])),
-        });
+        let bytes = |fill| FieldValue::Bytes(SmallVec::from_vec(vec![fill; 32]));
+        for (name, sources, expected) in [
+            ("hnam only", vec![(*b"HNAM", 0)], 0),
+            ("existing wgdr wins", vec![(*b"WGDR", 1), (*b"HNAM", 2)], 1),
+        ] {
+            let mut weather = Record::new(
+                SigCode(*b"WTHR"),
+                FormKey::parse("4398AE@SeventySix.esm", &mut interner).unwrap(),
+            );
+            for (sig, fill) in sources {
+                weather.fields.push(FieldEntry {
+                    sig: SubrecordSig(sig),
+                    value: bytes(fill),
+                });
+            }
 
-        super::super::Fo76Fo4Hook::translate_weather_volumetric_lighting(&mut weather);
+            super::super::Fo76Fo4Hook::translate_weather_volumetric_lighting(&mut weather);
 
-        assert_eq!(weather.fields[0].sig.0, *b"WGDR");
-        assert_eq!(
-            weather.fields[0].value,
-            FieldValue::Bytes(SmallVec::from_vec(vec![0; 32]))
-        );
-    }
-
-    #[test]
-    fn existing_wgdr_wins_over_fo76_hnam() {
-        let mut interner = StringInterner::new();
-        let mut weather = Record::new(
-            SigCode(*b"WTHR"),
-            FormKey::parse("4398AE@SeventySix.esm", &mut interner).unwrap(),
-        );
-        weather.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"WGDR"),
-            value: FieldValue::Bytes(SmallVec::from_vec(vec![1; 32])),
-        });
-        weather.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"HNAM"),
-            value: FieldValue::Bytes(SmallVec::from_vec(vec![2; 32])),
-        });
-
-        super::super::Fo76Fo4Hook::translate_weather_volumetric_lighting(&mut weather);
-
-        assert_eq!(weather.fields.len(), 1);
-        assert_eq!(weather.fields[0].sig.0, *b"WGDR");
+            assert_eq!(weather.fields.len(), 1, "{name}");
+            assert_eq!(weather.fields[0].sig.0, *b"WGDR", "{name}");
+            assert_eq!(weather.fields[0].value, bytes(expected), "{name}");
+        }
     }
 
     #[test]

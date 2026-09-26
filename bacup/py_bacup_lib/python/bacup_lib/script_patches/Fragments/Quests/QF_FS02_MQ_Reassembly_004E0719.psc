@@ -24,6 +24,16 @@ EndFunction
 Function Fragment_Stage_0100_Item_00()
 	SetObjectiveCompleted(50, True)
 	SetObjectiveDisplayed(100, True, True)
+	; Rose's holotape is created in the Mire holding container; nothing moved it to
+	; Abbie's desk (the alias bound to this fragment) for the player to take.
+	ObjectReference holotapeRef = Alias_RoseHolotape.GetReference()
+	ObjectReference deskRef = Alias_AbbieDesk.GetReference()
+	Actor playerRef = Alias_FS02Player.GetActorReference()
+	If holotapeRef != None && deskRef != None && holotapeRef.GetContainer() != deskRef && (playerRef == None || holotapeRef.GetContainer() != playerRef)
+		deskRef.AddItem(holotapeRef, 1, True)
+	ElseIf holotapeRef == None && deskRef != None && FS02_MQ_Overdue_RoseHolotape != None && (playerRef == None || playerRef.GetItemCount(FS02_MQ_Overdue_RoseHolotape) == 0)
+		deskRef.AddItem(FS02_MQ_Overdue_RoseHolotape, 1, True)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0150_Item_00()
@@ -42,6 +52,7 @@ Function Fragment_Stage_0200_Item_00()
 EndFunction
 
 Function Fragment_Stage_0205_Item_00()
+	FS02_StartAmbush()
 	SetObjectiveDisplayed(200, True, True)
 EndFunction
 
@@ -200,6 +211,10 @@ Bool Function FS02_TryStartFruition()
 EndFunction
 
 Event OnTimer(Int aiTimerID)
+	If aiTimerID == 205
+		FS02_StartAmbush()
+		Return
+	EndIf
 	If aiTimerID != 600 || !GetStageDone(600) || GetStageDone(1000)
 		Return
 	EndIf
@@ -209,4 +224,41 @@ Event OnTimer(Int aiTimerID)
 	Else
 		StartTimer(5.0, 600)
 	EndIf
+EndEvent
+
+Function FS02_StartAmbush()
+    If !IsRunning() || !IsStageDone(205) || GetStage() >= 260
+        CancelTimer(205)
+        Return
+    EndIf
+    B21:LocalEncounterMaterializer materializer = (Self as Quest) as B21:LocalEncounterMaterializer
+    If materializer != None
+        materializer.PrepareEligibleWaves()
+        If !materializer.HasPreparedWave(0)
+            StartTimer(5.0, 205)
+            Return
+        EndIf
+    EndIf
+    RefCollectionAlias enemies = GetAlias(22) as RefCollectionAlias
+    DefaultQuestEncounterWaveScript waves = (Self as Quest) as DefaultQuestEncounterWaveScript
+    If enemies == None || enemies.GetCount() == 0 || waves == None
+        StartTimer(5.0, 205)
+        Return
+    EndIf
+    waves.StartLocalEncounterWave(0)
+    CancelTimer(205)
+EndFunction
+
+Event OnQuestInit()
+    RegisterForRemoteEvent(Game.GetPlayer(), "OnPlayerLoadGame")
+    FS02_StartAmbush()
+EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    FS02_StartAmbush()
+EndEvent
+
+Event OnQuestShutdown()
+    CancelTimer(205)
+    UnregisterForAllRemoteEvents()
 EndEvent

@@ -70,6 +70,26 @@ const LISTENER_SPECS: &[ListenerSpec] = &[
         prereq_stage: 300,
         stage_to_set: 350,
     },
+    // Strange Bedfellows: FO76 set 820/830 from player-alias holotape events
+    // that FO4 never delivers to the player; the tapes only exist from 700.
+    ListenerSpec {
+        slug: "w05_mq_101p_a_david_meeting",
+        quest_local: 0x3FBC0D,
+        tape_local: 0x41B848,
+        quest_editor_id: "W05_MQ_101P_A",
+        tape_editor_id: "W05_MQ_101P_A_DavidHolotapeMeeting",
+        prereq_stage: 800,
+        stage_to_set: 820,
+    },
+    ListenerSpec {
+        slug: "w05_mq_101p_a_david_tessa",
+        quest_local: 0x3FBC0D,
+        tape_local: 0x41B849,
+        quest_editor_id: "W05_MQ_101P_A",
+        tape_editor_id: "W05_MQ_101P_A_DavidHolotapeTessa",
+        prereq_stage: 800,
+        stage_to_set: 830,
+    },
 ];
 
 pub fn apply(
@@ -615,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn listener_vmad_names_the_exact_script_quest_and_stages() {
+    fn listener_and_government_drop_vmads_name_exact_script_and_attach_once() {
         let interner = StringInterner::new();
         let quest = FormKey {
             local: QUEST_LOCAL,
@@ -636,12 +656,28 @@ mod tests {
         assert!(text.contains("TargetQuest"));
         assert!(text.contains("PrereqStage"));
         assert!(text.contains("StageToSet"));
-    }
 
-    #[test]
-    fn listener_attachment_is_idempotent_on_the_holotape_record() {
-        let interner = StringInterner::new();
         let plugin = interner.intern(SOURCE_PLUGIN);
+        let vmad = government_drop_vmad(
+            FormKey {
+                local: GOVERNMENT_DROP_FLAG_LOCAL,
+                plugin,
+            },
+            FormKey {
+                local: GOVERNMENT_DROP_KEYWORD_LOCAL,
+                plugin,
+            },
+            &[],
+            SOURCE_PLUGIN,
+            &interner,
+        )
+        .expect("VMAD");
+        let text = String::from_utf8_lossy(&vmad);
+
+        assert!(text.contains(GOVERNMENT_DROP_SCRIPT_NAME));
+        assert!(text.contains("GQ_DropGovt01Flag"));
+        assert!(text.contains("GQ_DropGovtIntroKeyword"));
+
         let quest = FormKey {
             local: QUEST_LOCAL,
             plugin,
@@ -678,31 +714,6 @@ mod tests {
                 .count(),
             1
         );
-    }
-
-    #[test]
-    fn government_drop_vmad_names_the_source_script_and_exact_properties() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern(SOURCE_PLUGIN);
-        let vmad = government_drop_vmad(
-            FormKey {
-                local: GOVERNMENT_DROP_FLAG_LOCAL,
-                plugin,
-            },
-            FormKey {
-                local: GOVERNMENT_DROP_KEYWORD_LOCAL,
-                plugin,
-            },
-            &[],
-            SOURCE_PLUGIN,
-            &interner,
-        )
-        .expect("VMAD");
-        let text = String::from_utf8_lossy(&vmad);
-
-        assert!(text.contains(GOVERNMENT_DROP_SCRIPT_NAME));
-        assert!(text.contains("GQ_DropGovt01Flag"));
-        assert!(text.contains("GQ_DropGovtIntroKeyword"));
     }
 
     #[test]
@@ -786,11 +797,7 @@ mod tests {
             &interner,
         ));
         assert!(plugin_handle_close_native(handle));
-    }
 
-    #[test]
-    fn government_drop_sender_rejects_a_wrong_selector_identity() {
-        let interner = StringInterner::new();
         let target_plugin = "GovernmentDropWrongSelector.esp";
         let records = vec![
             target_record(
@@ -840,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_is_fail_soft_when_mapped_quest_record_is_missing() {
+    fn apply_fails_soft_on_missing_mismatched_conflicting_or_unmapped_targets() {
         let interner = StringInterner::new();
         let target_plugin = "HellsMissingQuest.esp";
         let tape = target_record("NOTE", TAPE_LOCAL, TAPE_EDITOR_ID, target_plugin, &interner);
@@ -859,11 +866,7 @@ mod tests {
             &interner,
         ));
         assert!(plugin_handle_close_native(handle));
-    }
 
-    #[test]
-    fn apply_is_fail_soft_when_mapped_holotape_record_is_missing() {
-        let interner = StringInterner::new();
         let target_plugin = "HellsMissingTape.esp";
         let quest = target_record(
             "QUST",
@@ -887,11 +890,7 @@ mod tests {
             &interner,
         ));
         assert!(plugin_handle_close_native(handle));
-    }
 
-    #[test]
-    fn apply_rejects_wrong_target_record_identity() {
-        let interner = StringInterner::new();
         let target_plugin = "HellsWrongIdentity.esp";
         let quest = target_record(
             "QUST",
@@ -916,11 +915,7 @@ mod tests {
             &interner,
         ));
         assert!(plugin_handle_close_native(handle));
-    }
 
-    #[test]
-    fn apply_reports_conflicting_binding_without_mutation() {
-        let interner = StringInterner::new();
         let target_plugin = "HellsConflict.esp";
         let target_plugin_sym = interner.intern(target_plugin);
         let quest = target_record(
@@ -979,6 +974,136 @@ mod tests {
             &interner,
         ));
         assert!(plugin_handle_close_native(handle));
+
+        let target_plugin = "HellsWrongSourceId.esp";
+        let target_plugin_sym = interner.intern(target_plugin);
+        let quest = target_record(
+            "QUST",
+            QUEST_LOCAL,
+            QUEST_EDITOR_ID,
+            target_plugin,
+            &interner,
+        );
+        let tape = target_record("NOTE", TAPE_LOCAL, TAPE_EDITOR_ID, target_plugin, &interner);
+        let handle = target_handle(target_plugin, vec![quest, tape], &interner);
+        let mut mapper = FormKeyMapper::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: target_plugin.to_string(),
+                source_plugin_name: SOURCE_PLUGIN.to_string(),
+                ..MapperOptions::default()
+            },
+            &interner,
+        );
+        let source_plugin = interner.intern(SOURCE_PLUGIN);
+        mapper.add_mapping(
+            FormKey {
+                local: QUEST_LOCAL,
+                plugin: source_plugin,
+            },
+            FormKey {
+                local: QUEST_LOCAL,
+                plugin: target_plugin_sym,
+            },
+        );
+        mapper.add_mapping(
+            FormKey {
+                local: TAPE_LOCAL + 1,
+                plugin: source_plugin,
+            },
+            FormKey {
+                local: TAPE_LOCAL,
+                plugin: target_plugin_sym,
+            },
+        );
+
+        let report = {
+            let mut session = open_session(handle, None).expect("target session");
+            let report = apply(&mut session, &mut mapper, Game::Fo76, Game::Fo4)
+                .expect("wrong source ID apply");
+            let schema = session.schema().expect("FO4 schema");
+            let tape = session
+                .record_decoded(
+                    &FormKey {
+                        local: TAPE_LOCAL,
+                        plugin: target_plugin_sym,
+                    },
+                    schema.as_ref(),
+                    &interner,
+                )
+                .expect("read target tape");
+            assert_eq!(record_vmad(&tape), None);
+            report
+        };
+
+        assert_eq!(report.records_changed, 0);
+        assert!(has_message(
+            &report.warnings,
+            "attach_fo76_holotape_stage_listener:ac_sq01_hells_eagles:holotape_unmapped",
+            &interner,
+        ));
+        assert!(plugin_handle_close_native(handle));
+
+        let target_plugin = "HellsWrongSourcePlugin.esp";
+        let target_plugin_sym = interner.intern(target_plugin);
+        let quest = target_record(
+            "QUST",
+            QUEST_LOCAL,
+            QUEST_EDITOR_ID,
+            target_plugin,
+            &interner,
+        );
+        let tape = target_record("NOTE", TAPE_LOCAL, TAPE_EDITOR_ID, target_plugin, &interner);
+        let handle = target_handle(target_plugin, vec![quest, tape], &interner);
+        let mut mapper = FormKeyMapper::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: target_plugin.to_string(),
+                source_plugin_name: SOURCE_PLUGIN.to_string(),
+                ..MapperOptions::default()
+            },
+            &interner,
+        );
+        let foreign_plugin = interner.intern("Foreign.esm");
+        for local in [QUEST_LOCAL, TAPE_LOCAL] {
+            mapper.add_mapping(
+                FormKey {
+                    local,
+                    plugin: foreign_plugin,
+                },
+                FormKey {
+                    local,
+                    plugin: target_plugin_sym,
+                },
+            );
+        }
+
+        let report = {
+            let mut session = open_session(handle, None).expect("target session");
+            let report = apply(&mut session, &mut mapper, Game::Fo76, Game::Fo4)
+                .expect("wrong source plugin apply");
+            let schema = session.schema().expect("FO4 schema");
+            let tape = session
+                .record_decoded(
+                    &FormKey {
+                        local: TAPE_LOCAL,
+                        plugin: target_plugin_sym,
+                    },
+                    schema.as_ref(),
+                    &interner,
+                )
+                .expect("read target tape");
+            assert_eq!(record_vmad(&tape), None);
+            report
+        };
+
+        assert_eq!(report.records_changed, 0);
+        assert!(has_message(
+            &report.warnings,
+            "attach_fo76_holotape_stage_listener:ac_sq01_hells_eagles:quest_unmapped",
+            &interner,
+        ));
+        assert!(plugin_handle_close_native(handle));
     }
 
     #[test]
@@ -1016,11 +1141,36 @@ mod tests {
     }
 
     #[test]
-    fn apply_attaches_both_exact_tw007_holotape_listeners() {
+    fn apply_attaches_both_exact_same_quest_listener_pairs() {
+        assert_same_quest_pair_attaches(&LISTENER_SPECS[1..3], "ColdCaseHappyPath.esp");
+
+        let specs = &LISTENER_SPECS[3..5];
+        assert_eq!(specs[0].quest_local, 0x3FBC0D);
+        assert_eq!(specs[1].quest_local, 0x3FBC0D);
+        assert_eq!(
+            (
+                specs[0].tape_local,
+                specs[0].prereq_stage,
+                specs[0].stage_to_set
+            ),
+            (0x41B848, 800, 820)
+        );
+        assert_eq!(
+            (
+                specs[1].tape_local,
+                specs[1].prereq_stage,
+                specs[1].stage_to_set
+            ),
+            (0x41B849, 800, 830)
+        );
+        assert_same_quest_pair_attaches(specs, "StrangeBedfellowsHappyPath.esp");
+    }
+
+    fn assert_same_quest_pair_attaches(specs: &[ListenerSpec], target_plugin: &str) {
         let interner = StringInterner::new();
-        let target_plugin = "ColdCaseHappyPath.esp";
         let target_plugin_sym = interner.intern(target_plugin);
-        let specs = &LISTENER_SPECS[1..];
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].quest_local, specs[1].quest_local);
         let quest = target_record(
             "QUST",
             specs[0].quest_local,
@@ -1096,144 +1246,6 @@ mod tests {
                 &interner,
             ));
         }
-        assert!(plugin_handle_close_native(handle));
-    }
-
-    #[test]
-    fn apply_rejects_a_wrong_source_local_id() {
-        let interner = StringInterner::new();
-        let target_plugin = "HellsWrongSourceId.esp";
-        let target_plugin_sym = interner.intern(target_plugin);
-        let quest = target_record(
-            "QUST",
-            QUEST_LOCAL,
-            QUEST_EDITOR_ID,
-            target_plugin,
-            &interner,
-        );
-        let tape = target_record("NOTE", TAPE_LOCAL, TAPE_EDITOR_ID, target_plugin, &interner);
-        let handle = target_handle(target_plugin, vec![quest, tape], &interner);
-        let mut mapper = FormKeyMapper::new(
-            std::iter::empty(),
-            MapperOptions {
-                output_plugin_name: target_plugin.to_string(),
-                source_plugin_name: SOURCE_PLUGIN.to_string(),
-                ..MapperOptions::default()
-            },
-            &interner,
-        );
-        let source_plugin = interner.intern(SOURCE_PLUGIN);
-        mapper.add_mapping(
-            FormKey {
-                local: QUEST_LOCAL,
-                plugin: source_plugin,
-            },
-            FormKey {
-                local: QUEST_LOCAL,
-                plugin: target_plugin_sym,
-            },
-        );
-        mapper.add_mapping(
-            FormKey {
-                local: TAPE_LOCAL + 1,
-                plugin: source_plugin,
-            },
-            FormKey {
-                local: TAPE_LOCAL,
-                plugin: target_plugin_sym,
-            },
-        );
-
-        let report = {
-            let mut session = open_session(handle, None).expect("target session");
-            let report = apply(&mut session, &mut mapper, Game::Fo76, Game::Fo4)
-                .expect("wrong source ID apply");
-            let schema = session.schema().expect("FO4 schema");
-            let tape = session
-                .record_decoded(
-                    &FormKey {
-                        local: TAPE_LOCAL,
-                        plugin: target_plugin_sym,
-                    },
-                    schema.as_ref(),
-                    &interner,
-                )
-                .expect("read target tape");
-            assert_eq!(record_vmad(&tape), None);
-            report
-        };
-
-        assert_eq!(report.records_changed, 0);
-        assert!(has_message(
-            &report.warnings,
-            "attach_fo76_holotape_stage_listener:ac_sq01_hells_eagles:holotape_unmapped",
-            &interner,
-        ));
-        assert!(plugin_handle_close_native(handle));
-    }
-
-    #[test]
-    fn apply_rejects_exact_ids_mapped_from_a_foreign_source_plugin() {
-        let interner = StringInterner::new();
-        let target_plugin = "HellsWrongSourcePlugin.esp";
-        let target_plugin_sym = interner.intern(target_plugin);
-        let quest = target_record(
-            "QUST",
-            QUEST_LOCAL,
-            QUEST_EDITOR_ID,
-            target_plugin,
-            &interner,
-        );
-        let tape = target_record("NOTE", TAPE_LOCAL, TAPE_EDITOR_ID, target_plugin, &interner);
-        let handle = target_handle(target_plugin, vec![quest, tape], &interner);
-        let mut mapper = FormKeyMapper::new(
-            std::iter::empty(),
-            MapperOptions {
-                output_plugin_name: target_plugin.to_string(),
-                source_plugin_name: SOURCE_PLUGIN.to_string(),
-                ..MapperOptions::default()
-            },
-            &interner,
-        );
-        let foreign_plugin = interner.intern("Foreign.esm");
-        for local in [QUEST_LOCAL, TAPE_LOCAL] {
-            mapper.add_mapping(
-                FormKey {
-                    local,
-                    plugin: foreign_plugin,
-                },
-                FormKey {
-                    local,
-                    plugin: target_plugin_sym,
-                },
-            );
-        }
-
-        let report = {
-            let mut session = open_session(handle, None).expect("target session");
-            let report = apply(&mut session, &mut mapper, Game::Fo76, Game::Fo4)
-                .expect("wrong source plugin apply");
-            let schema = session.schema().expect("FO4 schema");
-            let tape = session
-                .record_decoded(
-                    &FormKey {
-                        local: TAPE_LOCAL,
-                        plugin: target_plugin_sym,
-                    },
-                    schema.as_ref(),
-                    &interner,
-                )
-                .expect("read target tape");
-            assert_eq!(record_vmad(&tape), None);
-            report
-        };
-
-        assert_eq!(report.records_changed, 0);
-        assert!(has_message(
-            &report.warnings,
-            "attach_fo76_holotape_stage_listener:ac_sq01_hells_eagles:quest_unmapped",
-            &interner,
-        ));
         assert!(plugin_handle_close_native(handle));
     }
 }

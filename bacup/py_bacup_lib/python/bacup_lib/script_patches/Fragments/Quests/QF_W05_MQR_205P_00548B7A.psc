@@ -66,17 +66,49 @@ EndFunction
 
 Function Fragment_Stage_0320_Item_00()
     SetObjectiveDisplayed(320)
+    W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
+    If owningQuestScript != None
+        owningQuestScript.PrepareFacilitiesManagement()
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0325_Item_00()
-    SetObjectiveDisplayed(325)
+    If IsObjectiveDisplayed(325)
+        SetObjectiveCompleted(325)
+    EndIf
+    If IsStageDone(330) && !IsStageDone(400)
+        SetObjectiveDisplayed(330)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0330_Item_00()
-    SetObjectiveDisplayed(330)
+    If IsObjectiveDisplayed(320)
+        SetObjectiveCompleted(320)
+    EndIf
+    W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
+    If owningQuestScript != None
+        owningQuestScript.PrepareFacilitiesManagement()
+    EndIf
+    If IsStageDone(400)
+        Return
+    EndIf
+    If IsStageDone(325)
+        SetObjectiveDisplayed(330)
+    Else
+        SetObjectiveDisplayed(325)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()
+    If IsObjectiveDisplayed(320)
+        SetObjectiveCompleted(320)
+    EndIf
+    If IsObjectiveDisplayed(325)
+        SetObjectiveCompleted(325)
+    EndIf
+    If IsObjectiveDisplayed(330)
+        SetObjectiveCompleted(330)
+    EndIf
     SetObjectiveDisplayed(400)
     If W05_MQR_205P_005_SecurityRoom != None && !W05_MQR_205P_005_SecurityRoom.IsPlaying()
         W05_MQR_205P_005_SecurityRoom.Start()

@@ -18,6 +18,13 @@ impl Default for FnvStartRouteEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Non-autostart producer routes are currently exercised only by policy tests"
+    )
+)]
 pub(crate) enum FnvStartCandidate {
     ExplicitScript {
         producer: StartProducerIntent,
@@ -404,147 +411,149 @@ mod tests {
     }
 
     #[test]
-    fn autostart_preserves_flag_without_story_manager_nodes() {
-        let mut component = component(QuestSourceGame::Fnv, true);
-        let graph = apply_fnv_start_route_policy(&mut component, &FnvStartRouteEvidence::default())
+    fn autostart_preserves_flag_without_decorative_story_manager_nodes() {
+        {
+            let mut component = component(QuestSourceGame::Fnv, true);
+            let graph =
+                apply_fnv_start_route_policy(&mut component, &FnvStartRouteEvidence::default())
+                    .unwrap();
+
+            assert!(graph.nodes.is_empty());
+            assert!(graph.producers.is_empty());
+            assert_eq!(
+                component.start_disposition,
+                Some(StartDisposition::Autostart)
+            );
+            assert!(
+                component
+                    .semantics
+                    .start_flags
+                    .contains(&QuestStartFlag::StartGameEnabled)
+            );
+            assert_eq!(component.expected_receipt.routes.len(), 1);
+            assert!(
+                component
+                    .expected_receipt
+                    .routes
+                    .iter()
+                    .all(|route| route.node_chain.is_empty())
+            );
+        }
+        {
+            let mut component = component(QuestSourceGame::Fnv, false);
+            let candidate = explicit(&component, "placed_actor_startquest");
+            let graph = apply_fnv_start_route_policy(
+                &mut component,
+                &FnvStartRouteEvidence {
+                    source_story_manager_records: BTreeSet::new(),
+                    candidates: vec![candidate],
+                },
+            )
             .unwrap();
 
-        assert!(graph.nodes.is_empty());
-        assert!(graph.producers.is_empty());
-        assert_eq!(
-            component.start_disposition,
-            Some(StartDisposition::Autostart)
-        );
-        assert!(
-            component
-                .semantics
-                .start_flags
-                .contains(&QuestStartFlag::StartGameEnabled)
-        );
-        assert_eq!(component.expected_receipt.routes.len(), 1);
-        assert!(
-            component
-                .expected_receipt
-                .routes
-                .iter()
-                .all(|route| route.node_chain.is_empty())
-        );
+            assert!(graph.nodes.is_empty());
+            assert!(
+                graph
+                    .producers
+                    .iter()
+                    .all(|producer| producer.carrier.signature != "SCPT")
+            );
+        }
     }
 
     #[test]
-    fn explicit_compiled_producer_is_preserved_with_fo3_provenance() {
-        let mut component = component(QuestSourceGame::Fo3, false);
-        let candidate = explicit(&component, "fo3_startquest_11f935");
-        let graph = apply_fnv_start_route_policy(
-            &mut component,
-            &FnvStartRouteEvidence {
-                source_story_manager_records: BTreeSet::new(),
-                candidates: vec![candidate],
-            },
-        )
-        .unwrap();
+    fn explicit_and_info_result_producers_require_compiled_evidence() {
+        {
+            let mut component = component(QuestSourceGame::Fo3, false);
+            let candidate = explicit(&component, "fo3_startquest_11f935");
+            let graph = apply_fnv_start_route_policy(
+                &mut component,
+                &FnvStartRouteEvidence {
+                    source_story_manager_records: BTreeSet::new(),
+                    candidates: vec![candidate],
+                },
+            )
+            .unwrap();
 
-        assert!(graph.graph_id.contains(":fo3:fallout3.esm:"));
-        assert!(graph.nodes.is_empty());
-        assert!(matches!(
-            component.start_disposition,
-            Some(StartDisposition::ExplicitScript { ref producer_id })
-                if producer_id == "fo3_startquest_11f935"
-        ));
-        assert_eq!(
-            component
-                .expected_receipt
-                .routes
-                .iter()
-                .next()
-                .unwrap()
-                .producer_evidence_id,
-            "pex:fo3_startquest_11f935"
-        );
+            assert!(graph.graph_id.contains(":fo3:fallout3.esm:"));
+            assert!(graph.nodes.is_empty());
+            assert!(matches!(
+                component.start_disposition,
+                Some(StartDisposition::ExplicitScript { ref producer_id })
+                    if producer_id == "fo3_startquest_11f935"
+            ));
+            assert_eq!(
+                component
+                    .expected_receipt
+                    .routes
+                    .iter()
+                    .next()
+                    .unwrap()
+                    .producer_evidence_id,
+                "pex:fo3_startquest_11f935"
+            );
+        }
+        {
+            let mut component = component(QuestSourceGame::Fnv, false);
+            let info = FnvStartCandidate::InfoResultScript {
+                producer: producer(&component, "info_130161_setstage", "compiled_info_result"),
+                compiled: true,
+                vmad_attached: true,
+            };
+            let graph = apply_fnv_start_route_policy(
+                &mut component,
+                &FnvStartRouteEvidence {
+                    source_story_manager_records: BTreeSet::new(),
+                    candidates: vec![info],
+                },
+            )
+            .unwrap();
+
+            assert!(graph.nodes.is_empty());
+            assert!(matches!(
+                component.start_disposition,
+                Some(StartDisposition::InfoResultScript { .. })
+            ));
+        }
     }
 
     #[test]
-    fn info_result_producer_requires_compiled_vmad_evidence() {
-        let mut component = component(QuestSourceGame::Fnv, false);
-        let info = FnvStartCandidate::InfoResultScript {
-            producer: producer(&component, "info_130161_setstage", "compiled_info_result"),
-            compiled: true,
-            vmad_attached: true,
-        };
-        let graph = apply_fnv_start_route_policy(
-            &mut component,
-            &FnvStartRouteEvidence {
-                source_story_manager_records: BTreeSet::new(),
-                candidates: vec![info],
-            },
-        )
-        .unwrap();
+    fn orphaned_or_duplicate_start_paths_are_rejected() {
+        {
+            let mut component = component(QuestSourceGame::Fnv, false);
+            let error =
+                apply_fnv_start_route_policy(&mut component, &FnvStartRouteEvidence::default())
+                    .unwrap_err();
 
-        assert!(graph.nodes.is_empty());
-        assert!(matches!(
-            component.start_disposition,
-            Some(StartDisposition::InfoResultScript { .. })
-        ));
-    }
-
-    #[test]
-    fn missing_producer_rejects_orphaned_start() {
-        let mut component = component(QuestSourceGame::Fnv, false);
-        let error = apply_fnv_start_route_policy(&mut component, &FnvStartRouteEvidence::default())
+            assert_eq!(error, FnvStartRoutePolicyError::MissingProducerEvidence);
+            assert_eq!(
+                component.start_disposition,
+                Some(StartDisposition::OrphanStartUnknown)
+            );
+            assert!(matches!(
+                component.admission,
+                QuestRuntimeAdmission::Rejected { ref reasons }
+                    if reasons.contains(&QuestRuntimeRejectionReason::OrphanStartUnknown)
+                        && reasons.contains(&QuestRuntimeRejectionReason::MissingStartProducer)
+            ));
+        }
+        {
+            let mut component = component(QuestSourceGame::Fnv, false);
+            let first = explicit(&component, "start_one");
+            let second = explicit(&component, "start_two");
+            let error = apply_fnv_start_route_policy(
+                &mut component,
+                &FnvStartRouteEvidence {
+                    source_story_manager_records: BTreeSet::new(),
+                    candidates: vec![first, second],
+                },
+            )
             .unwrap_err();
 
-        assert_eq!(error, FnvStartRoutePolicyError::MissingProducerEvidence);
-        assert_eq!(
-            component.start_disposition,
-            Some(StartDisposition::OrphanStartUnknown)
-        );
-        assert!(matches!(
-            component.admission,
-            QuestRuntimeAdmission::Rejected { ref reasons }
-                if reasons.contains(&QuestRuntimeRejectionReason::OrphanStartUnknown)
-                    && reasons.contains(&QuestRuntimeRejectionReason::MissingStartProducer)
-        ));
-    }
-
-    #[test]
-    fn duplicate_start_paths_are_rejected() {
-        let mut component = component(QuestSourceGame::Fnv, false);
-        let first = explicit(&component, "start_one");
-        let second = explicit(&component, "start_two");
-        let error = apply_fnv_start_route_policy(
-            &mut component,
-            &FnvStartRouteEvidence {
-                source_story_manager_records: BTreeSet::new(),
-                candidates: vec![first, second],
-            },
-        )
-        .unwrap_err();
-
-        assert_eq!(error, FnvStartRoutePolicyError::DuplicateStart);
-        assert!(component.inbound_producers.is_empty());
-        assert!(component.expected_receipt.routes.is_empty());
-    }
-
-    #[test]
-    fn absent_source_story_manager_does_not_create_decorative_scpt_nodes() {
-        let mut component = component(QuestSourceGame::Fnv, false);
-        let candidate = explicit(&component, "placed_actor_startquest");
-        let graph = apply_fnv_start_route_policy(
-            &mut component,
-            &FnvStartRouteEvidence {
-                source_story_manager_records: BTreeSet::new(),
-                candidates: vec![candidate],
-            },
-        )
-        .unwrap();
-
-        assert!(graph.nodes.is_empty());
-        assert!(
-            graph
-                .producers
-                .iter()
-                .all(|producer| producer.carrier.signature != "SCPT")
-        );
+            assert_eq!(error, FnvStartRoutePolicyError::DuplicateStart);
+            assert!(component.inbound_producers.is_empty());
+            assert!(component.expected_receipt.routes.is_empty());
+        }
     }
 
     #[test]

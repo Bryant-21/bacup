@@ -79,25 +79,25 @@ Function Fragment_Stage_0200_Item_00()
 EndFunction
 
 Function Fragment_Stage_0210_Item_00()
-    If IsStageDone(210) && IsStageDone(220) && IsStageDone(230) && IsStageDone(240) && !IsStageDone(300)
+    If IsStageDone(220) && IsStageDone(230) && IsStageDone(240) && !IsStageDone(300)
         SetStage(300)
     EndIf
 EndFunction
 
 Function Fragment_Stage_0220_Item_00()
-    If IsStageDone(210) && IsStageDone(220) && IsStageDone(230) && IsStageDone(240) && !IsStageDone(300)
+    If IsStageDone(210) && IsStageDone(230) && IsStageDone(240) && !IsStageDone(300)
         SetStage(300)
     EndIf
 EndFunction
 
 Function Fragment_Stage_0230_Item_00()
-    If IsStageDone(210) && IsStageDone(220) && IsStageDone(230) && IsStageDone(240) && !IsStageDone(300)
+    If IsStageDone(210) && IsStageDone(220) && IsStageDone(240) && !IsStageDone(300)
         SetStage(300)
     EndIf
 EndFunction
 
 Function Fragment_Stage_0240_Item_00()
-    If IsStageDone(210) && IsStageDone(220) && IsStageDone(230) && IsStageDone(240) && !IsStageDone(300)
+    If IsStageDone(210) && IsStageDone(220) && IsStageDone(230) && !IsStageDone(300)
         SetStage(300)
     EndIf
 EndFunction

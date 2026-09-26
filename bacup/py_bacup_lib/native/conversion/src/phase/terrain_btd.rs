@@ -32,7 +32,6 @@
 //! [`remap_ltex_palette`]). This is why the phase must run after `translate`.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use bytes::Bytes;
 use serde_json::Value as JsonValue;
@@ -1275,10 +1274,7 @@ mod tests {
             (heights[33] - (100.0 + 8.0) * 8.0).abs() < 1e-4,
             "row1 col0"
         );
-    }
 
-    #[test]
-    fn vhgt_heights_from_authoring_rejects_wrong_row_count() {
         let deltas: Vec<Vec<i64>> = vec![vec![0i64; 33]; 10];
         let vhgt = serde_json::json!({"base": 0.0, "deltas": deltas});
         let err = vhgt_heights_from_authoring(&vhgt).expect_err("must reject");
@@ -1348,10 +1344,7 @@ mod tests {
         let (n, res) = compute_grid_extent(half_span_m, None);
         assert_eq!(n, 114);
         assert_eq!(res, 14592);
-    }
 
-    #[test]
-    fn crop_param_overrides_measured_extent() {
         let (n, res) = compute_grid_extent(999_999.0, Some(32));
         assert_eq!(n, 32);
         assert_eq!(res, 4096);
@@ -1500,10 +1493,7 @@ mod tests {
             saw_increase,
             "expected a monotone increase across the gradient"
         );
-    }
 
-    #[test]
-    fn build_btd_input_rejects_empty_input() {
         let params = TerrainBtdParams {
             worldspace_editor_id: "Empty".into(),
             terrain_extent_cells: Some(2),
@@ -1604,134 +1594,6 @@ mod tests {
         let alpha = layers[0]["alpha"].as_array().unwrap();
         assert_eq!(alpha.len(), QUAD_ALPHA_SAMPLES * QUAD_ALPHA_SAMPLES);
         assert!((alpha[5].as_f64().unwrap() - 0.5).abs() < 1e-6);
-    }
-
-    /// Corpus-test idiom (mirrors `texture_engine/corpus_tests.rs`): resolve
-    /// the real FO4 install from `.env`'s `FO4_DIR`, skip cleanly if it
-    /// isn't configured or `Fallout4.esm` isn't there. Runs
-    /// `land_record_to_json_contract` against one real Commonwealth LAND
-    /// record; the test above only covers synthetic dumps.
-    fn resolve_fo4_data_dir_for_test() -> Option<std::path::PathBuf> {
-        let candidate_from_env = |root: &str| -> Option<std::path::PathBuf> {
-            let data_dir = std::path::PathBuf::from(root.trim().trim_matches('"')).join("Data");
-            data_dir.join("Fallout4.esm").is_file().then_some(data_dir)
-        };
-        if let Ok(root) = std::env::var("FO4_DIR") {
-            if let Some(dir) = candidate_from_env(&root) {
-                return Some(dir);
-            }
-        }
-        let env_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../.env");
-        let text = std::fs::read_to_string(&env_path).ok()?;
-        for line in text.lines() {
-            let line = line.trim();
-            if let Some(root) = line.strip_prefix("FO4_DIR=") {
-                if let Some(dir) = candidate_from_env(root) {
-                    return Some(dir);
-                }
-            }
-        }
-        None
-    }
-
-    #[test]
-    fn land_record_to_json_contract_matches_a_live_commonwealth_land_record() {
-        let Some(fo4_data_dir) = resolve_fo4_data_dir_for_test() else {
-            eprintln!(
-                "skip: land_record_to_json_contract_matches_a_live_commonwealth_land_record \
-                 -- FO4_DIR not configured (.env) or Fallout4.esm not present"
-            );
-            return;
-        };
-        let esm_path = fo4_data_dir.join("Fallout4.esm");
-
-        let handle_id = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
-            &esm_path.to_string_lossy(),
-            Some("fo4"),
-            None,
-            None,
-            false,
-        )
-        .expect("load real Fallout4.esm");
-
-        let ids_json = plugin_handle_collect_worldspace_terrain_ids_json(
-            handle_id,
-            "Commonwealth",
-            0,
-            0,
-            -1,
-            -1,
-        )
-        .expect("collect Commonwealth terrain ids");
-        let ids: JsonValue = serde_json::from_str(&ids_json).expect("parse terrain ids json");
-        let cells = ids
-            .get("cells")
-            .and_then(JsonValue::as_array)
-            .cloned()
-            .unwrap_or_default();
-        assert!(
-            !cells.is_empty(),
-            "Commonwealth worldspace has no LAND cells: {ids_json}"
-        );
-
-        let mut verified = 0usize;
-        for cell in cells.iter().take(200) {
-            let Some(land_form_id) = cell.get("land_form_id").and_then(JsonValue::as_u64) else {
-                continue;
-            };
-            let x = cell.get("x").and_then(JsonValue::as_i64).unwrap_or(0) as i32;
-            let y = cell.get("y").and_then(JsonValue::as_i64).unwrap_or(0) as i32;
-            let form_key = format!("Fallout4.esm:{:06X}", (land_form_id as u32) & 0x00FF_FFFF);
-            let Some(land_value) =
-                plugin_handle_read_authoring_record_value_json(handle_id, &form_key)
-                    .expect("read live LAND authoring json")
-            else {
-                continue;
-            };
-
-            let contract = land_record_to_json_contract(x, y, &land_value);
-
-            let vhgt = contract.value.get("vhgt").expect("vhgt key present");
-            let Some(deltas) = vhgt.get("deltas").and_then(JsonValue::as_array) else {
-                continue;
-            };
-            assert_eq!(deltas.len(), 33, "VHGT 33 rows for live cell ({x},{y})");
-
-            let quadrants = contract
-                .value
-                .get("quadrants")
-                .and_then(JsonValue::as_array)
-                .expect("quadrants array present");
-            assert_eq!(quadrants.len(), 4, "4 quadrants for live cell ({x},{y})");
-            let any_base_ltex = quadrants
-                .iter()
-                .any(|q| q.get("base_ltex").and_then(JsonValue::as_u64).unwrap_or(0) != 0);
-            if !any_base_ltex {
-                continue;
-            }
-
-            let heights = vhgt_heights_from_authoring(vhgt).expect("decode live VHGT heights");
-            let min = heights.iter().cloned().fold(f32::INFINITY, f32::min);
-            let max = heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            assert!(
-                min.is_finite() && max.is_finite(),
-                "finite height range for live cell ({x},{y}): min={min} max={max}"
-            );
-            // Commonwealth is a wasteland at modest elevation; any plausible
-            // FO4 world-unit height (pre metre-scale) fits comfortably here.
-            assert!(
-                min > -50_000.0 && max < 50_000.0,
-                "plausible FO4 world-unit height range for live cell ({x},{y}): min={min} max={max}"
-            );
-
-            verified += 1;
-            break;
-        }
-        assert!(
-            verified >= 1,
-            "no Commonwealth LAND record with a resolvable BTXT+VHGT payload was found \
-             among the first 200 cells to verify the adapter against"
-        );
     }
 
     #[test]

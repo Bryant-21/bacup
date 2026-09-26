@@ -1684,7 +1684,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_activation_attaches_without_placed_or_parent_mappings() {
+    fn activation_attaches_to_projected_or_mapped_placed_record() {
         let policy = activation_policy();
         let fixture = fixture(&[policy], &[PolicyFixtureOptions::default()]);
         let interner = StringInterner::new();
@@ -1702,13 +1702,9 @@ mod tests {
         assert_eq!(report.records_changed, 1);
         assert!(report.warnings.is_empty());
         assert!(vmad.is_some());
-    }
 
-    #[test]
-    fn mapped_nonidentity_placed_record_wins_over_preserved_local_candidate() {
-        let policy = activation_policy();
         let mapped_local = policy.placed.local + 0x100;
-        let fixture = fixture(&[policy], &[PolicyFixtureOptions::default()]);
+        let fixture = self::fixture(&[policy], &[PolicyFixtureOptions::default()]);
         edit_placed_record(&fixture, policy, &mut |record| {
             record.form_id = own(mapped_local);
         });
@@ -2013,7 +2009,7 @@ mod tests {
     }
 
     #[test]
-    fn topology_mismatch_fails_closed_for_parent_cell_and_section() {
+    fn topology_base_reftype_and_absent_target_mismatches_fail_closed() {
         for options in [
             PolicyFixtureOptions {
                 actual_parent_local: Some(trigger_policy().parent_cell.local + 1),
@@ -2041,10 +2037,7 @@ mod tests {
                     .any(|message| message.contains("topology_mismatch"))
             );
         }
-    }
 
-    #[test]
-    fn base_and_reference_type_mismatches_fail_closed() {
         for options in [
             PolicyFixtureOptions {
                 base_local: Some(trigger_policy().base.local + 1),
@@ -2072,10 +2065,7 @@ mod tests {
             assert_eq!(report.records_changed, 0);
             assert!(!report.warnings.is_empty());
         }
-    }
 
-    #[test]
-    fn mapped_but_absent_target_fails_closed_with_actionable_diagnostic() {
         let policy = trigger_policy();
         let target_quest = match policy.adapter {
             ScriptAdapter::StoryEventOnTriggerEnter { target_quest, .. } => target_quest,
@@ -2105,7 +2095,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_existing_script_is_idempotent() {
+    fn existing_script_exact_is_idempotent_conflicting_is_rejected() {
         let policy = trigger_policy();
         let interner = StringInterner::new();
         let existing = script_vmad(
@@ -2137,12 +2127,7 @@ mod tests {
         assert_eq!(first.records_changed, 0);
         assert_eq!(second.records_changed, 0);
         assert_eq!(after, existing);
-    }
 
-    #[test]
-    fn conflicting_same_script_binding_is_preserved_and_rejected() {
-        let policy = trigger_policy();
-        let interner = StringInterner::new();
         let resolved = resolved_property_form_keys(policy, &interner);
         let conflicting = build_vmad_bytes_from_payload(
             &serde_json::json!({
@@ -2166,7 +2151,7 @@ mod tests {
             TARGET_PLUGIN,
         )
         .unwrap();
-        let fixture = fixture(
+        let fixture = self::fixture(
             &[policy],
             &[PolicyFixtureOptions {
                 existing_vmad: Some(conflicting.clone()),

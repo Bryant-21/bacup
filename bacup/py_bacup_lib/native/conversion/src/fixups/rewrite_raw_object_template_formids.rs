@@ -28,6 +28,7 @@ use esp_authoring_core::plugin_runtime::{
     schema_subrecord_spec,
 };
 
+use crate::fixups::validate_reference_target_types::FO4_HARDCODED_AVIF_LOCAL_IDS;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SubrecordSig};
@@ -170,20 +171,34 @@ const FO76_CTDA_PARAM2_FORMID_FUNCTIONS: &[u16] = &[
 /// parameter holds a **quest alias index**, not a FormID.
 const CTDA_USE_ALIASES_FLAG: u8 = 0x02;
 
-/// `GetIsAliasRef` always stores a quest-alias index in Parameter #1. The
-/// index is not a FormID even when the generic `Use Aliases` flag is clear.
-const QUEST_ALIAS_PARAMETER_1_FUNCTION_IDS: &[u16] = &[566];
+/// Functions whose Parameter #1 is typed `ptAlias` in xEdit's FO76 condition
+/// table (`GetIsAliasRef` 566, `GetInCurrentLocationAlias` 360, ...). The value
+/// is always a quest-alias index, even when the generic `Use Aliases` flag is clear.
+const QUEST_ALIAS_PARAMETER_1_FUNCTION_IDS: &[u16] = &[
+    181, 360, 566, 567, 598, 600, 601, 604, 605, 608, 610, 626, 907,
+];
 
-/// Functions whose Parameter #1 is an object reference and so becomes a quest alias
-/// index under `CTDA_USE_ALIASES_FLAG`: `GetDistance` (1) and `GetWithinDistance`
-/// (639), the pair `strip_invalid_quest_condition_params` treats as persistent
-/// references. The flag only reinterprets reference-typed parameters, so e.g.
-/// `GetItemCount` (47, ptInventoryObject) still needs its rewrite with the flag set.
+/// Functions whose Parameter #1 is typed `ptReference`, `ptActor` or `ptPackage`
+/// in xEdit's FO76 condition table, which xEdit reads as a quest alias index
+/// under `CTDA_USE_ALIASES_FLAG` (`GetDistance` 1, `IsCurrentFurnitureRef` 162,
+/// `GetWithinDistance` 639, ...). The flag only reinterprets these types, so
+/// e.g. `GetItemCount` (47, ptInventoryObject) still needs its rewrite with the
+/// flag set.
 ///
 /// Validating an alias index as a FormID is doubly destructive: a low index that
 /// collides with no live record drops the whole condition, and one that collides
 /// with a converted object id is rewritten into that FormID, retargeting the check.
-const ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS: &[u16] = &[1, 639];
+const ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS: &[u16] = &[
+    1, 27, 32, 42, 43, 44, 45, 66, 79, 99, 105, 122, 132, 136, 161, 162, 172, 180, 258, 259, 261,
+    370, 378, 403, 408, 414, 438, 449, 463, 477, 512, 513, 515, 516, 517, 518, 522, 523, 524, 525,
+    577, 584, 603, 624, 639, 650, 652, 678, 705, 719, 720, 753, 754, 772, 773, 802, 804, 806, 807,
+    808, 809, 810, 835, 836, 863, 920,
+];
+
+/// xEdit's one exception: `GetIsCurrentPackage` run on a quest alias keeps a
+/// package FormID in Parameter #1 (the alias moves to Parameter #3).
+const GET_IS_CURRENT_PACKAGE_FUNCTION_ID: u16 = 161;
+const CTDA_RUN_ON_QUEST_ALIAS: u32 = 5;
 
 impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
     fn name(&self) -> &'static str {
@@ -393,7 +408,7 @@ impl Fixup for RewriteRawObjectTemplateFormIdsFixup {
     }
 }
 
-fn add_output_record_targets(
+pub(crate) fn add_output_record_targets(
     session: &mut PluginSession,
     interner: &StringInterner,
     target_masters: &[String],
@@ -1765,7 +1780,7 @@ fn rewrite_omod_data_record(
     changed
 }
 
-fn rewrite_obts_bytes(
+pub(crate) fn rewrite_obts_bytes(
     bytes: &mut [u8],
     encoded_targets: &FxHashMap<u32, u32>,
     is_valid_target_master_formid: &mut dyn FnMut(u32) -> bool,
@@ -2805,9 +2820,54 @@ fn is_source_shaped_get_stage_done(bytes: &[u8], function_id: u16) -> bool {
 }
 
 fn holds_alias_index_parameter_1(bytes: &[u8], function_id: u16) -> bool {
-    QUEST_ALIAS_PARAMETER_1_FUNCTION_IDS.contains(&function_id)
-        || (bytes[0] & CTDA_USE_ALIASES_FLAG != 0
-            && ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS.contains(&function_id))
+    if QUEST_ALIAS_PARAMETER_1_FUNCTION_IDS.contains(&function_id) {
+        return true;
+    }
+    if bytes[0] & CTDA_USE_ALIASES_FLAG == 0
+        || !ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS.contains(&function_id)
+    {
+        return false;
+    }
+    !(function_id == GET_IS_CURRENT_PACKAGE_FUNCTION_ID
+        && bytes.len() >= 24
+        && u32::from_le_bytes(bytes[20..24].try_into().unwrap()) == CTDA_RUN_ON_QUEST_ALIAS)
+}
+
+pub(crate) fn fo76_condition_references(bytes: &[u8]) -> Vec<u32> {
+    fo76_condition_reference_offsets(bytes)
+        .into_iter()
+        .map(|offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()))
+        .filter(|value| *value != 0)
+        .collect()
+}
+
+pub(crate) fn fo76_condition_reference_offsets(bytes: &[u8]) -> Vec<usize> {
+    if bytes.len() < 32 {
+        return Vec::new();
+    }
+    let function_id = u16::from_le_bytes([bytes[8], bytes[9]]);
+    let mut offsets = Vec::new();
+    if bytes[0] & 0x04 != 0 {
+        offsets.push(4);
+    }
+    if FO76_CTDA_PARAM1_FORMID_FUNCTIONS
+        .binary_search(&function_id)
+        .is_ok()
+        && !is_source_shaped_get_stage_done(bytes, function_id)
+        && !holds_alias_index_parameter_1(bytes, function_id)
+    {
+        offsets.push(12);
+    }
+    if FO76_CTDA_PARAM2_FORMID_FUNCTIONS
+        .binary_search(&function_id)
+        .is_ok()
+    {
+        offsets.push(16);
+    }
+    if u32::from_le_bytes(bytes[20..24].try_into().unwrap()) == 2 {
+        offsets.push(24);
+    }
+    offsets
 }
 
 fn rewrite_raw_condition_bytes(
@@ -3351,7 +3411,9 @@ fn rewrite_prps_bytes(
                     rewritten_row[0..4].copy_from_slice(&encoded.to_le_bytes());
                     changed = true;
                 }
-            } else if !is_valid_target_master_formid(raw) {
+            } else if !is_valid_target_master_formid(raw)
+                && !FO4_HARDCODED_AVIF_LOCAL_IDS.contains(&raw)
+            {
                 changed = true;
                 continue;
             }
@@ -6379,7 +6441,7 @@ mod tests {
     /// retarget the distance check at that record instead of the alias.
     #[test]
     fn does_not_rewrite_alias_index_colliding_with_converted_object_id() {
-        for function_id in [1_u16, 639] {
+        for function_id in [1_u16, 162, 639] {
             let mut record = make_pack_record("CTDA", ctda(function_id, 0x42, 0x00000024, 0));
 
             assert!(!rewrite_raw_condition_record(
@@ -6396,6 +6458,49 @@ mod tests {
                 "function {function_id} alias index must not be remapped as a FormID"
             );
         }
+    }
+
+    /// `W05_MQR_205P` objective targets gate on `GetInCurrentLocationAlias` (360)
+    /// against alias 1 with the Use-Aliases flag clear; the parameter is typed
+    /// ptAlias, so it is an index regardless of the flag.
+    #[test]
+    fn keeps_ptalias_parameter_without_alias_flag() {
+        let mut record = make_pack_record("CTDA", ctda(360, 0x00, 0x00000024, 0));
+
+        assert!(!rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected CTDA bytes");
+        };
+        assert_eq!(
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            0x00000024
+        );
+    }
+
+    /// xEdit's exception: `GetIsCurrentPackage` run on a quest alias keeps a
+    /// package FormID in Parameter #1 even with the Use-Aliases flag set.
+    #[test]
+    fn rewrites_quest_alias_run_get_is_current_package_parameter() {
+        let mut raw = ctda(161, 0x02, 0x00685532, 0);
+        raw[20..24].copy_from_slice(&5_u32.to_le_bytes());
+        let mut record = make_pack_record("CTDA", raw);
+
+        assert!(rewrite_raw_condition_record(
+            &mut record,
+            &target_map(),
+            &mut |_| false,
+        ));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected CTDA bytes");
+        };
+        assert_eq!(
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            0x07685532
+        );
     }
 
     /// The flag only reinterprets reference-typed parameters. `GetItemCount`
@@ -6753,6 +6858,50 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
             0x000002DC
+        );
+    }
+
+    #[test]
+    fn keeps_prps_rows_naming_fo4_hardcoded_workshop_actor_values() {
+        // WorkshopCollectorJunkPile: PowerRequired (330) and 33E have no AVIF
+        // record in Fallout4.esm, but the engine defines both; 38A does not exist.
+        let mut raw = Vec::new();
+        for (actor_value, value) in [
+            (0x0000_0330_u32, 10.0_f32),
+            (0x0000_02DC, 2.0),
+            (0x0000_038A, 1.0),
+            (0x0000_033E, 160.0),
+        ] {
+            raw.extend_from_slice(&actor_value.to_le_bytes());
+            raw.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut record = make_cont_record("PRPS", raw);
+
+        let mut is_valid_target_master_formid = |raw_form_id| raw_form_id == 0x000002DC;
+        assert!(rewrite_prps_record(
+            &mut record,
+            &target_map(),
+            &mut is_valid_target_master_formid,
+        ));
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected raw bytes");
+        };
+        let rows: Vec<(u32, f32)> = bytes
+            .chunks_exact(8)
+            .map(|row| {
+                (
+                    u32::from_le_bytes(row[0..4].try_into().unwrap()),
+                    f32::from_le_bytes(row[4..8].try_into().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (0x0000_0330, 10.0),
+                (0x0000_02DC, 2.0),
+                (0x0000_033E, 160.0)
+            ]
         );
     }
 

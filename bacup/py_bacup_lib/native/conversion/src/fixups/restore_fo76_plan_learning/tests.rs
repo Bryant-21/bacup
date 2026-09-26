@@ -340,3 +340,163 @@ fn session_roundtrip_links_remapped_books_shared_plans_and_expanded_variants() {
     assert!(plugin_handle_close_native(target));
     assert!(plugin_handle_close_native(source));
 }
+
+#[test]
+fn blue_camo_plan_follows_condition_proxy_without_a_created_object() {
+    let interner = StringInterner::new();
+    let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
+    let target = plugin_handle_new_native("SeventySix.esm", Some("fo4")).unwrap();
+    {
+        let mut session = open_session(source, None).unwrap();
+        session
+            .target_slot_mut()
+            .parsed
+            .header
+            .masters
+            .push("Other.esm".into());
+        let schema = session.schema().unwrap();
+        session.add_records(vec![
+            record(b"BOOK", 0x620435, vec![(b"DNAM", FieldValue::Bytes(vec![0x20; 13].into()))], &interner),
+            source_recipe(0x620422, 0x620435, 4, &interner),
+            record(b"COBJ", 0x53C020, vec![
+                (b"LRNM", FieldValue::Uint(0)),
+                (b"CTDA", FieldValue::Bytes(hex::decode("010000000000803F5503000022046201000000000000000000000000FFFFFFFF").unwrap().into())),
+                (b"CTDA", FieldValue::Bytes(hex::decode("000000000000803F5B030000CDC05301000000000000000000000000FFFFFFFF").unwrap().into())),
+                (b"CNAM", FieldValue::FormKey(fk(0x53824A, &interner))),
+            ], &interner),
+        ], &schema, &interner).unwrap();
+    }
+    let mut mapper = FormKeyMapper::new(
+        std::iter::empty(),
+        MapperOptions {
+            output_plugin_name: "SeventySix.esm".into(),
+            source_plugin_name: "SeventySix.esm".into(),
+            generated_object_id_floor: 0xF00000,
+            ..MapperOptions::default()
+        },
+        &interner,
+    );
+    for (source_local, target_local) in [
+        (0x620435, 0x800435),
+        (0x53C020, 0x800020),
+        (0x620422, 0x620422),
+    ] {
+        mapper.add_mapping(fk(source_local, &interner), fk(target_local, &interner));
+    }
+    let mut session = open_session(target, Some(source)).unwrap();
+    session
+        .target_slot_mut()
+        .parsed
+        .header
+        .masters
+        .push("Fallout4.esm".into());
+    let schema = session.schema().unwrap();
+    session
+        .add_records(
+            vec![
+                record(b"BOOK", 0x800435, vec![], &interner),
+                record(b"COBJ", 0x620422, vec![], &interner),
+                record(
+                    b"COBJ",
+                    0x800020,
+                    vec![(b"CNAM", FieldValue::FormKey(fk(0x53824A, &interner)))],
+                    &interner,
+                ),
+            ],
+            &schema,
+            &interner,
+        )
+        .unwrap();
+
+    let fixup = RestoreFo76PlanLearningFixup;
+    let report = fixup
+        .run_with_session(&mut session, &mut mapper, &FixupConfig::default())
+        .unwrap();
+    assert_eq!((report.records_added, report.records_changed), (1, 2));
+    let globals = session
+        .form_keys_of_sig(SigCode(*b"GLOB"), &interner)
+        .unwrap();
+    assert_eq!(globals.len(), 1);
+    let global = globals[0];
+    let decoded = session.record_decoded(&global, &schema, &interner).unwrap();
+    assert_eq!(
+        decoded.eid.and_then(|eid| interner.resolve(eid)),
+        Some("B21_PlanLearned_800435")
+    );
+    assert_eq!(field(&decoded, b"FLTV"), Some(&FieldValue::Float(0.0)));
+    let book = session
+        .record_decoded(&fk(0x800435, &interner), &schema, &interner)
+        .unwrap();
+    assert_eq!(
+        field(&book, b"VMAD"),
+        Some(&FieldValue::Bytes(
+            plan_vmad(
+                Some(global),
+                None,
+                &["Fallout4.esm".into()],
+                "SeventySix.esm",
+                &interner
+            )
+            .unwrap()
+            .into()
+        ))
+    );
+    let recipe = session
+        .record_decoded(&fk(0x800020, &interner), &schema, &interner)
+        .unwrap();
+    assert!(
+        recipe
+            .fields
+            .contains(&learning_condition(0x01000000 | global.local))
+    );
+    let proxy = session
+        .record_decoded(&fk(0x620422, &interner), &schema, &interner)
+        .unwrap();
+    assert!(field(&proxy, b"CTDA").is_none());
+    assert!(field(&proxy, b"CNAM").is_none());
+    let repeat = fixup
+        .run_with_session(&mut session, &mut mapper, &FixupConfig::default())
+        .unwrap();
+    assert_eq!((repeat.records_added, repeat.records_changed), (0, 0));
+    drop(session);
+    assert!(plugin_handle_close_native(target));
+    assert!(plugin_handle_close_native(source));
+}
+
+#[test]
+fn recipe_condition_links_require_positive_form_references_and_resolve_source_masters() {
+    let interner = StringInterner::new();
+    let masters = vec!["Other.esm".into()];
+    let original =
+        hex::decode("010000000000803F5503000022046201000000000000000000000000FFFFFFFF").unwrap();
+    let resolve = |data: Vec<u8>| {
+        learned_recipe_reference(
+            &FieldEntry {
+                sig: SubrecordSig(*b"CTDA"),
+                value: FieldValue::Bytes(data.into()),
+            },
+            &masters,
+            "SeventySix.esm",
+            &interner,
+        )
+    };
+    assert_eq!(resolve(original.clone()), Some(fk(0x620422, &interner)));
+    let mut data = original.clone();
+    data[15] = 0;
+    assert_eq!(
+        resolve(data),
+        Some(FormKey {
+            local: 0x620422,
+            plugin: interner.intern("Other.esm")
+        })
+    );
+    for (offset, value) in [(0, 2), (0, 4), (0, 0x20), (7, 0), (8, 0x5B), (15, 2)] {
+        let mut data = original.clone();
+        data[offset] = value;
+        assert_eq!(resolve(data), None, "offset {offset} value {value}");
+    }
+    let mut data = original.clone();
+    data[12..16].fill(0);
+    assert_eq!(resolve(data), None);
+    assert_eq!(resolve(original[..31].to_vec()), None);
+}

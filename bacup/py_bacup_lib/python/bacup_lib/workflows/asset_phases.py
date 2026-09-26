@@ -1963,7 +1963,7 @@ def phase_postprocess_havok_native(
             or ""
         ),
         target_extracted_dir=str(_target_havok_contract_root(orchestrator, runner) or "") or None,
-        params={},
+        params={"source_archive_dirs": [str(path) for path in getattr(orchestrator, "source_archive_dirs", ())]},
     )
     orchestrator._summary.havok_converted += int(report.get("assets_written", 0) or 0)
     orchestrator._summary.havok_failed += int(report.get("warnings", 0) or 0)

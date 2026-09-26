@@ -1,3 +1,15 @@
+Function PayInformationBribe(Int aiCaps)
+    If !IsRunning() || IsStageDone(543) || bInformationBribePaid || aiCaps <= 0 || Caps001 == None
+        Return
+    EndIf
+    Actor playerRef = GetQuestPlayer()
+    If playerRef == None || playerRef.GetItemCount(Caps001) < aiCaps
+        Return
+    EndIf
+    bInformationBribePaid = True
+    playerRef.RemoveItem(Caps001, aiCaps, False)
+EndFunction
+
 Actor Function GetQuestPlayer()
     Actor playerRef = None
     If currentPlayer != None

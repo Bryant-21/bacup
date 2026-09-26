@@ -42,6 +42,11 @@ impl Fixup for RestoreFo76PlanLearningFixup {
         let target_schema = session.schema().map_err(handle_error)?;
         let target_plugin = session.target_slot().parsed.plugin_name.clone();
         let target_masters = session.target_masters().to_vec();
+        let source_slot = session
+            .source_slot_opt()
+            .ok_or_else(|| handle_error("missing source"))?;
+        let source_plugin = source_slot.parsed.plugin_name.clone();
+        let source_masters = source_slot.parsed.header.masters.clone();
         let output_sym = mapper.interner.intern(&target_plugin);
         let mut report = FixupReport::empty();
         let mut recipes = FxHashMap::default();
@@ -67,6 +72,8 @@ impl Fixup for RestoreFo76PlanLearningFixup {
         }
         let mut by_book: FxHashMap<FormKey, Vec<FormKey>> = FxHashMap::default();
         let mut vanilla_books = FxHashSet::default();
+        let mut source_plan_books = FxHashMap::default();
+        let mut condition_links = Vec::new();
         for fk in session
             .source_form_keys_of_sig(SigCode(*b"COBJ"), mapper.interner)
             .map_err(handle_error)?
@@ -75,8 +82,24 @@ impl Fixup for RestoreFo76PlanLearningFixup {
                 .source_record_decoded(&fk, &source_schema, mapper.interner)
                 .map_err(handle_error)?;
             let Some(book) = plan_book(&record, mapper.interner) else {
+                let references: Vec<_> = record
+                    .fields
+                    .iter()
+                    .filter_map(|entry| {
+                        learned_recipe_reference(
+                            entry,
+                            &source_masters,
+                            &source_plugin,
+                            mapper.interner,
+                        )
+                    })
+                    .collect();
+                if !references.is_empty() {
+                    condition_links.push((fk, references));
+                }
                 continue;
             };
+            source_plan_books.insert(fk, book);
             if let Some(target) = mapper.lookup(fk) {
                 if recipes.contains_key(&target) {
                     by_book.entry(book).or_default().push(target);
@@ -85,6 +108,34 @@ impl Fixup for RestoreFo76PlanLearningFixup {
                 }
             }
             if let Some(children) = expanded.get(&fk.local) {
+                by_book.entry(book).or_default().extend(children);
+            }
+        }
+        // Condition-only proxy recipes have GNAM but no CNAM; their consumers create the item.
+        for (source_recipe, references) in condition_links {
+            let books: FxHashSet<_> = references
+                .iter()
+                .filter_map(|fk| source_plan_books.get(fk).copied())
+                .collect();
+            if books.len() > 1 {
+                // Multiple plan alternatives need their OR structure, not separate AND gates.
+                report.warnings.push(mapper.interner.intern(&format!(
+                    "restore_fo76_plan_learning:{:06X}:multiple_condition_plans",
+                    source_recipe.local
+                )));
+                continue;
+            }
+            let Some(book) = books.into_iter().next() else {
+                continue;
+            };
+            if let Some(target) = mapper.lookup(source_recipe) {
+                if recipes.contains_key(&target) {
+                    by_book.entry(book).or_default().push(target);
+                } else if target.plugin != output_sym {
+                    vanilla_books.insert(book);
+                }
+            }
+            if let Some(children) = expanded.get(&source_recipe.local) {
                 by_book.entry(book).or_default().extend(children);
             }
         }
@@ -253,6 +304,42 @@ fn plan_book(record: &Record, interner: &StringInterner) -> Option<FormKey> {
 fn expanded_parent(eid: &str) -> Option<u32> {
     let suffix = eid.strip_prefix("B21_FO76Workshop_")?;
     u32::from_str_radix(suffix.split('_').next()?, 16).ok()
+}
+
+fn learned_recipe_reference(
+    entry: &FieldEntry,
+    masters: &[String],
+    plugin: &str,
+    interner: &StringInterner,
+) -> Option<FormKey> {
+    if entry.sig.0 != *b"CTDA" {
+        return None;
+    }
+    let FieldValue::Bytes(data) = &entry.value else {
+        return None;
+    };
+    if data.len() != 32
+        || data[0] & !1 != 0
+        || f32::from_le_bytes(data[4..8].try_into().ok()?) != 1.0
+        || u16::from_le_bytes(data[8..10].try_into().ok()?) != 853
+    {
+        return None;
+    }
+    let raw = u32::from_le_bytes(data[12..16].try_into().ok()?);
+    let local = raw & 0x00FF_FFFF;
+    if local == 0 {
+        return None;
+    }
+    let index = (raw >> 24) as usize;
+    let owner = if index == masters.len() {
+        plugin
+    } else {
+        masters.get(index)?.as_str()
+    };
+    Some(FormKey {
+        local,
+        plugin: interner.intern(owner),
+    })
 }
 
 fn learned_global(

@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-_VIEW_MAPS_REL = Path("PrismaUI_F4/views/B21_FullScreenMap/maps")
+PLUGIN_ASSETS_REL = Path("F4SE/Plugins/B21_FullScreenMap")
+_VIEW_MAPS_REL = PLUGIN_ASSETS_REL / "maps"
 _TERRAIN_TILE_RE = re.compile(
     r"^(?P<world>.+)\.(?P<level>\d+)\.(?P<x>-?\d+)\.(?P<y>-?\d+)\.dds$",
     re.IGNORECASE,
@@ -37,6 +38,32 @@ def _texture_path(data_root: Path, value: str) -> Path:
     return data_root / "Textures" / Path(normalized)
 
 
+def align_to_blocks(image: Any, *, pad: bool = False) -> Any:
+    """BC7 needs whole 4x4 blocks. Map packs pad transparently on the right and bottom so
+    pixel-space calibration stays valid; UI art is resized so it still fills its box."""
+    from PIL import Image
+
+    pixels = image.convert("RGBA")
+    size = (-(-pixels.width // 4) * 4, -(-pixels.height // 4) * 4)
+    if size == pixels.size:
+        return pixels
+    if not pad:
+        return pixels.resize(size, Image.Resampling.LANCZOS)
+    padded = Image.new("RGBA", size)
+    padded.paste(pixels, (0, 0))
+    return padded
+
+
+def write_ui_dds(image: Any, path: Path, *, pad: bool = False) -> Path:
+    """Save FullScreenMap art as the BC7 DDS B21UI loads; mips keep zoomed-out maps smooth."""
+    from creation_lib.dds.io import save_image
+
+    path = path.with_suffix(".dds")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_image(align_to_blocks(image, pad=pad), str(path), format="BC7_UNORM", generate_mips=True)
+    return path
+
+
 def _write_pack(
     *,
     mod_root: Path,
@@ -49,12 +76,11 @@ def _write_pack(
 ) -> Path:
     pack_dir = mod_root / _VIEW_MAPS_REL / (pack_id or _safe_id(worldspace))
     pack_dir.mkdir(parents=True, exist_ok=True)
-    image_path = pack_dir / "map.png"
-    image.save(image_path, format="PNG", optimize=True)
+    write_ui_dds(image, pack_dir / "map.dds", pad=True)
     manifest = {
         "worldspace": worldspace,
         "title": title or worldspace.upper(),
-        "image": "map.png",
+        "image": "map.dds",
         "discovery": discovery,
         "calibration": calibration,
     }

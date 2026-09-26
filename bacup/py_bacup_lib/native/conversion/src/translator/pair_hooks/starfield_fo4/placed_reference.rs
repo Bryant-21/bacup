@@ -235,7 +235,7 @@ mod tests {
                 "0000000000000000000000000000803f0000000000000000",
             ),
         ] {
-            let refr = record(&interner, b"REFR", local, &[(b"XLIG", bytes(source))]);
+            let refr = self::record(&interner, b"REFR", local, &[(b"XLIG", bytes(source))]);
 
             assert_eq!(
                 fo4_payload(&interner, refr, b"XLIG"),
@@ -258,7 +258,7 @@ mod tests {
             (0x25_9FC0, 22, "0700"),
             (0x00_0800, 70, "4d00"),
         ] {
-            let refr = record(
+            let refr = self::record(
                 &interner,
                 b"REFR",
                 local,
@@ -274,12 +274,9 @@ mod tests {
                 "{local:06X}"
             );
         }
-    }
 
-    #[test]
-    fn map_marker_type_already_narrowed_to_two_bytes_is_still_mapped() {
         let interner = StringInterner::new();
-        let refr = record(&interner, b"REFR", 0x19_2566, &[(b"TNAM", bytes("1500"))]);
+        let refr = self::record(&interner, b"REFR", 0x19_2566, &[(b"TNAM", bytes("1500"))]);
 
         assert_eq!(fo4_payload(&interner, refr, b"TNAM"), "0400");
     }
@@ -296,7 +293,7 @@ mod tests {
             (0x25_5DAA, 0x0000_0901, "0109"),
             (0x0B_FA18, 0x0001_0005, "0500"),
         ] {
-            let cell = record(
+            let cell = self::record(
                 &interner,
                 b"CELL",
                 local,
@@ -309,18 +306,15 @@ mod tests {
                 "{local:06X}"
             );
         }
-    }
 
-    #[test]
-    fn same_signatures_on_other_records_are_untouched() {
         let interner = StringInterner::new();
-        let mut keyword = record(
+        let mut keyword = self::record(
             &interner,
             b"KYWD",
             0x80_0000,
             &[(b"TNAM", FieldValue::Uint(52))],
         );
-        let mut worldspace = record(
+        let mut worldspace = self::record(
             &interner,
             b"WRLD",
             0x80_0001,

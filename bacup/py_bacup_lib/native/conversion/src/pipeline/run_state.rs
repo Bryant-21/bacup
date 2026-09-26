@@ -245,34 +245,35 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_rewrites_updated_at() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run_state.json");
-        let writer = RunStateWriter::new(path.clone(), Arc::new(Counters::default()));
-        writer.write_now();
-        let first = read_json(&path)["updated_at"].as_str().unwrap().to_string();
+    fn heartbeat_rewrites_updated_at_and_write_failures_are_counted() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("run_state.json");
+            let writer = RunStateWriter::new(path.clone(), Arc::new(Counters::default()));
+            writer.write_now();
+            let first = read_json(&path)["updated_at"].as_str().unwrap().to_string();
 
-        let heartbeat = RunStateWriter::spawn_heartbeat(&writer, Duration::from_millis(25));
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut changed = false;
-        while Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-            let v = read_json(&path); // every observation must parse cleanly
-            if v["updated_at"].as_str().unwrap() != first {
-                changed = true;
-                break;
+            let heartbeat = RunStateWriter::spawn_heartbeat(&writer, Duration::from_millis(25));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut changed = false;
+            while Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+                let v = read_json(&path); // every observation must parse cleanly
+                if v["updated_at"].as_str().unwrap() != first {
+                    changed = true;
+                    break;
+                }
             }
+            heartbeat.stop();
+            assert!(changed, "heartbeat never rewrote run_state.json within 2s");
         }
-        heartbeat.stop();
-        assert!(changed, "heartbeat never rewrote run_state.json within 2s");
-    }
-
-    #[test]
-    fn write_failure_is_counted_not_fatal() {
-        let dir = tempfile::tempdir().unwrap();
-        // The destination IS a directory -> rename must fail.
-        let writer = RunStateWriter::new(dir.path().to_path_buf(), Arc::new(Counters::default()));
-        writer.write_now();
-        assert!(writer.write_errors.load(Ordering::Relaxed) >= 1);
+        {
+            let dir = tempfile::tempdir().unwrap();
+            // The destination IS a directory -> rename must fail.
+            let writer =
+                RunStateWriter::new(dir.path().to_path_buf(), Arc::new(Counters::default()));
+            writer.write_now();
+            assert!(writer.write_errors.load(Ordering::Relaxed) >= 1);
+        }
     }
 }

@@ -7,6 +7,7 @@ Build with:
 
 import os
 import sys
+from glob import glob as _glob_translations
 from PyInstaller.utils.hooks import (
     collect_data_files,
     collect_dynamic_libs,
@@ -79,6 +80,14 @@ bacup_ui_mods = collect_submodules(
     and not name.rsplit(".", 1)[-1].startswith("test"),
 )
 bacup_lib_datas = collect_data_files("bacup_lib")
+translation_dir = os.path.join(bacup_python_root, "bacup_lib", "data", "translations")
+translation_destination = "bacup_lib/data/translations"
+if not os.path.isfile(os.path.join(translation_dir, "B21_TalesFromAppalachia_en.txt")):
+    raise FileNotFoundError(os.path.join(translation_dir, "B21_TalesFromAppalachia_en.txt"))
+for translation_source in sorted(_glob_translations(os.path.join(translation_dir, "B21_TalesFromAppalachia_*.txt"))):
+    if not any(os.path.normcase(os.path.abspath(source)) == os.path.normcase(translation_source)
+               for source, destination in bacup_lib_datas):
+        bacup_lib_datas.append((translation_source, translation_destination))
 bacup_ui_datas = collect_data_files("bacup_ui")
 bacup_lib_binaries = collect_dynamic_libs("bacup_lib")
 

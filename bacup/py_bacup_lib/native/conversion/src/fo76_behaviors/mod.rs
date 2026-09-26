@@ -6,13 +6,15 @@ use havok_native::hkx::{HkxFile, HkxMember, HkxObject};
 use serde::{Deserialize, Serialize};
 
 pub mod assets;
+mod boss;
 mod bow;
+mod bow_power_armor;
+mod draw;
 mod furniture;
 mod locomotion;
 pub mod records;
-
-#[cfg(test)]
-mod furniture_tests;
+pub mod recovery;
+mod sneak;
 
 pub const PLAN_PATH: &str = "debug/fo76_behaviors/plan.json";
 pub const VERSION: &str = "hk_2014.1.0-r1";
@@ -141,9 +143,26 @@ pub fn meshes(root: &Path) -> PathBuf {
     }
 }
 
+/// Shortest readable HKX: a packfile header is 0x40 bytes on its own.
+pub(crate) const MIN_HKX_LEN: usize = 0x40;
+
+/// Reported when a source file is too short to be Havok data at all.
+///
+/// Recovery keys on this suffix to re-extract the file from the installed
+/// archive, so every reader has to reject short input here rather than let
+/// its own decoder report truncation in whatever words that decoder uses.
+pub(crate) const SHORT_INPUT: &str = ": invalid input: Havok data must contain at least 64 bytes";
+
+pub(crate) fn source_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() < MIN_HKX_LEN {
+        return Err(format!("{}{SHORT_INPUT}", path.display()));
+    }
+    Ok(bytes)
+}
+
 pub fn read(path: &Path) -> Result<HkxFile, String> {
-    HkxFile::read(&std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    HkxFile::read(&source_bytes(path)?).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn value<'a>(object: &'a HkxObject, name: &str) -> Option<&'a HkxValue> {
@@ -298,49 +317,49 @@ pub fn resolve_animation(
 mod tests {
     use super::*;
     #[test]
-    fn combat_scope_stays_separate_from_furniture() {
-        for path in [
-            "Actors/Character/Behaviors/MeleeBehavior.hkx",
-            "Actors/MoleMiner/Behaviors/MoleMinerRootBehavior.hkx",
-            "Actors/Character/_1stPerson/Behaviors/GunBehavior.hkx",
-        ] {
-            assert!(combat_graph(path));
+    fn behavior_scopes_and_nested_project_paths_keep_namespaces() {
+        {
+            for path in [
+                "Actors/Character/Behaviors/MeleeBehavior.hkx",
+                "Actors/MoleMiner/Behaviors/MoleMinerRootBehavior.hkx",
+                "Actors/Character/_1stPerson/Behaviors/GunBehavior.hkx",
+            ] {
+                assert!(combat_graph(path));
+            }
+            for path in [
+                "Actors/Character/Behaviors/FurnitureBed.hkx",
+                "Actors/Character/Behaviors/FaceGen.hkx",
+            ] {
+                assert!(!combat_graph(path));
+            }
         }
-        for path in [
-            "Actors/Character/Behaviors/FurnitureBed.hkx",
-            "Actors/Character/Behaviors/FaceGen.hkx",
-        ] {
-            assert!(!combat_graph(path));
+        {
+            for path in [
+                "Actors/Character/Behaviors/WorkbenchFurnitureBehavior.hkx",
+                "Actors/Character/Behaviors/FurnitureBed.hkx",
+                r"Actors\Character\Behaviors\B21_FO76_workbenchfurniturebehavior_123.hkx",
+            ] {
+                assert!(furniture_graph(path));
+                assert!(preserved_graph(path));
+                assert!(!combat_graph(path));
+            }
+            assert!(!preserved_graph(
+                "Furniture/Workstations/WorkbenchTinkers/WorkbenchTinkers.hkx"
+            ));
+            assert!(!preserved_graph("Actors/Character/Behaviors/FaceGen.hkx"));
         }
-    }
-    #[test]
-    fn furniture_scope_includes_private_cores_without_claiming_object_graphs() {
-        for path in [
-            "Actors/Character/Behaviors/WorkbenchFurnitureBehavior.hkx",
-            "Actors/Character/Behaviors/FurnitureBed.hkx",
-            r"Actors\Character\Behaviors\B21_FO76_workbenchfurniturebehavior_123.hkx",
-        ] {
-            assert!(furniture_graph(path));
-            assert!(preserved_graph(path));
-            assert!(!combat_graph(path));
+        {
+            assert_eq!(
+                project_dir("actors/B21_FO76/moleminer/behaviors/gun_abc.hkx"),
+                "actors/b21_fo76/moleminer"
+            );
+            assert_eq!(
+                relative_path(
+                    "actors/B21_FO76/moleminer",
+                    "actors/B21_FO76/source/actors/moleminer/animations/run.hkx"
+                ),
+                "..\\source\\actors\\moleminer\\animations\\run.hkx"
+            );
         }
-        assert!(!preserved_graph(
-            "Furniture/Workstations/WorkbenchTinkers/WorkbenchTinkers.hkx"
-        ));
-        assert!(!preserved_graph("Actors/Character/Behaviors/FaceGen.hkx"));
-    }
-    #[test]
-    fn resolves_nested_project_paths_without_losing_namespace() {
-        assert_eq!(
-            project_dir("actors/B21_FO76/moleminer/behaviors/gun_abc.hkx"),
-            "actors/b21_fo76/moleminer"
-        );
-        assert_eq!(
-            relative_path(
-                "actors/B21_FO76/moleminer",
-                "actors/B21_FO76/source/actors/moleminer/animations/run.hkx"
-            ),
-            "..\\source\\actors\\moleminer\\animations\\run.hkx"
-        );
     }
 }

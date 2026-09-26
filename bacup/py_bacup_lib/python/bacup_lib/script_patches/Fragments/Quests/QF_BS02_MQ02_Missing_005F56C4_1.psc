@@ -51,6 +51,9 @@ Function Fragment_Stage_0040_Item_00()
             index += 1
         EndWhile
     EndIf
+    If !IsStageDone(1450)
+        SetStage(1450)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
@@ -167,6 +170,10 @@ EndFunction
 
 Function Fragment_Stage_0750_Item_00()
     Alias_Marker_ClueEnable.TryToEnableNoWait()
+    ; The third-floor trigger is the only arrival signal left; 755 closes "Go to the third floor".
+    If !IsStageDone(755)
+        SetStage(755)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0755_Item_00()
@@ -212,9 +219,6 @@ EndFunction
 Function Fragment_Stage_0900_Item_00()
     SetObjectiveCompleted(70, True)
     SetObjectiveDisplayed(75, True)
-    If z_BS02_MQ02_Missing_Marcia03 != None && !z_BS02_MQ02_Missing_Marcia03.IsPlaying()
-        z_BS02_MQ02_Missing_Marcia03.Start()
-    EndIf
 EndFunction
 
 Function Fragment_Stage_0950_Item_00()
@@ -225,15 +229,14 @@ EndFunction
 Function Fragment_Stage_1000_Item_00()
     SetObjectiveCompleted(70, True)
     SetObjectiveDisplayed(75, True)
-    Alias_Activator_SheenasNote.TryToDisableNoWait()
-    Alias_Marker_MarciaNote.TryToDisableNoWait()
+    Alias_Marker_MarciaNote.TryToEnableNoWait()
 
     Actor playerRef = Alias_Player.GetActorReference()
     If playerRef != None && BS02_MQ02_Missing_TerminalPassword != None && playerRef.GetItemCount(BS02_MQ02_Missing_TerminalPassword) < 1
         playerRef.AddItem(BS02_MQ02_Missing_TerminalPassword, 1, False)
     EndIf
-    If z_BS02_MQ02_Missing_Marcia04 != None && !z_BS02_MQ02_Missing_Marcia04.IsPlaying()
-        z_BS02_MQ02_Missing_Marcia04.Start()
+    If z_BS02_MQ02_Missing_Marcia03 != None && !z_BS02_MQ02_Missing_Marcia03.IsPlaying()
+        z_BS02_MQ02_Missing_Marcia03.Start()
     EndIf
 EndFunction
 
@@ -249,6 +252,9 @@ EndFunction
 
 Function Fragment_Stage_1100_Item_00()
     SetObjectiveDisplayed(80, True)
+    If z_BS02_MQ02_Missing_Marcia04 != None && !z_BS02_MQ02_Missing_Marcia04.IsPlaying()
+        z_BS02_MQ02_Missing_Marcia04.Start()
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1175_Item_00()
@@ -496,6 +502,10 @@ Function Fragment_Stage_1700_Item_00()
     EndIf
     If zBS02_MQ02_Missing_Sheena != None && !zBS02_MQ02_Missing_Sheena.IsPlaying()
         zBS02_MQ02_Missing_Sheena.Start()
+    EndIf
+    ; Opening both cells is the release; nothing else sets 1750 in single player.
+    If !IsStageDone(1750)
+        SetStage(1750)
     EndIf
 EndFunction
 

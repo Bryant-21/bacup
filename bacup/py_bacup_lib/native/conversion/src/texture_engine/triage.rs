@@ -478,6 +478,19 @@ fn triage_request_impl(
         if bundled_roles.contains(&input.role.as_str()) {
             continue;
         }
+        // The emissive mask lives in `_l` alpha; only the legacy converter
+        // derives a lone `_l`'s glow from it instead of copying gloss/AO RGB.
+        if input.role == "lighting"
+            && reflectivity.is_none()
+            && find_input(request, "glow").is_none()
+            && let Some(output) = find_output(request, "glow")
+        {
+            tasks.push(TextureTask::SingleResidue {
+                input: input.clone(),
+                output: output.clone(),
+            });
+            continue;
+        }
         let Some(out_role) = mapped_fo76_output_role(&input.role) else {
             continue; // unsupported role — legacy skips it too
         };
@@ -532,91 +545,115 @@ mod tests {
     }
 
     #[test]
-    fn full_mip_bc7_diffuse_is_pass_through() {
-        let tmp = std::env::temp_dir().join("triage_pt_diffuse");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "rock_d.dds", 16, 16, "BC7_UNORM", true);
-        let tasks = tasks_for(&tmp, &["rock_d.dds"]);
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].class(), TriageClass::PassThrough);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn missing_mips_demote_pass_through_to_recompile() {
-        // Mip invariant: converted textures MUST carry mip chains; a mipless
-        // source can't be byte-copied — it must take the legacy path (which
-        // regenerates mips).
-        let tmp = std::env::temp_dir().join("triage_mipless");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "rock_d.dds", 16, 16, "BC7_UNORM", false);
-        let tasks = tasks_for(&tmp, &["rock_d.dds"]);
-        assert_eq!(tasks[0].class(), TriageClass::BundleRecompile);
-        assert!(matches!(tasks[0], TextureTask::SingleResidue { .. }));
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn bc5_normal_is_pass_through_but_bc7_normal_is_per_texel() {
-        let tmp = std::env::temp_dir().join("triage_normals");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "a_n.dds", 16, 16, "BC5_UNORM", true);
-        write_tex(&tmp, "b_n.dds", 16, 16, "BC7_UNORM", true);
-        let a = tasks_for(&tmp, &["a_n.dds"]);
-        let b = tasks_for(&tmp, &["b_n.dds"]);
-        assert_eq!(a[0].class(), TriageClass::PassThrough);
-        assert_eq!(b[0].class(), TriageClass::PerTexel);
-        match &b[0] {
-            TextureTask::Single { normal_kernel, .. } => assert!(*normal_kernel),
-            other => panic!("expected Single, got {other:?}"),
+    fn pass_through_requires_full_mips_and_no_format_override() {
+        {
+            let tmp = std::env::temp_dir().join("triage_pt_diffuse");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "rock_d.dds", 16, 16, "BC7_UNORM", true);
+            let tasks = tasks_for(&tmp, &["rock_d.dds"]);
+            assert_eq!(tasks.len(), 1);
+            assert_eq!(tasks[0].class(), TriageClass::PassThrough);
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn bc3_diffuse_needs_bc7_reencode_per_texel() {
-        // output_format_for_source maps BC3 (77) -> BC7_UNORM: format change,
-        // identity math -> PerTexel.
-        let tmp = std::env::temp_dir().join("triage_bc3");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "c_d.dds", 16, 16, "BC3_UNORM", true);
-        let tasks = tasks_for(&tmp, &["c_d.dds"]);
-        assert_eq!(tasks[0].class(), TriageClass::PerTexel);
-        match &tasks[0] {
-            TextureTask::Single { target_format, .. } => assert_eq!(target_format, "BC7_UNORM"),
-            other => panic!("expected Single, got {other:?}"),
+        {
+            // Mip invariant: converted textures MUST carry mip chains; a mipless
+            // source can't be byte-copied — it must take the legacy path (which
+            // regenerates mips).
+            let tmp = std::env::temp_dir().join("triage_mipless");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "rock_d.dds", 16, 16, "BC7_UNORM", false);
+            let tasks = tasks_for(&tmp, &["rock_d.dds"]);
+            assert_eq!(tasks[0].class(), TriageClass::BundleRecompile);
+            assert!(matches!(tasks[0], TextureTask::SingleResidue { .. }));
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let _ = std::fs::remove_dir_all(&tmp);
+        {
+            let tmp = std::env::temp_dir().join("triage_override");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "o_d.dds", 16, 16, "BC7_UNORM", true);
+            let paths = vec![tmp.join("o_d.dds").to_string_lossy().to_string()];
+            let groups = group_textures(&paths, &tmp, game_texture_suffixes("fo76"), "fo76");
+            let mut overrides = HashMap::new();
+            overrides.insert("o_d.dds".to_string(), "BC1_UNORM".to_string());
+            let request = build_request(
+                &groups[0],
+                &tmp.join("out"),
+                "fo76",
+                "fo4",
+                game_texture_suffixes("fo76"),
+                game_texture_suffixes("fo4"),
+                &overrides,
+                TextureConversionParamsPayload::default(),
+                false,
+                0,
+            )
+            .unwrap();
+            let tasks = triage_request(&request, &overrides, false);
+            assert_ne!(tasks[0].class(), TriageClass::PassThrough);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
-    fn bc3_effect_diffuse_stays_bc3_and_passes_through() {
-        let tmp = std::env::temp_dir()
-            .join("triage_effect_bc3")
-            .join("Effects");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(
-            &tmp,
-            "SmokeNuke76PuffsTile_d.dds",
-            16,
-            16,
-            "BC3_UNORM_SRGB",
-            true,
-        );
-        let tasks = tasks_for(&tmp, &["SmokeNuke76PuffsTile_d.dds"]);
-        assert_eq!(tasks[0].class(), TriageClass::PassThrough);
-        match &tasks[0] {
-            TextureTask::Single { target_format, .. } => {
-                assert_eq!(target_format, "BC3_UNORM_SRGB")
+    fn normal_and_diffuse_formats_choose_pass_through_or_per_texel() {
+        {
+            let tmp = std::env::temp_dir().join("triage_normals");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "a_n.dds", 16, 16, "BC5_UNORM", true);
+            write_tex(&tmp, "b_n.dds", 16, 16, "BC7_UNORM", true);
+            let a = tasks_for(&tmp, &["a_n.dds"]);
+            let b = tasks_for(&tmp, &["b_n.dds"]);
+            assert_eq!(a[0].class(), TriageClass::PassThrough);
+            assert_eq!(b[0].class(), TriageClass::PerTexel);
+            match &b[0] {
+                TextureTask::Single { normal_kernel, .. } => assert!(*normal_kernel),
+                other => panic!("expected Single, got {other:?}"),
             }
-            other => panic!("expected Single, got {other:?}"),
+            let _ = std::fs::remove_dir_all(&tmp);
         }
-        let _ = std::fs::remove_dir_all(&tmp);
+        {
+            // output_format_for_source maps BC3 (77) -> BC7_UNORM: format change,
+            // identity math -> PerTexel.
+            let tmp = std::env::temp_dir().join("triage_bc3");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "c_d.dds", 16, 16, "BC3_UNORM", true);
+            let tasks = tasks_for(&tmp, &["c_d.dds"]);
+            assert_eq!(tasks[0].class(), TriageClass::PerTexel);
+            match &tasks[0] {
+                TextureTask::Single { target_format, .. } => assert_eq!(target_format, "BC7_UNORM"),
+                other => panic!("expected Single, got {other:?}"),
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir()
+                .join("triage_effect_bc3")
+                .join("Effects");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(
+                &tmp,
+                "SmokeNuke76PuffsTile_d.dds",
+                16,
+                16,
+                "BC3_UNORM_SRGB",
+                true,
+            );
+            let tasks = tasks_for(&tmp, &["SmokeNuke76PuffsTile_d.dds"]);
+            assert_eq!(tasks[0].class(), TriageClass::PassThrough);
+            match &tasks[0] {
+                TextureTask::Single { target_format, .. } => {
+                    assert_eq!(target_format, "BC3_UNORM_SRGB")
+                }
+                other => panic!("expected Single, got {other:?}"),
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
@@ -665,31 +702,37 @@ mod tests {
     }
 
     #[test]
-    fn format_override_disables_pass_through() {
-        let tmp = std::env::temp_dir().join("triage_override");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write_tex(&tmp, "o_d.dds", 16, 16, "BC7_UNORM", true);
-        let paths = vec![tmp.join("o_d.dds").to_string_lossy().to_string()];
-        let groups = group_textures(&paths, &tmp, game_texture_suffixes("fo76"), "fo76");
-        let mut overrides = HashMap::new();
-        overrides.insert("o_d.dds".to_string(), "BC1_UNORM".to_string());
-        let request = build_request(
-            &groups[0],
-            &tmp.join("out"),
-            "fo76",
-            "fo4",
-            game_texture_suffixes("fo76"),
-            game_texture_suffixes("fo4"),
-            &overrides,
-            TextureConversionParamsPayload::default(),
-            false,
-            0,
-        )
-        .unwrap();
-        let tasks = triage_request(&request, &overrides, false);
-        assert_ne!(tasks[0].class(), TriageClass::PassThrough);
-        let _ = std::fs::remove_dir_all(&tmp);
+    fn lone_lighting_is_glow_unless_an_authored_glow_exists() {
+        {
+            let tmp = std::env::temp_dir().join("triage_lone_lighting");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "panel_l.dds", 16, 16, "BC3_UNORM", true);
+            let tasks = tasks_for(&tmp, &["panel_l.dds"]);
+            assert_eq!(tasks.len(), 1);
+            match &tasks[0] {
+                TextureTask::SingleResidue { input, output } => {
+                    assert_eq!(input.role, "lighting");
+                    assert_eq!(output.role, "glow");
+                    assert!(output.path.ends_with("panel_g.dds"));
+                }
+                other => panic!("expected SingleResidue, got {other:?}"),
+            }
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("triage_lighting_authored_glow");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).unwrap();
+            write_tex(&tmp, "sign_l.dds", 16, 16, "BC3_UNORM", true);
+            write_tex(&tmp, "sign_g.dds", 16, 16, "BC7_UNORM", true);
+            let tasks = tasks_for(&tmp, &["sign_l.dds", "sign_g.dds"]);
+            assert!(!tasks.iter().any(|task| matches!(
+                task,
+                TextureTask::SingleResidue { input, .. } if input.role == "lighting"
+            )));
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]

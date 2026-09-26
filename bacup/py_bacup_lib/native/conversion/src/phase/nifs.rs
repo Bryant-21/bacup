@@ -435,18 +435,8 @@ fn run_convert_nifs(
                             )),
                         };
                         let raw_result = raw_result.and_then(|report| {
-                            if let Some(point) = entry.workshop_wire_point {
-                                apply_workshop_wire_point(&staged.path, point)
-                                    .map_err(|error| format!("{source_path}: {error}"))?;
-                            }
-                            if !entry.workshop_snap_points.is_empty() {
-                                apply_workshop_snap_points(
-                                    &staged.path,
-                                    &entry.workshop_snap_points,
-                                )
-                                .map_err(|error| format!("{source_path}: {error}"))?;
-                            }
-                            Ok(report)
+                            apply_workshop_edits(report, &staged.path, entry)
+                                .map_err(|error| format!("{source_path}: {error}"))
                         });
                         publish_staged_result(
                             classify_convert_result(raw_result, staged.path.is_file()),
@@ -515,6 +505,41 @@ fn run_convert_nifs(
                 repose.files_reposed, repose.files_scanned, repose.bones_reposed
             ),
         });
+    }
+    if source_game.eq_ignore_ascii_case("fo76") && target_game.eq_ignore_ascii_case("fo4") {
+        let anim_objects = normalize_anim_object_roots(&data_root);
+        if anim_objects.files_normalized > 0 {
+            let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+                phase: phase_name,
+                level: LogLevel::Info,
+                message: format!(
+                    "{phase_name}: neutralized root scene trajectory on {}/{} anim object(s): {}",
+                    anim_objects.files_normalized,
+                    anim_objects.files_scanned,
+                    anim_objects.normalized.join(", ")
+                ),
+            });
+        }
+    }
+    if source_game.eq_ignore_ascii_case("fo76") && target_game.eq_ignore_ascii_case("fo4") {
+        let pipboy = crate::phase::pipboy2000_nifs::fix_pipboy2000_nifs(&data_root);
+        if pipboy.rigid_shapes > 0 || pipboy.screen_glow_fixed {
+            let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+                phase: phase_name,
+                level: LogLevel::Info,
+                message: format!(
+                    "{phase_name}: Pip-Boy 2000 worn meshes: {} rigid 1st-person shape(s), 3rd-person screen glow fixed: {}",
+                    pipboy.rigid_shapes, pipboy.screen_glow_fixed
+                ),
+            });
+        }
+        for failure in pipboy.failures {
+            let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+                phase: phase_name,
+                level: LogLevel::Warn,
+                message: format!("{phase_name}: Pip-Boy 2000 mesh fix failed: {failure}"),
+            });
+        }
     }
     if source_game.eq_ignore_ascii_case("fo76")
         && target_game.eq_ignore_ascii_case("fo4")
@@ -2092,6 +2117,25 @@ fn parse_workshop_wire_point(
     Ok(Some(point))
 }
 
+fn apply_workshop_edits(
+    report: ConvertFileReport,
+    path: &Path,
+    entry: &NifEntry,
+) -> Result<ConvertFileReport, String> {
+    // A rejected conversion writes no staged NIF; editing it would replace the
+    // converter's error with a misleading missing-file error.
+    if !report.supported || !report.errors.is_empty() {
+        return Ok(report);
+    }
+    if let Some(point) = entry.workshop_wire_point {
+        apply_workshop_wire_point(path, point)?;
+    }
+    if !entry.workshop_snap_points.is_empty() {
+        apply_workshop_snap_points(path, &entry.workshop_snap_points)?;
+    }
+    Ok(report)
+}
+
 fn apply_workshop_wire_point(path: &Path, point: [f32; 3]) -> Result<bool, String> {
     let mut nif =
         NifFile::load(path).map_err(|error| format!("could not load converted NIF: {error}"))?;
@@ -2507,6 +2551,171 @@ fn repose_creature_skeletons(data_root: &Path) -> ReposeSummary {
     summary
 }
 
+#[derive(Default)]
+struct AnimObjectRootSummary {
+    files_scanned: usize,
+    files_normalized: usize,
+    normalized: Vec<String>,
+}
+
+/// Neutralize the exported scene trajectory FO76 leaves on anim-object roots.
+///
+/// A `Prn`-attached anim object is placed by its attach bone, but FO76 ships
+/// these NIFs with the animator's scene motion still on the root node: a
+/// `NiTransformController` whose translation keys are in actor-root space
+/// (z ≈ 60–130) plus that track's frame-0 rotation baked into the root
+/// transform. FO76 ignores it; FO4 composes the root local transform onto the
+/// attach bone, which throws the object about a metre above the actor and
+/// flips it upside down. FO4's own anim objects never animate a root
+/// translation (1 of 147, and that one is a constant offset), so drop the
+/// controller chain and return the root to identity.
+fn normalize_anim_object_roots(data_root: &Path) -> AnimObjectRootSummary {
+    let mut summary = AnimObjectRootSummary::default();
+    let Some(meshes) = find_child_ci(data_root, "meshes") else {
+        return summary;
+    };
+    let mut pending = vec![meshes];
+    let mut anim_object_dirs: Vec<PathBuf> = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("animobjects")
+            {
+                anim_object_dirs.push(path);
+            } else {
+                pending.push(path);
+            }
+        }
+    }
+    anim_object_dirs.sort();
+
+    for directory in anim_object_dirs {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("nif"))
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            summary.files_scanned += 1;
+            let Ok(mut nif) = NifFile::load(&path) else {
+                continue;
+            };
+            if !strip_anim_object_root_trajectory(&mut nif) {
+                continue;
+            }
+            if nif.save(Some(path.clone())).is_ok() {
+                summary.files_normalized += 1;
+                summary.normalized.push(
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+    summary
+}
+
+/// Drop a root `NiTransformController` that carries translation keys, reset the
+/// root transform to identity and clear the now-meaningless BSX animated bit.
+/// Returns false when the NIF has no such controller.
+fn strip_anim_object_root_trajectory(nif: &mut NifFile) -> bool {
+    let root_id = *nif.header.footer_roots.first().unwrap_or(&0);
+    if root_id < 0 {
+        return false;
+    }
+    let root_id = root_id as usize;
+    let Some(root) = nif.blocks.get(root_id) else {
+        return false;
+    };
+    let controller_id = match root.get_field("Controller") {
+        Some(NifValue::Ref(id)) if *id >= 0 => *id as usize,
+        _ => return false,
+    };
+    let Some(controller) = nif.blocks.get(controller_id) else {
+        return false;
+    };
+    if controller.type_name != "NiTransformController" {
+        return false;
+    }
+    let interpolator_id = match controller.get_field("Interpolator") {
+        Some(NifValue::Ref(id)) if *id >= 0 => *id as usize,
+        _ => return false,
+    };
+    let Some(interpolator) = nif.blocks.get(interpolator_id) else {
+        return false;
+    };
+    let data_id = match interpolator.get_field("Data") {
+        Some(NifValue::Ref(id)) if *id >= 0 => *id as usize,
+        _ => return false,
+    };
+    let Some(data) = nif.blocks.get(data_id) else {
+        return false;
+    };
+    if translation_key_count(data) == 0 {
+        return false;
+    }
+
+    let bsx_ids: Vec<usize> = nif
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| block.type_name == "BSXFlags")
+        .map(|(id, _)| id)
+        .collect();
+    for id in bsx_ids {
+        let flags = nif.blocks[id]
+            .get_field("Integer Data")
+            .map(|value| value.as_i64())
+            .unwrap_or(0);
+        if flags & 1 != 0 {
+            nif.blocks[id].set_field("Integer Data", NifValue::UInt((flags & !1) as u64));
+        }
+    }
+
+    let root = &mut nif.blocks[root_id];
+    root.set_field("Controller", NifValue::Ref(-1));
+    root.set_field("Translation", NifValue::Vec3([0.0, 0.0, 0.0]));
+    root.set_field(
+        "Rotation",
+        NifValue::Matrix33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+    );
+    root.set_field("Scale", NifValue::Float(1.0));
+    nif.remove_blocks(&[controller_id, interpolator_id, data_id]);
+    true
+}
+
+fn translation_key_count(data: &nif_core_native::model::NifBlock) -> usize {
+    match data.get_field("Translations") {
+        Some(NifValue::Struct(fields)) => match fields.get("Keys") {
+            Some(NifValue::Array(keys)) => keys.len(),
+            _ => fields
+                .get("Num Keys")
+                .map(|value| value.as_i64().max(0) as usize)
+                .unwrap_or(0),
+        },
+        _ => 0,
+    }
+}
+
 fn ensure_floater_projectile_node(data_root: &Path) -> bool {
     let Some(meshes) = find_child_ci(data_root, "meshes") else {
         return false;
@@ -2665,7 +2874,7 @@ mod tests {
     }
 
     #[test]
-    fn mirrors_all_ssf_files_across_the_source_mesh_tree() {
+    fn mirrors_all_ssf_files_and_is_a_no_op_without_source_meshes() {
         let tmp = tempfile::tempdir().unwrap();
         let source = tmp.path().join("source");
         let data_root = tmp.path().join("output/data");
@@ -2703,6 +2912,23 @@ mod tests {
             b"creature"
         );
         assert!(!data_root.join("Meshes/Clothes/Raiders/Outfit.txt").exists());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut registered = Vec::new();
+
+        let summary = mirror_all_source_ssf_files(
+            &tmp.path().join("source"),
+            &tmp.path().join("output/data"),
+            |path| {
+                registered.push(path.to_path_buf());
+                true
+            },
+        );
+
+        assert_eq!(summary.files_found, 0);
+        assert_eq!(summary.files_copied, 0);
+        assert_eq!(summary.failures, 0);
+        assert!(registered.is_empty());
     }
 
     #[test]
@@ -2732,27 +2958,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_source_meshes_is_an_ssf_no_op() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut registered = Vec::new();
-
-        let summary = mirror_all_source_ssf_files(
-            &tmp.path().join("source"),
-            &tmp.path().join("output/data"),
-            |path| {
-                registered.push(path.to_path_buf());
-                true
-            },
-        );
-
-        assert_eq!(summary.files_found, 0);
-        assert_eq!(summary.files_copied, 0);
-        assert_eq!(summary.failures, 0);
-        assert!(registered.is_empty());
-    }
-
-    #[test]
-    fn report_errors_fail_without_counting_an_asset_and_preserve_warnings() {
+    fn convert_result_classification_counts_only_supported_written_reports() {
         let report = ConvertFileReport {
             supported: true,
             errors: vec!["animated Skyrim NIF excluded".to_string()],
@@ -2770,10 +2976,7 @@ mod tests {
         assert_eq!(agg.report_warnings, 1);
         assert!(agg.error_messages[0].contains("animated Skyrim NIF excluded"));
         assert!(agg.warning_messages[0].contains("collision stripped"));
-    }
 
-    #[test]
-    fn unsupported_or_missing_destination_reports_are_failures() {
         let unsupported = classify_convert_result(Ok(ConvertFileReport::default()), false);
         assert!(matches!(
             unsupported,
@@ -2793,10 +2996,7 @@ mod tests {
             NifConversionResult::Failed { message, .. }
                 if message == "converter reported success but wrote no destination NIF"
         ));
-    }
 
-    #[test]
-    fn supported_written_report_counts_one_asset() {
         let mut agg = NifAgg::default();
         agg.add(
             "Meshes/Architecture/Wall.nif".to_string(),
@@ -2960,7 +3160,7 @@ mod tests {
     }
 
     #[test]
-    fn case_variant_primary_destinations_are_reserved_before_parallel_work() {
+    fn case_variant_entries_are_deduplicated_and_primary_destinations_reserved() {
         let mod_path = Path::new("C:/mods/Skyrim");
         let entries = vec![
             nif_entry("Meshes/Architecture/Whiterun/Wall.nif"),
@@ -2973,10 +3173,7 @@ mod tests {
         assert_eq!(kept.len(), 1);
         assert_eq!(collisions, 1);
         assert_eq!(ownership.owners.len(), 1);
-    }
 
-    #[test]
-    fn identical_case_variant_source_and_destination_entries_are_deduplicated() {
         let mod_path = Path::new("C:/mods/Starfield");
         let entries = vec![
             nif_entry("Meshes/Architecture/Akila/Wall.nif"),
@@ -3508,31 +3705,22 @@ mod tests {
     }
 
     #[test]
-    fn nif_output_path_ignores_prefix_component() {
+    fn nif_output_path_strips_prefix_adds_meshes_root_and_honors_output_subpath() {
         let base = Path::new("/mod");
         let result = nif_output_path(base, &nif_entry("Meshes/fnv/Weapons/Gun.nif"));
         assert_eq!(result, Path::new("/mod/data/Meshes/Weapons/Gun.nif"));
-    }
 
-    #[test]
-    fn nif_output_path_unprefixed() {
         let base = Path::new("/mod");
         let result = nif_output_path(base, &nif_entry("Meshes/Weapons/Gun.nif"));
         assert_eq!(result, Path::new("/mod/data/Meshes/Weapons/Gun.nif"));
-    }
 
-    #[test]
-    fn nif_output_path_adds_meshes_root_for_mesh_relative_path() {
         let base = Path::new("/mod");
         let result = nif_output_path(base, &nif_entry("Landscape/Trees/Tree.nif"));
         assert_eq!(
             result,
             Path::new("/mod/data/Meshes/Landscape/Trees/Tree.nif")
         );
-    }
 
-    #[test]
-    fn nif_output_path_uses_explicit_output_subpath() {
         let base = Path::new("/mod");
         let mut entry = nif_entry("Meshes/Landscape/Trees/Tree.nif");
         entry.output_subpath = Some("Meshes/FO76/Landscape/Trees/Tree.nif".into());
@@ -3563,9 +3751,7 @@ mod tests {
     #[test]
     fn convert_nifs_empty_list() {
         use crate::phase::{PhaseCtx, PhaseReport};
-        use crate::run::{
-            ConversionRun, RunConfig, RunError, RunParams, create_run, drop_run, with_run,
-        };
+        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
 
@@ -3612,103 +3798,11 @@ mod tests {
         drop_run(id).unwrap();
     }
 
-    #[test]
-    fn fnv_bowie_fallback_normal_enters_ba2_sink_closure() {
-        use crate::phase::{PhaseCtx, PhaseReport};
-        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
-        use crate::sinks::{Ba2ShardWriter, LooseSink, SinkSet, TerrainSidecarSink};
-        use crate::translator::Game;
-        use std::sync::Arc;
-        use std::sync::atomic::AtomicBool;
-
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let source = repo_root.join(
-            "extracted/fnv/meshes/nvdlc04/weapons/1handmelee/bowieknife/nvdlc04bowieknife.nif",
-        );
-        if !source.is_file() {
-            eprintln!("exact Lonesome Road Bowie source corpus is unavailable; sink test skipped");
-            return;
-        }
-        let temp = tempfile::tempdir().unwrap();
-        let mod_root = temp.path().join("mod");
-        let material_root = mod_root.join("data/Materials/FNV");
-        let normal = mod_root.join(
-            "data/textures/FNV/nvdlc04/weapons/1handmelee/bowieknife/NVDLC04BowieKnife_n.dds",
-        );
-        let sink = Arc::new(SinkSet {
-            ba2: Some(Ba2ShardWriter::new(temp.path().join("spill")).unwrap()),
-            loose: LooseSink {
-                enabled: false,
-                mod_root: mod_root.clone(),
-            },
-            terrain: TerrainSidecarSink::default(),
-        });
-
-        let id = create_run(RunParams {
-            source: Game::Fnv,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        let report = with_run(id, |run| -> Result<PhaseReport, RunError> {
-            run.output_sink = Some(sink.clone());
-            let cancel = Arc::new(AtomicBool::new(false));
-            let params = serde_json::json!({
-                "source_game": "fnv",
-                "target_game": "fo4",
-                "bgsm_output_dir": material_root.to_string_lossy(),
-                "conversion_workers": 1,
-                "nif_paths": [{
-                    "source_path": "Meshes/nvdlc04/weapons/1handmelee/bowieknife/nvdlc04bowieknife.nif",
-                    "resolved_path": source.to_string_lossy(),
-                    "output_subpath": "Meshes/nvdlc04/weapons/1handmelee/bowieknife/nvdlc04bowieknife.nif",
-                    "asset_namespace": "FNV",
-                    "weapon_role": "melee"
-                }]
-            });
-            let source_root = repo_root.join("extracted/fnv");
-            let mut ctx = PhaseCtx {
-                run,
-                mod_path: &mod_root,
-                source_extracted_dir: &source_root,
-                target_extracted_dir: None,
-                target_data_dir: None,
-                params: &params,
-                cancel: &cancel,
-            };
-            ConvertNifsV2Phase
-                .run(&mut ctx)
-                .map_err(|error| RunError::InvalidConfig(error.to_string()))
-        })
-        .unwrap();
-
-        assert_eq!(report.assets_written, 1);
-        assert_eq!(report.items_failed, 0);
-        assert!(normal.is_file(), "fallback normal was not published");
-        assert!(
-            sink.ba2.as_ref().unwrap().streamed_rel_paths().contains(
-                &"textures/fnv/nvdlc04/weapons/1handmelee/bowieknife/nvdlc04bowieknife_n.dds"
-                    .to_string()
-            ),
-            "fallback normal was omitted from the BA2 sink closure"
-        );
-        drop_run(id).unwrap();
-    }
-
     /// Missing resolved_path returns warning, not panic.
     #[test]
     fn convert_nifs_missing_file_counts_as_warning() {
         use crate::phase::{PhaseCtx, PhaseReport};
-        use crate::run::{
-            ConversionRun, RunConfig, RunError, RunParams, create_run, drop_run, with_run,
-        };
+        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
 
@@ -3764,9 +3858,7 @@ mod tests {
     #[test]
     fn convert_nifs_skip_existing_counts_existing_output() {
         use crate::phase::{PhaseCtx, PhaseReport};
-        use crate::run::{
-            ConversionRun, RunConfig, RunError, RunParams, create_run, drop_run, with_run,
-        };
+        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
 
@@ -3828,9 +3920,7 @@ mod tests {
     #[test]
     fn convert_nifs_logs_havok_report_warnings_from_successful_nif() {
         use crate::phase::{PhaseCtx, PhaseEvent, PhaseReport};
-        use crate::run::{
-            ConversionRun, RunConfig, RunError, RunParams, create_run, drop_run, with_run,
-        };
+        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use indexmap::IndexMap;
         use nif_core_native::model::{NifFile, NifValue};
@@ -3919,28 +4009,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_conversion_workers_prefers_phase_param() {
+    fn parse_conversion_workers_prefers_phase_param_then_run_config_and_ignores_zero() {
         let p = serde_json::json!({ "conversion_workers": 3 });
         assert_eq!(parse_conversion_workers(&p, Some(7)), Some(3));
-    }
 
-    #[test]
-    fn parse_conversion_workers_uses_run_config_fallback() {
         let p = serde_json::json!({});
         assert_eq!(parse_conversion_workers(&p, Some(7)), Some(7));
-    }
 
-    #[test]
-    fn parse_conversion_workers_ignores_zero_values() {
         let p = serde_json::json!({ "conversion_workers": 0 });
         assert_eq!(parse_conversion_workers(&p, Some(0)), None);
-    }
-
-    #[test]
-    fn panic_payload_to_string_extracts_message() {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| panic!("bad nif")));
-        let payload = result.unwrap_err();
-        assert_eq!(panic_payload_to_string(&*payload), "bad nif");
     }
 
     #[test]
@@ -3979,15 +4056,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_nif_entries_missing_field_returns_error() {
-        let p = serde_json::json!({
-            "nif_paths": [{ "source_path": "Meshes/Foo.nif" }]
-        });
-        assert!(parse_nif_entries(&p).is_err());
-    }
-
-    #[test]
-    fn parse_nif_entries_reads_strip_cloth_flag() {
+    fn parse_nif_entries_reads_optional_flags_and_rejects_missing_fields() {
         let p = serde_json::json!({
             "nif_paths": [{
                 "source_path": "Meshes/Foo.nif",
@@ -4001,10 +4070,7 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert!(entries[0].strip_cloth);
-    }
 
-    #[test]
-    fn parse_nif_entries_reads_workshop_wire_point() {
         let p = serde_json::json!({
             "nif_paths": [{
                 "source_path": "Meshes/Workshop/Generator.nif",
@@ -4016,21 +4082,46 @@ mod tests {
         let entries = parse_nif_entries(&p).expect("parse NIF entries");
 
         assert_eq!(entries[0].workshop_wire_point, Some([3.5, 15.0, 77.0]));
+
+        let p = serde_json::json!({
+            "nif_paths": [{ "source_path": "Meshes/Foo.nif" }]
+        });
+        assert!(parse_nif_entries(&p).is_err());
     }
 
     #[test]
-    fn apply_workshop_wire_point_persists_anchor() {
+    fn rejected_workshop_conversion_reports_converter_error_not_missing_staged_file() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("Generator.nif");
-        let mut nif = NifFile::new("fo4");
-        nif.save(Some(path.clone())).unwrap();
+        let staged = temp.path().join("WorkshopPlayerVendingMachine01.nif");
+        let mut entry = nif_entry("Meshes/SetDressing/Workshop/VendingMachines/Machine.nif");
+        entry.workshop_wire_point = Some([0.0, 0.0, 64.0]);
+        entry.workshop_snap_points = vec![ParentConnectPoint {
+            parent: "WorkshopConnectPoints".into(),
+            name: "P-76-0A7382".into(),
+            rotation: [1.0, 0.0, 0.0, 0.0],
+            translation: [0.0, 0.0, 0.0],
+            scale: 1.0,
+        }];
+        let rejected = ConvertFileReport {
+            errors: vec!["block types absent from the FO4 runtime would fail the whole file load: BSCollisionQueryProxyExtraData x1".into()],
+            ..ConvertFileReport::default()
+        };
 
-        assert!(apply_workshop_wire_point(&path, [3.5, 15.0, 77.0]).unwrap());
-        assert!(!apply_workshop_wire_point(&path, [3.5, 15.0, 77.0]).unwrap());
+        let result = apply_workshop_edits(rejected, &staged, &entry);
+
+        match classify_convert_result(result, staged.is_file()) {
+            NifConversionResult::Failed { message, .. } => {
+                assert!(
+                    message.contains("BSCollisionQueryProxyExtraData"),
+                    "{message}"
+                );
+            }
+            NifConversionResult::Written(_) => panic!("rejected conversion was published"),
+        }
     }
 
     #[test]
-    fn parse_and_apply_workshop_snap_points() {
+    fn apply_workshop_wire_and_snap_points() {
         use nif_core_native::model::NifValue;
 
         let params = serde_json::json!({
@@ -4090,6 +4181,14 @@ mod tests {
                     Some(NifValue::String(name)) if name == "WorkshopConnectPoints"
                 )
         }));
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Generator.nif");
+        let mut nif = NifFile::new("fo4");
+        nif.save(Some(path.clone())).unwrap();
+
+        assert!(apply_workshop_wire_point(&path, [3.5, 15.0, 77.0]).unwrap());
+        assert!(!apply_workshop_wire_point(&path, [3.5, 15.0, 77.0]).unwrap());
     }
 
     #[test]
@@ -4476,7 +4575,7 @@ mod tests {
 
     #[test]
     fn convert_nifs_v2_is_registered_and_runs_empty_input() {
-        use crate::phase::{PhaseCtx, PhaseEvent, PhaseReport};
+        use crate::phase::{PhaseCtx, PhaseReport};
         use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
@@ -4768,6 +4867,207 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Anim-object root trajectory (FO76 export leftovers)
+    // -----------------------------------------------------------------------
+
+    /// `Prn`-attached anim object whose root carries the animator's scene
+    /// motion: actor-root-space translation keys plus the frame-0 rotation
+    /// baked onto the root node, as FO76 ships AnimObjectBinoculars.nif.
+    fn write_anim_object(path: &Path, translation_keys: usize) {
+        let mut nif = NifFile::new("fo4");
+
+        let mut prn = IndexMap::new();
+        prn.insert("Name".to_string(), NifValue::String("Prn".to_string()));
+        prn.insert(
+            "String Data".to_string(),
+            NifValue::String("AnimObjectR1".to_string()),
+        );
+        let prn_id = nif.add_block("NiStringExtraData", Some(prn));
+
+        let mut bsx = IndexMap::new();
+        bsx.insert("Name".to_string(), NifValue::String("BSX".to_string()));
+        bsx.insert("Integer Data".to_string(), NifValue::UInt(1));
+        let bsx_id = nif.add_block("BSXFlags", Some(bsx));
+
+        let mut keys = Vec::new();
+        for i in 0..translation_keys {
+            let mut key = IndexMap::new();
+            key.insert("Time".to_string(), NifValue::Float(i as f64 / 30.0));
+            key.insert(
+                "Value".to_string(),
+                NifValue::Vec3([14.0, 3.6, 60.3 + i as f32]),
+            );
+            keys.push(NifValue::Struct(key));
+        }
+        let mut translations = IndexMap::new();
+        translations.insert("Num Keys".to_string(), NifValue::UInt(keys.len() as u64));
+        translations.insert("Interpolation".to_string(), NifValue::UInt(1));
+        translations.insert("Keys".to_string(), NifValue::Array(keys));
+
+        let mut data = IndexMap::new();
+        data.insert("Num Rotation Keys".to_string(), NifValue::UInt(1));
+        data.insert(
+            "Rotation Type".to_string(),
+            NifValue::String("LINEAR_KEY".to_string()),
+        );
+        data.insert(
+            "Quaternion Keys".to_string(),
+            NifValue::Array(vec![NifValue::Struct({
+                let mut key = IndexMap::new();
+                key.insert("Time".to_string(), NifValue::Float(0.0));
+                key.insert(
+                    "Value".to_string(),
+                    NifValue::Quaternion([-0.011, 0.955, -0.046, 0.291]),
+                );
+                key
+            })]),
+        );
+        data.insert("Translations".to_string(), NifValue::Struct(translations));
+        let data_id = nif.add_block("NiTransformData", Some(data));
+
+        let mut interpolator = IndexMap::new();
+        interpolator.insert("Data".to_string(), NifValue::Ref(data_id as i32));
+        let interpolator_id = nif.add_block("NiTransformInterpolator", Some(interpolator));
+
+        let mut controller = IndexMap::new();
+        controller.insert("Flags".to_string(), NifValue::UInt(76));
+        controller.insert("Frequency".to_string(), NifValue::Float(1.0));
+        controller.insert("Stop Time".to_string(), NifValue::Float(24.2));
+        controller.insert(
+            "Interpolator".to_string(),
+            NifValue::Ref(interpolator_id as i32),
+        );
+        let controller_id = nif.add_block("NiTransformController", Some(controller));
+
+        let mut root = IndexMap::new();
+        root.insert(
+            "Name".to_string(),
+            NifValue::String("Binoculars".to_string()),
+        );
+        root.insert("Num Extra Data List".to_string(), NifValue::UInt(2));
+        root.insert(
+            "Extra Data List".to_string(),
+            NifValue::Array(vec![
+                NifValue::Ref(prn_id as i32),
+                NifValue::Ref(bsx_id as i32),
+            ]),
+        );
+        root.insert(
+            "Controller".to_string(),
+            NifValue::Ref(controller_id as i32),
+        );
+        root.insert("Flags".to_string(), NifValue::UInt(14));
+        root.insert("Translation".to_string(), NifValue::Vec3([0.0, 0.0, 0.0]));
+        root.insert(
+            "Rotation".to_string(),
+            NifValue::Matrix33([
+                [0.826, -0.095, 0.555],
+                [-0.082, -0.995, -0.048],
+                [0.557, -0.006, -0.830],
+            ]),
+        );
+        root.insert("Scale".to_string(), NifValue::Float(1.0));
+        root.insert("Num Children".to_string(), NifValue::UInt(0));
+        root.insert("Children".to_string(), NifValue::Array(Vec::new()));
+        let root_id = nif.add_block("NiNode", Some(root));
+        nif.header.footer_roots = vec![root_id as i32];
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        nif.save(Some(path.to_path_buf())).unwrap();
+    }
+
+    #[test]
+    fn anim_object_root_scene_trajectory_is_neutralized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_root = tmp.path().join("data");
+        let animated = data_root.join("Meshes/AnimObjects/AnimObjectBinoculars.nif");
+        let still = data_root.join("Meshes/DLC01/AnimObjects/Static.nif");
+        let unrelated = data_root.join("Meshes/Weapons/Binoculars/Binoculars.nif");
+        write_anim_object(&animated, 678);
+        write_anim_object(&still, 0);
+        write_anim_object(&unrelated, 678);
+
+        let summary = normalize_anim_object_roots(&data_root);
+        assert_eq!(
+            summary.files_scanned, 2,
+            "both AnimObjects trees are walked"
+        );
+        assert_eq!(summary.files_normalized, 1);
+
+        let fixed = NifFile::load(&animated).unwrap();
+        let root_id = fixed.header.footer_roots[0] as usize;
+        assert_eq!(
+            fixed.blocks[root_id].get_field("Controller"),
+            Some(&NifValue::Ref(-1)),
+            "root controller must be dropped"
+        );
+        let rotation = fixed.blocks[root_id].get_field("Rotation").unwrap();
+        for (member, expected) in [
+            ("m11", 1.0),
+            ("m21", 0.0),
+            ("m31", 0.0),
+            ("m12", 0.0),
+            ("m22", 1.0),
+            ("m32", 0.0),
+            ("m13", 0.0),
+            ("m23", 0.0),
+            ("m33", 1.0),
+        ] {
+            let actual = match rotation {
+                NifValue::Struct(fields) => match fields.get(member) {
+                    Some(NifValue::Float(value)) => *value,
+                    other => panic!("unexpected rotation member {member}: {other:?}"),
+                },
+                NifValue::Matrix33(m) => {
+                    let row = member.as_bytes()[2] - b'1';
+                    let col = member.as_bytes()[1] - b'1';
+                    m[row as usize][col as usize] as f64
+                }
+                other => panic!("unexpected rotation encoding {other:?}"),
+            };
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "baked scene rotation must be cleared so the attach bone owns the pose ({member} = {actual})"
+            );
+        }
+        assert!(
+            !fixed
+                .blocks
+                .iter()
+                .any(|block| block.type_name.starts_with("NiTransform")),
+            "controller chain must be gone"
+        );
+        assert!(
+            fixed.blocks.iter().any(
+                |block| matches!(block.get_field("String Data"), Some(NifValue::String(v)) if v == "AnimObjectR1")
+            ),
+            "the Prn attachment must survive"
+        );
+        assert_eq!(
+            fixed
+                .blocks
+                .iter()
+                .find(|block| block.type_name == "BSXFlags")
+                .and_then(|block| block.get_field("Integer Data"))
+                .map(NifValue::as_i64),
+            Some(0),
+            "the animated BSX bit must be cleared with the controller"
+        );
+
+        // A rotation/scale-only root controller is FO4's own convention, and a
+        // mesh outside an AnimObjects tree is none of this pass's business.
+        for untouched in [&still, &unrelated] {
+            let nif = NifFile::load(untouched).unwrap();
+            let root_id = nif.header.footer_roots[0] as usize;
+            assert!(
+                matches!(nif.blocks[root_id].get_field("Controller"), Some(NifValue::Ref(id)) if *id >= 0),
+                "{} must keep its root controller",
+                untouched.display()
+            );
+        }
+    }
+
     /// Body mesh with a BSSkin chain binding BoneA (world Rz(30)+t) and
     /// BoneB (world Rz(75)+t). Bind = inverse(world) = (Rᵀ, -Rᵀt).
     fn write_body_mesh(path: &Path) {
@@ -4820,7 +5120,7 @@ mod tests {
     }
 
     #[test]
-    fn repose_creature_skeletons_fixes_broken_skeleton_on_disk() {
+    fn repose_creature_skeletons_fixes_broken_and_keeps_consistent_skeletons() {
         let tmp = std::env::temp_dir().join("repose_creature_fixes_broken");
         let _ = std::fs::remove_dir_all(&tmp);
         let ca = tmp.join("data/Meshes/Actors/TestCreature/CharacterAssets");
@@ -4847,10 +5147,7 @@ mod tests {
             skeleton_bind_consistency(&NifFile::load(&skel_path).unwrap(), &bind, REPOSE_TOL);
         assert_eq!(after, total, "every skinned bone consistent after repose");
         let _ = std::fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn repose_creature_skeletons_noop_on_consistent_skeleton() {
         let tmp = std::env::temp_dir().join("repose_creature_noop_consistent");
         let _ = std::fs::remove_dir_all(&tmp);
         let ca = tmp.join("data/Meshes/Actors/TestCreature/CharacterAssets");

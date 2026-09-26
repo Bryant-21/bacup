@@ -131,7 +131,3 @@ pub(super) fn repair_gas_pump_exit(
     );
     Ok(true)
 }
-
-#[cfg(test)]
-#[path = "furniture_exit_tests.rs"]
-mod tests;

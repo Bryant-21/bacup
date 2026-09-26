@@ -8,6 +8,30 @@ Event OnQuestInit()
     EndIf
     RestoreCheckpoint()
     ReconcileBunkerProgress()
+    RegisterMiscProgressEvents()
+EndEvent
+
+; Stage 100 ("entered the trigger" at Blackwell's bunker) has no record-side
+; setter; it is what sends the Bunker Buster start event.
+Function RegisterMiscProgressEvents()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef != None
+        RegisterForRemoteEvent(playerRef, "OnLocationChange")
+    EndIf
+EndFunction
+
+Event Actor.OnLocationChange(Actor akSender, Location akOldLoc, Location akNewLoc)
+    If akSender != Game.GetPlayer() || !IsRunning() || IsStageDone(iShutdownStage) || !IsStageDone(iAcquiredQuinnsNotes)
+        Return
+    EndIf
+    LocationAlias bunkerAlias = GetAlias(5) as LocationAlias
+    If bunkerAlias == None || akNewLoc == None || akNewLoc != bunkerAlias.GetLocation()
+        Return
+    EndIf
+    If !IsStageDone(iReadQuinnsNotesStage)
+        SetStage(iReadQuinnsNotesStage)
+    EndIf
+    SetStage(iShutdownStage)
 EndEvent
 
 Event OnStageSet(Int auiStageID, Int auiItemID)

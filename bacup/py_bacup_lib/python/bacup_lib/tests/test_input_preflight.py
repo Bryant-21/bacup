@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bacup_lib.input_preflight import _resolve_ci_path, scan_conversion_inputs
+from bacup_lib.input_preflight import scan_conversion_inputs
 
 
 def _paths(fo76_data, fo76_ext, fo4_data, catalog):
@@ -53,54 +53,107 @@ def _make_complete_layout(tmp_path):
     return _paths(fo76_data, fo76_ext, fo4_data, catalog)
 
 
-def test_complete_layout_has_no_required_missing(tmp_path):
-    report = scan_conversion_inputs(_make_complete_layout(tmp_path))
-    assert report.ok
-    assert report.required_missing == []
-    assert report.optional_missing == []
+@pytest.fixture
+def no_bundled_corpus(monkeypatch):
+    """Isolate install detection from the shipped fallback.
 
-
-def test_target_extracted_dir_is_not_required(tmp_path):
-    paths = _make_complete_layout(tmp_path)
-    assert paths.target_extracted_dir is None
-    assert scan_conversion_inputs(paths).ok
-
-
-def test_missing_target_asset_catalog_is_left_for_auto_build(tmp_path):
-    paths = _make_complete_layout(tmp_path)
-    paths.target_asset_catalog_path = tmp_path / "missing_target_assets.sqlite3"
-
-    report = scan_conversion_inputs(paths)
-
-    assert report.ok
-    assert not any(
-        item.label == "FO4 target asset catalog"
-        for item in report.required_missing
+    A bundled corpus lets a bare install run, which would mask every assertion
+    about recognizing one.
+    """
+    monkeypatch.setattr(
+        "creation_lib.pex.corpus.bundled_corpus_archive", lambda game: None
     )
 
 
-def test_unreadable_target_asset_catalog_is_left_for_auto_rebuild(tmp_path):
-    paths = _make_complete_layout(tmp_path)
+def _drop_catalog(paths, tmp_path):
+    paths.target_asset_catalog_path = tmp_path / "missing_target_assets.sqlite3"
+
+
+def _corrupt_catalog(paths, tmp_path):
     paths.target_asset_catalog_path = tmp_path / "unreadable_target_assets.sqlite3"
     paths.target_asset_catalog_path.write_bytes(b"not a sqlite database")
 
-    report = scan_conversion_inputs(paths)
+
+def _drop_scripts(paths, _tmp_path):
+    shutil.rmtree(Path(paths.target_data_dir) / "Scripts")
+
+
+def _scripts_only_in_extracted(paths, tmp_path):
+    """Extraction is the normal source of the corpus; Data is the fallback."""
+    _drop_scripts(paths, tmp_path)
+    paths.target_extracted_dir = tmp_path / "ext" / "fo4"
+    _make_papyrus_corpus(paths.target_extracted_dir)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "worldspaces"),
+    [
+        (None, None),
+        (None, ("APPALACHIA",)),
+        (_drop_catalog, None),
+        (_corrupt_catalog, None),
+        (_scripts_only_in_extracted, None),
+        # The bundled corpus lets a bare install run.
+        (_drop_scripts, None),
+    ],
+)
+def test_usable_layout_has_no_required_missing(tmp_path, mutate, worldspaces):
+    paths = _make_complete_layout(tmp_path)
+    if mutate is not None:
+        mutate(paths, tmp_path)
+
+    kwargs = {"worldspaces": worldspaces} if worldspaces else {}
+    report = scan_conversion_inputs(paths, **kwargs)
 
     assert report.ok
-    assert not any(
-        item.label == "FO4 target asset catalog"
-        for item in report.required_missing
-    )
+    assert report.required_missing == []
 
 
-def test_missing_required_fo4_archive_fails(tmp_path):
-    paths = _make_complete_layout(tmp_path)
+def _unlink_archive(paths, _tmp_path):
     (paths.target_data_dir / "Fallout4 - Main.ba2").unlink()
+
+
+def _unlink_btos(paths, _tmp_path):
+    for bto in (paths.source_extracted_dir / "Meshes" / "Terrain" / "Appalachia" / "Objects").glob("*.bto"):
+        bto.unlink()
+
+
+def _unlink_source_plugin(paths, _tmp_path):
+    (paths.source_data_dir / "SeventySix.esm").unlink()
+
+
+def _drop_extracted(paths, _tmp_path):
+    shutil.rmtree(paths.source_extracted_dir)
+
+
+def _empty_scripts_dir(paths, _tmp_path):
+    """An `is_dir()` check alone would pass this and still fail every compile."""
+    for pex in (Path(paths.target_data_dir) / "Scripts").glob("*.pex"):
+        pex.unlink()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "matches"),
+    [
+        (_unlink_archive, lambda item, _paths: "FO4 archive" in item.label),
+        (_unlink_btos, lambda item, _paths: "BTO" in item.label or "terrain" in item.label.lower()),
+        (_unlink_source_plugin, lambda item, _paths: "SeventySix.esm" in item.checked_path),
+        (
+            _drop_extracted,
+            lambda item, paths: item.label == "FO76 extracted directory"
+            and item.checked_path == str(paths.source_extracted_dir),
+        ),
+        (_empty_scripts_dir, lambda item, _paths: "Papyrus" in item.label),
+    ],
+)
+def test_missing_required_input_blocks_the_run(tmp_path, no_bundled_corpus, mutate, matches):
+    paths = _make_complete_layout(tmp_path)
+    mutate(paths, tmp_path)
 
     report = scan_conversion_inputs(paths)
 
     assert not report.ok
-    assert any("FO4 archive" in item.label for item in report.required_missing)
+    assert sum(matches(item, paths) for item in report.required_missing) == 1
 
 
 def test_missing_optional_dlc_archive_is_reported_but_not_required(tmp_path):
@@ -117,62 +170,6 @@ def test_missing_optional_dlc_archive_is_reported_but_not_required(tmp_path):
     assert [item.label for item in report.optional_missing] == [
         "FO4 archive (DLCCoast)"
     ]
-
-
-def test_missing_btos_is_required_missing(tmp_path):
-    paths = _make_complete_layout(tmp_path)
-    for bto in (paths.source_extracted_dir / "Meshes" / "Terrain" / "Appalachia" / "Objects").glob("*.bto"):
-        bto.unlink()
-    report = scan_conversion_inputs(paths)
-    assert not report.ok
-    labels = [item.label for item in report.required_missing]
-    assert any("BTO" in label or "terrain" in label.lower() for label in labels)
-
-
-def test_missing_source_plugin_is_required_missing(tmp_path):
-    paths = _make_complete_layout(tmp_path)
-    (paths.source_data_dir / "SeventySix.esm").unlink()
-    report = scan_conversion_inputs(paths)
-    assert not report.ok
-    assert any("SeventySix.esm" in item.checked_path for item in report.required_missing)
-
-
-def test_bto_match_is_case_insensitive(tmp_path):
-    paths = _make_complete_layout(tmp_path)
-    report = scan_conversion_inputs(paths, worldspaces=("APPALACHIA",))
-    assert report.ok
-
-
-def test_missing_extracted_directory_is_reported_directly(tmp_path):
-    paths = _make_complete_layout(tmp_path)
-    shutil.rmtree(paths.source_extracted_dir)
-
-    report = scan_conversion_inputs(paths)
-
-    extracted_errors = [
-        item for item in report.required_missing
-        if item.label == "FO76 extracted directory"
-    ]
-    assert len(extracted_errors) == 1
-    assert extracted_errors[0].checked_path == str(paths.source_extracted_dir)
-
-
-def test_resolve_ci_path_with_repeated_segment(tmp_path):
-    (tmp_path / "Meshes" / "Terrain").mkdir(parents=True)
-    resolved = _resolve_ci_path(tmp_path, "Meshes", "Terrain", "Meshes")
-    assert resolved == tmp_path / "Meshes" / "Terrain" / "Meshes"
-
-
-@pytest.fixture
-def no_bundled_corpus(monkeypatch):
-    """Isolate install detection from the shipped fallback.
-
-    A bundled corpus lets a bare install run, which would mask every assertion
-    about recognizing one.
-    """
-    monkeypatch.setattr(
-        "creation_lib.pex.corpus.bundled_corpus_archive", lambda game: None
-    )
 
 
 def test_missing_papyrus_sources_blocks_the_run_without_a_bundled_corpus(
@@ -196,31 +193,6 @@ def test_missing_papyrus_sources_blocks_the_run_without_a_bundled_corpus(
     assert "archives" in entry.fix_hint
 
 
-def test_bundled_corpus_means_a_bare_install_does_not_block(tmp_path):
-    """Shipping the type universe removes the last reason to refuse a run."""
-    paths = _make_complete_layout(tmp_path)
-    shutil.rmtree(Path(paths.target_data_dir) / "Scripts")
-
-    report = scan_conversion_inputs(paths)
-
-    assert not [item for item in report.required_missing if "Papyrus" in item.label]
-
-
-
-def test_empty_source_dir_is_not_mistaken_for_installed_sources(
-    tmp_path, no_bundled_corpus
-):
-    """An `is_dir()` check alone would pass this and still fail every compile."""
-    paths = _make_complete_layout(tmp_path)
-    for pex in (Path(paths.target_data_dir) / "Scripts").glob("*.pex"):
-        pex.unlink()
-
-    report = scan_conversion_inputs(paths)
-
-    assert not report.ok
-    assert any("Papyrus" in item.label for item in report.required_missing)
-
-
 def test_partial_source_install_names_only_the_missing_anchors(
     tmp_path, no_bundled_corpus
 ):
@@ -236,16 +208,6 @@ def test_partial_source_install_names_only_the_missing_anchors(
     assert "Form" in entry.label
     assert "ScriptObject" not in entry.label
     assert "ObjectReference" not in entry.label
-
-
-def test_extracted_dir_satisfies_the_check_when_data_dir_does_not(tmp_path):
-    """Extraction is the normal source of the corpus; Data is the fallback."""
-    paths = _make_complete_layout(tmp_path)
-    shutil.rmtree(Path(paths.target_data_dir) / "Scripts")
-    paths.target_extracted_dir = tmp_path / "ext" / "fo4"
-    _make_papyrus_corpus(paths.target_extracted_dir)
-
-    assert scan_conversion_inputs(paths).ok
 
 
 def test_papyrus_anchors_found_in_archives_do_not_block(monkeypatch, tmp_path):

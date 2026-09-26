@@ -9,6 +9,7 @@ UI does the same from ``ToolkitSettings``. This module must never read
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple
@@ -71,11 +72,15 @@ class RegenPaths:
         return self.archive_base_name or self.mod_name
 
 
+# No BA2 size limit for the Main + Textures layout (the UI's standard format).
+UNLIMITED_ARCHIVE_MAX_BYTES = (1 << 63) - 1
+
+
 @dataclass
 class RegenOptions:
     deploy: bool = True
     ba2_mode: str = "packed"  # "packed" | "expanded"
-    archive_max_bytes: int = 16 * 1024**3
+    archive_max_bytes: int = UNLIMITED_ARCHIVE_MAX_BYTES
     ba2_compression_level: int | None = None
     deploy_loose: bool = False
     workers: int | None = None
@@ -97,9 +102,13 @@ class RegenOptions:
     records_only: bool = False
     include_interior: bool = True
     carry_interior_previs: bool = False
-    # Experimental post-asset precombine generation (default off). Reconciled onto
-    # PhaseSelection.generate_precombines; see family_map._PRECOMBINES_ENABLED.
-    generate_precombines: bool = False
+    fail_on_duplicate_form_ids: bool = False
+    # Leave exterior CELLs out of the precombine index (no <stem> - Exterior.cdx for Tales).
+    interior_cdx_only: bool = False
+    # Clean-room interior precombines, run before previs (default on).
+    build_precombines: bool = True
+    # Umbra previs from the clean-room Rust solve (default on).
+    generate_previs: bool = True
     records_limit: int | None = None
     emit_btd4: bool = False
     generate_anim_text_data: bool = False
@@ -108,6 +117,8 @@ class RegenOptions:
     validate_output: bool = False
     validation_warn_only: bool = False
     max_asset_failures: int | None = None
+    # A failing phase is recorded and the run still packs and deploys what it produced.
+    continue_on_error: bool = True
     max_seconds: int | None = None
     deep_invariants: bool = False
     export_yaml: bool = True
@@ -115,7 +126,9 @@ class RegenOptions:
     memory_report: bool = False
     direct_deploy_archives: bool = False
     update_runtime_ini: bool = True
-    fo4_ba2_target: str = "nextgen"  # "og" | "nextgen"; resolved concrete by caller
+    # Always "og" (BTDX v1): pre-next-gen FO4 runtimes reject any header
+    # version above 1 and silently skip the whole archive; next-gen accepts v1.
+    fo4_ba2_target: str = "og"
     # Upgrade generation: regenerate only the families changed between the
     # deployed and target versions; reuse the rest from the live deployment.
     upgrade: bool = False
@@ -275,6 +288,8 @@ RESUME_PHASES = (
     "build",
     "modt",
     "offsets",
+    "precombine",
+    "previs",
     "animtext",
     "lodgen",
     "pack",
@@ -328,6 +343,11 @@ _RESUME_PHASE_ALIASES = {
     "offsets": "offsets",
     "cell_offsets": "offsets",
     "rebuild_cell_offsets": "offsets",
+    "precombine": "precombine",
+    "precombines": "precombine",
+    "build_precombines": "precombine",
+    "previs": "previs",
+    "generate_previs": "previs",
     "animtext": "animtext",
     "anim_text_data": "animtext",
     "generate_anim_text_data": "animtext",
@@ -356,6 +376,8 @@ _RESUME_PHASE_LABELS = {
     "build": "Build ESP",
     "modt": "Regenerate MODT",
     "offsets": "Rebuild Cell Offsets",
+    "precombine": "Build Precombines",
+    "previs": "Generate Previs",
     "animtext": "Generate AnimTextData",
     "lodgen": "Generate LOD",
     "pack": "Pack BA2",
@@ -1120,8 +1142,9 @@ def _build_options(
             translate_records=ps.translate_records,
             convert_placed_records=placed,
             convert_npc_faces=False,
-            convert_terrain=False,
+            convert_terrain=reuse_terrain_navmesh,
             reuse_terrain_navmesh=reuse_terrain_navmesh,
+            terrain_graft_esm=terrain_graft_esm,
             convert_nifs=False,
             convert_btos=False,
             convert_textures=False,
@@ -1191,7 +1214,8 @@ def _build_options(
         papyrus_compiler=papyrus_compiler,
         fnv_quest_slice=fnv_quest_slice,
         mvp_melee_only=mvp_melee_only,
-        generate_precombines=ps.generate_precombines,
+        build_precombines=ps.build_precombines,
+        generate_previs=ps.generate_previs,
         placeholder_audio=placeholder_audio,
     )
 
@@ -1649,7 +1673,11 @@ def _run_runner_phase(
     phase_no: int,
     label: str,
     body,
+    *,
+    continue_failures: list[str] | None = None,
 ) -> None:
+    """Run one pipeline phase. With ``continue_failures`` an error is appended there
+    and the run carries on instead of raising."""
     from bacup_lib.models import PhaseProgress
 
     emit_start = getattr(runner, "emit_phase_start", None)
@@ -1672,7 +1700,14 @@ def _run_runner_phase(
         progress.elapsed_seconds = time.perf_counter() - started
         if callable(emit_complete):
             emit_complete(progress)
-        raise
+        if continue_failures is None:
+            raise
+        continue_failures.append(f"{label}: {exc}")
+        LOG.exception("%s failed; continuing", label)
+        emit_log = getattr(runner, "emit_log", None)
+        if callable(emit_log):
+            emit_log("ERROR", f"{label} failed; continuing: {exc}")
+        return
     progress.status = "completed"
     progress.completed_items = 1
     progress.elapsed_seconds = time.perf_counter() - started
@@ -1728,11 +1763,25 @@ def _run_existing_lodgen(
     )
 
 
+def _runner_pack_log(runner) -> Callable[[dict], bool] | None:
+    if runner is None:
+        return None
+
+    def log_pack_event(event: dict) -> bool:
+        message = str(event.get("message") or "")
+        if message:
+            runner.emit_log("INFO", message)
+        return True
+
+    return log_pack_event
+
+
 def _pack_existing_output(
     paths: "RegenPaths",
     options: "RegenOptions",
     *,
     resolved_workers: int,
+    pack_progress: Callable[[dict], bool | None] | None = None,
 ) -> bool:
     from bacup_lib.native_runtime import load_native_module
     from bacup_lib.workflows.unified import finalize_sinks_for_mod
@@ -1764,6 +1813,7 @@ def _pack_existing_output(
             expanded_archives=(options.ba2_mode == "expanded"),
             archive_output_dir=archive_output_dir,
             fo4_ba2_target=options.fo4_ba2_target,
+            pack_progress=pack_progress,
         )
     finally:
         try:
@@ -2096,6 +2146,25 @@ def _deploy_output_mods(
                     resource_dir=resource_dir,
                     deploy_archives=deploy_archives,
                 )
+                if plugin_only:
+                    from creation_lib.build.deployer import deploy_xse_files
+
+                    runtime_mod_dir = exposed_project_root / "mods" / mod_name
+                    deploy_xse_files(
+                        runtime_mod_dir,
+                        game_data_dir,
+                        game="fo4",
+                    )
+                    prisma_source = runtime_mod_dir / "PrismaUI_F4"
+                    for source in sorted(prisma_source.rglob("*")):
+                        if not source.is_file():
+                            continue
+                        relative = Path("PrismaUI_F4") / source.relative_to(
+                            prisma_source
+                        )
+                        destination = game_data_dir / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, destination)
         if output_root_name != plugin_stem:
             suffix = Path(plugin_name).suffix
             deployed_alias = game_data_dir / f"{output_root_name}{suffix}"
@@ -2383,6 +2452,44 @@ def _deploy_lod_settings(output_root: Path, deploy_data_dir: Path) -> int:
     return deployed
 
 
+def _precombine_sidecar_names(plugin_names: list[str]) -> list[str]:
+    from bacup_lib.precombine_generation import precombine_sidecar_names
+
+    return [name for plugin in plugin_names for name in precombine_sidecar_names(plugin)]
+
+
+def _deploy_precombine_sidecars(
+    output_root: Path, deploy_data_dir: Path, plugin_names: list[str]
+) -> int:
+    """Copy each plugin's precombine sidecars (``precombine_sidecar_names``) loose beside it.
+
+    The game only reads them as loose files next to the plugin, so they are
+    deployed in every mode and, like the plugin, never archived or recorded in
+    the loose manifest. A deployed copy the output no longer has is removed so
+    a stale index never outlives its plugin.
+    """
+    deployed = 0
+    for name in _precombine_sidecar_names(plugin_names):
+        source = output_root / name
+        destination = deploy_data_dir / name
+        if source.is_file():
+            shutil.copy2(source, destination)
+            deployed += 1
+        else:
+            destination.unlink(missing_ok=True)
+    return deployed
+
+
+def _remove_precombine_sidecars(game_data_dir: Path, plugin_names: list[str]) -> list[str]:
+    removed: list[str] = []
+    for name in _precombine_sidecar_names(plugin_names):
+        path = game_data_dir / name
+        if path.is_file():
+            path.unlink()
+            removed.append(name)
+    return removed
+
+
 def _preserve_lod_settings_from_archives(
     output_root: Path, archive_paths: list[Path]
 ) -> int:
@@ -2656,6 +2763,14 @@ def _snapshot_land_cache_assets(output_root: Path) -> int:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dst)
         copied += 1
+    # The dense BTD4 sidecar names the cached LTEX/GRAS records by object id, so
+    # it must travel with the cached LAND or a --re-use-land run loses it.
+    for terrain_root in _casefold_child_dirs(output_root, "terrain"):
+        for path in sorted(terrain_root.glob("*.btd4")):
+            dst = tmp / "Terrain" / path.name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _link_or_copy(path, dst)
+            copied += 1
 
     if cache_root.exists():
         shutil.rmtree(cache_root)
@@ -2664,6 +2779,23 @@ def _snapshot_land_cache_assets(output_root: Path) -> int:
     elif tmp.exists():
         shutil.rmtree(tmp)
     return copied
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Hard-link multi-GB sidecars when possible; BTD4 writes replace by rename,
+    so a later run never mutates the linked cache copy."""
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _restore_cached_file(src: Path, dst: Path) -> None:
+    if src.suffix.casefold() == ".btd4":
+        dst.unlink(missing_ok=True)
+        _link_or_copy(src, dst)
+    else:
+        shutil.copy2(src, dst)
 
 
 def _restore_land_cache_assets(output_root: Path) -> int:
@@ -2678,7 +2810,7 @@ def _restore_land_cache_assets(output_root: Path) -> int:
         rel = path.relative_to(cache_root)
         dst = output_root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dst)
+        _restore_cached_file(path, dst)
         copied += 1
     return copied
 
@@ -2697,7 +2829,7 @@ def _restore_land_cache_terrain_assets(output_root: Path) -> int:
             continue
         dst = output_root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, dst)
+        _restore_cached_file(path, dst)
         copied += 1
     return copied
 
@@ -2920,6 +3052,10 @@ def _deploy_post_steps(
             archive_plugin_names,
             swap_labels,
         )
+    from bacup_lib.menu_presentation_deploy import write_always_loose
+
+    # Outputs converted before the converter wrote this list still need it for any deploy path.
+    write_always_loose(paths.output_root)
     deploy_output_kwargs = {
         "deploy_archives": (
             not deploy_loose
@@ -2950,6 +3086,11 @@ def _deploy_post_steps(
     deployed_lod_settings = _deploy_lod_settings(paths.output_root, deploy_data_dir)
     if deployed_lod_settings:
         LOG.info("deployed %s LOD settings file(s)", deployed_lod_settings)
+    deployed_sidecars = _deploy_precombine_sidecars(
+        paths.output_root, deploy_data_dir, plugin_names
+    )
+    if deployed_sidecars:
+        LOG.info("deployed %s precombine sidecar file(s)", deployed_sidecars)
     archive_entries = _deployed_archive_names(
         deploy_data_dir,
         archive_plugin_names,
@@ -3097,6 +3238,7 @@ def _undeploy_main(
     removed_files.extend(
         _remove_tracked_loose_deployment(game_data_dir, paths.mod_name)
     )
+    removed_files.extend(_remove_precombine_sidecars(game_data_dir, plugin_names))
     if not undeploys_virtual_data:
         removed_ini_entries = _remove_fo4_archive_ini_entries(
             archive_names, ini_path=ck_ini_path
@@ -3598,6 +3740,10 @@ def run_full_regen(
     os.environ["RAYON_NUM_THREADS"] = str(resolved_workers)
 
     upgrade_plan = _resolve_upgrade_plan(paths, options, pair)
+    if isinstance(upgrade_plan, UpgradePlan) and upgrade_plan.full_build:
+        raise ValueError(
+            "this upgrade requires a full conversion; turn off Upgrade mode"
+        )
     if isinstance(upgrade_plan, _UpgradeNoOp):
         message = (
             f"regen upgrade: deployed version already at {upgrade_plan.target}; "
@@ -3844,12 +3990,9 @@ def run_full_regen(
         memory_report.start()
 
     phases.lod_mode = options.lod_mode
-    # Honor an explicit precombine request without clobbering the upgrade plan's
-    # (currently always-False) resolution. force-enable only: never turns off what
-    # resolve_upgrade_plan or the caller already enabled.
-    phases.generate_precombines = (
-        phases.generate_precombines or options.generate_precombines
-    )
+    # Both default on, so either side opting out turns the phase off.
+    phases.build_precombines = phases.build_precombines and options.build_precombines
+    phases.generate_previs = phases.generate_previs and options.generate_previs
     if graft_plan.force_convert_terrain:
         phases.convert_terrain = True
     build_kwargs = dict(
@@ -3879,6 +4022,9 @@ def run_full_regen(
     )
     port_options.include_interior = options.include_interior
     port_options.carry_interior_previs = options.carry_interior_previs
+    port_options.fail_on_duplicate_form_ids = options.fail_on_duplicate_form_ids
+    port_options.interior_cdx_only = options.interior_cdx_only
+    port_options.continue_on_error = options.continue_on_error
     object_lod_overlay_path = output_root / _OBJECT_LOD_OVERLAY_RELATIVE_PATH
 
     if pair.merge is None:
@@ -4157,8 +4303,12 @@ def run_full_regen(
             f"BTO conversion failed: {getattr(result, 'btos_failed', 0)}/"
             f"{getattr(result, 'btos_total', 0)} terrain BTO(s)"
         )
+    # Without continue-on-error a fatal phase already raised; what is left here are
+    # phases that report an error without stopping the run.
+    (failures if options.continue_on_error else warnings).extend(request.phase_failures)
+    keep_going = not failures or options.continue_on_error
 
-    if not failures:
+    if keep_going:
         if options.deep_invariants:
             invariants_started = time.perf_counter()
             emit_runner_status(runner, "Verifying generated mod output")
@@ -4187,9 +4337,11 @@ def run_full_regen(
             runner.emit_log("INFO", "postflight: deep output invariants disabled")
 
     deployed = False
-    if not failures:
+    if keep_going:
+        # A run with failed phases must not become the cache later runs reuse.
         if (
-            options.write_land_cache
+            not failures
+            and options.write_land_cache
             and not options.re_use_land
             and not options.records_only
             and not land_cache_snapshotted
@@ -4343,6 +4495,8 @@ def _run_existing_post_phases(
     from bacup_lib.timing_report import TimingReport
     from bacup_lib.workflows.unified import (
         _finalize_fo76_pipboy_map_texture,
+        _build_precombines_after_build,
+        _generate_previs_after_build,
         _rebuild_cell_offsets_after_build,
         _regenerate_modt_after_asset_waves,
         _run_anim_text_data_generation,
@@ -4358,6 +4512,7 @@ def _run_existing_post_phases(
     resolved_workers = options.workers or _effective_conversion_workers(None)
     failures: list[str] = []
     warnings: list[str] = []
+    continue_failures = failures if options.continue_on_error else None
     archives_already_deployed = False
     post_driver = None
     post_ctx = None
@@ -4368,13 +4523,15 @@ def _run_existing_post_phases(
             "Resuming conversion from "
             f"{_RESUME_PHASE_LABELS[start_phase]}; outputs from this phase onward will be overwritten",
         )
-        if start_phase in {"modt", "offsets", "animtext"}:
+        if start_phase in {"modt", "offsets", "precombine", "previs", "animtext"}:
             source_plugin, request, post_driver, post_ctx = _build_existing_post_driver(
                 paths,
                 plugin_names,
                 resolved_workers=resolved_workers,
                 runner=runner,
             )
+            request.options.continue_on_error = options.continue_on_error
+            request.phase_failures = failures if options.continue_on_error else warnings
             if start_phase == "modt":
                 _run_post_phase(
                     "Regenerate MODT",
@@ -4385,6 +4542,7 @@ def _run_existing_post_phases(
                         progress=progress,
                     ),
                     runner,
+                    request=request,
                 )
                 post_driver.record_runtime._repair_term_marker_parameters_final(
                     post_ctx,
@@ -4392,7 +4550,14 @@ def _run_existing_post_phases(
                     source_plugin,
                 )
                 request.options.convert_textures = True
-                _finalize_fo76_pipboy_map_texture(request, post_ctx, runner)
+                _run_post_phase(
+                    "Finalize Pip-Boy Map",
+                    lambda _progress: _finalize_fo76_pipboy_map_texture(
+                        request, post_ctx, runner
+                    ),
+                    runner,
+                    request=request,
+                )
 
             if start_phase in {"modt", "offsets"}:
                 # MODT resume rewrites the ESM above, so the layout-encoding
@@ -4406,6 +4571,39 @@ def _run_existing_post_phases(
                         progress=progress,
                     ),
                     runner,
+                    request=request,
+                )
+
+            if start_phase == "precombine" or (
+                start_phase in {"modt", "offsets"} and options.build_precombines
+            ):
+                request.options.build_precombines = True
+                _run_post_phase(
+                    "Build Precombines",
+                    lambda progress: _build_precombines_after_build(
+                        post_driver,
+                        runner,
+                        output_root,
+                        progress=progress,
+                    ),
+                    runner,
+                    request=request,
+                )
+
+            if start_phase == "previs" or (
+                start_phase in {"modt", "offsets", "precombine"} and options.generate_previs
+            ):
+                request.options.generate_previs = True
+                _run_post_phase(
+                    "Generate Previs",
+                    lambda progress: _generate_previs_after_build(
+                        post_driver,
+                        runner,
+                        output_root,
+                        progress=progress,
+                    ),
+                    runner,
+                    request=request,
                 )
 
             if start_phase == "animtext" or options.generate_anim_text_data:
@@ -4418,9 +4616,12 @@ def _run_existing_post_phases(
                         progress=progress,
                     ),
                     runner,
+                    request=request,
                 )
 
-        if start_phase in {"modt", "offsets", "animtext", "lodgen"} and options.lod_mode in {
+        if start_phase in {
+            "modt", "offsets", "precombine", "previs", "animtext", "lodgen"
+        } and options.lod_mode in {
             "generate",
             "hybrid",
             "hybrid-atlas",
@@ -4439,10 +4640,11 @@ def _run_existing_post_phases(
                     resolved_workers=resolved_workers,
                     pair_id=pair_id,
                 ),
+                continue_failures=continue_failures,
             )
 
         if (
-            start_phase in {"modt", "offsets", "animtext", "lodgen", "pack"}
+            start_phase in {"modt", "offsets", "precombine", "previs", "animtext", "lodgen", "pack"}
             and not options.deploy_loose
         ):
             pack_result = {"archives_already_deployed": False}
@@ -4452,6 +4654,7 @@ def _run_existing_post_phases(
                     paths,
                     options,
                     resolved_workers=resolved_workers,
+                    pack_progress=_runner_pack_log(runner),
                 )
 
             _run_runner_phase(
@@ -4459,6 +4662,7 @@ def _run_existing_post_phases(
                 91,
                 "Pack BA2",
                 pack_body,
+                continue_failures=continue_failures,
             )
             archives_already_deployed = bool(pack_result["archives_already_deployed"])
 
@@ -4476,7 +4680,7 @@ def _run_existing_post_phases(
             warnings.extend(invariant_warnings)
 
         deployed = False
-        if not failures and options.deploy:
+        if (not failures or options.continue_on_error) and options.deploy:
             deploy_kwargs = {
                 "archives_already_deployed": archives_already_deployed,
                 "update_runtime_ini": options.update_runtime_ini,
@@ -4551,6 +4755,7 @@ def run_resume_from_phase(
     phase = _normalize_resume_phase(start_phase)
     pair = pair or get_pair(DEFAULT_PAIR_ID)
     plugin_names = list(plugin_names or pair.source_plugins)
+    os.environ["RAYON_NUM_THREADS"] = str(options.workers or _effective_conversion_workers(None))
     if phase not in _FULL_REBUILD_RESUME_PHASES:
         _require_existing_plugins(paths, plugin_names, start_phase=phase)
 
@@ -4602,7 +4807,9 @@ def run_resume_from_phase(
             lod_worldspaces=lod_worldspaces,
             timing_report=timing_report,
         )
-        if asset_result.failures or asset_result.exit_code not in {0, 3}:
+        if not options.continue_on_error and (
+            asset_result.failures or asset_result.exit_code not in {0, 3}
+        ):
             return asset_result
         post_result = _run_existing_post_phases(
             paths,
@@ -4616,6 +4823,9 @@ def run_resume_from_phase(
             timing_report=timing_report,
         )
         post_result.warnings = [*asset_result.warnings, *post_result.warnings]
+        if asset_result.failures:
+            post_result.failures = [*asset_result.failures, *post_result.failures]
+            post_result.exit_code = post_result.exit_code or 2
         return post_result
 
     if phase == "deploy":
@@ -4647,6 +4857,7 @@ def deploy_existing(
     update_runtime_ini: bool = True,
     options: RegenOptions | None = None,
     timing_report=None,
+    runner=None,
 ) -> RegenResult:
     """Deploy an already-generated conversion output without running conversion."""
     from bacup_lib.timing_report import TimingReport
@@ -4667,17 +4878,37 @@ def deploy_existing(
             ],
         )
 
+    failures: list[str] = []
     deploy_loose = bool(options and options.deploy_loose)
     register_runtime_archives = True
     if options is not None:
         update_runtime_ini = options.update_runtime_ini
         register_runtime_archives = _should_register_runtime_archives(options)
     if options is not None and not deploy_loose:
-        archives_already_deployed = _pack_existing_output(
-            paths,
-            options,
-            resolved_workers=options.workers or _effective_conversion_workers(None),
-        )
+        workers = options.workers or _effective_conversion_workers(None)
+        if runner is not None:
+            runner.emit_log(
+                "INFO",
+                f"Scanning {paths.output_root / 'data'} for BA2 packing ({workers} workers)...",
+            )
+        try:
+            archives_already_deployed = _pack_existing_output(
+                paths,
+                options,
+                resolved_workers=workers,
+                pack_progress=_runner_pack_log(runner),
+            )
+        except Exception as exc:
+            if not options.continue_on_error:
+                raise
+            failures.append(f"Pack BA2: {exc}")
+            LOG.exception("Pack BA2 failed; deploying without new archives")
+            if runner is not None:
+                runner.emit_log(
+                    "ERROR", f"Pack BA2 failed; deploying without new archives: {exc}"
+                )
+            # Nothing trustworthy was packed, so copy no archives from the output.
+            archives_already_deployed = True
     else:
         output_archives = _output_archive_names(paths.output_root, names)
         archives_already_deployed = not bool(output_archives)
@@ -4691,10 +4922,11 @@ def deploy_existing(
         deploy_kwargs["deploy_loose"] = True
     _deploy_post_steps(paths, names, tr, **deploy_kwargs)
     return RegenResult(
-        exit_code=0,
+        exit_code=0 if not failures else 2,
         output_root=paths.output_root,
         elapsed_seconds=time.perf_counter() - started,
         deployed=True,
+        failures=failures,
     )
 
 

@@ -1,5 +1,5 @@
     #[test]
-    fn weapon_cone_force_only_changes_the_source_query_layer_contract() {
+    fn weapon_cone_force_only_changes_the_source_query_layer_contract_in_raw_or_structured_data() {
         let interner = StringInterner::new();
         let masters = vec!["Fallout4.esm".to_string()];
         let mut ctx = PairCtx::with_source(&interner, "SeventySix.esm", &masters);
@@ -24,11 +24,7 @@
             Fo76Fo4Hook.pre_translate(&mut ctx, &mut record).unwrap();
             assert_eq!(record.fields[0].value, before);
         }
-    }
 
-    #[test]
-    fn weapon_cone_force_handles_structured_source_data() {
-        let interner = StringInterner::new();
         let mut record = make_record("PROJ", &interner);
         let force = interner.intern("impact_force");
         push_field(&mut record, "DNAM", FieldValue::Struct(vec![

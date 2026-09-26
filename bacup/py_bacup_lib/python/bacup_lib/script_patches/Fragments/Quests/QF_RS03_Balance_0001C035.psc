@@ -213,6 +213,10 @@ Function Fragment_Stage_1000_Item_00()
 		playerRef.SetValue(FF05_Balance_Completed, 1.0)
 	EndIf
 
+	; Stage 1000 carries a second log entry that the conversion appended to pay
+	; the currency reward (B21:CurrencyQuestRewards RewardStageItems = 1). Yield
+	; before stopping so that entry is processed while the quest is still running.
+	Utility.Wait(1.0)
 	Stop()
 EndFunction
 

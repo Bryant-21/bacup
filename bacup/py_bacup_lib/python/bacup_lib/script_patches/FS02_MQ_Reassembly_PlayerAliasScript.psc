@@ -7,6 +7,11 @@ Function EvaluateAbbiesBunkerEntry()
 			FS02_MQ_Reassembly_AbbieIntroScene.Start()
 		EndIf
 	EndIf
+	; Objective 500 "Return to Abbie's bunker" had no stage setter; 600 starts
+	; FS03, whose startup completes this quest.
+	If owningQuest != None && playerRef != None && owningQuest.GetStageDone(500) && !owningQuest.GetStageDone(600) && playerRef.GetCurrentLocation() == AbbiesBunkerLocation
+		owningQuest.SetStage(600)
+	EndIf
 EndFunction
 
 Event OnAliasInit()

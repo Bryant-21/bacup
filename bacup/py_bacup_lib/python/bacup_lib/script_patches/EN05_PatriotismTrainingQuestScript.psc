@@ -22,15 +22,43 @@ EndFunction
 ; This course has no countdown properties, so the start-up stage hands straight
 ; over to the course start stage.
 Function EN05PT_BeginCourse()
+    iJimmyHelloValue = 0
+    iTopherHelloValue = 0
+    iJianjunHelloValue = 0
     fCourseStartTime = Utility.GetCurrentRealTime()
     fCourseTime = 0.0
     If !IsStageDone(iCourseStartStage)
         SetStage(iCourseStartStage)
     EndIf
+    EN05PT_ReconcileDiaryReads()
+EndFunction
+
+Function EN05PT_ShutdownCourse()
+    If EN05_PatriotismCourse_0110_Success != None
+        EN05_PatriotismCourse_0110_Success.Stop()
+    EndIf
+    iJimmyHelloValue = 0
+    iTopherHelloValue = 0
+    iJianjunHelloValue = 0
+EndFunction
+
+Function EN05PT_ReconcileDiaryReads()
+    Actor playerRef = EN05PT_GetPlayer()
+    If !IsRunning() || playerRef == None || DiaryData == None
+        Return
+    EndIf
+    Int index = 0
+    While index < DiaryData.Length
+        ActorValue readValue = DiaryData[index].ReadValue
+        If readValue != None && playerRef.GetValue(readValue) > 0.0
+            EN05PT_HandleDiaryRead(DiaryData[index].DiaryNote)
+        EndIf
+        index += 1
+    EndWhile
 EndFunction
 
 Function EN05PT_HandleDiaryRead(Book akDiary)
-    If akDiary == None || DiaryData == None
+    If !IsRunning() || akDiary == None || DiaryData == None
         Return
     EndIf
 

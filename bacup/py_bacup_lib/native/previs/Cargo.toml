@@ -1,0 +1,35 @@
+[package]
+name = "previs_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "previs_native"
+crate-type = ["rlib"]
+
+[dependencies]
+bsarchive_native = { path = "../../../../py_creation_lib/native/bsarchive" }
+flate2           = "1.1.9"
+havok_native     = { path = "../../../../py_creation_lib/native/havok" }
+half             = "2"
+indexmap         = "2"
+libz-sys         = { version = "1.1", default-features = false, features = ["static", "libc"] }
+materials_native = { path = "../../../../py_creation_lib/native/materials" }
+memmap2          = "0.9"
+nif_core_native  = { path = "../../../../py_creation_lib/native/nif_core" }
+pyo3             = { workspace = true, features = ["extension-module", "abi3-py310"] }
+rayon            = "1"
+rustc-hash       = "2"
+serde            = { workspace = true, features = ["derive"] }
+serde_json       = { workspace = true, features = ["preserve_order"] }
+sha2             = "0.10"
+thiserror        = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+hex = "0.4"
+# Examples match the production extension, which runs on mimalloc.
+mimalloc = { version = "0.1", default-features = false }

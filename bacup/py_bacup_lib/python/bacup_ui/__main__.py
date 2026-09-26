@@ -83,14 +83,11 @@ def run_bacup(launch_path: str | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    from bacup_ui.crash_diagnostics import start_crash_diagnostics
+    from bacup_ui.crash_diagnostics import enable_fatal_error_logging
 
-    stop_diagnostics = start_crash_diagnostics()
-    try:
-        args = list(sys.argv[1:] if argv is None else argv)
-        run_bacup(args[0] if args else None)
-    finally:
-        stop_diagnostics.set()
+    enable_fatal_error_logging()
+    args = list(sys.argv[1:] if argv is None else argv)
+    run_bacup(args[0] if args else None)
 
 
 if __name__ == "__main__":

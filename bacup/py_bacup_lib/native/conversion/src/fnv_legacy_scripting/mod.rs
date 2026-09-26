@@ -368,100 +368,98 @@ mod orchestration_tests {
     use serde_json::json;
 
     #[test]
-    fn translate_all_qust_smoke() {
-        let records = vec![(
-            json!({
-                "eid": "TestQuest",
-                "fields": [
-                    { "INDX": 10 },
-                    { "SCTX": "set x to 1" },
-                ]
-            }),
-            "001234:FNV.esm".to_string(),
-        )];
-        let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
-        translate_all_qust(&mut ctx, &records);
-        assert_eq!(
-            ctx.translated_quests.len(),
-            1,
-            "one quest should be translated"
-        );
-        assert_eq!(ctx.translated_record_payloads.len(), 1);
-        assert_eq!(ctx.skipped_records.len(), 0);
-        let tq = &ctx.translated_quests[0];
-        assert_eq!(tq.stage_fragments.len(), 1);
-        assert_eq!(tq.stage_fragments[0].stage_index, 10);
+    fn translate_all_smoke_for_qust_scen_and_dial() {
+        {
+            let records = vec![(
+                json!({
+                    "eid": "TestQuest",
+                    "fields": [
+                        { "INDX": 10 },
+                        { "SCTX": "set x to 1" },
+                    ]
+                }),
+                "001234:FNV.esm".to_string(),
+            )];
+            let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
+            translate_all_qust(&mut ctx, &records);
+            assert_eq!(
+                ctx.translated_quests.len(),
+                1,
+                "one quest should be translated"
+            );
+            assert_eq!(ctx.translated_record_payloads.len(), 1);
+            assert_eq!(ctx.skipped_records.len(), 0);
+            let tq = &ctx.translated_quests[0];
+            assert_eq!(tq.stage_fragments.len(), 1);
+            assert_eq!(tq.stage_fragments[0].stage_index, 10);
+        }
+        {
+            let records = vec![(
+                json!({
+                    "eid": "TestScene",
+                    "fields": [
+                        { "SCTX": "set y to 2" },
+                    ]
+                }),
+                "001235:FNV.esm".to_string(),
+            )];
+            let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
+            translate_all_scen(&mut ctx, &records);
+            assert_eq!(ctx.translated_scenes.len(), 1);
+            assert_eq!(ctx.translated_scenes[0].actions.len(), 1);
+        }
+        {
+            let records = vec![(
+                json!({
+                    "eid": "TestInfo",
+                    "fields": [
+                        { "SCTX": "set z to 3" },
+                    ]
+                }),
+                "001236:FNV.esm".to_string(),
+            )];
+            let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
+            translate_all_dial(&mut ctx, &records);
+            assert_eq!(ctx.translated_infos.len(), 1);
+            assert!(ctx.translated_infos[0].fragment_class_name.is_some());
+            // LIP dropped → voice path should be in lip_regeneration_needed.
+            assert!(!ctx.lip_regeneration_needed.is_empty());
+        }
     }
 
     #[test]
-    fn translate_all_scen_smoke() {
-        let records = vec![(
-            json!({
-                "eid": "TestScene",
-                "fields": [
-                    { "SCTX": "set y to 2" },
-                ]
-            }),
-            "001235:FNV.esm".to_string(),
-        )];
-        let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
-        translate_all_scen(&mut ctx, &records);
-        assert_eq!(ctx.translated_scenes.len(), 1);
-        assert_eq!(ctx.translated_scenes[0].actions.len(), 1);
-    }
-
-    #[test]
-    fn translate_all_dial_smoke() {
-        let records = vec![(
-            json!({
-                "eid": "TestInfo",
-                "fields": [
-                    { "SCTX": "set z to 3" },
-                ]
-            }),
-            "001236:FNV.esm".to_string(),
-        )];
-        let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
-        translate_all_dial(&mut ctx, &records);
-        assert_eq!(ctx.translated_infos.len(), 1);
-        assert!(ctx.translated_infos[0].fragment_class_name.is_some());
-        // LIP dropped → voice path should be in lip_regeneration_needed.
-        assert!(!ctx.lip_regeneration_needed.is_empty());
-    }
-
-    #[test]
-    fn fnv_legacy_scripting_context_accumulates_payloads() {
-        // Payloads are transient: they live on the context and are drained
-        // by `ConversionRun::run_fnv_legacy_scripting` into the target plugin
-        // handle. They do not appear on `FnvLegacyScriptingResult` anymore.
-        let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
-        let records = vec![(
-            json!({ "eid": "Q1", "fields": [] }),
-            "001234:FNV.esm".to_string(),
-        )];
-        translate_all_qust(&mut ctx, &records);
-        assert_eq!(ctx.translated_quests.len(), 1);
-        assert_eq!(ctx.translated_record_payloads.len(), 1);
-    }
-
-    #[test]
-    fn skipped_records_on_strict_not_halting_by_default() {
-        // A record with a dropped function should be skipped (not panic) in non-strict mode.
-        let records = vec![(
-            json!({
-                "eid": "Q2",
-                "fields": [
-                    { "INDX": 10 },
-                    { "SCTX": "RewardKarma(10)" },
-                ]
-            }),
-            "001237:FNV.esm".to_string(),
-        )];
-        let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
-        translate_all_qust(&mut ctx, &records);
-        // RewardKarma is dropped → translate error → record skipped.
-        assert_eq!(ctx.skipped_records.len(), 1);
-        assert_eq!(ctx.skipped_records[0].0, "QUST");
+    fn context_accumulates_payloads_and_strict_skips_do_not_halt() {
+        {
+            // Payloads are transient: they live on the context and are drained
+            // by `ConversionRun::run_fnv_legacy_scripting` into the target plugin
+            // handle. They do not appear on `FnvLegacyScriptingResult` anymore.
+            let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
+            let records = vec![(
+                json!({ "eid": "Q1", "fields": [] }),
+                "001234:FNV.esm".to_string(),
+            )];
+            translate_all_qust(&mut ctx, &records);
+            assert_eq!(ctx.translated_quests.len(), 1);
+            assert_eq!(ctx.translated_record_payloads.len(), 1);
+        }
+        {
+            // A record with a dropped function should be skipped (not panic) in non-strict mode.
+            let records = vec![(
+                json!({
+                    "eid": "Q2",
+                    "fields": [
+                        { "INDX": 10 },
+                        { "SCTX": "RewardKarma(10)" },
+                    ]
+                }),
+                "001237:FNV.esm".to_string(),
+            )];
+            let mut ctx = FnvLegacyScriptingContext::new("B21", "FNV.esm", false);
+            translate_all_qust(&mut ctx, &records);
+            // RewardKarma is dropped → translate error → record skipped.
+            assert_eq!(ctx.skipped_records.len(), 1);
+            assert_eq!(ctx.skipped_records[0].0, "QUST");
+        }
     }
 }
 
@@ -474,78 +472,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn end_to_end_set_statement() {
-        let ctx = FnvScriptContext::load().expect("load ctx");
-        let src = "begin GameMode\nset x to 100\nend\n";
-        let papyrus =
-            translate_to_papyrus(src, &ctx, "MyScript", "ObjectReference").expect("translate ok");
-        assert!(papyrus.contains("x = 100"), "output:\n{papyrus}");
-        assert!(papyrus.contains("Event OnInit()"), "output:\n{papyrus}");
-    }
-
-    #[test]
-    fn end_to_end_get_player() {
-        let ctx = FnvScriptContext::load().expect("load ctx");
-        let src = "begin GameMode\nGetPlayer()\nend\n";
-        let papyrus =
-            translate_to_papyrus(src, &ctx, "MyScript", "ObjectReference").expect("translate ok");
-        assert!(papyrus.contains("Game.GetPlayer()"), "output:\n{papyrus}");
-    }
-
-    #[test]
-    fn end_to_end_get_actor_value() {
-        // Tests AV remap: Strength → GetValue(Strength)
-        let ctx = FnvScriptContext::load().expect("load ctx");
-        let src = "begin GameMode\nGetActorValue(Strength)\nend\n";
-        let papyrus =
-            translate_to_papyrus(src, &ctx, "MyScript", "ObjectReference").expect("translate ok");
-        assert!(
-            papyrus.contains("GetValue") || papyrus.contains("Strength"),
-            "output:\n{papyrus}"
-        );
-    }
-
-    #[test]
-    fn end_to_end_scriptname_preserved() {
-        let ctx = FnvScriptContext::load().expect("load ctx");
-        let src = "ScriptName FooScript\nbegin GameMode\nend\n";
-        let papyrus =
-            translate_to_papyrus(src, &ctx, "OverrideName", "Quest").expect("translate ok");
-        // The explicit class name wins over the in-script name.
-        assert!(papyrus.contains("ScriptName OverrideName extends Quest"));
-    }
-
-    #[test]
-    fn end_to_end_var_decls() {
-        let ctx = FnvScriptContext::load().expect("load ctx");
-        let src = "short myCount\nfloat myRate\nbegin GameMode\nend\n";
-        let papyrus =
-            translate_to_papyrus(src, &ctx, "S", "ObjectReference").expect("translate ok");
-        assert!(papyrus.contains("Int myCount"), "output:\n{papyrus}");
-        assert!(papyrus.contains("Float myRate"), "output:\n{papyrus}");
-    }
-
-    #[test]
-    fn end_to_end_if_return() {
-        let ctx = FnvScriptContext::load().expect("load ctx");
-        let src = "begin GameMode\nif x == 1\nreturn\nendif\nend\n";
-        let papyrus =
-            translate_to_papyrus(src, &ctx, "S", "ObjectReference").expect("translate ok");
-        assert!(papyrus.contains("If"), "output:\n{papyrus}");
-        assert!(papyrus.contains("Return"), "output:\n{papyrus}");
-        assert!(papyrus.contains("EndIf"), "output:\n{papyrus}");
-    }
-
-    #[test]
-    fn end_to_end_dropped_function_errors() {
-        let ctx = FnvScriptContext::load().expect("load ctx");
-        let src = "begin GameMode\nRewardKarma(10)\nend\n";
-        let err = translate_to_papyrus(src, &ctx, "S", "ObjectReference")
-            .expect_err("expected translate error");
-        let msg = err.to_string().to_lowercase();
-        assert!(
-            msg.contains("drop") || msg.contains("karma"),
-            "error message: {msg}"
-        );
+    fn end_to_end_translation_of_statements_and_declarations() {
+        {
+            let ctx = FnvScriptContext::load().expect("load ctx");
+            let src = "begin GameMode\nset x to 100\nend\n";
+            let papyrus = translate_to_papyrus(src, &ctx, "MyScript", "ObjectReference")
+                .expect("translate ok");
+            assert!(papyrus.contains("x = 100"), "output:\n{papyrus}");
+            assert!(papyrus.contains("Event OnInit()"), "output:\n{papyrus}");
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load ctx");
+            let src = "begin GameMode\nGetPlayer()\nend\n";
+            let papyrus = translate_to_papyrus(src, &ctx, "MyScript", "ObjectReference")
+                .expect("translate ok");
+            assert!(papyrus.contains("Game.GetPlayer()"), "output:\n{papyrus}");
+        }
+        {
+            // Tests AV remap: Strength → GetValue(Strength)
+            let ctx = FnvScriptContext::load().expect("load ctx");
+            let src = "begin GameMode\nGetActorValue(Strength)\nend\n";
+            let papyrus = translate_to_papyrus(src, &ctx, "MyScript", "ObjectReference")
+                .expect("translate ok");
+            assert!(
+                papyrus.contains("GetValue") || papyrus.contains("Strength"),
+                "output:\n{papyrus}"
+            );
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load ctx");
+            let src = "ScriptName FooScript\nbegin GameMode\nend\n";
+            let papyrus =
+                translate_to_papyrus(src, &ctx, "OverrideName", "Quest").expect("translate ok");
+            // The explicit class name wins over the in-script name.
+            assert!(papyrus.contains("ScriptName OverrideName extends Quest"));
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load ctx");
+            let src = "short myCount\nfloat myRate\nbegin GameMode\nend\n";
+            let papyrus =
+                translate_to_papyrus(src, &ctx, "S", "ObjectReference").expect("translate ok");
+            assert!(papyrus.contains("Int myCount"), "output:\n{papyrus}");
+            assert!(papyrus.contains("Float myRate"), "output:\n{papyrus}");
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load ctx");
+            let src = "begin GameMode\nif x == 1\nreturn\nendif\nend\n";
+            let papyrus =
+                translate_to_papyrus(src, &ctx, "S", "ObjectReference").expect("translate ok");
+            assert!(papyrus.contains("If"), "output:\n{papyrus}");
+            assert!(papyrus.contains("Return"), "output:\n{papyrus}");
+            assert!(papyrus.contains("EndIf"), "output:\n{papyrus}");
+        }
+        {
+            let ctx = FnvScriptContext::load().expect("load ctx");
+            let src = "begin GameMode\nRewardKarma(10)\nend\n";
+            let err = translate_to_papyrus(src, &ctx, "S", "ObjectReference")
+                .expect_err("expected translate error");
+            let msg = err.to_string().to_lowercase();
+            assert!(
+                msg.contains("drop") || msg.contains("karma"),
+                "error message: {msg}"
+            );
+        }
     }
 }

@@ -370,3 +370,164 @@ fn fo76_qust_unproven_event_alias_fill_is_dropped_and_marked_optional() {
         Some(&FieldValue::Uint(0x2))
     );
 }
+
+/// Fly Swatter's vertibot markers are authored with FO76's scope-free
+/// `ALFF`. The quest's own sibling markers use `ALFA` + `ALRT` inside its
+/// `EventLocation` alias, which FO4 supports, so the dropped ones take that
+/// shape rather than filling nothing.
+#[test]
+fn fly_swatter_scopes_dropped_location_ref_types_to_its_event_location() {
+    let interner = StringInterner::new();
+    let source_plugin = interner.intern("SeventySix.esm");
+    let mut quest = Record::new(
+        SigCode::from_str("QUST").unwrap(),
+        FormKey {
+            local: 0x0002_9183,
+            plugin: source_plugin,
+        },
+    );
+    quest.eid = Some(interner.intern("FFZ16_Swatter"));
+    quest.fields.push(field("ANAM", FieldValue::Uint(12)));
+    // The location alias the repair scopes to: conditions-only, fills natively.
+    quest.fields.extend([
+        field("ALLS", FieldValue::Uint(6)),
+        field("ALID", FieldValue::String(interner.intern("EventLocation"))),
+        field("FNAM", FieldValue::Uint(0)),
+        condition(563, 0x0037_0B77),
+        field("ALED", FieldValue::None),
+    ]);
+    for (alias_id, ref_type) in [
+        (2_u64, 0x0001_9479_u32),
+        (4, 0x0002_271F),
+        (11, 0x0001_9479),
+    ] {
+        quest.fields.extend([
+            field("ALST", FieldValue::Uint(alias_id)),
+            field("FNAM", FieldValue::Uint(0)),
+            field(
+                "ALFF",
+                FieldValue::FormKey(FormKey {
+                    local: ref_type,
+                    plugin: source_plugin,
+                }),
+            ),
+            field("ALED", FieldValue::None),
+        ]);
+    }
+
+    let translator = Translator::new(Game::Fo76, Game::Fo4).unwrap();
+    translator
+        .pre_translate(&mut PairCtx::new(&interner), &mut quest)
+        .unwrap();
+    let mut translated = match translator.translate(&quest, &interner) {
+        TranslateResult::Translated(record) => record,
+        other => panic!("expected translated QUST, got {other:?}"),
+    };
+    translator
+        .post_translate(&mut PairCtx::new(&interner), &mut translated)
+        .unwrap();
+    translator
+        .run_target_hook(
+            &mut TargetCtx {
+                interner: &interner,
+            },
+            &mut translated,
+        )
+        .unwrap();
+
+    assert!(
+        translated
+            .fields
+            .iter()
+            .all(|entry| entry.sig.as_str() != "ALFF"),
+        "FO76-only ALFF must not survive FO4 translation"
+    );
+    for (alias_id, ref_type) in [
+        (2_u64, 0x0001_9479_u32),
+        (4, 0x0002_271F),
+        (11, 0x0001_9479),
+    ] {
+        let alias = alias_fields(&translated, alias_id);
+        assert!(
+            alias
+                .iter()
+                .any(|entry| entry.sig.as_str() == "ALFA" && entry.value == FieldValue::Uint(6)),
+            "alias {alias_id} searches inside EventLocation"
+        );
+        assert!(
+            alias.iter().any(|entry| entry.sig.as_str() == "ALRT"
+                && matches!(entry.value, FieldValue::FormKey(key) if key.local & 0x00FF_FFFF == ref_type)),
+            "alias {alias_id} keeps its ref type"
+        );
+    }
+}
+
+/// It's a Trap's whole marker chain hangs off a dropped `ALFF`, so its
+/// `ParentLocation` alias is given the conditions-only fill FO4 supports.
+#[test]
+fn trap_parent_location_selects_a_lure_site_by_ref_type() {
+    let interner = StringInterner::new();
+    let source_plugin = interner.intern("SeventySix.esm");
+    let mut quest = Record::new(
+        SigCode::from_str("QUST").unwrap(),
+        FormKey {
+            local: 0x0030_4A39,
+            plugin: source_plugin,
+        },
+    );
+    quest.eid = Some(interner.intern("FSS01_Trap"));
+    quest.fields.push(field("ANAM", FieldValue::Uint(28)));
+    quest.fields.extend([
+        field("ALST", FieldValue::Uint(15)),
+        field(
+            "ALID",
+            FieldValue::String(interner.intern("TrapLocationActual")),
+        ),
+        field("FNAM", FieldValue::Uint(2056)),
+        field("ALED", FieldValue::None),
+        field("ALLS", FieldValue::Uint(16)),
+        field(
+            "ALID",
+            FieldValue::String(interner.intern("ParentLocation")),
+        ),
+        field("FNAM", FieldValue::Uint(33_620_744)),
+        field("ALFA", FieldValue::Uint(15)),
+        field("ALED", FieldValue::None),
+    ]);
+
+    let translator = Translator::new(Game::Fo76, Game::Fo4).unwrap();
+    translator
+        .pre_translate(&mut PairCtx::new(&interner), &mut quest)
+        .unwrap();
+    let mut translated = match translator.translate(&quest, &interner) {
+        TranslateResult::Translated(record) => record,
+        other => panic!("expected translated QUST, got {other:?}"),
+    };
+    translator
+        .post_translate(&mut PairCtx::new(&interner), &mut translated)
+        .unwrap();
+    translator
+        .run_target_hook(
+            &mut TargetCtx {
+                interner: &interner,
+            },
+            &mut translated,
+        )
+        .unwrap();
+
+    let parent_location = location_alias_fields(&translated, 16);
+    assert!(
+        parent_location
+            .iter()
+            .all(|entry| entry.sig.as_str() != "ALFA"),
+        "the unfillable alias reference is gone"
+    );
+    assert_eq!(
+        parent_location
+            .iter()
+            .filter_map(raw_condition_function_and_parameter)
+            .collect::<Vec<_>>(),
+        vec![(563, 0x003D_A755)],
+        "ParentLocation selects a lure site by ref type"
+    );
+}

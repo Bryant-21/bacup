@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn scale_nested_scales_numeric_subfield() {
+    fn scale_nested_scales_only_present_numeric_subfields() {
         // Mirrors WEAP Data with MinRange: 100.0 scaled by 0.12226
         let mut interner = StringInterner::new();
         let mut value = make_struct(
@@ -200,10 +200,7 @@ mod tests {
         let max = get_float(&value, ctx.interner, "MaxRange").unwrap();
         assert!((min - 12.226_f32).abs() < 1e-3, "MinRange scaled: {min}");
         assert!((max - 16.996_f32).abs() < 1e-3, "MaxRange scaled: {max}");
-    }
 
-    #[test]
-    fn scale_nested_scales_int_subfield_promoting_to_float() {
         let mut interner = StringInterner::new();
         let mut value = make_struct(&mut interner, &[("MinPowerPerShot", FieldValue::Int(10))]);
         let config = json!({ "subfields": { "MinPowerPerShot": 0.1 } });
@@ -214,39 +211,7 @@ mod tests {
         t.apply(&mut ctx, &mut value, &config).unwrap();
         let v = get_float(&value, ctx.interner, "MinPowerPerShot").unwrap();
         assert!((v - 1.0_f32).abs() < 1e-6, "Got {v}");
-    }
 
-    #[test]
-    fn scale_nested_clamps_max_subfield() {
-        // CritDamageMult: 3.0 clamped to 2.0
-        let mut interner = StringInterner::new();
-        let mut value = make_struct(&mut interner, &[("CritDamageMult", FieldValue::Float(3.0))]);
-        let config = json!({ "clamp_max_subfields": { "CritDamageMult": 2.0 } });
-        let t = ScaleNestedTransform;
-        let mut ctx = TransformCtx {
-            interner: &mut interner,
-        };
-        t.apply(&mut ctx, &mut value, &config).unwrap();
-        let v = get_float(&value, ctx.interner, "CritDamageMult").unwrap();
-        assert!((v - 2.0_f32).abs() < 1e-6, "Got {v}");
-    }
-
-    #[test]
-    fn scale_nested_no_clamp_when_below_max() {
-        let mut interner = StringInterner::new();
-        let mut value = make_struct(&mut interner, &[("CritDamageMult", FieldValue::Float(1.5))]);
-        let config = json!({ "clamp_max_subfields": { "CritDamageMult": 2.0 } });
-        let t = ScaleNestedTransform;
-        let mut ctx = TransformCtx {
-            interner: &mut interner,
-        };
-        t.apply(&mut ctx, &mut value, &config).unwrap();
-        let v = get_float(&value, ctx.interner, "CritDamageMult").unwrap();
-        assert!((v - 1.5_f32).abs() < 1e-6, "Got {v}");
-    }
-
-    #[test]
-    fn scale_nested_non_struct_value_is_left_unchanged() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::Int(42);
         let config = json!({ "subfields": { "X": 2.0 } });
@@ -256,10 +221,7 @@ mod tests {
         };
         t.apply(&mut ctx, &mut value, &config).unwrap();
         assert_eq!(value, FieldValue::Int(42));
-    }
 
-    #[test]
-    fn scale_nested_missing_subfield_is_ignored() {
         let mut interner = StringInterner::new();
         let mut value = make_struct(&mut interner, &[("Other", FieldValue::Float(5.0))]);
         let config = json!({ "subfields": { "MinRange": 0.5 } });
@@ -274,7 +236,33 @@ mod tests {
     }
 
     #[test]
-    fn scale_nested_remap_esm_in_string_subfield() {
+    fn scale_nested_clamps_only_values_above_max() {
+        // CritDamageMult: 3.0 clamped to 2.0
+        let mut interner = StringInterner::new();
+        let mut value = make_struct(&mut interner, &[("CritDamageMult", FieldValue::Float(3.0))]);
+        let config = json!({ "clamp_max_subfields": { "CritDamageMult": 2.0 } });
+        let t = ScaleNestedTransform;
+        let mut ctx = TransformCtx {
+            interner: &mut interner,
+        };
+        t.apply(&mut ctx, &mut value, &config).unwrap();
+        let v = get_float(&value, ctx.interner, "CritDamageMult").unwrap();
+        assert!((v - 2.0_f32).abs() < 1e-6, "Got {v}");
+
+        let mut interner = StringInterner::new();
+        let mut value = make_struct(&mut interner, &[("CritDamageMult", FieldValue::Float(1.5))]);
+        let config = json!({ "clamp_max_subfields": { "CritDamageMult": 2.0 } });
+        let t = ScaleNestedTransform;
+        let mut ctx = TransformCtx {
+            interner: &mut interner,
+        };
+        t.apply(&mut ctx, &mut value, &config).unwrap();
+        let v = get_float(&value, ctx.interner, "CritDamageMult").unwrap();
+        assert!((v - 1.5_f32).abs() < 1e-6, "Got {v}");
+    }
+
+    #[test]
+    fn scale_nested_remaps_esm_in_string_and_nested_subfields() {
         let mut interner = StringInterner::new();
         let fk_str = interner.intern("000800@SeventySix.esm");
         let mut value = make_struct(
@@ -299,10 +287,7 @@ mod tests {
                 panic!("Expected String");
             }
         }
-    }
 
-    #[test]
-    fn deep_remap_formkey_replaces_esm_in_nested_struct() {
         let mut interner = StringInterner::new();
         let inner_sym = interner.intern("000100@SeventySix.esm");
         let mut fv = FieldValue::Struct(vec![(

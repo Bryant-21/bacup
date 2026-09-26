@@ -4,7 +4,26 @@ Function Fragment_Stage_0001_Item_00()
 	If playerRef != None && pBoSz04StartedAV != None
 		playerRef.SetValue(pBoSz04StartedAV, 1.0)
 	EndIf
+	; This stage carries no objective. DefaultDailyQuestScript.OnStoryScript is what moves
+	; the quest to stage 100 (region daily) or 25 (Brotherhood start keyword); arm a
+	; fallback so a story event that never reaches this quest cannot strand it here.
+	CancelTimer(65331)
+	StartTimer(5.0, 65331)
 EndFunction
+
+Event OnTimer(Int aiTimerID)
+	If aiTimerID != 65331
+		Return
+	EndIf
+	; Any stage past the two on-start stages means a real route already took over: the
+	; region daily sets 100, the Brotherhood keyword sets 25 and Scribe Grant's terminal
+	; sets 50 by itself.
+	If !IsRunning() || GetCurrentStageID() > 2
+		Return
+	EndIf
+	Debug.Trace("[B21 BoSZ04] start stage never advanced; entering the daily chain at stage 100", 0)
+	SetStage(100)
+EndEvent
 
 Function Fragment_Stage_0002_Item_00()
 	Debug.Trace("[B21 BoSZ04] Quest stage 2 fragment running quest=" + Self as String, 0)
@@ -54,6 +73,12 @@ Function Fragment_Stage_0100_Item_00()
 	If playerRef != None && pBoSZ04HarvestSBDNAPerk != None && !playerRef.HasPerk(pBoSZ04HarvestSBDNAPerk)
 		playerRef.AddPerk(pBoSZ04HarvestSBDNAPerk)
 	EndIf
+	; The VTU research terminal gates its test submenu on BoSZ04_HasPasswordKeyword, which
+	; this alias carries. FO76 filled it server-side when the player read Mission 099-01;
+	; the daily route skips that stage entirely and would find the submenu hidden.
+	If playerRef != None && Alias_PlayerPasswordTracker != None && Alias_PlayerPasswordTracker.GetReference() == None
+		Alias_PlayerPasswordTracker.ForceRefTo(playerRef)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
@@ -97,15 +122,29 @@ Function Fragment_Stage_0500_Item_00()
 	Stop()
 EndFunction
 
-Function Fragment_Stage_9900_Item_00()
-	Debug.Trace("[B21 BoSZ04] Quest stage 9900 cleanup fragment running", 0)
+Function B21StripHarvestLoadout()
 	Actor playerRef = Game.GetPlayer()
-	If playerRef != None
-		If pBoSZ04HarvestSBDNAPerk != None && playerRef.HasPerk(pBoSZ04HarvestSBDNAPerk)
-			playerRef.RemovePerk(pBoSZ04HarvestSBDNAPerk)
-		EndIf
-		If pBoSZ04VultureDNA != None && playerRef.GetItemCount(pBoSZ04VultureDNA) > 0
-			playerRef.RemoveItem(pBoSZ04VultureDNA, playerRef.GetItemCount(pBoSZ04VultureDNA), True)
-		EndIf
+	If playerRef == None
+		Return
+	EndIf
+	If pBoSZ04HarvestSBDNAPerk != None && playerRef.HasPerk(pBoSZ04HarvestSBDNAPerk)
+		playerRef.RemovePerk(pBoSZ04HarvestSBDNAPerk)
+	EndIf
+	If pBoSZ04VultureDNA != None && playerRef.GetItemCount(pBoSZ04VultureDNA) > 0
+		playerRef.RemoveItem(pBoSZ04VultureDNA, playerRef.GetItemCount(pBoSZ04VultureDNA), True)
 	EndIf
 EndFunction
+
+Function Fragment_Stage_9900_Item_00()
+	Debug.Trace("[B21 BoSZ04] Quest stage 9900 cleanup fragment running", 0)
+	B21StripHarvestLoadout()
+EndFunction
+
+Event OnQuestShutdown()
+	; Stage 9900 is RunOnStop, but the daily scheduler also expires an unfinished run at the
+	; in-game day boundary and Reset() never runs a stage at all. The harvest perk is granted
+	; at stage 100 and only given back at 200, so any shutdown in between would leave it on
+	; the player for good, stacking a dead "harvest DNA" choice every day.
+	CancelTimer(65331)
+	B21StripHarvestLoadout()
+EndEvent

@@ -113,6 +113,7 @@ pub fn add_record_native(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn reserve_record_localized_strings_native(
     handle_id: u64,
     record: Record,
@@ -821,6 +822,7 @@ fn find_parsed_record_by_form_id(items: &[ParsedItem], form_id: u32) -> Option<&
     None
 }
 
+#[cfg(test)]
 fn parsed_record_exists_by_object_id(items: &[ParsedItem], signature: &str, form_id: u32) -> bool {
     let object_id = form_id & 0x00FF_FFFF;
     items.iter().any(|item| match item {
@@ -1370,6 +1372,7 @@ fn nvnm_subrecord_data(record: &ParsedRecord) -> Option<&[u8]> {
         .map(|subrecord| subrecord.data.as_ref())
 }
 
+#[cfg(test)]
 /// Standalone diagnose (test + ad-hoc use): solves winding and finalizes
 /// internally, then delegates to `diagnose_navmesh_links_with`. The production
 /// finalizer calls `_with` directly so winding is solved and payloads are
@@ -2217,6 +2220,7 @@ fn regenerate_nvnm_trailing(
     }
 }
 
+#[cfg(test)]
 fn add_external_final_link_pair(
     finalized: &mut HashMap<u32, NvnmFinalizedPayload>,
     left: NvnmFinalEdgeRef,
@@ -4178,7 +4182,6 @@ mod tests {
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
     use crate::schema::AuthoringSchema;
     use crate::sym::StringInterner;
-    use crate::test_fixtures;
     use esp_authoring_core::plugin_runtime::{plugin_handle_new_native, plugin_handle_store_ref};
 
     // Helper: load fo4 schema
@@ -4732,28 +4735,41 @@ mod tests {
     }
 
     #[test]
-    fn encode_bool_true_and_false() {
+    fn encode_scalar_field_values_as_little_endian_payloads() {
         let interner = StringInterner::new();
         let schema = fo4_schema();
         let record_def = schema.record_def("WEAP");
-        let edid_sig = crate::ids::SubrecordSig::from_str("EDID").unwrap();
-        let mm = no_masters();
-
-        let entry_t = FieldEntry {
-            sig: edid_sig,
-            value: FieldValue::Bool(true),
-        };
-        let bytes_t =
-            encode_field_for_test(&entry_t, record_def, &interner, &mm, 0, false).unwrap();
-        assert_eq!(bytes_t, vec![1u8]);
-
-        let entry_f = FieldEntry {
-            sig: edid_sig,
-            value: FieldValue::Bool(false),
-        };
-        let bytes_f =
-            encode_field_for_test(&entry_f, record_def, &interner, &mm, 0, false).unwrap();
-        assert_eq!(bytes_f, vec![0u8]);
+        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
+        for (name, value, expected) in [
+            ("bool_true", FieldValue::Bool(true), vec![1u8]),
+            ("bool_false", FieldValue::Bool(false), vec![0u8]),
+            ("uint32", FieldValue::Uint(42), 42u32.to_le_bytes().to_vec()),
+            ("int32", FieldValue::Int(-7), (-7i32).to_le_bytes().to_vec()),
+            (
+                "float32",
+                FieldValue::Float(1.5),
+                1.5f32.to_le_bytes().to_vec(),
+            ),
+            (
+                "zstring",
+                FieldValue::String(interner.intern("TestWeap")),
+                b"TestWeap\0".to_vec(),
+            ),
+            (
+                "bytes_passthrough",
+                FieldValue::Bytes(smallvec::smallvec![0xDE, 0xAD, 0xBE, 0xEF]),
+                vec![0xDE, 0xAD, 0xBE, 0xEF],
+            ),
+        ] {
+            let entry = FieldEntry {
+                sig: edid_sig,
+                value,
+            };
+            let bytes =
+                encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false)
+                    .unwrap();
+            assert_eq!(bytes, expected, "{name}");
+        }
     }
 
     #[test]
@@ -5103,22 +5119,6 @@ mod tests {
     }
 
     #[test]
-    fn encode_uint32_round_trip() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("EDID").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Uint(42),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-        let back = u32::from_le_bytes(bytes.try_into().unwrap());
-        assert_eq!(back, 42);
-    }
-
-    #[test]
     fn encode_formid_array_preserves_null_slots() {
         let interner = StringInterner::new();
         let fallout4 = interner.intern("Fallout4.esm");
@@ -5177,348 +5177,310 @@ mod tests {
     }
 
     #[test]
-    fn encode_unresolved_lstring_id_allocates_placeholder_for_localized_target() {
+    fn encode_unresolved_lstring_ids_allocate_placeholders_for_localized_target() {
         let interner = StringInterner::new();
         let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("FULL").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Uint(0x6102_9A71),
-        };
-        let mut strings = localized_strings_for_test();
-        let bytes =
-            encode_localized_field_with_strings(&entry, record_def, &interner, &mut strings);
-
-        let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
-        assert_ne!(string_id, 0x6102_9A71);
-        assert_localized_entry(&strings, string_id, "LOC_61029A71", "strings");
-    }
-
-    #[test]
-    fn encode_existing_lstring_id_preserves_matching_target_table_id() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("FULL").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Uint(0x1234),
-        };
-        let mut strings = localized_strings_for_test();
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(0x1234, "Seeded Name".to_string());
-        strings.table_types.insert(0x1234, "strings".to_string());
-        let bytes =
-            encode_localized_field_with_strings(&entry, record_def, &interner, &mut strings);
-
-        assert_eq!(bytes, 0x1234_u32.to_le_bytes());
-    }
-
-    #[test]
-    fn encode_raw_lstring_id_allocates_placeholder_for_localized_target() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("FULL").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Bytes(SmallVec::from_slice(&0x6100_B7F4_u32.to_le_bytes())),
-        };
-        let mut strings = localized_strings_for_test();
-        let bytes =
-            encode_localized_field_with_strings(&entry, record_def, &interner, &mut strings);
-
-        let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
-        assert_ne!(string_id, 0x6100_B7F4);
-        assert_localized_entry(&strings, string_id, "LOC_6100B7F4", "strings");
-    }
-
-    #[test]
-    fn encode_raw_dlstring_id_allocates_dlstrings_placeholder() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("PERK");
-        let sig = SubrecordSig::from_str("DESC").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Bytes(SmallVec::from_slice(&0x8100_1CF0_u32.to_le_bytes())),
-        };
-        let mut strings = localized_strings_for_test();
-        let bytes =
-            encode_localized_field_with_strings(&entry, record_def, &interner, &mut strings);
-
-        let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
-        assert_ne!(string_id, 0x8100_1CF0);
-        assert_localized_entry(&strings, string_id, "LOC_81001CF0", "dlstrings");
-    }
-
-    #[test]
-    fn encode_terminal_and_message_lstrings_use_persistent_strings() {
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let cases = [
-            ("TERM", "RNAM", "ilstrings"),
-            ("TERM", "ITXT", "dlstrings"),
-            ("MESG", "DESC", "dlstrings"),
-            ("MESG", "ITXT", "dlstrings"),
-        ];
-
-        for (record_sig, field_sig, seeded_type) in cases {
-            let record_def = schema.record_def(record_sig);
-            let text = format!("{record_sig}.{field_sig} text");
-            let sym = interner.intern(&text);
+        for (name, record_sig, field_sig, value, source_id, placeholder, table) in [
+            (
+                "unresolved_uint",
+                "WEAP",
+                "FULL",
+                FieldValue::Uint(0x6102_9A71),
+                0x6102_9A71_u32,
+                "LOC_61029A71",
+                "strings",
+            ),
+            (
+                "raw_lstring_bytes",
+                "WEAP",
+                "FULL",
+                FieldValue::Bytes(SmallVec::from_slice(&0x6100_B7F4_u32.to_le_bytes())),
+                0x6100_B7F4,
+                "LOC_6100B7F4",
+                "strings",
+            ),
+            (
+                "raw_dlstring_bytes",
+                "PERK",
+                "DESC",
+                FieldValue::Bytes(SmallVec::from_slice(&0x8100_1CF0_u32.to_le_bytes())),
+                0x8100_1CF0,
+                "LOC_81001CF0",
+                "dlstrings",
+            ),
+        ] {
             let entry = FieldEntry {
                 sig: SubrecordSig::from_str(field_sig).unwrap(),
-                value: FieldValue::String(sym),
+                value,
             };
             let mut strings = localized_strings_for_test();
-            let seeded_id = 0x6100_EDB2;
+            let bytes = encode_localized_field_with_strings(
+                &entry,
+                schema.record_def(record_sig),
+                &interner,
+                &mut strings,
+            );
+
+            let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
+            assert_ne!(string_id, source_id, "{name}");
+            assert_localized_entry(&strings, string_id, placeholder, table);
+        }
+    }
+
+    #[test]
+    fn encode_localized_lstrings_reuse_seeded_ids_and_allocate_new_ones() {
+        {
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let record_def = schema.record_def("WEAP");
+            let sig = SubrecordSig::from_str("FULL").unwrap();
+            let entry = FieldEntry {
+                sig,
+                value: FieldValue::Uint(0x1234),
+            };
+            let mut strings = localized_strings_for_test();
             strings
                 .by_language
                 .entry("en".to_string())
                 .or_default()
-                .insert(seeded_id, text.clone());
-            strings
-                .table_types
-                .insert(seeded_id, seeded_type.to_string());
-
+                .insert(0x1234, "Seeded Name".to_string());
+            strings.table_types.insert(0x1234, "strings".to_string());
             let bytes =
                 encode_localized_field_with_strings(&entry, record_def, &interner, &mut strings);
-            let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
 
-            assert_ne!(string_id, seeded_id);
-            assert_localized_entry(&strings, string_id, &text, "strings");
+            assert_eq!(bytes, 0x1234_u32.to_le_bytes());
+        }
+        {
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let record_def = schema.record_def("WEAP");
+            let sig = SubrecordSig::from_str("FULL").unwrap();
+            let sym = interner.intern("Resolved Name");
+            let entry = FieldEntry {
+                sig,
+                value: FieldValue::String(sym),
+            };
+            let master_map = no_masters();
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            strings
+                .by_language
+                .entry("en".to_string())
+                .or_default()
+                .insert(0x1234, "Resolved Name".to_string());
+            strings
+                .by_language
+                .entry("fr".to_string())
+                .or_default()
+                .insert(0x1234, "Nom resolu".to_string());
+            strings.table_types.insert(0x1234, "strings".to_string());
+            let mut ctx = EncodeContext {
+                interner: &interner,
+                master_map: &master_map,
+                own_index: 0,
+                target_is_localized: true,
+                slot: None,
+                localized_strings: Some(&mut strings),
+            };
+
+            let bytes = encode_field(&entry, record_def, &mut ctx).unwrap();
+
+            assert_eq!(bytes, 0x1234_u32.to_le_bytes());
+        }
+        {
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let record_def = schema.record_def("WEAP");
+            let sig = SubrecordSig::from_str("FULL").unwrap();
+            let sym = interner.intern("New Name");
+            let entry = FieldEntry {
+                sig,
+                value: FieldValue::String(sym),
+            };
+            let master_map = no_masters();
+            let mut strings = LocalizedStringsState {
+                default_language: "en".to_string(),
+                ..LocalizedStringsState::default()
+            };
+            let mut ctx = EncodeContext {
+                interner: &interner,
+                master_map: &master_map,
+                own_index: 0,
+                target_is_localized: true,
+                slot: None,
+                localized_strings: Some(&mut strings),
+            };
+
+            let bytes = encode_field(&entry, record_def, &mut ctx).unwrap();
+
+            let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
+            let strings = ctx.localized_strings.expect("strings still attached");
+            assert_eq!(
+                strings
+                    .by_language
+                    .get("en")
+                    .and_then(|table| table.get(&string_id))
+                    .map(String::as_str),
+                Some("New Name")
+            );
         }
     }
 
     #[test]
-    fn encode_info_rnam_and_lscr_desc_text_use_strings_table() {
-        // INFO.RNAM (Prompt) and LSCR.DESC are plain STRINGS in FO4, not the
-        // ILSTRINGS/DLSTRINGS that FO76 files them under. A freshly encoded text
-        // value must allocate into the strings table so xEdit resolves it.
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let cases = [("INFO", "RNAM"), ("LSCR", "DESC")];
+    fn encode_localized_text_allocates_into_fo4_string_table_by_field() {
+        {
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let cases = [
+                ("TERM", "RNAM", "ilstrings"),
+                ("TERM", "ITXT", "dlstrings"),
+                ("MESG", "DESC", "dlstrings"),
+                ("MESG", "ITXT", "dlstrings"),
+            ];
 
-        for (record_sig, field_sig) in cases {
-            let record_def = schema.record_def(record_sig);
-            let text = format!("{record_sig}.{field_sig} text");
-            let sym = interner.intern(&text);
+            for (record_sig, field_sig, seeded_type) in cases {
+                let record_def = schema.record_def(record_sig);
+                let text = format!("{record_sig}.{field_sig} text");
+                let sym = interner.intern(&text);
+                let entry = FieldEntry {
+                    sig: SubrecordSig::from_str(field_sig).unwrap(),
+                    value: FieldValue::String(sym),
+                };
+                let mut strings = localized_strings_for_test();
+                let seeded_id = 0x6100_EDB2;
+                strings
+                    .by_language
+                    .entry("en".to_string())
+                    .or_default()
+                    .insert(seeded_id, text.clone());
+                strings
+                    .table_types
+                    .insert(seeded_id, seeded_type.to_string());
+
+                let bytes = encode_localized_field_with_strings(
+                    &entry,
+                    record_def,
+                    &interner,
+                    &mut strings,
+                );
+                let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
+
+                assert_ne!(string_id, seeded_id);
+                assert_localized_entry(&strings, string_id, &text, "strings");
+            }
+        }
+        {
+            // INFO.RNAM (Prompt) and LSCR.DESC are plain STRINGS in FO4, not the
+            // ILSTRINGS/DLSTRINGS that FO76 files them under. A freshly encoded text
+            // value must allocate into the strings table so xEdit resolves it.
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let cases = [("INFO", "RNAM"), ("LSCR", "DESC")];
+
+            for (record_sig, field_sig) in cases {
+                let record_def = schema.record_def(record_sig);
+                let text = format!("{record_sig}.{field_sig} text");
+                let sym = interner.intern(&text);
+                let entry = FieldEntry {
+                    sig: SubrecordSig::from_str(field_sig).unwrap(),
+                    value: FieldValue::String(sym),
+                };
+                let mut strings = localized_strings_for_test();
+                let bytes = encode_localized_field_with_strings(
+                    &entry,
+                    record_def,
+                    &interner,
+                    &mut strings,
+                );
+                let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
+                assert_localized_entry(&strings, string_id, &text, "strings");
+            }
+        }
+        {
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let record_def = schema.record_def("BOOK");
+            let sym = interner.intern("Test description");
             let entry = FieldEntry {
-                sig: SubrecordSig::from_str(field_sig).unwrap(),
+                sig: SubrecordSig::from_str("CNAM").unwrap(),
                 value: FieldValue::String(sym),
             };
             let mut strings = localized_strings_for_test();
+
             let bytes =
                 encode_localized_field_with_strings(&entry, record_def, &interner, &mut strings);
+
             let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
-            assert_localized_entry(&strings, string_id, &text, "strings");
+            assert_localized_entry(&strings, string_id, "Test description", "dlstrings");
         }
     }
 
     #[test]
-    fn encode_book_cnam_text_uses_dlstrings_table() {
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("BOOK");
-        let sym = interner.intern("Test description");
-        let entry = FieldEntry {
-            sig: SubrecordSig::from_str("CNAM").unwrap(),
-            value: FieldValue::String(sym),
-        };
-        let mut strings = localized_strings_for_test();
-
-        let bytes =
-            encode_localized_field_with_strings(&entry, record_def, &interner, &mut strings);
-
-        let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
-        assert_localized_entry(&strings, string_id, "Test description", "dlstrings");
-    }
-
-    #[test]
-    fn encode_localized_lstring_text_reuses_seeded_string_id() {
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("FULL").unwrap();
-        let sym = interner.intern("Resolved Name");
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::String(sym),
-        };
-        let master_map = no_masters();
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        strings
-            .by_language
-            .entry("en".to_string())
-            .or_default()
-            .insert(0x1234, "Resolved Name".to_string());
-        strings
-            .by_language
-            .entry("fr".to_string())
-            .or_default()
-            .insert(0x1234, "Nom resolu".to_string());
-        strings.table_types.insert(0x1234, "strings".to_string());
-        let mut ctx = EncodeContext {
-            interner: &interner,
-            master_map: &master_map,
-            own_index: 0,
-            target_is_localized: true,
-            slot: None,
-            localized_strings: Some(&mut strings),
-        };
-
-        let bytes = encode_field(&entry, record_def, &mut ctx).unwrap();
-
-        assert_eq!(bytes, 0x1234_u32.to_le_bytes());
-    }
-
-    #[test]
-    fn encode_localized_lstring_text_allocates_when_not_seeded() {
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("FULL").unwrap();
-        let sym = interner.intern("New Name");
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::String(sym),
-        };
-        let master_map = no_masters();
-        let mut strings = LocalizedStringsState {
-            default_language: "en".to_string(),
-            ..LocalizedStringsState::default()
-        };
-        let mut ctx = EncodeContext {
-            interner: &interner,
-            master_map: &master_map,
-            own_index: 0,
-            target_is_localized: true,
-            slot: None,
-            localized_strings: Some(&mut strings),
-        };
-
-        let bytes = encode_field(&entry, record_def, &mut ctx).unwrap();
-
-        let string_id = u32::from_le_bytes(bytes.try_into().unwrap());
-        let strings = ctx.localized_strings.expect("strings still attached");
-        assert_eq!(
-            strings
-                .by_language
-                .get("en")
-                .and_then(|table| table.get(&string_id))
-                .map(String::as_str),
-            Some("New Name")
-        );
-    }
-
-    #[test]
-    fn encode_int32_round_trip() {
+    fn encode_raw_bytes_fit_fixed_struct_sizes_but_keep_variable_payloads() {
         let interner = StringInterner::new();
         let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("EDID").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Int(-7),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-        let back = i32::from_le_bytes(bytes.try_into().unwrap());
-        assert_eq!(back, -7);
-    }
-
-    #[test]
-    fn encode_float32_round_trip() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("EDID").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Float(1.5),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-        let back = f32::from_le_bytes(bytes.try_into().unwrap());
-        assert!((back - 1.5f32).abs() < 1e-6);
-    }
-
-    #[test]
-    fn encode_string_null_terminated() {
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sym = interner.intern("TestWeap");
-        let sig = SubrecordSig::from_str("EDID").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::String(sym),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-        assert!(bytes.ends_with(&[0u8]), "zstring must be null-terminated");
-        let s = std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap();
-        assert_eq!(s, "TestWeap");
-    }
-
-    #[test]
-    fn encode_bytes_passthrough() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let raw: smallvec::SmallVec<[u8; 32]> = smallvec::smallvec![0xDE, 0xAD, 0xBE, 0xEF];
-        let sig = SubrecordSig::from_str("EDID").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Bytes(raw),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-        assert_eq!(bytes, &[0xDE, 0xAD, 0xBE, 0xEF]);
-    }
-
-    #[test]
-    fn encode_raw_struct_bytes_truncates_to_target_struct_size() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("RACE");
-        let raw = SmallVec::<[u8; 32]>::from_vec((0..48).collect());
-        let sig = SubrecordSig::from_str("ATKD").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Bytes(raw),
-        };
-
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-
-        assert_eq!(bytes.len(), 44);
-        assert_eq!(bytes, (0..44).collect::<Vec<u8>>());
-    }
-
-    #[test]
-    fn encode_short_fixed_size_raw_bytes_pads_to_target_size() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("CELL");
-        let sig = SubrecordSig::from_str("LTMP").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Bytes(SmallVec::new()),
-        };
-
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-
-        assert_eq!(bytes, vec![0, 0, 0, 0]);
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&6_u16.to_le_bytes());
+        vmad.extend_from_slice(&2_u16.to_le_bytes());
+        vmad.extend_from_slice(&1_u16.to_le_bytes());
+        vmad.extend_from_slice(&32_u16.to_le_bytes());
+        vmad.extend_from_slice(b"WorkshopTerminalActorValueScript");
+        vmad.push(0);
+        vmad.extend_from_slice(&[0, 0, 0, 0]);
+        for (name, record_sig, subrecord_sig, value, expected) in [
+            (
+                "struct_truncates_to_target_size",
+                "RACE",
+                "ATKD",
+                FieldValue::Bytes(SmallVec::from_vec((0..48).collect())),
+                (0..44).collect::<Vec<u8>>(),
+            ),
+            (
+                "short_fixed_size_pads",
+                "CELL",
+                "LTMP",
+                FieldValue::Bytes(SmallVec::new()),
+                vec![0, 0, 0, 0],
+            ),
+            (
+                "fixed_size_none_zero_payload",
+                "CELL",
+                "LTMP",
+                FieldValue::None,
+                vec![0, 0, 0, 0],
+            ),
+            (
+                "nvnm_not_truncated_to_schema_prefix",
+                "ACTI",
+                "NVNM",
+                FieldValue::Bytes(SmallVec::from_vec((0..116).collect())),
+                (0..116).collect::<Vec<u8>>(),
+            ),
+            (
+                "vmad_not_truncated_to_schema_prefix",
+                "TERM",
+                "VMAD",
+                FieldValue::Bytes(SmallVec::from_vec(vmad.clone())),
+                vmad.clone(),
+            ),
+        ] {
+            let entry = FieldEntry {
+                sig: SubrecordSig::from_str(subrecord_sig).unwrap(),
+                value,
+            };
+            let bytes = encode_field_for_test(
+                &entry,
+                schema.record_def(record_sig),
+                &interner,
+                &no_masters(),
+                0,
+                false,
+            )
+            .unwrap();
+            assert_eq!(bytes, expected, "{name}");
+        }
     }
 
     #[test]
@@ -5610,69 +5572,6 @@ mod tests {
     }
 
     #[test]
-    fn encode_fixed_size_none_uses_zero_payload() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("CELL");
-        let sig = SubrecordSig::from_str("LTMP").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::None,
-        };
-
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-
-        assert_eq!(bytes, vec![0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn encode_nvnm_bytes_does_not_truncate_to_schema_prefix_size() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("ACTI");
-        let raw = SmallVec::<[u8; 32]>::from_vec((0..116).collect());
-        let sig = SubrecordSig::from_str("NVNM").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Bytes(raw),
-        };
-
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-
-        assert_eq!(bytes.len(), 116);
-        assert_eq!(bytes, (0..116).collect::<Vec<u8>>());
-    }
-
-    #[test]
-    fn encode_vmad_bytes_does_not_truncate_to_schema_prefix_size() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("TERM");
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&6_u16.to_le_bytes());
-        raw.extend_from_slice(&2_u16.to_le_bytes());
-        raw.extend_from_slice(&1_u16.to_le_bytes());
-        raw.extend_from_slice(&32_u16.to_le_bytes());
-        raw.extend_from_slice(b"WorkshopTerminalActorValueScript");
-        raw.push(0);
-        raw.extend_from_slice(&[0, 0, 0, 0]);
-        let raw = SmallVec::<[u8; 32]>::from_vec(raw);
-        let sig = SubrecordSig::from_str("VMAD").unwrap();
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::Bytes(raw.clone()),
-        };
-
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &no_masters(), 0, false).unwrap();
-
-        assert_eq!(bytes.len(), raw.len());
-        assert_eq!(bytes, raw.to_vec());
-    }
-
-    #[test]
     fn encode_variable_tail_struct_bytes_do_not_truncate_to_schema_prefix_size() {
         let interner = StringInterner::new();
         let schema = fo4_schema();
@@ -5723,33 +5622,61 @@ mod tests {
     }
 
     #[test]
-    fn formkey_encodes_with_target_master_index() {
-        // Target plugin imports two masters; FK points at the second one.
-        // Encoded top byte must be 1 (the master's index in the list).
-        let mut interner = StringInterner::new();
+    fn formkey_encodes_master_index_own_index_or_null() {
+        let interner = StringInterner::new();
         let schema = fo4_schema();
         let record_def = schema.record_def("WEAP");
         let sig = SubrecordSig::from_str("CNAM").unwrap();
-
-        let masters = vec!["Fallout4.esm".to_string(), "DLCRobot.esm".to_string()];
-        let master_map = build_master_lookup(&masters);
-        let own_index = masters.len() as u32; // = 2
-
-        let plugin_sym = interner.intern("DLCRobot.esm");
-        let fk = FormKey {
-            local: 0x00ABCDEF,
-            plugin: plugin_sym,
-        };
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::FormKey(fk),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &master_map, own_index, false)
-                .unwrap();
-        let raw = u32::from_le_bytes(bytes.as_slice().try_into().unwrap());
-        assert_eq!(raw >> 24, 0x01, "master byte must be DLCRobot's index (1)");
-        assert_eq!(raw & 0x00FF_FFFF, 0x00ABCDEF, "object id must be preserved");
+        for (name, masters, plugin, local, expected) in [
+            (
+                "second_target_master",
+                &["Fallout4.esm", "DLCRobot.esm"][..],
+                "DLCRobot.esm",
+                0x00AB_CDEF_u32,
+                0x01AB_CDEF_u32,
+            ),
+            (
+                "unknown_plugin_uses_own_index",
+                &["Fallout4.esm"][..],
+                "SomeOtherMod.esp",
+                0x0001_2345,
+                0x0101_2345,
+            ),
+            (
+                "null_object_id_is_zero",
+                &["Fallout4.esm"][..],
+                "Anywhere.esp",
+                0xFF00_0000,
+                0,
+            ),
+            (
+                "case_insensitive_master_match",
+                &["Fallout4.esm"][..],
+                "FALLOUT4.ESM",
+                0x0000_0800,
+                0x0000_0800,
+            ),
+        ] {
+            let masters = masters.iter().map(|m| m.to_string()).collect::<Vec<_>>();
+            let master_map = build_master_lookup(&masters);
+            let entry = FieldEntry {
+                sig,
+                value: FieldValue::FormKey(FormKey {
+                    local,
+                    plugin: interner.intern(plugin),
+                }),
+            };
+            let bytes = encode_field_for_test(
+                &entry,
+                record_def,
+                &interner,
+                &master_map,
+                masters.len() as u32,
+                false,
+            )
+            .unwrap();
+            assert_eq!(bytes, expected.to_le_bytes(), "{name}");
+        }
     }
 
     #[test]
@@ -5876,152 +5803,6 @@ mod tests {
     }
 
     #[test]
-    fn formkey_encodes_with_own_index_when_plugin_unknown() {
-        // FK plugin sym is not present in the target's master list → encode
-        // with own_index (the slot for the target plugin itself).
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("CNAM").unwrap();
-
-        let masters = vec!["Fallout4.esm".to_string()];
-        let master_map = build_master_lookup(&masters);
-        let own_index = masters.len() as u32; // = 1
-
-        let plugin_sym = interner.intern("SomeOtherMod.esp");
-        let fk = FormKey {
-            local: 0x00012345,
-            plugin: plugin_sym,
-        };
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::FormKey(fk),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &master_map, own_index, false)
-                .unwrap();
-        let raw = u32::from_le_bytes(bytes.as_slice().try_into().unwrap());
-        assert_eq!(
-            raw >> 24,
-            own_index,
-            "unknown plugin falls back to own_index"
-        );
-        assert_eq!(raw & 0x00FF_FFFF, 0x00012345);
-    }
-
-    #[test]
-    fn formkey_null_encodes_as_zero() {
-        // A FormKey whose object-id bits are zero encodes as four zero bytes
-        // regardless of which plugin it points at.
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("CNAM").unwrap();
-
-        let masters = vec!["Fallout4.esm".to_string()];
-        let master_map = build_master_lookup(&masters);
-        let own_index = masters.len() as u32;
-
-        // local = 0xFF000000 → object_id bits are zero. Plugin sym is
-        // irrelevant; the FK is a null reference.
-        let plugin_sym = interner.intern("Anywhere.esp");
-        let fk = FormKey {
-            local: 0xFF00_0000,
-            plugin: plugin_sym,
-        };
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::FormKey(fk),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &master_map, own_index, false)
-                .unwrap();
-        assert_eq!(
-            bytes,
-            vec![0u8, 0, 0, 0],
-            "null FK must encode as 4 zero bytes"
-        );
-    }
-
-    #[test]
-    fn formkey_case_insensitive_master_match() {
-        // Master matching mirrors plugin_handle_add_master_native's case-insensitive
-        // policy: "Fallout4.esm" in the list must match a FK whose plugin sym is
-        // "FALLOUT4.ESM".
-        let mut interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("WEAP");
-        let sig = SubrecordSig::from_str("CNAM").unwrap();
-
-        let masters = vec!["Fallout4.esm".to_string()];
-        let master_map = build_master_lookup(&masters);
-        let own_index = masters.len() as u32;
-
-        let plugin_sym = interner.intern("FALLOUT4.ESM");
-        let fk = FormKey {
-            local: 0x00000800,
-            plugin: plugin_sym,
-        };
-        let entry = FieldEntry {
-            sig,
-            value: FieldValue::FormKey(fk),
-        };
-        let bytes =
-            encode_field_for_test(&entry, record_def, &interner, &master_map, own_index, false)
-                .unwrap();
-        let raw = u32::from_le_bytes(bytes.as_slice().try_into().unwrap());
-        assert_eq!(
-            raw >> 24,
-            0x00,
-            "uppercase plugin sym still matches case-insensitive"
-        );
-        assert_eq!(raw & 0x00FF_FFFF, 0x00000800);
-    }
-
-    #[test]
-    fn add_record_round_trip() {
-        let fixture = test_fixtures::fixture_plugin("fo4_minimal_weap.esm");
-        if !fixture.exists() {
-            return; // skip gracefully if fixture not built
-        }
-
-        // plugin_handle_load_native needs a Python runtime, so this adds a
-        // Record to a fresh plugin_handle_new_native handle, which doesn't.
-        let result = plugin_handle_new_native("Output.esm", Some("fo4"));
-        let tgt_handle_id = match result {
-            Ok(id) => id,
-            Err(_) => return, // cannot create handle without Python runtime
-        };
-
-        let schema = fo4_schema();
-        let mut interner = StringInterner::new();
-        let fk = FormKey::parse("000800@fo4_minimal_weap.esm", &mut interner).unwrap();
-
-        let sig = SigCode::from_str("WEAP").unwrap();
-        let edid_sym = interner.intern("TestWeap");
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-
-        let record = Record {
-            sig,
-            form_key: fk,
-            eid: Some(edid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-
-        let result = add_record_native(tgt_handle_id, record, &schema, &interner);
-        assert!(
-            result.is_ok(),
-            "add_record_native failed: {:?}",
-            result.err()
-        );
-    }
-
-    #[test]
     fn skyrim_interior_navmesh_writer_defers_cell_topology() {
         let handle_id = plugin_handle_new_native("SkyrimMerged.esp", Some("fo4")).unwrap();
         let schema = fo4_schema();
@@ -6063,8 +5844,17 @@ mod tests {
     }
 
     #[test]
-    fn default_form_version_fo4_is_131() {
-        assert_eq!(default_form_version_for_game(Some("fo4")), Some(131));
+    fn default_form_version_is_known_only_for_fo4_and_starfield() {
+        for (game, expected) in [
+            (Some("fo4"), Some(131)),
+            (Some("starfield"), Some(581)),
+            (None, None),
+            (Some("fo3"), None),
+            (Some("fnv"), None),
+            (Some("skyrimse"), None),
+        ] {
+            assert_eq!(default_form_version_for_game(game), expected, "{game:?}");
+        }
     }
 
     #[test]
@@ -6444,55 +6234,12 @@ mod tests {
     }
 
     #[test]
-    fn default_form_version_unknown_game_is_none() {
-        assert_eq!(default_form_version_for_game(None), None);
-        assert_eq!(default_form_version_for_game(Some("fo3")), None);
-        assert_eq!(default_form_version_for_game(Some("fnv")), None);
-        assert_eq!(default_form_version_for_game(Some("skyrimse")), None);
-    }
-
-    #[test]
-    fn default_form_version_starfield() {
-        assert_eq!(default_form_version_for_game(Some("starfield")), Some(581));
-    }
-
-    #[test]
-    fn add_record_native_sets_form_version_131_on_fo4_handle() {
-        // Records inserted on a fo4 plugin handle must carry form_version=131
-        // in their ParsedRecord, matching Python's
-        // _build_authoring_record_dicts behaviour (fixups.py:7814).
+    fn add_record_native_sets_target_form_version_on_handle() {
+        // Records inserted on a plugin handle carry the target's form_version
+        // (fo4 = 131, matching Python's _build_authoring_record_dicts; starfield
+        // = 581, see bacup/docs/starfield_target/R1-esm-wrld-btd.md).
         use esp_authoring_core::plugin_runtime::plugin_handle_store_ref;
 
-        let tgt_handle_id = match plugin_handle_new_native("FormVer.esm", Some("fo4")) {
-            Ok(id) => id,
-            Err(_) => return, // no Python runtime in unit tests
-        };
-
-        let schema = fo4_schema();
-        let mut interner = StringInterner::new();
-        let fk = FormKey::parse("000800@FormVer.esm", &mut interner).unwrap();
-        let sig = SigCode::from_str("WEAP").unwrap();
-        let edid_sym = interner.intern("FormVerWeap");
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let record = Record {
-            sig,
-            form_key: fk,
-            eid: Some(edid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-
-        add_record_native(tgt_handle_id, record, &schema, &interner).unwrap();
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store
-            .get(&tgt_handle_id)
-            .expect("fo4 handle present after add_record_native");
-        // Find our inserted record. Walk the tree until we hit the WEAP record.
         fn find_first_record<'a>(
             items: &'a [esp_authoring_core::plugin_runtime::ParsedItem],
         ) -> Option<&'a esp_authoring_core::plugin_runtime::ParsedRecord> {
@@ -6508,76 +6255,37 @@ mod tests {
             }
             None
         }
-        let record = find_first_record(&slot.parsed.root_items)
-            .expect("inserted record should be reachable from root_items");
-        assert_eq!(
-            record.form_version,
-            Some(131),
-            "fo4 records must emit form_version=131; got {:?}",
-            record.form_version
-        );
-    }
 
-    #[test]
-    fn add_record_native_sets_form_version_581_on_starfield_handle() {
-        // Records inserted on a starfield plugin handle must carry
-        // form_version=581 in their ParsedRecord — see
-        // bacup/docs/starfield_target/R1-esm-wrld-btd.md.
-        use esp_authoring_core::plugin_runtime::plugin_handle_store_ref;
+        for (game, schema, signature, expected) in [
+            ("fo4", fo4_schema(), "WEAP", 131),
+            ("starfield", starfield_schema(), "STAT", 581),
+        ] {
+            let tgt_handle_id = plugin_handle_new_native("FormVer.esm", Some(game)).unwrap();
+            let mut interner = StringInterner::new();
+            let fk = FormKey::parse("000800@FormVer.esm", &mut interner).unwrap();
+            let edid_sym = interner.intern("FormVerRecord");
+            let record = Record {
+                sig: SigCode::from_str(signature).unwrap(),
+                form_key: fk,
+                eid: Some(edid_sym),
+                flags: RecordFlags::empty(),
+                fields: smallvec::smallvec![FieldEntry {
+                    sig: SubrecordSig::from_str("EDID").unwrap(),
+                    value: FieldValue::String(edid_sym),
+                }],
+                warnings: smallvec::SmallVec::new(),
+            };
 
-        let tgt_handle_id = match plugin_handle_new_native("FormVer.esm", Some("starfield")) {
-            Ok(id) => id,
-            Err(_) => return, // no Python runtime in unit tests
-        };
+            add_record_native(tgt_handle_id, record, &schema, &interner).unwrap();
 
-        let schema = starfield_schema();
-        let mut interner = StringInterner::new();
-        let fk = FormKey::parse("000800@FormVer.esm", &mut interner).unwrap();
-        let sig = SigCode::from_str("STAT").unwrap();
-        let edid_sym = interner.intern("FormVerStat");
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let record = Record {
-            sig,
-            form_key: fk,
-            eid: Some(edid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-
-        add_record_native(tgt_handle_id, record, &schema, &interner).unwrap();
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store
-            .get(&tgt_handle_id)
-            .expect("starfield handle present after add_record_native");
-        // Find our inserted record. Walk the tree until we hit the STAT record.
-        fn find_first_record<'a>(
-            items: &'a [esp_authoring_core::plugin_runtime::ParsedItem],
-        ) -> Option<&'a esp_authoring_core::plugin_runtime::ParsedRecord> {
-            for item in items {
-                match item {
-                    esp_authoring_core::plugin_runtime::ParsedItem::Record(r) => return Some(r),
-                    esp_authoring_core::plugin_runtime::ParsedItem::Group(g) => {
-                        if let Some(r) = find_first_record(&g.children) {
-                            return Some(r);
-                        }
-                    }
-                }
-            }
-            None
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store
+                .get(&tgt_handle_id)
+                .expect("handle present after add_record_native");
+            let record = find_first_record(&slot.parsed.root_items)
+                .expect("inserted record should be reachable from root_items");
+            assert_eq!(record.form_version, Some(expected), "{game}");
         }
-        let record = find_first_record(&slot.parsed.root_items)
-            .expect("inserted record should be reachable from root_items");
-        assert_eq!(
-            record.form_version,
-            Some(581),
-            "starfield records must emit form_version=581; got {:?}",
-            record.form_version
-        );
     }
 
     #[test]
@@ -6588,10 +6296,7 @@ mod tests {
         // filter them out.
         use esp_authoring_core::plugin_runtime::plugin_handle_store_ref;
 
-        let handle_id = match plugin_handle_new_native("DropSchema.esm", Some("fo4")) {
-            Ok(id) => id,
-            Err(_) => return, // no Python runtime in unit tests
-        };
+        let handle_id = plugin_handle_new_native("DropSchema.esm", Some("fo4")).unwrap();
 
         let schema = fo4_schema();
         let mut interner = StringInterner::new();
@@ -6743,14 +6448,14 @@ mod tests {
     }
 
     #[test]
-    fn encode_record_force_compresses_cell_and_land_on_fo4_target() {
+    fn encode_record_force_compresses_only_cell_and_land_on_fo4_target() {
         // FO4 requires CELL and LAND records to carry the COMPRESSED flag
         // (0x00040000) on emit. FO76 sources sometimes ship them
         // uncompressed; without this stamp the target plugin would be
-        // invalid for CK.
+        // invalid for CK. Other records must not get the stamp.
         let schema = fo4_schema();
         let mut interner = StringInterner::new();
-        for sig in &["CELL", "LAND"] {
+        for (sig, compressed) in [("CELL", true), ("LAND", true), ("STAT", false)] {
             let fk = FormKey::parse("000801@Test.esm", &mut interner).unwrap();
             let record = Record {
                 sig: SigCode::from_str(sig).unwrap(),
@@ -6773,44 +6478,11 @@ mod tests {
                 .unwrap()
                 .unwrap_or_else(|| panic!("{sig} should be encoded"));
             assert_eq!(
-                parsed.flags & 0x0004_0000,
-                0x0004_0000,
-                "{sig} flags should have COMPRESSED set on FO4 target"
+                parsed.flags & 0x0004_0000 != 0,
+                compressed,
+                "{sig} COMPRESSED flag on FO4 target"
             );
         }
-    }
-
-    #[test]
-    fn encode_record_does_not_force_compress_non_cell_or_land_on_fo4() {
-        // Only CELL and LAND get the auto-COMPRESSED stamp.
-        let schema = fo4_schema();
-        let mut interner = StringInterner::new();
-        let fk = FormKey::parse("000801@Test.esm", &mut interner).unwrap();
-        let record = Record {
-            sig: SigCode::from_str("STAT").unwrap(),
-            form_key: fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![],
-            warnings: smallvec::SmallVec::new(),
-        };
-        let master_map = no_masters();
-        let mut ctx = EncodeContext {
-            interner: &interner,
-            master_map: &master_map,
-            own_index: 0,
-            target_is_localized: false,
-            slot: None,
-            localized_strings: None,
-        };
-        let parsed = encode_record_for_target(record, &schema, &mut ctx, Some("fo4"))
-            .unwrap()
-            .expect("STAT should be encoded");
-        assert_eq!(
-            parsed.flags & 0x0004_0000,
-            0,
-            "STAT must not be auto-COMPRESSED"
-        );
     }
 
     #[test]
@@ -6852,112 +6524,109 @@ mod tests {
     }
 
     #[test]
-    fn fo4_ck_drops_zero_length_workbench_data() {
-        for record_sig in ["FURN", "TERM"] {
-            let mut subrecords = vec![
-                parsed_subrecord("EDID", b"Workbench\0"),
-                parsed_subrecord("WBDT", &[]),
-                parsed_subrecord("FULL", b"Workbench\0"),
-            ];
+    fn fo4_ck_workbench_and_marker_payload_limits() {
+        let mut crafting_markers = vec![0x11; 48];
+        crafting_markers[21..24].copy_from_slice(&[0x01, 0x00, 0x00]);
+        crafting_markers[45..48].copy_from_slice(&[0x00, 0x00, 0x00]);
+        let mut crafting_markers_fixed = crafting_markers.clone();
+        crafting_markers_fixed[21..24].copy_from_slice(&[0xFF, 0xFF, 0xFF]);
+        crafting_markers_fixed[45..48].copy_from_slice(&[0xFF, 0xFF, 0xFF]);
+        let mut instrument_marker = vec![0x33; 24];
+        instrument_marker[21..24].copy_from_slice(&[0x01, 0x00, 0x00]);
+        let mut instrument_marker_fixed = instrument_marker.clone();
+        instrument_marker_fixed[21..24].copy_from_slice(&[0xFF, 0xFF, 0xFF]);
+        let legacy_marker = vec![0x22; 24];
+
+        for (name, record_sig, input, expected) in [
+            (
+                "furn_drops_empty_wbdt",
+                "FURN",
+                vec![
+                    ("EDID", b"Workbench\0".to_vec()),
+                    ("WBDT", vec![]),
+                    ("FULL", b"Workbench\0".to_vec()),
+                ],
+                vec![
+                    ("EDID", b"Workbench\0".to_vec()),
+                    ("FULL", b"Workbench\0".to_vec()),
+                ],
+            ),
+            (
+                "term_drops_empty_wbdt",
+                "TERM",
+                vec![
+                    ("EDID", b"Workbench\0".to_vec()),
+                    ("WBDT", vec![]),
+                    ("FULL", b"Workbench\0".to_vec()),
+                ],
+                vec![
+                    ("EDID", b"Workbench\0".to_vec()),
+                    ("FULL", b"Workbench\0".to_vec()),
+                ],
+            ),
+            (
+                "furn_projects_crafting_wbdt_but_keeps_legacy_tail",
+                "FURN",
+                vec![
+                    ("WBDT", vec![0x05, 0x01]),
+                    ("WBDT", vec![0x00, 0xFF, 0xBB]),
+                    ("WBDT", vec![0x00, 0x00]),
+                    ("WBDT", vec![0x07]),
+                ],
+                vec![
+                    ("WBDT", vec![0x05]),
+                    ("WBDT", vec![0x00, 0xFF]),
+                    ("WBDT", vec![0x00]),
+                    ("WBDT", vec![0x07]),
+                ],
+            ),
+            (
+                "crafting_furniture_marker_tails",
+                "FURN",
+                vec![("WBDT", vec![0x05, 0x01]), ("SNAM", crafting_markers)],
+                vec![("WBDT", vec![0x05]), ("SNAM", crafting_markers_fixed)],
+            ),
+            (
+                "instrument_furniture_marker_tails",
+                "FURN",
+                vec![("WBDT", vec![0x00, 0x01]), ("SNAM", instrument_marker)],
+                vec![("WBDT", vec![0x00]), ("SNAM", instrument_marker_fixed)],
+            ),
+            (
+                "legacy_furniture_marker_tails_preserved",
+                "FURN",
+                vec![("WBDT", vec![0x00, 0xFF]), ("SNAM", legacy_marker.clone())],
+                vec![("WBDT", vec![0x00, 0xFF]), ("SNAM", legacy_marker)],
+            ),
+            (
+                "terminal_wbdt_one_byte",
+                "TERM",
+                vec![("WBDT", vec![0x00, 0xFF])],
+                vec![("WBDT", vec![0x00])],
+            ),
+            (
+                "unrelated_record_untouched",
+                "STAT",
+                vec![("WBDT", vec![]), ("WBDT", vec![0x7f, 0xaa])],
+                vec![("WBDT", vec![]), ("WBDT", vec![0x7f, 0xaa])],
+            ),
+        ] {
+            let mut subrecords = input
+                .iter()
+                .map(|(sig, data)| parsed_subrecord(sig, data))
+                .collect::<Vec<_>>();
 
             apply_fo4_ck_payload_limits(record_sig, &mut subrecords, Some("fo4"));
 
             assert_eq!(
                 subrecords
                     .iter()
-                    .map(|subrecord| subrecord.signature.as_str())
+                    .map(|subrecord| (subrecord.signature.as_str(), subrecord.data.to_vec()))
                     .collect::<Vec<_>>(),
-                ["EDID", "FULL"],
-                "{record_sig} should drop only empty WBDT"
+                expected,
+                "{name}"
             );
         }
-    }
-
-    #[test]
-    fn fo4_ck_projects_crafting_workbench_data_but_preserves_legacy_furniture_tail() {
-        let mut subrecords = vec![
-            parsed_subrecord("WBDT", &[0x05, 0x01]),
-            parsed_subrecord("WBDT", &[0x00, 0xFF, 0xBB]),
-            parsed_subrecord("WBDT", &[0x00, 0x00]),
-            parsed_subrecord("WBDT", &[0x07]),
-        ];
-
-        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
-
-        assert_eq!(subrecords[0].data.as_ref(), &[0x05]);
-        assert_eq!(subrecords[1].data.as_ref(), &[0x00, 0xFF]);
-        assert_eq!(subrecords[2].data.as_ref(), &[0x00]);
-        assert_eq!(subrecords[3].data.as_ref(), &[0x07]);
-    }
-
-    #[test]
-    fn fo4_ck_normalizes_crafting_furniture_marker_parameter_tails() {
-        let mut marker_rows = vec![0x11; 48];
-        marker_rows[21..24].copy_from_slice(&[0x01, 0x00, 0x00]);
-        marker_rows[45..48].copy_from_slice(&[0x00, 0x00, 0x00]);
-        let mut subrecords = vec![
-            parsed_subrecord("WBDT", &[0x05, 0x01]),
-            parsed_subrecord("SNAM", &marker_rows),
-        ];
-
-        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
-
-        assert_eq!(subrecords[0].data.as_ref(), &[0x05]);
-        assert_eq!(&subrecords[1].data[21..24], &[0xFF, 0xFF, 0xFF]);
-        assert_eq!(&subrecords[1].data[45..48], &[0xFF, 0xFF, 0xFF]);
-        assert!(subrecords[1].data[..21].iter().all(|byte| *byte == 0x11));
-    }
-
-    #[test]
-    fn fo4_ck_normalizes_instrument_furniture_marker_parameter_tails() {
-        let mut marker_row = [0x33; 24];
-        marker_row[21..24].copy_from_slice(&[0x01, 0x00, 0x00]);
-        let mut subrecords = vec![
-            parsed_subrecord("WBDT", &[0x00, 0x01]),
-            parsed_subrecord("SNAM", &marker_row),
-        ];
-
-        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
-
-        assert_eq!(subrecords[0].data.as_ref(), &[0x00]);
-        assert_eq!(&subrecords[1].data[21..24], &[0xFF, 0xFF, 0xFF]);
-        assert!(subrecords[1].data[..21].iter().all(|byte| *byte == 0x33));
-    }
-
-    #[test]
-    fn fo4_ck_preserves_legacy_furniture_marker_parameter_tails() {
-        let marker_row = [0x22; 24];
-        let mut subrecords = vec![
-            parsed_subrecord("WBDT", &[0x00, 0xFF]),
-            parsed_subrecord("SNAM", &marker_row),
-        ];
-
-        apply_fo4_ck_payload_limits("FURN", &mut subrecords, Some("fo4"));
-
-        assert_eq!(subrecords[0].data.as_ref(), &[0x00, 0xFF]);
-        assert_eq!(subrecords[1].data.as_ref(), &marker_row);
-    }
-
-    #[test]
-    fn fo4_ck_projects_terminal_workbench_data_to_one_byte() {
-        let mut subrecords = vec![parsed_subrecord("WBDT", &[0x00, 0xFF])];
-
-        apply_fo4_ck_payload_limits("TERM", &mut subrecords, Some("fo4"));
-
-        assert_eq!(subrecords[0].data.as_ref(), &[0x00]);
-    }
-
-    #[test]
-    fn fo4_ck_workbench_data_rule_does_not_touch_unrelated_records() {
-        let mut subrecords = vec![
-            parsed_subrecord("WBDT", &[]),
-            parsed_subrecord("WBDT", &[0x7f, 0xaa]),
-        ];
-
-        apply_fo4_ck_payload_limits("STAT", &mut subrecords, Some("fo4"));
-
-        assert!(subrecords[0].data.is_empty());
-        assert_eq!(subrecords[1].data.as_ref(), &[0x7f, 0xaa]);
     }
 
     #[test]
@@ -7172,92 +6841,90 @@ mod tests {
     }
 
     #[test]
-    fn encode_scen_mixed_timer_and_template_tnam_selects_distinct_slots() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("SCEN").expect("SCEN schema");
-        let timer = scen_test_field("TNAM", FieldValue::Float(1.25));
-        let template_fk = FormKey::parse("55DE1F@Test.esm", &interner).unwrap();
-        let template = scen_test_field("TNAM", FieldValue::FormKey(template_fk));
+    fn encode_scen_timer_and_template_tnam_slots() {
+        {
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let record_def = schema.record_def("SCEN").expect("SCEN schema");
+            let timer = scen_test_field("TNAM", FieldValue::Float(1.25));
+            let template_fk = FormKey::parse("55DE1F@Test.esm", &interner).unwrap();
+            let template = scen_test_field("TNAM", FieldValue::FormKey(template_fk));
 
-        assert_eq!(
-            scen_tnam_def_for_entry(record_def, &timer, false)
-                .and_then(|subrecord| subrecord.codec.as_deref()),
-            Some("float32")
-        );
-        assert_eq!(
-            scen_tnam_def_for_entry(record_def, &template, true)
-                .and_then(|subrecord| subrecord.codec.as_deref()),
-            Some("formid")
-        );
+            assert_eq!(
+                scen_tnam_def_for_entry(record_def, &timer, false)
+                    .and_then(|subrecord| subrecord.codec.as_deref()),
+                Some("float32")
+            );
+            assert_eq!(
+                scen_tnam_def_for_entry(record_def, &template, true)
+                    .and_then(|subrecord| subrecord.codec.as_deref()),
+                Some("formid")
+            );
 
-        let parsed = encode_scen_for_test(
-            &interner,
-            vec![
-                scen_test_field(
-                    "EDID",
-                    FieldValue::Bytes(SmallVec::from_slice(b"MixedScene\0")),
-                ),
-                scen_test_field("ANAM", FieldValue::Uint(1)),
-                scen_test_field("INAM", FieldValue::Uint(0)),
-                timer,
-                scen_test_field("ANAM", FieldValue::None),
-                scen_test_field("VNAM", FieldValue::Bytes(SmallVec::from_vec(vec![0; 16]))),
-                template,
-            ],
-            7,
-        );
+            let parsed = encode_scen_for_test(
+                &interner,
+                vec![
+                    scen_test_field(
+                        "EDID",
+                        FieldValue::Bytes(SmallVec::from_slice(b"MixedScene\0")),
+                    ),
+                    scen_test_field("ANAM", FieldValue::Uint(1)),
+                    scen_test_field("INAM", FieldValue::Uint(0)),
+                    timer,
+                    scen_test_field("ANAM", FieldValue::None),
+                    scen_test_field("VNAM", FieldValue::Bytes(SmallVec::from_vec(vec![0; 16]))),
+                    template,
+                ],
+                7,
+            );
 
-        assert_eq!(
-            scen_tnam_payloads(&parsed),
-            vec![
-                1.25_f32.to_le_bytes().to_vec(),
-                0x0755_DE1F_u32.to_le_bytes().to_vec(),
-            ]
-        );
-    }
+            assert_eq!(
+                scen_tnam_payloads(&parsed),
+                vec![
+                    1.25_f32.to_le_bytes().to_vec(),
+                    0x0755_DE1F_u32.to_le_bytes().to_vec(),
+                ]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let schema = fo4_schema();
+            let record_def = schema.record_def("SCEN").expect("SCEN schema");
+            let template_fk = FormKey::parse("55DE1F@Test.esm", &interner).unwrap();
+            let template = scen_test_field("TNAM", FieldValue::FormKey(template_fk));
 
-    #[test]
-    fn encode_scen_template_only_tnam_survives_missing_optional_body_fields() {
-        let interner = StringInterner::new();
-        let schema = fo4_schema();
-        let record_def = schema.record_def("SCEN").expect("SCEN schema");
-        let template_fk = FormKey::parse("55DE1F@Test.esm", &interner).unwrap();
-        let template = scen_test_field("TNAM", FieldValue::FormKey(template_fk));
+            assert_eq!(
+                scen_tnam_def_for_entry(record_def, &template, false)
+                    .and_then(|subrecord| subrecord.codec.as_deref()),
+                Some("formid")
+            );
 
-        assert_eq!(
-            scen_tnam_def_for_entry(record_def, &template, false)
-                .and_then(|subrecord| subrecord.codec.as_deref()),
-            Some("formid")
-        );
+            let parsed = encode_scen_for_test(&interner, vec![template], 7);
+            assert_eq!(
+                scen_tnam_payloads(&parsed),
+                vec![0x0755_DE1F_u32.to_le_bytes().to_vec()]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let timer_bytes = 2.75_f32.to_le_bytes();
+            let timer = scen_test_field(
+                "TNAM",
+                FieldValue::Bytes(SmallVec::from_slice(&timer_bytes)),
+            );
+            let parsed = encode_scen_for_test(
+                &interner,
+                vec![
+                    scen_test_field("ANAM", FieldValue::Uint(1)),
+                    scen_test_field("INAM", FieldValue::Uint(0)),
+                    timer,
+                    scen_test_field("ANAM", FieldValue::None),
+                ],
+                7,
+            );
 
-        let parsed = encode_scen_for_test(&interner, vec![template], 7);
-        assert_eq!(
-            scen_tnam_payloads(&parsed),
-            vec![0x0755_DE1F_u32.to_le_bytes().to_vec()]
-        );
-    }
-
-    #[test]
-    fn encode_scen_timer_only_tnam_remains_byte_identical() {
-        let interner = StringInterner::new();
-        let timer_bytes = 2.75_f32.to_le_bytes();
-        let timer = scen_test_field(
-            "TNAM",
-            FieldValue::Bytes(SmallVec::from_slice(&timer_bytes)),
-        );
-        let parsed = encode_scen_for_test(
-            &interner,
-            vec![
-                scen_test_field("ANAM", FieldValue::Uint(1)),
-                scen_test_field("INAM", FieldValue::Uint(0)),
-                timer,
-                scen_test_field("ANAM", FieldValue::None),
-            ],
-            7,
-        );
-
-        assert_eq!(scen_tnam_payloads(&parsed), vec![timer_bytes.to_vec()]);
+            assert_eq!(scen_tnam_payloads(&parsed), vec![timer_bytes.to_vec()]);
+        }
     }
 
     #[test]
@@ -7899,9 +7566,9 @@ mod tests {
 
         let replacements = |plugin_name: &str, interner: &mut StringInterner| {
             vec![
-                weap_record(plugin_name, 0x800, "WeapA1", interner),
-                weap_record(plugin_name, 0x801, "WeapB1", interner),
-                weap_record(plugin_name, 0x802, "WeapC1", interner),
+                weap_record(plugin_name, 0x800, "WeapA2", interner),
+                weap_record(plugin_name, 0x801, "WeapB2", interner),
+                weap_record(plugin_name, 0x802, "WeapC2", interner),
             ]
         };
 
@@ -8153,7 +7820,7 @@ mod tests {
     #[test]
     fn content_batch_first_and_last_encode_errors_apply_exact_prefix() {
         let schema = fo4_schema();
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         for failure_index in [0, 2] {
             let plugin_name = format!("ContentBoundary{failure_index}.esm");
             let handle = plugin_handle_new_native(&plugin_name, Some("fo4")).unwrap();
@@ -8847,55 +8514,6 @@ mod tests {
     }
 
     #[test]
-    fn navmesh_diagnostics_detect_bad_internal_link_target() {
-        let mesh = nvnm_mesh(
-            0,
-            (0, 0),
-            &[
-                (0.0, 0.0, 0.0),
-                (10.0, 0.0, 0.0),
-                (0.0, 10.0, 0.0),
-                (100.0, 100.0, 0.0),
-                (110.0, 100.0, 0.0),
-                (100.0, 110.0, 0.0),
-            ],
-            &[([0, 1, 2], [1, -1, -1], 0), ([3, 4, 5], [0, -1, -1], 0)],
-            &[],
-        );
-        let snapshots = HashMap::from([(0x762D933, portal_snapshot(&mesh))]);
-
-        let stats = diagnose_navmesh_links(&snapshots).expect("NAVM diagnostics");
-
-        assert_eq!(stats.navmeshes_seen, 1);
-        assert_eq!(stats.bad_internal_links, 2);
-        assert_eq!(stats.linked_edge_vertex_mismatches, 2);
-        assert_eq!(stats.missing_internal_links, 0);
-    }
-
-    #[test]
-    fn navmesh_diagnostics_detect_missing_internal_shared_edge_link() {
-        let mesh = nvnm_mesh(
-            0,
-            (0, 0),
-            &[
-                (0.0, 0.0, 0.0),
-                (10.0, 0.0, 0.0),
-                (0.0, 10.0, 0.0),
-                (10.0, 10.0, 0.0),
-            ],
-            &[([0, 1, 2], [-1, -1, -1], 0), ([1, 3, 2], [-1, -1, -1], 0)],
-            &[],
-        );
-        let snapshots = HashMap::from([(0x742F713, portal_snapshot(&mesh))]);
-
-        let stats = diagnose_navmesh_links(&snapshots).expect("NAVM diagnostics");
-
-        assert_eq!(stats.bad_internal_links, 0);
-        assert_eq!(stats.missing_internal_links, 2);
-        assert_eq!(stats.same_direction_internal_edges, 0);
-    }
-
-    #[test]
     fn navmesh_diagnostics_treat_extra_info_links_as_missing_internal_links() {
         let mesh = nvnm_mesh(
             0,
@@ -8946,7 +8564,7 @@ mod tests {
     }
 
     #[test]
-    fn navmesh_finalizer_reports_cleared_bad_internal_links() {
+    fn navmesh_diagnostics_and_finalizer_report_bad_internal_links() {
         let mesh = nvnm_mesh(
             0,
             (0, 0),
@@ -8972,10 +8590,33 @@ mod tests {
         assert_eq!(stats.navmeshes_touched, 1);
         assert_eq!(payload.triangles[0].links, [-1, -1, -1]);
         assert_eq!(payload.triangles[1].links, [-1, -1, -1]);
+
+        let mesh = nvnm_mesh(
+            0,
+            (0, 0),
+            &[
+                (0.0, 0.0, 0.0),
+                (10.0, 0.0, 0.0),
+                (0.0, 10.0, 0.0),
+                (100.0, 100.0, 0.0),
+                (110.0, 100.0, 0.0),
+                (100.0, 110.0, 0.0),
+            ],
+            &[([0, 1, 2], [1, -1, -1], 0), ([3, 4, 5], [0, -1, -1], 0)],
+            &[],
+        );
+        let snapshots = HashMap::from([(0x762D933, portal_snapshot(&mesh))]);
+
+        let stats = diagnose_navmesh_links(&snapshots).expect("NAVM diagnostics");
+
+        assert_eq!(stats.navmeshes_seen, 1);
+        assert_eq!(stats.bad_internal_links, 2);
+        assert_eq!(stats.linked_edge_vertex_mismatches, 2);
+        assert_eq!(stats.missing_internal_links, 0);
     }
 
     #[test]
-    fn navmesh_finalizer_reports_rebuilt_missing_internal_links() {
+    fn navmesh_diagnostics_and_finalizer_report_missing_internal_links() {
         let mesh = nvnm_mesh(
             0,
             (0, 0),
@@ -8998,6 +8639,26 @@ mod tests {
         assert_eq!(stats.navmeshes_touched, 1);
         assert!(payload.triangles[0].links.iter().any(|link| *link == 1));
         assert!(payload.triangles[1].links.iter().any(|link| *link == 0));
+
+        let mesh = nvnm_mesh(
+            0,
+            (0, 0),
+            &[
+                (0.0, 0.0, 0.0),
+                (10.0, 0.0, 0.0),
+                (0.0, 10.0, 0.0),
+                (10.0, 10.0, 0.0),
+            ],
+            &[([0, 1, 2], [-1, -1, -1], 0), ([1, 3, 2], [-1, -1, -1], 0)],
+            &[],
+        );
+        let snapshots = HashMap::from([(0x742F713, portal_snapshot(&mesh))]);
+
+        let stats = diagnose_navmesh_links(&snapshots).expect("NAVM diagnostics");
+
+        assert_eq!(stats.bad_internal_links, 0);
+        assert_eq!(stats.missing_internal_links, 2);
+        assert_eq!(stats.same_direction_internal_edges, 0);
     }
 
     #[test]
@@ -9621,38 +9282,36 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_nvnm_grid_fo4_covers_ck_4ea53d() {
-        let src = include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA53D.nvnm.bin");
-        let ck = include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA53D.nvnm.bin");
-        assert_rebuild_covers_ck(src, ck, "4EA53D");
-    }
-
-    #[test]
-    fn rebuild_nvnm_grid_fo4_covers_ck_4ea542() {
-        let src = include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA542.nvnm.bin");
-        let ck = include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA542.nvnm.bin");
-        assert_rebuild_covers_ck(src, ck, "4EA542");
-    }
-
-    #[test]
-    fn rebuild_nvnm_grid_fo4_covers_ck_4ea534() {
-        let src = include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA534.nvnm.bin");
-        let ck = include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA534.nvnm.bin");
-        assert_rebuild_covers_ck(src, ck, "4EA534");
-    }
-
-    #[test]
-    fn rebuild_nvnm_grid_fo4_covers_ck_2b740a() {
-        let src = include_bytes!("test_fixtures/nvnm_grid_ck/src_2B740A.nvnm.bin");
-        let ck = include_bytes!("test_fixtures/nvnm_grid_ck/ck_2B740A.nvnm.bin");
-        assert_rebuild_covers_ck(src, ck, "2B740A");
-    }
-
-    #[test]
-    fn rebuild_nvnm_grid_fo4_covers_ck_4ea532() {
-        let src = include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA532.nvnm.bin");
-        let ck = include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA532.nvnm.bin");
-        assert_rebuild_covers_ck(src, ck, "4EA532");
+    fn rebuild_nvnm_grid_fo4_covers_ck_fixtures() {
+        for (label, src, ck) in [
+            (
+                "4EA53D",
+                &include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA53D.nvnm.bin")[..],
+                &include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA53D.nvnm.bin")[..],
+            ),
+            (
+                "4EA542",
+                &include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA542.nvnm.bin")[..],
+                &include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA542.nvnm.bin")[..],
+            ),
+            (
+                "4EA534",
+                &include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA534.nvnm.bin")[..],
+                &include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA534.nvnm.bin")[..],
+            ),
+            (
+                "2B740A",
+                &include_bytes!("test_fixtures/nvnm_grid_ck/src_2B740A.nvnm.bin")[..],
+                &include_bytes!("test_fixtures/nvnm_grid_ck/ck_2B740A.nvnm.bin")[..],
+            ),
+            (
+                "4EA532",
+                &include_bytes!("test_fixtures/nvnm_grid_ck/src_4EA532.nvnm.bin")[..],
+                &include_bytes!("test_fixtures/nvnm_grid_ck/ck_4EA532.nvnm.bin")[..],
+            ),
+        ] {
+            assert_rebuild_covers_ck(src, ck, label);
+        }
     }
 
     #[test]

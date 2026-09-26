@@ -2130,125 +2130,98 @@ mod tests {
     }
 
     #[test]
-    fn exact_current_location_travel_preserves_semantics_and_receipt() {
-        let interner = StringInterner::new();
-        let classification = classify_skyrim_pack(
-            &source_pack(&interner),
-            &evidence(SkyrimPackBlueprintKind::ExactSemanticBlueprint),
-            &interner,
-        )
-        .unwrap();
-        let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
-        assert_eq!(lowering.target.flags.general, 0x120);
-        assert_eq!(lowering.target.schedule.hour, 8);
-        assert_eq!(lowering.target.schedule.minute, 30);
-        assert_eq!(
-            lowering.target.locations[0].selector,
-            SkyrimPackCurrentLocation::NearSelf
-        );
-        assert_eq!(lowering.target.locations[0].radius, 384);
-        assert!(!lowering.target.universal_fallback_used);
-        verify_skyrim_pack_receipt(&classification, &lowering.target, &lowering.receipt).unwrap();
-    }
-
-    #[test]
-    fn travel_materialization_save_reopen_has_strict_record_receipt() {
-        let interner = StringInterner::new();
-        let procedure = evidence(SkyrimPackBlueprintKind::ExactSemanticBlueprint);
-        let classification =
-            classify_skyrim_pack(&source_pack(&interner), &procedure, &interner).unwrap();
-        let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
-        let source = FormKey::parse("000111@Skyrim.esm", &interner).unwrap();
-        let target = FormKey::parse("000800@Output.esp", &interner).unwrap();
-        let template = FormKey::parse("002CB0@Fallout4.esm", &interner).unwrap();
-        let template_evidence = materialization_evidence(&procedure);
-        let materialized = materialize_skyrim_pack(
-            &lowering,
-            source,
-            target,
-            template,
-            &BTreeMap::new(),
-            &template_evidence,
-            &interner,
-        )
-        .unwrap();
-        assert!(!materialized.receipt.vmad_attached);
-        let reopened = save_reopen(materialized.record, target, &interner);
-        let reopened_receipt = receipt_from_materialized_record(
-            &lowering,
-            &reopened,
-            source,
-            target,
-            template,
-            &BTreeMap::new(),
-            &template_evidence,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(reopened_receipt, materialized.receipt);
-    }
-
-    #[test]
-    fn exact_patrol_materializes_mapped_path_and_tamper_fails_closed() {
-        let interner = StringInterner::new();
-        let procedure = patrol_evidence();
-        let classification =
-            classify_skyrim_pack(&source_patrol(&interner), &procedure, &interner).unwrap();
-        let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
-        let source = FormKey::parse("000111@Skyrim.esm", &interner).unwrap();
-        let target = FormKey::parse("000800@Output.esp", &interner).unwrap();
-        let template = FormKey::parse("002CE0@Fallout4.esm", &interner).unwrap();
-        let mapped_path = FormKey::parse("000900@Output.esp", &interner).unwrap();
-        let mappings = BTreeMap::from([("000222@Skyrim.esm".to_string(), mapped_path)]);
-        let template_evidence = materialization_evidence(&procedure);
-        let materialized = materialize_skyrim_pack(
-            &lowering,
-            source,
-            target,
-            template,
-            &mappings,
-            &template_evidence,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(
-            materialized.receipt.mapped_references,
-            BTreeMap::from([(
-                "000222@Skyrim.esm".to_string(),
-                "000900@Output.esp".to_string()
-            )])
-        );
-        let mut reopened = save_reopen(materialized.record, target, &interner);
-        verify_skyrim_pack_record_receipt(
-            &lowering,
-            &reopened,
-            source,
-            target,
-            template,
-            &mappings,
-            &template_evidence,
-            &materialized.receipt,
-            &interner,
-        )
-        .unwrap();
-        let ptda = reopened
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "PTDA")
+    fn current_location_travel_preserves_semantics_and_save_reopen_receipt() {
+        {
+            let interner = StringInterner::new();
+            let classification = classify_skyrim_pack(
+                &source_pack(&interner),
+                &evidence(SkyrimPackBlueprintKind::ExactSemanticBlueprint),
+                &interner,
+            )
             .unwrap();
-        ptda.value = pack_struct(
-            &interner,
-            [
-                ("target_data_type", FieldValue::Int(0)),
-                (
-                    "target_data_target",
-                    FieldValue::FormKey(FormKey::parse("000901@Output.esp", &interner).unwrap()),
-                ),
-                ("target_data_count_distance", FieldValue::Int(0)),
-            ],
-        );
-        assert!(matches!(
-            receipt_from_materialized_record(
+            let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
+            assert_eq!(lowering.target.flags.general, 0x120);
+            assert_eq!(lowering.target.schedule.hour, 8);
+            assert_eq!(lowering.target.schedule.minute, 30);
+            assert_eq!(
+                lowering.target.locations[0].selector,
+                SkyrimPackCurrentLocation::NearSelf
+            );
+            assert_eq!(lowering.target.locations[0].radius, 384);
+            assert!(!lowering.target.universal_fallback_used);
+            verify_skyrim_pack_receipt(&classification, &lowering.target, &lowering.receipt)
+                .unwrap();
+        }
+        {
+            let interner = StringInterner::new();
+            let procedure = evidence(SkyrimPackBlueprintKind::ExactSemanticBlueprint);
+            let classification =
+                classify_skyrim_pack(&source_pack(&interner), &procedure, &interner).unwrap();
+            let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
+            let source = FormKey::parse("000111@Skyrim.esm", &interner).unwrap();
+            let target = FormKey::parse("000800@Output.esp", &interner).unwrap();
+            let template = FormKey::parse("002CB0@Fallout4.esm", &interner).unwrap();
+            let template_evidence = materialization_evidence(&procedure);
+            let materialized = materialize_skyrim_pack(
+                &lowering,
+                source,
+                target,
+                template,
+                &BTreeMap::new(),
+                &template_evidence,
+                &interner,
+            )
+            .unwrap();
+            assert!(!materialized.receipt.vmad_attached);
+            let reopened = save_reopen(materialized.record, target, &interner);
+            let reopened_receipt = receipt_from_materialized_record(
+                &lowering,
+                &reopened,
+                source,
+                target,
+                template,
+                &BTreeMap::new(),
+                &template_evidence,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(reopened_receipt, materialized.receipt);
+        }
+    }
+
+    #[test]
+    fn patrol_materializes_mapped_path_and_requires_exact_source_abi() {
+        {
+            let interner = StringInterner::new();
+            let procedure = patrol_evidence();
+            let classification =
+                classify_skyrim_pack(&source_patrol(&interner), &procedure, &interner).unwrap();
+            let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
+            let source = FormKey::parse("000111@Skyrim.esm", &interner).unwrap();
+            let target = FormKey::parse("000800@Output.esp", &interner).unwrap();
+            let template = FormKey::parse("002CE0@Fallout4.esm", &interner).unwrap();
+            let mapped_path = FormKey::parse("000900@Output.esp", &interner).unwrap();
+            let mappings = BTreeMap::from([("000222@Skyrim.esm".to_string(), mapped_path)]);
+            let template_evidence = materialization_evidence(&procedure);
+            let materialized = materialize_skyrim_pack(
+                &lowering,
+                source,
+                target,
+                template,
+                &mappings,
+                &template_evidence,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(
+                materialized.receipt.mapped_references,
+                BTreeMap::from([(
+                    "000222@Skyrim.esm".to_string(),
+                    "000900@Output.esp".to_string()
+                )])
+            );
+            let mut reopened = save_reopen(materialized.record, target, &interner);
+            verify_skyrim_pack_record_receipt(
                 &lowering,
                 &reopened,
                 source,
@@ -2256,44 +2229,75 @@ mod tests {
                 template,
                 &mappings,
                 &template_evidence,
-                &interner,
-            ),
-            Err(SkyrimPackRejectionReason::InvalidMaterializedRecord { .. })
-        ));
-    }
-
-    #[test]
-    fn patrol_requires_reference_mapping_and_exact_source_abi() {
-        let interner = StringInterner::new();
-        let procedure = patrol_evidence();
-        let mut source_record = source_patrol(&interner);
-        let classification = classify_skyrim_pack(&source_record, &procedure, &interner).unwrap();
-        let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
-        assert_eq!(
-            materialize_skyrim_pack(
-                &lowering,
-                FormKey::parse("000111@Skyrim.esm", &interner).unwrap(),
-                FormKey::parse("000800@Output.esp", &interner).unwrap(),
-                FormKey::parse("002CE0@Fallout4.esm", &interner).unwrap(),
-                &BTreeMap::new(),
-                &materialization_evidence(&procedure),
+                &materialized.receipt,
                 &interner,
             )
-            .unwrap_err(),
-            SkyrimPackRejectionReason::MissingReferenceMapping {
-                source_form_key: "000222@Skyrim.esm".to_string()
-            }
-        );
-        source_record
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "XNAM")
-            .unwrap()
-            .value = FieldValue::Bytes(SmallVec::from_slice(&[0x08]));
-        assert_eq!(
-            classify_skyrim_pack(&source_record, &procedure, &interner).unwrap_err(),
-            SkyrimPackRejectionReason::UnsupportedPatrolShape
-        );
+            .unwrap();
+            let ptda = reopened
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.as_str() == "PTDA")
+                .unwrap();
+            ptda.value = pack_struct(
+                &interner,
+                [
+                    ("target_data_type", FieldValue::Int(0)),
+                    (
+                        "target_data_target",
+                        FieldValue::FormKey(
+                            FormKey::parse("000901@Output.esp", &interner).unwrap(),
+                        ),
+                    ),
+                    ("target_data_count_distance", FieldValue::Int(0)),
+                ],
+            );
+            assert!(matches!(
+                receipt_from_materialized_record(
+                    &lowering,
+                    &reopened,
+                    source,
+                    target,
+                    template,
+                    &mappings,
+                    &template_evidence,
+                    &interner,
+                ),
+                Err(SkyrimPackRejectionReason::InvalidMaterializedRecord { .. })
+            ));
+        }
+        {
+            let interner = StringInterner::new();
+            let procedure = patrol_evidence();
+            let mut source_record = source_patrol(&interner);
+            let classification =
+                classify_skyrim_pack(&source_record, &procedure, &interner).unwrap();
+            let lowering = lower_skyrim_pack(&classification, &request()).unwrap();
+            assert_eq!(
+                materialize_skyrim_pack(
+                    &lowering,
+                    FormKey::parse("000111@Skyrim.esm", &interner).unwrap(),
+                    FormKey::parse("000800@Output.esp", &interner).unwrap(),
+                    FormKey::parse("002CE0@Fallout4.esm", &interner).unwrap(),
+                    &BTreeMap::new(),
+                    &materialization_evidence(&procedure),
+                    &interner,
+                )
+                .unwrap_err(),
+                SkyrimPackRejectionReason::MissingReferenceMapping {
+                    source_form_key: "000222@Skyrim.esm".to_string()
+                }
+            );
+            source_record
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.as_str() == "XNAM")
+                .unwrap()
+                .value = FieldValue::Bytes(SmallVec::from_slice(&[0x08]));
+            assert_eq!(
+                classify_skyrim_pack(&source_record, &procedure, &interner).unwrap_err(),
+                SkyrimPackRejectionReason::UnsupportedPatrolShape
+            );
+        }
     }
 
     #[test]

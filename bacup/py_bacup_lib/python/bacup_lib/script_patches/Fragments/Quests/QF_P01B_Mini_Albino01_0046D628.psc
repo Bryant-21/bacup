@@ -31,12 +31,44 @@ Function Fragment_Stage_0500_Item_00()
     If testKit != None
         testKit.Enable(False)
     EndIf
+    P01B_Albino_TrySampleStage()
 EndFunction
 
 Function Fragment_Stage_0510_Item_00()
     SetObjectiveCompleted(31, True)
     If IsStageDone(500)
         SetObjectiveDisplayed(32, True)
+    EndIf
+    P01B_Albino_TrySampleStage()
+EndFunction
+
+; 520 (kit in hand and the aerosolizer entry read) gates the aerosolizer (530) but had no
+; setter; either half can arrive last.
+Function P01B_Albino_TrySampleStage()
+    If IsStageDone(500) && IsStageDone(510) && !IsStageDone(520)
+        SetStage(520)
+    EndIf
+EndFunction
+
+; The confession note alias has no fill (FO76 created it server-side); place it at its
+; bound marker so the alias OnRead (800, preReq 700) can fire.
+Function P01B_Albino_PlaceConfession()
+    If Alias_ConfessionNote == None || Alias_ConfessionNote.GetReference() != None || P01B_Mini_Albino01_Confession == None
+        Return
+    EndIf
+    ObjectReference markerRef = None
+    If Alias_ConfessionNoteLocation != None
+        markerRef = Alias_ConfessionNoteLocation.GetReference()
+    EndIf
+    If markerRef == None
+        markerRef = p01b_mini_albino_confessionnotelocation
+    EndIf
+    If markerRef == None
+        Return
+    EndIf
+    ObjectReference noteRef = markerRef.PlaceAtMe(P01B_Mini_Albino01_Confession, 1, True)
+    If noteRef != None
+        Alias_ConfessionNote.ForceRefTo(noteRef)
     EndIf
 EndFunction
 
@@ -61,11 +93,15 @@ EndFunction
 Function Fragment_Stage_0600_Item_00()
     SetObjectiveCompleted(10, True)
     SetObjectiveDisplayed(50, True)
+    If !IsStageDone(675)
+        SetStage(675)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0675_Item_00()
     SetObjectiveCompleted(10, True)
     SetObjectiveDisplayed(50, True)
+    P01B_Albino_PlaceConfession()
     ObjectReference confession = Alias_ConfessionNote.GetReference()
     If confession != None
         confession.Enable(False)
@@ -74,6 +110,7 @@ EndFunction
 
 Function Fragment_Stage_0700_Item_00()
     SetObjectiveDisplayed(50, True)
+    P01B_Albino_PlaceConfession()
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()

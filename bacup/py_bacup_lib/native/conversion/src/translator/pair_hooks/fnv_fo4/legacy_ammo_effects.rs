@@ -112,6 +112,7 @@ pub(crate) fn classify_legacy_ammo_effect(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn apply_legacy_ammo_effect_fold(input: f32, fold: LegacyAmmoEffectFold) -> Option<f32> {
     let value = f32::from_bits(fold.value_bits);
     let output = match fold.operation {

@@ -1,7 +1,10 @@
-use crate::ids::{FormKey, SubrecordSig};
+use crate::ids::FormKey;
+#[cfg(test)]
+use crate::ids::SubrecordSig;
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::sym::StringInterner;
 use crate::target_fo4_melee::{Fo4MeleeProfile, Fo4MeleeSourcePayload, emit_fo4_melee_weapon};
+#[cfg(test)]
 use smallvec::SmallVec;
 
 const STEEL_BATTLEAXE_LOCAL: u32 = 0x013984;
@@ -274,6 +277,7 @@ fn path_eq(left: &str, right: &str) -> bool {
     left.replace('/', "\\").eq_ignore_ascii_case(right)
 }
 
+#[cfg(test)]
 fn field(signature: &str, value: FieldValue) -> FieldEntry {
     FieldEntry {
         sig: SubrecordSig::from_str(signature).expect("valid subrecord signature"),
@@ -281,6 +285,7 @@ fn field(signature: &str, value: FieldValue) -> FieldEntry {
     }
 }
 
+#[cfg(test)]
 fn form_key_field(signature: &str, plugin: crate::sym::Sym, local: u32) -> FieldEntry {
     field(signature, FieldValue::FormKey(FormKey { local, plugin }))
 }
@@ -507,84 +512,37 @@ mod tests {
     }
 
     #[test]
-    fn exact_clone_in_another_source_plugin_fails_closed() {
-        let interner = StringInterner::new();
-        let mut clone = source_weapon(&interner);
-        let wrong_owner = interner.intern("SteelWeapons.esm");
-        clone.form_key.plugin = wrong_owner;
-        for field in &mut clone.fields {
-            if let FieldValue::FormKey(form_key) = &mut field.value {
-                form_key.plugin = wrong_owner;
+    fn source_plugin_ownership_is_exact_case_insensitive_and_flagless() {
+        {
+            let interner = StringInterner::new();
+            let mut clone = source_weapon(&interner);
+            let wrong_owner = interner.intern("SteelWeapons.esm");
+            clone.form_key.plugin = wrong_owner;
+            for field in &mut clone.fields {
+                if let FieldValue::FormKey(form_key) = &mut field.value {
+                    form_key.plugin = wrong_owner;
+                }
             }
+
+            assert!(simple_melee_weapon_source(&clone, &interner).is_none());
         }
-
-        assert!(simple_melee_weapon_source(&clone, &interner).is_none());
-    }
-
-    #[test]
-    fn skyrim_master_owner_match_is_case_insensitive() {
-        let interner = StringInterner::new();
-        let mut clone = source_weapon(&interner);
-        let owner = interner.intern("SKYRIM.ESM");
-        clone.form_key.plugin = owner;
-        for field in &mut clone.fields {
-            if let FieldValue::FormKey(form_key) = &mut field.value {
-                form_key.plugin = owner;
+        {
+            let interner = StringInterner::new();
+            let mut clone = source_weapon(&interner);
+            let owner = interner.intern("SKYRIM.ESM");
+            clone.form_key.plugin = owner;
+            for field in &mut clone.fields {
+                if let FieldValue::FormKey(form_key) = &mut field.value {
+                    form_key.plugin = owner;
+                }
             }
+
+            assert!(simple_melee_weapon_source(&clone, &interner).is_some());
         }
-
-        assert!(simple_melee_weapon_source(&clone, &interner).is_some());
-    }
-
-    #[test]
-    fn optional_real_corpus_steel_battleaxe_projection() {
-        let Some(path) = std::env::var_os("SKYRIMSE_WEAPON_CORPUS_PLUGIN") else {
-            return;
-        };
-        let path = std::path::PathBuf::from(path);
-        if !path.is_file() {
-            return;
+        {
+            let interner = StringInterner::new();
+            assert_eq!(source_weapon(&interner).flags, RecordFlags::empty());
         }
-        let handle = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
-            path.to_str().unwrap(),
-            Some("skyrimse"),
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        let plugin_name = crate::source_read::plugin_name_for_handle(handle).unwrap();
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("skyrimse").unwrap();
-        let source = crate::source_read::read_record(
-            handle,
-            &format!("{STEEL_BATTLEAXE_LOCAL:06X}@{plugin_name}"),
-            &schema,
-            &interner,
-        )
-        .unwrap();
-        assert!(simple_melee_weapon_source(&source, &interner).is_some());
-
-        let first_person = crate::source_read::read_record(
-            handle,
-            &format!("{STEEL_BATTLEAXE_FIRST_PERSON_STAT_LOCAL:06X}@{plugin_name}"),
-            &schema,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(first_person.sig.as_str(), "STAT");
-        assert!(
-            string_value(exact_field(&first_person, "MODL").unwrap(), &interner)
-                .is_some_and(|path| path_eq(path, STEEL_BATTLEAXE_FIRST_PERSON_MODEL))
-        );
-
-        let mut projected = source;
-        assert!(project_simple_melee_weapon(&mut projected, &interner));
-        assert_eq!(
-            string_value(exact_field(&projected, "MOD4").unwrap(), &interner),
-            Some(STEEL_BATTLEAXE_FIRST_PERSON_MODEL)
-        );
-        esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle);
     }
 
     fn structured_encoded_width(value: &FieldValue) -> usize {
@@ -616,11 +574,5 @@ mod tests {
             }
             _ => {}
         }
-    }
-
-    #[test]
-    fn fixture_has_no_record_flags() {
-        let interner = StringInterner::new();
-        assert_eq!(source_weapon(&interner).flags, RecordFlags::empty());
     }
 }

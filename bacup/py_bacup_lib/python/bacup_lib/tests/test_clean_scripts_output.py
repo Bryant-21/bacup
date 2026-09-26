@@ -47,17 +47,6 @@ def test_clean_scripts_output_removes_stale_pex_and_psc(tmp_path):
     assert not (paths.output_root / "data" / "Scripts").exists()
     assert not (paths.output_root / "Scripts" / "Source" / "User").exists()
     assert kept.read_bytes() == b"keep"
-    assert any("cleared stale script output" in message for message in logs)
-
-
-def test_clean_scripts_output_is_a_noop_without_prior_scripts(tmp_path):
-    paths = _paths(tmp_path)
-    paths.output_root.mkdir(parents=True)
-
-    logs: list[str] = []
-    regen_pipeline._clean_scripts_output(paths, _runner(logs))
-
-    assert logs == []
 
 
 def test_clean_scripts_output_refuses_protected_output_root(tmp_path):

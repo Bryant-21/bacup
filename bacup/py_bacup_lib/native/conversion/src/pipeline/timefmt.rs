@@ -42,32 +42,26 @@ mod tests {
     }
 
     #[test]
-    fn formats_epoch() {
-        assert_eq!(iso8601_utc(at(0)), "1970-01-01T00:00:00.000Z");
-    }
-
-    #[test]
-    fn formats_end_of_day_and_rollover() {
-        assert_eq!(iso8601_utc(at(86_399)), "1970-01-01T23:59:59.000Z");
-        assert_eq!(iso8601_utc(at(86_400)), "1970-01-02T00:00:00.000Z");
-    }
-
-    #[test]
-    fn handles_leap_days() {
-        assert_eq!(iso8601_utc(at(951_782_400)), "2000-02-29T00:00:00.000Z");
-        assert_eq!(iso8601_utc(at(1_709_164_800)), "2024-02-29T00:00:00.000Z");
-    }
-
-    #[test]
-    fn formats_recent_date_and_millis() {
-        assert_eq!(iso8601_utc(at(1_735_689_600)), "2025-01-01T00:00:00.000Z");
-        let t = UNIX_EPOCH + Duration::from_millis(1_500);
-        assert_eq!(iso8601_utc(t), "1970-01-01T00:00:01.500Z");
-    }
-
-    #[test]
-    fn pre_epoch_clamps_instead_of_panicking() {
-        let t = UNIX_EPOCH - Duration::from_secs(5);
-        assert_eq!(iso8601_utc(t), "1970-01-01T00:00:00.000Z");
+    fn iso8601_utc_formats_dates_millis_and_clamps_pre_epoch() {
+        {
+            assert_eq!(iso8601_utc(at(0)), "1970-01-01T00:00:00.000Z");
+        }
+        {
+            assert_eq!(iso8601_utc(at(86_399)), "1970-01-01T23:59:59.000Z");
+            assert_eq!(iso8601_utc(at(86_400)), "1970-01-02T00:00:00.000Z");
+        }
+        {
+            assert_eq!(iso8601_utc(at(951_782_400)), "2000-02-29T00:00:00.000Z");
+            assert_eq!(iso8601_utc(at(1_709_164_800)), "2024-02-29T00:00:00.000Z");
+        }
+        {
+            assert_eq!(iso8601_utc(at(1_735_689_600)), "2025-01-01T00:00:00.000Z");
+            let t = UNIX_EPOCH + Duration::from_millis(1_500);
+            assert_eq!(iso8601_utc(t), "1970-01-01T00:00:01.500Z");
+        }
+        {
+            let t = UNIX_EPOCH - Duration::from_secs(5);
+            assert_eq!(iso8601_utc(t), "1970-01-01T00:00:00.000Z");
+        }
     }
 }

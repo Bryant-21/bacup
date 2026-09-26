@@ -304,13 +304,6 @@ mod tests {
             matches!(coct_value, Some(FieldValue::Uint(1))),
             "COCT must track the surviving CNTO row, got {coct_value:?}"
         );
-    }
-
-    #[test]
-    fn drops_coct_when_all_cnto_removed() {
-        let interner = StringInterner::new();
-        let perk_ll_ids: FxHashSet<u32> = [PERK_LL_ID].into_iter().collect();
-        let is_perk = perk_predicate(&interner, &perk_ll_ids);
 
         let mut record = container(vec![coct(1), cnto(PERK_LL_ID, 1, &interner)], &interner);
 
@@ -346,13 +339,6 @@ mod tests {
             ),
             "untouched container keeps its COCT"
         );
-    }
-
-    #[test]
-    fn ignores_perk_id_owned_by_foreign_plugin() {
-        let interner = StringInterner::new();
-        let perk_ll_ids: FxHashSet<u32> = [PERK_LL_ID].into_iter().collect();
-        let is_perk = perk_predicate(&interner, &perk_ll_ids);
 
         // Same object-id, but the CNTO addresses a base master → not our perk list.
         let foreign = FormKey {

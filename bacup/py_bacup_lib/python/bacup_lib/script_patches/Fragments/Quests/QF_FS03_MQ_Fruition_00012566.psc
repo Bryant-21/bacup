@@ -15,6 +15,15 @@ Function Fragment_Stage_0025_Item_00()
 	If playerRef != None
 		playerRef.SetValue(FS03_CheckpointValue, 25.0)
 	EndIf
+	; Reassembly Required hands off on entering Abbie's bunker, so the player can already be past
+	; the small AbbieTriggerVolume (alias 37) when this quest fills it; its OnTriggerEnter never fires.
+	ReferenceAlias triggerAlias = GetAlias(37) as ReferenceAlias
+	If playerRef != None && triggerAlias != None && !GetStageDone(50)
+		ObjectReference triggerRef = triggerAlias.GetReference()
+		If triggerRef != None && triggerRef.GetCurrentLocation() != None && playerRef.GetCurrentLocation() == triggerRef.GetCurrentLocation()
+			SetStage(50)
+		EndIf
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0050_Item_00()
@@ -22,6 +31,7 @@ Function Fragment_Stage_0050_Item_00()
 	If FS03_MQ_Fruition_AbbieIntroScene != None && !FS03_MQ_Fruition_AbbieIntroScene.IsPlaying()
 		FS03_MQ_Fruition_AbbieIntroScene.Start()
 	EndIf
+	FS03_ArmSceneHandoff(50, 0)
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
@@ -36,6 +46,10 @@ Function Fragment_Stage_0110_Item_00()
 	EndIf
 	SetObjectiveCompleted(100, True)
 	SetObjectiveDisplayed(275, True, True)
+	; 275 is the armory load stage: the master holotape watcher and alias 38 both key on it.
+	If !GetStageDone(275)
+		SetStage(275)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0275_Item_00()
@@ -53,6 +67,7 @@ Function Fragment_Stage_0350_Item_00()
 	If FS02_Fruition_AbbieArmoryEntranceScene != None && !FS02_Fruition_AbbieArmoryEntranceScene.IsPlaying()
 		FS02_Fruition_AbbieArmoryEntranceScene.Start()
 	EndIf
+	FS03_ArmSceneHandoff(350, 0)
 EndFunction
 
 Function Fragment_Stage_0375_Item_00()
@@ -82,6 +97,7 @@ Function Fragment_Stage_0450_Item_00()
 	If FS02_Fruition_AbbieArmoryTerminalScene != None && !FS02_Fruition_AbbieArmoryTerminalScene.IsPlaying()
 		FS02_Fruition_AbbieArmoryTerminalScene.Start()
 	EndIf
+	FS03_ArmSceneHandoff(450, 0)
 EndFunction
 
 Function Fragment_Stage_0475_Item_00()
@@ -128,6 +144,7 @@ Function Fragment_Stage_0650_Item_00()
 	If FS03_MQ_Fruition_AbbieSamTerminalScene != None && !FS03_MQ_Fruition_AbbieSamTerminalScene.IsPlaying()
 		FS03_MQ_Fruition_AbbieSamTerminalScene.Start()
 	EndIf
+	FS03_ArmSceneHandoff(650, 0)
 EndFunction
 
 Function Fragment_Stage_0660_Item_00()
@@ -178,6 +195,7 @@ Function Fragment_Stage_0850_Item_00()
 	If FS02_Fruition_AbbieFinishScene != None && !FS02_Fruition_AbbieFinishScene.IsPlaying()
 		FS02_Fruition_AbbieFinishScene.Start()
 	EndIf
+	FS03_ArmSceneHandoff(850, 0)
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()
@@ -218,7 +236,47 @@ Bool Function FS03_TryStartBoS01()
 	Return accepted || (BoS01 != None && (BoS01.IsRunning() || BoS01.IsCompleted()))
 EndFunction
 
+Function FS03_ArmSceneHandoff(Int aiSceneStage, Int aiAttempt)
+	StartTimer(15.0, 100000 + aiSceneStage * 100 + aiAttempt)
+EndFunction
+
+Function FS03_CheckSceneHandoff(Int aiSceneStage, Int aiAttempt)
+	; Each Abbie scene advances the quest only through its last INFO's end stage. Three of them
+	; speak through FO76 terminal refs, which FO4 cannot voice, so a stalled or failed scene
+	; would park the quest; wait while it plays (bounded), then set the stage it would have set.
+	Scene handoffScene = None
+	Int nextStage = -1
+	If aiSceneStage == 50
+		handoffScene = FS03_MQ_Fruition_AbbieIntroScene
+		nextStage = 100
+	ElseIf aiSceneStage == 350
+		handoffScene = FS02_Fruition_AbbieArmoryEntranceScene
+		nextStage = 375
+	ElseIf aiSceneStage == 450
+		handoffScene = FS02_Fruition_AbbieArmoryTerminalScene
+		nextStage = 475
+	ElseIf aiSceneStage == 650
+		handoffScene = FS03_MQ_Fruition_AbbieSamTerminalScene
+		nextStage = 660
+	ElseIf aiSceneStage == 850
+		handoffScene = FS02_Fruition_AbbieFinishScene
+		nextStage = 900
+	EndIf
+	If nextStage < 0 || !IsRunning() || GetStageDone(nextStage)
+		Return
+	EndIf
+	If handoffScene != None && handoffScene.IsPlaying() && aiAttempt < 12
+		FS03_ArmSceneHandoff(aiSceneStage, aiAttempt + 1)
+		Return
+	EndIf
+	SetStage(nextStage)
+EndFunction
+
 Event OnTimer(Int aiTimerID)
+	If aiTimerID >= 100000
+		FS03_CheckSceneHandoff((aiTimerID - 100000) / 100, aiTimerID % 100)
+		Return
+	EndIf
 	If aiTimerID != 900 || !GetStageDone(900) || GetStageDone(1000)
 		Return
 	EndIf

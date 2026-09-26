@@ -26,6 +26,10 @@ Function Fragment_Stage_0090_Item_00()
 	ObjectReference player = PlayerReference()
 	player.SetValue(Storm_MQ_AudreyAwayValue, 1.0)
 	player.SetValue(Storm_MQ_HugoAwayValue, 1.0)
+	; Nothing else sets 100, which places Audrey and shows "Speak to Audrey".
+	If !IsStageDone(100)
+		SetStage(100)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0010_Item_00()

@@ -8,11 +8,19 @@ package LegendaryPerksMenu_fla {
 
     public dynamic class MainTimeline extends MovieClip {
         public var LegendaryPerksMenu_mc:LegendaryPerksMenu;
-        public var BGSCodeObj:Object;
+        public var BGSCodeObj:Object = new Object();
         private var connected:Boolean = false;
 
         public function MainTimeline() {
             super();
+        }
+
+        public static function B21CopyCard(card:Object):Object {
+            var copy:Object = new Object();
+            for (var key:String in card) {
+                copy[key] = card[key];
+            }
+            return copy;
         }
 
         public function B21SetData(payload:Object, gamepad:Boolean):void {
@@ -58,6 +66,10 @@ package LegendaryPerksMenu_fla {
 
         public function ProcessUserEvent(eventName:String, pressed:Boolean):Boolean {
             return this.LegendaryPerksMenu_mc.ProcessUserEvent(eventName, pressed);
+        }
+
+        public function SetPlatform(platform:uint, unused:Boolean):void {
+            this.LegendaryPerksMenu_mc.SetPlatform(platform, false, 0, 0);
         }
     }
 }

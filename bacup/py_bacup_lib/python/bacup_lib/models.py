@@ -315,14 +315,12 @@ class PhaseSelection:
     regenerate_modt: bool = True        # Bucket B: post-asset MODT compute, always on (see family_map)
     rebuild_cell_offsets: bool = True   # Bucket B: WRLD OFST/CLSZ rebuild, last ESM mutation, always on (see family_map)
     generate_anim_text_data: bool = True
-    # EXPERIMENTAL gate, deliberately False unlike the rest of PhaseSelection.
-    # `generate_precombines` is a post-asset hybrid phase (Bucket A: emits
-    # Meshes-family `*_OC.nif`; Bucket B: stamps CELL PCMB/XCRI + REFR VC into the
-    # rebuilt ESM). Enabled, it must be restamp-always like `regenerate_modt`: every
-    # upgrade rebuilds the ESM, which drops the stamps unless the phase re-runs.
-    # family_map._PRECOMBINES_ENABLED derives the Meshes-feeder and _phases_off()
-    # wiring from this default, so flipping it is the only edit needed.
-    generate_precombines: bool = False
+    # Clean-room precombined meshes (*_OC.NIF + geometry CSG/CDX + CELL PCMB/XCRI)
+    # for the CK-verified interior subset. On by default; opt out per run.
+    build_precombines: bool = True
+    # Umbra previs (Vis/*.uvd + CELL VISI/RVIS/XPRI) from the clean-room Rust
+    # visibility solve. On by default; opt out per run.
+    generate_previs: bool = True
     lod_mode: str = "convert"  # {"convert","generate","hybrid","hybrid-atlas","none"}: native lodgen delivery switch
 
     @classmethod
@@ -369,6 +367,7 @@ class ConversionContext:
     preserve_source_ids: bool = True
     overwrite_existing: bool = False
     source_data_dir: Path | None = None
+    source_archive_dirs: tuple[Path, ...] = ()
     additional_source_asset_roots: tuple[Path, ...] = ()
     skyrim_quest_runtime_converted_asset_roots: tuple[Path, ...] = ()
     legacy_music_tracks: tuple[dict[str, str], ...] = ()
@@ -402,7 +401,7 @@ class TerrainOptions:
     source_max_x: int | None = None
     source_max_y: int | None = None
     resample_mode: str = "lanczos"
-    emit_btd4: bool = True
+    emit_btd4: bool = False
     emit_textures: bool = True
     export_heightmap: bool = False
     debug_flat_land: bool = False
@@ -467,6 +466,9 @@ class PluginPortOptions:
     disable_nif_collision_memo: bool = False
     records_limit: int | None = None
     fnv_unmapped_function_policy: Literal["halt", "skip_record"] = "halt"
+    # A failing phase is logged and recorded in PluginPortRequest.phase_failures
+    # instead of aborting the run.
+    continue_on_error: bool = False
     terrain: TerrainOptions = field(default_factory=TerrainOptions)
     cell_bounds: WorldspaceCellBounds | None = None
     placed_record_position_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -484,9 +486,14 @@ class PluginPortOptions:
     mvp_melee_only: bool = False
     include_interior: bool = True
     carry_interior_previs: bool = False
-    # Derived from PhaseSelection.generate_precombines by _build_options; consulted
-    # by the unified driver's post-asset window. Experimental, default off.
-    generate_precombines: bool = False
+    # Opt-in: fail the final plugin save when two records share a FormID.
+    fail_on_duplicate_form_ids: bool = False
+    # Leave exterior CELLs out of the precombine index (no <stem> - Exterior.cdx for Tales).
+    interior_cdx_only: bool = False
+    # Derived from PhaseSelection.build_precombines by _build_options.
+    build_precombines: bool = True
+    # Derived from PhaseSelection.generate_previs by _build_options.
+    generate_previs: bool = True
     # fo4:starfield only — skips the Wwise transcode/bank leg and points the
     # output's music/ambience at vanilla Starfield records instead
     # (`wwise_audio`'s `placeholder_audio` param). Required until the
@@ -549,6 +556,7 @@ class PluginPortRequest:
     legacy_pack_raw_source_counts: LegacyPackExpectedCounts | None = None
     legacy_pack_expected_counts: LegacyPackExpectedCounts | None = None
     legacy_pack_provenance_required: bool = False
+    phase_failures: list[str] = field(default_factory=list)
 
 
 @dataclass

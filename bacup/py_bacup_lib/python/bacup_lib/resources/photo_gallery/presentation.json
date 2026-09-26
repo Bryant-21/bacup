@@ -1,0 +1,16 @@
+{
+  "source": "photogallerymenu.swf",
+  "stage": [1920, 1080],
+  "document_class": "PhotoGalleryMenu",
+  "symbols": [
+    "PhotoGalleryMenu",
+    "PhotoGalleryThumbnailHolder",
+    "PhotoGalleryScrollbar",
+    "EmptyImage",
+    "PhotoSelector"
+  ],
+  "generated_symbol_stems": [
+    "PhotoGalleryMenu_fla.bg_container_"
+  ],
+  "runtime_view": "F4SE/Plugins/B21_FullScreenMap/photo-gallery"
+}

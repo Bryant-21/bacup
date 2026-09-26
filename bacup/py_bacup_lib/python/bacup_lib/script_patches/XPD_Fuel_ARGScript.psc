@@ -44,14 +44,44 @@ Function SelectPhotoObjectives()
 EndFunction
 
 Event OnTimer(Int aiTimerID)
+    ; CancelTimer does not recall a tick that has already fired, so one more can
+    ; still arrive after OnQuestShutdown has stopped the loop. Bail out before
+    ; touching any stage rather than acting on behalf of a stopped quest.
+    If !IsRunning()
+        Return
+    EndIf
+
     If aiTimerID == 1
+        CheckSkippyHandover()
         CheckPhotoObjectives()
         CheckTaskCompletion()
-        If IsRunning() && !IsStageDone(2000)
+        If IsRunning() && !IsStageDone(9000)
             StartTimer(2.0, 1)
         EndIf
     EndIf
 EndEvent
+
+; The converted Skippy dialogue cannot run, so walking up to him stands in for
+; taking the job (stage 104) and for handing the haul back in (stage 9000).
+Function CheckSkippyHandover()
+    If PlayerRef == None
+        PlayerRef = myPlayer.GetActorReference()
+    EndIf
+    ReferenceAlias skippyAlias = GetAlias(38) as ReferenceAlias
+    If PlayerRef == None || skippyAlias == None
+        Return
+    EndIf
+    ObjectReference skippy = skippyAlias.GetReference()
+    If skippy == None || PlayerRef.GetDistance(skippy) > 384.0
+        Return
+    EndIf
+
+    If !IsStageDone(104)
+        SetStage(104)
+    ElseIf IsStageDone(2000) && !IsStageDone(9000)
+        SetStage(9000)
+    EndIf
+EndFunction
 
 Function CheckPhotoObjectives()
     If PlayerRef == None || PhotoObjectivesChosen == None
@@ -108,6 +138,8 @@ EndFunction
 Event OnStageSet(Int auiStageID, Int auiItemID)
     If auiStageID == 100
         SetObjectiveDisplayed(2)
+        CancelTimer(1)
+        StartTimer(2.0, 1)
     ElseIf auiStageID == 104
         SetObjectiveCompleted(2)
         SelectPlantRegions()

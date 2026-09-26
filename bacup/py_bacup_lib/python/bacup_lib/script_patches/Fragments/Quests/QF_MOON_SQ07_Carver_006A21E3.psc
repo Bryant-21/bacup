@@ -1,7 +1,32 @@
 Function Fragment_Stage_0100_Item_00()
+	If !IsCostaBusinessStartAllowed()
+		Stop()
+		Return
+	EndIf
 	Alias_Player.ForceRefIfEmpty(Game.GetPlayer())
 	RegisterForQuestActors()
 	SetObjectiveDisplayed(100)
+EndFunction
+
+; Moon_SQ06_Vera_Branch (6A9F35) and all six of its quest nodes carry no conditions, and
+; the converted QUST lost the FO76 event-condition block, so any script story event that
+; reaches the branch starts this quest out of order. The Blue Ridge master quest owns the
+; real order/one-per-day rule; refuse the start when it says this is not our turn.
+; The namespaced script type must not be stored in a local -- the emitted local is
+; unresolvable at runtime -- so the cast is inlined.
+Bool Function IsCostaBusinessStartAllowed()
+	Quest costaMaster = Game.GetFormFromFile(0x0056B640, "SeventySix.esm") as Quest
+	If costaMaster as Quests:E05_Caravan:Master_QuestScript
+		Return (costaMaster as Quests:E05_Caravan:Master_QuestScript).IsCostaBusinessQuestEligible(Self as Quest)
+	EndIf
+	Return True
+EndFunction
+
+Function NotifyCostaBusinessCompleted()
+	Quest costaMaster = Game.GetFormFromFile(0x0056B640, "SeventySix.esm") as Quest
+	If costaMaster as Quests:E05_Caravan:Master_QuestScript
+		(costaMaster as Quests:E05_Caravan:Master_QuestScript).NotifyCostaBusinessCompleted(Self as Quest)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
@@ -59,7 +84,13 @@ Function Fragment_Stage_0700_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+	NotifyCostaBusinessCompleted()
 	SetObjectiveCompleted(500)
+	; The optional lighter hunt (objective 1000) stays open if the player never found it;
+	; retire it so the quest log does not close with an outstanding objective.
+	If !IsStageDone(475)
+		SetObjectiveDisplayed(1000, False)
+	EndIf
 	Stop()
 EndFunction
 

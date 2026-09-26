@@ -8,9 +8,9 @@ Actor Function GetLocalPlayer()
     Return Game.GetPlayer()
 EndFunction
 
-Bool Function HasLocalCodePiece(Actor akPlayer, Int aiSiloGroupID)
-    If akPlayer == None
-        Return False
+Form Function FindLocalTargetPiece(Actor akPlayer, Int aiSiloGroupID, ObjectReference akTarget)
+    If akPlayer == None || akTarget == None
+        Return None
     EndIf
     Int firstFormID = 0x003DA648
     If aiSiloGroupID == 1
@@ -21,12 +21,12 @@ Bool Function HasLocalCodePiece(Actor akPlayer, Int aiSiloGroupID)
     Int i = 0
     While i < 8
         Form codePage = Game.GetFormFromFile(firstFormID + i, "SeventySix.esm")
-        If codePage != None && akPlayer.GetItemCount(codePage) > 0
-            Return True
+        If codePage != None && akPlayer.GetItemCount(codePage) == 0 && akTarget.GetItemCount(codePage) > 0
+            Return codePage
         EndIf
         i += 1
     EndWhile
-    Return False
+    Return None
 EndFunction
 
 Function BeginLocalHunt(Int aiTargetType, Int aiSiloGroupID, ObjectReference akTarget, ObjectReference akTarget02)
@@ -43,6 +43,10 @@ Function BeginLocalHunt(Int aiTargetType, Int aiSiloGroupID, ObjectReference akT
     EndIf
 
     Actor player = GetLocalPlayer()
+    B21LocalTargetPiece = None
+    If aiTargetType == 0
+        B21LocalTargetPiece = FindLocalTargetPiece(player, aiSiloGroupID, akTarget)
+    EndIf
     If player != None
         player.SetValue(EN07_MQ_CodeHuntTargetType, aiTargetType as Float)
         player.SetValue(EN07_MQ_CodeHuntSiloID, aiSiloGroupID as Float)
@@ -122,7 +126,7 @@ Event OnTimer(Int aiTimerID)
     If iTargetType == 1
         acquired = player != None && player.GetItemCount(Nuke_LaunchCard) > 0
     ElseIf iTargetType == 0
-        acquired = HasLocalCodePiece(player, iSiloGroupID)
+        acquired = player != None && B21LocalTargetPiece != None && player.GetItemCount(B21LocalTargetPiece) > 0
     EndIf
     If acquired
         SetStage(iSuccessStage)

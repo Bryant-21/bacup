@@ -14,6 +14,7 @@ Int Function EN05MQ_HistoricCommendations(Actor akPlayer)
         Return 0
     EndIf
 
+    EN_MasterQuestScript eventMaster = EN_EventMaster as EN_MasterQuestScript
     Int completed = 0
     Int index = 0
     While index < TimesCompletedValues.Length
@@ -21,7 +22,22 @@ Int Function EN05MQ_HistoricCommendations(Actor akPlayer)
         If completedValue != None
             Int value = akPlayer.GetValue(completedValue) as Int
             If value > 0
-                completed += value
+                Int weight = 1
+                If eventMaster != None && eventMaster.EnclaveEventQuests != None
+                    Int eventIndex = 0
+                    While eventIndex < eventMaster.EnclaveEventQuests.Length
+                        EnclaveEventQuestScript enclaveEvent = eventMaster.EnclaveEventQuests[eventIndex] as EnclaveEventQuestScript
+                        If enclaveEvent != None && enclaveEvent.CompletionTrackingValue == completedValue
+                            weight = enclaveEvent.iCommendationValue
+                            eventIndex = eventMaster.EnclaveEventQuests.Length
+                        Else
+                            eventIndex += 1
+                        EndIf
+                    EndWhile
+                EndIf
+                If weight > 0
+                    completed += value * weight
+                EndIf
             EndIf
         EndIf
         index += 1

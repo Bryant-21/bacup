@@ -1555,123 +1555,125 @@ mod tests {
     }
 
     #[test]
-    fn created_reference_and_required_alias_vmad_fail_closed() {
-        let created = alias(
-            0,
-            "Created",
-            AliasFillKind::CreatedReference(key("NPC_", 0x201).form_key),
-        );
-        let plan = fixture_plan(vec![created.clone()]);
-        let error = project_quest_aliases(&plan, &[evidence(&plan.root_quest, &created, 0)], &[])
-            .unwrap_err();
-        assert_eq!(error.code, SkyrimAliasRejectionCode::UnsupportedFill);
-        assert!(error.detail.contains("ALCA"));
+    fn created_external_and_vmad_aliases_require_exact_evidence() {
+        {
+            let created = alias(
+                0,
+                "Created",
+                AliasFillKind::CreatedReference(key("NPC_", 0x201).form_key),
+            );
+            let plan = fixture_plan(vec![created.clone()]);
+            let error =
+                project_quest_aliases(&plan, &[evidence(&plan.root_quest, &created, 0)], &[])
+                    .unwrap_err();
+            assert_eq!(error.code, SkyrimAliasRejectionCode::UnsupportedFill);
+            assert!(error.detail.contains("ALCA"));
 
-        let forced = alias(
-            0,
-            "Marker",
-            AliasFillKind::ForcedReference(key("REFR", 0x200).form_key),
-        );
-        let plan = fixture_plan(vec![forced.clone()]);
-        let mut row = evidence(&plan.root_quest, &forced, 0);
-        row.vmad = SkyrimAliasVmadEvidence {
-            source_vmad_present: true,
-            source_script_class: Some("AliasScript".to_string()),
-            properties: BTreeSet::from([SkyrimAliasPropertyEvidence {
-                name: "Target".to_string(),
-                property_type: "ObjectReference".to_string(),
-                source_value: key("REFR", 0x200).form_key,
+            let forced = alias(
+                0,
+                "Marker",
+                AliasFillKind::ForcedReference(key("REFR", 0x200).form_key),
+            );
+            let plan = fixture_plan(vec![forced.clone()]);
+            let mut row = evidence(&plan.root_quest, &forced, 0);
+            row.vmad = SkyrimAliasVmadEvidence {
+                source_vmad_present: true,
+                source_script_class: Some("AliasScript".to_string()),
+                properties: BTreeSet::from([SkyrimAliasPropertyEvidence {
+                    name: "Target".to_string(),
+                    property_type: "ObjectReference".to_string(),
+                    source_value: key("REFR", 0x200).form_key,
+                    required: true,
+                }]),
                 required: true,
-            }]),
-            required: true,
-        };
-        let error = project_quest_aliases(&plan, &[row], &[]).unwrap_err();
-        assert_eq!(
-            error.code,
-            SkyrimAliasRejectionCode::RequiredAliasScriptUnsupported
-        );
+            };
+            let error = project_quest_aliases(&plan, &[row], &[]).unwrap_err();
+            assert_eq!(
+                error.code,
+                SkyrimAliasRejectionCode::RequiredAliasScriptUnsupported
+            );
+        }
+        {
+            let external = alias(
+                0,
+                "External",
+                AliasFillKind::ExternalAlias {
+                    quest: key("QUST", 0x203).form_key,
+                    alias_id: 12,
+                },
+            );
+            let plan = fixture_plan(vec![external.clone()]);
+            let row = evidence(&plan.root_quest, &external, 0);
+            let error = project_quest_aliases(&plan, std::slice::from_ref(&row), &[]).unwrap_err();
+            assert_eq!(error.code, SkyrimAliasRejectionCode::MissingExternalAlias);
+
+            let mut wrong_target = plan.clone();
+            wrong_target
+                .mappings
+                .iter_mut()
+                .find(|mapping| mapping.source == key("QUST", 0x203))
+                .unwrap()
+                .target
+                .signature = "SCEN".to_string();
+            let error = project_quest_aliases(
+                &wrong_target,
+                &[row],
+                &[SkyrimExternalAliasIdentity {
+                    owner: key("QUST", 0x203),
+                    alias_id: 12,
+                }],
+            )
+            .unwrap_err();
+            assert_eq!(error.code, SkyrimAliasRejectionCode::WrongTargetSignature);
+        }
     }
 
     #[test]
-    fn duplicate_aliases_and_wrong_owner_are_rejected() {
-        let one = alias(
-            0,
-            "One",
-            AliasFillKind::ForcedReference(key("REFR", 0x200).form_key),
-        );
-        let duplicate = alias(
-            0,
-            "Two",
-            AliasFillKind::UniqueActor(key("NPC_", 0x201).form_key),
-        );
-        let plan = fixture_plan(vec![one.clone(), duplicate]);
-        let error =
-            project_quest_aliases(&plan, &[evidence(&plan.root_quest, &one, 0)], &[]).unwrap_err();
-        assert_eq!(error.code, SkyrimAliasRejectionCode::DuplicateAliasId);
+    fn duplicate_wrong_owner_and_unsupported_flags_are_rejected() {
+        {
+            let one = alias(
+                0,
+                "One",
+                AliasFillKind::ForcedReference(key("REFR", 0x200).form_key),
+            );
+            let duplicate = alias(
+                0,
+                "Two",
+                AliasFillKind::UniqueActor(key("NPC_", 0x201).form_key),
+            );
+            let plan = fixture_plan(vec![one.clone(), duplicate]);
+            let error = project_quest_aliases(&plan, &[evidence(&plan.root_quest, &one, 0)], &[])
+                .unwrap_err();
+            assert_eq!(error.code, SkyrimAliasRejectionCode::DuplicateAliasId);
 
-        let plan = fixture_plan(vec![one.clone()]);
-        let mut row = evidence(&plan.root_quest, &one, 0);
-        row.owner = key("QUST", 0x999);
-        let error = project_quest_aliases(&plan, &[row], &[]).unwrap_err();
-        assert_eq!(error.code, SkyrimAliasRejectionCode::DuplicateOwnership);
-    }
+            let plan = fixture_plan(vec![one.clone()]);
+            let mut row = evidence(&plan.root_quest, &one, 0);
+            row.owner = key("QUST", 0x999);
+            let error = project_quest_aliases(&plan, &[row], &[]).unwrap_err();
+            assert_eq!(error.code, SkyrimAliasRejectionCode::DuplicateOwnership);
+        }
+        {
+            let forced = alias(
+                0,
+                "Marker",
+                AliasFillKind::ForcedReference(key("REFR", 0x200).form_key),
+            );
+            let plan = fixture_plan(vec![forced.clone()]);
+            let error = project_quest_aliases(
+                &plan,
+                &[evidence(&plan.root_quest, &forced, 0x0001_0000)],
+                &[],
+            )
+            .unwrap_err();
+            assert_eq!(error.code, SkyrimAliasRejectionCode::UnsupportedFlags);
 
-    #[test]
-    fn external_alias_requires_exact_inventory_and_mapping() {
-        let external = alias(
-            0,
-            "External",
-            AliasFillKind::ExternalAlias {
-                quest: key("QUST", 0x203).form_key,
-                alias_id: 12,
-            },
-        );
-        let plan = fixture_plan(vec![external.clone()]);
-        let row = evidence(&plan.root_quest, &external, 0);
-        let error = project_quest_aliases(&plan, std::slice::from_ref(&row), &[]).unwrap_err();
-        assert_eq!(error.code, SkyrimAliasRejectionCode::MissingExternalAlias);
-
-        let mut wrong_target = plan.clone();
-        wrong_target
-            .mappings
-            .iter_mut()
-            .find(|mapping| mapping.source == key("QUST", 0x203))
-            .unwrap()
-            .target
-            .signature = "SCEN".to_string();
-        let error = project_quest_aliases(
-            &wrong_target,
-            &[row],
-            &[SkyrimExternalAliasIdentity {
-                owner: key("QUST", 0x203),
-                alias_id: 12,
-            }],
-        )
-        .unwrap_err();
-        assert_eq!(error.code, SkyrimAliasRejectionCode::WrongTargetSignature);
-    }
-
-    #[test]
-    fn unsupported_source_flag_and_receipt_damage_are_rejected() {
-        let forced = alias(
-            0,
-            "Marker",
-            AliasFillKind::ForcedReference(key("REFR", 0x200).form_key),
-        );
-        let plan = fixture_plan(vec![forced.clone()]);
-        let error = project_quest_aliases(
-            &plan,
-            &[evidence(&plan.root_quest, &forced, 0x0001_0000)],
-            &[],
-        )
-        .unwrap_err();
-        assert_eq!(error.code, SkyrimAliasRejectionCode::UnsupportedFlags);
-
-        let mut projection =
-            project_quest_aliases(&plan, &[evidence(&plan.root_quest, &forced, 0)], &[]).unwrap();
-        projection.receipt.aliases[0].field_signatures.pop();
-        let error = validate_alias_projection(&projection).unwrap_err();
-        assert_eq!(error.code, SkyrimAliasRejectionCode::ReceiptMismatch);
+            let mut projection =
+                project_quest_aliases(&plan, &[evidence(&plan.root_quest, &forced, 0)], &[])
+                    .unwrap();
+            projection.receipt.aliases[0].field_signatures.pop();
+            let error = validate_alias_projection(&projection).unwrap_err();
+            assert_eq!(error.code, SkyrimAliasRejectionCode::ReceiptMismatch);
+        }
     }
 
     #[test]

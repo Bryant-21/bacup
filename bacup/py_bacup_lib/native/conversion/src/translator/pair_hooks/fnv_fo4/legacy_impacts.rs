@@ -497,10 +497,7 @@ mod tests {
             crate::target_write::encode_field_pub(decal, definition, &interner).unwrap();
         assert_eq!(&packed_data[20..24], &[1, 0, 0, 0]);
         assert_eq!(packed_decal, legacy_decal(0x06));
-    }
 
-    #[test]
-    fn source_only_impact_and_decal_semantics_use_safe_fallbacks() {
         let interner = StringInterner::new();
         let mut impact = record("IPCT", &interner);
         let mut decal = legacy_decal(1);

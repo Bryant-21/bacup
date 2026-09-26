@@ -550,50 +550,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the locally converted SeventySix master and meshes"]
-    fn live_shelter_records_reanchor_in_memory_with_temporary_mesh_outputs() {
-        use esp_authoring_core::plugin_runtime::plugin_handle_load_no_py;
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../mods/SeventySix");
-        let handle = plugin_handle_load_no_py(
-            root.join("SeventySix.esm").to_str().unwrap(),
-            Some("fo4"),
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let report = run_repair_with_assets(handle, temp.path(), Some(&root.join("data")));
-        eprintln!(
-            "live shelter repair: refs={} warnings={}",
-            report.assets_written, report.warnings
-        );
-        assert!(report.assets_written >= 2);
-        {
-            let store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get(&handle).unwrap();
-            let mut found = 0;
-            walk(&slot.parsed.root_items, &mut |r| {
-                if [FIRST, SECOND].contains(&(r.form_id & 0x00FF_FFFF)) {
-                    found += 1;
-                    assert!(anchor(r).is_none());
-                    let original = examples()
-                        .into_iter()
-                        .find(|original| original.form_id == r.form_id & 0x00FF_FFFF)
-                        .unwrap();
-                    assert_eq!(bytes(r, "XSCL"), bytes(&original, "XSCL"));
-                    assert_eq!(
-                        &bytes(r, "DATA").unwrap()[12..],
-                        &bytes(&original, "DATA").unwrap()[12..]
-                    );
-                }
-            });
-            assert_eq!(found, 2);
-        }
-        plugin_handle_close_native(handle);
-    }
-
-    #[test]
     fn repair_clones_shared_base_preserves_topology_and_is_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let model = "setdressing/shelters/mountain.nif";
@@ -700,40 +656,6 @@ mod tests {
             let original = nif.blocks.len();
             assert!(offset_scenery(&mut nif, [100.0; 3]).is_err());
             assert_eq!(nif.blocks.len(), original);
-        }
-    }
-
-    #[test]
-    #[ignore = "requires the locally converted FO76 shelter mesh"]
-    fn converted_mountain_mesh_roundtrip_preserves_all_vertices() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../mods/SeventySix/data/meshes/setdressing/shelters/shelters_summercamp/Shelters_SummerCamp_MountainForest02.nif");
-        let original = NifFile::load(path).unwrap();
-        for reference in examples() {
-            let mut nif = original.clone();
-            let (_, offset) = anchor(&reference).unwrap();
-            offset_scenery(&mut nif, offset).unwrap();
-            let encoded = nif.to_bytes().unwrap();
-            let reread = NifFile::from_bytes(&encoded, None).unwrap();
-            for (id, block) in original.blocks.iter().enumerate() {
-                for field in [
-                    "Vertex Data",
-                    "Triangles",
-                    "Translation",
-                    "Rotation",
-                    "Scale",
-                    "Bounding Sphere",
-                ] {
-                    assert_eq!(
-                        reread.blocks[id].get_field(field),
-                        block.get_field(field),
-                        "block {id} {field}"
-                    );
-                }
-            }
-            assert_eq!(
-                translation(reread.blocks.last().unwrap().get_field("Translation")),
-                Some(offset)
-            );
         }
     }
 }

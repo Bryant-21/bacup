@@ -11,16 +11,17 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::source_rig::{
-    CapabilityGraphManifest, CapabilityRoleGenerator, CreatureActorActionRecordPlan,
-    CreatureAttackRecordProjection, CreatureBodyPartProjection, CreatureClipRole,
-    CreatureGraphTemplate, CreatureManifest, CreatureRecordKeyPlan,
-    CreatureRecordProjectionManifest, NoRagdollReason, RaceDataMapping, RagdollDisposition,
-    SourceCreatureIdentity, SourceRigArtifactReceipt, SourceRigArtifactRole, SourceRigBridgeError,
+    CapabilityGraphManifest, CreatureActorActionRecordPlan, CreatureAttackRecordProjection,
+    CreatureBodyPartProjection, CreatureClipRole, CreatureGraphTemplate, CreatureManifest,
+    CreatureRecordKeyPlan, CreatureRecordProjectionManifest, NoRagdollReason, RaceDataMapping,
+    RagdollDisposition, SourceRigArtifactReceipt, SourceRigArtifactRole, SourceRigBridgeError,
     SourceRigConvertedArtifactRequestReceipt, SourceRigExecutableRecipe, SourceRigFieldDecision,
     SourceRigFieldReceipt, SourceRigPairLedgerEvidence, SourceRigRecipeBridgeInput,
     SourceRigRecipeError, SourceRigRecordBatchIntent, SourceRigRuntimeModelClosureReceipt,
     SourceRigSelectedFamilyEvidence, build_source_rig_executable_recipe,
 };
+#[cfg(test)]
+use crate::source_rig::{CapabilityRoleGenerator, SourceCreatureIdentity};
 
 use super::creature_catalog::{LegacyCreatureGame, RigFamilyKey};
 use super::creature_motion::{
@@ -74,6 +75,7 @@ pub enum FnvFo3SourceRigBridgeError {
     Recipe(#[from] SourceRigRecipeError),
 }
 
+#[cfg(test)]
 pub fn build_fnv_fo3_source_rig_bridge_input(
     input: FnvFo3SourceRigAdapterInput,
 ) -> Result<SourceRigRecipeBridgeInput, FnvFo3SourceRigBridgeError> {
@@ -219,6 +221,7 @@ fn selected_pair_ledger_canonical_json(
     .map_err(|error| FnvFo3SourceRigBridgeError::Ledger(error.to_string()))
 }
 
+#[cfg(test)]
 pub fn build_fnv_fo3_source_rig_executable_recipe(
     input: FnvFo3SourceRigAdapterInput,
 ) -> Result<SourceRigExecutableRecipe, FnvFo3SourceRigBridgeError> {
@@ -1634,7 +1637,7 @@ mod tests {
     }
 
     #[test]
-    fn ready_gecko_recipe_is_deterministic_and_roundtrips() {
+    fn ready_recipes_are_deterministic_roundtrip_and_keep_source_identity() {
         let input = adapter_fixture(LegacyCreatureGame::Fnv, false);
         let recipe = build_fnv_fo3_source_rig_executable_recipe(input).unwrap();
         let json = recipe.canonical_json().unwrap();
@@ -1651,6 +1654,31 @@ mod tests {
                 .sum::<usize>(),
             6
         );
+
+        let recipe = build_fnv_fo3_source_rig_executable_recipe(adapter_fixture(
+            LegacyCreatureGame::Fo3,
+            false,
+        ))
+        .unwrap();
+        let receipt = recipe.bridge_receipt.unwrap();
+        assert_eq!(receipt.source_identity.namespace, "fo3");
+        assert!(receipt.family_id.starts_with("fo3|"));
+
+        let recipe = build_fnv_fo3_source_rig_executable_recipe(adapter_fixture(
+            LegacyCreatureGame::Fnv,
+            true,
+        ))
+        .unwrap();
+        let batch = recipe
+            .rebuild_record_family_batch(&StringInterner::new())
+            .unwrap();
+        assert!(batch.closures.iter().all(|closure| {
+            closure
+                .closure
+                .records
+                .iter()
+                .all(|record| record.sig.as_str() != "WEAP")
+        }));
     }
 
     #[test]
@@ -1717,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn external_locomotion_trigger_need_not_be_a_kf_annotation() {
+    fn generated_locomotion_and_melee_triggers_need_not_be_kf_annotations() {
         let input = adapter_fixture(LegacyCreatureGame::Fnv, false);
         let family = input
             .ledger
@@ -1749,10 +1777,7 @@ mod tests {
             .unwrap();
 
         validate_candidate(&input, family, &role, clip, candidate).unwrap();
-    }
 
-    #[test]
-    fn generated_melee_actor_action_trigger_need_not_be_a_kf_annotation() {
         let input = adapter_fixture(LegacyCreatureGame::Fnv, false);
         let family = input
             .ledger
@@ -1865,36 +1890,7 @@ mod tests {
     }
 
     #[test]
-    fn fo3_identity_survives_the_bridge() {
-        let recipe = build_fnv_fo3_source_rig_executable_recipe(adapter_fixture(
-            LegacyCreatureGame::Fo3,
-            false,
-        ))
-        .unwrap();
-        let receipt = recipe.bridge_receipt.unwrap();
-        assert_eq!(receipt.source_identity.namespace, "fo3");
-        assert!(receipt.family_id.starts_with("fo3|"));
-    }
-
-    #[test]
-    fn ledger_tamper_produces_no_recipe() {
-        let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
-        Arc::make_mut(&mut input.ledger).records[0].editor_id = Some("tampered".to_string());
-        assert!(matches!(
-            build_fnv_fo3_source_rig_executable_recipe(input),
-            Err(FnvFo3SourceRigBridgeError::Ledger(_))
-        ));
-    }
-
-    #[test]
-    fn proxy_or_cross_game_primary_is_rejected() {
-        let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
-        input.projection.source_primary_identity.local_form_id += 1;
-        assert!(build_fnv_fo3_source_rig_executable_recipe(input).is_err());
-    }
-
-    #[test]
-    fn root_and_capsule_mismatches_are_rejected() {
+    fn tampered_or_mismatched_inputs_produce_no_recipe() {
         let mut root = adapter_fixture(LegacyCreatureGame::Fnv, false);
         root.rig.animation_skeleton.bones[0].name = "WrongRoot".to_string();
         assert!(build_fnv_fo3_source_rig_executable_recipe(root).is_err());
@@ -1931,10 +1927,18 @@ mod tests {
                 ..
             })
         ));
-    }
 
-    #[test]
-    fn same_path_changed_nif_source_hash_produces_no_recipe() {
+        let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
+        Arc::make_mut(&mut input.ledger).records[0].editor_id = Some("tampered".to_string());
+        assert!(matches!(
+            build_fnv_fo3_source_rig_executable_recipe(input),
+            Err(FnvFo3SourceRigBridgeError::Ledger(_))
+        ));
+
+        let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
+        input.projection.source_primary_identity.local_form_id += 1;
+        assert!(build_fnv_fo3_source_rig_executable_recipe(input).is_err());
+
         let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
         let changed_hash = blake3::hash(b"same path but changed source bytes")
             .to_hex()
@@ -1950,34 +1954,12 @@ mod tests {
                 ..
             })
         ));
-    }
 
-    #[test]
-    fn missing_hash_and_deferred_ragdoll_are_rejected() {
         let mut hash = adapter_fixture(LegacyCreatureGame::Fnv, false);
         hash.artifact_requests[0].source_evidence_blake3.clear();
         assert!(build_fnv_fo3_source_rig_executable_recipe(hash).is_err());
         let mut ragdoll = adapter_fixture(LegacyCreatureGame::Fnv, false);
         ragdoll.rig.ragdoll = RagdollDisposition::deferred();
         assert!(build_fnv_fo3_source_rig_executable_recipe(ragdoll).is_err());
-    }
-
-    #[test]
-    fn ranged_family_emits_no_phantom_weap() {
-        let recipe = build_fnv_fo3_source_rig_executable_recipe(adapter_fixture(
-            LegacyCreatureGame::Fnv,
-            true,
-        ))
-        .unwrap();
-        let batch = recipe
-            .rebuild_record_family_batch(&StringInterner::new())
-            .unwrap();
-        assert!(batch.closures.iter().all(|closure| {
-            closure
-                .closure
-                .records
-                .iter()
-                .all(|record| record.sig.as_str() != "WEAP")
-        }));
     }
 }

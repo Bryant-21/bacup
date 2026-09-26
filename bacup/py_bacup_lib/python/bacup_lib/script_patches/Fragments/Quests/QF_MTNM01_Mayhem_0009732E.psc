@@ -138,6 +138,7 @@ Function Fragment_Stage_0001_Item_00()
         playerRef.AddItem(AmmoSyringer, 20 - playerRef.GetItemCount(AmmoSyringer), True)
     EndIf
     If !playerRef.HasPerk(Cannibal01)
+        B21AddedCannibalPerk = True
         playerRef.AddPerk(Cannibal01)
     EndIf
     If !playerRef.HasPerk(MTNM01_DeathclawFriend)
@@ -415,6 +416,7 @@ Function Fragment_Stage_0900_Item_00()
 
     Actor playerRef = MTNM01_GetPlayer()
     If playerRef && !playerRef.HasPerk(Cannibal01)
+        B21AddedCannibalPerk = True
         playerRef.AddPerk(Cannibal01)
     EndIf
     MTNM01_SayRoseTopic(MTNM01_Mayhem_EBSTopic_CannibalOptional)
@@ -448,14 +450,39 @@ Function Fragment_Stage_1000_Item_00()
         If playerRef.HasPerk(MTNM01_DeathclawFriend)
             playerRef.RemovePerk(MTNM01_DeathclawFriend)
         EndIf
-        If playerRef.HasPerk(Cannibal01)
-            playerRef.RemovePerk(Cannibal01)
-        EndIf
-        If MTNL01_Raiders_Quest_Keyword
-            MTNL01_Raiders_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
-        EndIf
+        MTNM01_RemoveTemporaryCannibal()
+    EndIf
+    If !MTNM01_TryStartRaiders()
+        StartTimer(5.0, 1000)
     EndIf
 EndFunction
+
+Function MTNM01_RemoveTemporaryCannibal()
+    Actor playerRef = MTNM01_GetPlayer()
+    If B21AddedCannibalPerk && playerRef != None
+        playerRef.RemovePerk(Cannibal01)
+        B21AddedCannibalPerk = False
+    EndIf
+EndFunction
+
+Bool Function MTNM01_TryStartRaiders()
+    Quest nextQuest = Game.GetFormFromFile(0x00045A40, "SeventySix.esm") as Quest
+    If nextQuest != None && (nextQuest.IsRunning() || nextQuest.IsCompleted())
+        Return True
+    EndIf
+    Actor playerRef = MTNM01_GetPlayer()
+    If nextQuest == None || playerRef == None || MTNL01_Raiders_Quest_Keyword == None
+        Return False
+    EndIf
+    Bool accepted = MTNL01_Raiders_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
+    Return accepted || nextQuest.IsRunning() || nextQuest.IsCompleted()
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID == 1000 && IsRunning() && IsStageDone(1000) && !MTNM01_TryStartRaiders()
+        StartTimer(5.0, 1000)
+    EndIf
+EndEvent
 
 Function Fragment_Stage_1100_Item_00()
     Actor playerRef = MTNM01_GetPlayer()
@@ -463,9 +490,7 @@ Function Fragment_Stage_1100_Item_00()
         If playerRef.HasPerk(MTNM01_DeathclawFriend)
             playerRef.RemovePerk(MTNM01_DeathclawFriend)
         EndIf
-        If playerRef.HasPerk(Cannibal01)
-            playerRef.RemovePerk(Cannibal01)
-        EndIf
+        MTNM01_RemoveTemporaryCannibal()
     EndIf
 
     Alias_TRIGGERYaoGuai.Clear()

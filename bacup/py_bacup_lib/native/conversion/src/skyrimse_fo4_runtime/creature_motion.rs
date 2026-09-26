@@ -6,17 +6,21 @@ use havok_native::hkx::types::HkxValue;
 
 use crate::ids::FormKey;
 use crate::source_rig::{
-    CapabilityCandidateAttackBinding, CapabilityClipRole, CapabilityGeneratorAnonymousSourceObject,
-    CapabilityGeneratorBlenderChild, CapabilityGeneratorBlendingTransitionEffect,
-    CapabilityGeneratorEventProperty, CapabilityGeneratorEventRef, CapabilityGeneratorExpression,
-    CapabilityGeneratorExpressionArray, CapabilityGeneratorExpressionVariableReference,
-    CapabilityGeneratorInterval, CapabilityGeneratorNode, CapabilityGeneratorSourceObject,
-    CapabilityGeneratorState, CapabilityGeneratorTransition, CapabilityGeneratorTransitionArray,
-    CapabilityGeneratorVariableBinding, CapabilityGraphManifest, CapabilityModifierNode,
-    CapabilityRoleGenerator, CapabilitySourceVariableType, CapabilityVariableBindingType,
-    ClipMotionPolicy, CreatureClipRole, CreatureGraphTemplate, EventDecl, EventUsage, MotionAttack,
-    MotionSet, OverlayClipRole, SourceCreatureIdentity, VariableDecl, VariableType, VariableValue,
+    CapabilityCandidateAttackBinding, CapabilityClipRole, CapabilityGeneratorNode,
+    CapabilityGraphManifest, CapabilityModifierNode, CapabilityRoleGenerator, ClipMotionPolicy,
+    CreatureClipRole, CreatureGraphTemplate, EventDecl, EventUsage, MotionAttack, MotionSet,
+    OverlayClipRole, SourceCreatureIdentity, VariableDecl, VariableType, VariableValue,
     deterministic_standard_event,
+};
+#[cfg(test)]
+use crate::source_rig::{
+    CapabilityGeneratorAnonymousSourceObject, CapabilityGeneratorBlenderChild,
+    CapabilityGeneratorBlendingTransitionEffect, CapabilityGeneratorEventProperty,
+    CapabilityGeneratorEventRef, CapabilityGeneratorExpression, CapabilityGeneratorExpressionArray,
+    CapabilityGeneratorExpressionVariableReference, CapabilityGeneratorInterval,
+    CapabilityGeneratorSourceObject, CapabilityGeneratorState, CapabilityGeneratorTransition,
+    CapabilityGeneratorTransitionArray, CapabilityGeneratorVariableBinding,
+    CapabilitySourceVariableType, CapabilityVariableBindingType,
 };
 
 use super::creature_catalog::CreatureCorpusPlan;
@@ -2584,6 +2588,7 @@ fn build_living_family_evidence(
     }
 }
 
+#[cfg(test)]
 fn multimodal_template(
     candidates: &[CreatureGraphTemplate],
     evidenced_roles: &BTreeSet<SkyrimCreatureMotionRole>,
@@ -2898,71 +2903,6 @@ fn select_semantic_catalog_clip<'a>(
         .copied()
 }
 
-fn behavior_group_clip_paths(
-    group: &SkyrimBehaviorGeneratorGroupEvidence,
-) -> Option<BTreeSet<String>> {
-    let mut paths = BTreeSet::new();
-    let complete = match group {
-        SkyrimBehaviorGeneratorGroupEvidence::ManualSelector(selector) => {
-            selector.children.iter().all(|child| {
-                collect_behavior_generator_tree_clip_paths(&child.generator_tree, &mut paths)
-            })
-        }
-        SkyrimBehaviorGeneratorGroupEvidence::Blender(blender) => {
-            blender.children.iter().all(|child| {
-                collect_behavior_generator_tree_clip_paths(&child.generator_tree, &mut paths)
-            })
-        }
-        SkyrimBehaviorGeneratorGroupEvidence::StateMachine(state_machine) => {
-            state_machine.machine.states.iter().all(|state| {
-                state.generator.as_ref().is_some_and(|generator| {
-                    collect_behavior_generator_tree_clip_paths(generator, &mut paths)
-                })
-            })
-        }
-    };
-    if !complete {
-        return None;
-    }
-    (!paths.is_empty()).then_some(paths)
-}
-
-fn collect_behavior_generator_tree_clip_paths(
-    node: &SkyrimBehaviorGeneratorNodeEvidence,
-    paths: &mut BTreeSet<String>,
-) -> bool {
-    match node {
-        SkyrimBehaviorGeneratorNodeEvidence::Clip {
-            resolved_clip_path, ..
-        } => {
-            let Some(path) = resolved_clip_path else {
-                return false;
-            };
-            paths.insert(path_key(path));
-            true
-        }
-        SkyrimBehaviorGeneratorNodeEvidence::ManualSelector { children, .. } => children
-            .iter()
-            .all(|child| collect_behavior_generator_tree_clip_paths(child, paths)),
-        SkyrimBehaviorGeneratorNodeEvidence::Blender { children, .. } => children
-            .iter()
-            .all(|child| collect_behavior_generator_tree_clip_paths(&child.generator, paths)),
-        SkyrimBehaviorGeneratorNodeEvidence::StateMachine(machine) => {
-            machine.states.iter().all(|state| {
-                state.generator.as_ref().is_some_and(|generator| {
-                    collect_behavior_generator_tree_clip_paths(generator, paths)
-                })
-            })
-        }
-        SkyrimBehaviorGeneratorNodeEvidence::ModifierGenerator { generator, .. } => generator
-            .as_ref()
-            .is_some_and(|generator| collect_behavior_generator_tree_clip_paths(generator, paths)),
-        SkyrimBehaviorGeneratorNodeEvidence::Missing { .. }
-        | SkyrimBehaviorGeneratorNodeEvidence::Unsupported { .. }
-        | SkyrimBehaviorGeneratorNodeEvidence::Cycle { .. } => false,
-    }
-}
-
 fn living_candidate(
     role: SkyrimCreatureMotionRole,
     clip: &SkyrimCatalogClip,
@@ -2992,6 +2932,7 @@ fn living_candidate(
     }
 }
 
+#[cfg(test)]
 fn candidate_is_ready(candidate: &SkyrimLivingClipCandidate) -> bool {
     ((!role_requires_trigger(candidate.role) && candidate.triggers.is_empty())
         || (role_requires_trigger(candidate.role) && !candidate.triggers.is_empty()))
@@ -3122,6 +3063,7 @@ fn reconciled_attack_template(
     }
 }
 
+#[cfg(test)]
 fn capability_generator_source(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3157,6 +3099,7 @@ fn capability_generator_source(
     })
 }
 
+#[cfg(test)]
 fn capability_generator_anonymous_source(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3179,6 +3122,7 @@ fn capability_generator_anonymous_source(
     })
 }
 
+#[cfg(test)]
 fn capability_generator_binding(
     family: &SkyrimFamilyMotionSet,
     binding: &SkyrimBehaviorVariableBindingEvidence,
@@ -3245,6 +3189,7 @@ fn capability_generator_binding(
     })
 }
 
+#[cfg(test)]
 fn capability_generator_bindings(
     family: &SkyrimFamilyMotionSet,
     bindings: &[SkyrimBehaviorVariableBindingEvidence],
@@ -3255,6 +3200,7 @@ fn capability_generator_bindings(
         .collect()
 }
 
+#[cfg(test)]
 fn capability_event_ref(
     family: &SkyrimFamilyMotionSet,
     source_id: Option<i32>,
@@ -3286,6 +3232,7 @@ fn capability_event_ref(
     })
 }
 
+#[cfg(test)]
 fn capability_event_property(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3307,6 +3254,7 @@ fn capability_event_property(
     })
 }
 
+#[cfg(test)]
 fn capability_interval(
     family: &SkyrimFamilyMotionSet,
     interval: &SkyrimBehaviorTransitionIntervalEvidence,
@@ -3342,6 +3290,7 @@ fn capability_interval(
     })
 }
 
+#[cfg(test)]
 fn capability_blending_transition_effect(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3401,6 +3350,7 @@ fn capability_blending_transition_effect(
     })
 }
 
+#[cfg(test)]
 fn capability_transition_array(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3524,6 +3474,7 @@ fn capability_transition_array(
     })
 }
 
+#[cfg(test)]
 fn required_i32(
     family: &SkyrimFamilyMotionSet,
     value: Option<i32>,
@@ -3536,6 +3487,7 @@ fn required_i32(
     })
 }
 
+#[cfg(test)]
 fn required_capability_value<T>(
     family: &SkyrimFamilyMotionSet,
     value: Option<T>,
@@ -3548,6 +3500,7 @@ fn required_capability_value<T>(
     })
 }
 
+#[cfg(test)]
 fn capability_expression_variable_reference(
     family: &SkyrimFamilyMotionSet,
     reference: &SkyrimBehaviorExpressionVariableReferenceEvidence,
@@ -3587,6 +3540,7 @@ fn capability_expression_variable_reference(
     })
 }
 
+#[cfg(test)]
 fn capability_modifier_node(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3781,6 +3735,7 @@ fn capability_modifier_node(
     }
 }
 
+#[cfg(test)]
 fn capability_generator_node(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -4056,6 +4011,7 @@ fn capability_generator_node(
     }
 }
 
+#[cfg(test)]
 fn capability_state_machine_node(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -5197,111 +5153,109 @@ mod candidate_attack_binding_tests {
     use super::*;
 
     #[test]
-    fn a_nonconflicting_source_attack_still_gets_a_candidate_binding() {
-        let interner = crate::sym::StringInterner::new();
-        let source_race = FormKey {
-            local: 0x131E7,
-            plugin: interner.intern("Skyrim.esm"),
-        };
-        let family = SkyrimFamilyMotionSet {
-            family_id: "bear".to_string(),
-            project_path: "Actors\\Bear\\BearProject.hkx".to_string(),
-            race_attacks: vec![SkyrimRaceAttackEvidence {
-                event: "attackStart_ForwardPower".to_string(),
-                has_attack_spell: false,
-            }],
-            race_attack_sources: vec![SkyrimRaceAttackSourceEvidence {
-                source_race,
-                source_plugin: "Skyrim.esm".to_string(),
-                attack: SkyrimRaceAttackEvidence {
+    fn candidate_attack_bindings_use_source_owner_exact_clip_and_executable_role() {
+        {
+            let interner = crate::sym::StringInterner::new();
+            let source_race = FormKey {
+                local: 0x131E7,
+                plugin: interner.intern("Skyrim.esm"),
+            };
+            let family = SkyrimFamilyMotionSet {
+                family_id: "bear".to_string(),
+                project_path: "Actors\\Bear\\BearProject.hkx".to_string(),
+                race_attacks: vec![SkyrimRaceAttackEvidence {
                     event: "attackStart_ForwardPower".to_string(),
                     has_attack_spell: false,
+                }],
+                race_attack_sources: vec![SkyrimRaceAttackSourceEvidence {
+                    source_race,
+                    source_plugin: "Skyrim.esm".to_string(),
+                    attack: SkyrimRaceAttackEvidence {
+                        event: "attackStart_ForwardPower".to_string(),
+                        has_attack_spell: false,
+                    },
+                }],
+                clip_ids: vec!["AttackForwardPower".to_string()],
+            };
+
+            let bindings = candidate_attack_bindings(&family, &[]);
+
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].source_identity.local_form_id, source_race.local);
+            assert_eq!(bindings[0].role, CreatureClipRole::MeleeAttack);
+        }
+        {
+            let interner = crate::sym::StringInterner::new();
+            let family = SkyrimFamilyMotionSet {
+                family_id: "giant".to_string(),
+                project_path: "Actors\\Giant\\GiantProject.hkx".to_string(),
+                race_attacks: Vec::new(),
+                race_attack_sources: vec![SkyrimRaceAttackSourceEvidence {
+                    source_race: FormKey {
+                        local: 0x131F9,
+                        plugin: interner.intern("Skyrim.esm"),
+                    },
+                    source_plugin: "Skyrim.esm".to_string(),
+                    attack: SkyrimRaceAttackEvidence {
+                        event: "attackPowerStart_Stomp".to_string(),
+                        has_attack_spell: true,
+                    },
+                }],
+                clip_ids: vec!["Stomp".to_string()],
+            };
+            let stomp = SkyrimCatalogClip {
+                clip_id: "Stomp".to_string(),
+                clip_path: "Animations\\Stomp.hkx".to_string(),
+                original_skeleton_name: None,
+                family_ids: vec!["giant".to_string()],
+                disposition: SkyrimClipDisposition::Role {
+                    role: SkyrimCreatureMotionRole::MeleeAttack,
+                    trigger_event: Some("attackPowerStart_Stomp".to_string()),
+                    trigger_aliases: Vec::new(),
+                    evidence: Vec::new(),
                 },
-            }],
-            clip_ids: vec!["AttackForwardPower".to_string()],
-        };
-
-        let bindings = candidate_attack_bindings(&family, &[]);
-
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].source_identity.local_form_id, source_race.local);
-        assert_eq!(bindings[0].role, CreatureClipRole::MeleeAttack);
-    }
-
-    #[test]
-    fn exact_melee_clip_ownership_overrides_an_attack_spell_payload() {
-        let interner = crate::sym::StringInterner::new();
-        let family = SkyrimFamilyMotionSet {
-            family_id: "giant".to_string(),
-            project_path: "Actors\\Giant\\GiantProject.hkx".to_string(),
-            race_attacks: Vec::new(),
-            race_attack_sources: vec![SkyrimRaceAttackSourceEvidence {
-                source_race: FormKey {
-                    local: 0x131F9,
-                    plugin: interner.intern("Skyrim.esm"),
+                root_motion: SkyrimRootMotion::Stationary {
+                    source: SkyrimRootMotionSource::BoundAnims,
+                    sample_count: 1,
                 },
-                source_plugin: "Skyrim.esm".to_string(),
-                attack: SkyrimRaceAttackEvidence {
-                    event: "attackPowerStart_Stomp".to_string(),
-                    has_attack_spell: true,
+                events: Vec::new(),
+                annotations: Vec::new(),
+            };
+
+            let bindings = candidate_attack_bindings(&family, &[&stomp]);
+
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].role, CreatureClipRole::MeleeAttack);
+        }
+        {
+            let attack = SkyrimRaceAttackEvidence {
+                event: "attackPowerStart_Stomp".to_string(),
+                has_attack_spell: true,
+            };
+            let melee_clip = SkyrimCatalogClip {
+                clip_id: "Stomp".to_string(),
+                clip_path: "Animations\\Stomp.hkx".to_string(),
+                original_skeleton_name: None,
+                family_ids: vec!["giant".to_string()],
+                disposition: SkyrimClipDisposition::Role {
+                    role: SkyrimCreatureMotionRole::MeleeAttack,
+                    trigger_event: Some("attackStart_ClubAttack2".to_string()),
+                    trigger_aliases: Vec::new(),
+                    evidence: Vec::new(),
                 },
-            }],
-            clip_ids: vec!["Stomp".to_string()],
-        };
-        let stomp = SkyrimCatalogClip {
-            clip_id: "Stomp".to_string(),
-            clip_path: "Animations\\Stomp.hkx".to_string(),
-            original_skeleton_name: None,
-            family_ids: vec!["giant".to_string()],
-            disposition: SkyrimClipDisposition::Role {
-                role: SkyrimCreatureMotionRole::MeleeAttack,
-                trigger_event: Some("attackPowerStart_Stomp".to_string()),
-                trigger_aliases: Vec::new(),
-                evidence: Vec::new(),
-            },
-            root_motion: SkyrimRootMotion::Stationary {
-                source: SkyrimRootMotionSource::BoundAnims,
-                sample_count: 1,
-            },
-            events: Vec::new(),
-            annotations: Vec::new(),
-        };
+                root_motion: SkyrimRootMotion::Stationary {
+                    source: SkyrimRootMotionSource::BoundAnims,
+                    sample_count: 1,
+                },
+                events: Vec::new(),
+                annotations: Vec::new(),
+            };
 
-        let bindings = candidate_attack_bindings(&family, &[&stomp]);
-
-        assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].role, CreatureClipRole::MeleeAttack);
-    }
-
-    #[test]
-    fn spell_payload_uses_the_only_executable_attack_role() {
-        let attack = SkyrimRaceAttackEvidence {
-            event: "attackPowerStart_Stomp".to_string(),
-            has_attack_spell: true,
-        };
-        let melee_clip = SkyrimCatalogClip {
-            clip_id: "Stomp".to_string(),
-            clip_path: "Animations\\Stomp.hkx".to_string(),
-            original_skeleton_name: None,
-            family_ids: vec!["giant".to_string()],
-            disposition: SkyrimClipDisposition::Role {
-                role: SkyrimCreatureMotionRole::MeleeAttack,
-                trigger_event: Some("attackStart_ClubAttack2".to_string()),
-                trigger_aliases: Vec::new(),
-                evidence: Vec::new(),
-            },
-            root_motion: SkyrimRootMotion::Stationary {
-                source: SkyrimRootMotionSource::BoundAnims,
-                sample_count: 1,
-            },
-            events: Vec::new(),
-            annotations: Vec::new(),
-        };
-
-        assert_eq!(
-            candidate_attack_role(&attack, &[&melee_clip]),
-            CreatureClipRole::MeleeAttack
-        );
+            assert_eq!(
+                candidate_attack_role(&attack, &[&melee_clip]),
+                CreatureClipRole::MeleeAttack
+            );
+        }
     }
 }
 
@@ -8576,683 +8530,690 @@ mod tests {
     }
 
     #[test]
-    fn selector_and_blender_receipts_preserve_order_bindings_and_weights() {
-        let member = |name: &str, value: HkxValue| HkxMember {
-            name: name.to_string(),
-            value,
-        };
-        let object = |class_name: &str, members: Vec<HkxMember>| HkxObject {
-            name: None,
-            offset: 0,
-            signature: 0,
-            class_name: class_name.to_string(),
-            members,
-        };
-        let text = |value: &str| HkxValue::String {
-            value: value.to_string(),
-            is_null: false,
-        };
-        let binding = |member_path: &str, variable_index: i32| {
-            HkxValue::Object(vec![
-                member("memberPath", text(member_path)),
-                member("variableIndex", HkxValue::I32(variable_index)),
-                member("bitIndex", HkxValue::I32(-1)),
-                member("bindingType", HkxValue::I32(0)),
-            ])
-        };
-        let file = HkxFile::from_tagxml(
-            8,
-            SKYRIM_CONTENTS_VERSION,
-            vec![
-                object(
-                    "hkbVariableBindingSet",
-                    vec![member(
-                        "bindings",
-                        HkxValue::Array(vec![binding("selectedGeneratorIndex", 0)]),
-                    )],
-                ),
-                object(
-                    "hkbVariableBindingSet",
-                    vec![member(
-                        "bindings",
-                        HkxValue::Array(vec![binding("blendParameter", 1)]),
-                    )],
-                ),
-                object(
-                    "hkbClipGenerator",
-                    vec![
-                        member("name", text("IdleState")),
-                        member("animationName", text("Animations\\Idle.hkx")),
-                    ],
-                ),
-                object(
-                    "hkbClipGenerator",
-                    vec![
-                        member("name", text("RunState")),
-                        member("animationName", text("Animations\\Run.hkx")),
-                    ],
-                ),
-                object("hkbBlendingTransitionEffect", Vec::new()),
-                object(
-                    "hkbManualSelectorGenerator",
-                    vec![
-                        member("name", text("IdleSelector")),
-                        member("variableBindingSet", HkxValue::Pointer(Some(0))),
-                        member(
-                            "generators",
-                            HkxValue::Array(vec![
-                                HkxValue::Pointer(Some(2)),
-                                HkxValue::Pointer(Some(3)),
-                            ]),
-                        ),
-                        member("selectedGeneratorIndex", HkxValue::I8(1)),
-                        member("indexSelector", HkxValue::Pointer(None)),
-                        member("selectedIndexCanChangeAfterActivate", HkxValue::Bool(true)),
-                        member(
-                            "generatorChangedTransitionEffect",
-                            HkxValue::Pointer(Some(4)),
-                        ),
-                    ],
-                ),
-                object(
-                    "hkbBlenderGeneratorChild",
-                    vec![
-                        member("generator", HkxValue::Pointer(Some(2))),
-                        member("weight", HkxValue::F32(0.25)),
-                        member("worldFromModelWeight", HkxValue::F32(0.5)),
-                        member("boneWeights", HkxValue::Pointer(None)),
-                    ],
-                ),
-                object(
-                    "hkbBlenderGeneratorChild",
-                    vec![
-                        member("generator", HkxValue::Pointer(Some(3))),
-                        member("weight", HkxValue::F32(0.75)),
-                        member("worldFromModelWeight", HkxValue::F32(1.0)),
-                        member("boneWeights", HkxValue::Pointer(None)),
-                    ],
-                ),
-                object(
-                    "hkbBlenderGenerator",
-                    vec![
-                        member("name", text("SpeedBlend")),
-                        member("variableBindingSet", HkxValue::Pointer(Some(1))),
-                        member("referencePoseWeightThreshold", HkxValue::F32(0.1)),
-                        member("blendParameter", HkxValue::F32(0.0)),
-                        member("minCyclicBlendParameter", HkxValue::F32(-1.0)),
-                        member("maxCyclicBlendParameter", HkxValue::F32(1.0)),
-                        member("indexOfSyncMasterChild", HkxValue::I16(1)),
-                        member("flags", HkxValue::I16(3)),
-                        member("subtractLastChild", HkxValue::Bool(false)),
-                        member(
-                            "children",
-                            HkxValue::Array(vec![
-                                HkxValue::Pointer(Some(6)),
-                                HkxValue::Pointer(Some(7)),
-                            ]),
-                        ),
-                    ],
-                ),
-                object(
-                    "hkbVariableValueSet",
-                    vec![member(
-                        "wordVariableValues",
-                        HkxValue::Array(vec![
-                            HkxValue::Object(vec![member("value", HkxValue::I32(1))]),
-                            HkxValue::Object(vec![member(
-                                "value",
-                                HkxValue::I32(0.5_f32.to_bits() as i32),
-                            )]),
-                        ]),
-                    )],
-                ),
-                object(
-                    "hkbBehaviorGraphData",
-                    vec![
-                        member(
-                            "variableInfos",
-                            HkxValue::Array(vec![
-                                HkxValue::Object(vec![member("type", HkxValue::I32(3))]),
-                                HkxValue::Object(vec![member("type", HkxValue::I32(4))]),
-                            ]),
-                        ),
-                        member("variableInitialValues", HkxValue::Pointer(Some(9))),
-                    ],
-                ),
-            ],
-        );
-
-        let (variable_types, variable_initial_words) = behavior_variable_data(&file);
-        let groups = extract_behavior_generator_groups(
-            &file,
-            "Actors\\Fixture\\Behavior.hkx",
-            &[],
-            &["SelectorIndex".to_string(), "Speed".to_string()],
-            &variable_types,
-            &variable_initial_words,
-        );
-        let [
-            SkyrimBehaviorGeneratorGroupEvidence::ManualSelector(selector),
-            SkyrimBehaviorGeneratorGroupEvidence::Blender(blender),
-        ] = groups.as_slice()
-        else {
-            panic!("expected one selector followed by one blender: {groups:#?}");
-        };
-        assert_eq!(selector.selected_generator_index, 1);
-        assert!(selector.selected_index_can_change_after_activate);
-        assert_eq!(
-            selector.variable_bindings[0].variable_name.as_deref(),
-            Some("SelectorIndex")
-        );
-        assert_eq!(selector.variable_bindings[0].variable_type, Some(3));
-        assert_eq!(selector.variable_bindings[0].initial_word_value, Some(1));
-        assert_eq!(
-            selector.children[0].terminal_clips[0].animation_name,
-            "Animations\\Idle.hkx"
-        );
-        assert_eq!(
-            selector.children[1].terminal_clips[0].animation_name,
-            "Animations\\Run.hkx"
-        );
-        assert!(matches!(
-            &selector.children[0].generator_tree,
-            SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. }
-                if animation_name == "Animations\\Idle.hkx"
-        ));
-        assert_eq!(
-            selector
-                .transition_effect
-                .as_ref()
-                .map(|effect| effect.class_name.as_str()),
-            Some("hkbBlendingTransitionEffect")
-        );
-        assert_eq!(blender.index_of_sync_master_child, 1);
-        assert_eq!(blender.flags, 3);
-        assert_eq!(
-            blender.variable_bindings[0].variable_name.as_deref(),
-            Some("Speed")
-        );
-        assert_eq!(blender.variable_bindings[0].variable_type, Some(4));
-        assert_eq!(
-            blender.variable_bindings[0].initial_word_value,
-            Some(0.5_f32.to_bits())
-        );
-        assert_eq!(blender.children[0].weight_bits, Some(0.25_f32.to_bits()));
-        assert_eq!(
-            blender.children[1].world_from_model_weight_bits,
-            Some(1.0_f32.to_bits())
-        );
-        assert!(matches!(
-            &blender.children[1].generator_tree,
-            SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. }
-                if animation_name == "Animations\\Run.hkx"
-        ));
-    }
-
-    #[test]
-    fn recursive_state_machine_receipt_preserves_state_and_transition_fields() {
-        let member = |name: &str, value: HkxValue| HkxMember {
-            name: name.to_string(),
-            value,
-        };
-        let object = |class_name: &str, members: Vec<HkxMember>| HkxObject {
-            name: None,
-            offset: 0,
-            signature: 0,
-            class_name: class_name.to_string(),
-            members,
-        };
-        let text = |value: &str| HkxValue::String {
-            value: value.to_string(),
-            is_null: false,
-        };
-        let event_property = |event_id| {
-            HkxValue::Object(vec![
-                member("id", HkxValue::I32(event_id)),
-                member("payload", HkxValue::Pointer(None)),
-            ])
-        };
-        let interval = HkxValue::Object(vec![
-            member("enterEventId", HkxValue::I32(1)),
-            member("exitEventId", HkxValue::I32(-1)),
-            member("enterTime", HkxValue::F32(0.25)),
-            member("exitTime", HkxValue::F32(0.75)),
-        ]);
-        let transition = HkxValue::Object(vec![
-            member("triggerInterval", interval.clone()),
-            member("initiateInterval", interval),
-            member("transition", HkxValue::Pointer(Some(5))),
-            member("condition", HkxValue::Pointer(None)),
-            member("eventId", HkxValue::I32(0)),
-            member("toStateId", HkxValue::I32(7)),
-            member("fromNestedStateId", HkxValue::I32(2)),
-            member("toNestedStateId", HkxValue::I32(3)),
-            member("priority", HkxValue::I16(4)),
-            member("flags", HkxValue::I16(5)),
-        ]);
-        let file = HkxFile::from_tagxml(
-            8,
-            SKYRIM_CONTENTS_VERSION,
-            vec![
-                object(
-                    "hkbClipGenerator",
-                    vec![
-                        member("name", text("ExactIdle")),
-                        member("animationName", text("Animations\\Idle.hkx")),
-                    ],
-                ),
-                object(
-                    "hkbStateMachineTransitionInfoArray",
-                    vec![
-                        member("transitions", HkxValue::Array(vec![transition])),
-                        member("hasEventlessTransitions", HkxValue::Bool(false)),
-                        member("hasTimeBoundedTransitions", HkxValue::Bool(true)),
-                    ],
-                ),
-                object(
-                    "hkbStateMachineStateInfo",
-                    vec![
-                        member("listeners", HkxValue::Array(Vec::new())),
-                        member(
-                            "enterNotifyEvents",
-                            HkxValue::Array(vec![event_property(1)]),
-                        ),
-                        member("exitNotifyEvents", HkxValue::Array(Vec::new())),
-                        member("transitions", HkxValue::Pointer(Some(1))),
-                        member("generator", HkxValue::Pointer(Some(0))),
-                        member("name", text("IdleState")),
-                        member("stateId", HkxValue::I32(7)),
-                        member("probability", HkxValue::F32(0.5)),
-                        member("enable", HkxValue::Bool(true)),
-                        member("hasEventlessTransitions", HkxValue::Bool(false)),
-                    ],
-                ),
-                object(
-                    "hkbStateMachine",
-                    vec![
-                        member("name", text("IdleMachine")),
-                        member("eventToSendWhenStateOrTransitionChanges", event_property(0)),
-                        member("startStateIdSelector", HkxValue::Pointer(None)),
-                        member("startStateId", HkxValue::I32(7)),
-                        member("returnToPreviousStateEventId", HkxValue::I32(-1)),
-                        member("randomTransitionEventId", HkxValue::I32(-1)),
-                        member("transitionToNextHigherStateEventId", HkxValue::I32(-1)),
-                        member("transitionToNextLowerStateEventId", HkxValue::I32(-1)),
-                        member("syncVariableIndex", HkxValue::I32(-1)),
-                        member("wrapAroundStateId", HkxValue::Bool(false)),
-                        member("maxSimultaneousTransitions", HkxValue::I32(1)),
-                        member("startStateMode", HkxValue::I32(0)),
-                        member("selfTransitionMode", HkxValue::I32(0)),
-                        member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(2))])),
-                        member("wildcardTransitions", HkxValue::Pointer(Some(1))),
-                    ],
-                ),
-                object(
-                    "hkbManualSelectorGenerator",
-                    vec![
-                        member("name", text("NestedSelector")),
-                        member(
-                            "generators",
-                            HkxValue::Array(vec![HkxValue::Pointer(Some(3))]),
-                        ),
-                        member("selectedGeneratorIndex", HkxValue::I32(0)),
-                        member("indexSelector", HkxValue::Pointer(None)),
-                        member("selectedIndexCanChangeAfterActivate", HkxValue::Bool(false)),
-                        member("generatorChangedTransitionEffect", HkxValue::Pointer(None)),
-                    ],
-                ),
-                object(
-                    "hkbBlendingTransitionEffect",
-                    vec![
-                        member("name", text("ExactBlend")),
-                        member("selfTransitionMode", HkxValue::I8(2)),
-                        member("eventMode", HkxValue::I8(1)),
-                        member("duration", HkxValue::F32(0.2)),
-                        member("toGeneratorStartTimeFraction", HkxValue::F32(0.4)),
-                        member("flags", HkxValue::U16(3)),
-                        member("endMode", HkxValue::I8(1)),
-                        member("blendCurve", HkxValue::I8(2)),
-                        member("alignmentBone", HkxValue::I16(-1)),
-                    ],
-                ),
-            ],
-        );
-        let groups = extract_behavior_generator_groups(
-            &file,
-            "Actors\\Fixture\\Behavior.hkx",
-            &["enterIdle".to_string(), "intervalStart".to_string()],
-            &[],
-            &[],
-            &[],
-        );
-        let selector = groups
-            .iter()
-            .find_map(|group| match group {
-                SkyrimBehaviorGeneratorGroupEvidence::ManualSelector(selector) => Some(selector),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("expected selector group: {groups:#?}"));
-        assert!(groups.iter().any(|group| matches!(
-            group,
-            SkyrimBehaviorGeneratorGroupEvidence::StateMachine(state_machine)
-                if state_machine.machine.source == selector.children[0].generator
-        )));
-        let SkyrimBehaviorGeneratorNodeEvidence::StateMachine(machine) =
-            &selector.children[0].generator_tree
-        else {
-            panic!("expected nested state machine");
-        };
-        assert_eq!(machine.start_state_id, Some(7));
-        assert_eq!(machine.states[0].probability_bits, Some(0.5_f32.to_bits()));
-        assert_eq!(
-            machine.states[0].enter_notify_events[0]
-                .event_name
-                .as_deref(),
-            Some("intervalStart")
-        );
-        let transition = &machine.states[0].transitions.as_ref().unwrap().transitions[0];
-        assert_eq!(transition.event_name.as_deref(), Some("enterIdle"));
-        assert_eq!(transition.from_nested_state_id, Some(2));
-        assert_eq!(transition.to_nested_state_id, Some(3));
-        let blend = transition
-            .blending_transition_effect
-            .as_ref()
-            .expect("exact blending transition receipt");
-        assert_eq!(blend.source.object_index, 5);
-        assert_eq!(blend.self_transition_mode, Some(2));
-        assert_eq!(blend.event_mode, Some(1));
-        assert_eq!(blend.duration_bits, Some(0.2_f32.to_bits()));
-        assert_eq!(
-            blend.to_generator_start_time_fraction_bits,
-            Some(0.4_f32.to_bits())
-        );
-        assert_eq!(blend.flags, Some(3));
-        assert_eq!(blend.end_mode, Some(1));
-        assert_eq!(blend.blend_curve, Some(2));
-        assert_eq!(blend.alignment_bone, Some(-1));
-        assert!(blend.variable_bindings.is_empty());
-        assert_eq!(
-            transition
-                .trigger_interval
-                .as_ref()
-                .and_then(|interval| interval.enter_event_name.as_deref()),
-            Some("intervalStart")
-        );
-        assert!(matches!(
-            machine.states[0].generator.as_ref(),
-            Some(SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. })
-                if animation_name == "Animations\\Idle.hkx"
-        ));
-    }
-
-    #[test]
-    fn modifier_generator_receipt_preserves_order_expressions_and_variable_references() {
-        let member = |name: &str, value: HkxValue| HkxMember {
-            name: name.to_string(),
-            value,
-        };
-        let object = |class_name: &str, members: Vec<HkxMember>| HkxObject {
-            name: None,
-            offset: 0,
-            signature: 0,
-            class_name: class_name.to_string(),
-            members,
-        };
-        let text = |value: &str| HkxValue::String {
-            value: value.to_string(),
-            is_null: false,
-        };
-        let binding = |member_path: &str, variable_index| {
-            HkxValue::Object(vec![
-                member("memberPath", text(member_path)),
-                member("variableIndex", HkxValue::I32(variable_index)),
-                member("bitIndex", HkxValue::I8(-1)),
-                member("bindingType", HkxValue::I8(0)),
-            ])
-        };
-        let expression = |value: &str| {
-            HkxValue::Object(vec![
-                member("expression", text(value)),
-                member("assignmentVariableIndex", HkxValue::I32(-1)),
-                member("assignmentEventIndex", HkxValue::I32(-1)),
-                member("eventMode", HkxValue::I8(2)),
-            ])
-        };
-        let zero_vector = HkxValue::F32List(vec![0.0; 4]);
-        let file = HkxFile::from_tagxml(
-            8,
-            SKYRIM_CONTENTS_VERSION,
-            vec![
-                object(
-                    "hkbClipGenerator",
-                    vec![
-                        member("name", text("Forward")),
-                        member("animationName", text("Animations\\Forward.hkx")),
-                    ],
-                ),
-                object(
-                    "hkbExpressionDataArray",
-                    vec![member(
-                        "expressionsData",
-                        HkxValue::Array(vec![
-                            expression("runStart if (Speed > 420)"),
-                            expression("walkStart if (Speed < 420)"),
-                        ]),
-                    )],
-                ),
-                object(
-                    "hkbEvaluateExpressionModifier",
-                    vec![
-                        member("name", text("ForwardLocomotion_EEM")),
-                        member("userData", HkxValue::U64(2)),
-                        member("enable", HkxValue::Bool(false)),
-                        member("variableBindingSet", HkxValue::Pointer(None)),
-                        member("expressions", HkxValue::Pointer(Some(1))),
-                    ],
-                ),
-                object(
-                    "hkbVariableBindingSet",
-                    vec![member(
-                        "bindings",
-                        HkxValue::Array(vec![binding("rawValue", 0), binding("dampedValue", 1)]),
-                    )],
-                ),
-                object(
-                    "hkbDampingModifier",
-                    vec![
-                        member("name", text("TurnDeltaDampingModifier")),
-                        member("userData", HkxValue::U64(1)),
-                        member("enable", HkxValue::Bool(true)),
-                        member("variableBindingSet", HkxValue::Pointer(Some(3))),
-                        member("kP", HkxValue::F32(-0.1)),
-                        member("kI", HkxValue::F32(f32::from_bits(1))),
-                        member("kD", HkxValue::F32(0.0)),
-                        member("enableScalarDamping", HkxValue::Bool(false)),
-                        member("enableVectorDamping", HkxValue::Bool(false)),
-                        member("rawValue", HkxValue::F32(0.0)),
-                        member("dampedValue", HkxValue::F32(0.0)),
-                        member("rawVector", zero_vector.clone()),
-                        member("dampedVector", zero_vector.clone()),
-                        member("vecErrorSum", zero_vector.clone()),
-                        member("vecPreviousError", zero_vector),
-                        member("errorSum", HkxValue::F32(0.0)),
-                        member("previousError", HkxValue::F32(0.0)),
-                    ],
-                ),
-                object(
-                    "hkbModifierList",
-                    vec![
-                        member("name", text("ForwardLocomotionModifierList")),
-                        member("userData", HkxValue::U64(1)),
-                        member("enable", HkxValue::Bool(false)),
-                        member("variableBindingSet", HkxValue::Pointer(None)),
-                        member(
-                            "modifiers",
-                            HkxValue::Array(vec![
+    fn behavior_receipts_preserve_selectors_blenders_state_machines_and_modifiers() {
+        {
+            let member = |name: &str, value: HkxValue| HkxMember {
+                name: name.to_string(),
+                value,
+            };
+            let object = |class_name: &str, members: Vec<HkxMember>| HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: class_name.to_string(),
+                members,
+            };
+            let text = |value: &str| HkxValue::String {
+                value: value.to_string(),
+                is_null: false,
+            };
+            let binding = |member_path: &str, variable_index: i32| {
+                HkxValue::Object(vec![
+                    member("memberPath", text(member_path)),
+                    member("variableIndex", HkxValue::I32(variable_index)),
+                    member("bitIndex", HkxValue::I32(-1)),
+                    member("bindingType", HkxValue::I32(0)),
+                ])
+            };
+            let file = HkxFile::from_tagxml(
+                8,
+                SKYRIM_CONTENTS_VERSION,
+                vec![
+                    object(
+                        "hkbVariableBindingSet",
+                        vec![member(
+                            "bindings",
+                            HkxValue::Array(vec![binding("selectedGeneratorIndex", 0)]),
+                        )],
+                    ),
+                    object(
+                        "hkbVariableBindingSet",
+                        vec![member(
+                            "bindings",
+                            HkxValue::Array(vec![binding("blendParameter", 1)]),
+                        )],
+                    ),
+                    object(
+                        "hkbClipGenerator",
+                        vec![
+                            member("name", text("IdleState")),
+                            member("animationName", text("Animations\\Idle.hkx")),
+                        ],
+                    ),
+                    object(
+                        "hkbClipGenerator",
+                        vec![
+                            member("name", text("RunState")),
+                            member("animationName", text("Animations\\Run.hkx")),
+                        ],
+                    ),
+                    object("hkbBlendingTransitionEffect", Vec::new()),
+                    object(
+                        "hkbManualSelectorGenerator",
+                        vec![
+                            member("name", text("IdleSelector")),
+                            member("variableBindingSet", HkxValue::Pointer(Some(0))),
+                            member(
+                                "generators",
+                                HkxValue::Array(vec![
+                                    HkxValue::Pointer(Some(2)),
+                                    HkxValue::Pointer(Some(3)),
+                                ]),
+                            ),
+                            member("selectedGeneratorIndex", HkxValue::I8(1)),
+                            member("indexSelector", HkxValue::Pointer(None)),
+                            member("selectedIndexCanChangeAfterActivate", HkxValue::Bool(true)),
+                            member(
+                                "generatorChangedTransitionEffect",
                                 HkxValue::Pointer(Some(4)),
-                                HkxValue::Pointer(Some(2)),
+                            ),
+                        ],
+                    ),
+                    object(
+                        "hkbBlenderGeneratorChild",
+                        vec![
+                            member("generator", HkxValue::Pointer(Some(2))),
+                            member("weight", HkxValue::F32(0.25)),
+                            member("worldFromModelWeight", HkxValue::F32(0.5)),
+                            member("boneWeights", HkxValue::Pointer(None)),
+                        ],
+                    ),
+                    object(
+                        "hkbBlenderGeneratorChild",
+                        vec![
+                            member("generator", HkxValue::Pointer(Some(3))),
+                            member("weight", HkxValue::F32(0.75)),
+                            member("worldFromModelWeight", HkxValue::F32(1.0)),
+                            member("boneWeights", HkxValue::Pointer(None)),
+                        ],
+                    ),
+                    object(
+                        "hkbBlenderGenerator",
+                        vec![
+                            member("name", text("SpeedBlend")),
+                            member("variableBindingSet", HkxValue::Pointer(Some(1))),
+                            member("referencePoseWeightThreshold", HkxValue::F32(0.1)),
+                            member("blendParameter", HkxValue::F32(0.0)),
+                            member("minCyclicBlendParameter", HkxValue::F32(-1.0)),
+                            member("maxCyclicBlendParameter", HkxValue::F32(1.0)),
+                            member("indexOfSyncMasterChild", HkxValue::I16(1)),
+                            member("flags", HkxValue::I16(3)),
+                            member("subtractLastChild", HkxValue::Bool(false)),
+                            member(
+                                "children",
+                                HkxValue::Array(vec![
+                                    HkxValue::Pointer(Some(6)),
+                                    HkxValue::Pointer(Some(7)),
+                                ]),
+                            ),
+                        ],
+                    ),
+                    object(
+                        "hkbVariableValueSet",
+                        vec![member(
+                            "wordVariableValues",
+                            HkxValue::Array(vec![
+                                HkxValue::Object(vec![member("value", HkxValue::I32(1))]),
+                                HkxValue::Object(vec![member(
+                                    "value",
+                                    HkxValue::I32(0.5_f32.to_bits() as i32),
+                                )]),
                             ]),
-                        ),
-                    ],
-                ),
-                object(
-                    "hkbModifierGenerator",
-                    vec![
-                        member("name", text("ForwardLocomotion_MG")),
-                        member("userData", HkxValue::U64(1)),
-                        member("variableBindingSet", HkxValue::Pointer(None)),
-                        member("modifier", HkxValue::Pointer(Some(5))),
-                        member("generator", HkxValue::Pointer(Some(0))),
-                    ],
-                ),
-            ],
-        );
-        let mut node = behavior_generator_tree(
-            &file,
-            6,
-            &[],
-            &["Speed".to_string(), "DampedSpeed".to_string()],
-            &[Some(4), Some(4)],
-            &[Some(0.0_f32.to_bits()), Some(1.0_f32.to_bits())],
-            &mut BTreeSet::new(),
-        );
-        let SkyrimBehaviorGeneratorNodeEvidence::ModifierGenerator {
-            generator: Some(generator),
-            ..
-        } = &mut node
-        else {
-            panic!("expected exact modifier generator receipt: {node:#?}");
-        };
-        let SkyrimBehaviorGeneratorNodeEvidence::Clip {
-            resolved_clip_path, ..
-        } = generator.as_mut()
-        else {
-            panic!("expected terminal modifier-generator clip");
-        };
-        *resolved_clip_path = Some("Animations\\Forward.hkx".to_string());
-        let family = SkyrimFamilyMotionSet {
-            family_id: "fixture".to_string(),
-            project_path: "Actors\\Fixture\\FixtureProject.hkx".to_string(),
-            race_attacks: Vec::new(),
-            race_attack_sources: Vec::new(),
-            clip_ids: vec!["forward".to_string()],
-        };
-        let clip = SkyrimCatalogClip {
-            clip_id: "forward".to_string(),
-            clip_path: "Animations\\Forward.hkx".to_string(),
-            original_skeleton_name: None,
-            family_ids: vec!["fixture".to_string()],
-            disposition: SkyrimClipDisposition::Unsupported {
-                reason: SkyrimUnsupportedMotionReason::NoSemanticRoleEvidence,
-            },
-            root_motion: SkyrimRootMotion::Unknown,
-            events: Vec::new(),
-            annotations: Vec::new(),
-        };
-        let shared =
-            capability_generator_node(&family, "Actors\\Fixture\\Behavior.hkx", &node, &[&clip])
-                .expect("exact modifier tree should lower to the shared receipt");
-        let CapabilityGeneratorNode::ModifierGenerator {
-            user_data,
-            modifier: shared_modifier,
-            generator: shared_generator,
-            ..
-        } = shared
-        else {
-            panic!("expected shared modifier-generator receipt");
-        };
-        assert_eq!(user_data, 1);
-        assert!(matches!(
-            shared_generator.as_ref(),
-            CapabilityGeneratorNode::Clip { clip_name, .. } if clip_name == "forward"
-        ));
-        let CapabilityModifierNode::List {
-            user_data,
-            enable,
-            modifiers: shared_modifiers,
-            ..
-        } = shared_modifier.as_ref()
-        else {
-            panic!("expected shared ordered modifier-list receipt");
-        };
-        assert_eq!(*user_data, 1);
-        assert!(!enable);
-        assert!(matches!(
-            shared_modifiers.as_slice(),
-            [
-                CapabilityModifierNode::Damping { .. },
-                CapabilityModifierNode::EvaluateExpression { .. }
-            ]
-        ));
-        let SkyrimBehaviorGeneratorNodeEvidence::ModifierGenerator {
-            user_data,
-            modifier: Some(modifier),
-            generator: Some(generator),
-            ..
-        } = &node
-        else {
-            panic!("expected exact modifier generator receipt: {node:#?}");
-        };
-        assert_eq!(*user_data, Some(1));
-        assert!(matches!(
-            generator.as_ref(),
-            SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. }
-                if animation_name == "Animations\\Forward.hkx"
-        ));
-        let SkyrimBehaviorModifierNodeEvidence::ModifierList {
-            user_data,
-            enable,
-            modifiers,
-            ..
-        } = modifier.as_ref()
-        else {
-            panic!("expected exact modifier list receipt");
-        };
-        assert_eq!(*user_data, Some(1));
-        assert_eq!(*enable, Some(false));
-        assert_eq!(modifiers.len(), 2);
-        let SkyrimBehaviorModifierNodeEvidence::Damping {
-            k_p_bits,
-            k_i_bits,
-            variable_bindings,
-            raw_vector_bits,
-            ..
-        } = &modifiers[0]
-        else {
-            panic!("expected damping modifier first");
-        };
-        assert_eq!(*k_p_bits, Some((-0.1_f32).to_bits()));
-        assert_eq!(*k_i_bits, Some(1));
-        assert_eq!(raw_vector_bits, &Some([0; 4]));
-        let raw_binding = variable_bindings
-            .iter()
-            .find(|binding| binding.member_path == "rawValue")
-            .expect("raw-value binding");
-        let damped_binding = variable_bindings
-            .iter()
-            .find(|binding| binding.member_path == "dampedValue")
-            .expect("damped-value binding");
-        assert_eq!(raw_binding.variable_name.as_deref(), Some("Speed"));
-        assert_eq!(damped_binding.variable_index, 1);
-        let SkyrimBehaviorModifierNodeEvidence::EvaluateExpression {
-            expressions: Some(expressions),
-            ..
-        } = &modifiers[1]
-        else {
-            panic!("expected evaluate-expression modifier second");
-        };
-        assert_eq!(expressions.source.object_index, 1);
-        assert_eq!(expressions.expressions[0].event_mode, Some(2));
-        assert_eq!(expressions.expressions[0].referenced_variables.len(), 1);
-        assert_eq!(
-            expressions.expressions[0].referenced_variables[0],
-            SkyrimBehaviorExpressionVariableReferenceEvidence {
-                variable_index: 0,
-                variable_name: "Speed".to_string(),
-                variable_type: Some(4),
-                initial_word_value: Some(0.0_f32.to_bits()),
-            }
-        );
+                        )],
+                    ),
+                    object(
+                        "hkbBehaviorGraphData",
+                        vec![
+                            member(
+                                "variableInfos",
+                                HkxValue::Array(vec![
+                                    HkxValue::Object(vec![member("type", HkxValue::I32(3))]),
+                                    HkxValue::Object(vec![member("type", HkxValue::I32(4))]),
+                                ]),
+                            ),
+                            member("variableInitialValues", HkxValue::Pointer(Some(9))),
+                        ],
+                    ),
+                ],
+            );
+
+            let (variable_types, variable_initial_words) = behavior_variable_data(&file);
+            let groups = extract_behavior_generator_groups(
+                &file,
+                "Actors\\Fixture\\Behavior.hkx",
+                &[],
+                &["SelectorIndex".to_string(), "Speed".to_string()],
+                &variable_types,
+                &variable_initial_words,
+            );
+            let [
+                SkyrimBehaviorGeneratorGroupEvidence::ManualSelector(selector),
+                SkyrimBehaviorGeneratorGroupEvidence::Blender(blender),
+            ] = groups.as_slice()
+            else {
+                panic!("expected one selector followed by one blender: {groups:#?}");
+            };
+            assert_eq!(selector.selected_generator_index, 1);
+            assert!(selector.selected_index_can_change_after_activate);
+            assert_eq!(
+                selector.variable_bindings[0].variable_name.as_deref(),
+                Some("SelectorIndex")
+            );
+            assert_eq!(selector.variable_bindings[0].variable_type, Some(3));
+            assert_eq!(selector.variable_bindings[0].initial_word_value, Some(1));
+            assert_eq!(
+                selector.children[0].terminal_clips[0].animation_name,
+                "Animations\\Idle.hkx"
+            );
+            assert_eq!(
+                selector.children[1].terminal_clips[0].animation_name,
+                "Animations\\Run.hkx"
+            );
+            assert!(matches!(
+                &selector.children[0].generator_tree,
+                SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. }
+                    if animation_name == "Animations\\Idle.hkx"
+            ));
+            assert_eq!(
+                selector
+                    .transition_effect
+                    .as_ref()
+                    .map(|effect| effect.class_name.as_str()),
+                Some("hkbBlendingTransitionEffect")
+            );
+            assert_eq!(blender.index_of_sync_master_child, 1);
+            assert_eq!(blender.flags, 3);
+            assert_eq!(
+                blender.variable_bindings[0].variable_name.as_deref(),
+                Some("Speed")
+            );
+            assert_eq!(blender.variable_bindings[0].variable_type, Some(4));
+            assert_eq!(
+                blender.variable_bindings[0].initial_word_value,
+                Some(0.5_f32.to_bits())
+            );
+            assert_eq!(blender.children[0].weight_bits, Some(0.25_f32.to_bits()));
+            assert_eq!(
+                blender.children[1].world_from_model_weight_bits,
+                Some(1.0_f32.to_bits())
+            );
+            assert!(matches!(
+                &blender.children[1].generator_tree,
+                SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. }
+                    if animation_name == "Animations\\Run.hkx"
+            ));
+        }
+        {
+            let member = |name: &str, value: HkxValue| HkxMember {
+                name: name.to_string(),
+                value,
+            };
+            let object = |class_name: &str, members: Vec<HkxMember>| HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: class_name.to_string(),
+                members,
+            };
+            let text = |value: &str| HkxValue::String {
+                value: value.to_string(),
+                is_null: false,
+            };
+            let event_property = |event_id| {
+                HkxValue::Object(vec![
+                    member("id", HkxValue::I32(event_id)),
+                    member("payload", HkxValue::Pointer(None)),
+                ])
+            };
+            let interval = HkxValue::Object(vec![
+                member("enterEventId", HkxValue::I32(1)),
+                member("exitEventId", HkxValue::I32(-1)),
+                member("enterTime", HkxValue::F32(0.25)),
+                member("exitTime", HkxValue::F32(0.75)),
+            ]);
+            let transition = HkxValue::Object(vec![
+                member("triggerInterval", interval.clone()),
+                member("initiateInterval", interval),
+                member("transition", HkxValue::Pointer(Some(5))),
+                member("condition", HkxValue::Pointer(None)),
+                member("eventId", HkxValue::I32(0)),
+                member("toStateId", HkxValue::I32(7)),
+                member("fromNestedStateId", HkxValue::I32(2)),
+                member("toNestedStateId", HkxValue::I32(3)),
+                member("priority", HkxValue::I16(4)),
+                member("flags", HkxValue::I16(5)),
+            ]);
+            let file = HkxFile::from_tagxml(
+                8,
+                SKYRIM_CONTENTS_VERSION,
+                vec![
+                    object(
+                        "hkbClipGenerator",
+                        vec![
+                            member("name", text("ExactIdle")),
+                            member("animationName", text("Animations\\Idle.hkx")),
+                        ],
+                    ),
+                    object(
+                        "hkbStateMachineTransitionInfoArray",
+                        vec![
+                            member("transitions", HkxValue::Array(vec![transition])),
+                            member("hasEventlessTransitions", HkxValue::Bool(false)),
+                            member("hasTimeBoundedTransitions", HkxValue::Bool(true)),
+                        ],
+                    ),
+                    object(
+                        "hkbStateMachineStateInfo",
+                        vec![
+                            member("listeners", HkxValue::Array(Vec::new())),
+                            member(
+                                "enterNotifyEvents",
+                                HkxValue::Array(vec![event_property(1)]),
+                            ),
+                            member("exitNotifyEvents", HkxValue::Array(Vec::new())),
+                            member("transitions", HkxValue::Pointer(Some(1))),
+                            member("generator", HkxValue::Pointer(Some(0))),
+                            member("name", text("IdleState")),
+                            member("stateId", HkxValue::I32(7)),
+                            member("probability", HkxValue::F32(0.5)),
+                            member("enable", HkxValue::Bool(true)),
+                            member("hasEventlessTransitions", HkxValue::Bool(false)),
+                        ],
+                    ),
+                    object(
+                        "hkbStateMachine",
+                        vec![
+                            member("name", text("IdleMachine")),
+                            member("eventToSendWhenStateOrTransitionChanges", event_property(0)),
+                            member("startStateIdSelector", HkxValue::Pointer(None)),
+                            member("startStateId", HkxValue::I32(7)),
+                            member("returnToPreviousStateEventId", HkxValue::I32(-1)),
+                            member("randomTransitionEventId", HkxValue::I32(-1)),
+                            member("transitionToNextHigherStateEventId", HkxValue::I32(-1)),
+                            member("transitionToNextLowerStateEventId", HkxValue::I32(-1)),
+                            member("syncVariableIndex", HkxValue::I32(-1)),
+                            member("wrapAroundStateId", HkxValue::Bool(false)),
+                            member("maxSimultaneousTransitions", HkxValue::I32(1)),
+                            member("startStateMode", HkxValue::I32(0)),
+                            member("selfTransitionMode", HkxValue::I32(0)),
+                            member("states", HkxValue::Array(vec![HkxValue::Pointer(Some(2))])),
+                            member("wildcardTransitions", HkxValue::Pointer(Some(1))),
+                        ],
+                    ),
+                    object(
+                        "hkbManualSelectorGenerator",
+                        vec![
+                            member("name", text("NestedSelector")),
+                            member(
+                                "generators",
+                                HkxValue::Array(vec![HkxValue::Pointer(Some(3))]),
+                            ),
+                            member("selectedGeneratorIndex", HkxValue::I32(0)),
+                            member("indexSelector", HkxValue::Pointer(None)),
+                            member("selectedIndexCanChangeAfterActivate", HkxValue::Bool(false)),
+                            member("generatorChangedTransitionEffect", HkxValue::Pointer(None)),
+                        ],
+                    ),
+                    object(
+                        "hkbBlendingTransitionEffect",
+                        vec![
+                            member("name", text("ExactBlend")),
+                            member("selfTransitionMode", HkxValue::I8(2)),
+                            member("eventMode", HkxValue::I8(1)),
+                            member("duration", HkxValue::F32(0.2)),
+                            member("toGeneratorStartTimeFraction", HkxValue::F32(0.4)),
+                            member("flags", HkxValue::U16(3)),
+                            member("endMode", HkxValue::I8(1)),
+                            member("blendCurve", HkxValue::I8(2)),
+                            member("alignmentBone", HkxValue::I16(-1)),
+                        ],
+                    ),
+                ],
+            );
+            let groups = extract_behavior_generator_groups(
+                &file,
+                "Actors\\Fixture\\Behavior.hkx",
+                &["enterIdle".to_string(), "intervalStart".to_string()],
+                &[],
+                &[],
+                &[],
+            );
+            let selector = groups
+                .iter()
+                .find_map(|group| match group {
+                    SkyrimBehaviorGeneratorGroupEvidence::ManualSelector(selector) => {
+                        Some(selector)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("expected selector group: {groups:#?}"));
+            assert!(groups.iter().any(|group| matches!(
+                group,
+                SkyrimBehaviorGeneratorGroupEvidence::StateMachine(state_machine)
+                    if state_machine.machine.source == selector.children[0].generator
+            )));
+            let SkyrimBehaviorGeneratorNodeEvidence::StateMachine(machine) =
+                &selector.children[0].generator_tree
+            else {
+                panic!("expected nested state machine");
+            };
+            assert_eq!(machine.start_state_id, Some(7));
+            assert_eq!(machine.states[0].probability_bits, Some(0.5_f32.to_bits()));
+            assert_eq!(
+                machine.states[0].enter_notify_events[0]
+                    .event_name
+                    .as_deref(),
+                Some("intervalStart")
+            );
+            let transition = &machine.states[0].transitions.as_ref().unwrap().transitions[0];
+            assert_eq!(transition.event_name.as_deref(), Some("enterIdle"));
+            assert_eq!(transition.from_nested_state_id, Some(2));
+            assert_eq!(transition.to_nested_state_id, Some(3));
+            let blend = transition
+                .blending_transition_effect
+                .as_ref()
+                .expect("exact blending transition receipt");
+            assert_eq!(blend.source.object_index, 5);
+            assert_eq!(blend.self_transition_mode, Some(2));
+            assert_eq!(blend.event_mode, Some(1));
+            assert_eq!(blend.duration_bits, Some(0.2_f32.to_bits()));
+            assert_eq!(
+                blend.to_generator_start_time_fraction_bits,
+                Some(0.4_f32.to_bits())
+            );
+            assert_eq!(blend.flags, Some(3));
+            assert_eq!(blend.end_mode, Some(1));
+            assert_eq!(blend.blend_curve, Some(2));
+            assert_eq!(blend.alignment_bone, Some(-1));
+            assert!(blend.variable_bindings.is_empty());
+            assert_eq!(
+                transition
+                    .trigger_interval
+                    .as_ref()
+                    .and_then(|interval| interval.enter_event_name.as_deref()),
+                Some("intervalStart")
+            );
+            assert!(matches!(
+                machine.states[0].generator.as_ref(),
+                Some(SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. })
+                    if animation_name == "Animations\\Idle.hkx"
+            ));
+        }
+        {
+            let member = |name: &str, value: HkxValue| HkxMember {
+                name: name.to_string(),
+                value,
+            };
+            let object = |class_name: &str, members: Vec<HkxMember>| HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: class_name.to_string(),
+                members,
+            };
+            let text = |value: &str| HkxValue::String {
+                value: value.to_string(),
+                is_null: false,
+            };
+            let binding = |member_path: &str, variable_index| {
+                HkxValue::Object(vec![
+                    member("memberPath", text(member_path)),
+                    member("variableIndex", HkxValue::I32(variable_index)),
+                    member("bitIndex", HkxValue::I8(-1)),
+                    member("bindingType", HkxValue::I8(0)),
+                ])
+            };
+            let expression = |value: &str| {
+                HkxValue::Object(vec![
+                    member("expression", text(value)),
+                    member("assignmentVariableIndex", HkxValue::I32(-1)),
+                    member("assignmentEventIndex", HkxValue::I32(-1)),
+                    member("eventMode", HkxValue::I8(2)),
+                ])
+            };
+            let zero_vector = HkxValue::F32List(vec![0.0; 4]);
+            let file = HkxFile::from_tagxml(
+                8,
+                SKYRIM_CONTENTS_VERSION,
+                vec![
+                    object(
+                        "hkbClipGenerator",
+                        vec![
+                            member("name", text("Forward")),
+                            member("animationName", text("Animations\\Forward.hkx")),
+                        ],
+                    ),
+                    object(
+                        "hkbExpressionDataArray",
+                        vec![member(
+                            "expressionsData",
+                            HkxValue::Array(vec![
+                                expression("runStart if (Speed > 420)"),
+                                expression("walkStart if (Speed < 420)"),
+                            ]),
+                        )],
+                    ),
+                    object(
+                        "hkbEvaluateExpressionModifier",
+                        vec![
+                            member("name", text("ForwardLocomotion_EEM")),
+                            member("userData", HkxValue::U64(2)),
+                            member("enable", HkxValue::Bool(false)),
+                            member("variableBindingSet", HkxValue::Pointer(None)),
+                            member("expressions", HkxValue::Pointer(Some(1))),
+                        ],
+                    ),
+                    object(
+                        "hkbVariableBindingSet",
+                        vec![member(
+                            "bindings",
+                            HkxValue::Array(vec![
+                                binding("rawValue", 0),
+                                binding("dampedValue", 1),
+                            ]),
+                        )],
+                    ),
+                    object(
+                        "hkbDampingModifier",
+                        vec![
+                            member("name", text("TurnDeltaDampingModifier")),
+                            member("userData", HkxValue::U64(1)),
+                            member("enable", HkxValue::Bool(true)),
+                            member("variableBindingSet", HkxValue::Pointer(Some(3))),
+                            member("kP", HkxValue::F32(-0.1)),
+                            member("kI", HkxValue::F32(f32::from_bits(1))),
+                            member("kD", HkxValue::F32(0.0)),
+                            member("enableScalarDamping", HkxValue::Bool(false)),
+                            member("enableVectorDamping", HkxValue::Bool(false)),
+                            member("rawValue", HkxValue::F32(0.0)),
+                            member("dampedValue", HkxValue::F32(0.0)),
+                            member("rawVector", zero_vector.clone()),
+                            member("dampedVector", zero_vector.clone()),
+                            member("vecErrorSum", zero_vector.clone()),
+                            member("vecPreviousError", zero_vector),
+                            member("errorSum", HkxValue::F32(0.0)),
+                            member("previousError", HkxValue::F32(0.0)),
+                        ],
+                    ),
+                    object(
+                        "hkbModifierList",
+                        vec![
+                            member("name", text("ForwardLocomotionModifierList")),
+                            member("userData", HkxValue::U64(1)),
+                            member("enable", HkxValue::Bool(false)),
+                            member("variableBindingSet", HkxValue::Pointer(None)),
+                            member(
+                                "modifiers",
+                                HkxValue::Array(vec![
+                                    HkxValue::Pointer(Some(4)),
+                                    HkxValue::Pointer(Some(2)),
+                                ]),
+                            ),
+                        ],
+                    ),
+                    object(
+                        "hkbModifierGenerator",
+                        vec![
+                            member("name", text("ForwardLocomotion_MG")),
+                            member("userData", HkxValue::U64(1)),
+                            member("variableBindingSet", HkxValue::Pointer(None)),
+                            member("modifier", HkxValue::Pointer(Some(5))),
+                            member("generator", HkxValue::Pointer(Some(0))),
+                        ],
+                    ),
+                ],
+            );
+            let mut node = behavior_generator_tree(
+                &file,
+                6,
+                &[],
+                &["Speed".to_string(), "DampedSpeed".to_string()],
+                &[Some(4), Some(4)],
+                &[Some(0.0_f32.to_bits()), Some(1.0_f32.to_bits())],
+                &mut BTreeSet::new(),
+            );
+            let SkyrimBehaviorGeneratorNodeEvidence::ModifierGenerator {
+                generator: Some(generator),
+                ..
+            } = &mut node
+            else {
+                panic!("expected exact modifier generator receipt: {node:#?}");
+            };
+            let SkyrimBehaviorGeneratorNodeEvidence::Clip {
+                resolved_clip_path, ..
+            } = generator.as_mut()
+            else {
+                panic!("expected terminal modifier-generator clip");
+            };
+            *resolved_clip_path = Some("Animations\\Forward.hkx".to_string());
+            let family = SkyrimFamilyMotionSet {
+                family_id: "fixture".to_string(),
+                project_path: "Actors\\Fixture\\FixtureProject.hkx".to_string(),
+                race_attacks: Vec::new(),
+                race_attack_sources: Vec::new(),
+                clip_ids: vec!["forward".to_string()],
+            };
+            let clip = SkyrimCatalogClip {
+                clip_id: "forward".to_string(),
+                clip_path: "Animations\\Forward.hkx".to_string(),
+                original_skeleton_name: None,
+                family_ids: vec!["fixture".to_string()],
+                disposition: SkyrimClipDisposition::Unsupported {
+                    reason: SkyrimUnsupportedMotionReason::NoSemanticRoleEvidence,
+                },
+                root_motion: SkyrimRootMotion::Unknown,
+                events: Vec::new(),
+                annotations: Vec::new(),
+            };
+            let shared = capability_generator_node(
+                &family,
+                "Actors\\Fixture\\Behavior.hkx",
+                &node,
+                &[&clip],
+            )
+            .expect("exact modifier tree should lower to the shared receipt");
+            let CapabilityGeneratorNode::ModifierGenerator {
+                user_data,
+                modifier: shared_modifier,
+                generator: shared_generator,
+                ..
+            } = shared
+            else {
+                panic!("expected shared modifier-generator receipt");
+            };
+            assert_eq!(user_data, 1);
+            assert!(matches!(
+                shared_generator.as_ref(),
+                CapabilityGeneratorNode::Clip { clip_name, .. } if clip_name == "forward"
+            ));
+            let CapabilityModifierNode::List {
+                user_data,
+                enable,
+                modifiers: shared_modifiers,
+                ..
+            } = shared_modifier.as_ref()
+            else {
+                panic!("expected shared ordered modifier-list receipt");
+            };
+            assert_eq!(*user_data, 1);
+            assert!(!enable);
+            assert!(matches!(
+                shared_modifiers.as_slice(),
+                [
+                    CapabilityModifierNode::Damping { .. },
+                    CapabilityModifierNode::EvaluateExpression { .. }
+                ]
+            ));
+            let SkyrimBehaviorGeneratorNodeEvidence::ModifierGenerator {
+                user_data,
+                modifier: Some(modifier),
+                generator: Some(generator),
+                ..
+            } = &node
+            else {
+                panic!("expected exact modifier generator receipt: {node:#?}");
+            };
+            assert_eq!(*user_data, Some(1));
+            assert!(matches!(
+                generator.as_ref(),
+                SkyrimBehaviorGeneratorNodeEvidence::Clip { animation_name, .. }
+                    if animation_name == "Animations\\Forward.hkx"
+            ));
+            let SkyrimBehaviorModifierNodeEvidence::ModifierList {
+                user_data,
+                enable,
+                modifiers,
+                ..
+            } = modifier.as_ref()
+            else {
+                panic!("expected exact modifier list receipt");
+            };
+            assert_eq!(*user_data, Some(1));
+            assert_eq!(*enable, Some(false));
+            assert_eq!(modifiers.len(), 2);
+            let SkyrimBehaviorModifierNodeEvidence::Damping {
+                k_p_bits,
+                k_i_bits,
+                variable_bindings,
+                raw_vector_bits,
+                ..
+            } = &modifiers[0]
+            else {
+                panic!("expected damping modifier first");
+            };
+            assert_eq!(*k_p_bits, Some((-0.1_f32).to_bits()));
+            assert_eq!(*k_i_bits, Some(1));
+            assert_eq!(raw_vector_bits, &Some([0; 4]));
+            let raw_binding = variable_bindings
+                .iter()
+                .find(|binding| binding.member_path == "rawValue")
+                .expect("raw-value binding");
+            let damped_binding = variable_bindings
+                .iter()
+                .find(|binding| binding.member_path == "dampedValue")
+                .expect("damped-value binding");
+            assert_eq!(raw_binding.variable_name.as_deref(), Some("Speed"));
+            assert_eq!(damped_binding.variable_index, 1);
+            let SkyrimBehaviorModifierNodeEvidence::EvaluateExpression {
+                expressions: Some(expressions),
+                ..
+            } = &modifiers[1]
+            else {
+                panic!("expected evaluate-expression modifier second");
+            };
+            assert_eq!(expressions.source.object_index, 1);
+            assert_eq!(expressions.expressions[0].event_mode, Some(2));
+            assert_eq!(expressions.expressions[0].referenced_variables.len(), 1);
+            assert_eq!(
+                expressions.expressions[0].referenced_variables[0],
+                SkyrimBehaviorExpressionVariableReferenceEvidence {
+                    variable_index: 0,
+                    variable_name: "Speed".to_string(),
+                    variable_type: Some(4),
+                    initial_word_value: Some(0.0_f32.to_bits()),
+                }
+            );
+        }
     }
 
     #[test]
@@ -9438,31 +9399,145 @@ mod tests {
     }
 
     #[test]
-    fn attack_roles_do_not_infer_ground_movement_for_pure_swimmers() {
-        let candidates = [
-            CreatureGraphTemplate::GroundMelee,
-            CreatureGraphTemplate::Swim,
-        ];
-        let pure_swim = BTreeSet::from([
-            SkyrimCreatureMotionRole::MeleeAttack,
-            SkyrimCreatureMotionRole::SwimIdle,
-            SkyrimCreatureMotionRole::SwimLocomotion,
-        ]);
-        assert_eq!(
-            multimodal_template(&candidates, &pure_swim),
-            Some(CreatureGraphTemplate::Swim)
-        );
+    fn mode_roles_select_templates_and_idle_readiness_without_inference() {
+        {
+            let candidates = [
+                CreatureGraphTemplate::GroundMelee,
+                CreatureGraphTemplate::Swim,
+            ];
+            let pure_swim = BTreeSet::from([
+                SkyrimCreatureMotionRole::MeleeAttack,
+                SkyrimCreatureMotionRole::SwimIdle,
+                SkyrimCreatureMotionRole::SwimLocomotion,
+            ]);
+            assert_eq!(
+                multimodal_template(&candidates, &pure_swim),
+                Some(CreatureGraphTemplate::Swim)
+            );
 
-        let ground_swim = BTreeSet::from([
-            SkyrimCreatureMotionRole::MeleeAttack,
-            SkyrimCreatureMotionRole::GroundLocomotion,
-            SkyrimCreatureMotionRole::SwimIdle,
-            SkyrimCreatureMotionRole::SwimLocomotion,
-        ]);
-        assert_eq!(
-            multimodal_template(&candidates, &ground_swim),
-            Some(CreatureGraphTemplate::GroundSwim)
-        );
+            let ground_swim = BTreeSet::from([
+                SkyrimCreatureMotionRole::MeleeAttack,
+                SkyrimCreatureMotionRole::GroundLocomotion,
+                SkyrimCreatureMotionRole::SwimIdle,
+                SkyrimCreatureMotionRole::SwimLocomotion,
+            ]);
+            assert_eq!(
+                multimodal_template(&candidates, &ground_swim),
+                Some(CreatureGraphTemplate::GroundSwim)
+            );
+        }
+        {
+            let candidate =
+                |role, triggers: Vec<SkyrimMotionTriggerEvidence>| SkyrimLivingClipCandidate {
+                    role,
+                    clip_id: "clip".to_string(),
+                    clip_path: "actors/fixture/clip.hkx".to_string(),
+                    triggers,
+                    root_motion: SkyrimRootMotion::Stationary {
+                        source: SkyrimRootMotionSource::HavokReferenceFrame,
+                        sample_count: 1,
+                    },
+                    root_motion_locator: Some(SkyrimRootMotionSourceLocator::HavokReferenceFrame {
+                        clip_path: "actors/fixture/clip.hkx".to_string(),
+                    }),
+                    role_locators: Vec::new(),
+                };
+            let trigger = SkyrimMotionTriggerEvidence {
+                event: "attackStart".to_string(),
+                locator: SkyrimMotionSourceLocator::BehaviorTransition {
+                    behavior_path: "actors/fixture/behavior.hkx".to_string(),
+                    animation_name: "clip".to_string(),
+                    event: "attackStart".to_string(),
+                },
+            };
+
+            for role in [
+                SkyrimCreatureMotionRole::Idle,
+                SkyrimCreatureMotionRole::SwimIdle,
+                SkyrimCreatureMotionRole::FlyIdle,
+                SkyrimCreatureMotionRole::StationaryIdle,
+            ] {
+                assert!(candidate_is_ready(&candidate(role, Vec::new())));
+                assert!(!candidate_is_ready(&candidate(role, vec![trigger.clone()])));
+            }
+            assert!(!candidate_is_ready(&candidate(
+                SkyrimCreatureMotionRole::MeleeAttack,
+                Vec::new(),
+            )));
+            assert!(candidate_is_ready(&candidate(
+                SkyrimCreatureMotionRole::MeleeAttack,
+                vec![trigger],
+            )));
+        }
+        {
+            let mut evidence_clip = clip(
+                "Animations\\WW_SwimTread.hkx",
+                "WW SwimTread.hkx",
+                Some("SwimStart"),
+                "NPC Root [Root]",
+            );
+            evidence_clip.animation_data = vec![SkyrimAnimationDataEvidence {
+                source_path: "meshes/animationdata/animationdatasinglefile.txt".to_string(),
+                root_motion_source_path: Some(
+                    "meshes/animationdata/animationdatasinglefile.txt".to_string(),
+                ),
+                project_stem: "werewolfbeastproject".to_string(),
+                sequence_name: "WW SwimTread.hkx00".to_string(),
+                animation_index: 90,
+                playback_speed: 1.0,
+                crop_start_local_time: 0.0,
+                crop_end_local_time: 0.0,
+                events: vec![SkyrimTimedEvent {
+                    name: "SwimStart".to_string(),
+                    time: 1.9,
+                }],
+                root_motion: SkyrimRootMotion::Stationary {
+                    source: SkyrimRootMotionSource::BoundAnims,
+                    sample_count: 1,
+                },
+            }];
+            evidence_clip.root_motion = evidence_clip.animation_data[0].root_motion.clone();
+            let family = SkyrimCreatureFamilyEvidence {
+                family_id: "werewolf".to_string(),
+                project_path: "werewolfbeast\\werewolfbeastproject.hkx".to_string(),
+                inventory: SkyrimCreatureFamilyInventory::default(),
+                race_attacks: Vec::new(),
+                race_attack_sources: Vec::new(),
+                clips: vec![evidence_clip.clone()],
+            };
+
+            let disposition = classify_clip(&MergedClipEvidence::new(&family, &evidence_clip));
+            let SkyrimClipDisposition::Role {
+                role,
+                trigger_event,
+                trigger_aliases,
+                evidence,
+            } = disposition
+            else {
+                panic!("expected an exact semantic role")
+            };
+            assert_eq!(role, SkyrimCreatureMotionRole::SwimIdle);
+            assert_eq!(trigger_event, None);
+            assert!(trigger_aliases.is_empty());
+            assert!(evidence.iter().any(|entry| matches!(
+                &entry.locator,
+                SkyrimMotionSourceLocator::BehaviorGenerator { node, .. }
+                    if node == "WW SwimTread.hkx"
+            )));
+            assert!(evidence.iter().any(|entry| matches!(
+                &entry.locator,
+                SkyrimMotionSourceLocator::AnimationDataSequence {
+                    sequence_name,
+                    animation_index: 90,
+                    ..
+                } if sequence_name == "WW SwimTread.hkx00"
+            )));
+            assert!(
+                evidence
+                    .iter()
+                    .all(|entry| entry.root_motion_locator.is_some())
+            );
+        }
     }
 
     #[test]
@@ -9503,84 +9578,251 @@ mod tests {
     }
 
     #[test]
-    fn referenced_behavior_entry_events_keep_the_parent_locator() {
-        let edges = vec![
-            ResolvedNestedBehaviorEdge {
-                parent_key: "root".to_string(),
-                child_key: "middle".to_string(),
-                behavior_path: "Actors\\Fixture\\Root.hkx".to_string(),
-                initial: true,
-                incoming_events: vec!["enterMiddle".to_string()],
-            },
-            ResolvedNestedBehaviorEdge {
-                parent_key: "middle".to_string(),
-                child_key: "leaf".to_string(),
-                behavior_path: "Actors\\Fixture\\Middle.hkx".to_string(),
-                initial: true,
-                incoming_events: vec!["enterLeaf".to_string()],
-            },
-        ];
-        let mut events = Vec::new();
-        collect_ancestor_behavior_entry_events("leaf", &edges, &mut BTreeSet::new(), &mut events);
-        events.sort();
-        assert_eq!(
-            events,
-            [
-                SkyrimBehaviorEntryEventEvidence {
-                    behavior_path: "Actors\\Fixture\\Middle.hkx".to_string(),
-                    event: "enterLeaf".to_string(),
-                },
-                SkyrimBehaviorEntryEventEvidence {
+    fn behavior_events_and_clips_are_scoped_to_their_owning_state() {
+        {
+            let edges = vec![
+                ResolvedNestedBehaviorEdge {
+                    parent_key: "root".to_string(),
+                    child_key: "middle".to_string(),
                     behavior_path: "Actors\\Fixture\\Root.hkx".to_string(),
-                    event: "enterMiddle".to_string(),
+                    initial: true,
+                    incoming_events: vec!["enterMiddle".to_string()],
                 },
-            ]
-        );
-    }
-
-    #[test]
-    fn idle_roles_are_ready_without_events_and_attack_roles_still_require_one() {
-        let candidate =
-            |role, triggers: Vec<SkyrimMotionTriggerEvidence>| SkyrimLivingClipCandidate {
-                role,
-                clip_id: "clip".to_string(),
-                clip_path: "actors/fixture/clip.hkx".to_string(),
-                triggers,
-                root_motion: SkyrimRootMotion::Stationary {
-                    source: SkyrimRootMotionSource::HavokReferenceFrame,
-                    sample_count: 1,
+                ResolvedNestedBehaviorEdge {
+                    parent_key: "middle".to_string(),
+                    child_key: "leaf".to_string(),
+                    behavior_path: "Actors\\Fixture\\Middle.hkx".to_string(),
+                    initial: true,
+                    incoming_events: vec!["enterLeaf".to_string()],
                 },
-                root_motion_locator: Some(SkyrimRootMotionSourceLocator::HavokReferenceFrame {
-                    clip_path: "actors/fixture/clip.hkx".to_string(),
-                }),
-                role_locators: Vec::new(),
-            };
-        let trigger = SkyrimMotionTriggerEvidence {
-            event: "attackStart".to_string(),
-            locator: SkyrimMotionSourceLocator::BehaviorTransition {
-                behavior_path: "actors/fixture/behavior.hkx".to_string(),
-                animation_name: "clip".to_string(),
-                event: "attackStart".to_string(),
-            },
-        };
-
-        for role in [
-            SkyrimCreatureMotionRole::Idle,
-            SkyrimCreatureMotionRole::SwimIdle,
-            SkyrimCreatureMotionRole::FlyIdle,
-            SkyrimCreatureMotionRole::StationaryIdle,
-        ] {
-            assert!(candidate_is_ready(&candidate(role, Vec::new())));
-            assert!(!candidate_is_ready(&candidate(role, vec![trigger.clone()])));
+            ];
+            let mut events = Vec::new();
+            collect_ancestor_behavior_entry_events(
+                "leaf",
+                &edges,
+                &mut BTreeSet::new(),
+                &mut events,
+            );
+            events.sort();
+            assert_eq!(
+                events,
+                [
+                    SkyrimBehaviorEntryEventEvidence {
+                        behavior_path: "Actors\\Fixture\\Middle.hkx".to_string(),
+                        event: "enterLeaf".to_string(),
+                    },
+                    SkyrimBehaviorEntryEventEvidence {
+                        behavior_path: "Actors\\Fixture\\Root.hkx".to_string(),
+                        event: "enterMiddle".to_string(),
+                    },
+                ]
+            );
         }
-        assert!(!candidate_is_ready(&candidate(
-            SkyrimCreatureMotionRole::MeleeAttack,
-            Vec::new(),
-        )));
-        assert!(candidate_is_ready(&candidate(
-            SkyrimCreatureMotionRole::MeleeAttack,
-            vec![trigger],
-        )));
+        {
+            let member = |name: &str, value| HkxMember {
+                name: name.to_string(),
+                value,
+            };
+            let object = |class_name: &str, members| HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: class_name.to_string(),
+                members,
+            };
+            let string = |value: &str| HkxValue::String {
+                value: value.to_string(),
+                is_null: false,
+            };
+            let transition = |event_id, flags| {
+                HkxValue::Object(vec![
+                    member("toStateId", HkxValue::I32(1)),
+                    member("eventId", HkxValue::I32(event_id)),
+                    member("flags", HkxValue::I16(flags)),
+                ])
+            };
+            let state = |name: &str, generator, transitions| {
+                object(
+                    "hkbStateMachineStateInfo",
+                    vec![
+                        member("name", string(name)),
+                        member("stateId", HkxValue::I32(1)),
+                        member("generator", HkxValue::Pointer(Some(generator))),
+                        member("transitions", HkxValue::Pointer(Some(transitions))),
+                    ],
+                )
+            };
+            let machine = |state_index| {
+                object(
+                    "hkbStateMachine",
+                    vec![member(
+                        "states",
+                        HkxValue::Array(vec![HkxValue::Pointer(Some(state_index))]),
+                    )],
+                )
+            };
+            let file = HkxFile::from_tagxml(
+                8,
+                SKYRIM_CONTENTS_VERSION,
+                vec![
+                    object(
+                        "hkbBehaviorGraphStringData",
+                        vec![member(
+                            "eventNames",
+                            HkxValue::Array(vec![
+                                string("enterFirst"),
+                                string("enterSecond"),
+                                string("disabledEntry"),
+                            ]),
+                        )],
+                    ),
+                    object(
+                        "hkbClipGenerator",
+                        vec![member("animationName", string("Animations\\First.hkx"))],
+                    ),
+                    object(
+                        "hkbClipGenerator",
+                        vec![member("animationName", string("Animations\\Second.hkx"))],
+                    ),
+                    object(
+                        "hkbStateMachineTransitionInfoArray",
+                        vec![member(
+                            "transitions",
+                            HkxValue::Array(vec![transition(0, 0), transition(2, 32)]),
+                        )],
+                    ),
+                    object(
+                        "hkbStateMachineTransitionInfoArray",
+                        vec![member(
+                            "transitions",
+                            HkxValue::Array(vec![transition(1, 0)]),
+                        )],
+                    ),
+                    state("FirstState", 1, 3),
+                    state("SecondState", 2, 4),
+                    machine(5),
+                    machine(6),
+                ],
+            );
+
+            let references = extract_behavior_clip_evidence(
+                &file,
+                Path::new("Actors"),
+                Path::new("Actors\\Fixture\\Behavior.hkx"),
+            )
+            .clips;
+            let by_animation = references
+                .into_iter()
+                .map(|reference| (reference.animation_name.clone(), reference))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                by_animation["Animations\\First.hkx"].incoming_events,
+                ["enterFirst"]
+            );
+            assert_eq!(
+                by_animation["Animations\\Second.hkx"].incoming_events,
+                ["enterSecond"]
+            );
+        }
+        {
+            let member = |name: &str, value| HkxMember {
+                name: name.to_string(),
+                value,
+            };
+            let object = |class_name: &str, members| HkxObject {
+                name: None,
+                offset: 0,
+                signature: 0,
+                class_name: class_name.to_string(),
+                members,
+            };
+            let string = |value: &str| HkxValue::String {
+                value: value.to_string(),
+                is_null: false,
+            };
+            let transition = |to_state_id, event_id| {
+                HkxValue::Object(vec![
+                    member("toStateId", HkxValue::I32(to_state_id)),
+                    member("eventId", HkxValue::I32(event_id)),
+                ])
+            };
+            let state = |name: &str, state_id, generator, transitions| {
+                object(
+                    "hkbStateMachineStateInfo",
+                    vec![
+                        member("name", string(name)),
+                        member("stateId", HkxValue::I32(state_id)),
+                        member("generator", HkxValue::Pointer(Some(generator))),
+                        member("transitions", HkxValue::Pointer(Some(transitions))),
+                    ],
+                )
+            };
+            let machine = |state_index| {
+                object(
+                    "hkbStateMachine",
+                    vec![member(
+                        "states",
+                        HkxValue::Array(vec![HkxValue::Pointer(Some(state_index))]),
+                    )],
+                )
+            };
+            let file = HkxFile::from_tagxml(
+                8,
+                SKYRIM_CONTENTS_VERSION,
+                vec![
+                    object(
+                        "hkbBehaviorGraphStringData",
+                        vec![member(
+                            "eventNames",
+                            HkxValue::Array(vec![string("idleStart"), string("moveStart")]),
+                        )],
+                    ),
+                    object(
+                        "hkbClipGenerator",
+                        vec![
+                            member("name", string("ExactIdleGenerator")),
+                            member("animationName", string("Animations\\Idle.hkx")),
+                        ],
+                    ),
+                    object(
+                        "hkbStateMachineTransitionInfoArray",
+                        vec![member(
+                            "transitions",
+                            HkxValue::Array(vec![transition(1, 0)]),
+                        )],
+                    ),
+                    state("InnerIdleState", 1, 1, 2),
+                    machine(3),
+                    object(
+                        "hkbStateMachineTransitionInfoArray",
+                        vec![member(
+                            "transitions",
+                            HkxValue::Array(vec![transition(2, 1)]),
+                        )],
+                    ),
+                    state("OuterLocomotionState", 2, 4, 5),
+                    machine(6),
+                ],
+            );
+
+            let references = extract_behavior_clip_evidence(
+                &file,
+                Path::new("Actors"),
+                Path::new("Actors\\Fixture\\Behavior.hkx"),
+            )
+            .clips;
+            let [reference] = references.as_slice() else {
+                panic!("one clip reference");
+            };
+            assert_eq!(reference.state_names, ["InnerIdleState"]);
+            assert_eq!(reference.incoming_events, ["idleStart", "moveStart"]);
+            assert!(
+                !reference
+                    .topology_names
+                    .iter()
+                    .any(|name| name == "OuterLocomotionState")
+            );
+        }
     }
 
     #[test]
@@ -9660,301 +9902,67 @@ mod tests {
     }
 
     #[test]
-    fn incoming_events_are_scoped_to_the_owning_state_machine() {
-        let member = |name: &str, value| HkxMember {
-            name: name.to_string(),
-            value,
-        };
-        let object = |class_name: &str, members| HkxObject {
-            name: None,
-            offset: 0,
-            signature: 0,
-            class_name: class_name.to_string(),
-            members,
-        };
-        let string = |value: &str| HkxValue::String {
-            value: value.to_string(),
-            is_null: false,
-        };
-        let transition = |event_id, flags| {
-            HkxValue::Object(vec![
-                member("toStateId", HkxValue::I32(1)),
-                member("eventId", HkxValue::I32(event_id)),
-                member("flags", HkxValue::I16(flags)),
-            ])
-        };
-        let state = |name: &str, generator, transitions| {
-            object(
-                "hkbStateMachineStateInfo",
-                vec![
-                    member("name", string(name)),
-                    member("stateId", HkxValue::I32(1)),
-                    member("generator", HkxValue::Pointer(Some(generator))),
-                    member("transitions", HkxValue::Pointer(Some(transitions))),
-                ],
-            )
-        };
-        let machine = |state_index| {
-            object(
-                "hkbStateMachine",
-                vec![member(
-                    "states",
-                    HkxValue::Array(vec![HkxValue::Pointer(Some(state_index))]),
-                )],
-            )
-        };
-        let file = HkxFile::from_tagxml(
-            8,
-            SKYRIM_CONTENTS_VERSION,
-            vec![
-                object(
-                    "hkbBehaviorGraphStringData",
-                    vec![member(
-                        "eventNames",
-                        HkxValue::Array(vec![
-                            string("enterFirst"),
-                            string("enterSecond"),
-                            string("disabledEntry"),
-                        ]),
-                    )],
-                ),
-                object(
-                    "hkbClipGenerator",
-                    vec![member("animationName", string("Animations\\First.hkx"))],
-                ),
-                object(
-                    "hkbClipGenerator",
-                    vec![member("animationName", string("Animations\\Second.hkx"))],
-                ),
-                object(
-                    "hkbStateMachineTransitionInfoArray",
-                    vec![member(
-                        "transitions",
-                        HkxValue::Array(vec![transition(0, 0), transition(2, 32)]),
-                    )],
-                ),
-                object(
-                    "hkbStateMachineTransitionInfoArray",
-                    vec![member(
-                        "transitions",
-                        HkxValue::Array(vec![transition(1, 0)]),
-                    )],
-                ),
-                state("FirstState", 1, 3),
-                state("SecondState", 2, 4),
-                machine(5),
-                machine(6),
-            ],
-        );
-
-        let references = extract_behavior_clip_evidence(
-            &file,
-            Path::new("Actors"),
-            Path::new("Actors\\Fixture\\Behavior.hkx"),
-        )
-        .clips;
-        let by_animation = references
-            .into_iter()
-            .map(|reference| (reference.animation_name.clone(), reference))
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            by_animation["Animations\\First.hkx"].incoming_events,
-            ["enterFirst"]
-        );
-        assert_eq!(
-            by_animation["Animations\\Second.hkx"].incoming_events,
-            ["enterSecond"]
-        );
-    }
-
-    #[test]
-    fn nested_behavior_clip_uses_the_nearest_owning_state() {
-        let member = |name: &str, value| HkxMember {
-            name: name.to_string(),
-            value,
-        };
-        let object = |class_name: &str, members| HkxObject {
-            name: None,
-            offset: 0,
-            signature: 0,
-            class_name: class_name.to_string(),
-            members,
-        };
-        let string = |value: &str| HkxValue::String {
-            value: value.to_string(),
-            is_null: false,
-        };
-        let transition = |to_state_id, event_id| {
-            HkxValue::Object(vec![
-                member("toStateId", HkxValue::I32(to_state_id)),
-                member("eventId", HkxValue::I32(event_id)),
-            ])
-        };
-        let state = |name: &str, state_id, generator, transitions| {
-            object(
-                "hkbStateMachineStateInfo",
-                vec![
-                    member("name", string(name)),
-                    member("stateId", HkxValue::I32(state_id)),
-                    member("generator", HkxValue::Pointer(Some(generator))),
-                    member("transitions", HkxValue::Pointer(Some(transitions))),
-                ],
-            )
-        };
-        let machine = |state_index| {
-            object(
-                "hkbStateMachine",
-                vec![member(
-                    "states",
-                    HkxValue::Array(vec![HkxValue::Pointer(Some(state_index))]),
-                )],
-            )
-        };
-        let file = HkxFile::from_tagxml(
-            8,
-            SKYRIM_CONTENTS_VERSION,
-            vec![
-                object(
-                    "hkbBehaviorGraphStringData",
-                    vec![member(
-                        "eventNames",
-                        HkxValue::Array(vec![string("idleStart"), string("moveStart")]),
-                    )],
-                ),
-                object(
-                    "hkbClipGenerator",
-                    vec![
-                        member("name", string("ExactIdleGenerator")),
-                        member("animationName", string("Animations\\Idle.hkx")),
-                    ],
-                ),
-                object(
-                    "hkbStateMachineTransitionInfoArray",
-                    vec![member(
-                        "transitions",
-                        HkxValue::Array(vec![transition(1, 0)]),
-                    )],
-                ),
-                state("InnerIdleState", 1, 1, 2),
-                machine(3),
-                object(
-                    "hkbStateMachineTransitionInfoArray",
-                    vec![member(
-                        "transitions",
-                        HkxValue::Array(vec![transition(2, 1)]),
-                    )],
-                ),
-                state("OuterLocomotionState", 2, 4, 5),
-                machine(6),
-            ],
-        );
-
-        let references = extract_behavior_clip_evidence(
-            &file,
-            Path::new("Actors"),
-            Path::new("Actors\\Fixture\\Behavior.hkx"),
-        )
-        .clips;
-        let [reference] = references.as_slice() else {
-            panic!("one clip reference");
-        };
-        assert_eq!(reference.state_names, ["InnerIdleState"]);
-        assert_eq!(reference.incoming_events, ["idleStart", "moveStart"]);
-        assert!(
-            !reference
-                .topology_names
-                .iter()
-                .any(|name| name == "OuterLocomotionState")
-        );
-    }
-
-    #[test]
-    fn paired_and_overlay_clips_never_enter_the_single_rig_role_catalog() {
-        let mut paired = clip(
-            "animations\\paired.hkx",
-            "KillMove",
-            Some("KillMove"),
-            "PairedRoot",
-        );
-        let mut overlay = clip(
-            "animations\\face_offset.hkx",
-            "FaceOffset",
-            Some("FaceStart"),
-            "NPC Root [Root]",
-        );
-        overlay.blend_hint = 1;
-        paired.root_motion = SkyrimRootMotion::Sampled {
-            source: SkyrimRootMotionSource::HavokReferenceFrame,
-            sample_count: 2,
-            translation_delta: [1.0, 0.0, 0.0],
-            rotation_start: None,
-            rotation_end: None,
-        };
-        let catalog = build_skyrim_creature_motion_catalog(&[SkyrimCreatureFamilyEvidence {
-            family_id: "wolf".to_string(),
-            project_path: "canine\\wolfproject.hkx".to_string(),
-            inventory: SkyrimCreatureFamilyInventory::default(),
-            race_attacks: Vec::new(),
-            race_attack_sources: Vec::new(),
-            clips: vec![paired, overlay],
-        }])
-        .unwrap();
-        assert_eq!(catalog.accounting.paired_clips, 1);
-        assert_eq!(catalog.accounting.overlay_clips, 1);
-        assert_eq!(catalog.accounting.role_clips, 0);
-    }
-
-    #[test]
-    fn filename_alone_never_assigns_a_semantic_role() {
-        let catalog = build_skyrim_creature_motion_catalog(&[SkyrimCreatureFamilyEvidence {
-            family_id: "wolf".to_string(),
-            project_path: "canine\\wolfproject.hkx".to_string(),
-            inventory: SkyrimCreatureFamilyInventory::default(),
-            race_attacks: Vec::new(),
-            race_attack_sources: Vec::new(),
-            clips: vec![SkyrimCreatureClipEvidence {
-                clip_path: "animations\\obvious_attack_and_death.hkx".to_string(),
-                original_skeleton_name: Some("NPC Root [Root]".to_string()),
-                blend_hint: 0,
-                behavior: Vec::new(),
-                animation_data: Vec::new(),
-                annotations: Vec::new(),
-                root_motion: SkyrimRootMotion::Unknown,
-            }],
-        }])
-        .unwrap();
-        assert_eq!(catalog.accounting.unsupported_clips, 1);
-        assert!(matches!(
-            catalog.clips[0].disposition,
-            SkyrimClipDisposition::Unsupported {
-                reason: SkyrimUnsupportedMotionReason::BehaviorReferenceMissing
-            }
-        ));
-    }
-
-    #[test]
-    fn attack_contract_pairs_struct_spell_data_with_the_following_event() {
-        let attacks = attack_evidence_from_contract(&[
-            "atkd:struct:{attack_spell=form:skyrim.esm:012345,attack_type=form:skyrim.esm:0914e5}"
-                .to_string(),
-            "atke:string:AttackStartSpell".to_string(),
-            "atkd:bytes:0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-                .to_string(),
-            "atke:string:attackStartBite".to_string(),
-        ]);
-        assert_eq!(
-            attacks,
-            vec![
-                SkyrimRaceAttackEvidence {
-                    event: "AttackStartSpell".to_string(),
-                    has_attack_spell: true,
-                },
-                SkyrimRaceAttackEvidence {
-                    event: "attackStartBite".to_string(),
-                    has_attack_spell: false,
-                },
-            ]
-        );
+    fn catalog_excludes_paired_overlay_and_filename_only_clips_from_roles() {
+        {
+            let mut paired = clip(
+                "animations\\paired.hkx",
+                "KillMove",
+                Some("KillMove"),
+                "PairedRoot",
+            );
+            let mut overlay = clip(
+                "animations\\face_offset.hkx",
+                "FaceOffset",
+                Some("FaceStart"),
+                "NPC Root [Root]",
+            );
+            overlay.blend_hint = 1;
+            paired.root_motion = SkyrimRootMotion::Sampled {
+                source: SkyrimRootMotionSource::HavokReferenceFrame,
+                sample_count: 2,
+                translation_delta: [1.0, 0.0, 0.0],
+                rotation_start: None,
+                rotation_end: None,
+            };
+            let catalog = build_skyrim_creature_motion_catalog(&[SkyrimCreatureFamilyEvidence {
+                family_id: "wolf".to_string(),
+                project_path: "canine\\wolfproject.hkx".to_string(),
+                inventory: SkyrimCreatureFamilyInventory::default(),
+                race_attacks: Vec::new(),
+                race_attack_sources: Vec::new(),
+                clips: vec![paired, overlay],
+            }])
+            .unwrap();
+            assert_eq!(catalog.accounting.paired_clips, 1);
+            assert_eq!(catalog.accounting.overlay_clips, 1);
+            assert_eq!(catalog.accounting.role_clips, 0);
+        }
+        {
+            let catalog = build_skyrim_creature_motion_catalog(&[SkyrimCreatureFamilyEvidence {
+                family_id: "wolf".to_string(),
+                project_path: "canine\\wolfproject.hkx".to_string(),
+                inventory: SkyrimCreatureFamilyInventory::default(),
+                race_attacks: Vec::new(),
+                race_attack_sources: Vec::new(),
+                clips: vec![SkyrimCreatureClipEvidence {
+                    clip_path: "animations\\obvious_attack_and_death.hkx".to_string(),
+                    original_skeleton_name: Some("NPC Root [Root]".to_string()),
+                    blend_hint: 0,
+                    behavior: Vec::new(),
+                    animation_data: Vec::new(),
+                    annotations: Vec::new(),
+                    root_motion: SkyrimRootMotion::Unknown,
+                }],
+            }])
+            .unwrap();
+            assert_eq!(catalog.accounting.unsupported_clips, 1);
+            assert!(matches!(
+                catalog.clips[0].disposition,
+                SkyrimClipDisposition::Unsupported {
+                    reason: SkyrimUnsupportedMotionReason::BehaviorReferenceMissing
+                }
+            ));
+        }
     }
 
     #[test]
@@ -10068,809 +10076,121 @@ mod tests {
     }
 
     #[test]
-    fn semantic_role_classifier_covers_each_runtime_motion_family() {
-        let cases = [
-            ("Idle", SkyrimCreatureMotionRole::Idle),
-            ("WalkForward", SkyrimCreatureMotionRole::GroundLocomotion),
-            ("TurnLeft", SkyrimCreatureMotionRole::TurnLeft),
-            ("TurnRight", SkyrimCreatureMotionRole::TurnRight),
-            ("TurnAround", SkyrimCreatureMotionRole::Turn),
-            ("AttackBite", SkyrimCreatureMotionRole::MeleeAttack),
-            ("AttackShootBow", SkyrimCreatureMotionRole::RangedAttack),
-            (
-                "AttackSpitProjectile",
-                SkyrimCreatureMotionRole::ProjectileAttack,
-            ),
-            ("AttackCastSpell", SkyrimCreatureMotionRole::SpellAttack),
-            ("SwimIdle", SkyrimCreatureMotionRole::SwimIdle),
-            ("WW_SwimTread", SkyrimCreatureMotionRole::SwimIdle),
-            ("SwimForward", SkyrimCreatureMotionRole::SwimLocomotion),
-            ("HoverIdle", SkyrimCreatureMotionRole::FlyIdle),
-            ("FlyForward", SkyrimCreatureMotionRole::FlyLocomotion),
-            ("StationaryIdle", SkyrimCreatureMotionRole::StationaryIdle),
-            ("DeployStart", SkyrimCreatureMotionRole::MechanicalStart),
-            ("SpinLoop", SkyrimCreatureMotionRole::MechanicalLoop),
-            ("RetractStop", SkyrimCreatureMotionRole::MechanicalStop),
-            ("HitReact", SkyrimCreatureMotionRole::Hurt),
-            ("Death", SkyrimCreatureMotionRole::Death),
-        ];
-        for (text, expected) in cases {
-            assert_eq!(role_from_text(text), Some(expected), "{text}");
-        }
-        assert_eq!(role_from_text("Idle"), Some(SkyrimCreatureMotionRole::Idle));
-        assert_eq!(role_from_text("Start"), None);
-    }
-
-    #[test]
-    fn swim_tread_semantics_bind_stationary_idle_without_consuming_mode_entry_event() {
-        let mut evidence_clip = clip(
-            "Animations\\WW_SwimTread.hkx",
-            "WW SwimTread.hkx",
-            Some("SwimStart"),
-            "NPC Root [Root]",
-        );
-        evidence_clip.animation_data = vec![SkyrimAnimationDataEvidence {
-            source_path: "meshes/animationdata/animationdatasinglefile.txt".to_string(),
-            root_motion_source_path: Some(
-                "meshes/animationdata/animationdatasinglefile.txt".to_string(),
-            ),
-            project_stem: "werewolfbeastproject".to_string(),
-            sequence_name: "WW SwimTread.hkx00".to_string(),
-            animation_index: 90,
-            playback_speed: 1.0,
-            crop_start_local_time: 0.0,
-            crop_end_local_time: 0.0,
-            events: vec![SkyrimTimedEvent {
-                name: "SwimStart".to_string(),
-                time: 1.9,
-            }],
-            root_motion: SkyrimRootMotion::Stationary {
-                source: SkyrimRootMotionSource::BoundAnims,
-                sample_count: 1,
-            },
-        }];
-        evidence_clip.root_motion = evidence_clip.animation_data[0].root_motion.clone();
-        let family = SkyrimCreatureFamilyEvidence {
-            family_id: "werewolf".to_string(),
-            project_path: "werewolfbeast\\werewolfbeastproject.hkx".to_string(),
-            inventory: SkyrimCreatureFamilyInventory::default(),
-            race_attacks: Vec::new(),
-            race_attack_sources: Vec::new(),
-            clips: vec![evidence_clip.clone()],
-        };
-
-        let disposition = classify_clip(&MergedClipEvidence::new(&family, &evidence_clip));
-        let SkyrimClipDisposition::Role {
-            role,
-            trigger_event,
-            trigger_aliases,
-            evidence,
-        } = disposition
-        else {
-            panic!("expected an exact semantic role")
-        };
-        assert_eq!(role, SkyrimCreatureMotionRole::SwimIdle);
-        assert_eq!(trigger_event, None);
-        assert!(trigger_aliases.is_empty());
-        assert!(evidence.iter().any(|entry| matches!(
-            &entry.locator,
-            SkyrimMotionSourceLocator::BehaviorGenerator { node, .. }
-                if node == "WW SwimTread.hkx"
-        )));
-        assert!(evidence.iter().any(|entry| matches!(
-            &entry.locator,
-            SkyrimMotionSourceLocator::AnimationDataSequence {
-                sequence_name,
-                animation_index: 90,
-                ..
-            } if sequence_name == "WW SwimTread.hkx00"
-        )));
-        assert!(
-            evidence
-                .iter()
-                .all(|entry| entry.root_motion_locator.is_some())
-        );
-    }
-
-    #[test]
-    fn transition_roles_reject_outgoing_stop_events() {
-        assert_eq!(
-            transition_role("moveStart", &[]),
-            Some(SkyrimCreatureMotionRole::GroundLocomotion)
-        );
-        assert_eq!(
-            transition_role("attackStart_Attack1", &[]),
-            Some(SkyrimCreatureMotionRole::MeleeAttack)
-        );
-        assert_eq!(transition_role("moveStop", &[]), None);
-        assert_eq!(transition_role("attackStop", &[]), None);
-        assert_eq!(transition_role("deathEnd", &[]), None);
-        assert!(transition_event_matches_node(
-            "attackStart_Attack_L1",
-            "Attack_L1"
-        ));
-        assert!(!transition_event_matches_node(
-            "attackStart_Attack_R1",
-            "Attack_L1"
-        ));
-        assert!(transition_event_matches_node("moveStart", "ForwardWalk"));
-        assert!(transition_event_matches_node(
-            "moveStartBackward",
-            "Ranged_DrawnBackward"
-        ));
-        assert!(!transition_event_matches_node(
-            "moveStartBackward",
-            "Ranged_DrawnForward"
-        ));
-    }
-
-    #[test]
-    fn race_attack_link_requires_the_complete_semantic_token_set() {
-        let attacks = [
-            LocatedRaceAttack {
-                project_path: "cow\\highlandcowproject.hkx".to_string(),
-                source_race: None,
-                attack: SkyrimRaceAttackEvidence {
-                    event: "attackStart_ForwardPower".to_string(),
-                    has_attack_spell: false,
-                },
-            },
-            LocatedRaceAttack {
-                project_path: "cow\\highlandcowproject.hkx".to_string(),
-                source_race: None,
-                attack: SkyrimRaceAttackEvidence {
-                    event: "attackStart_StandingPower".to_string(),
-                    has_attack_spell: false,
-                },
-            },
-        ];
-
-        assert_eq!(
-            linked_race_events("AttackPowerForward", &attacks)
-                .iter()
-                .map(|attack| attack.attack.event.as_str())
-                .collect::<Vec<_>>(),
-            ["attackStart_ForwardPower"]
-        );
-        assert!(linked_race_events("RunForward", &attacks).is_empty());
-        assert!(linked_race_events("StaggerForward", &attacks).is_empty());
-    }
-
-    #[test]
-    fn exact_extracted_46_family_corpus_has_one_terminal_disposition_per_clip() {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let actors = repo.join("extracted/skyrimse/meshes/actors");
-        let animation_data = repo.join("extracted/skyrimse/meshes/animationdata");
-        if !actors.exists() {
-            return;
-        }
-        let catalog =
-            load_extracted_skyrim_creature_motion_catalog(&actors, &animation_data, &[]).unwrap();
-        eprintln!(
-            "Skyrim creature motion accounting: {:?}",
-            catalog.accounting
-        );
-        assert_eq!(catalog.accounting.families, 46);
-        assert_eq!(catalog.accounting.unique_clips, 2_460);
-        assert_eq!(catalog.accounting.paired_clips, 99);
-        assert_eq!(
-            catalog.accounting.role_clips
-                + catalog.accounting.paired_clips
-                + catalog.accounting.overlay_clips
-                + catalog.accounting.unsupported_clips
-                + catalog.accounting.ambiguous_clips,
-            2_460
-        );
-        assert!(catalog.clips.iter().all(|clip| !clip.family_ids.is_empty()));
-        assert_eq!(
-            catalog
-                .clips
-                .iter()
-                .filter(|clip| {
-                    matches!(
-                        clip.root_motion,
-                        SkyrimRootMotion::Stationary {
-                            source: SkyrimRootMotionSource::HavokReferenceFrame,
-                            ..
-                        } | SkyrimRootMotion::Sampled {
-                            source: SkyrimRootMotionSource::HavokReferenceFrame,
-                            ..
-                        }
-                    )
-                })
-                .count(),
-            13
-        );
-        assert!(
-            catalog
-                .clips
-                .iter()
-                .any(|clip| matches!(clip.root_motion, SkyrimRootMotion::Sampled { .. }))
-        );
-    }
-
-    #[test]
-    fn optional_installed_merged_corpus_reports_exact_family_readiness() {
-        let Some(data_dir) = std::env::var_os("SKYRIMSE_CREATURE_DATA_DIR").map(PathBuf::from)
-        else {
-            return;
-        };
-        let verbose_diagnostics =
-            std::env::var_os("SKYRIMSE_CREATURE_DIAGNOSTIC_VERBOSE").is_some();
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let actors = repo.join("extracted/skyrimse/meshes/actors");
-        let animation_data = repo.join("extracted/skyrimse/meshes/animationdata");
-        if !actors.is_dir() {
-            return;
-        }
-        let interner = crate::sym::StringInterner::new();
-        let schema = crate::schema::AuthoringSchema::for_game("skyrimse").unwrap();
-        let mut records_by_key = std::collections::HashMap::new();
-        for plugin in [
-            "Skyrim.esm",
-            "Update.esm",
-            "Dawnguard.esm",
-            "HearthFires.esm",
-            "Dragonborn.esm",
-        ] {
-            let path = data_dir.join(plugin);
-            if !path.is_file() {
-                continue;
-            }
-            let handle = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
-                path.to_str().unwrap(),
-                Some("skyrimse"),
-                None,
-                None,
-                true,
-            )
-            .unwrap();
-            for signature in [
-                "KYWD", "RACE", "NPC_", "LVLN", "ARMO", "ARMA", "BPTD", "SPEL", "SHOU",
-            ] {
-                let sig = crate::ids::SigCode::from_str(signature).unwrap();
-                for form_key in
-                    crate::source_read::iter_form_keys_of_sig(handle, sig, &interner).unwrap()
-                {
-                    let record = crate::source_read::read_record_relayout_by_form_key(
-                        handle, &form_key, &schema, &interner, None,
-                    )
-                    .unwrap();
-                    records_by_key.insert(form_key, record);
-                }
-            }
-            esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle);
-        }
-        let records = records_by_key.into_values().collect::<Vec<_>>();
-        if let Some(wolf) = records.iter().find(|record| {
-            record
-                .eid
-                .and_then(|value| interner.resolve(value))
-                .is_some_and(|value| value.eq_ignore_ascii_case("WolfRace"))
-        }) {
-            eprintln!(
-                "Skyrim WolfRace attack_field_count={}",
-                wolf.fields
-                    .iter()
-                    .filter(|field| {
-                        matches!(
-                            field.sig.as_str(),
-                            "ATKD" | "ATKE" | "AttackData" | "AttackEvent"
-                        )
-                    })
-                    .count()
-            );
-        }
-        let plan = super::super::creature_catalog::build_creature_corpus_plan(&records, &interner);
-        if let Some(wolf) = plan.races.iter().find(|race| {
-            race.editor_id
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case("WolfRace"))
-        }) {
-            eprintln!(
-                "Skyrim WolfRace plan project_paths={:?} events={:?} attack_contract_entries={} derived_attacks={:?}",
-                wolf.project_paths,
-                wolf.attack_events,
-                wolf.attack_contract.len(),
-                attack_evidence_from_contract(&wolf.attack_contract)
-            );
-        }
-        assert_eq!(plan.summary.candidate_races, 121);
-        // 109, not 110: excluding testDraugrRace also removes the catalog family its
-        // one-off DLC01\SkeletonWarrior.nif skeleton kept to itself.
-        assert_eq!(plan.summary.family_count, 109);
-        let race_attacks = race_motion_evidence_from_creature_plan(&plan);
-        let catalog =
-            load_extracted_skyrim_creature_motion_catalog(&actors, &animation_data, &race_attacks)
-                .unwrap();
-        assert_eq!(catalog.accounting.families, 46);
-        for (family_id, event) in [
-            ("benthic_lurker", "attackPowerStart_Stomp"),
-            ("giant", "attackPowerStart_Stomp"),
-            ("netch", "attackStartRight"),
-            ("werewolf", "AttackStartLeftRunningPower"),
-            ("werewolf", "AttackStartBackHand"),
-        ] {
-            let graph = catalog.capability_graph_manifest(family_id).unwrap();
-            assert!(
-                graph.roles.iter().any(|role| {
-                    role.role == CreatureClipRole::MeleeAttack
-                        && role
-                            .trigger_event
-                            .iter()
-                            .chain(&role.trigger_aliases)
-                            .any(|trigger| trigger.eq_ignore_ascii_case(event))
-                }),
-                "family {family_id} does not execute source melee event {event:?}"
-            );
-        }
-        if let Ok(requested_family) = std::env::var("SKYRIMSE_CREATURE_DIAGNOSTIC_FAMILY")
-            && let Some(family) = catalog.family(&requested_family)
+    fn text_classifiers_map_roles_transitions_attack_links_and_contracts() {
         {
-            let family_race_evidence = race_attacks
-                .iter()
-                .filter(|evidence| {
-                    project_path_key(&evidence.project_path)
-                        == project_path_key(&family.project_path)
-                })
-                .collect::<Vec<_>>();
-            eprintln!(
-                "Skyrim diagnostic family={} clips={} inventory={:?} race_evidence={family_race_evidence:?}",
-                family.family_id,
-                family.clip_ids.len(),
-                catalog.inventory(&requested_family).map(|inventory| (
-                    inventory.character_paths.len(),
-                    inventory.behavior_paths.len(),
-                    inventory.animation_skeleton_paths.len(),
-                    inventory.ragdoll_paths.len(),
-                ))
-            );
-            if verbose_diagnostics {
-                if let Some(inventory) = catalog.inventory(&requested_family) {
-                    eprintln!(
-                        "Skyrim diagnostic inventory paths characters={:?} animation_skeletons={:?} controllers={:?}",
-                        inventory.character_paths,
-                        inventory.animation_skeleton_paths,
-                        inventory.controllers
-                    );
-                }
-                let source_races = family_race_evidence
-                    .iter()
-                    .flat_map(|evidence| evidence.attacks.iter().map(|attack| attack.source_race))
-                    .collect::<Vec<_>>();
-                for race in plan
-                    .races
-                    .iter()
-                    .filter(|race| source_races.contains(&race.source_race))
-                {
-                    eprintln!(
-                        "Skyrim diagnostic RACE={} editor_id={:?} attack_data={:#?}",
-                        race.source_race.format(&interner),
-                        race.editor_id,
-                        race.attack_data
-                    );
-                }
+            let cases = [
+                ("Idle", SkyrimCreatureMotionRole::Idle),
+                ("WalkForward", SkyrimCreatureMotionRole::GroundLocomotion),
+                ("TurnLeft", SkyrimCreatureMotionRole::TurnLeft),
+                ("TurnRight", SkyrimCreatureMotionRole::TurnRight),
+                ("TurnAround", SkyrimCreatureMotionRole::Turn),
+                ("AttackBite", SkyrimCreatureMotionRole::MeleeAttack),
+                ("AttackShootBow", SkyrimCreatureMotionRole::RangedAttack),
+                (
+                    "AttackSpitProjectile",
+                    SkyrimCreatureMotionRole::ProjectileAttack,
+                ),
+                ("AttackCastSpell", SkyrimCreatureMotionRole::SpellAttack),
+                ("SwimIdle", SkyrimCreatureMotionRole::SwimIdle),
+                ("WW_SwimTread", SkyrimCreatureMotionRole::SwimIdle),
+                ("SwimForward", SkyrimCreatureMotionRole::SwimLocomotion),
+                ("HoverIdle", SkyrimCreatureMotionRole::FlyIdle),
+                ("FlyForward", SkyrimCreatureMotionRole::FlyLocomotion),
+                ("StationaryIdle", SkyrimCreatureMotionRole::StationaryIdle),
+                ("DeployStart", SkyrimCreatureMotionRole::MechanicalStart),
+                ("SpinLoop", SkyrimCreatureMotionRole::MechanicalLoop),
+                ("RetractStop", SkyrimCreatureMotionRole::MechanicalStop),
+                ("HitReact", SkyrimCreatureMotionRole::Hurt),
+                ("Death", SkyrimCreatureMotionRole::Death),
+            ];
+            for (text, expected) in cases {
+                assert_eq!(role_from_text(text), Some(expected), "{text}");
             }
-            if let Some(inventory) = catalog.inventory(&requested_family) {
-                eprintln!(
-                    "Skyrim diagnostic behavior group clip sets={:?}",
-                    inventory
-                        .behavior_groups
-                        .iter()
-                        .map(|group| (
-                            behavior_group_sort_key(group),
-                            behavior_group_clip_paths(group)
-                        ))
-                        .collect::<Vec<_>>()
-                );
-                eprintln!(
-                    "Skyrim diagnostic behavior groups={:#?}",
-                    inventory.behavior_groups
-                );
-                for behavior_path in &inventory.behavior_paths {
-                    let relative = behavior_path
-                        .strip_prefix("Actors\\")
-                        .unwrap_or(behavior_path);
-                    let file =
-                        HkxFile::read(&std::fs::read(actors.join(relative)).unwrap()).unwrap();
-                    if verbose_diagnostics {
-                        for (index, object) in
-                            file.objects().iter().enumerate().filter(|(_, object)| {
-                                matches!(
-                                    object.class_name.as_str(),
-                                    "hkbModifierGenerator"
-                                        | "hkbBehaviorGraphData"
-                                        | "hkbVariableValueSet"
-                                )
-                            })
-                        {
-                            eprintln!(
-                                "Skyrim diagnostic raw behavior object behavior={} index={} class={} members={:?}",
-                                behavior_path, index, object.class_name, object.members
-                            );
-                        }
-                    }
-                    if let Some(root) = file
-                        .objects()
-                        .iter()
-                        .find(|object| object.class_name == "hkbBehaviorGraph")
-                        .and_then(|object| pointer_member(object, "rootGenerator"))
-                    {
-                        let mut initial_states = BTreeSet::new();
-                        collect_initial_state_chain(
-                            &file,
-                            root,
-                            &mut BTreeSet::new(),
-                            &mut initial_states,
-                        );
-                        eprintln!(
-                            "Skyrim diagnostic behavior={} root_generator={:?} initial_states={:#?}",
-                            behavior_path,
-                            file.objects()
-                                .get(root)
-                                .map(|object| (&object.class_name, string_member(object, "name"))),
-                            initial_states
-                                .iter()
-                                .filter_map(|index| file.objects().get(*index))
-                                .map(|state| (
-                                    string_member(state, "name"),
-                                    pointer_member(state, "generator")
-                                        .and_then(|generator| file.objects().get(generator))
-                                        .map(|object| (
-                                            &object.class_name,
-                                            string_member(object, "name")
-                                        ))
-                                ))
-                                .collect::<Vec<_>>()
-                        );
-                    }
-                    for (index, object) in
-                        file.objects().iter().enumerate().filter(|(_, object)| {
-                            ["name", "animationName"]
-                                .iter()
-                                .filter_map(|member| string_member(object, member))
-                                .any(|value| value.to_ascii_lowercase().contains("idleswim"))
-                        })
-                    {
-                        eprintln!(
-                            "Skyrim diagnostic idleswim object behavior={} index={} class={} signature=0x{:08x} members={:?}",
-                            behavior_path,
-                            index,
-                            object.class_name,
-                            object.signature,
-                            object.members
-                        );
-                    }
-                    for class_name in [
-                        "hkbBehaviorGraph",
-                        "hkbBehaviorGraphStringData",
-                        "hkbStateMachine",
-                        "hkbStateMachineStateInfo",
-                        "hkbStateMachineTransitionInfoArray",
-                        "hkbModifierGenerator",
-                        "hkbBehaviorReferenceGenerator",
-                        "hkbManualSelectorGenerator",
-                        "hkbBlenderGenerator",
-                        "hkbVariableBindingSet",
-                        "BSiStateTaggingGenerator",
-                        "hkbClipGenerator",
-                    ] {
-                        let objects = file
-                            .objects()
-                            .iter()
-                            .filter(|object| object.class_name == class_name)
-                            .collect::<Vec<_>>();
-                        eprintln!(
-                            "Skyrim diagnostic behavior={} class={} count={} first_named_clip={:?}",
-                            behavior_path,
-                            class_name,
-                            objects.len(),
-                            objects
-                                .iter()
-                                .find(|object| {
-                                    string_member(object, "animationName")
-                                        .is_some_and(|name| !name.is_empty())
-                                })
-                                .and_then(|object| string_member(object, "animationName"))
-                        );
-                        if let Some(object) = objects.first() {
-                            let data_section = file.packfile().section("__data__").unwrap();
-                            let object_relative = object.offset - data_section.offset;
-                            let next_relative = file
-                                .objects()
-                                .iter()
-                                .map(|candidate| candidate.offset - data_section.offset)
-                                .filter(|offset| *offset > object_relative)
-                                .min()
-                                .unwrap_or(data_section.data1 - data_section.offset);
-                            let local_fixups = file
-                                .packfile()
-                                .local_fixups
-                                .iter()
-                                .filter(|fixup| {
-                                    let source = fixup.source as usize;
-                                    source >= object_relative && source < next_relative
-                                })
-                                .map(|fixup| {
-                                    let target = data_section.offset + fixup.target as usize;
-                                    let tail = &file.source_bytes()[target..];
-                                    let end = tail.iter().position(|byte| *byte == 0).unwrap_or(0);
-                                    (
-                                        fixup.source as usize - object_relative,
-                                        String::from_utf8_lossy(&tail[..end]).into_owned(),
-                                    )
-                                })
-                                .collect::<Vec<_>>();
-                            let global_fixups = file
-                                .packfile()
-                                .global_fixups
-                                .iter()
-                                .filter(|fixup| {
-                                    let source = fixup.source as usize;
-                                    source >= object_relative && source < next_relative
-                                })
-                                .map(|fixup| fixup.source as usize - object_relative)
-                                .collect::<Vec<_>>();
-                            eprintln!(
-                                "Skyrim diagnostic layout class={} signature=0x{:08x} local={local_fixups:?} global={global_fixups:?}",
-                                object.class_name, object.signature
-                            );
-                        }
-                    }
-                }
-                for character_path in &inventory.character_paths {
-                    let relative = character_path
-                        .strip_prefix("Actors\\")
-                        .unwrap_or(character_path);
-                    let file =
-                        HkxFile::read(&std::fs::read(actors.join(relative)).unwrap()).unwrap();
-                    if let Some(strings) = file
-                        .objects()
-                        .iter()
-                        .find(|object| object.class_name == "hkbCharacterStringData")
-                    {
-                        for member_name in [
-                            "animationBundleNameData",
-                            "animationBundleFilenameData",
-                            "behaviorFilename",
-                        ] {
-                            eprintln!(
-                                "Skyrim diagnostic character={} class={} signature=0x{:08x} member={} value={:?}",
-                                character_path,
-                                strings.class_name,
-                                strings.signature,
-                                member_name,
-                                strings
-                                    .members
-                                    .iter()
-                                    .find(|member| member.name == member_name)
-                                    .map(|member| &member.value)
-                            );
-                        }
-                    }
-                }
-            }
-            if verbose_diagnostics {
-                for clip_id in &family.clip_ids {
-                    eprintln!(
-                        "Skyrim diagnostic clip={:#?}",
-                        catalog.clip(clip_id).expect("family clip exists")
-                    );
-                }
-            }
-            for clip_id in &family.clip_ids {
-                let clip = catalog.clip(clip_id).expect("family clip exists");
-                if matches!(
-                    &clip.disposition,
-                    SkyrimClipDisposition::Role {
-                        role: SkyrimCreatureMotionRole::SwimIdle
-                            | SkyrimCreatureMotionRole::SwimLocomotion,
-                        ..
-                    }
-                ) {
-                    eprintln!(
-                        "Skyrim diagnostic swim clip family={} clip={} disposition={:?}",
-                        family.family_id, clip.clip_id, clip.disposition
-                    );
-                }
-            }
+            assert_eq!(role_from_text("Idle"), Some(SkyrimCreatureMotionRole::Idle));
+            assert_eq!(role_from_text("Start"), None);
         }
-        let readiness = catalog.family_readiness();
-        let ready = readiness.iter().filter(|family| family.ready).count();
-        eprintln!("Skyrim merged motion ready={ready}/46");
-        for family in readiness.iter().filter(|family| !family.ready) {
-            eprintln!(
-                "Skyrim merged motion blocked family={} template={:?} blockers={:?}",
-                family.family_id, family.template, family.blockers
-            );
-        }
-        let living = catalog.living_family_evidence();
-        let living_ready = living
-            .iter()
-            .filter(|family| family.disposition == SkyrimLivingFamilyDisposition::Ready)
-            .count();
-        eprintln!("Skyrim living motion ready={living_ready}/46");
-        for family in &living {
-            let (graph, _) = catalog.capability_graph_bundle(&family.family_id).unwrap();
-            let mut graph_clips = BTreeSet::new();
-            for role in &graph.roles {
-                let mut role_clips = BTreeSet::new();
-                for clip_name in role.generator.clip_names(&role.clip_name) {
-                    let key = clip_name.to_ascii_lowercase();
-                    if role_clips.insert(key.clone()) {
-                        assert!(
-                            graph_clips.insert(key),
-                            "family {} assigns clip {clip_name:?} to multiple runtime roles",
-                            family.family_id
-                        );
-                    }
-                }
-            }
-        }
-        let template_failures = living
-            .iter()
-            .filter_map(|family| {
-                catalog
-                    .capability_graph_bundle(&family.family_id)
-                    .err()
-                    .map(|error| (family.family_id.clone(), error.to_string()))
-            })
-            .collect::<Vec<_>>();
-        eprintln!(
-            "Skyrim authored FO4 template ready={}/46 fatal={}",
-            46 - template_failures.len(),
-            template_failures.len(),
-        );
-        for (family_id, error) in &template_failures {
-            eprintln!("Skyrim authored FO4 template blocked family={family_id} error={error}");
-        }
-        if std::env::var_os("SKYRIMSE_CREATURE_SWIM_CENSUS").is_some() {
-            for family in living.iter().filter(|family| {
-                family.required_roles.iter().any(|role| {
-                    matches!(
-                        role,
-                        SkyrimRequiredRoleDisposition::MissingRole { alternatives }
-                            if alternatives.contains(&SkyrimCreatureMotionRole::SwimIdle)
-                    )
-                })
-            }) {
-                let inventory = catalog
-                    .inventory(&family.family_id)
-                    .expect("living family inventory exists");
-                let mut bound_swim_assets = inventory
-                    .character_paths
-                    .iter()
-                    .flat_map(|character_path| {
-                        let relative = character_path
-                            .strip_prefix("Actors\\")
-                            .unwrap_or(character_path);
-                        let file =
-                            HkxFile::read(&std::fs::read(actors.join(relative)).unwrap()).unwrap();
-                        file.objects()
-                            .iter()
-                            .filter(|object| object.class_name == "hkbCharacterStringData")
-                            .flat_map(|object| {
-                                array_member(object, "animationBundleNameData")
-                                    .into_iter()
-                                    .flatten()
-                            })
-                            .filter_map(HkxValue::as_object_members)
-                            .filter_map(|members| string_members(members, "bundleName"))
-                            .filter(|name| name.to_ascii_lowercase().contains("swim"))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect::<Vec<_>>();
-                bound_swim_assets.sort_by_key(|path| path.to_ascii_lowercase());
-                bound_swim_assets.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
-                eprintln!(
-                    "Skyrim missing SwimIdle family={} bound_swim_assets={bound_swim_assets:?}",
-                    family.family_id
-                );
-            }
-        }
-        for family in living
-            .iter()
-            .filter(|family| family.disposition == SkyrimLivingFamilyDisposition::Blocked)
         {
-            if std::env::var("SKYRIMSE_CREATURE_DIAGNOSTIC_FAMILY")
-                .ok()
-                .is_some_and(|requested| requested == family.family_id)
-                && verbose_diagnostics
-            {
-                eprintln!("Skyrim diagnostic living family={family:#?}");
-                for role in &family.required_roles {
-                    if let SkyrimRequiredRoleDisposition::AmbiguousRole {
-                        alternatives,
-                        candidates,
-                    } = role
-                    {
-                        eprintln!(
-                            "Skyrim diagnostic ambiguous role alternatives={alternatives:?} candidates={:?}",
-                            candidates
-                                .iter()
-                                .map(|candidate| (
-                                    &candidate.clip_id,
-                                    candidate.role,
-                                    &catalog
-                                        .clip(&candidate.clip_id)
-                                        .expect("living candidate clip exists")
-                                        .disposition,
-                                    &candidate.triggers,
-                                    &candidate.role_locators,
-                                ))
-                                .collect::<Vec<_>>()
-                        );
-                    }
-                }
-            }
-            if family.family_id == "chicken" && verbose_diagnostics {
-                eprintln!("Skyrim chicken passive evidence={family:#?}");
-            }
-            let template = match &family.template {
-                SkyrimLivingTemplateDisposition::Proven { template, .. } => {
-                    format!("proven:{template:?}")
-                }
-                SkyrimLivingTemplateDisposition::Ambiguous { candidates, .. } => {
-                    format!("ambiguous:{candidates:?}")
-                }
-                SkyrimLivingTemplateDisposition::Unsupported { evidenced_roles } => {
-                    format!("unsupported:{evidenced_roles:?}")
-                }
-            };
-            for role in &family.required_roles {
-                if verbose_diagnostics
-                    && let SkyrimRequiredRoleDisposition::AmbiguousTrigger {
-                        alternatives,
-                        candidates,
-                    } = role
-                {
-                    eprintln!(
-                        "Skyrim living trigger aliases family={} alternatives={alternatives:?} candidates={:?}",
-                        family.family_id,
-                        candidates
-                            .iter()
-                            .map(|candidate| (&candidate.clip_id, &candidate.triggers))
-                            .collect::<Vec<_>>()
-                    );
-                }
-            }
-            let required = family
-                .required_roles
-                .iter()
-                .map(|role| match role {
-                    SkyrimRequiredRoleDisposition::Ready { alternatives, .. } => {
-                        format!("ready:{alternatives:?}")
-                    }
-                    SkyrimRequiredRoleDisposition::MissingRole { alternatives } => {
-                        format!("missing_role:{alternatives:?}")
-                    }
-                    SkyrimRequiredRoleDisposition::AmbiguousRole { alternatives, .. } => {
-                        format!("ambiguous_role:{alternatives:?}")
-                    }
-                    SkyrimRequiredRoleDisposition::MissingTrigger { alternatives, .. } => {
-                        format!("missing_trigger:{alternatives:?}")
-                    }
-                    SkyrimRequiredRoleDisposition::AmbiguousTrigger { alternatives, .. } => {
-                        format!("ambiguous_trigger:{alternatives:?}")
-                    }
-                    SkyrimRequiredRoleDisposition::UnknownRootMotion { alternatives, .. } => {
-                        format!("unknown_root_motion:{alternatives:?}")
-                    }
-                    SkyrimRequiredRoleDisposition::UnsupportedRootMotion {
-                        alternatives, ..
-                    } => format!("unsupported_root_motion:{alternatives:?}"),
-                })
-                .collect::<Vec<_>>();
-            eprintln!(
-                "Skyrim living motion blocked family={} template={} required={:?}",
-                family.family_id, template, required
+            assert_eq!(
+                transition_role("moveStart", &[]),
+                Some(SkyrimCreatureMotionRole::GroundLocomotion)
+            );
+            assert_eq!(
+                transition_role("attackStart_Attack1", &[]),
+                Some(SkyrimCreatureMotionRole::MeleeAttack)
+            );
+            assert_eq!(transition_role("moveStop", &[]), None);
+            assert_eq!(transition_role("attackStop", &[]), None);
+            assert_eq!(transition_role("deathEnd", &[]), None);
+            assert!(transition_event_matches_node(
+                "attackStart_Attack_L1",
+                "Attack_L1"
+            ));
+            assert!(!transition_event_matches_node(
+                "attackStart_Attack_R1",
+                "Attack_L1"
+            ));
+            assert!(transition_event_matches_node("moveStart", "ForwardWalk"));
+            assert!(transition_event_matches_node(
+                "moveStartBackward",
+                "Ranged_DrawnBackward"
+            ));
+            assert!(!transition_event_matches_node(
+                "moveStartBackward",
+                "Ranged_DrawnForward"
+            ));
+        }
+        {
+            let attacks = [
+                LocatedRaceAttack {
+                    project_path: "cow\\highlandcowproject.hkx".to_string(),
+                    source_race: None,
+                    attack: SkyrimRaceAttackEvidence {
+                        event: "attackStart_ForwardPower".to_string(),
+                        has_attack_spell: false,
+                    },
+                },
+                LocatedRaceAttack {
+                    project_path: "cow\\highlandcowproject.hkx".to_string(),
+                    source_race: None,
+                    attack: SkyrimRaceAttackEvidence {
+                        event: "attackStart_StandingPower".to_string(),
+                        has_attack_spell: false,
+                    },
+                },
+            ];
+
+            assert_eq!(
+                linked_race_events("AttackPowerForward", &attacks)
+                    .iter()
+                    .map(|attack| attack.attack.event.as_str())
+                    .collect::<Vec<_>>(),
+                ["attackStart_ForwardPower"]
+            );
+            assert!(linked_race_events("RunForward", &attacks).is_empty());
+            assert!(linked_race_events("StaggerForward", &attacks).is_empty());
+        }
+        {
+            let attacks = attack_evidence_from_contract(&[
+                "atkd:struct:{attack_spell=form:skyrim.esm:012345,attack_type=form:skyrim.esm:0914e5}"
+                    .to_string(),
+                "atke:string:AttackStartSpell".to_string(),
+                "atkd:bytes:0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+                "atke:string:attackStartBite".to_string(),
+            ]);
+            assert_eq!(
+                attacks,
+                vec![
+                    SkyrimRaceAttackEvidence {
+                        event: "AttackStartSpell".to_string(),
+                        has_attack_spell: true,
+                    },
+                    SkyrimRaceAttackEvidence {
+                        event: "attackStartBite".to_string(),
+                        has_attack_spell: false,
+                    },
+                ]
             );
         }
-        assert_eq!(readiness.len(), 46);
-        assert_eq!(living.len(), 46);
-        assert!(
-            template_failures.is_empty(),
-            "all installed Skyrim motion families must lower into a deterministic FO4 template"
-        );
     }
 }

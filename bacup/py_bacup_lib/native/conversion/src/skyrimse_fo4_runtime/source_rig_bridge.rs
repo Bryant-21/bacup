@@ -1797,132 +1797,132 @@ mod tests {
     }
 
     #[test]
-    fn legacy_controller_without_source_enums_matches_normalized_fo4_controller() {
-        let mut input = fixture();
-        input.ledger.family_jobs[0].controllers[0].rigid_body_type = None;
-        input.ledger.family_jobs[0].controllers[0].shape_type = None;
-        input.rig.controller.rigid_body_type = u8::MAX as i32;
-        ledger_hash(&mut input.ledger);
+    fn legacy_controllers_and_float_tracks_bind_to_converted_skeleton() {
+        {
+            let mut input = fixture();
+            input.ledger.family_jobs[0].controllers[0].rigid_body_type = None;
+            input.ledger.family_jobs[0].controllers[0].shape_type = None;
+            input.rig.controller.rigid_body_type = u8::MAX as i32;
+            ledger_hash(&mut input.ledger);
 
-        build_skyrim_source_rig_executable_recipe(input).unwrap();
-    }
-
-    #[test]
-    fn decoded_float_tracks_bind_to_converted_skeleton_slots() {
-        let mut input = fixture();
-        input.rig.animation_skeleton.float_slots = vec!["Speed".to_string()];
-        for clip in &mut input.rig.clips {
-            clip.binding.declared_float_tracks = 1;
-            clip.binding.float_track_to_float_slot_indices = vec![0];
+            build_skyrim_source_rig_executable_recipe(input).unwrap();
         }
-        refresh_field_decisions(&mut input);
+        {
+            let mut input = fixture();
+            input.rig.animation_skeleton.float_slots = vec!["Speed".to_string()];
+            for clip in &mut input.rig.clips {
+                clip.binding.declared_float_tracks = 1;
+                clip.binding.float_track_to_float_slot_indices = vec![0];
+            }
+            refresh_field_decisions(&mut input);
 
-        build_skyrim_source_rig_executable_recipe(input).unwrap();
+            build_skyrim_source_rig_executable_recipe(input).unwrap();
+        }
     }
 
     #[test]
-    fn absent_source_ragdoll_uses_explicit_source_reason() {
-        let mut input = fixture();
-        input.rig.ragdoll = RagdollDisposition::NoRagdoll {
-            reason: NoRagdollReason::SourceHasNoRagdoll,
-        };
+    fn absent_or_unsupported_source_ragdoll_uses_explicit_disposition() {
+        {
+            let mut input = fixture();
+            input.rig.ragdoll = RagdollDisposition::NoRagdoll {
+                reason: NoRagdollReason::SourceHasNoRagdoll,
+            };
 
-        build_skyrim_source_rig_executable_recipe(input).unwrap();
+            build_skyrim_source_rig_executable_recipe(input).unwrap();
+        }
+        {
+            let mut input = fixture();
+            input.rig.ragdoll = RagdollDisposition::NoRagdoll {
+                reason: NoRagdollReason::UnsupportedSourceRagdoll,
+            };
+
+            build_skyrim_source_rig_executable_recipe(input).unwrap();
+        }
     }
 
     #[test]
-    fn unsupported_source_ragdoll_is_terminal_for_not_applicable_evidence() {
-        let mut input = fixture();
-        input.rig.ragdoll = RagdollDisposition::NoRagdoll {
-            reason: NoRagdollReason::UnsupportedSourceRagdoll,
-        };
+    fn body_paths_and_nonmelee_templates_do_not_invent_projections() {
+        {
+            let mut input = fixture();
+            let mut duplicate = input.ledger.family_jobs[0].body_variants[0].clone();
+            duplicate.armor_addon = "123458@Skyrim.esm".to_string();
+            input.ledger.family_jobs[0].body_variants.push(duplicate);
+            ledger_hash(&mut input.ledger);
 
-        build_skyrim_source_rig_executable_recipe(input).unwrap();
+            build_skyrim_source_rig_executable_recipe(input).unwrap();
+        }
+        {
+            let mut input = fixture();
+            input.ledger.family_jobs[0].graph.template = CreatureGraphTemplate::StationaryTurret;
+            input.ledger.family_jobs[0].disposition = SkyrimCreatureFamilyDisposition::Ready {
+                capabilities: vec![SkyrimCreatureCapability::Flying],
+            };
+            ledger_hash(&mut input.ledger);
+            assert!(matches!(
+                build_skyrim_source_rig_executable_recipe(input),
+                Err(SkyrimSourceRigBridgeError::Invalid {
+                    code: "attack_template",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
-    fn repeated_body_path_across_armor_addons_is_not_ambiguous() {
-        let mut input = fixture();
-        let mut duplicate = input.ledger.family_jobs[0].body_variants[0].clone();
-        duplicate.armor_addon = "123458@Skyrim.esm".to_string();
-        input.ledger.family_jobs[0].body_variants.push(duplicate);
-        ledger_hash(&mut input.ledger);
+    fn blocked_mismatched_or_rehashed_inputs_fail_before_recipe_output() {
+        {
+            let mut blocked = fixture();
+            blocked.ledger.family_jobs[0].disposition =
+                SkyrimCreatureFamilyDisposition::Blocked { issues: Vec::new() };
+            blocked.ledger.accounting.ready_family_jobs = 0;
+            blocked.ledger.accounting.blocked_family_jobs = 1;
+            ledger_hash(&mut blocked.ledger);
+            assert!(matches!(
+                build_skyrim_source_rig_executable_recipe(blocked),
+                Err(SkyrimSourceRigBridgeError::Invalid {
+                    code: "family_disposition",
+                    ..
+                })
+            ));
 
-        build_skyrim_source_rig_executable_recipe(input).unwrap();
-    }
+            let mut mismatch = fixture();
+            mismatch.artifact_requests[0].source_evidence_blake3 = hash("wrong-source");
+            assert!(matches!(
+                build_skyrim_source_rig_executable_recipe(mismatch),
+                Err(SkyrimSourceRigBridgeError::Invalid {
+                    code: "artifact_source_evidence",
+                    ..
+                })
+            ));
 
-    #[test]
-    fn blocked_family_and_mismatched_receipt_fail_before_recipe_output() {
-        let mut blocked = fixture();
-        blocked.ledger.family_jobs[0].disposition =
-            SkyrimCreatureFamilyDisposition::Blocked { issues: Vec::new() };
-        blocked.ledger.accounting.ready_family_jobs = 0;
-        blocked.ledger.accounting.blocked_family_jobs = 1;
-        ledger_hash(&mut blocked.ledger);
-        assert!(matches!(
-            build_skyrim_source_rig_executable_recipe(blocked),
-            Err(SkyrimSourceRigBridgeError::Invalid {
-                code: "family_disposition",
-                ..
-            })
-        ));
-
-        let mut mismatch = fixture();
-        mismatch.artifact_requests[0].source_evidence_blake3 = hash("wrong-source");
-        assert!(matches!(
-            build_skyrim_source_rig_executable_recipe(mismatch),
-            Err(SkyrimSourceRigBridgeError::Invalid {
-                code: "artifact_source_evidence",
-                ..
-            })
-        ));
-
-        let mut request_mismatch = fixture();
-        request_mismatch.creature_closure_request_blake3 = hash("different-closure-request");
-        assert!(matches!(
-            build_skyrim_source_rig_executable_recipe(request_mismatch),
-            Err(SkyrimSourceRigBridgeError::Invalid {
-                code: "nif_closure_request",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn same_nif_path_with_changed_source_hash_fails_before_recipe_output() {
-        let mut input = fixture();
-        let skeleton_claim = input.ledger.family_jobs[0]
-            .asset_claims
-            .iter_mut()
-            .find(|claim| claim.role == SkyrimAssetRole::VisualSkeletonNif)
-            .unwrap();
-        skeleton_claim.disposition = SkyrimAssetClaimDisposition::Present {
-            blake3: hash("different-source-bytes-at-the-same-path"),
-        };
-        ledger_hash(&mut input.ledger);
-        assert!(matches!(
-            build_skyrim_source_rig_executable_recipe(input),
-            Err(SkyrimSourceRigBridgeError::Invalid {
-                code: "nif_source_hash",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn nonmelee_template_rejects_phantom_weapon_projection() {
-        let mut input = fixture();
-        input.ledger.family_jobs[0].graph.template = CreatureGraphTemplate::StationaryTurret;
-        input.ledger.family_jobs[0].disposition = SkyrimCreatureFamilyDisposition::Ready {
-            capabilities: vec![SkyrimCreatureCapability::Flying],
-        };
-        ledger_hash(&mut input.ledger);
-        assert!(matches!(
-            build_skyrim_source_rig_executable_recipe(input),
-            Err(SkyrimSourceRigBridgeError::Invalid {
-                code: "attack_template",
-                ..
-            })
-        ));
+            let mut request_mismatch = fixture();
+            request_mismatch.creature_closure_request_blake3 = hash("different-closure-request");
+            assert!(matches!(
+                build_skyrim_source_rig_executable_recipe(request_mismatch),
+                Err(SkyrimSourceRigBridgeError::Invalid {
+                    code: "nif_closure_request",
+                    ..
+                })
+            ));
+        }
+        {
+            let mut input = fixture();
+            let skeleton_claim = input.ledger.family_jobs[0]
+                .asset_claims
+                .iter_mut()
+                .find(|claim| claim.role == SkyrimAssetRole::VisualSkeletonNif)
+                .unwrap();
+            skeleton_claim.disposition = SkyrimAssetClaimDisposition::Present {
+                blake3: hash("different-source-bytes-at-the-same-path"),
+            };
+            ledger_hash(&mut input.ledger);
+            assert!(matches!(
+                build_skyrim_source_rig_executable_recipe(input),
+                Err(SkyrimSourceRigBridgeError::Invalid {
+                    code: "nif_source_hash",
+                    ..
+                })
+            ));
+        }
     }
 }

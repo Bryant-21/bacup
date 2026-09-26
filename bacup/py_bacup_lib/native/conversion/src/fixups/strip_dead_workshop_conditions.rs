@@ -273,121 +273,61 @@ mod tests {
         }
     }
 
-    fn or_flag(record: &Record, position: usize) -> bool {
-        match &record.fields[position].value {
-            FieldValue::Bytes(bytes) => bytes[0] & CTDA_OR_FLAG != 0,
-            _ => panic!("expected a CTDA blob"),
+    #[test]
+    fn only_always_false_camp_and_recipe_gates_are_stripped() {
+        let interner = StringInterner::new();
+        let camp = |or_next| ctda(HAS_KEYWORD_FUNCTION, CAMP_KEYWORD, 1.0, or_next);
+        let live_keyword = |or_next| ctda(HAS_KEYWORD_FUNCTION, 0x00_1234, 1.0, or_next);
+        let global_gate = ctda(74, 0x3F_C7E7, 1.0, false);
+
+        for (name, conditions, expected) in [
+            ("camp keyword", vec![camp(false)], vec![]),
+            (
+                "learned recipe",
+                vec![ctda(GET_VALUE_FUNCTION, LEARNED_SIGN_RECIPE, 1.0, false)],
+                vec![],
+            ),
+            (
+                "camp or shelter chain",
+                vec![
+                    camp(true),
+                    ctda(HAS_KEYWORD_FUNCTION, SHELTER_KEYWORD, 1.0, false),
+                ],
+                vec![],
+            ),
+            (
+                "or flag cleared on removed tail",
+                vec![live_keyword(true), camp(false)],
+                vec![live_keyword(false)],
+            ),
+            (
+                "unrelated gate survives",
+                vec![global_gate.clone(), camp(false)],
+                vec![global_gate],
+            ),
+        ] {
+            let mut record = cobj(conditions, &interner);
+            assert!(apply_to_record(&mut record), "{name}");
+            assert_eq!(record.fields.to_vec(), expected, "{name}");
         }
-    }
 
-    #[test]
-    fn strips_camp_keyword_gate() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![ctda(HAS_KEYWORD_FUNCTION, CAMP_KEYWORD, 1.0, false)],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut record));
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn strips_learned_recipe_gate() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![ctda(GET_VALUE_FUNCTION, LEARNED_SIGN_RECIPE, 1.0, false)],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut record));
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn collapses_a_camp_or_shelter_chain_whole() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![
-                ctda(HAS_KEYWORD_FUNCTION, CAMP_KEYWORD, 1.0, true),
-                ctda(HAS_KEYWORD_FUNCTION, SHELTER_KEYWORD, 1.0, false),
-            ],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut record));
-        assert!(
-            record.fields.is_empty(),
-            "both members of the OR chain are always false"
-        );
-    }
-
-    #[test]
-    fn clears_the_or_flag_when_the_chain_tail_is_removed() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![
-                // A live disjunct that ORs into a dead one.
-                ctda(HAS_KEYWORD_FUNCTION, 0x00_1234, 1.0, true),
-                ctda(HAS_KEYWORD_FUNCTION, CAMP_KEYWORD, 1.0, false),
-            ],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut record));
-        assert_eq!(record.fields.len(), 1);
-        assert!(
-            !or_flag(&record, 0),
-            "the surviving disjunct must not still point at a removed successor"
-        );
-    }
-
-    #[test]
-    fn keeps_the_negative_shelter_test() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![ctda(HAS_KEYWORD_FUNCTION, SHELTER_KEYWORD, 0.0, false)],
-            &interner,
-        );
-
-        assert!(
-            !apply_to_record(&mut record),
-            "HasKeyword(Shelter) == 0 is always true in FO4, so it blocks nothing"
-        );
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn keeps_both_sides_of_the_completed_quest_pair() {
-        let interner = StringInterner::new();
-        let mut quest = cobj(
-            vec![ctda(GET_VALUE_FUNCTION, COMPLETED_002P, 0.0, false)],
-            &interner,
-        );
-        let mut post_quest = cobj(
-            vec![ctda(GET_VALUE_FUNCTION, COMPLETED_002P, 1.0, false)],
-            &interner,
-        );
-
-        assert!(!apply_to_record(&mut quest));
-        assert!(
-            !apply_to_record(&mut post_quest),
-            "leaving PlayerCompleted002p unset already selects exactly one recipe"
-        );
-    }
-
-    #[test]
-    fn leaves_unrelated_conditions_alone() {
-        let interner = StringInterner::new();
-        let mut record = cobj(
-            vec![
-                ctda(74, 0x3F_C7E7, 1.0, false),
-                ctda(HAS_KEYWORD_FUNCTION, CAMP_KEYWORD, 1.0, false),
-            ],
-            &interner,
-        );
-
-        assert!(apply_to_record(&mut record));
-        assert_eq!(record.fields.len(), 1, "the GetGlobalValue gate survives");
+        for (name, condition) in [
+            (
+                "HasKeyword(Shelter) == 0 is always true in FO4",
+                ctda(HAS_KEYWORD_FUNCTION, SHELTER_KEYWORD, 0.0, false),
+            ),
+            (
+                "PlayerCompleted002p == 0",
+                ctda(GET_VALUE_FUNCTION, COMPLETED_002P, 0.0, false),
+            ),
+            (
+                "PlayerCompleted002p == 1",
+                ctda(GET_VALUE_FUNCTION, COMPLETED_002P, 1.0, false),
+            ),
+        ] {
+            let mut record = cobj(vec![condition.clone()], &interner);
+            assert!(!apply_to_record(&mut record), "{name}");
+            assert_eq!(record.fields.to_vec(), vec![condition], "{name}");
+        }
     }
 }

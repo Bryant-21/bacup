@@ -973,13 +973,9 @@ mod tests {
         assert_eq!(pkcu.package_template, 0x0000_2F75);
         // Idempotent: a second pass makes no change.
         assert!(!rewrite_pack_instance_template(&mut instance, 0x0000_2F75));
-    }
 
-    #[test]
-    fn trims_instance_extra_trailing_template_input() {
-        let interner = interner();
         let mut instance = pack_record(&interner, 0x8A4CF5, "TravelInstance");
-        instance.fields.push(pkcu(5, 0x07002CB0, 2));
+        instance.fields.push(self::pkcu(5, 0x07002CB0, 2));
         instance.fields.push(anam("Location", &interner));
         instance.fields.push(bytes_field("PLDT", vec![0; 16]));
         for _ in 0..4 {
@@ -1055,11 +1051,7 @@ mod tests {
             .find(|field| field.sig.as_str() == "PLDT")
             .expect("PLDT");
         assert_eq!(pack_keyword_formid(location), Some(0x001C_A8CF));
-    }
 
-    #[test]
-    fn persists_keyword_redirect_for_late_placed_refs() {
-        let interner = interner();
         let source = FormKey::parse("1CA8CF@SeventySix.esm", &interner).unwrap();
         let copied = FormKey::parse("1CA8CF@SeventySix.esm", &interner).unwrap();
         let canonical = FormKey::parse("1CA8CF@Fallout4.esm", &interner).unwrap();

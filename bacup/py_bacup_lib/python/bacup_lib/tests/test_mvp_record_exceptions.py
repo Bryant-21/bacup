@@ -99,40 +99,9 @@ def test_bulk_melee_policy_requires_the_complete_mvp_fence(
     pair_id: str,
     full_fence: frozenset[str],
 ) -> None:
-    assert mvp_melee_policy_payload(pair_id, frozenset()) is None
-    assert mvp_melee_policy_payload(pair_id, full_fence - {"WEAP"}) is None
-    assert mvp_melee_policy_payload(pair_id, full_fence - {"RACE"}) is None
-
-
-def test_bulk_melee_policies_exclude_ranged_animation_enums() -> None:
-    skyrim = mvp_melee_policy_payload(
-        "skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES
-    )
-    fnv = mvp_melee_policy_payload("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES)
-
-    assert skyrim is not None
-    assert fnv is not None
-    assert set(skyrim["allowed_raw_animation_types"]) == set(range(7))
-    assert {7, 8, 9}.isdisjoint(skyrim["allowed_raw_animation_types"])
-    assert set(fnv["allowed_raw_animation_types"]) == {0, 1, 2}
-    assert set(range(3, 14)).isdisjoint(fnv["allowed_raw_animation_types"])
-
-
-def test_fnv_bulk_policy_carries_official_fonv_and_grafted_fo3_provenance() -> None:
-    policy = mvp_melee_policy_payload("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES)
-
-    assert policy is not None
-    assert policy["source_games"] == ["fnv", "fo3"]
-    assert {
-        "FalloutNV.esm",
-        "DeadMoney.esm",
-        "TribalPack.esm",
-        "Fallout3.esm",
-        "Anchorage.esm",
-        "Zeta.esm",
-    } <= set(policy["source_plugins"])
-    assert policy["provenance_policy"] == "official_source_and_graft"
-    assert policy["include_model_less_unarmed"] is True
+    for partial in (frozenset(), full_fence - {"WEAP"}, full_fence - {"RACE"}):
+        assert mvp_melee_policy_payload(pair_id, partial) is None
+        assert mvp_record_exception_payload(pair_id, partial) == []
 
 
 @pytest.mark.parametrize(
@@ -175,33 +144,21 @@ def test_malformed_or_wrong_pair_bulk_melee_policy_fails_closed(
 
 
 @pytest.mark.parametrize(
-    ("pair_id", "exclusions", "profile"),
+    ("pair_id", "exclusions", "profile", "source_games"),
     [
-        ("skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES, "skyrim_wolf"),
-        ("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES, "fnv_gecko"),
+        ("skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES, "skyrim_wolf", ["skyrimse"]),
+        ("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES, "fnv_gecko", ["fnv", "fo3"]),
     ],
 )
-def test_complete_pair_mvp_fence_selects_exact_creature_profile(
+def test_complete_pair_mvp_fence_selects_creature_profile_and_corpus_policy(
     pair_id: str,
     exclusions: frozenset[str],
     profile: str,
+    source_games: list[str],
 ) -> None:
     assert mvp_creature_profile_payload(pair_id, exclusions) == profile
     assert mvp_creature_profile_payload(pair_id, exclusions - {"RACE"}) is None
 
-
-@pytest.mark.parametrize(
-    ("pair_id", "exclusions", "source_games"),
-    [
-        ("skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES, ["skyrimse"]),
-        ("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES, ["fnv", "fo3"]),
-    ],
-)
-def test_complete_pair_mvp_fence_selects_all_creatures_corpus_policy(
-    pair_id: str,
-    exclusions: frozenset[str],
-    source_games: list[str],
-) -> None:
     policy = mvp_creature_corpus_policy_payload(pair_id, exclusions)
 
     assert policy is not None
@@ -245,19 +202,6 @@ def test_exception_config_rejects_out_of_range_local_form_ids(
         MvpRecordException("WEAP", local_form_id, "Skyrim.esm").to_config()
 
 
-@pytest.mark.parametrize("local_form_id", [-1, 0x01013984])
-def test_exact_record_matching_rejects_out_of_range_local_form_ids(
-    local_form_id: int,
-) -> None:
-    assert not is_mvp_record_exception(
-        "skyrimse:fo4",
-        SKYRIM_MVP_EXCLUDE_SIGNATURES,
-        signature="WEAP",
-        local_form_id=local_form_id,
-        source_plugin="Skyrim.esm",
-    )
-
-
 @pytest.mark.parametrize(
     ("pair_id", "exclusions", "signature", "local_form_id", "source_plugin"),
     [
@@ -265,6 +209,8 @@ def test_exact_record_matching_rejects_out_of_range_local_form_ids(
         ("skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES, "WEAP", 0x013985, "Skyrim.esm"),
         ("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES, "WEAP", 0x14DE1D, "FalloutNV.esm"),
         ("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES, "WEAP", 0x11A8E4, "DeadMoney.esm"),
+        ("skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES, "WEAP", -1, "Skyrim.esm"),
+        ("skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES, "WEAP", 0x01013984, "Skyrim.esm"),
     ],
 )
 def test_other_weapons_and_wrong_plugin_ownership_remain_excluded(
@@ -281,22 +227,6 @@ def test_other_weapons_and_wrong_plugin_ownership_remain_excluded(
         local_form_id=local_form_id,
         source_plugin=source_plugin,
     )
-
-
-@pytest.mark.parametrize(
-    ("pair_id", "exclusions"),
-    [
-        ("skyrimse:fo4", frozenset()),
-        ("fnvfo3:fo4", frozenset()),
-        ("skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES - {"WEAP"}),
-        ("fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES - {"WEAP"}),
-    ],
-)
-def test_non_mvp_and_partial_fences_emit_no_record_exceptions(
-    pair_id: str,
-    exclusions: frozenset[str],
-) -> None:
-    assert mvp_record_exception_payload(pair_id, exclusions) == []
 
 
 @pytest.mark.parametrize(

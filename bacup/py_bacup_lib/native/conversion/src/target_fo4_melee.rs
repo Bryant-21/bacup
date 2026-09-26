@@ -203,6 +203,7 @@ pub(crate) fn emit_fo4_unarmed_weapon(
     record.fields = SmallVec::from_vec(fields);
 }
 
+#[cfg(test)]
 pub(crate) fn fo4_melee_dependencies(profile: Fo4MeleeProfile) -> Vec<Fo4MeleeDependency> {
     fo4_melee_dependencies_with_equip(profile, FO4_RIGHT_HAND_EQUIP_LOCAL)
 }
@@ -262,6 +263,7 @@ fn fo4_melee_dependencies_with_equip(
     dependencies
 }
 
+#[cfg(test)]
 pub(crate) fn audit_fo4_melee_dependencies(
     record: &Record,
     profile: Fo4MeleeProfile,

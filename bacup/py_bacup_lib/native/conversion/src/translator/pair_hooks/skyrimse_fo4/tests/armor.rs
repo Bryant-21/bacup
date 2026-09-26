@@ -65,10 +65,7 @@ fn armor_addon_uses_human_race_fo4_slots_and_no_source_additional_races() {
             "33BODY", "36UTorso", "37ULArm", "38URArm", "39ULLeg", "40URLLeg"
         ]
     );
-}
 
-#[test]
-fn armor_raw_biped_mask_maps_hands_to_both_fo4_hand_slots() {
     let interner = StringInterner::new();
     let plugin = interner.intern("Skyrim.esm");
     let mut record = Record::new(
@@ -95,3 +92,4 @@ fn armor_raw_biped_mask_maps_hands_to_both_fo4_hand_slots() {
     };
     assert_eq!(*mask, 0x30);
 }
+

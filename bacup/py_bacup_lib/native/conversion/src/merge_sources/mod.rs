@@ -1,12 +1,17 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
+#[cfg(test)]
+use esp_authoring_core::plugin_runtime::ensure_core_section;
 use esp_authoring_core::plugin_runtime::{
     LocalizedStringsState, ParsedItem, ParsedPlugin, compiled_schema_for_game_str,
-    ensure_core_section, plugin_handle_close_native, plugin_handle_load_no_py,
-    plugin_handle_new_native, plugin_handle_save_no_py, plugin_handle_store_ref,
+    plugin_handle_close_native, plugin_handle_load_no_py, plugin_handle_new_native,
+    plugin_handle_save_no_py, plugin_handle_store_ref,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use smol_str::SmolStr;
 use thiserror::Error;
 
@@ -117,6 +122,7 @@ pub enum MergeError {
     PackAccountingMismatch,
 }
 
+#[cfg(test)]
 pub(crate) fn load_no_py(path: &str, game: Option<&str>) -> Result<u64, MergeError> {
     load_no_py_with_strings(path, game, None)
 }
@@ -136,6 +142,7 @@ fn load_no_py_with_strings(
     .map_err(MergeError::Load)
 }
 
+#[cfg(test)]
 pub(crate) fn build_primary_eid_index(
     handle_id: u64,
 ) -> Result<HashMap<(String, SmolStr), u32>, MergeError> {
@@ -159,6 +166,7 @@ pub(crate) fn build_primary_eid_index(
         .collect())
 }
 
+#[cfg(test)]
 pub(crate) fn collect_used_ids(handle_id: u64) -> Result<HashSet<u32>, MergeError> {
     let mut store = plugin_handle_store_ref()
         .lock()
@@ -670,26 +678,67 @@ mod tests {
     }
 
     #[test]
-    fn eid_index_and_used_ids_from_loaded_plugin() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = write_test_plugin(
-            tmp.path(),
-            "Primary.esm",
-            "fnv",
-            vec![
-                rec("GLOB", 0x001200, "TimeScale"),
-                rec("FACT", 0x001300, "RaiderFaction"),
-            ],
-        );
-        let handle = load_no_py(path.to_str().unwrap(), Some("fnv")).unwrap();
-        let index = build_primary_eid_index(handle).unwrap();
-        assert_eq!(
-            index.get(&("timescale".to_string(), "GLOB".into())),
-            Some(&0x001200)
-        );
-        let used = collect_used_ids(handle).unwrap();
-        assert!(used.contains(&0x001300));
-        plugin_handle_close_native(handle);
+    fn loaded_plugin_indexes_counts_and_output_identity() {
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = write_test_plugin(
+                tmp.path(),
+                "Primary.esm",
+                "fnv",
+                vec![
+                    rec("GLOB", 0x001200, "TimeScale"),
+                    rec("FACT", 0x001300, "RaiderFaction"),
+                ],
+            );
+            let handle = load_no_py(path.to_str().unwrap(), Some("fnv")).unwrap();
+            let index = build_primary_eid_index(handle).unwrap();
+            assert_eq!(
+                index.get(&("timescale".to_string(), "GLOB".into())),
+                Some(&0x001200)
+            );
+            let used = collect_used_ids(handle).unwrap();
+            assert!(used.contains(&0x001300));
+            plugin_handle_close_native(handle);
+        }
+        {
+            let tree = vec![ParsedItem::Group(ParsedGroup {
+                label: *b"GLOB",
+                group_type: 0,
+                tail: Bytes::new(),
+                children: vec![
+                    ParsedItem::Record(rec("GLOB", 0x1200, "One")),
+                    ParsedItem::Group(ParsedGroup {
+                        label: 0x1200_u32.to_le_bytes(),
+                        group_type: 1,
+                        tail: Bytes::new(),
+                        children: vec![ParsedItem::Record(rec("CELL", 0x1300, "Two"))],
+                    }),
+                ],
+            })];
+            assert_eq!(count_records(&tree), 2);
+        }
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let source = write_test_plugin(
+                tmp.path(),
+                "Skyrim.esm",
+                "skyrimse",
+                vec![rec("GLOB", 0x1200, "Primary")],
+            );
+            let handle = load_no_py(&source.to_string_lossy(), Some("skyrimse")).unwrap();
+            let (mut plugin, _) = clone_plugin_handle_state_no_py(handle).unwrap();
+            plugin_handle_close_native(handle);
+
+            prepare_output_plugin(
+                &mut plugin,
+                Vec::new(),
+                &HashSet::new(),
+                "skyrimse",
+                "Skyrim.esm",
+            );
+
+            assert_eq!(plugin.plugin_name, "Skyrim.esm");
+        }
     }
 
     #[test]
@@ -1577,61 +1626,61 @@ mod tests {
     }
 
     #[test]
-    fn dangling_reference_writes_report_before_hard_failure() {
-        let tmp = tempfile::tempdir().unwrap();
-        let primary = write_test_plugin(
-            tmp.path(),
-            "Primary.esm",
-            "fnv",
-            vec![rec("GLOB", 0x1200, "Primary")],
-        );
-        let mut dangling = rec("ACTI", 0x9900, "DanglingRef");
-        dangling.subrecords.push(formid_sub("SCRI", 0xBEEF));
-        let grafted = write_test_plugin(tmp.path(), "Grafted.esm", "fo3", vec![dangling]);
-        let report_path = tmp.path().join("merge_report.json");
-        let error = run(&MergeOptions {
-            primary_paths: vec![primary],
-            grafted_paths: vec![grafted],
-            output_path: tmp.path().join("FalloutNV.esm"),
-            report_path: Some(report_path.clone()),
-            game: "fnv".to_string(),
-            source_strings_dir: None,
-            conversion_workers: Some(2),
-        })
-        .unwrap_err();
-        assert!(matches!(error, MergeError::Dangling(1)));
-        let report: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
-        assert_eq!(report["dangling"][0], "ACTI:00009900:SCRI:0000BEEF");
-    }
-
-    #[test]
-    fn grafted_invalid_high_byte_reference_is_still_dangling() {
-        let tmp = tempfile::tempdir().unwrap();
-        let primary = write_test_plugin(
-            tmp.path(),
-            "Primary.esm",
-            "fnv",
-            vec![rec("GLOB", 0x1200, "Primary")],
-        );
-        let mut region = rec("ACTI", 0x9900, "GraftedRegion");
-        region.subrecords.push(formid_sub("SCRI", 0x0102_76B2));
-        let grafted = write_test_plugin(tmp.path(), "Grafted.esm", "fo3", vec![region]);
-        let report_path = tmp.path().join("merge_report.json");
-        let error = run(&MergeOptions {
-            primary_paths: vec![primary],
-            grafted_paths: vec![grafted],
-            output_path: tmp.path().join("FalloutNV.esm"),
-            report_path: Some(report_path.clone()),
-            game: "fnv".to_string(),
-            source_strings_dir: None,
-            conversion_workers: Some(2),
-        })
-        .unwrap_err();
-        assert!(matches!(error, MergeError::Dangling(1)));
-        let report: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
-        assert_eq!(report["dangling"][0], "ACTI:00009900:SCRI:010276B2");
+    fn dangling_references_report_before_failure_including_high_byte_grafts() {
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let primary = write_test_plugin(
+                tmp.path(),
+                "Primary.esm",
+                "fnv",
+                vec![rec("GLOB", 0x1200, "Primary")],
+            );
+            let mut dangling = rec("ACTI", 0x9900, "DanglingRef");
+            dangling.subrecords.push(formid_sub("SCRI", 0xBEEF));
+            let grafted = write_test_plugin(tmp.path(), "Grafted.esm", "fo3", vec![dangling]);
+            let report_path = tmp.path().join("merge_report.json");
+            let error = run(&MergeOptions {
+                primary_paths: vec![primary],
+                grafted_paths: vec![grafted],
+                output_path: tmp.path().join("FalloutNV.esm"),
+                report_path: Some(report_path.clone()),
+                game: "fnv".to_string(),
+                source_strings_dir: None,
+                conversion_workers: Some(2),
+            })
+            .unwrap_err();
+            assert!(matches!(error, MergeError::Dangling(1)));
+            let report: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+            assert_eq!(report["dangling"][0], "ACTI:00009900:SCRI:0000BEEF");
+        }
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let primary = write_test_plugin(
+                tmp.path(),
+                "Primary.esm",
+                "fnv",
+                vec![rec("GLOB", 0x1200, "Primary")],
+            );
+            let mut region = rec("ACTI", 0x9900, "GraftedRegion");
+            region.subrecords.push(formid_sub("SCRI", 0x0102_76B2));
+            let grafted = write_test_plugin(tmp.path(), "Grafted.esm", "fo3", vec![region]);
+            let report_path = tmp.path().join("merge_report.json");
+            let error = run(&MergeOptions {
+                primary_paths: vec![primary],
+                grafted_paths: vec![grafted],
+                output_path: tmp.path().join("FalloutNV.esm"),
+                report_path: Some(report_path.clone()),
+                game: "fnv".to_string(),
+                source_strings_dir: None,
+                conversion_workers: Some(2),
+            })
+            .unwrap_err();
+            assert!(matches!(error, MergeError::Dangling(1)));
+            let report: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+            assert_eq!(report["dangling"][0], "ACTI:00009900:SCRI:010276B2");
+        }
     }
 
     #[test]
@@ -1683,48 +1732,5 @@ mod tests {
         assert_eq!(count_records(&plugin.root_items), 1);
         assert_eq!(plugin.header.next_object_id, 0x1201);
         plugin_handle_close_native(handle);
-    }
-
-    #[test]
-    fn recursive_record_counter_excludes_groups() {
-        let tree = vec![ParsedItem::Group(ParsedGroup {
-            label: *b"GLOB",
-            group_type: 0,
-            tail: Bytes::new(),
-            children: vec![
-                ParsedItem::Record(rec("GLOB", 0x1200, "One")),
-                ParsedItem::Group(ParsedGroup {
-                    label: 0x1200_u32.to_le_bytes(),
-                    group_type: 1,
-                    tail: Bytes::new(),
-                    children: vec![ParsedItem::Record(rec("CELL", 0x1300, "Two"))],
-                }),
-            ],
-        })];
-        assert_eq!(count_records(&tree), 2);
-    }
-
-    #[test]
-    fn output_identity_comes_from_requested_file_name() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source = write_test_plugin(
-            tmp.path(),
-            "Skyrim.esm",
-            "skyrimse",
-            vec![rec("GLOB", 0x1200, "Primary")],
-        );
-        let handle = load_no_py(&source.to_string_lossy(), Some("skyrimse")).unwrap();
-        let (mut plugin, _) = clone_plugin_handle_state_no_py(handle).unwrap();
-        plugin_handle_close_native(handle);
-
-        prepare_output_plugin(
-            &mut plugin,
-            Vec::new(),
-            &HashSet::new(),
-            "skyrimse",
-            "Skyrim.esm",
-        );
-
-        assert_eq!(plugin.plugin_name, "Skyrim.esm");
     }
 }

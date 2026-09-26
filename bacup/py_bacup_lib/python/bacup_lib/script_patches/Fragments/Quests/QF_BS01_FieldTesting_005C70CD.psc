@@ -258,7 +258,7 @@ Function Fragment_Stage_0980_Item_00()
     If livingAreaSpawnCenter != None
         livingAreaSpawnCenter.Disable()
     EndIf
-    If IsStageDone(980) && IsStageDone(990) && !IsStageDone(1000)
+    If IsStageDone(990) && !IsStageDone(1000)
         SetStage(1000)
     EndIf
 EndFunction
@@ -272,7 +272,7 @@ Function Fragment_Stage_0990_Item_00()
     If poolSpawnCenter != None
         poolSpawnCenter.Disable()
     EndIf
-    If IsStageDone(980) && IsStageDone(990) && !IsStageDone(1000)
+    If IsStageDone(980) && !IsStageDone(1000)
         SetStage(1000)
     EndIf
 EndFunction

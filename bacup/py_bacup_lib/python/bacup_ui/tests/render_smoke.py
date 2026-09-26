@@ -110,7 +110,7 @@ def main():
                 panel._draw_settings_column = scrolled_settings
             panel.install_location = "mo2"
             panel.install_path = str(args.output.parent / "fixture-output" / "A very long project folder name")
-            panel._detect_ba2_target = lambda: ("og", "1.10.163")
+            panel._detect_fo4_exe_version = lambda: "1.10.163"
             panel._detected_installed_version = lambda: "Not installed"
             panel._store_install_result = lambda _game: SimpleNamespace(ok=True, store="steam")
             panel.disk_usage_summary = lambda: {"mod_ba2": 0, "deployed_ba2": 0}
@@ -165,6 +165,9 @@ def main():
             workspace._runner_owner = panel
         if args.screen == "changelog":
             workspace._changelog_pending = True
+        elif args.screen == "known-issues":
+            workspace._known_issues_pending = True
+            workspace._known_issues = lambda: ("Example known issue with a long description that wraps inside the dialog body.", "Second example issue.")
         elif args.screen == "confirmation":
             workspace._setup_confirm_pending = True
         elif args.screen in {"cleanup", "cleanup-busy"}:
@@ -182,6 +185,9 @@ def main():
         elif args.screen == "space-warning":
             panel._low_space_warning = [SimpleNamespace(unavailable=False, key="I:", path=args.output.parent,
                 labels=["Conversion workspace", "Packed output"], required_bytes=180 * 1024**3, free_bytes=90 * 1024**3)]
+        elif args.screen.startswith("tales-config"):
+            panel._open_tales_config()
+            panel._tales_config()._page = int(args.screen.rpartition("-")[2] or 0) if args.screen[-1].isdigit() else 0
         elif args.screen == "completion":
             panel._completion = {"deployed": False, "elapsed_seconds": 5025, "mod_path": str(args.output.parent / "fixture-output" / "A very long project folder name")}
 
@@ -199,8 +205,9 @@ def main():
             imgui.set_next_window_size(viewport.work_size)
             workspace._draw_projects()
         frames += 1
-        if args.screen in {"changelog", "confirmation"}:
+        if args.screen in {"changelog", "known-issues", "confirmation"}:
             workspace._draw_changelog_popup()
+            workspace._draw_known_issues_popup()
             workspace._draw_setup_confirm_popup()
         if frames >= args.frames:
             args.output.with_suffix(".json").write_text(json.dumps({

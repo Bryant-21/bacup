@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn fnv_golden_fixture_rebuilds_the_fo4_contract() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, &[]);
+        let mut mapper = self::mapper(&interner, &[]);
         mapper.add_mapping(
             form_key(&interner, "FalloutNV.esm", 0x1234),
             form_key(&interner, "Fallout4.esm", 0x5678),
@@ -863,7 +863,7 @@ mod tests {
     #[test]
     fn restore_all_limbs_0cb05d_accounts_for_its_incompatible_legacy_script() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, &[]);
+        let mut mapper = self::mapper(&interner, &[]);
         let source = hex::decode(
             "30200000000000007FB00C00FFFFFFFFFFFFFFFF00003A20000000000000803F000000000000000000000000000000000000000000000000000000000000000001000000FFFFFFFF",
         )
@@ -887,9 +887,9 @@ mod tests {
     }
 
     #[test]
-    fn fo3_golden_fixture_uses_fo3_actor_value_meanings() {
+    fn fo3_golden_fixture_uses_fo3_actor_value_meanings_that_diverge_from_fnv() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, &[]);
+        let mut mapper = self::mapper(&interner, &[]);
         let mut source = legacy_data();
         set_u32(&mut source, 0, SOURCE_TARGET);
         set_i32(&mut source, 16, 16);
@@ -910,19 +910,16 @@ mod tests {
             decision(&report, "actor_value"),
             &MgefReferenceOutcome::ExplicitNull { source_value: 44 }
         );
-    }
 
-    #[test]
-    fn fnv_and_fo3_actor_value_44_diverge() {
         let interner = StringInterner::new();
         let mut source = legacy_data();
         set_i32(&mut source, 68, 44);
 
-        let mut fnv_mapper = mapper(&interner, &[]);
+        let mut fnv_mapper = self::mapper(&interner, &[]);
         let mut fnv = record_with_data(&interner, source.clone());
         normalize_legacy_mgef_data(&mut fnv, LegacyMgefFamily::Fnv, &mut fnv_mapper);
 
-        let mut fo3_mapper = mapper(&interner, &[]);
+        let mut fo3_mapper = self::mapper(&interner, &[]);
         let mut fo3 = record_with_data(&interner, source);
         normalize_legacy_mgef_data(&mut fo3, LegacyMgefFamily::Fo3, &mut fo3_mapper);
 
@@ -933,7 +930,7 @@ mod tests {
     #[test]
     fn missing_target_avif_is_reported_and_never_fabricated() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, &[]);
+        let mut mapper = self::mapper(&interner, &[]);
         let mut source = legacy_data();
         set_i32(&mut source, 68, 5);
         let mut record = record_with_data(&interner, source);
@@ -953,7 +950,7 @@ mod tests {
     #[test]
     fn ordinary_and_hardcoded_actor_values_keep_their_distinct_encodings() {
         let interner = StringInterner::new();
-        let mut ordinary_mapper = mapper(&interner, &[("Strength", 0x2C2)]);
+        let mut ordinary_mapper = self::mapper(&interner, &[("Strength", 0x2C2)]);
         let mut ordinary_source = legacy_data();
         set_i32(&mut ordinary_source, 68, 5);
         let mut ordinary = record_with_data(&interner, ordinary_source);
@@ -968,7 +965,7 @@ mod tests {
             } if target.local == 0x2C2
         ));
 
-        let mut hardcoded_mapper = mapper(&interner, &[]);
+        let mut hardcoded_mapper = self::mapper(&interner, &[]);
         let mut hardcoded_source = legacy_data();
         set_i32(&mut hardcoded_source, 68, 16);
         let mut hardcoded = record_with_data(&interner, hardcoded_source);
@@ -990,7 +987,7 @@ mod tests {
     #[test]
     fn unresolved_and_incompatible_struct_references_never_leak_source_raws() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, &[]);
+        let mut mapper = self::mapper(&interner, &[]);
         mapper.add_mapping(
             form_key(&interner, "FalloutNV.esm", 0x3333),
             form_key(&interner, "Converted.esm", 0x4444),
@@ -1042,9 +1039,24 @@ mod tests {
     }
 
     #[test]
-    fn target_sized_and_nonlegacy_rows_are_preserved() {
+    fn enum_maps_stay_inside_fo4_domains_and_target_rows_are_preserved() {
+        let allowed_flags = SOURCE_FLAG_MAP
+            .iter()
+            .fold(0, |allowed, (_, target)| allowed | target);
+        for bit in 0..32 {
+            assert_eq!(translate_flags(1 << bit) & !allowed_flags, 0);
+        }
+        for flags in 0..=u8::MAX {
+            assert!(matches!(translate_delivery(u32::from(flags)), 0 | 1 | 3));
+        }
+
+        let allowed_archetypes = [0, 1, 2, 3, 11, 12, 15, 16, 17, 18, 21, 27, 28, 29, 30, 49];
+        for source in 0..=64 {
+            assert!(allowed_archetypes.contains(&translate_archetype(source)));
+        }
+
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner, &[]);
+        let mut mapper = self::mapper(&interner, &[]);
         for (length, expected_preserved, expected_unsupported) in
             [(FO4_MGEF_DATA_LEN, 1, 0), (160, 0, 1), (71, 0, 1)]
         {
@@ -1059,24 +1071,6 @@ mod tests {
             assert_eq!(report.preserved_target_rows, expected_preserved);
             assert_eq!(report.unsupported_rows, expected_unsupported);
             assert_eq!(report.converted_rows, 0);
-        }
-    }
-
-    #[test]
-    fn enum_maps_stay_inside_fo4_domains() {
-        let allowed_flags = SOURCE_FLAG_MAP
-            .iter()
-            .fold(0, |allowed, (_, target)| allowed | target);
-        for bit in 0..32 {
-            assert_eq!(translate_flags(1 << bit) & !allowed_flags, 0);
-        }
-        for flags in 0..=u8::MAX {
-            assert!(matches!(translate_delivery(u32::from(flags)), 0 | 1 | 3));
-        }
-
-        let allowed_archetypes = [0, 1, 2, 3, 11, 12, 15, 16, 17, 18, 21, 27, 28, 29, 30, 49];
-        for source in 0..=64 {
-            assert!(allowed_archetypes.contains(&translate_archetype(source)));
         }
     }
 

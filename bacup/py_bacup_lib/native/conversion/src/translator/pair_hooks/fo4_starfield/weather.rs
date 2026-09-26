@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn worldspace_without_climate_gains_the_vanilla_default() {
+    fn worldspace_climate_is_always_the_vanilla_default() {
         let interner = StringInterner::new();
         let mut rec = new_record("WRLD", &interner);
 
@@ -155,10 +155,7 @@ mod tests {
             interner.resolve(starfield_form_key(&interner, 0).plugin),
             Some(STARFIELD_MASTER)
         );
-    }
 
-    #[test]
-    fn worldspace_with_a_stale_fo4_climate_is_overwritten() {
         let interner = StringInterner::new();
         let mut rec = new_record("WRLD", &interner);
         rec.fields.push(FieldEntry {
@@ -184,10 +181,17 @@ mod tests {
                 .count(),
             1
         );
+
+        let interner = StringInterner::new();
+        let mut rec = new_record("STAT", &interner);
+
+        point_weather_refs_at_vanilla_starfield(&interner, &mut rec);
+
+        assert!(rec.fields.is_empty());
     }
 
     #[test]
-    fn region_weather_table_collapses_to_one_vanilla_row() {
+    fn region_weather_table_collapses_to_one_vanilla_row_or_stays_empty() {
         let interner = StringInterner::new();
         let mut rec = new_record("REGN", &interner);
         rec.fields.push(FieldEntry {
@@ -224,10 +228,7 @@ mod tests {
             members[2].1,
             FieldValue::Bytes(SmallVec::from_slice(&[0u8; 4]))
         );
-    }
 
-    #[test]
-    fn no_fo4_weather_formkey_survives_in_a_region() {
         let interner = StringInterner::new();
         let mut rec = new_record("REGN", &interner);
         rec.fields.push(FieldEntry {
@@ -248,29 +249,7 @@ mod tests {
             &mut plugins,
         );
         assert_eq!(plugins, vec![STARFIELD_MASTER.to_string()]);
-    }
 
-    fn collect_plugins(value: &FieldValue, interner: &StringInterner, out: &mut Vec<String>) {
-        match value {
-            FieldValue::FormKey(fk) => {
-                out.push(interner.resolve(fk.plugin).unwrap_or_default().to_string())
-            }
-            FieldValue::List(items) => {
-                for item in items {
-                    collect_plugins(item, interner, out);
-                }
-            }
-            FieldValue::Struct(members) => {
-                for (_, v) in members {
-                    collect_plugins(v, interner, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    #[test]
-    fn empty_region_weather_table_is_left_empty() {
         let interner = StringInterner::new();
         let mut rec = new_record("REGN", &interner);
         rec.fields.push(FieldEntry {
@@ -290,13 +269,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unrelated_records_are_untouched() {
-        let interner = StringInterner::new();
-        let mut rec = new_record("STAT", &interner);
-
-        point_weather_refs_at_vanilla_starfield(&interner, &mut rec);
-
-        assert!(rec.fields.is_empty());
+    fn collect_plugins(value: &FieldValue, interner: &StringInterner, out: &mut Vec<String>) {
+        match value {
+            FieldValue::FormKey(fk) => {
+                out.push(interner.resolve(fk.plugin).unwrap_or_default().to_string())
+            }
+            FieldValue::List(items) => {
+                for item in items {
+                    collect_plugins(item, interner, out);
+                }
+            }
+            FieldValue::Struct(members) => {
+                for (_, v) in members {
+                    collect_plugins(v, interner, out);
+                }
+            }
+            _ => {}
+        }
     }
 }

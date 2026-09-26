@@ -242,117 +242,117 @@ mod tests {
     use super::*;
 
     #[test]
-    fn receipt_rejects_duplicate_source_mapping_and_inconsistent_accounting() {
-        let identity = RuntimeRecordIdentity {
-            form_key: "000001@Source.esm".to_string(),
-            signature: "QUST".to_string(),
-        };
-        let mut receipt = SkyrimRuntimeReceipt {
-            version: SkyrimRuntimeReceipt::VERSION,
-            source_game: "skyrimse".to_string(),
-            target_game: "fo4".to_string(),
-            source_plugin: "Source.esm".to_string(),
-            target_plugin: "Output.esm".to_string(),
-            components: vec![RuntimeComponentReceipt {
-                component_id: "quest:1".to_string(),
-                family: "quest".to_string(),
-                roots: vec![identity.clone()],
-                members: vec![identity.clone()],
-                decision: RuntimeComponentDecision::Supported,
-                reason: None,
-                adaptations: Vec::new(),
-            }],
-            mappings: vec![
-                FrozenRecordMapping {
-                    source: identity.clone(),
-                    target: RuntimeRecordIdentity {
-                        form_key: "000800@Output.esm".to_string(),
-                        signature: "QUST".to_string(),
-                    },
-                },
-                FrozenRecordMapping {
-                    source: identity,
-                    target: RuntimeRecordIdentity {
-                        form_key: "000801@Output.esm".to_string(),
-                        signature: "QUST".to_string(),
-                    },
-                },
-            ],
-            topology: Vec::new(),
-            signature_adaptations: Vec::new(),
-            script_bindings: Vec::new(),
-            assets: Vec::new(),
-            accounting: SkyrimRuntimeAccounting {
-                components_seen: 1,
-                components_supported: 1,
-                ..Default::default()
-            },
-        };
-        assert!(receipt.validate_shape().is_err());
-        receipt.mappings.truncate(1);
-        receipt.accounting.components_dropped = 1;
-        assert!(receipt.validate_shape().is_err());
-    }
-
-    #[test]
-    fn receipt_accepts_multiple_source_races_mapped_to_one_target_race() {
-        let source_races = ["013746@Skyrim.esm", "013747@Skyrim.esm"];
-        let components = source_races
-            .iter()
-            .map(|form_key| {
-                let identity = RuntimeRecordIdentity {
-                    form_key: (*form_key).to_string(),
-                    signature: "RACE".to_string(),
-                };
-                RuntimeComponentReceipt {
-                    component_id: format!("race:{form_key}"),
-                    family: "appearance".to_string(),
+    fn receipt_accounting_accepts_shared_targets_and_rejects_duplicates() {
+        {
+            let identity = RuntimeRecordIdentity {
+                form_key: "000001@Source.esm".to_string(),
+                signature: "QUST".to_string(),
+            };
+            let mut receipt = SkyrimRuntimeReceipt {
+                version: SkyrimRuntimeReceipt::VERSION,
+                source_game: "skyrimse".to_string(),
+                target_game: "fo4".to_string(),
+                source_plugin: "Source.esm".to_string(),
+                target_plugin: "Output.esm".to_string(),
+                components: vec![RuntimeComponentReceipt {
+                    component_id: "quest:1".to_string(),
+                    family: "quest".to_string(),
                     roots: vec![identity.clone()],
-                    members: vec![identity],
+                    members: vec![identity.clone()],
                     decision: RuntimeComponentDecision::Supported,
                     reason: None,
                     adaptations: Vec::new(),
-                }
-            })
-            .collect::<Vec<_>>();
-        let mappings = source_races
-            .iter()
-            .map(|form_key| FrozenRecordMapping {
-                source: RuntimeRecordIdentity {
-                    form_key: (*form_key).to_string(),
-                    signature: "RACE".to_string(),
+                }],
+                mappings: vec![
+                    FrozenRecordMapping {
+                        source: identity.clone(),
+                        target: RuntimeRecordIdentity {
+                            form_key: "000800@Output.esm".to_string(),
+                            signature: "QUST".to_string(),
+                        },
+                    },
+                    FrozenRecordMapping {
+                        source: identity,
+                        target: RuntimeRecordIdentity {
+                            form_key: "000801@Output.esm".to_string(),
+                            signature: "QUST".to_string(),
+                        },
+                    },
+                ],
+                topology: Vec::new(),
+                signature_adaptations: Vec::new(),
+                script_bindings: Vec::new(),
+                assets: Vec::new(),
+                accounting: SkyrimRuntimeAccounting {
+                    components_seen: 1,
+                    components_supported: 1,
+                    ..Default::default()
                 },
-                target: RuntimeRecordIdentity {
-                    form_key: "013746@Fallout4.esm".to_string(),
-                    signature: "RACE".to_string(),
+            };
+            assert!(receipt.validate_shape().is_err());
+            receipt.mappings.truncate(1);
+            receipt.accounting.components_dropped = 1;
+            assert!(receipt.validate_shape().is_err());
+        }
+        {
+            let source_races = ["013746@Skyrim.esm", "013747@Skyrim.esm"];
+            let components = source_races
+                .iter()
+                .map(|form_key| {
+                    let identity = RuntimeRecordIdentity {
+                        form_key: (*form_key).to_string(),
+                        signature: "RACE".to_string(),
+                    };
+                    RuntimeComponentReceipt {
+                        component_id: format!("race:{form_key}"),
+                        family: "appearance".to_string(),
+                        roots: vec![identity.clone()],
+                        members: vec![identity],
+                        decision: RuntimeComponentDecision::Supported,
+                        reason: None,
+                        adaptations: Vec::new(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mappings = source_races
+                .iter()
+                .map(|form_key| FrozenRecordMapping {
+                    source: RuntimeRecordIdentity {
+                        form_key: (*form_key).to_string(),
+                        signature: "RACE".to_string(),
+                    },
+                    target: RuntimeRecordIdentity {
+                        form_key: "013746@Fallout4.esm".to_string(),
+                        signature: "RACE".to_string(),
+                    },
+                })
+                .collect::<Vec<_>>();
+            let mut receipt = SkyrimRuntimeReceipt {
+                version: SkyrimRuntimeReceipt::VERSION,
+                source_game: "skyrimse".to_string(),
+                target_game: "fo4".to_string(),
+                source_plugin: "Skyrim.esm".to_string(),
+                target_plugin: "Skyrim.esm".to_string(),
+                components,
+                mappings,
+                topology: Vec::new(),
+                signature_adaptations: Vec::new(),
+                script_bindings: Vec::new(),
+                assets: Vec::new(),
+                accounting: SkyrimRuntimeAccounting {
+                    components_seen: 2,
+                    components_supported: 2,
+                    records_written: 2,
+                    ..Default::default()
                 },
-            })
-            .collect::<Vec<_>>();
-        let mut receipt = SkyrimRuntimeReceipt {
-            version: SkyrimRuntimeReceipt::VERSION,
-            source_game: "skyrimse".to_string(),
-            target_game: "fo4".to_string(),
-            source_plugin: "Skyrim.esm".to_string(),
-            target_plugin: "Skyrim.esm".to_string(),
-            components,
-            mappings,
-            topology: Vec::new(),
-            signature_adaptations: Vec::new(),
-            script_bindings: Vec::new(),
-            assets: Vec::new(),
-            accounting: SkyrimRuntimeAccounting {
-                components_seen: 2,
-                components_supported: 2,
-                records_written: 2,
-                ..Default::default()
-            },
-        };
+            };
 
-        assert_eq!(receipt.validate_shape(), Ok(()));
-        receipt.mappings[1].target.signature = "NPC_".to_string();
-        assert_eq!(
-            receipt.validate_shape(),
-            Err("Skyrim runtime receipt target signature is inconsistent".to_string())
-        );
+            assert_eq!(receipt.validate_shape(), Ok(()));
+            receipt.mappings[1].target.signature = "NPC_".to_string();
+            assert_eq!(
+                receipt.validate_shape(),
+                Err("Skyrim runtime receipt target signature is inconsistent".to_string())
+            );
+        }
     }
 }

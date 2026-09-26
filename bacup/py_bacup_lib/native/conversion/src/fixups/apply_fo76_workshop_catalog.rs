@@ -787,10 +787,7 @@ mod tests {
             catalog.recipes[&103].workbench_id,
             FO4_WORKSHOP_WORKBENCH_EXTERIOR
         );
-    }
 
-    #[test]
-    fn preserves_vanilla_crafting_workbench_for_shared_recipes() {
         let json = br#"[{
           "CategoryKeyword":{"FormEditorID":"Workshop2_MainCategory_CAMP","FormID":8530398},
           "SubCategories":[{
@@ -905,22 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn converts_modern_workshop_keyword_to_recipe_filter() {
-        let interner = StringInterner::new();
-        let mut record = Record {
-            sig: SigCode::from_str("KYWD").unwrap(),
-            form_key: fk(0x8229F5, "SeventySix.esm", &interner),
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec![field("TNAM", FieldValue::Uint(0))],
-            warnings: SmallVec::new(),
-        };
-        assert!(normalize_category_keyword(&mut record));
-        assert_eq!(record.fields[0].value, FieldValue::Uint(9));
-        assert!(!normalize_category_keyword(&mut record));
-    }
-
-    #[test]
     fn reads_every_variant_from_leveled_and_form_lists() {
         let interner = StringInterner::new();
         let item = interner.intern("item");
@@ -973,11 +954,7 @@ mod tests {
                 fk(0x401, "SeventySix.esm", &interner),
             ]
         );
-    }
 
-    #[test]
-    fn reads_raw_lvlo_references_before_leveled_list_cleanup() {
-        let interner = StringInterner::new();
         let masters = vec!["Fallout4.esm".to_string()];
         let mut leveled = Record::new(
             SigCode::from_str("LVLI").unwrap(),
@@ -1029,6 +1006,18 @@ mod tests {
             field.sig.0,
             [b'B', b'N', b'A', b'M'] | [b'F', b'N', b'A', b'M']
         )));
+
+        let mut record = Record {
+            sig: SigCode::from_str("KYWD").unwrap(),
+            form_key: fk(0x8229F5, "SeventySix.esm", &interner),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: smallvec![field("TNAM", FieldValue::Uint(0))],
+            warnings: SmallVec::new(),
+        };
+        assert!(normalize_category_keyword(&mut record));
+        assert_eq!(record.fields[0].value, FieldValue::Uint(9));
+        assert!(!normalize_category_keyword(&mut record));
     }
 
     #[test]

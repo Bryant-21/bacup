@@ -13,7 +13,12 @@ from pathlib import Path
 from imgui_bundle import imgui
 from creation_lib.ui.widgets.modern import loading_panel
 
-from creation_lib.build.archive_plan import DEFAULT_ARCHIVE_MAX_BYTES, discover_mod_archives, gib_to_bytes
+from creation_lib.build.archive_plan import (
+    DEFAULT_ARCHIVE_MAX_BYTES,
+    discover_mod_archives,
+    gib_to_bytes,
+    precombine_sidecar_names,
+)
 from creation_lib.core.game_profiles import GAME_PROFILES
 from ui.builder.release_metadata import (
     latest_tracked_version,
@@ -35,6 +40,8 @@ PROJECT_ROOT = _get_app_root()
 _log = logging.getLogger("toolkit.mod_builder")
 
 MODS_DIR = os.path.join(str(PROJECT_ROOT), "mods")
+# ripgrep/fd/ast-grep read this when sweeping mods/; explicit mods/<name> paths still search.
+_MODS_IGNORE_FILE = ".ignore"
 TEX_OPTIONS_COL_W = 360
 
 
@@ -383,9 +390,36 @@ def _xse_plugin_label(mod_name: str, kind: str) -> str:
     return _xse_name_for(plugin_dir)
 
 
-def _mod_list_label(mod_name: str, plugin_label: str, *, deployed: bool) -> str:
+def _mod_list_label(mod_name: str, plugin_label: str, *, deployed: bool, ignored: bool = False) -> str:
     prefix = "* " if deployed else ""
-    return f"{prefix}{mod_name} [{plugin_label}]"
+    suffix = " (ignored)" if ignored else ""
+    return f"{prefix}{mod_name} [{plugin_label}]{suffix}"
+
+
+def _read_ignored_mods(mods_dir: str) -> set[str]:
+    path = os.path.join(mods_dir, _MODS_IGNORE_FILE)
+    if not os.path.isfile(path):
+        return set()
+    with open(path, encoding="utf-8") as f:
+        lines = [line.strip() for line in f]
+    return {line[1:-1] for line in lines if re.fullmatch(r"/[^/]+/", line)}
+
+
+def _set_mod_ignored(mods_dir: str, mod_name: str, ignored: bool) -> None:
+    path = os.path.join(mods_dir, _MODS_IGNORE_FILE)
+    entry = f"/{mod_name}/"
+    lines: list[str] = []
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            lines = [line.rstrip("\n") for line in f]
+    lines = [line for line in lines if line.strip() != entry]
+    if ignored:
+        lines.append(entry)
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.writelines(f"{line}\n" for line in lines)
+    except OSError:
+        _log.warning("Could not update %s", path)
 
 
 def _is_mod_deployed(
@@ -831,6 +865,7 @@ class ModBuilderApp:
         self._mod_list: list[str] = []
         self._mod_kinds: list[str] = []   # parallel to _mod_list: "mod" | "xse" | "combined"
         self._mod_deployed: list[bool] = []  # parallel to _mod_list
+        self._mod_ignored: set[str] = set()
         self._mod_display: dict[str, tuple[str, imgui.ImVec4]] = {}
         self._selected_mod_idx = 0
         self._new_mod_name = ""
@@ -1204,6 +1239,7 @@ class ModBuilderApp:
                     is_selected = idx == self._selected_mod_idx
                     kind = self._mod_kinds[idx] if idx < len(self._mod_kinds) else "mod"
                     deployed = idx < len(self._mod_deployed) and self._mod_deployed[idx]
+                    ignored = mod in self._mod_ignored
                     metadata = self._mod_display.get(mod)
                     if metadata is None:
                         plugin_label = "N/A"
@@ -1217,7 +1253,7 @@ class ModBuilderApp:
                     entry_dir = os.path.join(MODS_DIR, mod)
                     imgui.push_style_color(imgui.Col_.text, text_color)
                     clicked, _ = imgui.selectable(
-                        f"{_mod_list_label(mod, plugin_label, deployed=deployed)}##mod_{idx}",
+                        f"{_mod_list_label(mod, plugin_label, deployed=deployed, ignored=ignored)}##mod_{idx}",
                         is_selected,
                         imgui.SelectableFlags_.span_all_columns,
                     )
@@ -1227,6 +1263,8 @@ class ModBuilderApp:
                         self._on_mod_changed()
                     if imgui.is_item_hovered():
                         status = "Deployed" if deployed else "Not deployed"
+                        if ignored:
+                            status += ", ignored by search (mods/.ignore)"
                         imgui.set_item_tooltip(f"{entry_dir}\nPlugin: {plugin_label}\nStatus: {status}")
         imgui.end_child()
 
@@ -1244,6 +1282,18 @@ class ModBuilderApp:
             self._delete_popup_open = True
         if no_mod or self._running:
             imgui.end_disabled()
+        if not no_mod:
+            mod = self._selected_mod()
+            imgui.same_line()
+            changed, ignored = imgui.checkbox("Ignore", mod in self._mod_ignored)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    f"List {mod}/ in mods/.ignore so ripgrep, fd and Grep/Glob skip it\n"
+                    "when searching mods/. Searching mods/<name> directly still works."
+                )
+            if changed:
+                _set_mod_ignored(MODS_DIR, mod, ignored)
+                self._mod_ignored = _read_ignored_mods(MODS_DIR)
 
     def _mod_group(self, idx: int) -> int:
         kind = self._mod_kinds[idx] if idx < len(self._mod_kinds) else "mod"
@@ -1522,8 +1572,8 @@ class ModBuilderApp:
                 self._on_xse_build()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled.value):
                 imgui.set_tooltip(
-                    f"Run xmake install -y in mods/<name>/ to compile\n"
-                    f"and stage the DLL to mods/<name>/{xse_name}/Plugins/."
+                    f"Build with xmake, then install the DLL\n"
+                    f"to mods/<name>/{xse_name}/Plugins/."
                     if has_xmake else "No xmake.lua found — cannot build DLL."
                 )
             if disabled or not has_xmake:
@@ -1778,10 +1828,10 @@ class ModBuilderApp:
                 self._on_deploy()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled.value):
                 imgui.set_tooltip(
-                    "Copy plugin DLL/INI tree to game Data."
+                    "Copy plugin DLLs, INIs and loose translation tables to the selected Data target."
                     if is_xse_only else
                     "Build + pack archives + copy to game Data.\n"
-                    "Also copies F4SE/SKSE/SFSE/NVSE/FOSE plugin tree if present."
+                    "Also copies the loose F4SE/SKSE/SFSE/NVSE/FOSE runtime files, including translation tables."
                 )
 
             imgui.table_set_column_index(1)
@@ -2661,6 +2711,21 @@ class ModBuilderApp:
             if git_disabled:
                 imgui.end_disabled()
 
+            if git_disabled:
+                imgui.begin_disabled()
+            if imgui.button("Prune LFS Cache##utils_git_prune_lfs", _btn):
+                self._on_utils_git_prune_lfs()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled.value):
+                imgui.set_tooltip(
+                    "Delete local Git LFS copies of files Gitea already stores "
+                    "(git lfs prune --force --verify-remote).\n"
+                    "Checked-out files stay; restoring other versions re-downloads them."
+                    if self._selected_mod_has_git_repo() else
+                    "This mod does not have a local Git repository yet."
+                )
+            if git_disabled:
+                imgui.end_disabled()
+
             imgui.end_table()
 
         self._draw_dictionary_popup()
@@ -2849,6 +2914,7 @@ class ModBuilderApp:
         self._mod_kinds = [e[1] for e in entries]
         self._refresh_mod_display()
         self._refresh_deployed_state()
+        self._mod_ignored = _read_ignored_mods(MODS_DIR)
 
         try:
             self._selected_mod_idx = next(
@@ -3317,7 +3383,6 @@ class ModBuilderApp:
         self._run_fn(_do, description=f"Building {mod}")
 
     def _on_xse_build(self):
-        """Run xmake install -y in mods/<name>/ to compile and stage the DLL."""
         mod = self._selected_mod()
         src_dir = self._selected_xse_src_dir()
         if not mod or not src_dir:
@@ -3325,23 +3390,24 @@ class ModBuilderApp:
 
         def _do(on_progress):
             import subprocess
-            on_progress(f"Running: xmake install -y  (cwd={src_dir})")
-            result = subprocess.run(
-                ["xmake", "install", "-y"],
-                cwd=src_dir,
-                capture_output=True, text=True,
-            )
-            for line in (result.stdout + result.stderr).splitlines():
-                on_progress(line)
-            if result.returncode != 0:
-                raise RuntimeError("xmake install failed — see output above.")
+            for action in ("build", "install"):
+                on_progress(f"Running: xmake {action} -y  (cwd={src_dir})")
+                result = subprocess.run(
+                    ["xmake", action, "-y"],
+                    cwd=src_dir,
+                    capture_output=True, text=True,
+                )
+                for line in (result.stdout + result.stderr).splitlines():
+                    on_progress(line)
+                if result.returncode != 0:
+                    raise RuntimeError(f"xmake {action} failed — see output above.")
             on_progress("DLL built and staged.")
 
         xse_name = _xse_name_for(src_dir) if src_dir else "XSE"
         self._run_fn(_do, description=f"Building {xse_name} plugin {mod}")
 
     def _on_xse_deploy(self):
-        """Deploy staged DLL from mods/<name>/<XSE>/ to game Data/<XSE>/Plugins/."""
+        """Deploy the staged XSE runtime and its compiled Papyrus scripts."""
         mod = self._selected_mod()
         if not mod:
             return
@@ -3349,6 +3415,7 @@ class ModBuilderApp:
         xse_name = _xse_name_for(os.path.join(MODS_DIR, mod))
 
         preserve_xse_inis = self._preserve_xse_inis
+        skip_papyrus_compile = self._skip_papyrus_compile
 
         def _do(on_progress):
             from app.paths import get_app_root, get_resource_dir
@@ -3360,6 +3427,7 @@ class ModBuilderApp:
                 deploy_data_dir=deploy_data,
                 skip_build=True, skip_pack=True,
                 esp_only=False, no_esp=True, xbox=False, ps=False,
+                skip_papyrus_compile=skip_papyrus_compile,
                 preserve_xse_inis=preserve_xse_inis,
                 pc_max_res=0, pc_effects_max_res=0,
                 xbox_max_res=0, xbox_effects_max_res=0,
@@ -4371,6 +4439,22 @@ class ModBuilderApp:
 
         self._run_fn(_do, description=f"Git checkout {mod}")
 
+    def _on_utils_git_prune_lfs(self):
+        """Delete local LFS copies that Gitea already stores for the selected entry's repo."""
+        mod = self._selected_mod()
+        if not mod:
+            return
+        creds = self._gitea_creds()
+        target_dir = self._selected_mod_dir()
+
+        def _do(on_progress):
+            from pathlib import Path
+            from creation_lib.mod.git_ops import git_lfs_prune
+            for line in git_lfs_prune(Path(target_dir), **creds).splitlines():
+                on_progress(line)
+
+        self._run_fn(_do, description=f"Git LFS prune {mod}")
+
     def _do_release_package(self, mod: str, localize: bool = False):
         """Create the release zip (ESP + BA2s + optionally Strings/)."""
         mod_dir = os.path.join(MODS_DIR, mod)
@@ -4383,10 +4467,11 @@ class ModBuilderApp:
             files_to_pack.append((plugin, os.path.basename(plugin)))
         for archive in discover_mod_archives(Path(mod_dir), mod):
             files_to_pack.append((str(archive), archive.name))
-        # Include .cdx (cell index) if present — shipped loose alongside .esp
-        cdx = os.path.join(mod_dir, f"{mod}.cdx")
-        if os.path.isfile(cdx):
-            files_to_pack.append((cdx, os.path.basename(cdx)))
+        # Precombine sidecars (geometry, index, exterior index) ship loose beside the plugin
+        for sidecar in precombine_sidecar_names(plugin):
+            sidecar_path = os.path.join(mod_dir, sidecar)
+            if os.path.isfile(sidecar_path):
+                files_to_pack.append((sidecar_path, sidecar))
         # Include patch plugin ESPs
         from creation_lib.mod.patches import list_patches, get_patch_plugin_name
         for pname in list_patches(Path(mod_dir)):

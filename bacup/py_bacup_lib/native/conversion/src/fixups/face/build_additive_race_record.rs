@@ -110,15 +110,43 @@ pub fn strip_template_subgraph_fields(record: &Record) -> Record {
 // build_additive_race_record
 // ---------------------------------------------------------------------------
 
-/// Compose a canonical-shape additive RACE record: the stripped `template`
-/// (e.g. `strip_template_subgraph_fields(&source)`), one `SADD` reference, then
-/// the serialized subgraph blocks in order.
+/// Replace the template's graph section, preserving trailing chatter and morph fields.
 pub fn build_additive_race_record(
     template: Record,
     target_base_fk: FormKey,
     blocks: &[SubgraphBlock],
 ) -> Record {
-    let mut out = template;
+    let insertion = template
+        .fields
+        .iter()
+        .position(|field| {
+            matches!(
+                field.sig.as_str(),
+                "SADD"
+                    | "SAKD"
+                    | "STKD"
+                    | "SGNM"
+                    | "SAPT"
+                    | "SRAF"
+                    | "PTOP"
+                    | "NTOP"
+                    | "MSID"
+                    | "MSM0"
+                    | "MSM1"
+                    | "MLSI"
+                    | "HNAM"
+                    | "HLTX"
+                    | "QSTI"
+                    | "BSMP"
+                    | "BSMB"
+                    | "BSMS"
+                    | "BMMP"
+                    | "ICON"
+            )
+        })
+        .unwrap_or(template.fields.len());
+    let mut out = strip_template_subgraph_fields(&template);
+    let trailing: Vec<_> = out.fields.drain(insertion..).collect();
     let sadd = SubrecordSig::from_str("SADD").expect("SADD sig");
     out.fields.push(FieldEntry {
         sig: sadd,
@@ -129,6 +157,7 @@ pub fn build_additive_race_record(
             out.fields.push(entry);
         }
     }
+    out.fields.extend(trailing);
     out
 }
 
@@ -408,6 +437,40 @@ mod tests {
         let reparsed = parse_canonical_subgraphs(&built);
         assert_eq!(reparsed.len(), 1);
         assert_eq!(reparsed[0], block);
+    }
+
+    #[test]
+    fn replaces_graphs_before_chatter_and_morph_fields() {
+        let interner = StringInterner::new();
+        let parent = fk(0x166729, "Fallout4.esm", &interner);
+        let fields = vec![
+            entry_str("EDID", "Template", &interner),
+            entry_str("SGNM", "Old.hkx", &interner),
+            entry_bytes("SRAF", &[0; 4]),
+            entry_bytes("PTOP", &[0; 4]),
+            entry_bytes("NTOP", &[0; 4]),
+            entry_bytes("MLSI", &[0; 4]),
+        ];
+        let template = make_race(0x800, "Output.esp", "Template", fields, &interner);
+        let block = SubgraphBlock {
+            behaviour_graph: sym("Fishing.hkx", &interner),
+            paths: vec![],
+            subgraph_keywords: vec![],
+            target_keywords: vec![],
+            flags_bytes: Some(smallvec::smallvec![2, 0, 0, 0]),
+        };
+        for template in [template.clone(), strip_template_subgraph_fields(&template)] {
+            let built = build_additive_race_record(template, parent, &[block.clone()]);
+            assert_eq!(
+                built
+                    .fields
+                    .iter()
+                    .map(|field| field.sig.as_str())
+                    .collect::<Vec<_>>(),
+                ["EDID", "SADD", "SGNM", "SRAF", "PTOP", "NTOP", "MLSI"]
+            );
+            assert_eq!(parse_canonical_subgraphs(&built), vec![block.clone()]);
+        }
     }
 
     /// build with empty blocks list still emits a single SADD.

@@ -49,7 +49,12 @@ pub fn normalize_starfield_alch(
                 push_field(&mut fields, interner, "value", raw(&source[0..4]));
                 push_field(&mut fields, interner, "flags", raw(&source[4..8]));
                 push_field(&mut fields, interner, "addiction", addiction);
-                push_field(&mut fields, interner, "addiction_chance", raw(&source[12..16]));
+                push_field(
+                    &mut fields,
+                    interner,
+                    "addiction_chance",
+                    raw(&source[12..16]),
+                );
                 // Starfield consume sounds are WWise events; FO4 has no SNDR for them.
                 push_field(&mut fields, interner, "sound_consume", null_reference());
                 field.value = FieldValue::Struct(fields);
@@ -116,7 +121,10 @@ mod tests {
             FieldValue::Bytes(bytes) => bytes.to_vec(),
             FieldValue::Uint(value) => (*value as u32).to_le_bytes().to_vec(),
             FieldValue::Float(value) => value.to_le_bytes().to_vec(),
-            FieldValue::Struct(fields) => fields.iter().flat_map(|(_, value)| encoded(value)).collect(),
+            FieldValue::Struct(fields) => fields
+                .iter()
+                .flat_map(|(_, value)| encoded(value))
+                .collect(),
             other => panic!("unexpected fixture value: {other:?}"),
         }
     }
@@ -160,7 +168,7 @@ mod tests {
     #[test]
     fn tranquilitea_effect_data_takes_the_fo4_layout_without_a_wwise_sound() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         let mut record = tranquilitea(&interner);
 
         let report = normalize_starfield_alch(&mut record, &mut mapper);
@@ -171,19 +179,20 @@ mod tests {
         // value 75, No Auto-Calc | Food Item, no addiction, no chance, no sound.
         assert_eq!(
             encoded(enit[0]),
-            hex::decode("4b000000030000000000000000000000" .to_owned() + "00000000").unwrap()
+            hex::decode("4b000000030000000000000000000000".to_owned() + "00000000").unwrap()
         );
-    }
 
-    #[test]
-    fn starfield_effect_globals_and_ids_leave_the_effect_list() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         let mut record = tranquilitea(&interner);
 
         normalize_starfield_alch(&mut record, &mut mapper);
 
-        let signatures: Vec<&str> = record.fields.iter().map(|field| field.sig.as_str()).collect();
+        let signatures: Vec<&str> = record
+            .fields
+            .iter()
+            .map(|field| field.sig.as_str())
+            .collect();
         assert_eq!(
             signatures,
             ["DATA", "ENIT", "EFID", "EFIT", "EFID", "EFIT", "CTDA"],
@@ -194,9 +203,9 @@ mod tests {
     #[test]
     fn addiction_resolves_through_the_mapper_or_is_nulled() {
         let interner = StringInterner::new();
-        let addicted_enit = "4b000000030000003d8d2600" .to_owned() + "3333b33e" + &"00".repeat(40);
+        let addicted_enit = "4b000000030000003d8d2600".to_owned() + "3333b33e" + &"00".repeat(40);
 
-        let mut mapped = mapper(&interner);
+        let mut mapped = self::mapper(&interner);
         mapped.add_mapping(
             form_key(&interner, 0x26_8D3D),
             FormKey {
@@ -207,29 +216,39 @@ mod tests {
         let mut record = Record::new(SigCode(*b"ALCH"), form_key(&interner, 0x2449));
         record.fields.push(entry(b"ENIT", bytes(&addicted_enit)));
         normalize_starfield_alch(&mut record, &mut mapped);
-        assert_eq!(&encoded(fields(&record, b"ENIT")[0])[8..12], &0x0012_3456_u32.to_le_bytes());
+        assert_eq!(
+            &encoded(fields(&record, b"ENIT")[0])[8..12],
+            &0x0012_3456_u32.to_le_bytes()
+        );
 
-        let mut unmapped = mapper(&interner);
+        let mut unmapped = self::mapper(&interner);
         let mut record = Record::new(SigCode(*b"ALCH"), form_key(&interner, 0x2449));
         record.fields.push(entry(b"ENIT", bytes(&addicted_enit)));
         let report = normalize_starfield_alch(&mut record, &mut unmapped);
         let enit = encoded(fields(&record, b"ENIT")[0]);
         assert_eq!(&enit[8..12], &[0; 4]);
         assert_eq!(f32::from_le_bytes(enit[12..16].try_into().unwrap()), 0.35);
-        assert!(report.references.iter().any(|decision| decision.field == "addiction"
-            && decision.outcome == MgefReferenceOutcome::DeferredNull { source_raw: 0x26_8D3D }));
-    }
+        assert!(
+            report
+                .references
+                .iter()
+                .any(|decision| decision.field == "addiction"
+                    && decision.outcome
+                        == MgefReferenceOutcome::DeferredNull {
+                            source_raw: 0x26_8D3D
+                        })
+        );
 
-    #[test]
-    fn effect_area_becomes_fo4_whole_units() {
         let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
+        let mut mapper = self::mapper(&interner);
         let mut record = Record::new(SigCode(*b"ALCH"), form_key(&interner, 0x2449));
         let mut efit = Vec::new();
         efit.extend_from_slice(&5.0_f32.to_le_bytes());
         efit.extend_from_slice(&2.6_f32.to_le_bytes());
         efit.extend_from_slice(&30_u32.to_le_bytes());
-        record.fields.push(entry(b"EFIT", FieldValue::Bytes(SmallVec::from_vec(efit))));
+        record
+            .fields
+            .push(entry(b"EFIT", FieldValue::Bytes(SmallVec::from_vec(efit))));
 
         normalize_starfield_alch(&mut record, &mut mapper);
 

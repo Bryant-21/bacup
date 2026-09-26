@@ -44,6 +44,7 @@ const SYNTHETIC_SHELTER_WORKBENCH_SOURCE_PLUGIN: &str = "__fo76_to_fo4_shelter_w
 const DEFAULT_EMPTY_TRIGGER_LOCAL: u32 = 0x0002_24E3;
 const WORKSHOP_WORKBENCH_LOCAL: u32 = 0x000C_1AEB;
 const WORKSHOP_WORKBENCH_INTERIOR_LOCAL: u32 = 0x0012_E2C4;
+const WORKSHOP_WORKBENCH_TYPE_SETTLEMENT_LOCAL: u32 = 0x0024_6F85;
 const SHELTER_CONTROL_PANEL_LOCAL: u32 = 0x005E_4D5D;
 const SHELTER_INTERIOR_WORKSHOP_AREA_LOCAL: u32 = 0x005D_8042;
 const WORKSHOP_LINK_CENTER_LOCAL: u32 = 0x0003_8C0B;
@@ -586,6 +587,16 @@ fn materialize_shelter_workbench_base(
     .ok_or_else(|| {
         FixupError::HandleError("missing Fallout4.esm WorkshopWorkbenchInterior".into())
     })?;
+    let outdoor = read_target_or_master_record(
+        session,
+        target_schema,
+        interner,
+        own_plugin,
+        &target_masters,
+        &config.target_master_handle_ids,
+        fo4_form_key(WORKSHOP_WORKBENCH_LOCAL, interner),
+    )
+    .ok_or_else(|| FixupError::HandleError("missing Fallout4.esm WorkshopWorkbench".into()))?;
     let panel = session
         .record_decoded(
             &FormKey {
@@ -606,27 +617,61 @@ fn materialize_shelter_workbench_base(
     {
         field.value = FieldValue::String(edid);
     }
-    for signature in ["OBND", "MODL", "MODT"] {
-        let Some(panel_field) = panel
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == signature)
-        else {
-            continue;
-        };
-        if let Some(donor_field) = donor
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == signature)
-        {
-            donor_field.value = panel_field.value.clone();
-        }
-    }
+    copy_existing_fields(&mut donor, &panel, &["OBND", "MODL", "MODT"]);
+    apply_shelter_workbench_keywords(
+        &mut donor,
+        &outdoor,
+        fo4_form_key(WORKSHOP_WORKBENCH_TYPE_SETTLEMENT_LOCAL, interner),
+    );
 
     session
         .add_record(donor, target_schema, interner)
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
     Ok((form_key, true))
+}
+
+/// Shelters are outdoor workshops to FO4 but not settlements: the converted CAMP
+/// recipes are gated on WorkshopWorkbenchTypeExterior, which the interior donor lacks.
+fn apply_shelter_workbench_keywords(donor: &mut Record, outdoor: &Record, settlement: FormKey) {
+    copy_existing_fields(donor, outdoor, &["KSIZ", "KWDA"]);
+    let mut keyword_count = None;
+    if let Some(FieldValue::List(items)) = donor
+        .fields
+        .iter_mut()
+        .find(|field| field.sig.as_str() == "KWDA")
+        .map(|field| &mut field.value)
+    {
+        items.retain(|item| *item != FieldValue::FormKey(settlement));
+        keyword_count = Some(items.len() as u64);
+    }
+    if let (Some(count), Some(ksiz)) = (
+        keyword_count,
+        donor
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.as_str() == "KSIZ"),
+    ) {
+        ksiz.value = FieldValue::Uint(count);
+    }
+}
+
+fn copy_existing_fields(target: &mut Record, source: &Record, signatures: &[&str]) {
+    for signature in signatures {
+        let Some(source_field) = source
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == *signature)
+        else {
+            continue;
+        };
+        if let Some(target_field) = target
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.as_str() == *signature)
+        {
+            target_field.value = source_field.value.clone();
+        }
+    }
 }
 
 fn ensure_workshop_script(record: &mut Record, class: WorkshopClass) -> bool {
@@ -2495,18 +2540,7 @@ mod tests {
     }
 
     #[test]
-    fn object_bounds_drive_workshop_radius() {
-        let interner = StringInterner::new();
-        let record = record_with_obnd(&interner, [-5112, -5112, -64, 5112, 5112, 160]);
-
-        assert_eq!(
-            bounds_from_center_base(&record, &interner),
-            Some([5112.0, 5112.0, MIN_VERTICAL_HALF_EXTENT])
-        );
-    }
-
-    #[test]
-    fn raw_records_preserve_workshop_center_and_bounds() {
+    fn workshop_bounds_from_raw_records_obnd_and_editor_id() {
         let center_keyword: u32 = 0x0003_8C0B;
         let center_ref: u32 = 0x0708_8C18;
         let center_base: u32 = 0x0743_CF11;
@@ -2550,6 +2584,19 @@ mod tests {
         );
         assert_eq!(shape.placement.position, [-157_385.38, 138_592.11, 1608.0]);
         assert_eq!(shape.bounds, [8200.0, 8200.0, MIN_VERTICAL_HALF_EXTENT]);
+
+        let interner = StringInterner::new();
+        let record = record_with_obnd(&interner, [-5112, -5112, -64, 5112, 5112, 160]);
+
+        assert_eq!(
+            bounds_from_center_base(&record, &interner),
+            Some([5112.0, 5112.0, MIN_VERTICAL_HALF_EXTENT])
+        );
+
+        assert_eq!(
+            parse_max_radius("SpawnCenter_Min2048_Max4096"),
+            Some(4096.0)
+        );
     }
 
     fn region_point_bytes(points: &[[f32; 2]]) -> Vec<u8> {
@@ -2560,7 +2607,7 @@ mod tests {
     }
 
     #[test]
-    fn workshop_region_polygon_bbox_spans_all_point_lists() {
+    fn workshop_region_bbox_and_invalid_regions() {
         let subrecords = vec![
             parsed_subrecord("LNAM", 0x002D_E57D_u32.to_le_bytes().to_vec()),
             parsed_subrecord(
@@ -2578,10 +2625,7 @@ mod tests {
         assert_eq!(lnam, 0x002D_E57D);
         assert_eq!(bounds.center, [0.0, 150.0]);
         assert_eq!(bounds.half_extents, [300.0, 300.0]);
-    }
 
-    #[test]
-    fn non_workshop_or_degenerate_regions_are_skipped() {
         let lnam = || parsed_subrecord("LNAM", 5_u32.to_le_bytes().to_vec());
         let rdwk = || parsed_subrecord("RDWK", vec![0; 8]);
         let triangle = || {
@@ -2615,7 +2659,7 @@ mod tests {
     }
 
     #[test]
-    fn region_shape_overrides_xy_and_keeps_vertical_placement() {
+    fn region_shape_and_union_bounds() {
         let base = shape_from_placement(
             Placement {
                 position: [-157_385.375, 138_592.109_375, 584.0],
@@ -2632,10 +2676,7 @@ mod tests {
         assert_eq!(shape.placement.position, [-157_404.0, 140_140.0, 1608.0]);
         assert_eq!(shape.placement.rotation, [0.0, 0.0, 0.0]);
         assert_eq!(shape.bounds, [5432.0, 5625.0, MIN_VERTICAL_HALF_EXTENT]);
-    }
 
-    #[test]
-    fn union_bounds_covers_both_regions() {
         let a = RegionBounds {
             center: [0.0, 0.0],
             half_extents: [100.0, 100.0],
@@ -2869,7 +2910,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_workshop_scan_collects_no_camp_box_and_existing_edge_link() {
+    fn raw_workshop_scan_no_camp_box_vs_sphere() {
         let interner = StringInterner::new();
         let own_plugin = interner.intern("SeventySix.esm");
         let raw_forms = RawWorkshopForms {
@@ -2918,12 +2959,7 @@ mod tests {
                 has_build_area_edge: true,
             })
         );
-    }
 
-    #[test]
-    fn raw_workshop_scan_ignores_no_camp_spheres() {
-        let interner = StringInterner::new();
-        let own_plugin = interner.intern("SeventySix.esm");
         let raw_forms = RawWorkshopForms {
             workbench_base: 0x000C_1AEB,
             link_center: 0x0003_8C0B,
@@ -2948,14 +2984,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_record_ownership_accepts_local_and_own_index_forms() {
-        assert!(raw_record_is_own(0xFF00_0800, 7));
-        assert!(raw_record_is_own(0x0700_0800, 7));
-        assert!(!raw_record_is_own(0x0000_0800, 7));
-    }
-
-    #[test]
-    fn parent_cell_form_key_preserves_master_identity() {
+    fn raw_form_id_ownership_and_master_identity() {
         let interner = StringInterner::new();
         let own_plugin = interner.intern("SeventySix.esm");
         let fallout4 = interner.intern("Fallout4.esm");
@@ -2977,6 +3006,10 @@ mod tests {
             target_form_key_from_raw(0x0300_0800, &masters, own_plugin, &interner),
             None
         );
+
+        assert!(raw_record_is_own(0xFF00_0800, 7));
+        assert!(raw_record_is_own(0x0700_0800, 7));
+        assert!(!raw_record_is_own(0x0000_0800, 7));
     }
 
     #[test]
@@ -3044,6 +3077,58 @@ mod tests {
             raw_forms.boss_ref_type,
             &interner
         ));
+
+        let target_masters = vec!["Fallout4.esm".to_owned()];
+        let raw_forms = raw_workshop_forms(&target_masters).unwrap();
+        let world = fk(0x25DA15, plugin);
+        let location = Record {
+            sig: sig_code("LCTN"),
+            form_key: fk(0x2DE57D, plugin),
+            eid: None,
+            flags: RecordFlags::empty(),
+            fields: smallvec![FieldEntry {
+                sig: subrecord_sig("LCSR"),
+                value: FieldValue::List(vec![
+                    location_special_ref_row(
+                        forms.boss_ref_type,
+                        fk(0x29C2DA, plugin),
+                        world,
+                        (-39, 33),
+                        &interner,
+                    ),
+                    location_special_ref_row(
+                        forms.workshop_ref_type,
+                        fk(0x088ACF, plugin),
+                        world,
+                        (-39, 33),
+                        &interner,
+                    ),
+                ]),
+            }],
+            warnings: SmallVec::new(),
+        };
+
+        let refs = workshop_special_refs(
+            &location,
+            forms.workshop_ref_type,
+            raw_forms.workshop_ref_type,
+            &target_masters,
+            plugin,
+            &interner,
+        );
+        assert_eq!(refs.as_slice(), &[fk(0x088ACF, plugin)]);
+        assert!(
+            workshop_special_refs(
+                &location,
+                forms.boss_ref_type,
+                raw_forms.boss_ref_type,
+                &target_masters,
+                plugin,
+                &interner,
+            )
+            .as_slice()
+                == &[fk(0x29C2DA, plugin)]
+        );
     }
 
     fn raw_lcsr_row(loc_ref_type: u32, reference: u32, world: u32, grid: (i16, i16)) -> Vec<u8> {
@@ -3117,13 +3202,7 @@ mod tests {
             raw_forms.boss_ref_type,
             &interner
         ));
-    }
 
-    #[test]
-    fn strip_workshop_boss_refs_drops_emptied_raw_lcsr() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let forms = workshop_forms(&interner);
         let raw_forms = raw_workshop_forms(&["Fallout4.esm".to_owned()]).unwrap();
         let bytes = raw_lcsr_row(
             raw_forms.boss_ref_type,
@@ -3158,7 +3237,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_workshop_location_keywords_extends_raw_kwda_bytes() {
+    fn workshop_location_keywords_by_kwda_shape_and_class() {
         let interner = StringInterner::new();
         let plugin = interner.intern("SeventySix.esm");
         let forms = workshop_forms(&interner);
@@ -3203,14 +3282,7 @@ mod tests {
             &forms,
             &raw_forms
         ));
-    }
 
-    #[test]
-    fn ensure_workshop_location_keywords_fills_missing_set() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let forms = workshop_forms(&interner);
-        let raw_forms = raw_workshop_forms(&["Fallout4.esm".to_owned()]).unwrap();
         let mut location = Record {
             sig: sig_code("LCTN"),
             form_key: fk(0x0B23D7, plugin),
@@ -3253,14 +3325,7 @@ mod tests {
             &forms,
             &raw_forms
         ));
-    }
 
-    #[test]
-    fn shelter_location_keeps_private_keywords_only() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let forms = workshop_forms(&interner);
-        let raw_forms = raw_workshop_forms(&["Fallout4.esm".to_owned()]).unwrap();
         let fishing_excluded = fk(0x7BD03F, plugin);
         let mut location = Record {
             sig: sig_code("LCTN"),
@@ -3342,72 +3407,6 @@ mod tests {
         assert_eq!(
             struct_form_key(&rows[0], "master_special_references_world_cell", &interner,),
             Some(cell)
-        );
-    }
-
-    #[test]
-    fn workshop_special_refs_finds_workbench_claims() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let forms = workshop_forms(&interner);
-        let target_masters = vec!["Fallout4.esm".to_owned()];
-        let raw_forms = raw_workshop_forms(&target_masters).unwrap();
-        let world = fk(0x25DA15, plugin);
-        let location = Record {
-            sig: sig_code("LCTN"),
-            form_key: fk(0x2DE57D, plugin),
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec![FieldEntry {
-                sig: subrecord_sig("LCSR"),
-                value: FieldValue::List(vec![
-                    location_special_ref_row(
-                        forms.boss_ref_type,
-                        fk(0x29C2DA, plugin),
-                        world,
-                        (-39, 33),
-                        &interner,
-                    ),
-                    location_special_ref_row(
-                        forms.workshop_ref_type,
-                        fk(0x088ACF, plugin),
-                        world,
-                        (-39, 33),
-                        &interner,
-                    ),
-                ]),
-            }],
-            warnings: SmallVec::new(),
-        };
-
-        let refs = workshop_special_refs(
-            &location,
-            forms.workshop_ref_type,
-            raw_forms.workshop_ref_type,
-            &target_masters,
-            plugin,
-            &interner,
-        );
-        assert_eq!(refs.as_slice(), &[fk(0x088ACF, plugin)]);
-        assert!(
-            workshop_special_refs(
-                &location,
-                forms.boss_ref_type,
-                raw_forms.boss_ref_type,
-                &target_masters,
-                plugin,
-                &interner,
-            )
-            .as_slice()
-                == &[fk(0x29C2DA, plugin)]
-        );
-    }
-
-    #[test]
-    fn editor_id_max_radius_is_fallback() {
-        assert_eq!(
-            parse_max_radius("SpawnCenter_Min2048_Max4096"),
-            Some(4096.0)
         );
     }
 
@@ -3653,7 +3652,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_workshop_script_adds_inherited_workshopscript_vmad() {
+    fn workshop_script_vmad_by_class_and_existing() {
         let interner = StringInterner::new();
         let plugin = interner.intern("SeventySix.esm");
         let mut record = Record {
@@ -3711,12 +3710,7 @@ mod tests {
                 .iter()
                 .any(|property| property.name == "OwnedByPlayer")
         );
-    }
 
-    #[test]
-    fn ensure_workshop_script_preserves_existing_vmad() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
         let existing = SmallVec::from_slice(&[1, 2, 3, 4]);
         let mut record = Record {
             sig: sig_code("REFR"),
@@ -3736,12 +3730,7 @@ mod tests {
         ));
         assert_eq!(record.fields.len(), 1);
         assert_eq!(record.fields[0].value, FieldValue::Bytes(existing));
-    }
 
-    #[test]
-    fn shelter_workshop_script_starts_owned_like_home_plate() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
         let mut record = Record::new(sig_code("REFR"), fk(0x8A5523, plugin));
 
         assert!(ensure_workshop_script(&mut record, WorkshopClass::Shelter));
@@ -3767,30 +3756,52 @@ mod tests {
     }
 
     #[test]
-    fn set_form_key_field_replaces_existing_cell_location() {
+    fn shelter_workbench_takes_outdoor_keywords_except_settlement() {
         let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let old_location = fk(0x2F70F9, plugin);
-        let new_location = fk(0xA00000, plugin);
-        let mut cell = Record {
-            sig: sig_code("CELL"),
-            form_key: fk(0x050B2C, plugin),
-            eid: Some(interner.intern("WorkshopCell")),
-            flags: RecordFlags::PERSISTENT,
-            fields: smallvec![FieldEntry {
-                sig: subrecord_sig("XLCN"),
-                value: FieldValue::FormKey(old_location),
-            }],
-            warnings: SmallVec::new(),
+        let keywords = |locals: &[u32]| {
+            [
+                FieldEntry {
+                    sig: subrecord_sig("KSIZ"),
+                    value: FieldValue::Uint(locals.len() as u64),
+                },
+                FieldEntry {
+                    sig: subrecord_sig("KWDA"),
+                    value: FieldValue::List(
+                        locals
+                            .iter()
+                            .map(|local| FieldValue::FormKey(fo4_form_key(*local, &interner)))
+                            .collect(),
+                    ),
+                },
+            ]
         };
+        let hide_happiness = FieldEntry {
+            sig: subrecord_sig("PRPS"),
+            value: FieldValue::Bytes(SmallVec::from_slice(&[0x91, 0x9E, 0x24, 0x00])),
+        };
+        let mut donor = Record::new(sig_code("CONT"), fo4_form_key(0x12E2C4, &interner));
+        donor.fields.extend(keywords(&[0x054BA7, 0x23D9BA]));
+        donor.fields.push(hide_happiness.clone());
+        let mut outdoor = Record::new(sig_code("CONT"), fo4_form_key(0x0C1AEB, &interner));
+        outdoor
+            .fields
+            .extend(keywords(&[0x054BA7, 0x05A0C8, 0x246F85]));
 
-        assert!(set_form_key_field(&mut cell, "XLCN", new_location));
-        assert_eq!(form_key_field(&cell, "XLCN"), Some(new_location));
-        assert!(!set_form_key_field(&mut cell, "XLCN", new_location));
+        apply_shelter_workbench_keywords(
+            &mut donor,
+            &outdoor,
+            fo4_form_key(WORKSHOP_WORKBENCH_TYPE_SETTLEMENT_LOCAL, &interner),
+        );
+
+        let expected: Vec<FieldEntry> = keywords(&[0x054BA7, 0x05A0C8])
+            .into_iter()
+            .chain([hide_happiness])
+            .collect();
+        assert_eq!(donor.fields.to_vec(), expected);
     }
 
     #[test]
-    fn unique_edge_link_removes_larger_stale_assignments() {
+    fn unique_edge_link_and_form_key_field_setters() {
         let interner = StringInterner::new();
         let plugin = interner.intern("SeventySix.esm");
         let edge_keyword = fo4_form_key(WORKSHOP_LINKED_BUILD_AREA_EDGE_LOCAL, &interner);
@@ -3860,6 +3871,24 @@ mod tests {
             linked_ref(&record, other_keyword, &interner),
             Some(workshop)
         );
+
+        let old_location = fk(0x2F70F9, plugin);
+        let new_location = fk(0xA00000, plugin);
+        let mut cell = Record {
+            sig: sig_code("CELL"),
+            form_key: fk(0x050B2C, plugin),
+            eid: Some(interner.intern("WorkshopCell")),
+            flags: RecordFlags::PERSISTENT,
+            fields: smallvec![FieldEntry {
+                sig: subrecord_sig("XLCN"),
+                value: FieldValue::FormKey(old_location),
+            }],
+            warnings: SmallVec::new(),
+        };
+
+        assert!(set_form_key_field(&mut cell, "XLCN", new_location));
+        assert_eq!(form_key_field(&cell, "XLCN"), Some(new_location));
+        assert!(!set_form_key_field(&mut cell, "XLCN", new_location));
     }
 
     #[test]
@@ -3920,18 +3949,5 @@ mod tests {
                 rotation: [0.0, 0.0, 4.283185],
             })
         );
-    }
-
-    #[test]
-    fn missing_target_record_decode_is_optional() {
-        assert!(is_missing_target_record_decode(
-            &SessionError::RecordNotFound("Fallout4.esm:2196DC".into())
-        ));
-        assert!(is_missing_target_record_decode(&SessionError::Other(
-            "record not found: Fallout4.esm:2196DC".into()
-        )));
-        assert!(!is_missing_target_record_decode(&SessionError::Other(
-            "decode failed".into()
-        )));
     }
 }

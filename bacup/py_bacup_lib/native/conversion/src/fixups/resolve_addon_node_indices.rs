@@ -612,259 +612,115 @@ mod tests {
     // -- content key -------------------------------------------------------
 
     #[test]
-    fn content_key_ignores_edid_and_index() {
+    fn content_key_compares_content_not_identity() {
         let interner = StringInterner::new();
-        let a = addn(
-            0x01,
-            "Out.esp",
-            100,
-            vec![("MODL", modl("Foo\\Bar.nif", &interner))],
-            &interner,
-        );
-        // Different index, different FormKey — same content fields.
-        let b = addn(
-            0x02,
-            "Out.esp",
-            999,
-            vec![("MODL", modl("Foo\\Bar.nif", &interner))],
-            &interner,
-        );
-        assert_eq!(
-            addn_content_key(&a, &interner),
-            addn_content_key(&b, &interner)
-        );
-    }
-
-    #[test]
-    fn content_key_modl_path_normalised() {
-        let interner = StringInterner::new();
-        let a = addn(
-            0x01,
-            "Out.esp",
-            1,
-            vec![("MODL", modl("Effects\\Foo.NIF", &interner))],
-            &interner,
-        );
-        let b = addn(
-            0x02,
-            "Out.esp",
-            1,
-            vec![("MODL", modl("effects/foo.nif", &interner))],
-            &interner,
-        );
-        assert_eq!(
-            addn_content_key(&a, &interner),
-            addn_content_key(&b, &interner)
-        );
-    }
-
-    #[test]
-    fn content_key_differs_on_snam() {
-        let interner = StringInterner::new();
-        let a = addn(
-            0x01,
-            "Out.esp",
-            1,
-            vec![(
-                "SNAM",
-                FieldValue::FormKey(fk(0x10, "Fallout4.esm", &interner)),
-            )],
-            &interner,
-        );
-        let b = addn(
-            0x02,
-            "Out.esp",
-            1,
-            vec![(
-                "SNAM",
-                FieldValue::FormKey(fk(0x20, "Fallout4.esm", &interner)),
-            )],
-            &interner,
-        );
-        assert_ne!(
-            addn_content_key(&a, &interner),
-            addn_content_key(&b, &interner)
-        );
-    }
-
-    #[test]
-    fn content_key_resolves_formkey_target_equally() {
-        let interner = StringInterner::new();
-        // Same resolved (plugin, object_id) → equal regardless of casing.
-        let a = addn(
-            0x01,
-            "Out.esp",
-            1,
-            vec![(
+        let master = |local| FieldValue::FormKey(fk(local, "Fallout4.esm", &interner));
+        for (name, sig, a, b, equal) in [
+            (
+                "edid and index ignored",
+                "MODL",
+                modl("Foo\\Bar.nif", &interner),
+                modl("Foo\\Bar.nif", &interner),
+                true,
+            ),
+            (
+                "modl path normalised",
+                "MODL",
+                modl("Effects\\Foo.NIF", &interner),
+                modl("effects/foo.nif", &interner),
+                true,
+            ),
+            ("snam differs", "SNAM", master(0x10), master(0x20), false),
+            (
+                "formkey plugin casing",
                 "LNAM",
-                FieldValue::FormKey(fk(0xAB, "Fallout4.esm", &interner)),
-            )],
-            &interner,
-        );
-        let b = addn(
-            0x02,
-            "Out.esp",
-            1,
-            vec![(
-                "LNAM",
+                master(0xAB),
                 FieldValue::FormKey(fk(0xAB, "fallout4.esm", &interner)),
-            )],
-            &interner,
-        );
-        assert_eq!(
-            addn_content_key(&a, &interner),
-            addn_content_key(&b, &interner)
-        );
+                true,
+            ),
+        ] {
+            let a = addn(0x01, "Out.esp", 100, vec![(sig, a)], &interner);
+            let b = addn(0x02, "Out.esp", 999, vec![(sig, b)], &interner);
+            assert_eq!(
+                addn_content_key(&a, &interner) == addn_content_key(&b, &interner),
+                equal,
+                "{name}"
+            );
+        }
     }
 
     // -- reconciliation plan ----------------------------------------------
 
     #[test]
-    fn plan_drops_on_content_match_with_remap() {
+    fn plan_drops_content_matches_and_keeps_or_reallocates_novel_addons() {
         let interner = StringInterner::new();
         let master_fk = fk(0x50, "Fallout4.esm", &interner);
-        let mut vanilla: FxHashMap<String, (FormKey, u32)> = FxHashMap::default();
-        vanilla.insert("C".to_string(), (master_fk, 50));
-        let mut vanilla_idx: FxHashSet<u32> = FxHashSet::default();
-        vanilla_idx.insert(50);
-
-        let conv_fk = fk(0x0801, "Out.esp", &interner);
-        let converted = vec![(conv_fk, "C".to_string(), 119u32)];
-
-        let (plans, remap) = plan_addon_reconciliation(
-            &converted,
-            &vanilla,
-            &vanilla_idx,
-            CONVERSION_RANGE_START,
-            FO4_MAX_PRESERVED_INDEX,
-        );
-        assert_eq!(
-            plans,
-            vec![AddnPlan::Drop {
-                fk: conv_fk,
-                master_fk
-            }]
-        );
-        assert_eq!(remap, vec![(119, 50)]);
-    }
-
-    #[test]
-    fn plan_drop_same_index_emits_no_remap() {
-        let interner = StringInterner::new();
-        let master_fk = fk(0x50, "Fallout4.esm", &interner);
-        let mut vanilla: FxHashMap<String, (FormKey, u32)> = FxHashMap::default();
-        vanilla.insert("C".to_string(), (master_fk, 119));
-        let mut vanilla_idx: FxHashSet<u32> = FxHashSet::default();
-        vanilla_idx.insert(119);
-
-        let conv_fk = fk(0x0801, "Out.esp", &interner);
-        let converted = vec![(conv_fk, "C".to_string(), 119u32)];
-
-        let (plans, remap) = plan_addon_reconciliation(
-            &converted,
-            &vanilla,
-            &vanilla_idx,
-            CONVERSION_RANGE_START,
-            FO4_MAX_PRESERVED_INDEX,
-        );
-        assert_eq!(
-            plans,
-            vec![AddnPlan::Drop {
-                fk: conv_fk,
-                master_fk
-            }]
-        );
-        assert!(remap.is_empty());
-    }
-
-    #[test]
-    fn plan_keeps_novel_content_at_source_index() {
-        let interner = StringInterner::new();
-        let vanilla: FxHashMap<String, (FormKey, u32)> = FxHashMap::default();
-        let vanilla_idx: FxHashSet<u32> = FxHashSet::default();
-
         let f0 = fk(0x0801, "Out.esp", &interner);
         let f1 = fk(0x0802, "Out.esp", &interner);
-        let converted = vec![(f0, "A".to_string(), 10u32), (f1, "B".to_string(), 11u32)];
+        let drop = AddnPlan::Drop { fk: f0, master_fk };
+        let keep = |fk, new_index| AddnPlan::Keep { fk, new_index };
+        for (name, vanilla_entries, vanilla_indices, converted, expected_plans, expected_remap) in [
+            (
+                "content match at another index",
+                vec![("C", 50u32)],
+                vec![50u32],
+                vec![(f0, "C", 119u32)],
+                vec![drop.clone()],
+                vec![(119, 50i64)],
+            ),
+            (
+                "content match at the same index",
+                vec![("C", 119)],
+                vec![119],
+                vec![(f0, "C", 119)],
+                vec![drop.clone()],
+                vec![],
+            ),
+            (
+                "novel content keeps source index",
+                vec![],
+                vec![],
+                vec![(f0, "A", 10), (f1, "B", 11)],
+                vec![keep(f0, 10), keep(f1, 11)],
+                vec![],
+            ),
+            (
+                "colliding index reallocated",
+                vec![],
+                vec![5, CONVERSION_RANGE_START],
+                vec![(f0, "novel", 5)],
+                vec![keep(f0, CONVERSION_RANGE_START + 1)],
+                vec![(5, i64::from(CONVERSION_RANGE_START + 1))],
+            ),
+            (
+                "fo76 index above fo4 loader limit",
+                vec![],
+                vec![],
+                vec![(f0, "novel", 208_480_396)],
+                vec![keep(f0, CONVERSION_RANGE_START)],
+                vec![(208_480_396, i64::from(CONVERSION_RANGE_START))],
+            ),
+        ] {
+            let vanilla: FxHashMap<String, (FormKey, u32)> = vanilla_entries
+                .into_iter()
+                .map(|(key, index)| (key.to_string(), (master_fk, index)))
+                .collect();
+            let vanilla_idx: FxHashSet<u32> = vanilla_indices.into_iter().collect();
+            let converted: Vec<(FormKey, String, u32)> = converted
+                .into_iter()
+                .map(|(fk, key, index)| (fk, key.to_string(), index))
+                .collect();
 
-        let (plans, remap) = plan_addon_reconciliation(
-            &converted,
-            &vanilla,
-            &vanilla_idx,
-            CONVERSION_RANGE_START,
-            FO4_MAX_PRESERVED_INDEX,
-        );
-        assert_eq!(
-            plans,
-            vec![
-                AddnPlan::Keep {
-                    fk: f0,
-                    new_index: 10
-                },
-                AddnPlan::Keep {
-                    fk: f1,
-                    new_index: 11
-                },
-            ]
-        );
-        assert!(remap.is_empty());
-    }
-
-    #[test]
-    fn plan_keep_allocation_only_for_colliding_index() {
-        let interner = StringInterner::new();
-        let vanilla: FxHashMap<String, (FormKey, u32)> = FxHashMap::default();
-        let mut vanilla_idx: FxHashSet<u32> = FxHashSet::default();
-        vanilla_idx.insert(5);
-        vanilla_idx.insert(CONVERSION_RANGE_START);
-
-        let f0 = fk(0x0801, "Out.esp", &interner);
-        let converted = vec![(f0, "novel".to_string(), 5u32)];
-
-        let (plans, remap) = plan_addon_reconciliation(
-            &converted,
-            &vanilla,
-            &vanilla_idx,
-            CONVERSION_RANGE_START,
-            FO4_MAX_PRESERVED_INDEX,
-        );
-        assert_eq!(
-            plans,
-            vec![AddnPlan::Keep {
-                fk: f0,
-                new_index: CONVERSION_RANGE_START + 1
-            }]
-        );
-        assert_eq!(remap, vec![(5, i64::from(CONVERSION_RANGE_START + 1))]);
-    }
-
-    #[test]
-    fn plan_keep_allocates_for_fo76_index_above_fo4_loader_limit() {
-        let interner = StringInterner::new();
-        let vanilla: FxHashMap<String, (FormKey, u32)> = FxHashMap::default();
-        let vanilla_idx: FxHashSet<u32> = FxHashSet::default();
-
-        let f0 = fk(0x0801, "Out.esp", &interner);
-        let converted = vec![(f0, "novel".to_string(), 208_480_396u32)];
-
-        let (plans, remap) = plan_addon_reconciliation(
-            &converted,
-            &vanilla,
-            &vanilla_idx,
-            CONVERSION_RANGE_START,
-            FO4_MAX_PRESERVED_INDEX,
-        );
-        assert_eq!(
-            plans,
-            vec![AddnPlan::Keep {
-                fk: f0,
-                new_index: CONVERSION_RANGE_START
-            }]
-        );
-        assert_eq!(
-            remap,
-            vec![(208_480_396, i64::from(CONVERSION_RANGE_START))]
-        );
+            let (plans, remap) = plan_addon_reconciliation(
+                &converted,
+                &vanilla,
+                &vanilla_idx,
+                CONVERSION_RANGE_START,
+                FO4_MAX_PRESERVED_INDEX,
+            );
+            assert_eq!(plans, expected_plans, "{name}");
+            assert_eq!(remap, expected_remap, "{name}");
+        }
     }
 
     // -- FK leaf rewrite ---------------------------------------------------
@@ -912,11 +768,7 @@ mod tests {
         } else {
             panic!("expected list");
         }
-    }
 
-    #[test]
-    fn rewrite_returns_false_without_match() {
-        let interner = StringInterner::new();
         let mut drops: FxHashMap<FormKey, FormKey> = FxHashMap::default();
         drops.insert(
             fk(0x0801, "Out.esp", &interner),
@@ -930,7 +782,7 @@ mod tests {
     // -- DATA helpers ------------------------------------------------------
 
     #[test]
-    fn extract_node_index_from_bytes() {
+    fn node_index_extract_and_set_with_or_without_data() {
         let interner = StringInterner::new();
         let sig = SigCode::from_str("ADDN").unwrap();
         let data_sig = SubrecordSig::from_str("DATA").unwrap();
@@ -949,12 +801,7 @@ mod tests {
             warnings: smallvec::SmallVec::new(),
         };
         assert_eq!(extract_node_index(&record), Some(42));
-    }
 
-    #[test]
-    fn extract_node_index_none_without_data() {
-        let interner = StringInterner::new();
-        let sig = SigCode::from_str("ADDN").unwrap();
         let record = Record {
             sig,
             form_key: fk(0x0801, "Out.esp", &interner),
@@ -964,20 +811,11 @@ mod tests {
             warnings: smallvec::SmallVec::new(),
         };
         assert_eq!(extract_node_index(&record), None);
-    }
 
-    #[test]
-    fn set_node_index_mutates_in_place() {
-        let interner = StringInterner::new();
         let mut record = addn(0x0801, "Out.esp", 10, vec![], &interner);
         set_node_index(&mut record, 760_005);
         assert_eq!(extract_node_index(&record), Some(760_005));
-    }
 
-    #[test]
-    fn set_node_index_appends_when_missing() {
-        let interner = StringInterner::new();
-        let sig = SigCode::from_str("ADDN").unwrap();
         let mut record = Record {
             sig,
             form_key: fk(0x0801, "Out.esp", &interner),

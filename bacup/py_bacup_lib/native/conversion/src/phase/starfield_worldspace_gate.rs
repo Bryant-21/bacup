@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_worldspace_without_matching_btd_and_its_cell() {
+    fn drops_worldspaces_without_matching_btd_or_editor_id() {
         let handle = plugin_handle_new_native("Starfield.esm", Some("starfield")).unwrap();
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
@@ -329,10 +329,7 @@ mod tests {
         drop(store);
 
         plugin_handle_close_native(handle);
-    }
 
-    #[test]
-    fn drops_worldspace_without_editor_id_and_its_subtree() {
         let nameless_wrld_id = 0x0000_0A00;
         let nameless_cell_id = 0x0000_0A01;
         let nameless_ref_id = 0x0000_0A02;
@@ -364,10 +361,7 @@ mod tests {
             HashSet::from([nameless_wrld_id, nameless_cell_id, nameless_ref_id])
         );
         assert_eq!(editor_ids, ["<missing EDID:000A00>"]);
-    }
 
-    #[test]
-    fn drops_worldspace_with_empty_editor_id() {
         let root = vec![group(
             TOP_GROUP_TYPE,
             *b"WRLD",
@@ -379,10 +373,7 @@ mod tests {
 
         assert_eq!(dropped, HashSet::from([PROC_WRLD_ID]));
         assert_eq!(editor_ids, ["<missing EDID:000900>"]);
-    }
 
-    #[test]
-    fn directory_named_like_btd_does_not_admit_worldspace() {
         let root = vec![group(
             TOP_GROUP_TYPE,
             *b"WRLD",

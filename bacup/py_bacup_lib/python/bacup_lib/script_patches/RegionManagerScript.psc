@@ -67,6 +67,9 @@ Event OnTimerGameTime(Int aiTimerID)
 		Else
 			Debug.Trace("[B21 Daily] RegionManager pulse could not run controller: player is None", 0)
 		EndIf
-		StartDailyQuestPulse()
+		; Re-register rather than only re-arming: when OnQuestInit ran before the
+		; player existed the remote-event registration was skipped, and the pulse is
+		; the only path left that can still put it back.
+		RegisterDailyQuestEvents()
 	EndIf
 EndEvent

@@ -4,7 +4,12 @@ Event OnContainerChanged(ObjectReference akNewContainer, ObjectReference akOldCo
     EndIf
 
     Quest owningQuest = GetOwningQuest()
-    If owningQuest != None && !owningQuest.IsObjectiveCompleted(1610)
+    ObjectReference droppedItem = GetReference()
+    If owningQuest == None || !owningQuest.IsRunning() || droppedItem == None || droppedItem.GetContainer() != akNewContainer
+        Return
+    EndIf
+    If !owningQuest.IsObjectiveCompleted(1610)
         owningQuest.SetObjectiveCompleted(1610)
     EndIf
+    Clear()
 EndEvent

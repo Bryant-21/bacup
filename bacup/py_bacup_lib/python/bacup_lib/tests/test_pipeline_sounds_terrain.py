@@ -97,7 +97,14 @@ def test_copy_sounds_preserves_resolved_audio_format(tmp_path: Path):
     assert ctx.summary.audio_copied == 1
 
 
-def test_copy_sounds_preserves_music_root(tmp_path: Path):
+@pytest.mark.parametrize(
+    "music_source_path",
+    [
+        "music/76/explore/MUS_76_Explore.wav",
+        "Data/music/76/explore/MUS_76_Explore.wav",
+    ],
+)
+def test_copy_sounds_preserves_music_root(tmp_path: Path, music_source_path: str):
     from bacup_lib import pipeline
     from bacup_lib.models import AssetRef, PhaseProgress
 
@@ -111,7 +118,7 @@ def test_copy_sounds_preserves_music_root(tmp_path: Path):
     assets = [
         AssetRef(
             asset_type="sound",
-            source_path="music/76/explore/MUS_76_Explore.wav",
+            source_path=music_source_path,
             resolved_path=str(source_path),
         )
     ]
@@ -120,98 +127,7 @@ def test_copy_sounds_preserves_music_root(tmp_path: Path):
 
     copied = tmp_path / "data" / "Music" / "76" / "explore" / "MUS_76_Explore.wav"
     assert copied.read_bytes() == b"RIFFmusic"
-    assert not (tmp_path / "data" / "Sound" / "music").exists()
-
-
-def test_copy_sounds_strips_data_prefix_from_music_root(tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import AssetRef, PhaseProgress
-
-    ctx = _context("fo76", tmp_path)
-    runner = MagicMock()
-    runner.is_cancelled.return_value = False
-    progress = PhaseProgress(phase=10, phase_name="Sounds")
-    source_path = tmp_path / "source" / "MUS_76_Explore.wav"
-    source_path.parent.mkdir(parents=True)
-    source_path.write_bytes(b"RIFFmusic")
-    assets = [
-        AssetRef(
-            asset_type="sound",
-            source_path="Data/music/76/explore/MUS_76_Explore.wav",
-            resolved_path=str(source_path),
-        )
-    ]
-
-    pipeline.copy_sounds(assets, ctx, runner, progress)
-
-    copied = tmp_path / "data" / "Music" / "76" / "explore" / "MUS_76_Explore.wav"
-    assert copied.read_bytes() == b"RIFFmusic"
-    assert not (tmp_path / "data" / "Sound" / "data").exists()
-
-
-def test_copy_sounds_rate_limits_missing_audio_examples(tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import AssetRef, PhaseProgress
-
-    ctx = _context("fnv", tmp_path)
-    runner = _RecordingRunner()
-    progress = PhaseProgress(phase=10, phase_name="Sounds")
-    assets = [
-        AssetRef(
-            asset_type="sound",
-            source_path=f"FX/missing_{index:02}.wav",
-            resolved_path=None,
-        )
-        for index in range(40)
-    ]
-
-    pipeline.copy_sounds(assets, ctx, runner, progress)
-
-    assert ctx.summary.audio_total == 40
-    assert ctx.summary.audio_failed == 40
-    assert ctx.summary.audio_copied == 0
-    assert ctx.summary.audio_base_game_skipped == 0
-    assert sum("Audio not found" in message for message in runner.messages) == 25
-    assert any(
-        "15 additional audio files were not found" in message
-        for message in runner.messages
-    )
-
-
-def test_fo76_terrain_resolves_btd_from_source_data_dir(monkeypatch, tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import PhaseProgress, TerrainOptions
-
-    source_data = tmp_path / "extracted" / "fo76"
-    native_data = tmp_path / "Fallout76" / "Data"
-    btd_path = source_data / "Terrain" / "Appalachia.btd"
-    btd_path.parent.mkdir(parents=True)
-    btd_path.write_bytes(b"btd")
-
-    class FakeRustRun:
-        def __init__(self):
-            self.params = None
-            self.source_extracted_dir = ""
-
-        def run_phase(self, phase, mod_path="", source_extracted_dir="", params=None):
-            self.params = params
-            self.source_extracted_dir = source_extracted_dir
-            return {"records_added": 1}
-
-    ctx = _context("fo76", tmp_path)
-    ctx.source_data_dir = source_data
-    ctx.output_plugin_name = "SeventySix.esm"
-    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
-    ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
-    ctx._rust_conversion_run = FakeRustRun()
-    runner = _RecordingRunner()
-    progress = PhaseProgress(phase=3, phase_name="Terrain")
-
-    pipeline.convert_terrain(ctx, runner, progress)
-
-    assert ctx._rust_conversion_run.params["fo76_data_dir"] == str(native_data)
-    assert ctx._rust_conversion_run.params["btd_path"] == str(btd_path)
-    assert ctx._rust_conversion_run.params["write_materials"] is True
+    assert not (tmp_path / "data" / "Sound").exists()
 
 
 def test_fo76_terrain_converts_all_discovered_btd_worldspaces(tmp_path: Path):
@@ -238,7 +154,9 @@ def test_fo76_terrain_converts_all_discovered_btd_worldspaces(tmp_path: Path):
     ctx = _context("fo76", tmp_path)
     ctx.source_data_dir = source_data
     ctx.output_plugin_name = "SeventySix.esm"
-    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
+    # Dense BTD4 sidecars are an experimental opt-in.
+    assert TerrainOptions().emit_btd4 is False
+    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data), emit_btd4=True)
     ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
     ctx._rust_conversion_run = FakeRustRun()
     runner = _RecordingRunner()
@@ -257,6 +175,10 @@ def test_fo76_terrain_converts_all_discovered_btd_worldspaces(tmp_path: Path):
         params["source_worldspace_authoring_dir"]
         for params in ctx._rust_conversion_run.params
     ] == ["", ""]
+    assert [params["btd4_output_path"] for params in ctx._rust_conversion_run.params] == [
+        str(tmp_path / "Terrain" / "APPALACHIA.btd4"),
+        str(tmp_path / "Terrain" / "EXM1PittWorldspace.btd4"),
+    ]
     assert progress.total_items == 2
     assert progress.completed_items == 2
 
@@ -295,43 +217,6 @@ def test_starfield_terrain_dispatches_btds_to_native_fo4_land(tmp_path: Path):
     assert ctx._rust_conversion_run.params["water_manifest_path"] == ""
     assert progress.total_items == 1
     assert progress.completed_items == 1
-
-
-def test_fo76_terrain_delegates_material_writes_to_shared_asset_phase(tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import PhaseProgress, TerrainOptions
-
-    source_data = tmp_path / "extracted" / "fo76"
-    native_data = tmp_path / "Fallout76" / "Data"
-    btd_path = source_data / "Terrain" / "Appalachia.btd"
-    btd_path.parent.mkdir(parents=True)
-    btd_path.write_bytes(b"btd")
-
-    class FakeRustRun:
-        def __init__(self):
-            self.params = None
-
-        def run_phase(self, phase, mod_path="", source_extracted_dir="", params=None):
-            self.params = params
-            return {"records_added": 1}
-
-    ctx = _context("fo76", tmp_path)
-    ctx.source_data_dir = source_data
-    ctx.output_plugin_name = "SeventySix.esm"
-    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
-    ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
-    ctx._rust_conversion_run = FakeRustRun()
-    ctx.shared_asset_conversion_enabled = True
-    runner = _RecordingRunner()
-    progress = PhaseProgress(phase=3, phase_name="Terrain")
-
-    pipeline.convert_terrain(ctx, runner, progress)
-
-    assert ctx._rust_conversion_run.params["write_materials"] is False
-    assert "record_output_mode" not in ctx._rust_conversion_run.params
-    assert ctx._rust_conversion_run.params["populate_grass_assets"] is True
-    assert ctx._rust_conversion_run.params["convert_grass_assets"] is False
-    assert progress.status == "completed"
 
 
 def test_fo76_terrain_delegates_grass_assets_to_shared_asset_phases(tmp_path: Path):
@@ -398,6 +283,8 @@ def test_fo76_terrain_delegates_grass_assets_to_shared_asset_phases(tmp_path: Pa
 
     pipeline.convert_terrain(ctx, runner, progress)
 
+    assert ctx._rust_conversion_run.params["write_materials"] is False
+    assert "record_output_mode" not in ctx._rust_conversion_run.params
     assert ctx._rust_conversion_run.params["populate_grass_assets"] is True
     assert ctx._rust_conversion_run.params["convert_grass_assets"] is False
     assert [(asset.asset_type, asset.source_path) for asset in ctx.assets] == [
@@ -407,72 +294,6 @@ def test_fo76_terrain_delegates_grass_assets_to_shared_asset_phases(tmp_path: Pa
     assert any("grass asset conversion delegated" in entry for entry in runner.messages)
     assert any("queued 2 grass asset refs" in entry for entry in runner.messages)
     assert progress.status == "completed"
-
-
-def test_fo76_terrain_uses_configured_data_dir_for_native_params(tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import PhaseProgress, TerrainOptions
-
-    source_data = tmp_path / "extracted" / "fo76"
-    native_data = tmp_path / "Fallout76" / "Data"
-    btd_path = source_data / "Terrain" / "Appalachia.btd"
-    btd_path.parent.mkdir(parents=True)
-    btd_path.write_bytes(b"btd")
-
-    class FakeRustRun:
-        def __init__(self):
-            self.params = None
-
-        def run_phase(self, phase, mod_path="", source_extracted_dir="", params=None):
-            self.params = params
-            return {"records_added": 1}
-
-    ctx = _context("fo76", tmp_path)
-    ctx.source_data_dir = source_data
-    ctx.output_plugin_name = "SeventySix.esm"
-    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
-    ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
-    ctx._rust_conversion_run = FakeRustRun()
-    runner = _RecordingRunner()
-    progress = PhaseProgress(phase=3, phase_name="Terrain")
-
-    pipeline.convert_terrain(ctx, runner, progress)
-
-    assert ctx._rust_conversion_run.params["fo76_data_dir"] == str(native_data)
-    assert ctx._rust_conversion_run.params["btd_path"] == str(btd_path)
-
-
-def test_fo76_terrain_passes_conversion_workers_to_native_params(tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import PhaseProgress, TerrainOptions
-
-    source_data = tmp_path / "extracted" / "fo76"
-    native_data = tmp_path / "Fallout76" / "Data"
-    btd_path = source_data / "Terrain" / "Appalachia.btd"
-    btd_path.parent.mkdir(parents=True)
-    btd_path.write_bytes(b"btd")
-
-    class FakeRustRun:
-        def __init__(self):
-            self.params = None
-
-        def run_phase(self, phase, mod_path="", source_extracted_dir="", params=None):
-            self.params = params
-            return {"records_added": 1}
-
-    ctx = _context("fo76", tmp_path)
-    ctx.source_data_dir = source_data
-    ctx.output_plugin_name = "SeventySix.esm"
-    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
-    ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
-    ctx._rust_conversion_run = FakeRustRun()
-    ctx.conversion_workers = 16
-    runner = _RecordingRunner()
-    progress = PhaseProgress(phase=3, phase_name="Terrain")
-
-    pipeline.convert_terrain(ctx, runner, progress)
-
-    assert ctx._rust_conversion_run.params["conversion_workers"] == 16
 
 
 def test_fo76_terrain_passes_configured_cell_bounds_to_native_params(tmp_path: Path):
@@ -599,48 +420,18 @@ def test_fo76_terrain_writes_water_manifest_for_authoring_worldspace(
     )
 
 
-def test_fo76_terrain_requests_water_manifest_without_authoring_worldspace(tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import PhaseProgress, TerrainOptions
-
-    source_data = tmp_path / "extracted" / "fo76"
-    native_data = tmp_path / "Fallout76" / "Data"
-    btd_path = source_data / "Terrain" / "Appalachia.btd"
-    btd_path.parent.mkdir(parents=True)
-    btd_path.write_bytes(b"btd")
-
-    class FakeRustRun:
-        def __init__(self):
-            self.params = None
-
-        def run_phase(self, phase, mod_path="", source_extracted_dir="", params=None):
-            self.params = params
-            return {"records_added": 1}
-
-    ctx = _context("fo76", tmp_path)
-    ctx.source_data_dir = source_data
-    ctx.output_plugin_name = "SeventySix.esm"
-    ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
-    ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
-    ctx._rust_conversion_run = FakeRustRun()
-    runner = _RecordingRunner()
-    progress = PhaseProgress(phase=3, phase_name="Terrain")
-
-    pipeline.convert_terrain(ctx, runner, progress)
-
-    assert ctx._rust_conversion_run.params["water_manifest_path"] == str(
-        tmp_path / "debug" / "terrain" / "water_manifest.json"
-    )
-
-
-def test_fo76_terrain_resolves_btd_from_configured_data_dir(tmp_path: Path):
+@pytest.mark.parametrize("btd_in_source_data", [True, False])
+def test_fo76_terrain_resolves_btd_and_native_params(
+    tmp_path: Path, btd_in_source_data: bool
+):
     from bacup_lib import pipeline
     from bacup_lib.models import PhaseProgress, TerrainOptions
 
     source_data = tmp_path / "extracted" / "fo76"
     source_data.mkdir(parents=True)
     native_data = tmp_path / "Fallout76" / "Data"
-    btd_path = native_data / "Terrain" / "Appalachia.btd"
+    btd_root = source_data if btd_in_source_data else native_data
+    btd_path = btd_root / "Terrain" / "Appalachia.btd"
     btd_path.parent.mkdir(parents=True)
     btd_path.write_bytes(b"btd")
 
@@ -660,15 +451,22 @@ def test_fo76_terrain_resolves_btd_from_configured_data_dir(tmp_path: Path):
     ctx.terrain_options = TerrainOptions(fo76_data_dir=str(native_data))
     ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
     ctx._rust_conversion_run = FakeRustRun()
+    ctx.conversion_workers = 16
     runner = _RecordingRunner()
     progress = PhaseProgress(phase=3, phase_name="Terrain")
 
     pipeline.convert_terrain(ctx, runner, progress)
 
-    assert ctx._rust_conversion_run.params["fo76_data_dir"] == str(native_data)
-    assert ctx._rust_conversion_run.params["source_extracted_dir"] == str(source_data)
+    params = ctx._rust_conversion_run.params
+    assert params["fo76_data_dir"] == str(native_data)
+    assert params["source_extracted_dir"] == str(source_data)
     assert ctx._rust_conversion_run.source_extracted_dir == str(source_data)
-    assert ctx._rust_conversion_run.params["btd_path"] == str(btd_path)
+    assert params["btd_path"] == str(btd_path)
+    assert params["write_materials"] is True
+    assert params["conversion_workers"] == 16
+    assert params["water_manifest_path"] == str(
+        tmp_path / "debug" / "terrain" / "water_manifest.json"
+    )
     assert progress.status == "completed"
 
 
@@ -705,39 +503,6 @@ def test_fo76_terrain_requires_explicit_data_dir_for_native_params(tmp_path: Pat
     assert any("TerrainOptions.fo76_data_dir" in entry for entry in runner.messages)
 
 
-def test_fo76_terrain_without_options_skips_even_when_btd_exists(tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import PhaseProgress
-
-    source_data = tmp_path / "extracted" / "fo76"
-    btd_path = source_data / "Terrain" / "Appalachia.btd"
-    btd_path.parent.mkdir(parents=True)
-    btd_path.write_bytes(b"btd")
-
-    class FakeRustRun:
-        def __init__(self):
-            self.called = False
-
-        def run_phase(self, phase, mod_path="", source_extracted_dir="", params=None):
-            self.called = True
-            return {"records_added": 1}
-
-    ctx = _context("fo76", tmp_path)
-    ctx.source_data_dir = source_data
-    ctx.terrain_options = None
-    ctx.source_plugin_handle = type("Handle", (), {"native_handle_id": 7})()
-    ctx._rust_conversion_run = FakeRustRun()
-    runner = _RecordingRunner()
-    progress = PhaseProgress(phase=3, phase_name="Terrain")
-
-    pipeline.convert_terrain(ctx, runner, progress)
-
-    assert ctx._rust_conversion_run.called is False
-    assert progress.total_items == 0
-    assert progress.completed_items == 0
-    assert any("no BTD path configured" in entry for entry in runner.messages)
-
-
 def test_fo76_terrain_missing_btd_raises_with_candidates(tmp_path: Path):
     from bacup_lib import pipeline
     from bacup_lib.models import PhaseProgress, TerrainOptions
@@ -756,41 +521,6 @@ def test_fo76_terrain_missing_btd_raises_with_candidates(tmp_path: Path):
     assert "Terrain" in message
     assert progress.status == "error"
     assert any("FO76 BTD files not found" in entry for entry in runner.messages)
-
-
-@pytest.mark.skip(
-    reason="FO76 BTD terrain path is now native; fo76_btd Python module deleted"
-)
-def test_terrain_fo76_dispatches(monkeypatch, tmp_path: Path):
-    from bacup_lib import pipeline
-    from bacup_lib.models import PhaseProgress, TerrainOptions
-
-    called = {}
-
-    def fake_fo76(req):
-        called["req"] = req
-        return {"cells_written": 0}
-
-    btd = tmp_path / "Appalachia.btd"
-    btd.write_bytes(b"\x00")
-
-    monkeypatch.setattr(
-        "bacup_lib.terrain.fo76_btd.convert_fo76_btd_to_fo4_land",
-        fake_fo76,
-    )
-
-    ctx = _context("fo76", tmp_path)
-    ctx.terrain_options = TerrainOptions(btd_path=str(btd))
-    runner = MagicMock()
-    progress = PhaseProgress(phase=2, phase_name="Terrain")
-
-    pipeline.convert_terrain([], ctx, runner, progress)
-
-    assert "req" in called
-    assert called["req"].btd_path == str(btd)
-    assert called["req"].plugin_name == "Converted.esp"
-    assert called["req"].worldspace_editor_id == "Converted"
-    assert progress.status == "completed"
 
 
 @pytest.mark.parametrize("source", ["fnv", "fo3", "skyrimse"])

@@ -72,6 +72,7 @@ Function Fragment_Stage_0091_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
+    CompleteQuest()
     Actor player = Alias_ActivePlayer.GetActorReference()
     ObjectReference cryptosData = Alias_CryptosDataCore.GetReference()
     If player && cryptosData && cryptosData.GetContainer() != player
@@ -96,5 +97,9 @@ Function Fragment_Stage_0100_Item_00()
     EndIf
 
     CompleteAllObjectives()
+    Stop()
+EndFunction
+
+Function Fragment_Stage_0255_Item_00()
     Stop()
 EndFunction

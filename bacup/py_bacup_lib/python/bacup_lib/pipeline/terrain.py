@@ -198,7 +198,7 @@ def _run_fo76_btd_native(
         "source_max_x": (-1 if opts.source_max_x is None else int(opts.source_max_x)),
         "source_max_y": (-1 if opts.source_max_y is None else int(opts.source_max_y)),
         "resample_mode": opts.resample_mode,
-        "btd4_output_path": str(ctx.mod_path / "Terrain" / f"{worldspace_eid}.btd4") if getattr(opts, "emit_btd4", True) else "",
+        "btd4_output_path": str(ctx.mod_path / "Terrain" / f"{worldspace_eid}.btd4") if getattr(opts, "emit_btd4", False) else "",
         "debug_output_dir": str(debug_output_dir),
         "emit_textures": opts.emit_textures,
         "write_materials": not shared_asset_conversion,
@@ -231,6 +231,11 @@ def _run_fo76_btd_native(
     timing_path = Path(params["debug_output_dir"]) / "terrain_timing.json"
     if timing_path.is_file():
         runner.emit_log("INFO", f"convert_terrain: timing_report={timing_path}")
+    if params["btd4_output_path"]:
+        _log_btd4_verification(
+            runner,
+            Path(params["debug_output_dir"]) / f"btd4_verify_{worldspace_eid}.json",
+        )
     if shared_asset_conversion:
         added = _append_grass_assets_from_manifest(
             ctx,
@@ -249,6 +254,38 @@ def _run_fo76_btd_native(
     progress.completed_items = 100
     progress.status = "completed"
     runner.emit_item_progress(progress)
+
+
+def _log_btd4_verification(runner, report_path: Path) -> None:
+    """Surface the native BTD4 verification so a regen log shows sidecar health."""
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        runner.emit_log(
+            "WARN",
+            f"convert_terrain: BTD4 verification report missing at {report_path}",
+        )
+        return
+    unresolved = len(report.get("unresolved_ltex_ids") or []) + len(
+        report.get("unresolved_grass_ids") or []
+    )
+    level = "INFO" if unresolved == 0 and not report.get("grass_intervals_over_16_types") else "WARN"
+    runner.emit_log(
+        level,
+        "convert_terrain: BTD4 {worldspace} cells={cells} fallback={fallback} "
+        "edges_checked={edges} edge_mismatches={mismatches} unresolved_refs={unresolved} "
+        "max_coarse_deviation={deviation:.1f} report={path}".format(
+            worldspace=report.get("worldspace_editor_id", "?"),
+            cells=report.get("cells", 0),
+            fallback=report.get("fallback_cells", 0),
+            edges=report.get("edges_checked", 0),
+            mismatches=int(report.get("height_edge_mismatches", 0))
+            + int(report.get("color_edge_mismatches", 0)),
+            unresolved=unresolved,
+            deviation=float(report.get("max_coarse_deviation", 0.0)),
+            path=report_path,
+        ),
+    )
 
 
 def _can_auto_write_water_manifest(source_worldspace_authoring_dir: str) -> bool:

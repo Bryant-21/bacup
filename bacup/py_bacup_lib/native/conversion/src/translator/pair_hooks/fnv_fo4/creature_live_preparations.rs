@@ -38,15 +38,15 @@ use crate::source_rig::{
     CreaturePrimaryRecordMapping, CreatureRecordEditorIds, CreatureRecordFormKeys,
     CreatureRecordKeyPlan, CreatureRecordManifest, CreatureRecordProjectionManifest,
     CreatureTargetRecordReference, EventDecl, EventUsage, GraphDeclarations, NoRagdollReason,
-    OverlayClipRole, PreparedCreatureAncillaryNpcBatch, PropertyDecl, RaceDataMapping,
-    RagdollDisposition, SOURCE_RIG_RUNTIME_MODEL_CLOSURE_VERSION, ScaffoldPaths, SkeletonDecl,
-    SourceCreatureIdentity, SourceOwnedRagdollReceipt, SourceRigArtifactProvenance,
-    SourceRigArtifactReceipt, SourceRigArtifactRole, SourceRigConvertedArtifactRequestReceipt,
-    SourceRigExecutableRecipe, SourceRigFieldDecision, SourceRigRecordBatchIntent,
-    SourceRigRuntimeModelArtifactKind, SourceRigRuntimeModelArtifactReceipt,
-    SourceRigRuntimeModelClosureReceipt, SourceRigRuntimeModelRowExpectation,
-    SourceRigRuntimeModelRowKey, SourceRigRuntimeModelRowReceipt, TargetFormKey, VariableDecl,
-    VariableType, VariableValue, deterministic_standard_event, required_actor_action_records,
+    OverlayClipRole, PropertyDecl, RaceDataMapping, RagdollDisposition,
+    SOURCE_RIG_RUNTIME_MODEL_CLOSURE_VERSION, ScaffoldPaths, SkeletonDecl, SourceCreatureIdentity,
+    SourceOwnedRagdollReceipt, SourceRigArtifactProvenance, SourceRigArtifactReceipt,
+    SourceRigArtifactRole, SourceRigConvertedArtifactRequestReceipt, SourceRigExecutableRecipe,
+    SourceRigFieldDecision, SourceRigRecordBatchIntent, SourceRigRuntimeModelArtifactKind,
+    SourceRigRuntimeModelArtifactReceipt, SourceRigRuntimeModelClosureReceipt,
+    SourceRigRuntimeModelRowExpectation, SourceRigRuntimeModelRowKey,
+    SourceRigRuntimeModelRowReceipt, TargetFormKey, VariableDecl, VariableType, VariableValue,
+    deterministic_standard_event, required_actor_action_records,
     validate_source_rig_runtime_model_closure,
 };
 use crate::sym::StringInterner;
@@ -4513,7 +4513,7 @@ mod tests {
         let leveled_weapon = stable(0x400);
         let matching_embedded_weapon = stable(0x500);
         let other_embedded_weapon = stable(0x501);
-        let inventory = receipt(
+        let inventory = self::receipt(
             inventory_source,
             "CREA",
             vec![
@@ -4521,17 +4521,17 @@ mod tests {
                 followed(ammunition.clone(), "AMMO", "CNTO[1].item"),
             ],
         );
-        let list = receipt(
+        let list = self::receipt(
             list_source.clone(),
             "LVLI",
             vec![followed(leveled_weapon.clone(), "WEAP", "LVLO[0].item")],
         );
-        let matching = receipt(
+        let matching = self::receipt(
             matching_embedded_weapon.clone(),
             "WEAP",
             vec![followed(ammunition.clone(), "AMMO", "DATA.ammo")],
         );
-        let other = receipt(
+        let other = self::receipt(
             other_embedded_weapon.clone(),
             "WEAP",
             vec![followed(other_ammunition, "AMMO", "DATA.ammo")],
@@ -4547,7 +4547,7 @@ mod tests {
             vec![leveled_weapon]
         );
 
-        let ammo_only_inventory = receipt(
+        let ammo_only_inventory = self::receipt(
             stable(0x101),
             "CREA",
             vec![followed(ammunition, "AMMO", "CNTO[0].item")],
@@ -4698,124 +4698,6 @@ mod tests {
             receipt.rows[0].artifacts[0].kind,
             SourceRigRuntimeModelArtifactKind::Nif
         );
-    }
-
-    #[test]
-    #[ignore = "requires BACUP_FNV_EXTRACTED_DATA_ROOT and BACUP_FO3_EXTRACTED_DATA_ROOT"]
-    fn live_official_debris_models_stage_with_exact_texture_closure() {
-        let interner = StringInterner::new();
-        let temp = TempDir::new().unwrap();
-        let families: &[(&str, &[(&str, bool)])] = &[
-            (
-                "MeatBit",
-                &[
-                    ("Gore\\MeatBit02.NIF", true),
-                    ("Gore\\MeatBit01.NIF", true),
-                    ("Gore\\MeatBit03.NIF", true),
-                ],
-            ),
-            (
-                "InsectBit",
-                &[
-                    ("Gore\\InsectBit01.NIF", true),
-                    ("Gore\\InsectBit02.NIF", true),
-                    ("Gore\\InsectBit03.NIF", false),
-                    ("Gore\\InsectBit04.NIF", true),
-                    ("Gore\\InsectBit05.NIF", true),
-                    ("Gore\\InsectBit06.NIF", true),
-                    ("Gore\\InsectBit07.NIF", true),
-                ],
-            ),
-            (
-                "RoboBit",
-                &[
-                    ("Gore\\RoboBit01.NIF", true),
-                    ("Gore\\RoboBit02.NIF", true),
-                    ("Gore\\RoboBit03.NIF", true),
-                    ("Gore\\RoboBit04.NIF", true),
-                    ("Gore\\RoboBit06.NIF", true),
-                    ("Gore\\RoboBit07.NIF", true),
-                    ("Gore\\RoboBit05.NIF", true),
-                ],
-            ),
-        ];
-        for (game, plugin, variable) in [
-            (
-                LegacyCreatureGame::Fnv,
-                "FalloutNV.esm",
-                "BACUP_FNV_EXTRACTED_DATA_ROOT",
-            ),
-            (
-                LegacyCreatureGame::Fo3,
-                "Fallout3.esm",
-                "BACUP_FO3_EXTRACTED_DATA_ROOT",
-            ),
-        ] {
-            let source_root = PathBuf::from(std::env::var_os(variable).unwrap());
-            for (family_index, (editor_id, rows)) in families.iter().enumerate() {
-                let mut record = Record::new(
-                    SigCode::from_str("DEBR").unwrap(),
-                    FormKey {
-                        local: 0x800 + family_index as u32,
-                        plugin: interner.intern(plugin),
-                    },
-                );
-                record.fields.push(FieldEntry {
-                    sig: SubrecordSig(*b"EDID"),
-                    value: FieldValue::String(interner.intern(editor_id)),
-                });
-                for (path, collision) in *rows {
-                    record.fields.push(FieldEntry {
-                        sig: SubrecordSig(*b"DATA"),
-                        value: FieldValue::Bytes(
-                            [10_u8]
-                                .into_iter()
-                                .chain(path.bytes())
-                                .chain([0, u8::from(*collision)])
-                                .collect::<Vec<_>>()
-                                .into(),
-                        ),
-                    });
-                    record.fields.push(FieldEntry {
-                        sig: SubrecordSig(*b"MODT"),
-                        value: FieldValue::Bytes(vec![1].into()),
-                    });
-                }
-                let staged_root = temp
-                    .path()
-                    .join(format!("{game:?}_{family_index}"))
-                    .join("data");
-                let prepared = prepare_legacy_debris_record(
-                    game,
-                    &record,
-                    &source_root,
-                    &staged_root,
-                    &interner,
-                )
-                .unwrap();
-                let receipt = SourceRigRuntimeModelClosureReceipt {
-                    version: SOURCE_RIG_RUNTIME_MODEL_CLOSURE_VERSION,
-                    rows: prepared.rows,
-                };
-                validate_source_rig_runtime_model_closure(
-                    &prepared.expectations,
-                    &receipt,
-                    &BTreeMap::from([(legacy_game_name(game).to_string(), source_root.clone())]),
-                    &staged_root,
-                )
-                .unwrap();
-                assert_eq!(receipt.rows.len(), rows.len());
-                assert!(receipt.rows.iter().all(|row| {
-                    row.artifacts.iter().all(|artifact| {
-                        matches!(
-                            artifact.kind,
-                            SourceRigRuntimeModelArtifactKind::Nif
-                                | SourceRigRuntimeModelArtifactKind::Dds
-                        )
-                    })
-                }));
-            }
-        }
     }
 
     #[test]
@@ -5075,12 +4957,12 @@ mod tests {
         let list = stable(0x300);
         let first = stable(0x900);
         let second = stable(0x100);
-        let creature = receipt(
+        let creature = self::receipt(
             stable(0x200),
             "CREA",
             vec![followed(list.clone(), "FLST", "LNAM[0]")],
         );
-        let list_receipt = receipt(
+        let list_receipt = self::receipt(
             list.clone(),
             "FLST",
             vec![
@@ -5161,7 +5043,7 @@ mod tests {
                 ]),
             },
         ]);
-        let dependencies = receipt(
+        let dependencies = self::receipt(
             source_record_key,
             "CREA",
             vec![

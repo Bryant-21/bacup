@@ -22,7 +22,9 @@ from creation_lib.ui.widgets.modern import (
 from creation_lib.ui.widgets.images import image_in_box
 
 from creation_lib.build.archive_plan import discover_mod_archives
+from creation_lib.build.deployer import _remove_loose_string_sidecars
 from creation_lib.build.packer import pack_mod
+from bacup_lib import tales_config
 from bacup_lib.family_map import resolve_upgrade_plan
 from bacup_lib.input_preflight import (
     InputPreflightReport,
@@ -82,6 +84,7 @@ from bacup_ui.storage_cleanup import (
     windows_temp_dir,
 )
 from bacup_ui.conversion.widgets.runner_overlay import draw_runner_overlay
+from bacup_ui.conversion.widgets.tales_config_dialog import TalesConfigDialog
 from bacup_ui.conversion.progress import ProgressEstimate, estimated_phase_weights
 from bacup_ui.conversion.music import (
     ConversionMusicPlayer,
@@ -89,7 +92,7 @@ from bacup_ui.conversion.music import (
     prepare_theme_tracks,
     prioritize_music_tracks,
 )
-from creation_lib.core.fo4_version import detect_ba2_target
+from creation_lib.core.fo4_version import detect_fo4_version
 from creation_lib.core.store_install import StoreInstallResult, validate_store_install_for_game
 
 _log = logging.getLogger("toolkit.appalachia")
@@ -117,6 +120,8 @@ _PHASE_ALIASES = {
     "lod": ("lodgen", "Generate LOD"),
     "lodgen": ("lodgen", "Generate LOD"),
     "offsets": ("rebuild_cell_offsets", "Rebuild Cell Offsets"),
+    "build_precombines": ("build_precombines", "Build Precombines"),
+    "generate_previs": ("generate_previs", "Generate Previs"),
     "cell_offsets": ("rebuild_cell_offsets", "Rebuild Cell Offsets"),
     "pack_ba2": ("pack", "Pack BA2"),
     "postprocess_havok_assets": ("postprocess_havok_assets", "Postprocess Havok Assets"),
@@ -151,10 +156,6 @@ _DEPLOY_MODE_VALUES = ["packed", "loose"]
 _DEPLOY_MODE_LABELS = ["Packed BA2", "Loose files"]
 _ARCHIVE_LAYOUT_VALUES = ["standard", "expanded"]
 _ARCHIVE_LAYOUT_LABELS = ["Standard (recommended)", "Expanded"]
-_BA2_TARGET_KEY = "ba2_target"
-_DEFAULT_BA2_TARGET = "og"
-_BA2_TARGET_VALUES = ["auto", "og", "nextgen"]
-_BA2_TARGET_LABELS = ["Auto (detect FO4)", "Force OG (v1)", "Force Next-Gen (v8)"]
 _BA2_COMPRESSION_KEY = "ba2_compression"
 _BA2_COMPRESSION_VALUES = [None, 1, 6, 9]
 _BA2_COMPRESSION_LABELS = [
@@ -165,12 +166,17 @@ _BA2_COMPRESSION_LABELS = [
 ]
 _ATLAS_MIP_FLOODING_KEY = "atlas_mip_flooding"
 _TEXTURE_LANDSCAPE_MIP_FLOODING_KEY = "texture_landscape_mip_flooding"
-_GENERATE_PRECOMBINES_KEY = "generate_precombines"
+_BUILD_PRECOMBINES_KEY = "build_precombines"
+_GENERATE_PREVIS_KEY = "generate_previs"
+_INTERIOR_CDX_ONLY_KEY = "interior_cdx_only"
 _FULL_LOGGING_KEY = "full_logging"
+_CONTINUE_ON_ERROR_KEY = "continue_on_error"
+_INSTALL_DEVTOOLS_KEY = "install_devtools"
 _CONVERSION_MUSIC_MUTED_KEY = "conversion_music_muted"
 _CONVERSION_MUSIC_VOLUME_KEY = "conversion_music_volume"
 _DEFAULT_CONVERSION_MUSIC_VOLUME = 0.12
 _WORKERS_KEY = "workers"
+_TALES_CONFIG_EDITS_KEY = "tales_config_edits"
 _LOD_PROFILE_KEY = "lod_profile"
 _INSTALL_LOCATION_KEY = "install_location"
 _INSTALL_LOCATION_VALUES = ["game", "mo2", "vortex", "none"]
@@ -195,6 +201,8 @@ _RECOVERY_PHASE_VALUES = [
     "build",
     "modt",
     "offsets",
+    "precombine",
+    "previs",
     "animtext",
     "lodgen",
     "pack",
@@ -216,6 +224,8 @@ _RECOVERY_PHASE_LABELS = [
     "Build ESP (full rebuild)",
     "Regenerate MODT",
     "Rebuild Cell Offsets",
+    "Build Precombines",
+    "Generate Previs",
     "Generate AnimTextData",
     "Generate LOD",
     "Pack BA2",
@@ -230,8 +240,22 @@ _RECOVERY_FULL_REBUILD_PHASES = {
     "build",
 }
 _COMPANION_MOD_NAME = "B21_TalesFromAppalachia"
-_COMPANION_ROOT_FILES = (f"{_COMPANION_MOD_NAME}.esp",)
-_COMPANION_DEPLOY_DIRS = ("PrismaUI_F4", "F4SE")
+_COMPANION_ROOT_FILES = (f"{_COMPANION_MOD_NAME}.esm",)
+_COMPANION_DEPLOY_DIRS = ("F4SE",)
+_FULL_SCREEN_MAP_MOD_NAME = "B21_FullScreenMap"
+_FULL_SCREEN_MAP_DEPLOY_DIRS = (
+    ("data", ""),
+    ("F4SE", "F4SE"),
+)
+_DEVTOOLS_MOD_NAME = "B21_DevTools"
+# Holds the user's hotkeys and workbench filters, so a redeploy never overwrites it.
+_DEVTOOLS_USER_INI = Path("F4SE/Plugins/B21_DevTools.ini")
+_BUNDLED_MOD_NAMES = (_COMPANION_MOD_NAME, _FULL_SCREEN_MAP_MOD_NAME, _DEVTOOLS_MOD_NAME)
+# Only BACUP's bundled mods and the conversion write here, so undeploy removes them whole.
+_UNDEPLOY_OWNED_DIRS = (
+    *(Path("F4SE/Plugins") / name for name in _BUNDLED_MOD_NAMES),
+    Path("Interface/B21/TalesFromAppalachia"),
+)
 _STORE_INSTALL_LABELS = {
     "fo4": "FO4",
     "fo76": "FO76",
@@ -522,18 +546,13 @@ class RegenPanel:
                     _DEPLOY_FORMAT_MIGRATION_KEY: True,
                 }
             )
-        self.ba2_target = str(
-            workspace_settings.get(_BA2_TARGET_KEY, _DEFAULT_BA2_TARGET)
-        ).strip().lower()
-        if self.ba2_target not in _BA2_TARGET_VALUES:
-            self.ba2_target = _DEFAULT_BA2_TARGET
         saved_compression = workspace_settings.get(_BA2_COMPRESSION_KEY)
         self.ba2_compression_level = (
             saved_compression
             if saved_compression in _BA2_COMPRESSION_VALUES
             else None
         )
-        self._ba2_detect_cache: tuple[str, tuple] | None = None
+        self._fo4_exe_version_cache: tuple[str, str | None] | None = None
         self._preflight_report = None
         self._preflight_cache: tuple[str, object] | None = None
         self._worker_rec = recommend_workers(detect_system_ram_gb(), os.cpu_count() or 2)
@@ -557,6 +576,10 @@ class RegenPanel:
             workspace_settings.get(_TEXTURE_LANDSCAPE_MIP_FLOODING_KEY, False)
         )
         self.full_logging = bool(workspace_settings.get(_FULL_LOGGING_KEY, False))
+        self.continue_on_error = bool(workspace_settings.get(_CONTINUE_ON_ERROR_KEY, True))
+        self.install_devtools = bool(
+            workspace_settings.get(_INSTALL_DEVTOOLS_KEY, False)
+        )
         self.music_muted = bool(
             workspace_settings.get(_CONVERSION_MUSIC_MUTED_KEY, True)
         )
@@ -573,11 +596,9 @@ class RegenPanel:
         self._music_player = ConversionMusicPlayer(volume=self.music_volume)
         self._conversion_music_session_active = False
         self._music_missing_logged = False
-        # Experimental precombine generation — default off (see
-        # models.PhaseSelection.generate_precombines).
-        self.generate_precombines = bool(
-            workspace_settings.get(_GENERATE_PRECOMBINES_KEY, False)
-        )
+        self.build_precombines = bool(workspace_settings.get(_BUILD_PRECOMBINES_KEY, True))
+        self.generate_previs = bool(workspace_settings.get(_GENERATE_PREVIS_KEY, True))
+        self.interior_cdx_only = bool(workspace_settings.get(_INTERIOR_CDX_ONLY_KEY, False))
         self.re_use_land = False
         self.recovery_phase = _recovery_phase(
             workspace_settings.get(_RECOVERY_PHASE_KEY, "lodgen")
@@ -858,6 +879,8 @@ class RegenPanel:
         return rows
 
     def _reset_progress(self, start_phase: str = "prepare") -> None:
+        self._conversion_error = None
+        self._conversion_error_pending = False
         self._phase_scroll_frames = 0
         self._progress_estimate = ProgressEstimate(
             estimated_phase_weights(
@@ -865,7 +888,8 @@ class RegenPanel:
                 lod_mode=self.lod_mode,
                 packed=self.deploy_format != "loose",
                 deploy=self.deploy and self.install_location != "none",
-                precombines=getattr(self, "generate_precombines", False),
+                build_precombines=getattr(self, "build_precombines", True),
+                previs=getattr(self, "generate_previs", True),
                 start_phase=start_phase,
             )
         )
@@ -995,9 +1019,9 @@ class RegenPanel:
             texture_landscape_mip_flooding=bool(
                 getattr(self, "texture_landscape_mip_flooding", False)
             ),
-            generate_precombines=bool(
-                getattr(self, "generate_precombines", False)
-            ),
+            build_precombines=bool(getattr(self, "build_precombines", True)),
+            generate_previs=bool(getattr(self, "generate_previs", True)),
+            interior_cdx_only=bool(getattr(self, "interior_cdx_only", False)),
             re_use_land=self.re_use_land,
             write_land_cache=False,
             include_interior=True,
@@ -1008,15 +1032,15 @@ class RegenPanel:
             update_runtime_ini=(
                 self.add_archives_to_ini if deploy_format == "expanded" else True
             ),
-            fo4_ba2_target=self.resolve_ba2_target(),
             memory_report=bool(getattr(self, "full_logging", False)),
+            continue_on_error=bool(getattr(self, "continue_on_error", True)),
         )
         manifest = self._load_upgrade_manifest_cached()
         if manifest is not None:
             options.mod_version = manifest.current
             # getattr guard: some tests construct RegenPanel via __new__
             # (bypassing __init__) and don't set the upgrade attributes.
-            if getattr(self, "upgrade", False):
+            if getattr(self, "upgrade", False) and not self._upgrade_requires_full_build(manifest):
                 options.upgrade = True
                 options.hydrate_upgrade_from_deployed = True
                 options.upgrade_from = None
@@ -1079,6 +1103,11 @@ class RegenPanel:
             return False
         return self._store_installs_ok() and self.generated_plugin_path().is_file()
 
+    def can_undeploy(self) -> bool:
+        if self._runner_running() or getattr(self, "_cleanup_status", "idle") == "deleting":
+            return False
+        return bool(self._settings().get_game_paths("fo4").get("root_dir"))
+
     def _store_install_result(self, game_id: str) -> StoreInstallResult:
         root = self._settings().get_game_paths(game_id).get("root_dir", "") or ""
         cached = self._store_install_cache.get(game_id)
@@ -1088,20 +1117,14 @@ class RegenPanel:
         self._store_install_cache[game_id] = (root, result)
         return result
 
-    def _detect_ba2_target(self) -> tuple[str, str | None]:
+    def _detect_fo4_exe_version(self) -> str | None:
         fo4_root = self._settings().get_game_paths("fo4").get("root_dir", "") or ""
-        cached = self._ba2_detect_cache
+        cached = self._fo4_exe_version_cache
         if cached is not None and cached[0] == fo4_root:
             return cached[1]
-        result = detect_ba2_target(fo4_root)
-        self._ba2_detect_cache = (fo4_root, result)
-        return result
-
-    def resolve_ba2_target(self) -> str:
-        if self.ba2_target in ("og", "nextgen"):
-            return self.ba2_target
-        target, _version = self._detect_ba2_target()
-        return target
+        version = detect_fo4_version(fo4_root)
+        self._fo4_exe_version_cache = (fo4_root, version)
+        return version
 
     def upgrade_manifest_path(self) -> Path:
         return bundled_upgrade_manifest_path()
@@ -1146,6 +1169,22 @@ class RegenPanel:
         version = read_plugin_snam_header(esm) or "alpha1"
         self._snam_cache = (key, version)
         return version
+
+    def _upgrade_requires_full_build(self, manifest) -> bool:
+        if manifest is None:
+            return False
+        from_version = self._detected_installed_version()
+        target = manifest.current
+        conversion_id = self._pair().pair_id
+        try:
+            families = resolve_family_union(
+                manifest, from_version, target, conversion_id=conversion_id,
+            )
+            return "ALL" in families or requires_forced_regen(
+                manifest, from_version, target, conversion_id=conversion_id,
+            )
+        except ValueError:
+            return False
 
     def upgrade_plan_preview(self) -> str:
         manifest = self._load_upgrade_manifest_cached()
@@ -1345,26 +1384,21 @@ class RegenPanel:
                         lod_settings=lod_settings,
                         build_option_overrides=self._build_option_overrides(),
                     )
-                    companion_deployed = (
-                        self._deploy_companion_mod(paths, active_runner)
-                        if result.deployed and self._is_default_pair()
-                        else []
-                    )
                     if result.deployed:
-                        emit_runner_status(
-                            active_runner,
-                            "Removing temporary conversion data",
-                        )
                         self._end_conversion_music_session()
-                    cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
+                    finished = self._finish_deploy(
+                        paths,
+                        active_runner,
+                        result,
+                        continue_on_error=options.continue_on_error,
+                    )
                     active_runner.emit_complete(
                         str(result.output_root),
                         {
                             "deployed": result.deployed,
                             "exit_code": result.exit_code,
                             "elapsed_seconds": time.perf_counter() - preparation_started,
-                            "companion_deployed": companion_deployed,
-                            "cleanup_removed": cleanup_removed,
+                            **finished,
                         },
                     )
             finally:
@@ -1392,17 +1426,13 @@ class RegenPanel:
             result = regen_pipeline.deploy_existing(
                 paths,
                 options=options,
+                runner=runner,
             )
-            if result.failures:
+            if result.failures and not options.continue_on_error:
                 raise RuntimeError("; ".join(result.failures))
-            companion_deployed = (
-                self._deploy_companion_mod(paths, runner)
-                if result.deployed and self._is_default_pair()
-                else []
+            finished = self._finish_deploy(
+                paths, runner, result, continue_on_error=options.continue_on_error
             )
-            if result.deployed:
-                emit_runner_status(runner, "Removing temporary conversion data")
-            cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
             runner.emit_complete(
                 str(result.output_root),
                 {
@@ -1410,8 +1440,40 @@ class RegenPanel:
                     "exit_code": result.exit_code,
                     "deploy_existing": True,
                     "elapsed_seconds": time.perf_counter() - started,
-                    "companion_deployed": companion_deployed,
-                    "cleanup_removed": cleanup_removed,
+                    **finished,
+                },
+            )
+
+        self._start_runner(work)
+
+    def start_undeploy(self) -> None:
+        from bacup_lib import regen_pipeline
+
+        self._phases = []
+        self._reset_progress("deploy")
+        self._runner_status = "Preparing undeploy"
+        self._summary = None
+        self._completion = None
+        paths = self.build_paths()
+        plugin_name = self._pair().output_plugin_name
+        undeploy_bundled = self._is_default_pair()
+
+        def work(runner: ConversionRunner) -> None:
+            started = time.perf_counter()
+            emit_runner_status(runner, f"Removing {plugin_name}")
+            runner.emit_log("INFO", f"Undeploying {self._project_label()}...")
+            result = regen_pipeline.undeploy(paths, plugin_names=[plugin_name])
+            removed = (
+                self._undeploy_bundled_mods(paths, runner) if undeploy_bundled else []
+            )
+            runner.emit_complete(
+                str(result.output_root),
+                {
+                    "deployed": False,
+                    "undeployed": True,
+                    "exit_code": result.exit_code,
+                    "elapsed_seconds": time.perf_counter() - started,
+                    "bundled_removed": removed,
                 },
             )
 
@@ -1452,20 +1514,16 @@ class RegenPanel:
                         runner=active_runner,
                         lod_settings=lod_settings,
                     )
-                    if result.failures:
+                    if result.failures and not options.continue_on_error:
                         raise RuntimeError("; ".join(result.failures))
-                    companion_deployed = (
-                        self._deploy_companion_mod(paths, active_runner)
-                        if result.deployed and self._is_default_pair()
-                        else []
-                    )
                     if result.deployed:
-                        emit_runner_status(
-                            active_runner,
-                            "Removing temporary conversion data",
-                        )
                         self._end_conversion_music_session()
-                    cleanup_removed = self._cleanup_after_deploy(paths, result.deployed)
+                    finished = self._finish_deploy(
+                        paths,
+                        active_runner,
+                        result,
+                        continue_on_error=options.continue_on_error,
+                    )
                     active_runner.emit_complete(
                         str(result.output_root),
                         {
@@ -1473,8 +1531,7 @@ class RegenPanel:
                             "exit_code": result.exit_code,
                             "resume_from": start_phase,
                             "elapsed_seconds": time.perf_counter() - started,
-                            "companion_deployed": companion_deployed,
-                            "cleanup_removed": cleanup_removed,
+                            **finished,
                         },
                     )
             finally:
@@ -1486,6 +1543,11 @@ class RegenPanel:
         etype = event.get("type", "")
         if etype == "status":
             self._runner_status = str(event.get("message", "") or "")
+        elif etype == "error":
+            self._conversion_error = dict(event)
+            self._conversion_error_pending = True
+            self._progress_succeeded = False
+            self._runner_status = "Conversion stopped"
         elif etype in ("phase_start", "item_progress", "phase_complete"):
             data = self._normalize_phase_data(event.get("data", {}) or {})
             phase_key = data.get("ui_key", "")
@@ -1528,11 +1590,15 @@ class RegenPanel:
                 "mod_path": event.get("mod_path", ""),
                 "deployed": deployed,
                 "deploy_existing": bool(summary.get("deploy_existing")),
+                "undeployed": bool(summary.get("undeployed")),
+                "bundled_removed": summary.get("bundled_removed", []),
                 "resume_from": summary.get("resume_from"),
                 "elapsed_seconds": summary.get("elapsed_seconds"),
                 "ini_snippet": ini_snippet,
                 "companion_deployed": summary.get("companion_deployed", []),
                 "cleanup_removed": summary.get("cleanup_removed", []),
+                "failures": summary.get("failures", []),
+                "warnings": summary.get("warnings", []),
             }
 
     @staticmethod
@@ -1762,9 +1828,20 @@ class RegenPanel:
             raise FileNotFoundError(
                 f"Companion mod directory not found: {companion_data_root}"
             )
+        full_screen_map_root = app_root / "mods" / _FULL_SCREEN_MAP_MOD_NAME
+        if not full_screen_map_root.is_dir():
+            raise FileNotFoundError(
+                f"Bundled mod directory not found: {full_screen_map_root}"
+            )
+        for source_dirname, _ in _FULL_SCREEN_MAP_DEPLOY_DIRS:
+            source_dir = full_screen_map_root / source_dirname
+            if not source_dir.is_dir():
+                raise FileNotFoundError(f"Bundled mod directory not found: {source_dir}")
 
         deploy_data_dir = paths.deploy_data_dir or paths.target_data_dir
         deploy_data_dir.mkdir(parents=True, exist_ok=True)
+        # Read before the companion copy replaces it with the shipped defaults.
+        installed_tales_ini = tales_config.read_deployed(deploy_data_dir)
         deployed: list[str] = []
         options = self.build_options()
         from creation_lib.build.loose_deploy import (
@@ -1777,6 +1854,7 @@ class RegenPanel:
             try:
                 undeploy_loose_assets(
                     _COMPANION_MOD_NAME,
+                    game_data_dir=deploy_data_dir,
                     project_root=app_root,
                 )
             except FileNotFoundError:
@@ -1818,7 +1896,7 @@ class RegenPanel:
                 archive_max_bytes=_UNLIMITED_ARCHIVE_MAX_BYTES,
                 expanded_archives=False,
                 archive_workers=self.workers,
-                fo4_ba2_target=options.fo4_ba2_target,
+                fo4_ba2_target="og",
             )
             companion_archives = discover_mod_archives(
                 companion_root,
@@ -1859,6 +1937,43 @@ class RegenPanel:
             for archive in companion_archives:
                 shutil.copy2(archive, deploy_data_dir / archive.name)
                 deployed.append(archive.name)
+            _remove_loose_string_sidecars(
+                deploy_data_dir,
+                _COMPANION_MOD_NAME,
+                lambda message: (
+                    runner.emit_log("INFO", message)
+                    if runner is not None
+                    else _log.info(message)
+                ),
+                stale=True,
+            )
+
+        for source_dirname, target_dirname in _FULL_SCREEN_MAP_DEPLOY_DIRS:
+            src_root = full_screen_map_root / source_dirname
+            target_root = deploy_data_dir / target_dirname
+            for src in sorted(src_root.rglob("*")):
+                if not src.is_file():
+                    continue
+                rel = src.relative_to(src_root)
+                dest = target_root / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                deployed.append((Path(target_dirname) / rel).as_posix())
+
+        if getattr(self, "install_devtools", False):
+            devtools_f4se = app_root / "mods" / _DEVTOOLS_MOD_NAME / "F4SE"
+            if not devtools_f4se.is_dir():
+                raise FileNotFoundError(f"Bundled mod directory not found: {devtools_f4se}")
+            for src in sorted(devtools_f4se.rglob("*")):
+                if not src.is_file():
+                    continue
+                rel = Path("F4SE") / src.relative_to(devtools_f4se)
+                dest = deploy_data_dir / rel
+                if rel == _DEVTOOLS_USER_INI and dest.is_file():
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                deployed.append(rel.as_posix())
 
         for dirname in _COMPANION_DEPLOY_DIRS:
             src_root = companion_root / dirname
@@ -1874,12 +1989,124 @@ class RegenPanel:
                 shutil.copy2(src, dest)
                 deployed.append((Path(dirname) / rel).as_posix())
 
+        edits = self._tales_config_edits()
+        tales_config.write_install_ini(deploy_data_dir, installed_tales_ini, edits)
+        if edits:
+            self._set_workspace_settings({_TALES_CONFIG_EDITS_KEY: {}})
         if runner is not None:
+            runner.emit_log(
+                "INFO",
+                f"Tales settings written ({len(edits)} change(s) from Configure Features"
+                f"{', installed values kept' if installed_tales_ini is not None else ''})",
+            )
             runner.emit_log(
                 "INFO",
                 f"Companion mod {_COMPANION_MOD_NAME} deployed ({len(deployed)} file(s))",
             )
         return deployed
+
+    def _undeploy_bundled_mods(
+        self,
+        paths: RegenPaths,
+        runner: ConversionRunner | None = None,
+    ) -> list[str]:
+        from bacup_lib.regen_pipeline import _undeploy_output_mod_files
+        from creation_lib.build.loose_deploy import MANIFEST_NAME, undeploy_loose_assets
+
+        app_root = get_exe_dir()
+        data_dir = paths.deploy_data_dir or paths.target_data_dir
+        if not data_dir.is_dir():
+            return []
+        removed: list[str] = []
+        touched_dirs: set[Path] = set()
+
+        def remove_file(path: Path) -> None:
+            path.unlink()
+            removed.append(path.relative_to(data_dir).as_posix())
+            touched_dirs.add(path.parent)
+
+        if (app_root / "mods" / _COMPANION_MOD_NAME / MANIFEST_NAME).is_file():
+            try:
+                removed.extend(
+                    undeploy_loose_assets(
+                        _COMPANION_MOD_NAME, game_data_dir=data_dir, project_root=app_root
+                    )
+                )
+            except FileNotFoundError:
+                pass
+        removed.extend(_undeploy_output_mod_files(_COMPANION_MOD_NAME, data_dir))
+
+        for owned in _UNDEPLOY_OWNED_DIRS:
+            owned_dir = data_dir / owned
+            if owned_dir.is_dir():
+                removed.extend(
+                    path.relative_to(data_dir).as_posix()
+                    for path in owned_dir.rglob("*")
+                    if path.is_file()
+                )
+                shutil.rmtree(owned_dir)
+                touched_dirs.add(owned_dir.parent)
+
+        plugins_dir = data_dir / "F4SE" / "Plugins"
+        if plugins_dir.is_dir():
+            for path in plugins_dir.iterdir():
+                if path.is_file() and any(
+                    path.stem == name or path.stem.startswith(f"{name}_")
+                    for name in _BUNDLED_MOD_NAMES
+                ):
+                    remove_file(path)
+
+        map_data = app_root / "mods" / _FULL_SCREEN_MAP_MOD_NAME / "data"
+        if map_data.is_dir():
+            for src in map_data.rglob("*"):
+                deployed = data_dir / src.relative_to(map_data)
+                if src.is_file() and deployed.is_file():
+                    remove_file(deployed)
+
+        for directory in sorted(touched_dirs, key=lambda path: len(path.parts), reverse=True):
+            while directory != data_dir and data_dir in directory.parents:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    break
+                directory = directory.parent
+
+        if runner is not None:
+            runner.emit_log(
+                "INFO",
+                f"Removed Tales, FullScreenMap and DevTools ({len(removed)} file(s))",
+            )
+        return removed
+
+    def _finish_deploy(
+        self,
+        paths: RegenPaths,
+        runner: ConversionRunner,
+        result,
+        *,
+        continue_on_error: bool,
+    ) -> dict:
+        failures = list(result.failures)
+        companion_deployed: list[str] = []
+        if result.deployed and self._is_default_pair():
+            try:
+                companion_deployed = self._deploy_companion_mod(paths, runner)
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                failures.append(f"Deploy companion mod: {exc}")
+                _log.exception("Companion mod deploy failed; continuing")
+                runner.emit_log("ERROR", f"Companion mod deploy failed; continuing: {exc}")
+        if result.deployed:
+            emit_runner_status(runner, "Removing temporary conversion data")
+        # A run with failures keeps its output so it can be resumed or redeployed.
+        cleanup_removed = self._cleanup_after_deploy(paths, result.deployed and not failures)
+        return {
+            "companion_deployed": companion_deployed,
+            "cleanup_removed": cleanup_removed,
+            "failures": failures,
+            "warnings": list(result.warnings),
+        }
 
     def _cleanup_after_deploy(self, paths: RegenPaths, deployed: bool) -> list[str]:
         if not deployed:
@@ -2077,7 +2304,10 @@ class RegenPanel:
         self._draw_preflight_modal()
         self._draw_low_space_modal()
         self._draw_cleanup_dialog()
+        if getattr(self, "_tales_config_dialog", None) is not None:
+            self._tales_config_dialog.draw()
         self._draw_completion_popup()
+        self._draw_error_popup()
 
     def _draw_header(self) -> None:
         from ui.toolkit.app_paths import get_resource_dir
@@ -2092,7 +2322,7 @@ class RegenPanel:
         heading(self._project_label(), size=30)
         profile = get_project_profile(self.project_id)
         imgui.text_disabled(f"{profile.source_label}  →  Fallout 4")
-        _, exe_version = self._detect_ba2_target()
+        exe_version = self._detect_fo4_exe_version()
         pair = self._pair()
         target_root = (
             self._settings().get_game_paths(pair.target_game).get("root_dir", "")
@@ -2645,17 +2875,21 @@ class RegenPanel:
                             "Loose deployment does not register BA2 archives. Existing "
                             "entries for this mod are removed automatically when possible."
                         )
-            target_idx = (
-                _BA2_TARGET_VALUES.index(self.ba2_target)
-                if self.ba2_target in _BA2_TARGET_VALUES
-                else 0
-            )
-            changed, target_idx = draw_combo_field(
-                "BA2 target", _BA2_TARGET_LABELS, target_idx
-            )
-            if changed:
-                self.ba2_target = _BA2_TARGET_VALUES[target_idx]
-                self._set_workspace_settings({_BA2_TARGET_KEY: self.ba2_target})
+            if self._is_default_pair():
+                _form_row_label("Install B21 DevTools")
+                changed, self.install_devtools = toggle(
+                    "##installdevtools", self.install_devtools
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Optional developer suite: catalogs, spawning, quest control, "
+                        "Engine Lab and a performance HUD (F10 / Home). Deployed with the "
+                        "companion mod; an existing B21_DevTools.ini is kept."
+                    )
+                if changed:
+                    self._set_workspace_settings(
+                        {_INSTALL_DEVTOOLS_KEY: self.install_devtools}
+                    )
             pair_id = self._pair().pair_id
             profile_values = _lod_profile_values(pair_id)
             if profile_values:
@@ -2699,25 +2933,37 @@ class RegenPanel:
                 self._set_workspace_settings({_WORKERS_KEY: self.workers})
             _form_row_label("")
             imgui.text_disabled(self._worker_rec.note)
+            manifest = self._load_upgrade_manifest_cached()
+            requires_full_build = self._upgrade_requires_full_build(manifest)
             if not self._upgrade_user_toggled:
-                self.upgrade = self._deployed_esm_exists()
+                self.upgrade = self._deployed_esm_exists() and not requires_full_build
+            elif requires_full_build:
+                self.upgrade = False
             _form_row_label("Upgrade mode")
+            if requires_full_build:
+                imgui.begin_disabled()
             changed, self.upgrade = toggle(
                 f"Upgrade existing deployment{_NS}", self.upgrade
             )
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "Reuses the BACUP workspace when all eight loose-asset folders "
-                    "are present; otherwise extracts the currently deployed BA2s. "
-                    "Then converts changed assets and redeploys the complete mod "
-                    "using the selected BA2 format."
-                )
+            if requires_full_build:
+                imgui.end_disabled()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                if requires_full_build:
+                    imgui.set_tooltip("This upgrade requires a full conversion.")
+                else:
+                    imgui.set_tooltip(
+                        "Reuses the BACUP workspace when all eight loose-asset folders "
+                        "are present; otherwise extracts the currently deployed BA2s. "
+                        "Then converts changed assets and redeploys the complete mod "
+                        "using the selected BA2 format."
+                    )
             if changed:
                 self._upgrade_user_toggled = True
-            manifest = self._load_upgrade_manifest_cached()
             _form_row_label("")
             if manifest is None:
                 imgui.text_disabled("No upgrade manifest found - full build only.")
+            elif requires_full_build:
+                imgui.text_disabled("This upgrade requires a full conversion.")
             else:
                 detected = self._detected_installed_version()
                 imgui.text_disabled(f"Detected installed: {detected}")
@@ -2747,6 +2993,20 @@ class RegenPanel:
             icon=fa.ICON_FA_PLAY, enabled=can_start_conversion,
         ):
             self._request_conversion()
+        if self._is_default_pair():
+            if side_by_side:
+                imgui.same_line()
+            if action_button(
+                f"Configure Features{_NS}", width=secondary_width, height=button_height,
+                icon=fa.ICON_FA_SLIDERS, enabled=not running,
+            ):
+                self._open_tales_config()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "Tales from Appalachia settings (the in-game TALES CONFIG menu), "
+                    "written to its ini when the mod is installed."
+                )
+            side_by_side = imgui.get_content_region_avail().x >= 3 * secondary_width + 2 * gap
         if side_by_side:
             imgui.same_line()
         if running and self._owns_active_runner():
@@ -2762,6 +3022,26 @@ class RegenPanel:
         if hint:
             imgui.text_wrapped(hint)
 
+    def _tales_config(self) -> TalesConfigDialog:
+        dialog = getattr(self, "_tales_config_dialog", None)
+        if dialog is None:
+            dialog = self._tales_config_dialog = TalesConfigDialog(
+                lambda edits: self._set_workspace_settings({_TALES_CONFIG_EDITS_KEY: edits})
+            )
+        return dialog
+
+    def _tales_config_edits(self) -> dict[str, str]:
+        edits = self._workspace_settings().get(_TALES_CONFIG_EDITS_KEY)
+        return {str(k): str(v) for k, v in edits.items()} if isinstance(edits, dict) else {}
+
+    def _open_tales_config(self) -> None:
+        try:
+            paths = self.build_paths()
+            data_dir = paths.deploy_data_dir or paths.target_data_dir
+        except (OSError, ValueError):
+            data_dir = None
+        self._tales_config().open(data_dir, self._tales_config_edits())
+
     def _deploy_existing_hint(self) -> str:
         if self.generated_plugin_path().is_file():
             return ""
@@ -2771,7 +3051,7 @@ class RegenPanel:
         running = self._runner_running()
 
         with expandable_section(f"Advanced{_NS}",
-            description="Archive layout, compression & textures") as expanded:
+            description="Archive layout, compression, textures & undeploy") as expanded:
             if expanded:
                 if running:
                     imgui.begin_disabled()
@@ -2865,20 +3145,46 @@ class RegenPanel:
                             )
                         }
                     )
-                changed, self.generate_precombines = toggle(
-                    f"Generate precombines (experimental){_NS}",
-                    self.generate_precombines,
+                changed, self.build_precombines = toggle(
+                    f"Build precombines{_NS}",
+                    self.build_precombines,
                 )
                 if imgui.is_item_hovered():
                     imgui.set_tooltip(
-                        "EXPERIMENTAL. Bake interior precombined meshes (*_OC.nif) and "
-                        "stamp CELL PCMB/XCRI + REFR VC into the built ESM after the "
-                        "asset waves. Off by default; leave unchecked unless testing."
+                        "Build precombined meshes (Meshes/PreCombined/*_OC.NIF and the "
+                        "plugin geometry file) and CELL precombine stamps for interior "
+                        "cells inside the CK-verified subset. Runs before previs; "
+                        "unsupported cells are skipped and listed in diagnostics/precombine."
                     )
                 if changed:
                     self._set_workspace_settings(
-                        {_GENERATE_PRECOMBINES_KEY: self.generate_precombines}
+                        {_BUILD_PRECOMBINES_KEY: self.build_precombines}
                     )
+                changed, self.generate_previs = toggle(
+                    f"Generate previs{_NS}",
+                    self.generate_previs,
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Generate Umbra visibility (Vis/*.uvd) and CELL previs stamps for "
+                        "clusters the planner supports, solved in Rust. Unsupported "
+                        "clusters are skipped and listed in diagnostics/previs."
+                    )
+                if changed:
+                    self._set_workspace_settings({_GENERATE_PREVIS_KEY: self.generate_previs})
+                changed, self.interior_cdx_only = toggle(
+                    f"Interior-only precombine index{_NS}",
+                    self.interior_cdx_only,
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "Leave exterior cells out of the precombine index. Off, their rows "
+                        "go to '<plugin> - Exterior.cdx' (about 75 MB for Appalachia), which "
+                        "Tales From Appalachia loads beside the game's own index. Exterior "
+                        "precombines still load without it."
+                    )
+                if changed:
+                    self._set_workspace_settings({_INTERIOR_CDX_ONLY_KEY: self.interior_cdx_only})
                 changed, self.full_logging = toggle(
                     f"Full logging{_NS}",
                     self.full_logging,
@@ -2892,6 +3198,19 @@ class RegenPanel:
                     )
                 if changed:
                     self._set_workspace_settings({_FULL_LOGGING_KEY: self.full_logging})
+                changed, self.continue_on_error = toggle(
+                    f"Continue on error{_NS}",
+                    self.continue_on_error,
+                )
+                if imgui.is_item_hovered():
+                    imgui.set_tooltip(
+                        "A failing phase (for example a missing intro movie or a SWF "
+                        "that won't convert) is logged and skipped; the conversion "
+                        "carries on and deploys everything else. The failures are "
+                        "listed when it finishes."
+                    )
+                if changed:
+                    self._set_workspace_settings({_CONTINUE_ON_ERROR_KEY: self.continue_on_error})
                 imgui.separator()
                 recovery_idx = (
                     _RECOVERY_PHASE_VALUES.index(self.recovery_phase)
@@ -2926,8 +3245,49 @@ class RegenPanel:
                     imgui.text_disabled(
                         "Resume overwrites outputs from the selected phase onward."
                     )
+                imgui.separator()
+                self._draw_undeploy()
                 if running:
                     imgui.end_disabled()
+
+    def _undeploy_targets_label(self) -> str:
+        plugin = self._pair().output_plugin_name
+        if not self._is_default_pair():
+            return plugin
+        return f"{plugin}, Tales From Appalachia, FullScreenMap and DevTools"
+
+    def _draw_undeploy(self) -> None:
+        popup = f"Undeploy mods{_NS}_undeploy"
+        can_undeploy = self.can_undeploy()
+        if not can_undeploy:
+            imgui.begin_disabled()
+        if imgui.button(f"Undeploy{_NS}"):
+            imgui.open_popup(popup)
+        if not can_undeploy:
+            imgui.end_disabled()
+        imgui.push_text_wrap_pos(0)
+        imgui.text_disabled(
+            f"Removes {self._undeploy_targets_label()} from the install folder, "
+            "plus their archive entries in Fallout4Custom.ini."
+        )
+        imgui.pop_text_wrap_pos()
+
+        prepare_dialog(560, 220)
+        opened, _ = imgui.begin_popup_modal(popup)
+        if opened:
+            imgui.text_wrapped(
+                f"Remove {self._undeploy_targets_label()} from the install folder? "
+                "Their settings files (including Tales and DevTools .ini files) are "
+                "deleted too. The converted output folder is not touched, so if it "
+                "still exists Deploy existing mod can reinstall it."
+            )
+            if action_button(f"Undeploy{_NS}_confirm", primary=True):
+                imgui.close_current_popup()
+                self.start_undeploy()
+            imgui.same_line()
+            if action_button(f"Cancel{_NS}_undeploy"):
+                imgui.close_current_popup()
+            imgui.end_popup()
 
     def _run_install_audit(self):
         try:
@@ -3203,6 +3563,31 @@ class RegenPanel:
                 )
         imgui.end()
 
+    def _draw_error_popup(self) -> None:
+        error = self._conversion_error
+        if error is None:
+            return
+        popup = f"Conversion failed{_NS}_error"
+        if self._conversion_error_pending:
+            imgui.open_popup(popup)
+            self._conversion_error_pending = False
+        prepare_dialog(720, 440)
+        opened, _ = imgui.begin_popup_modal(popup)
+        if opened:
+            imgui.begin_child(
+                f"error_message{_NS}",
+                imgui.ImVec2(0, -imgui.get_frame_height_with_spacing()),
+            )
+            imgui.text_wrapped(error["message"])
+            imgui.end_child()
+            if imgui.button(f"Copy error details{_NS}"):
+                imgui.set_clipboard_text(error["message"] + "\n\n" + error["details"])
+            imgui.same_line()
+            if imgui.button(f"Close{_NS}_error"):
+                self._conversion_error = None
+                imgui.close_current_popup()
+            imgui.end_popup()
+
     def _draw_completion_popup(self) -> None:
         if not self._completion:
             return
@@ -3210,12 +3595,33 @@ class RegenPanel:
         if imgui.begin(f"Conversion complete{_NS}_done"):
             c = self._completion
             if c.get("elapsed_seconds") is not None:
-                operation = "deployment" if c.get("deploy_existing") else (
-                    "recovery" if c.get("resume_from") else "conversion"
-                )
+                if c.get("undeployed"):
+                    operation = "undeploy"
+                elif c.get("deploy_existing"):
+                    operation = "deployment"
+                else:
+                    operation = "recovery" if c.get("resume_from") else "conversion"
                 heading(f"Total {operation} time: {_format_duration(c['elapsed_seconds'])}")
                 imgui.separator()
-            if c["deployed"]:
+            if c.get("failures"):
+                imgui.text_colored(
+                    semantic_color("error"),
+                    f"Finished with {len(c['failures'])} error(s); these parts were skipped:",
+                )
+                imgui.begin_child(f"failures{_NS}", imgui.ImVec2(0, scaled(110)))
+                for failure in c["failures"]:
+                    imgui.text_wrapped(failure)
+                imgui.end_child()
+                if imgui.button(f"Copy errors{_NS}"):
+                    imgui.set_clipboard_text("\n".join(c["failures"]))
+                imgui.separator()
+            if c.get("undeployed"):
+                imgui.text(f"{self._pair().output_plugin_name} removed from the install folder.")
+                if c.get("bundled_removed"):
+                    imgui.text(
+                        f"Bundled mods removed: {len(c['bundled_removed'])} file(s)"
+                    )
+            elif c["deployed"]:
                 if c.get("deploy_existing"):
                     imgui.text("Existing mod deployed.")
                 elif c.get("resume_from"):

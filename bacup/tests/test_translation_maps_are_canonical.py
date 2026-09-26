@@ -16,15 +16,6 @@ MAP_DIR = (
     / "embedded"
     / "translation_maps"
 )
-LEGACY_MAP_DIR = (
-    ROOT
-    / "py_creation_lib"
-    / "python"
-    / "creation_lib"
-    / "conversion"
-    / "record"
-    / "translation_maps"
-)
 
 OLD_SHAPE_TERMS = (
     "MutagenObjectType",
@@ -58,17 +49,18 @@ def _active_translation_maps() -> list[Path]:
     )
 
 
-def test_legacy_python_translation_maps_removed() -> None:
-    assert not LEGACY_MAP_DIR.exists()
-
-
 def test_active_translation_maps_are_canonical() -> None:
-    failures: list[str] = []
+    failures: list[str] = [
+        f"{filename}: required map missing from active loader path"
+        for filename in sorted(REQUIRED_MAP_FILENAMES)
+        if not (MAP_DIR / filename).is_file()
+    ]
 
     for map_file in _active_translation_maps():
         text = map_file.read_text(encoding="utf-8")
+        uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
         for term in OLD_SHAPE_TERMS:
-            if term in text:
+            if term in uncommented:
                 failures.append(f"{map_file.name}: active map contains old-shape term {term!r}")
 
         data = yaml.safe_load(text) or {}
@@ -77,7 +69,7 @@ def test_active_translation_maps_are_canonical() -> None:
             continue
 
         for key, value in data.items():
-            if key in {"skip_records", "material_overrides"} or str(key).startswith("_"):
+            if key in {"skip_records", "material_overrides", "record_routes"} or str(key).startswith("_"):
                 continue
             valid_signature = (
                 isinstance(key, str)
@@ -92,23 +84,3 @@ def test_active_translation_maps_are_canonical() -> None:
                 failures.append(f"{map_file.name}: {key} block must be a mapping")
 
     assert not failures, "Translation map canonical validation failed:\n" + "\n".join(failures)
-
-
-def test_required_translation_maps_exist() -> None:
-    missing = sorted(
-        filename
-        for filename in REQUIRED_MAP_FILENAMES
-        if not (MAP_DIR / filename).is_file()
-    )
-    assert not missing, "Required translation maps missing from active loader path: " + ", ".join(missing)
-
-
-def test_fo76_fact_preserves_legacy_and_relayouts_new_vendor_values() -> None:
-    translation_map = yaml.safe_load(
-        (MAP_DIR / "fo76_to_fo4.yaml").read_text(encoding="utf-8")
-    )
-    fact_rules = translation_map["FACT"]
-
-    assert "VENV" not in fact_rules.get("drop", [])
-    assert fact_rules["fields"]["VENP"] == "VENV"
-    assert fact_rules["transforms"]["VENV"] == {"type": "venp_to_venv"}

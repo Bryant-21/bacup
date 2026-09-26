@@ -32,9 +32,14 @@ State ready
 
         akActionRef.RemoveItem(IgnitionReactorCore01, 1, True)
         MTR07_Earth.SetStage(QuestStageToSet)
-        If MTR07RRISoundRef != None
-            MTR07RRISoundRef.PlayAnimation("Play")
-        EndIf
+        ; A later Earth Mover run re-enables this port, so it must not stay busy.
+        GoToState("ready")
         Disable()
+        If MTR07RRISoundRef != None
+            ; The bound rod-insert marker is a one-shot sound that plays when enabled.
+            MTR07RRISoundRef.Enable()
+            Utility.Wait(3.0)
+            MTR07RRISoundRef.Disable()
+        EndIf
     EndEvent
 EndState

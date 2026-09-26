@@ -23,8 +23,14 @@ Int[] PreparedWaveIndices
 ObjectReference[] SpawnedReferences
 RefCollectionAlias[] SpawnedCollections
 Bool ShuttingDown
+Bool PreparingWaves
 
 Event OnQuestInit()
+    ClearAllMaterializedReferences()
+    PreparedWaveIndices = None
+    SpawnedReferences = None
+    SpawnedCollections = None
+    PreparingWaves = False
     ShuttingDown = False
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
@@ -53,18 +59,19 @@ Event OnQuestShutdown()
 EndEvent
 
 Function PrepareEligibleWaves()
-    If ShuttingDown || !WaveContractIsValid()
+    If ShuttingDown || PreparingWaves || !WaveContractIsValid()
         Return
     EndIf
-
+    PreparingWaves = True
     Int waveIndex = 0
-    While waveIndex < WaveCollections.Length
+    While !ShuttingDown && waveIndex < WaveCollections.Length
         Int preparationStage = WavePreparationStages[waveIndex]
         If !HasPreparedWave(waveIndex) && (preparationStage < 0 || IsStageDone(preparationStage))
             PrepareWave(waveIndex)
         EndIf
         waveIndex += 1
     EndWhile
+    PreparingWaves = False
 EndFunction
 
 Function PrepareWave(Int aiWaveIndex)
@@ -89,10 +96,17 @@ Function PrepareWave(Int aiWaveIndex)
 
     Int actorIndex = 0
     While actorIndex < actorCount
-        Form actorBase = SelectCandidateForm(aiWaveIndex, actorIndex)
+        Form spawnForm = SelectCandidateForm(aiWaveIndex, actorIndex)
         ObjectReference spawnedRef
-        If actorBase != None
-            spawnedRef = spawnMarker.PlaceAtMe(actorBase, 1, True, True, False)
+        If spawnForm != None
+            spawnedRef = spawnMarker.PlaceAtMe(spawnForm, 1, True, True, False)
+        EndIf
+        If ShuttingDown
+            If spawnedRef != None
+                spawnedRef.DisableNoWait()
+                spawnedRef.Delete()
+            EndIf
+            Return
         EndIf
         If spawnedRef == None
             ClearMaterializedCollection(waveCollection)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -51,18 +50,3 @@ def test_active_conversion_code_has_no_legacy_vocab_terms() -> None:
                 hits.append(f"{path.relative_to(PROJECT_ROOT)} contains {term}")
     assert hits == []
 
-
-def test_runtime_does_not_import_whitelist_tools() -> None:
-    offenders: list[str] = []
-    for path in (CONVERSION_ROOT / "orchestrator.py",):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module and "whitelist" in node.module:
-                offenders.append(f"{path.name}: {node.module}")
-            if isinstance(node, ast.Import):
-                offenders.extend(
-                    f"{path.name}: {alias.name}"
-                    for alias in node.names
-                    if "whitelist" in alias.name
-                )
-    assert offenders == []

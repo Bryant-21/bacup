@@ -183,11 +183,13 @@ pub(crate) enum MagicContractError {
     PlanDrift {
         form_key: FormKey,
     },
+    #[cfg(test)]
     DonorSignatureDrift {
         role: MagicDonorRole,
         expected: SigCode,
         actual: SigCode,
     },
+    #[cfg(test)]
     DonorEditorIdDrift {
         role: MagicDonorRole,
         expected: &'static str,
@@ -203,6 +205,7 @@ impl std::fmt::Display for MagicContractError {
                 "Skyrim magic lowering plan no longer matches {:06X}",
                 form_key.local
             ),
+            #[cfg(test)]
             Self::DonorSignatureDrift {
                 role,
                 expected,
@@ -213,6 +216,7 @@ impl std::fmt::Display for MagicContractError {
                 expected.as_str(),
                 actual.as_str()
             ),
+            #[cfg(test)]
             Self::DonorEditorIdDrift {
                 role,
                 expected,
@@ -386,6 +390,7 @@ pub(crate) fn magic_donor_identity(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn validate_magic_donor(
     record: &Record,
     role: MagicDonorRole,

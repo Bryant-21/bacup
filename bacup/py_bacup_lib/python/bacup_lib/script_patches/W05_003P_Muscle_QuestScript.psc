@@ -1,3 +1,36 @@
+Function ApplySkinnerDiscount(Int aiChoiceStage)
+    If !IsRunning() || (aiChoiceStage != 1221 && aiChoiceStage != 1222 && aiChoiceStage != 1223)
+        Return
+    EndIf
+    If !IsStageDone(aiChoiceStage)
+        If !SetStage(aiChoiceStage)
+            Return
+        EndIf
+    EndIf
+    Actor playerRef = None
+    W05_003P_ApplyPerkOnEnterRefScript perkTrigger = None
+    If owningPlayer != None
+        playerRef = owningPlayer.GetActorReference()
+    EndIf
+    If SkinnerPerkTrigger != None
+        perkTrigger = SkinnerPerkTrigger.GetReference() as W05_003P_ApplyPerkOnEnterRefScript
+    EndIf
+    If playerRef == None || perkTrigger == None
+        Return
+    EndIf
+    Int discountRank = 0
+    If IsStageDone(1221)
+        discountRank += 1
+    EndIf
+    If IsStageDone(1222)
+        discountRank += 1
+    EndIf
+    If IsStageDone(1223)
+        discountRank += 2
+    EndIf
+    perkTrigger.SetDiscountRank(playerRef, discountRank)
+EndFunction
+
 Event OnQuestInit()
     If !IsStageDone(10)
         SetStage(10)

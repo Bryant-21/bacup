@@ -4,14 +4,11 @@ EndFunction
 
 Function Fragment_Stage_0010_Item_00()
     SetObjectiveDisplayed(10, True)
-    Actor playerRef = Alias_MTR07_EarthPlayer.GetActorReference()
+    Actor playerRef = Game.GetPlayer()
     MiscObject ignitionCore = Game.GetFormFromFile(0x0015C3, "SeventySix.esm") as MiscObject
     If playerRef != None && ignitionCore != None
         Int coreCount = playerRef.GetItemCount(ignitionCore)
-        If coreCount < 4
-            playerRef.AddItem(ignitionCore, 4 - coreCount, True)
-        EndIf
-        If !IsStageDone(20)
+        If coreCount >= 4 && !IsStageDone(20)
             SetStage(20)
         EndIf
     EndIf

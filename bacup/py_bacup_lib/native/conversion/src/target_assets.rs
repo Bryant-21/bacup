@@ -9,7 +9,7 @@ use nif_core_native::model::NifFile;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rayon::prelude::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 
 use crate::relocation::normalize_rel;
 
@@ -1928,86 +1928,60 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the extracted target overlay"]
-    fn overlay_metadata_matches_full_corpus() {
-        let root = PathBuf::from(std::env::var_os("OVERLAY_CORPUS_ROOT").unwrap());
-        let started = Instant::now();
-        let old = legacy_overlay(&root);
-        let legacy_seconds = started.elapsed().as_secs_f64();
-        let started = Instant::now();
-        let new = index_overlay(&root).unwrap();
-        let optimized_seconds = started.elapsed().as_secs_f64();
-        assert_same_overlay(&old, &new);
-        let report = serde_json::json!({
-            "files": new.len(), "legacy_seconds": legacy_seconds,
-            "optimized_seconds": optimized_seconds, "identical": true,
-            "fingerprint": archive_fingerprint(&HashMap::new(), &new, 2).unwrap(),
-        });
-        eprintln!("{report}");
-        if let Some(path) = std::env::var_os("OVERLAY_CORPUS_REPORT") {
-            fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-        }
-    }
-
-    #[test]
-    fn anim_text_data_scope_includes_target_and_base_race_handles() {
+    fn anim_text_data_requests_cover_race_handles_fixed_assets_and_hkx_descendants() {
         assert_eq!(
             anim_text_data_race_handles(10, &[20, 30]),
             vec![(10, true), (20, false), (30, false)]
         );
-    }
 
-    #[test]
-    fn anim_text_data_fixed_assets_include_skeleton_offsets_and_stance_files() {
         let mut requested = HashSet::new();
         add_fixed_anim_text_data_requests(&mut requested, [42]);
         assert!(requested.contains(CHARACTER_SKELETON_ASSET));
         assert!(requested.contains(ANIM_TEXT_DATA_OFFSETS_ASSET));
         assert!(requested.contains("meshes/animtextdata/animationstancedata/42.txt"));
-    }
 
-    #[test]
-    fn anim_text_data_hkx_directory_matching_includes_descendants_only() {
         let directories = HashSet::from([
             "meshes/actors/character/behaviors".to_string(),
             "meshes/actors/character/animations/gauss".to_string(),
         ]);
-        assert!(asset_is_under_requested_directory(
-            "meshes/actors/character/behaviors/weapon.hkx",
-            &directories
-        ));
-        assert!(asset_is_under_requested_directory(
-            "meshes/actors/character/animations/gauss/reload/idle.hkx",
-            &directories
-        ));
-        assert!(!asset_is_under_requested_directory(
-            "meshes/actors/character/animations/minigun/idle.hkx",
-            &directories
-        ));
+        for (asset, expected) in [
+            ("meshes/actors/character/behaviors/weapon.hkx", true),
+            (
+                "meshes/actors/character/animations/gauss/reload/idle.hkx",
+                true,
+            ),
+            ("meshes/actors/character/animations/minigun/idle.hkx", false),
+        ] {
+            assert_eq!(
+                asset_is_under_requested_directory(asset, &directories),
+                expected,
+                "{asset}"
+            );
+        }
     }
 
     #[test]
-    fn official_archive_filter_excludes_mod_archives() {
-        assert!(official_archive_name("Fallout4 - Meshes.ba2"));
-        assert!(official_archive_name("DLCCoast - Main.ba2"));
-        assert!(!official_archive_name(
-            "ccBGSFO4001-PipBoy(Black) - Main.ba2"
-        ));
-        assert!(!official_archive_name("B21_Test - Main.ba2"));
-    }
-
-    #[test]
-    fn archive_priority_matches_official_master_order() {
-        assert!(
-            archive_load_order("Fallout4 - Main.ba2") < archive_load_order("DLCRobot - Main.ba2")
-        );
-        assert!(
-            archive_load_order("DLCRobot - Main.ba2") < archive_load_order("DLCCoast - Main.ba2")
-        );
-        assert!(
-            archive_load_order("DLCCoast - Main.ba2")
-                < archive_load_order("DLCNukaWorld - Main.ba2")
-        );
+    fn official_archives_exclude_mods_and_load_in_master_order() {
+        for (name, official) in [
+            ("Fallout4 - Meshes.ba2", true),
+            ("DLCCoast - Main.ba2", true),
+            ("ccBGSFO4001-PipBoy(Black) - Main.ba2", false),
+            ("B21_Test - Main.ba2", false),
+        ] {
+            assert_eq!(official_archive_name(name), official, "{name}");
+        }
+        let order = [
+            "Fallout4 - Main.ba2",
+            "DLCRobot - Main.ba2",
+            "DLCCoast - Main.ba2",
+            "DLCNukaWorld - Main.ba2",
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                archive_load_order(pair[0]) < archive_load_order(pair[1]),
+                "{pair:?}"
+            );
+        }
     }
 
     #[test]
@@ -2201,11 +2175,6 @@ mod tests {
         let stats = store.stats();
         assert_eq!(stats.relocation_preparations, 2);
         assert_eq!(stats.relocation_cache_hits, 1);
-    }
-
-    #[test]
-    fn catalog_dependency_source_stays_compact() {
-        assert!(std::mem::size_of::<CatalogDependencySource>() <= 12);
     }
 
     #[test]

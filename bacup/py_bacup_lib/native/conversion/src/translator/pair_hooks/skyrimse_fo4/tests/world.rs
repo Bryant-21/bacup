@@ -23,10 +23,7 @@ fn maps_skyrim_refr_marker_types_to_safe_fo4_icons() {
             FieldValue::Bytes(smallvec::smallvec![target_type, 7])
         );
     }
-}
 
-#[test]
-fn maps_decoded_marker_type_without_overwriting_unknown_byte() {
     let interner = StringInterner::new();
     let hook = SkyrimSeFo4Hook;
     let mut ctx = PairCtx::new(&interner);
@@ -53,10 +50,7 @@ fn maps_decoded_marker_type_without_overwriting_unknown_byte() {
             (interner.intern("unknown_u8_1"), FieldValue::Uint(9)),
         ])
     );
-}
 
-#[test]
-fn leaves_non_marker_tnam_contexts_unchanged() {
     let interner = StringInterner::new();
     let hook = SkyrimSeFo4Hook;
     let mut ctx = PairCtx::new(&interner);
@@ -77,3 +71,4 @@ fn leaves_non_marker_tnam_contexts_unchanged() {
         );
     }
 }
+

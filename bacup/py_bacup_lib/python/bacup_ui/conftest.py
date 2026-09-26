@@ -10,7 +10,8 @@ def imgui_layout_metrics(monkeypatch):
 
     if not isinstance(imgui, MagicMock):
         return
-    for name, glyph in (("ICON_FA_PLAY", "\uf04b"), ("ICON_FA_STOP", "\uf04d"), ("ICON_FA_FOLDER_OPEN", "\uf07c")):
+    for name, glyph in (("ICON_FA_PLAY", "\uf04b"), ("ICON_FA_STOP", "\uf04d"), ("ICON_FA_FOLDER_OPEN", "\uf07c"),
+                        ("ICON_FA_SLIDERS", "\uf1de"), ("ICON_FA_ROTATE_LEFT", "\uf2ea")):
         monkeypatch.setattr(fa, name, glyph)
     def vector(x, y):
         return SimpleNamespace(x=x, y=y)

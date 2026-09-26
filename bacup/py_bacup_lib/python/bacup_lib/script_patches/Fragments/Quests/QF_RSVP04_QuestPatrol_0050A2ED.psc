@@ -1,3 +1,6 @@
+; Nothing sets the container fill stages (2001/3001/4001), the post-listen checkpoints
+; (1900/2900/3900/4900, otherwise reached only through checkpoint restore at init) or the
+; completion stage 9000, whose check-in objective has no target in this conversion.
 Function Fragment_Stage_0001_Item_00()
     If Alias_Player
         Alias_Player.ForceRefIfEmpty(Game.GetPlayer())
@@ -22,6 +25,9 @@ EndFunction
 
 Function Fragment_Stage_1800_Item_00()
     SetObjectiveCompleted(1000)
+    If !IsStageDone(1900)
+        SetStage(1900)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1900_Item_00()
@@ -38,6 +44,9 @@ EndFunction
 Function Fragment_Stage_2000_Item_00()
     SetObjectiveCompleted(1900)
     SetObjectiveDisplayed(2000)
+    If !IsStageDone(2001)
+        SetStage(2001)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_2001_Item_00()
@@ -54,6 +63,9 @@ EndFunction
 
 Function Fragment_Stage_2800_Item_00()
     SetObjectiveCompleted(2900)
+    If !IsStageDone(2900)
+        SetStage(2900)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_2900_Item_00()
@@ -70,6 +82,9 @@ EndFunction
 Function Fragment_Stage_3000_Item_00()
     SetObjectiveCompleted(3000)
     SetObjectiveDisplayed(3100)
+    If !IsStageDone(3001)
+        SetStage(3001)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_3001_Item_00()
@@ -91,6 +106,9 @@ EndFunction
 
 Function Fragment_Stage_3800_Item_00()
     SetObjectiveCompleted(3500)
+    If !IsStageDone(3900)
+        SetStage(3900)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_3900_Item_00()
@@ -107,6 +125,9 @@ EndFunction
 Function Fragment_Stage_4000_Item_00()
     SetObjectiveCompleted(4000)
     SetObjectiveDisplayed(4100)
+    If !IsStageDone(4001)
+        SetStage(4001)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_4001_Item_00()
@@ -123,6 +144,9 @@ EndFunction
 
 Function Fragment_Stage_4800_Item_00()
     SetObjectiveCompleted(4900)
+    If !IsStageDone(4900)
+        SetStage(4900)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_4900_Item_00()
@@ -142,6 +166,9 @@ EndFunction
 Function Fragment_Stage_5500_Item_00()
     SetObjectiveCompleted(5200)
     SetObjectiveDisplayed(5500)
+    If !IsStageDone(9000)
+        SetStage(9000)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()

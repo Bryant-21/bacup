@@ -1,11 +1,20 @@
 Event OnAliasInit()
     AddInventoryEventFilter(SFM04_Organic_RadShield)
+    RestoreChemistryProgress()
     ReconcileRadShield()
 EndEvent
 
 Event OnPlayerLoadGame()
+    RestoreChemistryProgress()
     ReconcileRadShield()
 EndEvent
+
+Function RestoreChemistryProgress()
+    SFM04_Organic_QuestScript organicQuest = GetOwningQuest() as SFM04_Organic_QuestScript
+    If organicQuest != None && organicQuest.IsRunning()
+        organicQuest.ConfigureLocalTerminals()
+    EndIf
+EndFunction
 
 Event OnItemAdded(Form akBaseItem, Int aiItemCount, ObjectReference akItemReference, ObjectReference akSourceContainer)
     If akBaseItem == SFM04_Organic_RadShield && aiItemCount > 0

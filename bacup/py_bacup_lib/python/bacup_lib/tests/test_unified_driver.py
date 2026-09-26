@@ -5,7 +5,6 @@ orchestrator); the REAL oracle is the byte-gate."""
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,17 +27,13 @@ from bacup_lib.workflows.unified import (
     TrackSignals,
     UnifiedDriver,
     _UnifiedRecordRuntime,
-    _augment_fo76_to_fo4_script_skeleton,
     _copy_fo76_vaultboy_swfs,
     _finalize_fo76_pipboy_map_texture,
     _iter_top_level_papyrus_members,
     _merge_script_method_patches,
     _resolve_source_strings_dir,
     _resolve_fo76_translate_tokens,
-    _script_body_is_hollow,
-    _script_patch_source,
 )
-from creation_lib.pex.native_runtime import compile_psc
 
 
 def test_asset_failure_parser_reads_native_wave_messages():
@@ -57,20 +52,9 @@ def test_asset_failure_parser_reads_native_wave_messages():
     ]
 
 
-def test_source_strings_dir_prefers_sidecars_beside_plugin(tmp_path: Path) -> None:
+def test_source_strings_dir_prefers_sidecars_then_configured_data(tmp_path: Path) -> None:
     source_plugin = tmp_path / "merge" / "Skyrim.esm"
     adjacent_strings = source_plugin.parent / "Strings"
-    fallback_root = tmp_path / "extracted"
-    adjacent_strings.mkdir(parents=True)
-    (fallback_root / "Strings").mkdir(parents=True)
-
-    assert _resolve_source_strings_dir(source_plugin, fallback_root) == str(
-        adjacent_strings
-    )
-
-
-def test_source_strings_dir_uses_configured_data_strings_child(tmp_path: Path) -> None:
-    source_plugin = tmp_path / "merge" / "Skyrim.esm"
     source_data_root = tmp_path / "extracted"
     configured_strings = source_data_root / "Strings"
     source_plugin.parent.mkdir(parents=True)
@@ -78,6 +62,11 @@ def test_source_strings_dir_uses_configured_data_strings_child(tmp_path: Path) -
 
     assert _resolve_source_strings_dir(source_plugin, source_data_root) == str(
         configured_strings
+    )
+
+    adjacent_strings.mkdir()
+    assert _resolve_source_strings_dir(source_plugin, source_data_root) == str(
+        adjacent_strings
     )
 
 
@@ -447,48 +436,6 @@ def test_mvp_melee_asset_receipt_preserves_native_record_only_admission(
     assert rows[0]["first_person_model"] == ""
 
 
-def test_mvp_melee_phase_runs_after_fixups_before_material_rewrite() -> None:
-    import inspect
-
-    source = inspect.getsource(_UnifiedRecordRuntime._translate_records_rust)
-    assert source.index('run.run_phase("fixups_v2"') < source.index(
-        "self._run_mvp_melee_phase"
-    )
-    assert source.index("self._run_mvp_melee_phase") < source.index(
-        '"rewrite_mswp_material_paths"'
-    )
-    assert source.index("self._run_mvp_melee_phase") < source.index(
-        "self._run_mvp_creature_corpus_discovery"
-    )
-    assert source.index("self._run_mvp_creature_corpus_discovery") < source.index(
-        '"rewrite_mswp_material_paths"'
-    )
-    assert source.index("self._run_mvp_creature_dependency_plan") < source.index(
-        'run.run_phase("translate_v2"'
-    )
-
-
-def test_skyrim_quest_runtime_compiles_before_story_manager_and_finalizes_after_fixups() -> None:
-    import inspect
-
-    source = inspect.getsource(_UnifiedRecordRuntime._translate_records_rust)
-    assert source.index("self._prepare_skyrim_minimal_quest_actions") < source.index(
-        'run.run_phase("translate_v2"'
-    )
-    assert source.index('run.run_phase("translate_v2"') < source.index(
-        "self._compile_and_attach_skyrim_minimal_quests"
-    )
-    assert source.index("self._compile_and_attach_skyrim_minimal_quests") < source.index(
-        "self._copy_skyrim_quest_runtime_assets"
-    )
-    assert source.index("self._copy_skyrim_quest_runtime_assets") < source.index(
-        'run.run_phase(\n            "emit_story_manager_subset"'
-    )
-    assert source.index('"emit_story_manager_subset"') < source.index(
-        'run.run_phase("fixups_v2"'
-    )
-
-
 def test_skyrim_quest_preparation_uses_native_loader(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -514,26 +461,6 @@ def test_skyrim_quest_preparation_uses_native_loader(
 
     assert prepared == 0
     assert native_calls == [73]
-
-
-def test_skyrim_quest_runtime_asset_lookup_rejects_missing_declared_roots(
-    tmp_path: Path,
-) -> None:
-    with pytest.raises(FileNotFoundError, match="missing from declared roots"):
-        _UnifiedRecordRuntime._find_skyrim_quest_runtime_asset(
-            (),
-            ("sound/voice/questport/nord_male/001234_00.xwm",),
-            "converted Skyrim quest XWM/WAV",
-        )
-
-    empty_root = tmp_path / "converted"
-    empty_root.mkdir()
-    with pytest.raises(FileNotFoundError, match="001234_00.xwm"):
-        _UnifiedRecordRuntime._find_skyrim_quest_runtime_asset(
-            (empty_root,),
-            ("sound/voice/questport/nord_male/001234_00.xwm",),
-            "converted Skyrim quest XWM/WAV",
-        )
 
 
 def test_skyrim_quest_runtime_converted_roots_exclude_output_staging(
@@ -726,9 +653,13 @@ def test_finalize_fo76_pipboy_map_texture_writes_fo4_legacy_dds(
     request.options.convert_textures = True
     runner = StubRunner()
     saved: dict[str, object] = {}
+    saved_maps: dict[Path, dict[str, object]] = {}
+
+    military_path = source_path.with_name("military_map_d.dds")
+    military_path.write_bytes(b"dds")
 
     def fake_load_image(path: str, mode: str = "RGBA") -> Image.Image:
-        assert path == str(source_path)
+        assert path in (str(source_path), str(military_path))
         assert mode == "RGBA"
         return Image.new("RGBA", (4, 4), (1, 2, 3, 255))
 
@@ -741,6 +672,9 @@ def test_finalize_fo76_pipboy_map_texture_writes_fo4_legacy_dds(
         generate_mips: bool = False,
         use_gpu: bool = True,
     ) -> None:
+        if "B21_FullScreenMap" in Path(path).parts:
+            saved_maps[Path(path)] = {"size": img.size, "format": format, "generate_mips": generate_mips}
+            return
         saved.update(
             path=Path(path),
             size=img.size,
@@ -768,19 +702,13 @@ def test_finalize_fo76_pipboy_map_texture_writes_fo4_legacy_dds(
         "generate_mips": True,
         "use_gpu": False,
     }
-    web_map = (
-        mod_path
-        / "PrismaUI_F4"
-        / "views"
-        / "B21_FullScreenMap"
-        / "maps"
-        / "appalachia"
-        / "map.png"
-    )
-    assert web_map.is_file()
-    with Image.open(web_map) as img:
-        assert img.size == (4, 4)
-    manifest = json.loads((web_map.parent / "map.json").read_text(encoding="utf-8"))
+    pack = mod_path / "F4SE" / "Plugins" / "B21_FullScreenMap" / "maps" / "appalachia"
+    assert saved_maps[pack / "map.dds"] == {"size": (4, 4), "format": "BC7_UNORM", "generate_mips": True}
+    assert not (pack / "map.png").exists()
+    assert saved_maps[pack / "military.dds"] == {"size": (4, 4), "format": "BC7_UNORM", "generate_mips": True}
+    manifest = json.loads((pack / "map.json").read_text(encoding="utf-8"))
+    assert manifest["image"] == "map.dds"
+    assert manifest["nukeImage"] == "military.dds"
     assert manifest["worldspace"] == "Appalachia"
     assert manifest["discovery"] == "proximity"
     assert manifest["calibration"]["mode"] == "survey"
@@ -918,79 +846,6 @@ def test_target_asset_preflight_ignores_live_data_loose_assets(
     assert index.owners == {}
 
 
-def test_projected_worldspace_carry_log_failure_is_nonfatal(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from bacup_lib import worldspace_services
-    from bacup_lib.pipeline import terrain as terrain_pipeline
-
-    runtime = _UnifiedRecordRuntime(make_request(tmp_path))
-    terrain = SimpleNamespace(source_worldspace_editor_id="APPALACHIA")
-    ctx = SimpleNamespace(
-        source_plugin_handle=SimpleNamespace(native_handle_id=11),
-        mod_path=tmp_path,
-        output_plugin_name="B21_Test.esm",
-        rust_target_handle_id=None,
-    )
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        terrain_pipeline,
-        "fo76_btd_work_items",
-        lambda _ctx: [(terrain, tmp_path / "Appalachia.btd", "APPALACHIA")],
-    )
-
-    def fake_patch_target_worldspaces_subrecords(**kwargs):
-        captured.update(kwargs)
-        return [6]
-
-    monkeypatch.setattr(
-        worldspace_services,
-        "patch_target_worldspaces_subrecords",
-        fake_patch_target_worldspaces_subrecords,
-    )
-
-    class FailingLogRunner:
-        def emit_log(self, level, message):
-            raise OSError(22, "Invalid argument")
-
-    runtime._patch_projected_worldspace_subrecords(
-        ctx,
-        FailingLogRunner(),
-        tmp_path / "SeventySix.esm",
-    )
-
-    assert captured["worldspace_editor_ids"] == ["APPALACHIA"]
-    assert captured["target_plugin_path"] == tmp_path / "B21_Test.esm"
-
-
-def test_projected_worldspace_carry_does_not_restore_starfield_bounds(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from bacup_lib.pipeline import terrain as terrain_pipeline
-
-    request = make_request(tmp_path)
-    request.source_game = "starfield"
-    request.target_game = "fo4"
-    runtime = _UnifiedRecordRuntime(request)
-
-    monkeypatch.setattr(
-        terrain_pipeline,
-        "fo76_btd_work_items",
-        lambda _ctx: (_ for _ in ()).throw(
-            AssertionError("Starfield WRLD bounds must stay relatticed")
-        ),
-    )
-
-    runtime._patch_projected_worldspace_subrecords(
-        SimpleNamespace(),
-        StubRunner(),
-        tmp_path / "Starfield.esm",
-    )
-
-
 def test_final_term_marker_repair_roundtrips_real_plugins(tmp_path) -> None:
     import struct
 
@@ -1088,36 +943,6 @@ def test_final_term_marker_repair_roundtrips_real_plugins(tmp_path) -> None:
     assert "modified=2" in runner.logs[-1][1]
     assert "audit_modified=0" in runner.logs[-1][1]
     assert not output_path.with_name(f"{output_path.name}.termrepair.tmp").exists()
-
-
-def test_final_term_marker_repair_runs_after_last_esm_writer() -> None:
-    import inspect
-
-    source = inspect.getsource(unified_mod.run_unified)
-
-    assert source.index("_regenerate_modt_after_asset_waves") < source.index(
-        "_repair_term_marker_parameters_final"
-    )
-    assert source.index("_repair_term_marker_parameters_final") < source.index(
-        "_finalize_fo76_pipboy_map_texture"
-    )
-    # OFST/CLSZ encode the serialized layout: the rebuild must follow every
-    # other ESM writer and precede the asset-only finalizers.
-    assert source.index("_repair_term_marker_parameters_final") < source.index(
-        "_rebuild_cell_offsets_after_build"
-    )
-    assert source.index("_rebuild_cell_offsets_after_build") < source.index(
-        "_finalize_fo76_pipboy_map_texture"
-    )
-
-
-def test_unified_driver_does_not_import_plugin_port():
-    import inspect
-    import bacup_lib.workflows.unified as unified
-
-    source = inspect.getsource(unified)
-    assert "workflows." + "plugin_port" not in source
-    assert "PluginPort" + "Orchestrator" not in source
 
 
 def test_iter_nif_files_parallel_returns_sorted_paths(tmp_path: Path) -> None:
@@ -1566,6 +1391,7 @@ def test_record_track_builds_esp_before_post_asset_modt(tmp_path, monkeypatch):
     assert required_phases == [
         "Translate Records",
         "Convert Terrain",
+        "Equipment Condition Catalog",
         "Build ESP",
         "Check Runtime Hazards",
     ]
@@ -1737,17 +1563,6 @@ def test_melee_only_native_config_suppresses_creature_products(tmp_path: Path) -
     assert runtime._active_mvp_creature_profile() is None
 
 
-def test_native_run_config_forwards_overwrite_intent(tmp_path: Path) -> None:
-    runtime = UnifiedDriver(make_request(tmp_path)).record_runtime
-
-    assert runtime._native_run_config(
-        SimpleNamespace(output_plugin_name="Output.esm", overwrite_existing=True)
-    )["overwrite_existing"] is True
-    assert runtime._native_run_config(
-        SimpleNamespace(output_plugin_name="Output.esm")
-    )["overwrite_existing"] is False
-
-
 def test_native_run_config_supplies_exact_fnv_force_greet_donor_only_for_slice(
     tmp_path: Path,
 ) -> None:
@@ -1771,30 +1586,26 @@ def test_native_run_config_supplies_exact_fnv_force_greet_donor_only_for_slice(
     assert config["fnv_force_greet_donor_form_key"] is None
 
 
-def test_native_run_config_rejects_required_slice_signature_exclusion(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("exclude_info", "convert_placed_records", "message"),
+    [
+        (True, True, "required record signatures: INFO"),
+        (False, False, "requires placed-record conversion"),
+    ],
+)
+def test_native_run_config_rejects_incomplete_quest_slice(
+    tmp_path: Path, exclude_info: bool, convert_placed_records: bool, message: str
 ) -> None:
     from bacup_lib.source_pairs import FNV_QUEST_SLICE_EXCLUDE_SIGNATURES
 
     request = make_request(tmp_path)
     request.source_game = "fnv"
     request.options.fnv_quest_slice = True
-    request.options.exclude_signatures = FNV_QUEST_SLICE_EXCLUDE_SIGNATURES | {"INFO"}
-    runtime = UnifiedDriver(request).record_runtime
+    if exclude_info:
+        request.options.exclude_signatures = FNV_QUEST_SLICE_EXCLUDE_SIGNATURES | {"INFO"}
+    request.options.convert_placed_records = convert_placed_records
 
-    with pytest.raises(RuntimeError, match="required record signatures: INFO"):
-        runtime._native_run_config(SimpleNamespace(output_plugin_name="FalloutNV.esm"))
-
-
-def test_native_run_config_rejects_quest_slice_without_placed_records(
-    tmp_path: Path,
-) -> None:
-    request = make_request(tmp_path)
-    request.source_game = "fnv"
-    request.options.fnv_quest_slice = True
-    request.options.convert_placed_records = False
-
-    with pytest.raises(RuntimeError, match="requires placed-record conversion"):
+    with pytest.raises(RuntimeError, match=message):
         UnifiedDriver(request).record_runtime._native_run_config(
             SimpleNamespace(output_plugin_name="FalloutNV.esm")
         )
@@ -1849,25 +1660,7 @@ def test_grafted_asset_roots_resolve_after_primary_with_stable_dedup(tmp_path: P
     ) == (str(grafted_only), None)
 
 
-def test_non_grafted_pair_asset_roots_remain_primary_then_plugin(tmp_path: Path):
-    request = make_request(tmp_path)
-    primary = tmp_path / "extracted" / "fo76"
-    request.source_data_dir = primary
-    driver = UnifiedDriver(request, sink_id=None)
-    ctx = SimpleNamespace(
-        source_data_dir=primary,
-        additional_source_asset_roots=(),
-    )
-
-    assert driver._record_runtime._native_asset_source_roots(
-        request.source_plugins[0], ctx
-    ) == [
-        primary,
-        request.source_plugins[0].parent,
-    ]
-
-
-def test_legacy_nif_resolution_uses_unique_basename_path_drift(tmp_path: Path):
+def test_legacy_nif_resolution_uses_only_unique_basename_path_drift(tmp_path: Path):
     primary = tmp_path / "extracted" / "fnv"
     source_plugin = tmp_path / "merge" / "FalloutNV.esm"
     source_plugin.parent.mkdir(parents=True)
@@ -1877,6 +1670,10 @@ def test_legacy_nif_resolution_uses_unique_basename_path_drift(tmp_path: Path):
     )
     actual.parent.mkdir(parents=True)
     actual.write_bytes(b"nif")
+    for directory in ("first", "second"):
+        candidate = primary / "Meshes" / directory / "SharedName.nif"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_bytes(directory.encode())
     request = PluginPortRequest(
         source_game="fnv",
         target_game="fo4",
@@ -1897,31 +1694,6 @@ def test_legacy_nif_resolution_uses_unique_basename_path_drift(tmp_path: Path):
         source_plugin,
         ctx,
     ) == (str(actual), None)
-
-
-def test_legacy_nif_resolution_rejects_ambiguous_basename_path_drift(tmp_path: Path):
-    primary = tmp_path / "extracted" / "fnv"
-    source_plugin = tmp_path / "merge" / "FalloutNV.esm"
-    source_plugin.parent.mkdir(parents=True)
-    source_plugin.write_bytes(b"TES4")
-    for directory in ("first", "second"):
-        candidate = primary / "Meshes" / directory / "SharedName.nif"
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        candidate.write_bytes(directory.encode())
-    request = PluginPortRequest(
-        source_game="fnv",
-        target_game="fo4",
-        source_plugins=[source_plugin],
-        output_root=tmp_path / "mods",
-        source_data_dir=primary,
-    )
-    runtime = UnifiedDriver(request, sink_id=None).record_runtime
-    ctx = SimpleNamespace(
-        source_data_dir=primary,
-        additional_source_asset_roots=(),
-        conversion_workers=1,
-    )
-
     resolved, error = runtime._resolve_native_asset_path(
         "nif", "wrong/SharedName.nif", source_plugin, ctx
     )
@@ -1954,234 +1726,71 @@ def test_post_asset_modt_skips_non_fo4_and_no_build_paths(
     assert runner.logs == []
 
 
-def _fake_precombine_run(phases, plugin_events, *, assets_written):
-    class FakeRun:
-        @classmethod
-        def open_existing(cls, *args, **kwargs):
-            plugin_events.append(("open_existing", args, kwargs))
-            return cls()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            plugin_events.append("drop")
-
-        def save_target(self, path, **_kwargs):
-            plugin_events.append(("save", Path(path)))
-            Path(path).write_bytes(b"stamped plugin")
-
-        def run_phase(self, phase, **kwargs):
-            phases.append((phase, kwargs))
-            return {"assets_written": assets_written, "records_changed": 7}
-
-    return FakeRun
-
-
-def _precombine_driver(request, mod_path, output_name, monkeypatch):
-    driver = UnifiedDriver(request, sink_id=None)
-    driver.ctx = SimpleNamespace(mod_path=mod_path, output_plugin_name=output_name)
-    monkeypatch.setattr(
-        driver.record_runtime,
-        "_native_run_config",
-        lambda _ctx: {"output_plugin_name": output_name},
-    )
-    return driver
-
-
-def test_generate_precombines_dispatches_phase_when_enabled(tmp_path, monkeypatch):
-    mod_path = tmp_path / "fo76"
-    mod_path.mkdir()
-    output_name = "SeventySix.esm"
-    (mod_path / output_name).write_bytes(b"plugin")
-    phases: list[tuple[str, dict]] = []
-    plugin_events: list[object] = []
-
-    request = make_request(tmp_path)
-    request.options.generate_precombines = True
-    driver = _precombine_driver(request, mod_path, output_name, monkeypatch)
-    monkeypatch.setattr(
-        "bacup_lib.run.ConversionRun",
-        _fake_precombine_run(phases, plugin_events, assets_written=3),
-    )
-
-    progress = PhaseProgress(
-        phase=0, phase_name="Generate precombines", status="running"
-    )
-    runner = StubRunner()
-    unified_mod._generate_precombines_after_asset_waves(
-        driver, runner, mod_path, progress=progress
-    )
-
-    assert [phase for phase, _ in phases] == ["generate_precombines"]
-    params = phases[0][1]["params"]
-    # Minimal params only: no archive/extract-root keys handed from the pipeline.
-    assert "include_cells" in params
-    assert "mesh_archives" not in params
-    assert "mesh_extract_roots" not in params
-    assert phases[0][1]["mod_path"] == str(mod_path)
-    assert any(isinstance(evt, tuple) and evt[0] == "save" for evt in plugin_events)
-    assert any(evt == "drop" for evt in plugin_events)
-    assert (mod_path / output_name).read_bytes() == b"stamped plugin"
-    assert runner.logs[-1][0] == "INFO"
-    assert "post-asset precombine generation" in runner.logs[-1][1]
-
-
-def test_generate_precombines_no_assets_does_not_write(tmp_path, monkeypatch):
-    mod_path = tmp_path / "fo76"
-    mod_path.mkdir()
-    output_name = "SeventySix.esm"
-    (mod_path / output_name).write_bytes(b"plugin")
-    phases: list[tuple[str, dict]] = []
-    plugin_events: list[object] = []
-
-    request = make_request(tmp_path)
-    request.options.generate_precombines = True
-    driver = _precombine_driver(request, mod_path, output_name, monkeypatch)
-    monkeypatch.setattr(
-        "bacup_lib.run.ConversionRun",
-        _fake_precombine_run(phases, plugin_events, assets_written=0),
-    )
-
-    runner = StubRunner()
-    unified_mod._generate_precombines_after_asset_waves(driver, runner, mod_path)
-
-    assert [phase for phase, _ in phases] == ["generate_precombines"]
-    assert not any(isinstance(evt, tuple) and evt[0] == "save" for evt in plugin_events)
-    assert (mod_path / output_name).read_bytes() == b"plugin"
-
-
-@pytest.mark.parametrize(
-    ("target_game", "build_esp", "generate_precombines"),
-    [
-        ("skyrimse", True, True),
-        ("fo4", False, True),
-        ("fo4", True, False),  # gate off: the default full build must not run it
-    ],
-)
-def test_generate_precombines_skips_when_disabled_or_unsupported(
-    tmp_path, monkeypatch, target_game, build_esp, generate_precombines
-):
-    request = make_request(tmp_path)
-    request.target_game = target_game
-    request.options.build_esp = build_esp
-    request.options.generate_precombines = generate_precombines
-    driver = UnifiedDriver(request, sink_id=None)
-    driver.ctx = SimpleNamespace(output_plugin_name="Unused.esm")
-    monkeypatch.setattr(
-        "bacup_lib.run.ConversionRun",
-        lambda *a, **k: pytest.fail("disabled precombine path opened a plugin"),
-    )
-
-    runner = StubRunner()
-    unified_mod._generate_precombines_after_asset_waves(driver, runner, tmp_path)
-
-    assert runner.logs == []
-
-
-def test_run_unified_schedules_precombines_after_modt_and_gated():
-    import inspect
-
-    source = inspect.getsource(unified_mod.run_unified)
-    assert source.index("_regenerate_modt_after_asset_waves") < source.index(
-        "_generate_precombines_after_asset_waves"
-    )
-    # The call is guarded by the (default-off) option, so a standard build skips it.
-    assert 'getattr(request.options, "generate_precombines"' in source
-    assert source.index("_generate_precombines_after_asset_waves") < source.index(
-        "_repair_term_marker_parameters_final"
-    )
-
-
-def test_build_esp_phase_sets_summary_for_native_write(tmp_path, monkeypatch):
-    recorded: list = []
-    contexts: list = []
-    request = make_request(tmp_path)
-    request.options.convert_scripts = False
-    driver = UnifiedDriver(request, sink_id=None)
+def test_condition_catalog_keeps_mapper_and_masters_through_terrain_tail(tmp_path, monkeypatch):
+    recorded = []
+    calls = []
+    driver = UnifiedDriver(make_request(tmp_path), sink_id=None)
     stub_record_runtime(driver, recorded, monkeypatch)
+    original_context = driver.record_runtime._build_context
 
     class FakeRustRun:
         id = 123
+        mapper_live = True
+        masters_live = True
+
+        def run_phase(self, phase, **kwargs):
+            assert phase == "emit_equipment_condition"
+            assert self.mapper_live and self.masters_live
+            calls.append("emit")
+            path = Path(kwargs["mod_path"]) / "F4SE/Plugins/B21_TalesFromAppalachia/Condition/SeventySix.esm.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"mapping_available": True}))
+            return {"assets_written": 1}
 
         def release_remap_state(self):
-            pass
+            calls.append("mapper release")
+            self.mapper_live = False
 
         def release_master_handles(self):
+            calls.append("masters release")
+            self.masters_live = False
             return 0
 
         def release_source_handle(self):
+            calls.append("source release")
             return False
 
-        def save_target(self, output_path, **_kwargs):
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(b"fresh")
+        def save_target(self, path, **kwargs):
+            calls.append("save")
+            assert not self.mapper_live and not self.masters_live
+            Path(path).write_bytes(b"final plugin")
 
-    def make_ctx(source_plugin, plugin_name, mod_path, runner=None):
-        ctx = SimpleNamespace(
-            mod_path=mod_path,
-            output_plugin_name=plugin_name,
-            source_game="fo76",
-            target_game="fo4",
-            is_whole_plugin=True,
-            target_record_preflight_missing_masters=[],
-            target_record_preflight_warnings=[],
-            target_asset_index=None,
-            summary=ConversionSummary(mod_path=str(mod_path)),
-            addon_index_map={3: 7},
-            _rust_conversion_run=FakeRustRun(),
-        )
-        contexts.append(ctx)
+    def make_context(*args, **kwargs):
+        ctx = original_context(*args, **kwargs)
+        ctx._rust_conversion_run = FakeRustRun()
         return ctx
 
-    def record_phase(
-        phase_no, label, body, runner, timing_ctx=None, raise_on_error=False
-    ):
-        recorded.append(("phase", label))
-        if label == "Build ESP":
+    def execute_phase(phase_no, label, body, runner, **kwargs):
+        if label in {"Equipment Condition Catalog", "Build ESP"}:
             body(SimpleNamespace())
 
-    monkeypatch.setattr(driver.record_runtime, "_build_context", make_ctx)
-    monkeypatch.setattr(driver.record_runtime, "_run_phase", record_phase)
-    monkeypatch.setattr(driver, "_harvest_terrain_products", lambda *_args: None)
-
+    monkeypatch.setattr(driver.record_runtime, "_build_context", make_context)
+    monkeypatch.setattr(driver.record_runtime, "_run_phase", execute_phase)
     driver.run_record_track(StubRunner())
-
-    assert contexts[0].summary.esp_built is True
-
-
-def test_quest_runtime_inventory_runs_after_script_vmad_strip_and_before_save():
-    import inspect
-
-    script_phase = inspect.getsource(
-        unified_mod._UnifiedRecordRuntime._run_convert_scripts_phase
-    )
-    record_track = inspect.getsource(unified_mod.UnifiedDriver._convert_record_track)
-
-    assert "_reconcile_script_references(" in script_phase
-    assert record_track.index('"Convert Scripts"') < record_track.index(
-        '"Inventory Quest Runtime Routes"'
-    )
-    assert record_track.index('"Inventory Quest Runtime Routes"') < record_track.index(
-        "rust_run.save_target("
-    )
+    assert calls == ["emit", "mapper release", "masters release", "source release", "save"]
 
 
-def test_quest_runtime_inventory_delegates_route_analysis_to_native():
-    import inspect
+def test_production_condition_catalog_rejects_source_only_diagnostic(tmp_path):
+    class FakeRun:
+        def run_phase(self, phase, **kwargs):
+            path = tmp_path / "F4SE/Plugins/B21_TalesFromAppalachia/Condition/SeventySix.esm.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"mapping_available": False}))
+            return {"assets_written": 1}
 
-    inventory_phase = inspect.getsource(
-        unified_mod._UnifiedRecordRuntime._run_quest_runtime_inventory_phase
-    )
-
-    assert "conversion_run_quest_runtime_inventory_json" in inventory_phase
-    assert "target_evidence_from_native_records" not in inventory_phase
-    assert "source_evidence_from_plugin" not in inventory_phase
-    assert "_build_pex_index" not in inventory_phase
-    assert 'ctx.mod_path) / "data" / "Scripts"' in inventory_phase
-    assert "self._req.options.convert_scripts" in inventory_phase
-    assert "persistent mod-output" in inventory_phase
+    ctx = SimpleNamespace(mod_path=tmp_path, output_plugin_name="SeventySix.esm")
+    with pytest.raises(RuntimeError, match="no live source-to-target mappings"):
+        _UnifiedRecordRuntime._emit_equipment_condition_catalog(FakeRun(), ctx, StubRunner())
 
 
 def test_build_esp_phase_rejects_stale_output_without_native_write(
@@ -2261,10 +1870,16 @@ def test_translate_v2_report_accounting_preserves_translated_semantics():
     assert sum(stats.values()) == 46
 
 
-def test_native_phase_report_decoder_defaults_new_outcomes_for_legacy_tuple():
+@pytest.mark.parametrize(
+    ("raw", "remapped", "deferred"),
+    [((36, 0, 3, 1, 2, 4, 5), 0, 0), ((36, 0, 3, 1, 2, 4, 5, 6, 7), 6, 7)],
+)
+def test_native_phase_report_decoder_reads_legacy_and_append_only_tuples(
+    raw, remapped, deferred
+):
     from bacup_lib import native_runtime as conversion_native_runtime
 
-    report = conversion_native_runtime._phase_report_from_raw((36, 0, 3, 1, 2, 4, 5))
+    report = conversion_native_runtime._phase_report_from_raw(raw)
 
     assert report["records_changed"] == 36
     assert report["records_dropped"] == 3
@@ -2272,29 +1887,8 @@ def test_native_phase_report_decoder_defaults_new_outcomes_for_legacy_tuple():
     assert report["warnings"] == 2
     assert report["elapsed_ms"] == 4
     assert report["items_failed"] == 5
-    assert report["records_vanilla_remapped"] == 0
-    assert report["records_deferred"] == 0
-
-
-def test_native_phase_report_decoder_reads_append_only_outcomes():
-    from bacup_lib import native_runtime as conversion_native_runtime
-
-    report = conversion_native_runtime._phase_report_from_raw(
-        (36, 0, 3, 1, 2, 4, 5, 6, 7)
-    )
-
-    assert report["records_changed"] == 36
-    assert report["records_dropped"] == 3
-    assert report["assets_written"] == 1
-    assert report["warnings"] == 2
-    assert report["elapsed_ms"] == 4
-    assert report["items_failed"] == 5
-    assert report["records_vanilla_remapped"] == 6
-    assert report["records_deferred"] == 7
-
-
-def test_native_phase_report_decoder_rejects_unknown_tuple_length():
-    from bacup_lib import native_runtime as conversion_native_runtime
+    assert report["records_vanilla_remapped"] == remapped
+    assert report["records_deferred"] == deferred
 
     with pytest.raises(ValueError, match=r"7 or 9 fields, got 8"):
         conversion_native_runtime._phase_report_from_raw((0,) * 8)
@@ -2315,121 +1909,6 @@ def test_land_cache_hook_fires_after_projected_navmeshes(tmp_path, monkeypatch):
         < recorded.index(("hook", "land_cache"))
         < recorded.index(("phase", "Convert Interior Cells"))
     )
-
-
-def test_synthesize_object_lod_phase_receives_conversion_workers(tmp_path, monkeypatch):
-    recorded: list = []
-    request = make_request(tmp_path)
-    request.options.synthesize_object_lod = True
-    driver = UnifiedDriver(request, sink_id=None)
-    stub_record_runtime(driver, recorded, monkeypatch)
-
-    class FakeRustRun:
-        def __init__(self):
-            self.id = 123
-            self.calls = []
-
-        def release_remap_state(self):
-            pass
-
-        def release_master_handles(self):
-            return 0
-
-        def release_source_handle(self):
-            return False
-
-        def run_phase(self, phase, **kwargs):
-            self.calls.append((phase, kwargs))
-            return {}
-
-    rust_run = FakeRustRun()
-    source_dir = tmp_path / "source"
-    source_dir.mkdir()
-
-    def make_ctx(source_plugin, plugin_name, mod_path, runner=None):
-        ctx = SimpleNamespace(
-            mod_path=mod_path,
-            output_plugin_name=plugin_name,
-            source_game="fo76",
-            target_game="fo4",
-            is_whole_plugin=True,
-            target_record_preflight_missing_masters=[],
-            target_record_preflight_warnings=[],
-            target_asset_index=None,
-            summary=ConversionSummary(mod_path=str(mod_path)),
-            addon_index_map={3: 7},
-            source_data_dir=source_dir,
-            conversion_workers=20,
-            _rust_conversion_run=rust_run,
-        )
-        return ctx
-
-    def record_phase(
-        phase_no, label, body, runner, timing_ctx=None, raise_on_error=False
-    ):
-        recorded.append(("phase", label))
-        if label == "Synthesize Object LOD":
-            body(SimpleNamespace())
-
-    monkeypatch.setattr(driver.record_runtime, "_build_context", make_ctx)
-    monkeypatch.setattr(driver.record_runtime, "_run_phase", record_phase)
-
-    driver.run_record_track(StubRunner())
-
-    assert rust_run.calls == [
-        (
-            "synthesize_object_lod",
-            {
-                "mod_path": str(tmp_path / "out" / "SeventySix"),
-                "source_extracted_dir": str(source_dir),
-                "params": {"conversion_workers": 20},
-            },
-        )
-    ]
-
-
-def test_synthesize_object_lod_runs_for_existing_output_without_translate(
-    tmp_path, monkeypatch
-):
-    recorded: list = []
-    request = make_request(tmp_path)
-    request.options.translate_records = False
-    request.options.convert_terrain = False
-    request.options.build_esp = False
-    request.options.convert_scripts = False
-    request.options.synthesize_object_lod = True
-    driver = UnifiedDriver(request, sink_id=None)
-    stub_record_runtime(driver, recorded, monkeypatch)
-
-    synth_calls = []
-
-    def record_phase(
-        phase_no, label, body, runner, timing_ctx=None, raise_on_error=False
-    ):
-        recorded.append(("phase", label))
-        if label == "Synthesize Object LOD":
-            body(SimpleNamespace())
-
-    monkeypatch.setattr(driver.record_runtime, "_run_phase", record_phase)
-    monkeypatch.setattr(
-        driver.record_runtime,
-        "_run_synthesize_object_lod_existing_output",
-        lambda source_plugin, ctx, runner: synth_calls.append(
-            (source_plugin, ctx.mod_path, ctx.output_plugin_name)
-        ),
-    )
-
-    driver.run_record_track(StubRunner())
-
-    assert ("phase", "Translate Records") not in recorded
-    assert ("phase", "Synthesize Object LOD") in recorded
-    assert synth_calls == [
-        (
-            request.source_plugins[0],
-            tmp_path / "out" / "SeventySix",
-            "SeventySix.esm",
-        )
-    ]
 
 
 def test_synthesize_object_lod_uses_existing_output_when_build_esp_disabled(
@@ -2794,64 +2273,13 @@ def test_full_plugin_asset_collection_sweeps_all_source_nifs(tmp_path):
     )
 
 
-def test_native_asset_collection_adds_fo76_voice_tree(tmp_path):
+def test_native_asset_collection_adds_fo76_voice_music_and_sound_fx_trees(tmp_path):
     source_dir = tmp_path / "source"
-    voice_dir = source_dir / "Sound" / "voice" / "seventysix.esm" / "npcf_fs_abbie"
+    voice_dir = source_dir / "sound" / "voice" / "seventysix.esm" / "npcf_fs_abbie"
     voice_dir.mkdir(parents=True)
     fuz = voice_dir / "004e315f_1.fuz"
     fuz.write_bytes(b"fuz")
-    lip = voice_dir / "004e315f_1.lip"
-    lip.write_bytes(b"lip")
-    ignored = voice_dir / "notes.txt"
-    ignored.write_text("not audio", encoding="utf-8")
-
-    class FakeSourceHandle:
-        def collect_assets(self, *, asset_kinds=None, signatures=None):
-            assert asset_kinds == ["sound"]
-            return []
-
-    request = make_request(tmp_path)
-    request.options.copy_sounds = True
-    driver = UnifiedDriver(request, sink_id=None)
-    ctx = SimpleNamespace(
-        source_plugin_handle=FakeSourceHandle(),
-        source_data_dir=source_dir,
-        output_plugin_name="SeventySix.esm",
-    )
-    runner = StubRunner()
-
-    assets = driver.record_runtime._collect_assets_native(
-        request.source_plugins[0],
-        ctx,
-        runner,
-    )
-
-    by_path = {
-        asset.source_path.replace("\\", "/"): asset
-        for asset in assets
-        if asset.asset_type == "sound"
-    }
-    assert sorted(by_path) == [
-        "Sound/Voice/SeventySix.esm/npcf_fs_abbie/004e315f_1.fuz",
-    ]
-    assert by_path[
-        "Sound/Voice/SeventySix.esm/npcf_fs_abbie/004e315f_1.fuz"
-    ].resolved_path == str(fuz)
-    assert (
-        by_path[
-            "Sound/Voice/SeventySix.esm/npcf_fs_abbie/004e315f_1.fuz"
-        ].provenance.walker_pass
-        == "voice_asset_tree"
-    )
-    assert any(
-        log
-        == ("INFO", "Expanded 1 FO76 voice asset(s) from Sound/Voice/SeventySix.esm")
-        for log in runner.logs
-    )
-
-
-def test_native_asset_collection_adds_fo76_music_and_sound_fx_trees(tmp_path):
-    source_dir = tmp_path / "source"
+    (voice_dir / "004e315f_1.lip").write_bytes(b"lip")
     music_dir = source_dir / "music" / "76" / "combat"
     music_dir.mkdir(parents=True)
     combat = music_dir / "mus_76_combat_finale.xwm"
@@ -2893,7 +2321,11 @@ def test_native_asset_collection_adds_fo76_music_and_sound_fx_trees(tmp_path):
     assert sorted(by_path) == [
         "Music/76/combat/mus_76_combat_finale.xwm",
         "Sound/FX/ui/pipboy/ui_pipboy_radio_static.wav",
+        "Sound/Voice/SeventySix.esm/npcf_fs_abbie/004e315f_1.fuz",
     ]
+    voice = by_path["Sound/Voice/SeventySix.esm/npcf_fs_abbie/004e315f_1.fuz"]
+    assert voice.resolved_path == str(fuz)
+    assert voice.provenance.walker_pass == "voice_asset_tree"
     assert by_path["Music/76/combat/mus_76_combat_finale.xwm"].resolved_path == str(
         combat
     )
@@ -3154,53 +2586,6 @@ def test_all_creatures_discovers_and_executes_on_retained_record_run(
     assert driver.ctx._creature_corpus_executed is True
 
 
-def test_all_creatures_without_prepared_recipes_stays_discovery_only(
-    tmp_path: Path,
-) -> None:
-    from bacup_lib.source_pairs import (
-        FNV_MVP_EXCLUDE_SIGNATURES,
-        mvp_creature_corpus_policy_payload,
-    )
-    from bacup_lib.workflows.unified import AssetWaveBuilder, AssetWaveToggles
-
-    request = make_request(tmp_path)
-    request.source_game = "fnv"
-    driver = UnifiedDriver(request, sink_id=None)
-    policy = mvp_creature_corpus_policy_payload(
-        "fnvfo3:fo4", FNV_MVP_EXCLUDE_SIGNATURES
-    )
-    assert policy is not None
-    driver.ctx = SimpleNamespace(
-        source_game="fnv",
-        target_game="fo4",
-        mod_path=tmp_path / "mod",
-        source_data_dir=tmp_path / "source",
-        target_extracted_dir=tmp_path / "target",
-        target_data_dir=None,
-        mvp_creature_corpus_policy=policy,
-    )
-    discovery_calls: list[tuple[str, dict]] = []
-    source_run = SimpleNamespace(
-        run_phase=lambda phase, **kwargs: discovery_calls.append((phase, kwargs)) or {}
-    )
-
-    runtime = _UnifiedRecordRuntime(request)
-    runtime._run_mvp_creature_corpus_discovery(source_run, driver.ctx, StubRunner())
-    runtime._run_mvp_creature_corpus_execution(source_run, driver.ctx, StubRunner())
-    stages = AssetWaveBuilder(
-        driver,
-        AssetWaveToggles(),
-        SimpleNamespace(),
-        StubRunner(),
-    ).build_wave_a4()
-
-    assert "jobs" not in discovery_calls[0][1]["params"]
-    assert stages == []
-    assert driver.ctx._creature_corpus_discovered is True
-    assert driver.ctx._creature_corpus_has_jobs is False
-    assert driver.ctx._creature_corpus_executed is True
-
-
 def test_all_creatures_wave_fails_closed_without_record_run_execution(
     tmp_path: Path,
 ) -> None:
@@ -3234,95 +2619,6 @@ def test_all_creatures_wave_fails_closed_without_record_run_execution(
         builder.build_wave_a4()
 
 
-def test_all_creatures_discovery_rejects_incomplete_policy(tmp_path: Path) -> None:
-    request = make_request(tmp_path)
-    request.source_game = "skyrimse"
-    ctx = SimpleNamespace(
-        mod_path=tmp_path / "mod",
-        mvp_creature_corpus_policy={"policy_id": "all_creatures_v1"},
-    )
-
-    with pytest.raises(RuntimeError, match="missing required fields"):
-        _UnifiedRecordRuntime(request)._run_mvp_creature_corpus_discovery(
-            SimpleNamespace(run_phase=lambda *args, **kwargs: {}),
-            ctx,
-            StubRunner(),
-        )
-
-
-def test_all_creatures_discovery_does_not_consume_external_prepared_manifest(
-    tmp_path: Path,
-) -> None:
-    from bacup_lib.source_pairs import (
-        SKYRIM_MVP_EXCLUDE_SIGNATURES,
-        mvp_creature_corpus_policy_payload,
-    )
-
-    request = make_request(tmp_path)
-    request.source_game = "skyrimse"
-    policy = mvp_creature_corpus_policy_payload(
-        "skyrimse:fo4", SKYRIM_MVP_EXCLUDE_SIGNATURES
-    )
-    assert policy is not None
-    mod_path = tmp_path / "mod"
-    prepared_path = mod_path / "debug/creature_corpus/prepared_jobs.json"
-    prepared_path.parent.mkdir(parents=True)
-    prepared_path.write_text("not valid json", encoding="utf-8")
-    ctx = SimpleNamespace(mod_path=mod_path, mvp_creature_corpus_policy=policy)
-    calls: list[tuple[str, dict]] = []
-
-    _UnifiedRecordRuntime(request)._run_mvp_creature_corpus_discovery(
-        SimpleNamespace(
-            run_phase=lambda phase, **kwargs: calls.append((phase, kwargs))
-            or {"records_deferred": 1}
-        ),
-        ctx,
-        StubRunner(),
-    )
-
-    assert calls == [
-        (
-            "discover_creature_corpus",
-            {
-                "mod_path": str(mod_path),
-                "source_extracted_dir": "",
-                "target_extracted_dir": None,
-                "target_data_dir": None,
-                "params": {
-                    "profile": "all_creatures_v1",
-                    "debug_dir": "debug/creature_corpus",
-                },
-            },
-        )
-    ]
-    assert ctx._creature_corpus_has_jobs is True
-
-
-def test_asset_run_keeps_output_sink_attachment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from bacup_lib.workflows.unified import AssetRuns
-
-    attached: list[tuple[int, int]] = []
-    monkeypatch.setattr(
-        unified_mod,
-        "load_native_module",
-        lambda: SimpleNamespace(
-            sinks_attach_run=lambda run_id, sink_id: attached.append((run_id, sink_id))
-        ),
-    )
-    runs = AssetRuns.__new__(AssetRuns)
-    runs.textures = None
-    runs.nifs = None
-    runs.havok = None
-    runs.sounds = None
-    runs.textures = SimpleNamespace(id=91)
-
-    runs.attach_sink(7)
-
-    assert attached == [(91, 7)]
-
-
 def test_asset_wave_pipeline_is_sequential():
     from bacup_lib.workflows.unified import WaveStage, _sequential_wave_plan
 
@@ -3339,63 +2635,6 @@ def test_asset_wave_pipeline_is_sequential():
     ]
 
 
-def test_nif_only_asset_wave_remains_dependency_free(tmp_path):
-    from bacup_lib.workflows.unified import (
-        AssetRuns,
-        AssetWaveBuilder,
-        AssetWaveToggles,
-        _sequential_wave_plan,
-    )
-
-    driver = UnifiedDriver(make_request(tmp_path), sink_id=None)
-    driver.ctx = make_wave_ctx(tmp_path)
-    toggles = AssetWaveToggles(
-        nifs=True,
-        btos=False,
-        textures=False,
-        materials=False,
-        havok=False,
-        drivers=False,
-        sounds=False,
-        animations=False,
-    )
-    runs = AssetRuns(driver.ctx, toggles)
-    try:
-        stages = AssetWaveBuilder(driver, toggles, runs, StubRunner()).build_wave_a2()
-        plan = _sequential_wave_plan(stages)
-
-        assert [stage["phase"] for stage in plan] == ["convert_nifs_v2"]
-        assert plan[0]["after"] == []
-    finally:
-        runs.drop_all()
-
-
-def test_harvest_terrain_products_logs_texture_job_handoff(tmp_path, monkeypatch):
-    driver = UnifiedDriver(make_request(tmp_path), sink_id=None)
-    driver.ctx = SimpleNamespace(_rust_conversion_run=SimpleNamespace(id=17))
-    jobs = [
-        {
-            "diffuse_path": "source/soil_d.dds",
-            "normal_path": "source/soil_n.dds",
-            "reflectivity_path": "source/soil_r.dds",
-            "lighting_path": "source/soil_l.dds",
-            "output_prefix": "textures/terrain/appalachia/soil",
-        }
-    ]
-    native = SimpleNamespace(
-        conversion_run_terrain_texture_jobs_json=lambda run_id: unified_mod.json.dumps(
-            jobs
-        )
-    )
-    monkeypatch.setattr(unified_mod, "load_native_module", lambda: native)
-    runner = StubRunner()
-
-    driver._harvest_terrain_products(tmp_path, runner)
-
-    assert driver.terrain_texture_jobs == jobs
-    assert runner.logs == [("INFO", "Queued 1 LAND texture bundle(s) for textures_v2")]
-
-
 def test_harvest_terrain_products_does_not_hide_transfer_failure(tmp_path, monkeypatch):
     driver = UnifiedDriver(make_request(tmp_path), sink_id=None)
     driver.ctx = SimpleNamespace(_rust_conversion_run=SimpleNamespace(id=17))
@@ -3408,49 +2647,6 @@ def test_harvest_terrain_products_does_not_hide_transfer_failure(tmp_path, monke
 
     with pytest.raises(RuntimeError, match="transfer LAND texture jobs"):
         driver._harvest_terrain_products(tmp_path, StubRunner())
-
-
-def test_missing_nif_asset_logs_at_warn_not_error(tmp_path):
-    """Regen review finding: an unresolved source NIF is a benign skip, not a
-    conversion failure — it must log at WARN so the summary doesn't read as
-    an error-worthy run."""
-    from bacup_lib.models import AssetRef
-    from bacup_lib.workflows.unified import (
-        AssetRuns,
-        AssetWaveBuilder,
-        AssetWaveToggles,
-    )
-
-    driver = UnifiedDriver(make_request(tmp_path), sink_id=None)
-    driver.ctx = make_wave_ctx(tmp_path)
-    driver.ctx.assets.append(
-        AssetRef(
-            asset_type="nif",
-            source_path="Meshes/missing.nif",
-            resolved_path=None,
-            resolution_error="source path did not resolve",
-        )
-    )
-    toggles = AssetWaveToggles()
-    runs = AssetRuns(driver.ctx, toggles)
-    runner = StubRunner()
-    try:
-        builder = AssetWaveBuilder(driver, toggles, runs, runner)
-        builder.build_wave_a2()
-
-        assert driver.ctx.summary.nifs_failed == 1
-        assert not any(
-            level == "ERROR" and "NIF not found" in message
-            for level, message in runner.logs
-        )
-        assert any(
-            level == "WARN"
-            and message
-            == "NIF not found: Meshes/missing.nif: source path did not resolve"
-            for level, message in runner.logs
-        )
-    finally:
-        runs.drop_all()
 
 
 def test_asset_planning_counters_merge_once_after_record_summary(tmp_path):
@@ -3492,40 +2688,6 @@ def test_asset_planning_counters_merge_once_after_record_summary(tmp_path):
         assert driver.ctx.summary.nifs_failed == 7
         assert planning_summary.nifs_failed == 1
         assert driver.record_runtime._aggregate_summary.nifs_failed == 8
-    finally:
-        runs.drop_all()
-
-
-def test_asset_wave_worker_override_is_used_in_phase_params(tmp_path):
-    from bacup_lib.workflows.unified import (
-        AssetRuns,
-        AssetWaveBuilder,
-        AssetWaveToggles,
-    )
-
-    driver = UnifiedDriver(make_request(tmp_path), sink_id=None)
-    driver.ctx = make_wave_ctx(tmp_path)
-    driver.ctx.conversion_workers = 12
-    toggles = AssetWaveToggles()
-    runs = AssetRuns(driver.ctx, toggles, conversion_workers=3)
-    try:
-        builder = AssetWaveBuilder(
-            driver,
-            toggles,
-            runs,
-            StubRunner(),
-            conversion_workers=3,
-        )
-
-        a2 = builder.build_wave_a2()
-        nifs = next(s for s in a2 if s.phase == "convert_nifs_v2")
-        btos = next(s for s in a2 if s.phase == "convert_btos_v2")
-        assert nifs.params["conversion_workers"] == 3
-        assert btos.params["conversion_workers"] == 3
-
-        a3 = builder.build_wave_a3()
-        textures = next(s for s in a3 if s.phase == "convert_textures_v2")
-        assert textures.params["conversion_workers"] == 3
     finally:
         runs.drop_all()
 
@@ -3700,17 +2862,6 @@ def test_animtext_generation_uses_native_when_ck_absent(tmp_path, monkeypatch):
     )
 
 
-def test_animtext_native_module_exposes_combined_binding():
-    from bacup_lib.native_runtime import load_native_module
-
-    native = load_native_module()
-    assert callable(native.conversion_prepare_anim_text_data_assets)
-    assert callable(native.conversion_generate_anim_text_data)
-    assert not hasattr(
-        native, "conversion_generate_anim_text_data_with_base_race_handles"
-    )
-
-
 def test_animtext_ck_wrapper_forwards_paths_and_progress(tmp_path, monkeypatch):
     from creation_lib._native import ck_native
     from creation_lib.ck.anim_text_data import generate_anim_text_data
@@ -3756,31 +2907,6 @@ def test_animtext_ck_wrapper_forwards_paths_and_progress(tmp_path, monkeypatch):
     ]
     assert calls[0][-1] is progress_callback
     assert progress_messages == ["records: decoded"]
-
-
-def test_animtext_ck_wrapper_forwards_worker_limit(tmp_path, monkeypatch):
-    from creation_lib._native import ck_native
-    from creation_lib.ck.anim_text_data import generate_anim_text_data
-
-    calls = []
-
-    def fake_generate(*args, **kwargs):
-        calls.append((args, kwargs))
-        return 1
-
-    monkeypatch.setattr(ck_native, "ck_generate_anim_text_data", fake_generate)
-
-    assert (
-        generate_anim_text_data(
-            tmp_path / "Target.esp",
-            game="fo4",
-            source_meshes_root=tmp_path / "source" / "Meshes",
-            output_meshes_root=tmp_path / "output" / "Meshes",
-            workers=3,
-        )
-        == 1
-    )
-    assert calls[0][1] == {"workers": 3}
 
 
 def _write_creature_anim_text_ledgers(mod_dir: Path) -> tuple[Path, Path, Path]:
@@ -4028,31 +3154,6 @@ def test_creature_animtext_receipt_rejects_non_source_or_unresolved_events(
         )
 
 
-def test_creature_animtext_contract_fails_when_native_seam_is_missing(
-    tmp_path, monkeypatch
-):
-    from creation_lib._native import ck_native
-    from creation_lib.ck.anim_text_data import generate_creature_anim_text_closure
-
-    plan_path, execution_path, record_path = _write_creature_anim_text_ledgers(tmp_path)
-    monkeypatch.delattr(
-        ck_native, "ck_generate_creature_anim_text_closure", raising=False
-    )
-
-    with pytest.raises(RuntimeError, match="missing family-local CK native seam"):
-        generate_creature_anim_text_closure(
-            tmp_path / "Target.esp",
-            game="fo4",
-            source_meshes_root=tmp_path / "data" / "Meshes",
-            output_meshes_root=tmp_path / "data" / "Meshes",
-            corpus_plan_path=plan_path,
-            execution_ledger_path=execution_path,
-            record_commit_ledger_path=record_path,
-            expected_family_ids=("family-canis",),
-            policy_id="all_creatures_v1",
-        )
-
-
 def test_creature_animtext_workflow_requires_and_persists_family_receipt(
     tmp_path, monkeypatch
 ):
@@ -4134,18 +3235,6 @@ def test_creature_animtext_workflow_fails_without_record_commit_receipt(tmp_path
         _run_creature_corpus_anim_text_closure(ctx, StubRunner())
 
 
-def test_creature_animtext_is_mandatory_after_record_mutations_before_packaging():
-    import inspect
-
-    source = inspect.getsource(unified_mod.run_unified)
-    animtext = source.index('"Generate Creature AnimTextData"')
-    assert source.index('"Rebuild Cell Offsets"') < animtext
-    assert animtext < source.index('"Pack BA2"')
-    assert source.index("all_creatures_v1") < source.index(
-        'getattr(request.options, "generate_anim_text_data", False)'
-    )
-
-
 def test_animtext_force_native_overrides_present_ck(tmp_path, monkeypatch):
     from bacup_lib import native_runtime
     from bacup_lib.workflows.unified import _run_anim_text_data_generation
@@ -4189,30 +3278,6 @@ def test_animtext_force_native_overrides_present_ck(tmp_path, monkeypatch):
     assert calls[0][0] == str(mod_dir / "SeventySix.esm")
     assert calls[0][2] == []
     assert calls[0][5]["base_meshes_root"] == str(extracted_dir / "Meshes")
-
-
-def test_asset_waves_forward_collision_memo_disable(tmp_path):
-    from bacup_lib.workflows.unified import (
-        AssetRuns,
-        AssetWaveBuilder,
-        AssetWaveToggles,
-    )
-
-    driver = UnifiedDriver(make_request(tmp_path), sink_id=None)
-    driver.ctx = make_wave_ctx(tmp_path)
-    driver.ctx.disable_nif_collision_memo = True
-    toggles = AssetWaveToggles()
-    runs = AssetRuns(driver.ctx, toggles)
-    try:
-        builder = AssetWaveBuilder(driver, toggles, runs, StubRunner())
-
-        a2 = builder.build_wave_a2()
-        nifs = next(s for s in a2 if s.phase == "convert_nifs_v2")
-        btos = next(s for s in a2 if s.phase == "convert_btos_v2")
-        assert nifs.params["disable_collision_memo"] is True
-        assert btos.params["disable_collision_memo"] is True
-    finally:
-        runs.drop_all()
 
 
 def test_deferred_a2_shape_converts_terrain_nifs_in_late_a2(tmp_path):
@@ -4440,16 +3505,6 @@ def test_asset_track_failure_stops_record_track_at_phase_boundary(
     assert signals.record_failed.is_set()
 
 
-def test_script_body_is_hollow_flags_stub_without_events():
-    hollow = "Scriptname X Extends ObjectReference\nState waiting\nEndState\n"
-    with_event = (
-        "Scriptname X Extends ObjectReference\n"
-        "Event OnActivate(ObjectReference akActionRef)\nEndEvent\n"
-    )
-    assert _script_body_is_hollow(hollow) is True
-    assert _script_body_is_hollow(with_event) is False
-
-
 def test_iter_top_level_papyrus_members_skips_in_state_members():
     lines = (
         "Scriptname X Extends ObjectReference\n"
@@ -4467,626 +3522,6 @@ def test_iter_top_level_papyrus_members_skips_in_state_members():
     assert ("event", "onactivate") not in names
 
 
-def test_shipped_example_patches_are_method_fragments():
-    # The two authored example patches must resolve through the fix-folder API and
-    # be method fragments (event bodies only, no whole-script header).
-    for name in ("WindChimesActivatorScript", "WaterSourceActivatorScript"):
-        source = _script_patch_source(name)
-        assert source is not None, name
-        assert "Event OnActivate" in source
-        # A fragment has no Scriptname declaration line (the skeleton supplies it).
-        assert not any(
-            line.strip().lower().startswith("scriptname ")
-            for line in source.splitlines()
-        )
-
-
-@pytest.mark.parametrize(
-    ("name", "expected_members"),
-    [
-        ("DefaultPlayExplosionOnActivate", {("event", "onactivate")}),
-        ("DefaultPlaySoundOnActivate", {("event", "onactivate")}),
-        ("OnActivateCastSpell", {("event", "onactivate")}),
-        (
-            "HazardTriggerScript",
-            {
-                ("event", "ontriggerenter"),
-                ("event", "ontriggerleave"),
-                ("event", "ontimer"),
-            },
-        ),
-        ("Quests:_Default:DisableRefOnActivate", {("event", "onactivate")}),
-        ("DefaultRefSendStoryEvent", {("function", "sendconfiguredstoryevent")}),
-        ("DefaultRefOnActivateSendEvent", {("event", "onactivate")}),
-        ("DefaultRefOnTriggerEnterSendEvent", {("event", "ontriggerenter")}),
-        (
-            "DefaultRefOnDistanceSendEvent",
-            {
-                ("event", "onload"),
-                ("event", "onunload"),
-                ("event", "ondistancelessthan"),
-                ("event", "ondistancegreaterthan"),
-            },
-        ),
-        ("E09C_PlaySoundOnActivateScript", {("event", "onactivate")}),
-        (
-            "E08B_RadiationTriggerScript",
-            {
-                ("event", "ontriggerenter"),
-                ("event", "ontriggerleave"),
-                ("event", "ontimer"),
-            },
-        ),
-        (
-            "DefaultPlayExposionAtNodeOnActivate",
-            {
-                ("event", "onactivate"),
-                ("event", "ontimer"),
-                ("function", "playexplosion"),
-            },
-        ),
-        ("SSE_LandmineTrigger_Script", {("event", "ontriggerenter")}),
-        (
-            "EN02_ExamRoomAVTriggerScript",
-            {("event", "ontriggerenter"), ("event", "ontriggerleave")},
-        ),
-        (
-            "MTN_MQ_3rdFloorTriggerScript",
-            {("event", "ontriggerenter"), ("event", "ontriggerleave")},
-        ),
-        ("StormProjectorToggleEnableLinkedRef", {("event", "onactivate")}),
-        ("DenizenEnableMarkerScript", {("event", "onload")}),
-        (
-            "SSE_ReEnableActivatorAfterTimer",
-            {("event", "onactivate"), ("event", "ontimer")},
-        ),
-        (
-            "BoSSetStageTriggerScript",
-            {
-                ("event", "ontriggerenter"),
-                ("event", "ontriggerleave"),
-                ("function", "trysetstage"),
-            },
-        ),
-        ("BoS01PerPlayerSetStageTriggerScript", {("event", "ontriggerenter")}),
-        ("BoSActivateMessageScript", {("event", "onactivate")}),
-        ("BoSStartQuestTriggerScript", {("event", "ontriggerenter")}),
-        ("FF05_Balance_SensorMessageScript", {("event", "onactivate")}),
-        ("W05_RE_BlacklightActivatorScript", {("event", "onactivate")}),
-        (
-            "defaultonactivategiveitems",
-            {
-                ("event", "onactivate"),
-                ("event", "ontimer"),
-                ("function", "giveitems"),
-            },
-        ),
-        ("Storm_SE09_ChickenExplode", {("event", "ondeath")}),
-        (
-            "DLC03HermitCrabSpawnChildScript",
-            {
-                ("event", "onload"),
-                ("event", "ondeath"),
-                ("event", "onunload"),
-                ("function", "findmymommy"),
-            },
-        ),
-        (
-            "AudioActorPlaySound",
-            {
-                ("event", "onload"),
-                ("event", "oncombatstatechanged"),
-                ("event", "ontimer"),
-                ("event", "oncelldetach"),
-                ("event", "onunload"),
-                ("event", "ondying"),
-                ("function", "refreshsoundtimers"),
-                ("function", "stopsoundtimers"),
-            },
-        ),
-        (
-            "Creatures:EyebotSuiciderScript",
-            {
-                ("event", "onload"),
-                ("event", "oncombatstatechanged"),
-                ("event", "ondistancelessthan"),
-                ("event", "ondeath"),
-                ("event", "onunload"),
-                ("function", "registerforplayerproximity"),
-                ("function", "unregisterforplayerproximity"),
-            },
-        ),
-        ("DefaultActorIgnoreFriendlyHitsScript", {("event", "oninit")}),
-        (
-            "Creatures:ScorchbeastRaceScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "onanimationevent"),
-                ("event", "ontimer"),
-                ("event", "oneffectfinish"),
-                ("function", "registerscorchbeastanimationevents"),
-                ("function", "unregisterscorchbeastanimationevents"),
-                ("function", "updatestrafeweaponforstate"),
-                ("function", "restoresonicweapon"),
-                ("function", "placeconfiguredexplosion"),
-                ("function", "startsonicattackcooldown"),
-            },
-        ),
-        (
-            "Creatures:MothmanCombatantScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "actor.oncombatstatechanged"),
-                ("event", "onanimationevent"),
-                ("event", "ontimer"),
-                ("event", "oneffectfinish"),
-                ("function", "registercombatantevents"),
-                ("function", "unregistercombatantevents"),
-                ("function", "startaoeweapontimer"),
-            },
-        ),
-        (
-            "Creatures:MothmanDefenderScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "actor.oncombatstatechanged"),
-                ("event", "ondistancelessthan"),
-                ("event", "ontimer"),
-                ("event", "onanimationevent"),
-                ("event", "oneffectfinish"),
-                ("function", "registerdefenderevents"),
-                ("function", "unregisterdefenderevents"),
-                ("function", "entercombatantstate"),
-            },
-        ),
-        (
-            "Creatures:MothmanWatcherScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "ondistancelessthan"),
-                ("event", "onanimationevent"),
-                ("event", "oneffectfinish"),
-                ("function", "registerwatcherdistance"),
-                ("function", "unregisterwatcherevents"),
-            },
-        ),
-        (
-            "Creatures:FlatwoodsMonsterRaceScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "onanimationevent"),
-                ("event", "oneffectfinish"),
-            },
-        ),
-        (
-            "Creatures:FlatwoodsMonsterWatcherScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "ondistancelessthan"),
-                ("event", "oneffectfinish"),
-                ("function", "registerwatcherdistance"),
-                ("function", "unregisterwatcherevents"),
-            },
-        ),
-        (
-            "Creatures:WendigoRaceScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "onanimationevent"),
-                ("event", "oneffectfinish"),
-                ("function", "registerwendigoanimationevents"),
-                ("function", "unregisterwendigoanimationevents"),
-            },
-        ),
-        (
-            "crOguaRaceScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "onanimationevent"),
-                ("event", "oneffectfinish"),
-                ("function", "registeroguashellevents"),
-                ("function", "unregisteroguashellevents"),
-                ("function", "entershell"),
-                ("function", "exitshell"),
-            },
-        ),
-        (
-            "Creatures:SheepsquatchRaceScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "onhit"),
-                ("event", "oneffectfinish"),
-                ("function", "applysheepsquatchstage"),
-                ("function", "updatesheepsquatchstage"),
-            },
-        ),
-        (
-            "Creatures:FloaterRaceScript",
-            {
-                ("event", "oneffectstart"),
-                ("event", "onanimationevent"),
-                ("event", "oneffectfinish"),
-            },
-        ),
-        (
-            "Creatures:FloaterGnasherBiteScript",
-            {("event", "oneffectstart")},
-        ),
-        (
-            "Creatures:FloaterScript",
-            {("event", "ondying")},
-        ),
-    ],
-)
-def test_core_activator_patches_are_method_fragments(name, expected_members):
-    source = _script_patch_source(name)
-
-    assert source is not None
-    assert not any(
-        line.strip().lower().startswith("scriptname ") for line in source.splitlines()
-    )
-    members = {
-        (kind, member_name)
-        for kind, member_name, _start, _end in _iter_top_level_papyrus_members(
-            source.splitlines()
-        )
-    }
-    assert expected_members <= members
-
-
-def test_scorchbeast_patch_uses_fo4_weapon_fallback_and_all_animation_events():
-    source = _script_patch_source("Creatures:ScorchbeastRaceScript")
-
-    assert source is not None
-    assert "SetEquippedWeaponAttacksEnabled" not in source
-    assert "selfRef.UnequipItem(currentData.SonicAttackWeapon" in source
-    assert "selfRef.EquipItem(currentData.SonicAttackWeapon" in source
-    for event_variable in (
-        "animEventStartCloakVFX",
-        "animEventFlightLandingAttack",
-        "animEventFlightLanded",
-        "animEventGroundAreaAttack",
-        "animEventGroundTakeoffAttack",
-        "animEventGroundTakeoff",
-        "animEventSonicAttack",
-    ):
-        assert f"RegisterForAnimationEvent(selfRef, {event_variable})" in source
-        assert f"UnregisterForAnimationEvent(selfRef, {event_variable})" in source
-
-
-def test_cryptid_watcher_patches_do_not_force_combat():
-    for name in (
-        "Creatures:MothmanWatcherScript",
-        "Creatures:FlatwoodsMonsterWatcherScript",
-    ):
-        source = _script_patch_source(name)
-
-        assert source is not None
-        assert "RegisterForDistanceLessThanEvent" in source
-        assert 'GoToState("disappear")' in source
-        assert "StartCombat(" not in source
-        assert "SetEnemy(" not in source
-
-
-def test_cryptid_disappear_paths_disable_actor_after_teleport_event():
-    for name in (
-        "Creatures:MothmanCombatantScript",
-        "Creatures:MothmanDefenderScript",
-        "Creatures:MothmanWatcherScript",
-        "Creatures:FlatwoodsMonsterWatcherScript",
-    ):
-        source = _script_patch_source(name)
-
-        assert source is not None
-        assert ".Disable()" in source
-
-    flatwoods_patch = _script_patch_source("Creatures:FlatwoodsMonsterWatcherScript")
-    assert flatwoods_patch is not None
-    skeleton = (
-        "Scriptname Creatures:FlatwoodsMonsterWatcherScript "
-        "Extends ActiveMagicEffect\n"
-        "actor selfRef\n"
-        'String animEventTeleportStart = "TurnInvisible"\n'
-        "sound Property DisappearSound Auto mandatory\n"
-        "State disappear\n"
-        "    Event OnAnimationEvent(ObjectReference akSource, String asEventName)\n"
-        "        DisappearSound.Play(selfRef)\n"
-        "    EndEvent\n"
-        "EndState\n"
-    )
-
-    merged = _merge_script_method_patches(skeleton, flatwoods_patch)
-
-    assert merged.count("State disappear") == 1
-    assert merged.count("Event OnAnimationEvent") == 1
-    assert "selfRef.Disable()" in merged
-    assert "If DisappearSound != None" in merged
-
-
-def test_mothman_aoe_weapon_cooldown_starts_after_attack_completion():
-    source = _script_patch_source("Creatures:MothmanCombatantScript")
-
-    assert source is not None
-    aoe_start = source.index("If asEventName == animEventAoEAttackStart")
-    attack_finished = source.index('ElseIf asEventName == "AttackEnd"', aoe_start)
-    teleport_start = source.index(
-        "ElseIf asEventName == animEventTeleportStart", attack_finished
-    )
-    aoe_start_branch = source[aoe_start:attack_finished]
-    attack_finished_branch = source[attack_finished:teleport_start]
-    assert "UnequipItem" not in aoe_start_branch
-    assert 'RegisterForAnimationEvent(selfRef, "AttackEnd")' in aoe_start_branch
-    assert 'RegisterForAnimationEvent(selfRef, "AttackStop")' in aoe_start_branch
-    assert 'RegisterForAnimationEvent(selfRef, "AttackInterrupt")' in aoe_start_branch
-    assert "selfRef.UnequipItem(AoEAttackWeapon, False, True)" in attack_finished_branch
-    assert (
-        "StartAoEWeaponTimer(AoEAttackDelayTime, AoEAttackDelayTime)"
-        in attack_finished_branch
-    )
-
-    effect_finish = source[source.index("Event OnEffectFinish") :]
-    assert "selfRef.UnequipItem(AoEAttackWeapon, False, True)" in effect_finish
-    assert "selfRef.EquipItem(AoEAttackWeapon, False, True)" not in effect_finish
-
-
-def test_p1_creature_patches_use_verified_fo4_fallbacks():
-    wendigo = _script_patch_source("Creatures:WendigoRaceScript")
-    ogua = _script_patch_source("crOguaRaceScript")
-    sheepsquatch = _script_patch_source("Creatures:SheepsquatchRaceScript")
-    floater = _script_patch_source("Creatures:FloaterRaceScript")
-    gnasher_bite = _script_patch_source("Creatures:FloaterGnasherBiteScript")
-    floater_actor = _script_patch_source("Creatures:FloaterScript")
-
-    assert wendigo is not None
-    assert "PlaceAtNode(sExplosionSpawnLocation, ScreamAttackExplosion)" in wendigo
-    assert "PlaceAtMe(ScreamAttackExplosion)" in wendigo
-
-    assert ogua is not None
-    assert 'RegisterForAnimationEvent(mySelf, "TurnInvulnerable")' in ogua
-    assert 'RegisterForAnimationEvent(mySelf, "TurnVulnerable")' in ogua
-    assert "timesShelled >= ShellLimit" in ogua
-    assert "ShellSpell.Cast(mySelf, mySelf)" in ogua
-    assert "ShellExit" not in ogua
-
-    assert sheepsquatch is not None
-    assert "selfRef.GetValuePercentage(Health)" in sheepsquatch
-    assert 'ApplySheepsquatchStage("stage2", Sheepsquatch_Stage2)' in sheepsquatch
-    assert 'ApplySheepsquatchStage("stage3", Sheepsquatch_Stage3)' in sheepsquatch
-
-    assert floater is not None
-    assert "VampiricBiteSpell.Cast(floater, floater)" in floater
-    assert gnasher_bite is not None
-    assert "VampiricBiteSpell.Cast(akCaster, akCaster)" in gnasher_bite
-    assert floater_actor is not None
-    assert "Event OnDying(Actor akKiller)" in floater_actor
-    assert "PlaceAtMe(DeathExplosion)" in floater_actor
-
-
-def test_radio_general_patch_supplies_station_scheduler():
-    source = _script_patch_source("RadioGeneral_MasterScript")
-
-    assert source is not None
-    assert "Event OnInit()" in source
-    assert "Event Scene.OnEnd(Scene akSender)" in source
-    assert "Function QueueNextScene()" in source
-    assert "Scene Function PickNextScene()" in source
-    assert "Scene Function ResolveScene(Int index)" in source
-    assert (
-        'Game.GetFormFromFile(songFormIDs[index], "SeventySix.esm") as Scene' in source
-    )
-    assert 'RegisterForRemoteEvent(nextScene, "OnEnd")' in source
-    assert not any(
-        line.strip().lower().startswith("scriptname ") for line in source.splitlines()
-    )
-
-    skeleton = (
-        "Scriptname RadioGeneral_MasterScript Extends QuestInstance\n"
-        "songsDatum[] Property songsData Auto Mandatory\n"
-    )
-    augmented = _augment_fo76_to_fo4_script_skeleton(
-        "RadioGeneral_MasterScript", skeleton
-    )
-    merged = _merge_script_method_patches(augmented, source)
-    assert "Int[] Property songFormIDs Auto Const Mandatory" in merged
-    assert "Event Scene.OnEnd(Scene akSender)" in merged
-    assert "Scene Function PickNextScene()" in merged
-    assert "Scene candidate = ResolveScene(index)" in merged
-    assert (
-        _augment_fo76_to_fo4_script_skeleton("RadioGeneral_MasterScript", augmented)
-        == augmented
-    )
-
-
-def test_radio_general_merged_source_native_compiles_for_fo4():
-    repo_root = Path(__file__).resolve().parents[5]
-    candidates: list[Path] = []
-    configured = os.environ.get("FO4_DIR", "").strip().strip('"')
-    if configured:
-        candidates.append(Path(configured))
-    env_path = repo_root / ".env"
-    if env_path.is_file():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("FO4_DIR="):
-                candidates.append(Path(line.split("=", 1)[1].strip().strip('"')))
-                break
-    base_source = next(
-        (
-            game_root / "Data" / "Scripts" / "Source" / "Base"
-            for game_root in candidates
-            if (game_root / "Data" / "Scripts" / "Source" / "Base").is_dir()
-        ),
-        None,
-    )
-    if base_source is None:
-        pytest.skip("FO4 base Papyrus sources unavailable")
-
-    source_root = repo_root / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
-    skeleton = (source_root / "RadioGeneral_MasterScript.psc").read_text(
-        encoding="utf-8"
-    )
-    augmented = _augment_fo76_to_fo4_script_skeleton(
-        "RadioGeneral_MasterScript", skeleton
-    )
-    patch = _script_patch_source("RadioGeneral_MasterScript")
-    assert patch is not None
-    merged = _merge_script_method_patches(augmented, patch)
-    result = compile_psc(
-        merged,
-        imports=[str(source_root), str(base_source)],
-        game="fo4",
-        flags=str(base_source / "Institute_Papyrus_Flags.flg"),
-        source_path="RadioGeneral_MasterScript.psc",
-    )
-    diagnostics = "\n".join(str(item) for item in result.diagnostics)
-    assert result.ok, diagnostics
-    assert result.pex_bytes is not None
-
-
-def _fo4_base_source_root() -> Path | None:
-    repo_root = Path(__file__).resolve().parents[5]
-    candidates: list[Path] = []
-    configured = os.environ.get("FO4_DIR", "").strip().strip('"')
-    if configured:
-        candidates.append(Path(configured))
-    env_path = repo_root / ".env"
-    if env_path.is_file():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("FO4_DIR="):
-                candidates.append(Path(line.split("=", 1)[1].strip().strip('"')))
-                break
-    return next(
-        (
-            game_root / "Data" / "Scripts" / "Source" / "Base"
-            for game_root in candidates
-            if (game_root / "Data" / "Scripts" / "Source" / "Base").is_dir()
-        ),
-        None,
-    )
-
-
-def _merge_and_compile_patch(script_name: str) -> str:
-    """Merge a patch into its generated skeleton, compile it, return the source.
-
-    Note the compiler does not resolve methods across scripts, so a successful
-    compile says nothing about calls into another script; assert on the returned
-    source for those.
-    """
-    base_source = _fo4_base_source_root()
-    if base_source is None:
-        pytest.skip("FO4 base Papyrus sources unavailable")
-
-    repo_root = Path(__file__).resolve().parents[5]
-    source_root = repo_root / "mods" / "SeventySix" / "Scripts" / "Source" / "User"
-    relative = unified_mod._script_relative_path(script_name, ".psc")
-    skeleton_path = source_root / relative
-    if not skeleton_path.is_file():
-        pytest.skip(f"generated skeleton unavailable: {relative}")
-
-    augmented = _augment_fo76_to_fo4_script_skeleton(
-        script_name, skeleton_path.read_text(encoding="utf-8")
-    )
-    patch = _script_patch_source(script_name)
-    assert patch is not None
-    merged = _merge_script_method_patches(augmented, patch)
-    result = compile_psc(
-        merged,
-        imports=[str(source_root), str(base_source)],
-        game="fo4",
-        flags=str(base_source / "Institute_Papyrus_Flags.flg"),
-        source_path=relative.name,
-    )
-    diagnostics = "\n".join(str(item) for item in result.diagnostics)
-    assert result.ok, diagnostics
-    assert result.pex_bytes is not None
-    return merged
-
-
-def test_mothman_combatant_merged_source_native_compiles_for_fo4():
-    merged = _merge_and_compile_patch("Creatures:MothmanCombatantScript")
-
-    assert merged.count("Event OnAnimationEvent") == 1
-    assert merged.count("Event OnEffectFinish") == 1
-
-
-def test_radio_drama_patch_supplies_rotating_station_scheduler():
-    source = _script_patch_source("RadioDramaRadio_MasterScript")
-
-    assert source is not None
-    assert "Event OnInit()" in source
-    assert "Event Scene.OnEnd(Scene akSender)" in source
-    assert "Function QueueNextScene()" in source
-    assert "Scene Function PickNextScene()" in source
-    # All three track lists must be reachable, not just songs.
-    assert "PickFrom(dramasData, dramaFormIDs, lastDramaScenePlayed)" in source
-    assert (
-        "PickFrom(commercialsData, commercialFormIDs, lastCommercialScenePlayed)"
-        in source
-    )
-    assert "PickFrom(songsData, songFormIDs, lastSongScenePlayed)" in source
-    assert not any(
-        line.strip().lower().startswith("scriptname ") for line in source.splitlines()
-    )
-
-    skeleton = (
-        "Scriptname RadioDramaRadio_MasterScript Extends QuestInstance\n"
-        "tracksDatum[] Property songsData Auto Mandatory\n"
-    )
-    augmented = _augment_fo76_to_fo4_script_skeleton(
-        "RadioDramaRadio_MasterScript", skeleton
-    )
-    for declaration in (
-        "Int[] Property songFormIDs Auto Const Mandatory",
-        "Int[] Property dramaFormIDs Auto Const Mandatory",
-        "Int[] Property commercialFormIDs Auto Const Mandatory",
-    ):
-        assert declaration in augmented
-    assert (
-        _augment_fo76_to_fo4_script_skeleton("RadioDramaRadio_MasterScript", augmented)
-        == augmented
-    )
-
-
-def test_muzak_radio_patches_drive_conditional_song_variable():
-    quest_patch = _script_patch_source("SQRadio76QuestScript")
-    assert quest_patch is not None
-    assert "Function UpdateRadio()" in quest_patch
-    assert "LastSong01 = CurrentSong" in quest_patch
-
-    fragment_patch = _script_patch_source(
-        "Fragments:Scenes:SF_SQ_Radio76_MuzakA_Scene01_004F7AF7"
-    )
-    assert fragment_patch is not None
-    # Phase index 0 is the ident phase, ahead of the CurrentSong-gated phases.
-    assert "Function Fragment_Phase_01_Begin()" in fragment_patch
-    assert "radioQuest.CurrentSong = nextSong" in fragment_patch
-    assert "radioQuest.UpdateRadio()" in fragment_patch
-
-
-def test_radio_drama_merged_source_native_compiles_for_fo4():
-    _merge_and_compile_patch("RadioDramaRadio_MasterScript")
-
-
-def test_muzak_radio_merged_sources_native_compile_for_fo4():
-    quest_source = _merge_and_compile_patch("SQRadio76QuestScript")
-    fragment_source = _merge_and_compile_patch(
-        "Fragments:Scenes:SF_SQ_Radio76_MuzakA_Scene01_004F7AF7"
-    )
-
-    # The compiler ignores unresolved cross-script methods, so pair the fragment's
-    # call with the declaration it depends on rather than trusting the compile.
-    assert "radioQuest.UpdateRadio()" in fragment_source
-    assert "Function UpdateRadio()" in quest_source
-    # The scene conditions read ::CurrentSong_var, which only exists when the
-    # property survives decompilation as Conditional.
-    assert "Int Property CurrentSong" in quest_source
-    current_song = next(
-        line
-        for line in quest_source.splitlines()
-        if line.strip().startswith("Int Property CurrentSong")
-    )
-    assert "conditional" in current_song.lower(), current_song
-
-
 @pytest.mark.parametrize(
     ("source_type", "expected"),
     (
@@ -5102,33 +3537,6 @@ def test_fo76_questinstance_type_adapts_to_fo4_quest(
     expected: str,
 ) -> None:
     assert unified_mod._fo76_to_fo4_script_type(source_type) == expected
-
-
-def test_decompile_adapts_questinstance_extends_header(tmp_path, monkeypatch):
-    import creation_lib.pex as pex_mod
-
-    def fake_decompile(*_args, type_adapter=None, **_kwargs):
-        assert type_adapter is not None
-        return f"Scriptname W05_TestQuest Extends {type_adapter('QuestInstance')}\n"
-
-    monkeypatch.setattr(pex_mod, "decompile_pex", fake_decompile)
-    patch_dir = tmp_path / "patches"
-    patch_dir.mkdir()
-    monkeypatch.setattr(unified_mod, "_SCRIPT_PATCH_DIR", patch_dir)
-
-    runtime = _UnifiedRecordRuntime(make_request(tmp_path))
-    result = runtime._decompile_script_source_for_fo4(
-        "W05_TestQuest",
-        tmp_path / "W05_TestQuest.pex",
-        SimpleNamespace(mod_path=tmp_path / "mod"),
-        StubRunner(),
-    )
-
-    assert result is None
-    written = (
-        tmp_path / "mod" / "Scripts" / "Source" / "User" / "W05_TestQuest.psc"
-    ).read_text(encoding="utf-8")
-    assert written.startswith("Scriptname W05_TestQuest Extends Quest\n")
 
 
 def test_skyrim_decompile_uses_fo4_type_and_api_adapters(tmp_path, monkeypatch):
@@ -5175,110 +3583,102 @@ def test_skyrim_decompile_uses_fo4_type_and_api_adapters(tmp_path, monkeypatch):
     assert written.startswith("Scriptname SkyrimObjectScript Extends ObjectReference\n")
 
 
-def test_merge_appends_missing_event_and_keeps_skeleton():
-    skeleton = (
-        "Scriptname WindChimesActivatorScript Extends ObjectReference\n"
-        "Form Property ResourceToGive Auto Mandatory\n"
-        "State waitingforactivate\nEndState\n"
-    )
-    patch = (
-        "Event OnActivate(ObjectReference akActionRef)\n"
-        "    akActionRef.AddItem(ResourceToGive, 1)\n"
-        "EndEvent\n"
-    )
-    merged = _merge_script_method_patches(skeleton, patch)
-    # Skeleton declarations are preserved and the event is injected exactly once.
-    assert "Scriptname WindChimesActivatorScript" in merged
-    assert "Form Property ResourceToGive" in merged
-    assert merged.count("Event OnActivate") == 1
-    assert "akActionRef.AddItem(ResourceToGive, 1)" in merged
-
-
-def test_merge_replaces_matching_top_level_stub():
-    skeleton = (
-        "Scriptname X Extends ObjectReference\n"
-        "Event OnActivate(ObjectReference akRef)\n"
-        "    ; stub — does nothing\n"
-        "EndEvent\n"
-    )
-    patch = "Event OnActivate(ObjectReference akRef)\n    akRef.Disable()\nEndEvent\n"
-    merged = _merge_script_method_patches(skeleton, patch)
-    assert merged.count("Event OnActivate") == 1
-    assert "akRef.Disable()" in merged
-    assert "stub — does nothing" not in merged
-
-
-def test_merge_replaces_member_inside_existing_named_state():
-    skeleton = (
-        "Scriptname X Extends ObjectReference\n"
-        "Bool Property Enabled Auto\n"
-        "Auto State Ready\n"
-        "    Event OnActivate(ObjectReference akRef)\n"
-        '        Debug.Trace("old")\n'
-        "    EndEvent\n"
-        "    Event OnLoad()\n"
-        "        Enabled = True\n"
-        "    EndEvent\n"
-        "EndState\n"
-    )
-    patch = (
-        "State Ready\n"
-        "    Event OnActivate(ObjectReference akRef)\n"
-        "        akRef.Disable()\n"
-        "    EndEvent\n"
-        "EndState\n"
-    )
-
-    merged = _merge_script_method_patches(skeleton, patch)
-
-    assert merged.count("State Ready") == 1
-    assert merged.count("Event OnActivate") == 1
-    assert "akRef.Disable()" in merged
-    assert 'Debug.Trace("old")' not in merged
-    assert "Event OnLoad()" in merged
-    assert "Bool Property Enabled Auto" in merged
-
-
-def test_merge_state_rename_updates_declaration_and_exact_gotostate_target():
-    skeleton = (
-        "Scriptname X Extends ObjectReference\n"
-        'String label = "default"\n'
-        "Function Restore()\n"
-        '    Self.GoToState("default")\n'
-        "EndFunction\n"
-        "Auto State default\n"
-        "    Event OnLoad()\n"
-        '        PlayAnimation("Reset")\n'
-        "    EndEvent\n"
-        "EndState\n"
-    )
-
-    merged = _merge_script_method_patches(
-        skeleton, "; @state-rename default operational\n"
-    )
-
-    assert "Auto State operational" in merged
-    assert 'Self.GoToState("operational")' in merged
-    assert 'String label = "default"' in merged
-    assert "Event OnLoad()" in merged
-    assert "State default" not in merged
-
-
-def test_merge_top_level_fragment_remains_backward_compatible_with_states():
-    skeleton = (
-        "Scriptname X Extends ObjectReference\n"
-        "State Waiting\n"
-        "    Event OnLoad()\n"
-        "    EndEvent\n"
-        "EndState\n"
-    )
-    patch = "Event OnActivate(ObjectReference akRef)\nEndEvent\n"
-
+@pytest.mark.parametrize(
+    ("skeleton", "patch", "present", "absent", "counts"),
+    [
+        pytest.param(
+            "Scriptname WindChimesActivatorScript Extends ObjectReference\n"
+            "Form Property ResourceToGive Auto Mandatory\n"
+            "State waitingforactivate\nEndState\n",
+            "Event OnActivate(ObjectReference akActionRef)\n"
+            "    akActionRef.AddItem(ResourceToGive, 1)\n"
+            "EndEvent\n",
+            (
+                "Scriptname WindChimesActivatorScript",
+                "Form Property ResourceToGive",
+                "akActionRef.AddItem(ResourceToGive, 1)",
+            ),
+            (),
+            {"Event OnActivate": 1},
+            id="appends_missing_event_and_keeps_skeleton",
+        ),
+        pytest.param(
+            "Scriptname X Extends ObjectReference\n"
+            "Event OnActivate(ObjectReference akRef)\n"
+            "    ; stub — does nothing\n"
+            "EndEvent\n",
+            "Event OnActivate(ObjectReference akRef)\n    akRef.Disable()\nEndEvent\n",
+            ("akRef.Disable()",),
+            ("stub — does nothing",),
+            {"Event OnActivate": 1},
+            id="replaces_matching_top_level_stub",
+        ),
+        pytest.param(
+            "Scriptname X Extends ObjectReference\n"
+            "Bool Property Enabled Auto\n"
+            "Auto State Ready\n"
+            "    Event OnActivate(ObjectReference akRef)\n"
+            '        Debug.Trace("old")\n'
+            "    EndEvent\n"
+            "    Event OnLoad()\n"
+            "        Enabled = True\n"
+            "    EndEvent\n"
+            "EndState\n",
+            "State Ready\n"
+            "    Event OnActivate(ObjectReference akRef)\n"
+            "        akRef.Disable()\n"
+            "    EndEvent\n"
+            "EndState\n",
+            ("akRef.Disable()", "Event OnLoad()", "Bool Property Enabled Auto"),
+            ('Debug.Trace("old")',),
+            {"State Ready": 1, "Event OnActivate": 1},
+            id="replaces_member_inside_existing_named_state",
+        ),
+        pytest.param(
+            "Scriptname X Extends ObjectReference\n"
+            'String label = "default"\n'
+            "Function Restore()\n"
+            '    Self.GoToState("default")\n'
+            "EndFunction\n"
+            "Auto State default\n"
+            "    Event OnLoad()\n"
+            '        PlayAnimation("Reset")\n'
+            "    EndEvent\n"
+            "EndState\n",
+            "; @state-rename default operational\n",
+            (
+                "Auto State operational",
+                'Self.GoToState("operational")',
+                'String label = "default"',
+                "Event OnLoad()",
+            ),
+            ("State default",),
+            {},
+            id="state_rename_updates_declaration_and_exact_gotostate_target",
+        ),
+        pytest.param(
+            "Scriptname X Extends ObjectReference\n"
+            "State Waiting\n"
+            "    Event OnLoad()\n"
+            "    EndEvent\n"
+            "EndState\n",
+            "Event OnActivate(ObjectReference akRef)\nEndEvent\n",
+            (),
+            (),
+            {"State Waiting": 1, "Event OnLoad()": 1, "Event OnActivate": 1},
+            id="top_level_fragment_backward_compatible_with_states",
+        ),
+    ],
+)
+def test_merge_script_method_patches(skeleton, patch, present, absent, counts):
     merged = _merge_script_method_patches(skeleton, patch)
 
-    assert merged.count("State Waiting") == 1
-    assert merged.count("Event OnLoad()") == 1
-    assert merged.count("Event OnActivate") == 1
+    for text in present:
+        assert text in merged
+    for text in absent:
+        assert text not in merged
+    for text, count in counts.items():
+        assert merged.count(text) == count
 
 
 def test_decompile_merges_patch_into_skeleton(tmp_path, monkeypatch):

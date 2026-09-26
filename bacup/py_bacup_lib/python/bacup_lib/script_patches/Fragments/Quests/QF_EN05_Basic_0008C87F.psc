@@ -9,6 +9,42 @@ Actor Function EN05Basic_GetPlayer()
     Return player
 EndFunction
 
+Function EN05Basic_GiveGraduationPapers()
+    If B21GraduationPapersGranted || (!IsStageDone(145) && !IsStageDone(150))
+        Return
+    EndIf
+    Actor player = EN05Basic_GetPlayer()
+    If player == None || pBoS02SoldierCertificate == None || FolderPapersArmyRegistration01 == None
+        Return
+    EndIf
+    B21GraduationPapersGranted = True
+    If player.GetItemCount(pBoS02SoldierCertificate) == 0
+        player.AddItem(pBoS02SoldierCertificate, 1, True)
+    EndIf
+    If player.GetItemCount(FolderPapersArmyRegistration01) == 0
+        player.AddItem(FolderPapersArmyRegistration01, 1, True)
+    EndIf
+EndFunction
+
+Event OnQuestInit()
+    RegisterForRemoteEvent(Game.GetPlayer(), "OnPlayerLoadGame")
+    EN05Basic_GiveGraduationPapers()
+EndEvent
+
+Event OnStageSet(Int auiStageID, Int auiItemID)
+    If auiStageID == 145 || auiStageID == 150
+        EN05Basic_GiveGraduationPapers()
+    EndIf
+EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    EN05Basic_GiveGraduationPapers()
+EndEvent
+
+Event OnQuestShutdown()
+    UnregisterForAllRemoteEvents()
+EndEvent
+
 Function EN05Basic_RecordStage(Int aiStage)
     Actor player = EN05Basic_GetPlayer()
     If player != None && EN05_StageValue != None
@@ -36,6 +72,9 @@ Function EN05Basic_TallyCourses()
     If completed >= 3 && !IsStageDone(90)
         SetObjectiveDisplayed(90)
         SetStage(90)
+    EndIf
+    If basic != None
+        basic.EN05Basic_ProcessCourseCompletion()
     EndIf
 EndFunction
 
@@ -117,6 +156,8 @@ Function Fragment_Stage_0015_Item_00()
 EndFunction
 
 Function Fragment_Stage_0020_Item_00()
+    SetObjectiveCompleted(5)
+    SetObjectiveCompleted(20)
     SetObjectiveSkipped(12)
     SetObjectiveSkipped(13)
     SetObjectiveSkipped(15)

@@ -1812,234 +1812,106 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "cold synthetic benchmark"]
-    fn benchmark_batched_lctn_contents_against_sequential_replacements() {
-        const BACKGROUND: u32 = 200_000;
-        const CHANGED_LCTN: u32 = 313;
-        const WORLD: u32 = 0x0705_0000;
-        let mut lctn_items = Vec::with_capacity((CHANGED_LCTN + 1) as usize);
-        lctn_items.push(ParsedItem::Record(parsed_record("WRLD", WORLD, vec![])));
-        for index in 0..CHANGED_LCTN {
-            lctn_items.push(ParsedItem::Record(lctn_cell_record(
-                0x0706_0000 + index,
-                WORLD & 0x00FF_FFFF,
-                index as i16,
-                0,
-            )));
-        }
-        let mut background = Vec::with_capacity(BACKGROUND as usize);
-        for index in 0..BACKGROUND {
-            let mut record = parsed_record("REFR", 0x0710_0000 + index, vec![]);
-            if index % 3 == 0 {
-                record.raw_payload = Some(Bytes::new());
+    fn reconciles_persistence_row_against_cell_location() {
+        const SOURCE_LOCATION: u32 = 0x077D6A95;
+        const ACTUAL_LOCATION: u32 = 0x077D2A0E;
+        const CELL: u32 = 0x07265353;
+        const REFERENCE: u32 = 0x077FF721;
+        for (name, actual_parent, strip_cell_location, counts, lcpr_owner, ref_xlcn) in [
+            (
+                "sibling cell location rehomes",
+                None,
+                false,
+                (1, 0, 1),
+                Some(ACTUAL_LOCATION),
+                Some(ACTUAL_LOCATION),
+            ),
+            (
+                "descendant cell location keeps",
+                Some(SOURCE_LOCATION),
+                false,
+                (0, 0, 0),
+                Some(SOURCE_LOCATION),
+                Some(SOURCE_LOCATION),
+            ),
+            (
+                "cell without location drops",
+                None,
+                true,
+                (0, 1, 1),
+                None,
+                None,
+            ),
+        ] {
+            let mut items = reconcile_test_items(actual_parent);
+            if strip_cell_location {
+                find_record_mut(&mut items, CELL)
+                    .expect("cell")
+                    .subrecords
+                    .retain(|subrecord| subrecord.signature.as_str() != "XLCN");
             }
-            background.push(ParsedItem::Record(record));
-        }
 
-        let temp = tempfile::tempdir().unwrap();
-        for late_lctn in [false, true] {
-            let mut items = Vec::with_capacity((BACKGROUND + CHANGED_LCTN + 1) as usize);
-            if late_lctn {
-                items.extend(background.iter().cloned());
-                items.extend(lctn_items.iter().cloned());
-            } else {
-                items.extend(lctn_items.iter().cloned());
-                items.extend(background.iter().cloned());
+            let report = reconcile_test_tree(&mut items);
+
+            assert_eq!(
+                (
+                    report.rows_rehomed,
+                    report.rows_dropped,
+                    report.refs_changed
+                ),
+                counts,
+                "{name}"
+            );
+            for location in [SOURCE_LOCATION, ACTUAL_LOCATION] {
+                let lcpr = find_record(&items, location)
+                    .expect("location")
+                    .subrecords
+                    .iter()
+                    .find(|subrecord| subrecord.signature.as_str() == "LCPR")
+                    .map(|row| raw_u32(&row.data, 0));
+                assert_eq!(
+                    lcpr,
+                    (lcpr_owner == Some(location)).then_some(REFERENCE),
+                    "{name}: LCPR on {location:08X}"
+                );
             }
-            let mut sequential = Vec::new();
-            let mut batched = Vec::new();
-            for sample in 0..6 {
-                let modes = if sample % 2 == 0 {
-                    [false, true]
-                } else {
-                    [true, false]
-                };
-                let mut reports = Vec::new();
-                let mut outputs = Vec::new();
-                for batch in modes {
-                    let output = temp
-                        .path()
-                        .join(format!("{late_lctn}-{sample}-{batch}.esm"));
-                    let (report, elapsed) = run_lctn_content_mode(items.clone(), batch, &output);
-                    if batch {
-                        batched.push(elapsed);
-                    } else {
-                        sequential.push(elapsed);
-                    }
-                    assert_eq!(report["changed"].as_u64(), Some(CHANGED_LCTN as u64));
-                    reports.push(report);
-                    outputs.push(output);
-                }
-                assert_eq!(reports[0], reports[1]);
-                assert_identical_plugin_files(&outputs[0], &outputs[1]);
-            }
-            eprintln!(
-                "lctn_content_batch late_lctn={late_lctn} background={BACKGROUND} expected_changed={CHANGED_LCTN} sequential_seconds={sequential:?} batched_seconds={batched:?}"
+            let reference = find_record(&items, REFERENCE).expect("placed reference");
+            assert_eq!(
+                parsed_subrecords_raw_form_id(&reference.subrecords, "XLCN"),
+                ref_xlcn,
+                "{name}"
             );
         }
     }
 
-    #[test]
-    #[ignore = "requires PLACED_REPAIR_CORPUS and optional PLACED_REPAIR_REPORT"]
-    fn shared_repair_session_preserves_complete_plugin_corpus() {
-        use crate::run::OwnedPluginHandle;
-        use esp_authoring_core::plugin_runtime::plugin_handle_save_no_py;
-        let path = std::path::PathBuf::from(std::env::var_os("PLACED_REPAIR_CORPUS").unwrap());
-        let temp = tempfile::tempdir().unwrap();
-        let mut reports = Vec::new();
-        let mut times = Vec::new();
-        for shared in [false, true] {
-            let handle = OwnedPluginHandle::load(&path, "fo4", None).unwrap();
-            let (normalization, report, seconds) =
-                run_normalize_and_location_repairs(handle.id(), true, shared);
-            reports.push((normalization, report));
-            times.push(seconds);
-            let output = temp.path().join(format!("{shared}.esm"));
-            plugin_handle_save_no_py(handle.id(), output.to_str().unwrap()).unwrap();
-        }
-        assert_eq!(reports[0], reports[1]);
-        let baseline = temp.path().join("false.esm");
-        let optimized = temp.path().join("true.esm");
-        let digest = assert_identical_plugin_files(&baseline, &optimized);
-        let report = serde_json::json!({
-            "source": path, "bytes": std::fs::metadata(&optimized).unwrap().len(),
-            "identical": true, "digest": digest,
-            "separate_sessions_seconds": times[0], "shared_session_seconds": times[1],
-            "normalization": reports[1].0, "location": reports[1].1,
-        });
-        eprintln!("{report}");
-        if let Some(path) = std::env::var_os("PLACED_REPAIR_REPORT") {
-            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-        }
+    fn raw_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
     }
 
-    #[test]
-    fn rehomes_persistence_row_when_cell_uses_sibling_location() {
-        const SOURCE_LOCATION: u32 = 0x077D6A95;
-        const ACTUAL_LOCATION: u32 = 0x077D2A0E;
-        const REFERENCE: u32 = 0x077FF721;
-        let mut items = reconcile_test_items(None);
-
-        let report = reconcile_test_tree(&mut items);
-
-        assert_eq!(report.rows_rehomed, 1);
-        assert_eq!(report.rows_dropped, 0);
-        assert_eq!(report.refs_changed, 1);
-        let source = find_record(&items, SOURCE_LOCATION).expect("source location");
-        assert!(
-            source
-                .subrecords
-                .iter()
-                .all(|subrecord| subrecord.signature.as_str() != "LCPR")
-        );
-        let actual = find_record(&items, ACTUAL_LOCATION).expect("actual location");
-        let moved = actual
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "LCPR")
-            .expect("moved LCPR row");
-        assert_eq!(
-            u32::from_le_bytes(moved.data[0..4].try_into().unwrap()),
-            REFERENCE
-        );
-        let reference = find_record(&items, REFERENCE).expect("placed reference");
-        assert_eq!(
-            parsed_subrecords_raw_form_id(&reference.subrecords, "XLCN"),
-            Some(ACTUAL_LOCATION)
-        );
-    }
-
-    #[test]
-    fn keeps_persistence_row_when_cell_location_is_descendant() {
-        const SOURCE_LOCATION: u32 = 0x077D6A95;
-        const ACTUAL_LOCATION: u32 = 0x077D2A0E;
-        const REFERENCE: u32 = 0x077FF721;
-        let mut items = reconcile_test_items(Some(SOURCE_LOCATION));
-
-        let report = reconcile_test_tree(&mut items);
-
-        assert_eq!(report.rows_rehomed, 0);
-        assert_eq!(report.rows_dropped, 0);
-        assert_eq!(report.refs_changed, 0);
-        let source = find_record(&items, SOURCE_LOCATION).expect("source location");
-        assert!(
-            source
-                .subrecords
-                .iter()
-                .any(|subrecord| subrecord.signature.as_str() == "LCPR")
-        );
-        let reference = find_record(&items, REFERENCE).expect("placed reference");
-        assert_eq!(
-            parsed_subrecords_raw_form_id(&reference.subrecords, "XLCN"),
-            Some(SOURCE_LOCATION)
-        );
-        let actual = find_record(&items, ACTUAL_LOCATION).expect("actual location");
-        assert!(
-            actual
-                .subrecords
-                .iter()
-                .all(|subrecord| subrecord.signature.as_str() != "LCPR")
-        );
-    }
-
-    #[test]
-    fn drops_persistence_row_when_cell_has_no_location() {
-        const SOURCE_LOCATION: u32 = 0x077D6A95;
-        const CELL: u32 = 0x07265353;
-        const REFERENCE: u32 = 0x077FF721;
-        let mut items = reconcile_test_items(None);
-        let cell = find_record_mut(&mut items, CELL).expect("cell");
-        cell.subrecords
-            .retain(|subrecord| subrecord.signature.as_str() != "XLCN");
-
-        let report = reconcile_test_tree(&mut items);
-
-        assert_eq!(report.rows_rehomed, 0);
-        assert_eq!(report.rows_dropped, 1);
-        assert_eq!(report.refs_changed, 1);
-        let source = find_record(&items, SOURCE_LOCATION).expect("source location");
-        assert!(
-            source
-                .subrecords
-                .iter()
-                .all(|subrecord| subrecord.signature.as_str() != "LCPR")
-        );
-        let reference = find_record(&items, REFERENCE).expect("placed reference");
-        assert_eq!(
-            parsed_subrecords_raw_form_id(&reference.subrecords, "XLCN"),
-            None
-        );
-    }
-
-    #[test]
-    fn rewrites_lctn_master_special_reference_formids() {
-        let mut record = lctn_record_with_raw("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15));
-
-        assert!(rewrite_lctn_record(&mut record, &target_map(), false, None));
+    fn raw_field(record: &Record) -> &[u8] {
         let FieldValue::Bytes(bytes) = &record.fields[0].value else {
             panic!("expected raw bytes");
         };
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            0x073D4B0D
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            0x07001234
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            0x0725DA15
-        );
+        bytes
+    }
+
+    fn row_words(bytes: &[u8]) -> [u32; 3] {
+        [raw_u32(bytes, 0), raw_u32(bytes, 4), raw_u32(bytes, 8)]
     }
 
     #[test]
-    fn rewrites_lctn_master_worldspace_cell_formid() {
+    fn rewrites_lctn_master_formids_and_leaves_encoded_ones() {
+        let mut record = lctn_record_with_raw("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15));
+        assert!(rewrite_lctn_record(&mut record, &target_map(), false, None));
+        assert_eq!(
+            row_words(raw_field(&record)),
+            [0x073D4B0D, 0x07001234, 0x0725DA15]
+        );
+
         let mut raw = SmallVec::<[u8; 32]>::new();
         raw.extend_from_slice(&0x0025DA15_u32.to_le_bytes());
         raw.extend_from_slice(&(-18_i16).to_le_bytes());
         raw.extend_from_slice(&(-37_i16).to_le_bytes());
-
         assert!(rewrite_lctn_bytes(
             &mut raw,
             LctnRawLayout::FirstFormId,
@@ -2047,95 +1919,63 @@ mod tests {
             None,
             0
         ));
-        assert_eq!(
-            u32::from_le_bytes(raw[0..4].try_into().unwrap()),
-            0x0725DA15
-        );
+        assert_eq!(raw_u32(&raw, 0), 0x0725DA15);
+
+        let mut raw = 0x073D4B0D_u32.to_le_bytes().to_vec();
+        assert!(!rewrite_formid_at(&mut raw, 0, &target_map()));
+        assert_eq!(raw_u32(&raw, 0), 0x073D4B0D);
     }
 
     #[test]
-    fn prunes_lctn_special_reference_row_with_unmapped_worldspace() {
-        let mut record = lctn_record_with_raw("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15));
+    fn prunes_lctn_rows_with_unmapped_worldspace() {
+        let mut lcec = Vec::new();
+        lcec.extend_from_slice(&0x0025DA15_u32.to_le_bytes());
+        lcec.extend_from_slice(&(-18_i16).to_le_bytes());
+        lcec.extend_from_slice(&(-37_i16).to_le_bytes());
+        for (sig, raw) in [
+            ("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15)),
+            ("LCEC", lcec),
+        ] {
+            let mut record = lctn_record_with_raw(sig, raw);
+            assert!(
+                rewrite_lctn_record(&mut record, &target_map_without_world(), false, None),
+                "{sig}"
+            );
+            assert!(
+                record.fields.is_empty(),
+                "{sig} row should be removed rather than leaving a raw source-local worldspace"
+            );
+        }
 
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &target_map_without_world(),
-            false,
-            None
-        ));
-        assert!(
-            record.fields.is_empty(),
-            "row should be removed rather than leaving a raw source-local worldspace"
-        );
-    }
-
-    #[test]
-    fn prunes_only_unmapped_lctn_special_reference_rows() {
         let mut raw = lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15);
         raw.extend_from_slice(&lcsr_row(0x003D4B0D, 0x00001234, 0x00BEEF01));
         let mut record = lctn_record_with_raw("LCSR", raw);
-
         assert!(rewrite_lctn_record(&mut record, &target_map(), false, None));
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw bytes");
-        };
+        let bytes = raw_field(&record);
         assert_eq!(bytes.len(), 16, "only the mapped row should remain");
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            0x073D4B0D
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            0x07001234
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            0x0725DA15
-        );
+        assert_eq!(row_words(bytes), [0x073D4B0D, 0x07001234, 0x0725DA15]);
     }
 
     #[test]
-    fn prunes_lctn_worldspace_cells_with_unmapped_worldspace() {
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&0x0025DA15_u32.to_le_bytes());
-        raw.extend_from_slice(&(-18_i16).to_le_bytes());
-        raw.extend_from_slice(&(-37_i16).to_le_bytes());
-        let mut record = lctn_record_with_raw("LCEC", raw);
-
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &target_map_without_world(),
-            false,
-            None
-        ));
-        assert!(
-            record.fields.is_empty(),
-            "LCEC should be removed rather than leaving a raw source-local worldspace"
-        );
-    }
-
-    #[test]
-    fn augment_registers_own_record_object_ids_outside_mapper() {
+    fn augment_registers_only_missing_own_record_object_ids() {
         let mut encoded_targets = FxHashMap::default();
-        augment_with_own_encoded_form_ids(&mut encoded_targets, [0x07001234, 0x0725DA15], 7);
+        encoded_targets.insert(0x00ABCD, 0x07ABCDEF);
+        augment_with_own_encoded_form_ids(
+            &mut encoded_targets,
+            [0x07001234, 0x0725DA15, 0x0700ABCD, 0x0000_0ABC],
+            7,
+        );
         assert_eq!(encoded_targets.get(&0x001234), Some(&0x07001234));
         assert_eq!(encoded_targets.get(&0x25DA15), Some(&0x0725DA15));
-    }
-
-    #[test]
-    fn augment_does_not_override_existing_mapper_target() {
-        let mut encoded_targets = FxHashMap::default();
-        encoded_targets.insert(0x001234, 0x07ABCDEF);
-        augment_with_own_encoded_form_ids(&mut encoded_targets, [0x07001234], 7);
-        assert_eq!(encoded_targets.get(&0x001234), Some(&0x07ABCDEF));
-    }
-
-    #[test]
-    fn augment_ignores_master_resident_records() {
-        let mut encoded_targets = FxHashMap::default();
-        // index 0 (e.g. a Fallout4.esm override) is not an own record.
-        augment_with_own_encoded_form_ids(&mut encoded_targets, [0x0000_0ABC], 7);
-        assert!(encoded_targets.get(&0x000ABC).is_none());
+        assert_eq!(
+            encoded_targets.get(&0x00ABCD),
+            Some(&0x07ABCDEF),
+            "existing mapper target wins"
+        );
+        assert!(
+            encoded_targets.get(&0x000ABC).is_none(),
+            "master-resident records are not own records"
+        );
     }
 
     #[test]
@@ -2143,11 +1983,10 @@ mod tests {
         // LocRefType + WorldCell are mapper-resident; the placed Ref reached the
         // target through the cell-slice copy and is absent from the mapper.
         let mut base_targets = FxHashMap::default();
-        base_targets.insert(0x3D4B0D, 0x073D4B0D); // LocRefType (LCRT)
-        base_targets.insert(0x25DA15, 0x0725DA15); // WorldCell (WRLD)
+        base_targets.insert(0x3D4B0D, 0x073D4B0D);
+        base_targets.insert(0x25DA15, 0x0725DA15);
 
-        // In the pre-copy fixup phase, special-ref rows are deferred because the
-        // placed refs have not been copied into the output plugin yet.
+        // Pre-copy, special-ref rows are deferred: the placed refs are not in the output yet.
         let mut deferred =
             lctn_record_with_raw("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15));
         assert!(!rewrite_lctn_record(
@@ -2156,16 +1995,12 @@ mod tests {
             true,
             None
         ));
-        let FieldValue::Bytes(bytes) = &deferred.fields[0].value else {
-            panic!("expected raw bytes");
-        };
         assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            raw_u32(raw_field(&deferred), 4),
             0x00001234,
             "deferred special ref keeps its source-local placed ref"
         );
 
-        // Post-copy, a missing own ref still prunes the row.
         let mut pruned = lctn_record_with_raw("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15));
         assert!(rewrite_lctn_record(&mut pruned, &base_targets, false, None));
         assert!(
@@ -2177,271 +2012,148 @@ mod tests {
         augment_with_own_encoded_form_ids(&mut fixed_targets, [0x07001234], 7);
         let mut kept = lctn_record_with_raw("LCSR", lcsr_row(0x003D4B0D, 0x00001234, 0x0025DA15));
         assert!(rewrite_lctn_record(&mut kept, &fixed_targets, false, None));
-        let FieldValue::Bytes(bytes) = &kept.fields[0].value else {
-            panic!("expected raw bytes");
-        };
+        let bytes = raw_field(&kept);
         assert_eq!(bytes.len(), 16, "the special-ref row is retained");
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            0x073D4B0D
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            0x07001234
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            0x0725DA15
-        );
+        assert_eq!(row_words(bytes), [0x073D4B0D, 0x07001234, 0x0725DA15]);
     }
 
     #[test]
-    fn keeps_persistent_lctn_row_when_ref_location_and_grid_match() {
-        let location = 0x0700414F;
-        let world = 0x0725DA15;
-        let cell = 0x07A035C5;
-        let reference = 0x07001234;
-        let placed = placed_record(
-            "REFR",
-            reference,
-            RECORD_FLAG_PERSISTENT,
-            Some(location),
-            -37.0 * 4096.0,
-            -18.0 * 4096.0,
-        );
-        let items = exterior_persistence_items(world, cell, placed);
-        let index = LctnPersistenceIndex::from_items(&items, 7);
-        let mut record = lctn_record_with_raw("LCPR", lcpr_row(0x00001234, 0x0025DA15, -18, -37));
-
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &target_map(),
-            false,
-            Some(&index)
-        ));
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw bytes");
+    fn persistence_index_keeps_or_prunes_lctn_rows() {
+        const LOCATION: u32 = 0x0700414F;
+        const WORLD: u32 = 0x0725DA15;
+        const EXTERIOR_CELL: u32 = 0x07A035C5;
+        const INTERIOR_CELL: u32 = 0x076240BB;
+        const REFERENCE: u32 = 0x07001234;
+        let exterior = |sig: &str, flags: u32, location: Option<u32>| {
+            placed_record(
+                sig,
+                REFERENCE,
+                flags,
+                location,
+                -37.0 * 4096.0,
+                -18.0 * 4096.0,
+            )
         };
-        assert_eq!(bytes.len(), 12);
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            reference
-        );
-    }
+        let exterior_lcpr = || lcpr_row(0x00001234, 0x0025DA15, -18, -37);
+        let cases: Vec<(
+            &str,
+            bool,
+            ParsedRecord,
+            Vec<(u32, u32)>,
+            &str,
+            Vec<u8>,
+            Option<Vec<(usize, u32)>>,
+        )> = vec![
+            (
+                "persistent ref with matching location and grid",
+                false,
+                exterior("REFR", RECORD_FLAG_PERSISTENT, Some(LOCATION)),
+                vec![],
+                "LCPR",
+                exterior_lcpr(),
+                Some(vec![(0, REFERENCE)]),
+            ),
+            (
+                "special row without ref XLCN when grid matches",
+                false,
+                placed_record(
+                    "REFR",
+                    0x070B1051,
+                    RECORD_FLAG_PERSISTENT,
+                    None,
+                    -25.5 * 4096.0,
+                    22.5 * 4096.0,
+                ),
+                vec![(0x02271F, 0x0702271F), (0x0B1051, 0x070B1051)],
+                "LCSR",
+                lcsr_row_at(0x0002271F, 0x000B1051, 0x0025DA15, 22, -26),
+                Some(vec![(0, 0x0702271F), (4, 0x070B1051), (8, WORLD)]),
+            ),
+            (
+                "non-persistent actor keeps LCPR",
+                false,
+                exterior("ACHR", 0, Some(LOCATION)),
+                vec![],
+                "LCPR",
+                exterior_lcpr(),
+                Some(vec![(0, REFERENCE)]),
+            ),
+            (
+                "non-persistent non-actor prunes LCPR",
+                false,
+                exterior("REFR", 0, Some(LOCATION)),
+                vec![],
+                "LCPR",
+                exterior_lcpr(),
+                None,
+            ),
+            (
+                "ref XLCN names another location",
+                false,
+                exterior("REFR", RECORD_FLAG_PERSISTENT, Some(0x07004150)),
+                vec![],
+                "LCPR",
+                exterior_lcpr(),
+                None,
+            ),
+            (
+                "static LCSR kept for non-persistent interior actor so quest location aliases fill",
+                true,
+                placed_record("ACHR", 0x07646883, 0, Some(LOCATION), 0.0, 0.0),
+                vec![
+                    (0x6240BB, INTERIOR_CELL),
+                    (0x653007, 0x07653007),
+                    (0x646883, 0x07646883),
+                ],
+                "LCSR",
+                lcsr_row_at(0x00653007, 0x00646883, 0x006240BB, i16::MAX, i16::MAX),
+                Some(vec![(4, 0x07646883)]),
+            ),
+            (
+                "interior persistent row by cell parentage",
+                true,
+                placed_record(
+                    "ACHR",
+                    REFERENCE,
+                    RECORD_FLAG_PERSISTENT,
+                    Some(LOCATION),
+                    0.0,
+                    0.0,
+                ),
+                vec![(0x6240BB, INTERIOR_CELL)],
+                "LCPR",
+                lcpr_row(0x00001234, 0x076240BB, i16::MAX, i16::MAX),
+                Some(vec![(0, REFERENCE)]),
+            ),
+        ];
+        for (name, interior, placed, extra_targets, sig, raw, expected) in cases {
+            let items = if interior {
+                interior_persistence_items(INTERIOR_CELL, placed)
+            } else {
+                exterior_persistence_items(WORLD, EXTERIOR_CELL, placed)
+            };
+            let index = LctnPersistenceIndex::from_items(&items, 7);
+            let mut targets = target_map();
+            targets.extend(extra_targets);
+            let mut record = lctn_record_with_raw(sig, raw);
 
-    #[test]
-    fn keeps_special_lctn_row_without_ref_xlcn_when_grid_matches() {
-        let world = 0x0725DA15;
-        let cell = 0x07A035C5;
-        let reference = 0x070B1051;
-        let map_marker_ref_type = 0x0702271F;
-        let placed = placed_record(
-            "REFR",
-            reference,
-            RECORD_FLAG_PERSISTENT,
-            None,
-            -25.5 * 4096.0,
-            22.5 * 4096.0,
-        );
-        let items = exterior_persistence_items(world, cell, placed);
-        let index = LctnPersistenceIndex::from_items(&items, 7);
-        let mut targets = FxHashMap::default();
-        targets.insert(0x02271F, map_marker_ref_type);
-        targets.insert(0x0B1051, reference);
-        targets.insert(0x25DA15, world);
-        let mut record = lctn_record_with_raw(
-            "LCSR",
-            lcsr_row_at(0x0002271F, 0x000B1051, 0x0025DA15, 22, -26),
-        );
+            assert!(
+                rewrite_lctn_record(&mut record, &targets, false, Some(&index)),
+                "{name}"
+            );
 
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &targets,
-            false,
-            Some(&index)
-        ));
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw bytes");
-        };
-        assert_eq!(bytes.len(), 16);
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            map_marker_ref_type
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            reference
-        );
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), world);
-    }
-
-    #[test]
-    fn keeps_lcpr_row_for_nonpersistent_actor() {
-        let location = 0x0700414F;
-        let world = 0x0725DA15;
-        let cell = 0x07A035C5;
-        let reference = 0x07001234;
-        let placed = placed_record(
-            "ACHR",
-            reference,
-            0,
-            Some(location),
-            -37.0 * 4096.0,
-            -18.0 * 4096.0,
-        );
-        let items = exterior_persistence_items(world, cell, placed);
-        let index = LctnPersistenceIndex::from_items(&items, 7);
-        let mut record = lctn_record_with_raw("LCPR", lcpr_row(0x00001234, 0x0025DA15, -18, -37));
-
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &target_map(),
-            false,
-            Some(&index)
-        ));
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("temporary actor LCPR row must be retained");
-        };
-        assert_eq!(bytes.len(), 12);
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            reference
-        );
-    }
-
-    #[test]
-    fn prunes_lcpr_row_for_nonpersistent_nonactor() {
-        let location = 0x0700414F;
-        let world = 0x0725DA15;
-        let cell = 0x07A035C5;
-        let placed = placed_record(
-            "REFR",
-            0x07001234,
-            0,
-            Some(location),
-            -37.0 * 4096.0,
-            -18.0 * 4096.0,
-        );
-        let items = exterior_persistence_items(world, cell, placed);
-        let index = LctnPersistenceIndex::from_items(&items, 7);
-        let mut record = lctn_record_with_raw("LCPR", lcpr_row(0x00001234, 0x0025DA15, -18, -37));
-
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &target_map(),
-            false,
-            Some(&index)
-        ));
-
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn keeps_lcsr_static_row_when_ref_is_not_persistent() {
-        // The Whitespring greeter case: a non-persistent ACHR special-ref in an
-        // interior cell. LCSR (static) refs are non-persistent by design (vanilla
-        // FO4 carries both), so the row must be KEPT — pruning it leaves the
-        // quest's location alias unable to fill, aborting the dialogue quest.
-        let location = 0x0700414F;
-        let cell = 0x076240BB;
-        let reference = 0x07646883;
-        let ref_type = 0x07653007;
-        let placed = placed_record("ACHR", reference, 0, Some(location), 0.0, 0.0);
-        let items = interior_persistence_items(cell, placed);
-        let index = LctnPersistenceIndex::from_items(&items, 7);
-        let mut targets = target_map();
-        targets.insert(0x6240BB, cell);
-        targets.insert(0x653007, ref_type);
-        targets.insert(0x646883, reference);
-        let mut record = lctn_record_with_raw(
-            "LCSR",
-            lcsr_row_at(0x00653007, 0x00646883, 0x006240BB, i16::MAX, i16::MAX),
-        );
-
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &targets,
-            false,
-            Some(&index)
-        ));
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("static-ref row must be retained for a non-persistent interior ref");
-        };
-        assert_eq!(bytes.len(), 16);
-        assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            reference
-        );
-    }
-
-    #[test]
-    fn prunes_lctn_row_when_ref_points_at_other_location() {
-        let world = 0x0725DA15;
-        let cell = 0x07A035C5;
-        let placed = placed_record(
-            "REFR",
-            0x07001234,
-            RECORD_FLAG_PERSISTENT,
-            Some(0x07004150),
-            -37.0 * 4096.0,
-            -18.0 * 4096.0,
-        );
-        let items = exterior_persistence_items(world, cell, placed);
-        let index = LctnPersistenceIndex::from_items(&items, 7);
-        let mut record = lctn_record_with_raw("LCPR", lcpr_row(0x00001234, 0x0025DA15, -18, -37));
-
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &target_map(),
-            false,
-            Some(&index)
-        ));
-
-        assert!(
-            record.fields.is_empty(),
-            "a row under location 00414F cannot name a ref whose XLCN is another location"
-        );
-    }
-
-    #[test]
-    fn keeps_interior_persistent_row_by_cell_parentage() {
-        let location = 0x0700414F;
-        let cell = 0x076240BB;
-        let reference = 0x07001234;
-        let placed = placed_record(
-            "ACHR",
-            reference,
-            RECORD_FLAG_PERSISTENT,
-            Some(location),
-            0.0,
-            0.0,
-        );
-        let items = interior_persistence_items(cell, placed);
-        let index = LctnPersistenceIndex::from_items(&items, 7);
-        let raw = lcpr_row(0x00001234, 0x076240BB, i16::MAX, i16::MAX);
-        let mut record = lctn_record_with_raw("LCPR", raw);
-        let mut targets = target_map();
-        targets.insert(0x6240BB, 0x076240BB);
-
-        assert!(rewrite_lctn_record(
-            &mut record,
-            &targets,
-            false,
-            Some(&index)
-        ));
-
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw bytes");
-        };
-        assert_eq!(bytes.len(), 12);
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            reference
-        );
+            match expected {
+                None => assert!(record.fields.is_empty(), "{name}: row should be pruned"),
+                Some(words) => {
+                    assert!(!record.fields.is_empty(), "{name}: row must be retained");
+                    let bytes = raw_field(&record);
+                    assert_eq!(bytes.len(), if sig == "LCPR" { 12 } else { 16 }, "{name}");
+                    for (offset, value) in words {
+                        assert_eq!(raw_u32(bytes, offset), value, "{name} @{offset}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2517,87 +2229,48 @@ mod tests {
     }
 
     #[test]
-    fn leaves_already_encoded_target_formids_unchanged() {
-        let mut raw = 0x073D4B0D_u32.to_le_bytes().to_vec();
-        assert!(!rewrite_formid_at(&mut raw, 0, &target_map()));
-        assert_eq!(
-            u32::from_le_bytes(raw[0..4].try_into().unwrap()),
-            0x073D4B0D
-        );
-    }
-
-    #[test]
-    fn tags_missing_cell_location_from_lctn_worldspace_cells() {
-        let world = 0x0725DA15;
-        let location = 0x077FFFCC;
-        let cell = 0x072628FE;
-        let mut items = vec![
-            ParsedItem::Record(lctn_cell_record(location, world, 13, 42)),
-            world_children_group(
-                world,
-                vec![ParsedItem::Record(parsed_cell_record(cell, 13, 42, None))],
+    fn tags_missing_cell_location_without_overwriting_existing() {
+        const WORLD: u32 = 0x0725DA15;
+        const LOCATION: u32 = 0x077FFFCC;
+        const EXISTING_LOCATION: u32 = 0x07012345;
+        const CELL: u32 = 0x072628FE;
+        for (name, existing, expected_changed, expected_location) in [
+            ("missing location is tagged", None, &[CELL][..], LOCATION),
+            (
+                "existing location is kept",
+                Some(EXISTING_LOCATION),
+                &[][..],
+                EXISTING_LOCATION,
             ),
-        ];
-        let mut locations = FxHashMap::default();
-        let mut conflicts = rustc_hash::FxHashSet::default();
-        collect_lctn_world_cell_locations(&items, &mut locations, &mut conflicts);
-        assert!(conflicts.is_empty());
+        ] {
+            let mut items = vec![
+                ParsedItem::Record(lctn_cell_record(LOCATION, WORLD, 13, 42)),
+                world_children_group(
+                    WORLD,
+                    vec![ParsedItem::Record(parsed_cell_record(
+                        CELL, 13, 42, existing,
+                    ))],
+                ),
+            ];
+            let mut locations = FxHashMap::default();
+            let mut conflicts = rustc_hash::FxHashSet::default();
+            collect_lctn_world_cell_locations(&items, &mut locations, &mut conflicts);
+            assert!(conflicts.is_empty(), "{name}");
 
-        let mut changed_form_ids = Vec::new();
-        assert_eq!(
-            tag_cell_locations_in_items(&mut items, None, &locations, &mut changed_form_ids),
-            1
-        );
-        assert_eq!(changed_form_ids, vec![cell]);
-        let cell_record = first_cell(&items).expect("tagged cell");
-        let xlcn = cell_record
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "XLCN")
-            .expect("XLCN");
-        assert_eq!(
-            u32::from_le_bytes(xlcn.data[0..4].try_into().unwrap()),
-            location
-        );
-    }
-
-    #[test]
-    fn does_not_overwrite_existing_cell_location() {
-        let world = 0x0725DA15;
-        let location = 0x077FFFCC;
-        let existing_location = 0x07012345;
-        let cell = 0x072628FE;
-        let mut items = vec![
-            ParsedItem::Record(lctn_cell_record(location, world, 13, 42)),
-            world_children_group(
-                world,
-                vec![ParsedItem::Record(parsed_cell_record(
-                    cell,
-                    13,
-                    42,
-                    Some(existing_location),
-                ))],
-            ),
-        ];
-        let mut locations = FxHashMap::default();
-        let mut conflicts = rustc_hash::FxHashSet::default();
-        collect_lctn_world_cell_locations(&items, &mut locations, &mut conflicts);
-
-        let mut changed_form_ids = Vec::new();
-        assert_eq!(
-            tag_cell_locations_in_items(&mut items, None, &locations, &mut changed_form_ids),
-            0
-        );
-        assert!(changed_form_ids.is_empty());
-        let cell_record = first_cell(&items).expect("cell");
-        let xlcn = cell_record
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "XLCN")
-            .expect("XLCN");
-        assert_eq!(
-            u32::from_le_bytes(xlcn.data[0..4].try_into().unwrap()),
-            existing_location
-        );
+            let mut changed_form_ids = Vec::new();
+            assert_eq!(
+                tag_cell_locations_in_items(&mut items, None, &locations, &mut changed_form_ids),
+                expected_changed.len(),
+                "{name}"
+            );
+            assert_eq!(changed_form_ids, expected_changed, "{name}");
+            let xlcn = first_cell(&items)
+                .expect("cell")
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "XLCN")
+                .expect("XLCN");
+            assert_eq!(raw_u32(&xlcn.data, 0), expected_location, "{name}");
+        }
     }
 }

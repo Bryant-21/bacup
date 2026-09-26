@@ -5,7 +5,7 @@ Event OnActivate(ObjectReference akActionRef)
 	If akActionRef != playerRef || owningQuest == None || terminalRef == None
 		Return
 	EndIf
-	If owningQuest.GetCurrentStageID() == 475 && terminalRef.IsLocked() && !owningQuest.GetStageDone(500)
+	If owningQuest.GetStageDone(475) && !owningQuest.GetStageDone(500) && !owningQuest.GetStageDone(600) && terminalRef.IsLocked()
 		owningQuest.SetStage(500)
 	EndIf
 EndEvent

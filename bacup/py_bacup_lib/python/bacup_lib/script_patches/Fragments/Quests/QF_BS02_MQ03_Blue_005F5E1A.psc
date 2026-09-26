@@ -402,6 +402,9 @@ Function Fragment_Stage_0450_Item_00()
     If BS02_MQ03_Tunnel_RahmaniWeaponInvestigate != None && !BS02_MQ03_Tunnel_RahmaniWeaponInvestigate.IsPlaying()
         BS02_MQ03_Tunnel_RahmaniWeaponInvestigate.Start()
     EndIf
+    ; The scene has no completion stage in the record; FO76 set 460 server-side, and the
+    ; station trigger (470) requires it.
+    StartTimer(2.0, 460)
 EndFunction
 
 Function Fragment_Stage_0455_Item_00()
@@ -749,11 +752,18 @@ Function Fragment_Stage_0505_Item_00()
     If BS02_MQ03_Tunnel_z_Comments_SheepsquatchRoar != None && !BS02_MQ03_Tunnel_z_Comments_SheepsquatchRoar.IsPlaying()
         BS02_MQ03_Tunnel_z_Comments_SheepsquatchRoar.Start()
     EndIf
+    ; No vine record reports its destruction; reaching the pump-room triggers means the vines are cut.
+    If !IsStageDone(500)
+        SetStage(500)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0510_Item_00()
     If BS02_MQ03_Tunnel_z_Comments_ReadTerminal != None && !BS02_MQ03_Tunnel_z_Comments_ReadTerminal.IsPlaying()
         BS02_MQ03_Tunnel_z_Comments_ReadTerminal.Start()
+    EndIf
+    If !IsStageDone(500)
+        SetStage(500)
     EndIf
 EndFunction
 
@@ -991,13 +1001,24 @@ Function Fragment_Stage_9000_Item_00()
             If exitScript != None
                 exitScript.ReconcileSuccessorAcceptance()
             EndIf
-        ElseIf IsStageDone(9000) && !IsStageDone(9999)
+        EndIf
+        If !IsStageDone(9999)
             StartTimer(5.0, 9000)
         EndIf
     EndIf
 EndFunction
 
 Event OnTimer(Int aiTimerID)
+    If aiTimerID == 460
+        If IsStageDone(460) || IsStageDone(9999)
+            Return
+        ElseIf BS02_MQ03_Tunnel_RahmaniWeaponInvestigate != None && BS02_MQ03_Tunnel_RahmaniWeaponInvestigate.IsPlaying()
+            StartTimer(2.0, 460)
+        Else
+            SetStage(460)
+        EndIf
+        Return
+    EndIf
     If aiTimerID != 9000 || !IsStageDone(9000) || IsStageDone(9999) || BS02_MQ04_Conscience == None || BS02_MQ04_Conscience_StartKeyword == None
         Return
     EndIf

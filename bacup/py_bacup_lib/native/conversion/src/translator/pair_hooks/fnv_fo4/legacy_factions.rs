@@ -318,10 +318,7 @@ mod tests {
                 .value,
             FieldValue::Struct(_)
         ));
-    }
 
-    #[test]
-    fn source_only_flags_and_fields_are_omitted_with_warnings() {
         let interner = StringInterner::new();
         let mut record = fixture(&interner, [0x03, 0x02, 0, 0]);
         record.fields.extend([

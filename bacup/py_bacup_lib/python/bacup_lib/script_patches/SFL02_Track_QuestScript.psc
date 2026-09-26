@@ -207,7 +207,11 @@ EndFunction
 Function RegisterAliasEvent(Int aiAliasId, String asEventName)
     ReferenceAlias targetAlias = GetAlias(aiAliasId) as ReferenceAlias
     If targetAlias != None && targetAlias.GetReference() != None
-        RegisterForRemoteEvent(targetAlias.GetReference(), asEventName)
+        If asEventName == "OnActivate"
+            RegisterForRemoteEvent(targetAlias.GetReference(), "OnActivate")
+        ElseIf asEventName == "OnTriggerEnter"
+            RegisterForRemoteEvent(targetAlias.GetReference(), "OnTriggerEnter")
+        EndIf
     EndIf
 EndFunction
 
@@ -229,7 +233,11 @@ EndFunction
 Function UnregisterAliasEvent(Int aiAliasId, String asEventName)
     ReferenceAlias targetAlias = GetAlias(aiAliasId) as ReferenceAlias
     If targetAlias != None && targetAlias.GetReference() != None
-        UnregisterForRemoteEvent(targetAlias.GetReference(), asEventName)
+        If asEventName == "OnActivate"
+            UnregisterForRemoteEvent(targetAlias.GetReference(), "OnActivate")
+        ElseIf asEventName == "OnTriggerEnter"
+            UnregisterForRemoteEvent(targetAlias.GetReference(), "OnTriggerEnter")
+        EndIf
     EndIf
 EndFunction
 

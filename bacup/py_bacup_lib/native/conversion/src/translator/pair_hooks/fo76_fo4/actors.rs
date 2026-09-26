@@ -8,7 +8,9 @@ pub(super) const FO76_ARMA_XFLG_HAS_UPPER_BODY_SKIN: u64 = 1 << 1;
 pub(super) const FO4_BODY_BIPED_MASK: u64 = 1 << (33 - 30);
 pub(super) const FO4_PIPBOY_BIPED_MASK: u64 = 1 << (60 - 30);
 pub(super) const FO4_HUMAN_CHILD_RACE_FORM_ID: u32 = 0x11D83F;
+#[cfg(test)]
 pub(super) const FO76_ANIMS_GRIP_RIFLE_STRAIGHT_FORM_ID: u32 = 0x0464EF;
+#[cfg(test)]
 pub(super) const FO76_ANIMS_ALIEN_RIFLE_FORM_ID: u32 = 0x63E33B;
 
 pub(super) const DESTRUCTIBLE_GROUP_SIGS: &[[u8; 4]] = &[

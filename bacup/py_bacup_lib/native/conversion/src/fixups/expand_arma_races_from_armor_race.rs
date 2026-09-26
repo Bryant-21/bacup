@@ -366,13 +366,6 @@ mod tests {
 
         assert_eq!(augment_arma_additional_races(&mut arma, &expansions), 1);
         assert_eq!(additional_races(&arma), vec![human, lost]);
-    }
-
-    #[test]
-    fn uses_primary_race_as_expansion_seed() {
-        let interner = StringInterner::new();
-        let human = fk("0EAFB6", "Fallout4.esm", &interner);
-        let lost = fk("727CCF", "SeventySix.esm", &interner);
 
         let mut expansions = FxHashMap::default();
         expansions.insert(human, vec![lost]);
@@ -382,13 +375,6 @@ mod tests {
 
         assert_eq!(augment_arma_additional_races(&mut arma, &expansions), 1);
         assert_eq!(additional_races(&arma), vec![lost]);
-    }
-
-    #[test]
-    fn skips_existing_custom_race() {
-        let interner = StringInterner::new();
-        let human = fk("0EAFB6", "Fallout4.esm", &interner);
-        let lost = fk("727CCF", "SeventySix.esm", &interner);
 
         let mut expansions = FxHashMap::default();
         expansions.insert(human, vec![lost]);
@@ -399,13 +385,7 @@ mod tests {
 
         assert_eq!(augment_arma_additional_races(&mut arma, &expansions), 0);
         assert_eq!(additional_races(&arma), vec![lost]);
-    }
 
-    #[test]
-    fn inserts_before_post_modl_fields_when_no_modl_exists() {
-        let interner = StringInterner::new();
-        let human = fk("0EAFB6", "Fallout4.esm", &interner);
-        let lost = fk("727CCF", "SeventySix.esm", &interner);
         let footstep = fk("012345", "Fallout4.esm", &interner);
 
         let mut expansions = FxHashMap::default();

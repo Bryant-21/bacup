@@ -1287,175 +1287,208 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_complete_chain_projects_with_lowered_conditions() {
-        let interner = StringInterner::new();
-        let fixture = fixture(&interner, [0x001001, 0x001002, 0x001003, 0x001004]);
-        let projection = project_story_manager_chain(
-            &fixture.records,
-            &fixture.component,
-            &fixture.mapping,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(
-            projection.route_receipt.route.node_chain,
-            vec![
-                fixture.target_root.clone(),
-                fixture.target_branch.clone(),
-                fixture.target_node.clone(),
-            ]
-        );
-        assert_eq!(projection.route_receipt.route.quest, fixture.target_quest);
-        assert_eq!(projection.records.len(), 2);
-        assert_eq!(
-            projection.records[0].form_key,
-            parse_key(&fixture.target_branch, &interner).unwrap()
-        );
-        assert_eq!(
-            projection.records[1].form_key,
-            parse_key(&fixture.target_node, &interner).unwrap()
-        );
-        assert!(projection.records[1].fields.iter().any(|field| {
-            field.sig.0 == *b"CIS2"
-                && text_value(&field.value, &interner).as_deref() == Some("::State")
-        }));
-        let expected_root = parse_key(&fixture.target_root, &interner).unwrap();
-        let expected_branch = parse_key(&fixture.target_branch, &interner).unwrap();
-        let expected_quest = parse_key(&fixture.target_quest, &interner).unwrap();
-        assert!(projection.records[0].fields.iter().any(|field| {
-            field.sig.0 == *b"PNAM" && field.value == FieldValue::FormKey(expected_root)
-        }));
-        assert!(projection.records[1].fields.iter().any(|field| {
-            field.sig.0 == *b"PNAM" && field.value == FieldValue::FormKey(expected_branch)
-        }));
-        assert!(projection.records[1].fields.iter().any(|field| {
-            field.sig.0 == *b"NNAM" && field.value == FieldValue::FormKey(expected_quest)
-        }));
-        assert_eq!(projection.graph.nodes[1].conditions.len(), 1);
-        assert_eq!(projection.graph.nodes[2].conditions.len(), 1);
+    fn story_manager_chains_project_root_first_with_lowered_conditions() {
+        {
+            let interner = StringInterner::new();
+            let fixture = fixture(&interner, [0x001001, 0x001002, 0x001003, 0x001004]);
+            let projection = project_story_manager_chain(
+                &fixture.records,
+                &fixture.component,
+                &fixture.mapping,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(
+                projection.route_receipt.route.node_chain,
+                vec![
+                    fixture.target_root.clone(),
+                    fixture.target_branch.clone(),
+                    fixture.target_node.clone(),
+                ]
+            );
+            assert_eq!(projection.route_receipt.route.quest, fixture.target_quest);
+            assert_eq!(projection.records.len(), 2);
+            assert_eq!(
+                projection.records[0].form_key,
+                parse_key(&fixture.target_branch, &interner).unwrap()
+            );
+            assert_eq!(
+                projection.records[1].form_key,
+                parse_key(&fixture.target_node, &interner).unwrap()
+            );
+            assert!(projection.records[1].fields.iter().any(|field| {
+                field.sig.0 == *b"CIS2"
+                    && text_value(&field.value, &interner).as_deref() == Some("::State")
+            }));
+            let expected_root = parse_key(&fixture.target_root, &interner).unwrap();
+            let expected_branch = parse_key(&fixture.target_branch, &interner).unwrap();
+            let expected_quest = parse_key(&fixture.target_quest, &interner).unwrap();
+            assert!(projection.records[0].fields.iter().any(|field| {
+                field.sig.0 == *b"PNAM" && field.value == FieldValue::FormKey(expected_root)
+            }));
+            assert!(projection.records[1].fields.iter().any(|field| {
+                field.sig.0 == *b"PNAM" && field.value == FieldValue::FormKey(expected_branch)
+            }));
+            assert!(projection.records[1].fields.iter().any(|field| {
+                field.sig.0 == *b"NNAM" && field.value == FieldValue::FormKey(expected_quest)
+            }));
+            assert_eq!(projection.graph.nodes[1].conditions.len(), 1);
+            assert_eq!(projection.graph.nodes[2].conditions.len(), 1);
+        }
+        {
+            let interner = StringInterner::new();
+            let mut fixture = fixture(&interner, [0x070221, 0x070222, 0x070223, 0x070224]);
+            fixture.records.reverse();
+            let projection = project_story_manager_chain(
+                &fixture.records,
+                &fixture.component,
+                &fixture.mapping,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(
+                projection
+                    .graph
+                    .nodes
+                    .iter()
+                    .map(|node| node.source.clone())
+                    .collect::<Vec<_>>(),
+                vec![
+                    fixture.source_root,
+                    fixture.source_branch,
+                    fixture.source_node
+                ]
+            );
+            assert_eq!(
+                projection.route_receipt.route.producer_evidence_id,
+                "fo4-native-event:HACK"
+            );
+        }
     }
 
     #[test]
-    fn documented_070221_through_070224_shape_is_root_first_and_deterministic() {
-        let interner = StringInterner::new();
-        let mut fixture = fixture(&interner, [0x070221, 0x070222, 0x070223, 0x070224]);
-        fixture.records.reverse();
-        let projection = project_story_manager_chain(
-            &fixture.records,
-            &fixture.component,
-            &fixture.mapping,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(
-            projection
-                .graph
-                .nodes
-                .iter()
-                .map(|node| node.source.clone())
-                .collect::<Vec<_>>(),
-            vec![
-                fixture.source_root,
-                fixture.source_branch,
-                fixture.source_node
-            ]
-        );
-        assert_eq!(
-            projection.route_receipt.route.producer_evidence_id,
-            "fo4-native-event:HACK"
-        );
-    }
-
-    #[test]
-    fn noncanonical_or_unavailable_fo4_event_roots_fail_closed() {
-        let interner = StringInterner::new();
-        let mut noncanonical = fixture(&interner, [0x009001, 0x009002, 0x009003, 0x009004]);
-        noncanonical.mapping.target_event_root.form_key = "000ABC@Fallout4.esm".to_string();
-        let error = project_story_manager_chain(
-            &noncanonical.records,
-            &noncanonical.component,
-            &noncanonical.mapping,
-            &interner,
-        )
-        .unwrap_err();
-        assert!(error.contains("canonical loaded FO4 SMEN root"), "{error}");
-
-        let mut kill = fixture(&interner, [0x009101, 0x009102, 0x009103, 0x009104]);
-        kill.mapping.event = SkyrimFo4StoryEvent::KillActor;
-        let root = kill
-            .records
-            .iter_mut()
-            .find(|record| record.sig.as_str() == "SMEN")
-            .unwrap();
-        root.fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "ENAM")
-            .unwrap()
-            .value = FieldValue::Uint(SkyrimFo4StoryEvent::KillActor.code() as u64);
-        let error =
-            project_story_manager_chain(&kill.records, &kill.component, &kill.mapping, &interner)
-                .unwrap_err();
-        assert!(
-            error.contains("Fallout 4 has no canonical SMEN root"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn missing_parent_cycle_and_unsupported_event_reject_the_component() {
-        let interner = StringInterner::new();
-
-        let mut missing = fixture(&interner, [0x002001, 0x002002, 0x002003, 0x002004]);
-        missing
-            .records
-            .retain(|record| record.sig.as_str() != "SMBN");
-        assert!(
-            project_story_manager_chain(
-                &missing.records,
-                &missing.component,
-                &missing.mapping,
+    fn story_manager_rejects_bad_roots_topology_events_and_conditions() {
+        {
+            let interner = StringInterner::new();
+            let mut noncanonical = fixture(&interner, [0x009001, 0x009002, 0x009003, 0x009004]);
+            noncanonical.mapping.target_event_root.form_key = "000ABC@Fallout4.esm".to_string();
+            let error = project_story_manager_chain(
+                &noncanonical.records,
+                &noncanonical.component,
+                &noncanonical.mapping,
                 &interner,
             )
-            .unwrap_err()
-            .contains("missing")
-        );
+            .unwrap_err();
+            assert!(error.contains("canonical loaded FO4 SMEN root"), "{error}");
 
-        let mut cycle = fixture(&interner, [0x003001, 0x003002, 0x003003, 0x003004]);
-        let source_node_fk = parse_key(&cycle.source_node, &interner).unwrap();
-        let branch = cycle
-            .records
-            .iter_mut()
-            .find(|record| record.sig.as_str() == "SMBN")
-            .unwrap();
-        branch.fields[0].value = FieldValue::FormKey(source_node_fk);
-        assert!(
-            project_story_manager_chain(
-                &cycle.records,
-                &cycle.component,
-                &cycle.mapping,
+            let mut kill = fixture(&interner, [0x009101, 0x009102, 0x009103, 0x009104]);
+            kill.mapping.event = SkyrimFo4StoryEvent::KillActor;
+            let root = kill
+                .records
+                .iter_mut()
+                .find(|record| record.sig.as_str() == "SMEN")
+                .unwrap();
+            root.fields
+                .iter_mut()
+                .find(|field| field.sig.as_str() == "ENAM")
+                .unwrap()
+                .value = FieldValue::Uint(SkyrimFo4StoryEvent::KillActor.code() as u64);
+            let error = project_story_manager_chain(
+                &kill.records,
+                &kill.component,
+                &kill.mapping,
                 &interner,
             )
-            .unwrap_err()
-            .contains("cycle")
-        );
+            .unwrap_err();
+            assert!(
+                error.contains("Fallout 4 has no canonical SMEN root"),
+                "{error}"
+            );
+        }
+        {
+            let interner = StringInterner::new();
 
-        let mut event = fixture(&interner, [0x004001, 0x004002, 0x004003, 0x004004]);
-        let root = event
-            .records
-            .iter_mut()
-            .find(|record| record.sig.as_str() == "SMEN")
-            .unwrap();
-        root.fields[0].value = FieldValue::Uint(u32::from_le_bytes(*b"NONE") as u64);
-        assert!(
-            project_story_manager_chain(
-                &event.records,
-                &event.component,
-                &event.mapping,
-                &interner,
-            )
-            .unwrap_err()
-            .contains("unsupported")
-        );
+            let mut missing = fixture(&interner, [0x002001, 0x002002, 0x002003, 0x002004]);
+            missing
+                .records
+                .retain(|record| record.sig.as_str() != "SMBN");
+            assert!(
+                project_story_manager_chain(
+                    &missing.records,
+                    &missing.component,
+                    &missing.mapping,
+                    &interner,
+                )
+                .unwrap_err()
+                .contains("missing")
+            );
+
+            let mut cycle = fixture(&interner, [0x003001, 0x003002, 0x003003, 0x003004]);
+            let source_node_fk = parse_key(&cycle.source_node, &interner).unwrap();
+            let branch = cycle
+                .records
+                .iter_mut()
+                .find(|record| record.sig.as_str() == "SMBN")
+                .unwrap();
+            branch.fields[0].value = FieldValue::FormKey(source_node_fk);
+            assert!(
+                project_story_manager_chain(
+                    &cycle.records,
+                    &cycle.component,
+                    &cycle.mapping,
+                    &interner,
+                )
+                .unwrap_err()
+                .contains("cycle")
+            );
+
+            let mut event = fixture(&interner, [0x004001, 0x004002, 0x004003, 0x004004]);
+            let root = event
+                .records
+                .iter_mut()
+                .find(|record| record.sig.as_str() == "SMEN")
+                .unwrap();
+            root.fields[0].value = FieldValue::Uint(u32::from_le_bytes(*b"NONE") as u64);
+            assert!(
+                project_story_manager_chain(
+                    &event.records,
+                    &event.component,
+                    &event.mapping,
+                    &interner,
+                )
+                .unwrap_err()
+                .contains("unsupported")
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let mut fixture = fixture(&interner, [0x008001, 0x008002, 0x008003, 0x008004]);
+            let branch = fixture
+                .records
+                .iter_mut()
+                .find(|record| record.sig.as_str() == "SMBN")
+                .unwrap();
+            let FieldValue::Bytes(bytes) = &mut branch
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.0 == *b"CTDA")
+                .unwrap()
+                .value
+            else {
+                unreachable!()
+            };
+            bytes[8..10].copy_from_slice(&999_u16.to_le_bytes());
+            assert!(
+                project_story_manager_chain(
+                    &fixture.records,
+                    &fixture.component,
+                    &fixture.mapping,
+                    &interner,
+                )
+                .unwrap_err()
+                .contains("unsupported Skyrim Story Manager condition")
+            );
+        }
     }
 
     #[test]
@@ -1522,37 +1555,6 @@ mod tests {
             )
             .unwrap_err()
             .contains("topology")
-        );
-    }
-
-    #[test]
-    fn unsupported_condition_shape_rejects_the_whole_graph() {
-        let interner = StringInterner::new();
-        let mut fixture = fixture(&interner, [0x008001, 0x008002, 0x008003, 0x008004]);
-        let branch = fixture
-            .records
-            .iter_mut()
-            .find(|record| record.sig.as_str() == "SMBN")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &mut branch
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.0 == *b"CTDA")
-            .unwrap()
-            .value
-        else {
-            unreachable!()
-        };
-        bytes[8..10].copy_from_slice(&999_u16.to_le_bytes());
-        assert!(
-            project_story_manager_chain(
-                &fixture.records,
-                &fixture.component,
-                &fixture.mapping,
-                &interner,
-            )
-            .unwrap_err()
-            .contains("unsupported Skyrim Story Manager condition")
         );
     }
 }

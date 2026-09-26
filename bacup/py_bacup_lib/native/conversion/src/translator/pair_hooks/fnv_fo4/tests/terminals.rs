@@ -54,7 +54,7 @@ fn pre_translate_drops_term_snam_because_fo4_v131_expects_24_byte_sound_rows() {
 }
 
 #[test]
-fn pre_translate_synthesizes_fo4_furniture_markers_for_legacy_term_models() {
+fn pre_translate_synthesizes_fo4_furniture_markers_only_for_modeled_terms() {
     let interner = StringInterner::new();
     let cases = [
         (
@@ -120,10 +120,7 @@ fn pre_translate_synthesizes_fo4_furniture_markers_for_legacy_term_models() {
         assert_eq!(&marker_parameters[20..24], &[0xff; 4]);
         assert_eq!(field("BSIZ").value, FieldValue::Uint(0));
     }
-}
 
-#[test]
-fn pre_translate_leaves_modeless_term_without_furniture_markers() {
     let interner = StringInterner::new();
     let mut term = make_record("TERM", &interner);
     push_field(
@@ -143,10 +140,7 @@ fn pre_translate_leaves_modeless_term_without_furniture_markers() {
             .collect::<Vec<_>>(),
         vec!["EDID"]
     );
-}
 
-#[test]
-fn synthesized_term_furniture_markers_survive_fo4_target_normalization() {
     let interner = StringInterner::new();
     let mut term = make_record("TERM", &interner);
     push_field(
@@ -296,6 +290,33 @@ fn pre_translate_maps_raw_term_submenu_rows_and_drops_unsupported_rows() {
     assert_eq!(record.fields[4].value, FieldValue::Uint(1));
     assert_eq!(record.fields[7].value, FieldValue::Uint(4));
     assert_eq!(record.fields[8].value, FieldValue::Uint(2));
+
+    let interner = StringInterner::new();
+    let note = FormKey::parse("005678@FalloutNV.esm", &interner).unwrap();
+    let mut record = make_record("TERM", &interner);
+    push_field(&mut record, "EDID", FieldValue::None);
+    push_field(&mut record, "ISIZ", FieldValue::Uint(1));
+    push_field(
+        &mut record,
+        "ITXT",
+        FieldValue::String(interner.intern("Read note")),
+    );
+    push_field(&mut record, "ANAM", FieldValue::Uint(1));
+    push_field(&mut record, "ITID", FieldValue::Uint(77));
+    push_field(&mut record, "INAM", FieldValue::FormKey(note));
+
+    FnvFo4Hook
+        .pre_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    assert_eq!(
+        record
+            .fields
+            .iter()
+            .map(|field| field.sig.as_str())
+            .collect::<Vec<_>>(),
+        vec!["EDID"]
+    );
 }
 
 #[test]
@@ -374,37 +395,7 @@ fn pre_translate_maps_structured_term_submenu_rows() {
 }
 
 #[test]
-fn pre_translate_removes_term_count_and_item_ids_when_all_rows_drop() {
-    let interner = StringInterner::new();
-    let note = FormKey::parse("005678@FalloutNV.esm", &interner).unwrap();
-    let mut record = make_record("TERM", &interner);
-    push_field(&mut record, "EDID", FieldValue::None);
-    push_field(&mut record, "ISIZ", FieldValue::Uint(1));
-    push_field(
-        &mut record,
-        "ITXT",
-        FieldValue::String(interner.intern("Read note")),
-    );
-    push_field(&mut record, "ANAM", FieldValue::Uint(1));
-    push_field(&mut record, "ITID", FieldValue::Uint(77));
-    push_field(&mut record, "INAM", FieldValue::FormKey(note));
-
-    FnvFo4Hook
-        .pre_translate(&mut make_ctx(&interner), &mut record)
-        .unwrap();
-
-    assert_eq!(
-        record
-            .fields
-            .iter()
-            .map(|field| field.sig.as_str())
-            .collect::<Vec<_>>(),
-        vec!["EDID"]
-    );
-}
-
-#[test]
-fn pre_translate_drops_legacy_term_condition_id_collisions() {
+fn pre_translate_drops_legacy_condition_id_collisions() {
     let interner = StringInterner::new();
     let submenu = FormKey::parse("001234@FalloutNV.esm", &interner).unwrap();
     let mut record = make_record("TERM", &interner);
@@ -468,10 +459,7 @@ fn pre_translate_drops_legacy_term_condition_id_collisions() {
         })
         .collect::<Vec<_>>();
     assert_eq!(condition_strings, vec!["Keep"]);
-}
 
-#[test]
-fn pre_translate_drops_legacy_condition_id_collisions_from_non_term_records() {
     let interner = StringInterner::new();
 
     for signature in ["MESG", "IDLE", "CPTH"] {
@@ -498,10 +486,7 @@ fn pre_translate_drops_legacy_condition_id_collisions_from_non_term_records() {
             .collect::<Vec<_>>();
         assert_eq!(condition_ids, vec![46], "{signature}");
     }
-}
 
-#[test]
-fn fo3_pre_translate_drops_legacy_condition_id_collisions() {
     let interner = StringInterner::new();
     let mut record = make_record("CPTH", &interner);
     push_field(&mut record, "CTDA", raw_term_condition(53));
@@ -524,3 +509,4 @@ fn fo3_pre_translate_drops_legacy_condition_id_collisions() {
         .collect::<Vec<_>>();
     assert_eq!(condition_ids, vec![46]);
 }
+

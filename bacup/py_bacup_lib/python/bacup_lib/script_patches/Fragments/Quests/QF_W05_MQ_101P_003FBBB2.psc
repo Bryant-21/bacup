@@ -60,6 +60,12 @@ Function Fragment_Stage_0100_Item_00()
     SetObjectiveDisplayed(30)
     SetObjectiveDisplayed(40)
     ObjectReference playerRef = Alias_currentPlayer.GetReference()
+    ; Davenport's Photo Opportunity daily (SM node W05_Daily_Photo_Initial) requires this
+    ; AV; the stripped 101P fragments were its only writer (property bound here).
+    Actor playerActor = playerRef as Actor
+    If playerActor && W05_Daily_PhotoCanStartAV
+        playerActor.SetValue(W05_Daily_PhotoCanStartAV, 1.0)
+    EndIf
     If W05_MQ_101P_A && !W05_MQ_101P_A.IsRunning() && !W05_MQ_101P_A.IsCompleted()
         W05_MQ_101P_A_QuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
     EndIf
@@ -315,6 +321,10 @@ Function Fragment_Stage_1700_Item_00()
     SetObjectiveCompleted(170)
     SetObjectiveDisplayed(180)
     SetObjectiveDisplayed(190)
+    ; Stage 1750 carries the mid-quest XP/caps (B21:QuestRewards); FO76 granted it server side.
+    If !IsStageDone(1750)
+        SetStage(1750)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1800_Item_00()

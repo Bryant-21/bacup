@@ -30,8 +30,13 @@ use crate::sym::StringInterner;
 
 const SLOT_COUNT: usize = 13;
 const TRAITS_SLOT: usize = 0;
+const STATS_SLOT: usize = 1;
 const SCRIPT_SLOT: usize = 9;
 const MAX_TRAITS_VARIANTS: usize = 64;
+const MAX_MATERIALIZED_VARIANTS: usize = 64;
+const ACBS_LEVEL_OFFSET: usize = 6;
+const ACBS_FEMALE_FLAG: u32 = 0x0000_0001;
+const ACBS_PC_LEVEL_MULT_FLAG: u32 = 0x0000_0080;
 const MAX_DIAGNOSTIC_DETAILS: usize = 256;
 const SYNTH_PLUGIN: &str = "__synth_materialized_npc__";
 const SYNTH_LIST_PLUGIN: &str = "__synth_materialized_npc_list__";
@@ -664,9 +669,29 @@ impl<'a, 'store, 'interner> NpcMaterializer<'a, 'store, 'interner> {
             traits_sources.truncate(MAX_TRAITS_VARIANTS);
         }
 
-        let mut variants = Vec::with_capacity(traits_sources.len());
-        for traits_source in traits_sources {
-            let mut clone = match self.materialize_variant(&base, &slots, traits_source) {
+        let stat_tiers = slots[STATS_SLOT]
+            .map(|target| {
+                self.resolve_slot_terminals(target, STATS_SLOT, &mut FxHashSet::default(), 0)
+            })
+            .unwrap_or_default();
+        let pairs = plan_variant_pairs(&traits_sources, &stat_tiers, MAX_MATERIALIZED_VARIANTS);
+        if stat_tiers.len() > 1 {
+            let actor_label = self.record_label(&base);
+            self.record_diagnostic(format!(
+                "decision:stat_tier_spread:actor={actor_label}:tiers={}:variants={}",
+                stat_tiers.len(),
+                pairs.len()
+            ));
+        }
+
+        let mut variants = Vec::with_capacity(pairs.len());
+        for (traits_source, stats_source) in pairs {
+            let mut clone = match self.materialize_variant(
+                &base,
+                &slots,
+                traits_source,
+                stats_source,
+            ) {
                 Ok(clone) => clone,
                 Err(failure) => {
                     self.unresolved += 1;
@@ -750,7 +775,10 @@ impl<'a, 'store, 'interner> NpcMaterializer<'a, 'store, 'interner> {
                 traits_source_local: traits_source.local & 0x00FF_FFFF,
                 clone_local: clone_fk.local & 0x00FF_FFFF,
             });
-            variants.push(clone_fk);
+            let entry_level = npc_acbs_level(&clone, self.mapper.interner)
+                .unwrap_or(1)
+                .max(1);
+            variants.push((clone_fk, entry_level));
             self.clones.push(clone);
         }
         if variants.is_empty() {
@@ -910,7 +938,8 @@ impl<'a, 'store, 'interner> NpcMaterializer<'a, 'store, 'interner> {
         ));
     }
 
-    fn build_variant_list(&mut self, base: &Record, variants: Vec<FormKey>) -> FormKey {
+    fn build_variant_list(&mut self, base: &Record, mut variants: Vec<(FormKey, u16)>) -> FormKey {
+        anchor_weakest_band(&mut variants);
         let source = FormKey {
             local: self.next_synth_list_local,
             plugin: self.mapper.interner.intern(SYNTH_LIST_PLUGIN),
@@ -946,13 +975,13 @@ impl<'a, 'store, 'interner> NpcMaterializer<'a, 'store, 'interner> {
         let count = self.mapper.interner.intern("Count");
         let chance_none = self.mapper.interner.intern("chance_none");
         let unknown_u8_6 = self.mapper.interner.intern("unknown_u8_6");
-        for variant in variants {
+        for (variant, entry_level) in variants {
             list.fields.push(FieldEntry {
                 sig: SubrecordSig::from_str("LVLO").expect("LVLO signature"),
                 value: FieldValue::Struct(vec![
                     (
                         level,
-                        FieldValue::Bytes(1u16.to_le_bytes().as_slice().into()),
+                        FieldValue::Bytes(entry_level.to_le_bytes().as_slice().into()),
                     ),
                     (unknown_u8_1, FieldValue::Bytes(vec![0].into())),
                     (unknown_u8_2, FieldValue::Bytes(vec![0].into())),
@@ -975,11 +1004,14 @@ impl<'a, 'store, 'interner> NpcMaterializer<'a, 'store, 'interner> {
         base: &Record,
         slots: &[Option<FormKey>; SLOT_COUNT],
         traits_source: FormKey,
+        stats_source: Option<FormKey>,
     ) -> Result<Record, VariantFailure> {
         let mut output = base.clone();
         for slot in 0..SLOT_COUNT {
             let source_fk = if slot == TRAITS_SLOT {
                 slots[slot].map(|_| traits_source)
+            } else if slot == STATS_SLOT && stats_source.is_some() {
+                slots[slot].and(stats_source)
             } else {
                 slots[slot].and_then(|target| {
                     let terminals =
@@ -1562,6 +1594,113 @@ fn clear_acbs_template_flags(record: &mut Record, interner: &StringInterner) {
     }
 }
 
+/// The level an actor's `ACBS` declares.
+///
+/// FO76 bands a spawn's level through a tier list on the Stats slot and picks the
+/// band from its own scaling globals, which FO4 has no equivalent for. Reading the
+/// level the chosen tier stamped lets the clone carry its band onto the leveled
+/// list entry, where FO4 rolls it against the player instead.
+///
+/// A `PCLevelMult` actor stores its multiplier (x1000) in that field, not a level,
+/// so it has no band to carry.
+fn npc_acbs_level(record: &Record, interner: &StringInterner) -> Option<u16> {
+    let value = record
+        .fields
+        .iter()
+        .find(|field| field.sig.as_str() == "ACBS")
+        .map(|field| &field.value)?;
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= ACBS_LEVEL_OFFSET + 2 => {
+            let flags = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+            (flags & ACBS_PC_LEVEL_MULT_FLAG == 0).then(|| {
+                u16::from_le_bytes(
+                    bytes[ACBS_LEVEL_OFFSET..ACBS_LEVEL_OFFSET + 2]
+                        .try_into()
+                        .unwrap(),
+                )
+            })
+        }
+        FieldValue::Struct(fields)
+            if struct_flags_contains(
+                fields,
+                "Flags",
+                "PCLevelMult",
+                ACBS_PC_LEVEL_MULT_FLAG,
+                interner,
+            ) =>
+        {
+            None
+        }
+        FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
+            (normalized_sym(*name, interner) == "level")
+                .then(|| match value {
+                    FieldValue::Uint(value) => u16::try_from(*value).ok(),
+                    FieldValue::Int(value) if *value >= 0 => u16::try_from(*value).ok(),
+                    FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+                        Some(u16::from_le_bytes(bytes[0..2].try_into().unwrap()))
+                    }
+                    _ => None,
+                })
+                .flatten()
+        }),
+        _ => None,
+    }
+}
+
+/// A variant list replaces one actor entry of its parent list, and that entry's level
+/// already gates it. FO4 rolls only entries at or below the player's level, so a
+/// weakest band above 1 (a level-39 actor FO76 listed at level 1) leaves the parent
+/// entry resolving to nothing until the player reaches that band.
+fn anchor_weakest_band(variants: &mut [(FormKey, u16)]) {
+    let Some(weakest) = variants.iter().map(|(_, level)| *level).min() else {
+        return;
+    };
+    for (_, level) in variants.iter_mut() {
+        if *level == weakest {
+            *level = 1;
+        }
+    }
+}
+
+/// Pair each face variant with the stats tier its clone should carry.
+///
+/// FO76 templates an actor's level band through a tier list on the Stats slot, so
+/// taking a single terminal pins every clone of that actor to whichever band comes
+/// first — the weakest one. Cycling the two axes against each other covers every
+/// tier without multiplying faces by tiers.
+fn plan_variant_pairs(
+    traits_sources: &[FormKey],
+    stat_tiers: &[FormKey],
+    cap: usize,
+) -> Vec<(FormKey, Option<FormKey>)> {
+    if traits_sources.is_empty() {
+        return Vec::new();
+    }
+    if stat_tiers.len() < 2 {
+        return traits_sources
+            .iter()
+            .map(|traits| (*traits, None))
+            .collect();
+    }
+    let count = traits_sources
+        .len()
+        .max(stat_tiers.len())
+        .min(cap.max(traits_sources.len()));
+    (0..count)
+        .map(|index| {
+            let traits = traits_sources[index % traits_sources.len()];
+            // A slot whose terminals already name the chosen face keeps it, the way
+            // the single-terminal path does, so the clone stays self-consistent.
+            let tier = if stat_tiers.contains(&traits) {
+                traits
+            } else {
+                stat_tiers[index % stat_tiers.len()]
+            };
+            (traits, Some(tier))
+        })
+        .collect()
+}
+
 fn npc_is_female(record: &Record, interner: &StringInterner) -> Option<bool> {
     let value = record
         .fields
@@ -1572,9 +1711,13 @@ fn npc_is_female(record: &Record, interner: &StringInterner) -> Option<bool> {
         FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
             Some(u32::from_le_bytes(bytes[0..4].try_into().unwrap()) & 1 != 0)
         }
-        FieldValue::Struct(fields) => {
-            Some(struct_flags_contains(fields, "Flags", "Female", interner))
-        }
+        FieldValue::Struct(fields) => Some(struct_flags_contains(
+            fields,
+            "Flags",
+            "Female",
+            ACBS_FEMALE_FLAG,
+            interner,
+        )),
         _ => None,
     }
 }
@@ -1583,6 +1726,7 @@ fn struct_flags_contains(
     fields: &[(crate::sym::Sym, FieldValue)],
     field_name: &str,
     flag_name: &str,
+    flag_bit: u32,
     interner: &StringInterner,
 ) -> bool {
     let wanted = normalize_name(field_name);
@@ -1593,8 +1737,8 @@ fn struct_flags_contains(
             FieldValue::List(items) => items.iter().any(|item| {
                 matches!(item, FieldValue::String(value) if interner.resolve(*value).is_some_and(|name| name.eq_ignore_ascii_case(flag_name)))
             }),
-            FieldValue::Uint(flags) => *flags & 1 != 0,
-            FieldValue::Int(flags) => *flags & 1 != 0,
+            FieldValue::Uint(flags) => *flags & u64::from(flag_bit) != 0,
+            FieldValue::Int(flags) => *flags & i64::from(flag_bit) != 0,
             _ => false,
         })
 }
@@ -2091,6 +2235,153 @@ mod tests {
             0
         );
         assert!(npc_is_female(&output, &interner).unwrap());
+    }
+
+    #[test]
+    fn plans_variant_pairs_across_stat_tiers_faces_and_cap() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let faces: Vec<FormKey> = (1..=3).map(|local| FormKey { local, plugin }).collect();
+        let tiers: Vec<FormKey> = (100..=104).map(|local| FormKey { local, plugin }).collect();
+
+        let pairs = plan_variant_pairs(&faces, &tiers, MAX_MATERIALIZED_VARIANTS);
+
+        assert_eq!(pairs.len(), tiers.len());
+        let covered: FxHashSet<FormKey> = pairs.iter().filter_map(|(_, tier)| *tier).collect();
+        assert_eq!(
+            covered.len(),
+            tiers.len(),
+            "every tier must back at least one variant"
+        );
+        let faces_used: FxHashSet<FormKey> = pairs.iter().map(|(face, _)| *face).collect();
+        assert_eq!(faces_used.len(), faces.len(), "no face may be dropped");
+
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("SeventySix.esm");
+            let faces: Vec<FormKey> = (1..=3).map(|local| FormKey { local, plugin }).collect();
+            let tiers = vec![FormKey { local: 100, plugin }];
+
+            let pairs = plan_variant_pairs(&faces, &tiers, MAX_MATERIALIZED_VARIANTS);
+
+            assert_eq!(pairs.len(), faces.len());
+            assert!(pairs.iter().all(|(_, tier)| tier.is_none()));
+        }
+
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("SeventySix.esm");
+            let shared = FormKey { local: 7, plugin };
+            let tiers = vec![shared, FormKey { local: 100, plugin }];
+
+            let pairs = plan_variant_pairs(&[shared], &tiers, MAX_MATERIALIZED_VARIANTS);
+
+            assert!(
+                pairs
+                    .iter()
+                    .all(|(face, tier)| *face == shared && *tier == Some(shared))
+            );
+        }
+
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("SeventySix.esm");
+            let tiers: Vec<FormKey> = (100..140).map(|local| FormKey { local, plugin }).collect();
+
+            let pairs = plan_variant_pairs(&[FormKey { local: 1, plugin }], &tiers, 8);
+
+            assert_eq!(pairs.len(), 8);
+        }
+    }
+
+    #[test]
+    fn resolves_acbs_levels_and_variant_level_bands() {
+        let interner = StringInterner::new();
+        let mut bytes = vec![0u8; 20];
+        bytes[ACBS_LEVEL_OFFSET..ACBS_LEVEL_OFFSET + 2].copy_from_slice(&68u16.to_le_bytes());
+        let raw = record(
+            "NPC_",
+            1,
+            vec![field("ACBS", FieldValue::Bytes(bytes.into()))],
+            &interner,
+        );
+        assert_eq!(npc_acbs_level(&raw, &interner), Some(68));
+
+        let decoded = record(
+            "NPC_",
+            2,
+            vec![field(
+                "ACBS",
+                FieldValue::Struct(vec![(interner.intern("Level"), FieldValue::Uint(100))]),
+            )],
+            &interner,
+        );
+        assert_eq!(npc_acbs_level(&decoded, &interner), Some(100));
+
+        {
+            let interner = StringInterner::new();
+            let mut bytes = vec![0u8; 20];
+            bytes[0..4].copy_from_slice(&ACBS_PC_LEVEL_MULT_FLAG.to_le_bytes());
+            bytes[ACBS_LEVEL_OFFSET..ACBS_LEVEL_OFFSET + 2].copy_from_slice(&1000u16.to_le_bytes());
+            let raw = record(
+                "NPC_",
+                1,
+                vec![field("ACBS", FieldValue::Bytes(bytes.into()))],
+                &interner,
+            );
+            assert_eq!(npc_acbs_level(&raw, &interner), None);
+
+            let decoded = record(
+                "NPC_",
+                2,
+                vec![field(
+                    "ACBS",
+                    FieldValue::Struct(vec![
+                        (
+                            interner.intern("Flags"),
+                            FieldValue::List(vec![
+                                FieldValue::String(interner.intern("AutoCalcStats")),
+                                FieldValue::String(interner.intern("PCLevelMult")),
+                            ]),
+                        ),
+                        (interner.intern("Level"), FieldValue::Uint(1000)),
+                    ]),
+                )],
+                &interner,
+            );
+            assert_eq!(npc_acbs_level(&decoded, &interner), None);
+        }
+
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("SeventySix.esm");
+            let levels = |levels: &[u16]| {
+                let mut variants: Vec<(FormKey, u16)> = levels
+                    .iter()
+                    .enumerate()
+                    .map(|(local, level)| {
+                        (
+                            FormKey {
+                                local: local as u32,
+                                plugin,
+                            },
+                            *level,
+                        )
+                    })
+                    .collect();
+                anchor_weakest_band(&mut variants);
+                variants
+                    .into_iter()
+                    .map(|(_, level)| level)
+                    .collect::<Vec<_>>()
+            };
+
+            // EncSettler07_Foundation (L39) sits at level 1 of LCharSettler_Normal_Foundation.
+            assert_eq!(levels(&[39, 39, 39]), vec![1, 1, 1]);
+            assert_eq!(levels(&[23, 50, 23, 100]), vec![1, 50, 1, 100]);
+            assert_eq!(levels(&[1, 23, 100]), vec![1, 23, 100]);
+            assert_eq!(levels(&[]), Vec::<u16>::new());
+        }
     }
 
     #[test]

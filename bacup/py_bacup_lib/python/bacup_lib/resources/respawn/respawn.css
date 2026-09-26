@@ -1,0 +1,21 @@
+:root { color-scheme: dark; font: 20px Arial, sans-serif; color: #f3e8c8; }
+* { box-sizing: border-box; }
+body { margin: 0; background: transparent; }
+[hidden] { display: none !important; }
+#respawn { position: fixed; inset: 0; background: #191c1b; }
+#map { position: absolute; inset: 0 360px 0 0; overflow: hidden; }
+#mapImage { position: absolute; width: 100%; height: 100%; object-fit: contain; opacity: .85; }
+#markers { position: absolute; inset: 0; }
+#choices { position: absolute; right: 0; top: 0; bottom: 0; width: 360px; padding: 28px; background: #172021; }
+h1 { font-size: 32px; margin: 0 0 16px; text-transform: uppercase; }
+#notice { min-height: 48px; font-size: 17px; line-height: 1.4; }
+#locations { max-height: 58vh; overflow-y: auto; }
+button { display: block; width: 100%; padding: 14px; margin: 8px 0; border: 1px solid #b6ac89; background: #243537; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+button:focus, button:hover { outline: 3px solid #f2ce79; background: #425e60; }
+button:disabled { opacity: .5; }
+.map-choice { position: absolute; width: 26px; height: 26px; padding: 0; border-radius: 50%; transform: translate(-50%,-50%); background: #f2ce79; }
+#b21Reputation { position: absolute; left: 24px; bottom: 24px; width: 320px; background: rgba(15,24,24,.95); padding: 18px; }
+.b21-rep-row + .b21-rep-row { margin-top: 18px; }
+.b21-rep-row strong, .b21-rep-row span { display: block; }
+.b21-rep-row span { margin: 6px 0; font-size: 16px; }
+.b21-rep-row progress { width: 100%; height: 14px; accent-color: #efcc78; }

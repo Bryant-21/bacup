@@ -99,16 +99,22 @@ def _paths(tmp_path: Path, *, deploy_data_dir: Path | None = None) -> RegenPaths
 # --------------------------------------------------------------------------- #
 
 
-def test_not_upgrade_returns_none(tmp_path):
-    assert _resolve_upgrade_plan(_paths(tmp_path), RegenOptions(upgrade=False)) is None
-
-
-def test_upgrade_alpha1_to_alpha2_partial_plan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("snam_or_override", ["snam", "override"])
+def test_upgrade_alpha1_to_alpha2_partial_plan(tmp_path, monkeypatch, snam_or_override):
     manifest = _write_manifest(tmp_path, _ALPHA1_ALPHA2)
-    monkeypatch.setattr(
-        "bacup_lib.version_stamp.read_plugin_snam", lambda _p: "alpha1"
-    )
-    options = RegenOptions(upgrade=True, upgrade_manifest_path=manifest)
+    if snam_or_override == "snam":
+        monkeypatch.setattr(
+            "bacup_lib.version_stamp.read_plugin_snam", lambda _p: "alpha1"
+        )
+        options = RegenOptions(upgrade=True, upgrade_manifest_path=manifest)
+    else:
+        def _boom(_p):
+            raise AssertionError("read_plugin_snam must not run when upgrade_from is set")
+
+        monkeypatch.setattr("bacup_lib.version_stamp.read_plugin_snam", _boom)
+        options = RegenOptions(
+            upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha1"
+        )
 
     plan = _resolve_upgrade_plan(_paths(tmp_path), options)
 
@@ -121,62 +127,15 @@ def test_upgrade_alpha1_to_alpha2_partial_plan(tmp_path, monkeypatch):
     assert not ps.convert_textures and not ps.convert_havok and not ps.convert_lod
     assert ps.convert_terrain  # always on (graft lives in this phase)
     assert ps.regenerate_modt  # Bucket B: never family-gated
-    assert ps.generate_precombines is False  # experimental gate: off unless enabled
     assert set(plan.swap_labels) == {"Meshes", "MeshesExtra", "Materials"}
 
 
-def test_upgrade_plan_carries_forced_regen(tmp_path):
-    manifest = _write_manifest(tmp_path, _ALPHA1_ALPHA2_FORCED)
-    options = RegenOptions(
-        upgrade=True,
-        upgrade_from="alpha1",
-        upgrade_manifest_path=manifest,
-    )
-
-    plan = _resolve_upgrade_plan(_paths(tmp_path), options)
-
-    assert isinstance(plan, UpgradePlan)
-    assert plan.force_regen is True
-    assert plan.full_build is True
-
-
-def test_upgrade_none_scope_returns_pair_specific_no_op(tmp_path):
-    manifest = _write_manifest(
-        tmp_path,
-        """\
-current: alpha3
-versions:
-  - id: alpha2
-    families_by_conversion:
-      'skyrimse:fo4': [ALL]
-  - id: alpha3
-    families_by_conversion:
-      'skyrimse:fo4': [NONE]
-    force_regen_by_conversion:
-      'skyrimse:fo4': false
-""",
-    )
-    options = RegenOptions(
-        upgrade=True,
-        upgrade_from="alpha2",
-        upgrade_manifest_path=manifest,
-    )
-
-    plan = _resolve_upgrade_plan(
-        _paths(tmp_path),
-        options,
-        get_pair("skyrimse:fo4"),
-    )
-
-    assert isinstance(plan, _UpgradeNoOp)
-    assert plan.target == "alpha3"
-    assert plan.already_current is False
-
-
-def test_pair_specific_force_regen_overrides_none_family_scope(tmp_path):
-    manifest = _write_manifest(
-        tmp_path,
-        """\
+@pytest.mark.parametrize(
+    ("body", "pair_id", "from_id"),
+    [
+        (_ALPHA1_ALPHA2_FORCED, "fo76:fo4", "alpha1"),
+        (
+            """\
 current: alpha3
 versions:
   - id: alpha2
@@ -188,31 +147,136 @@ versions:
     force_regen_by_conversion:
       'skyrimse:fo4': true
 """,
-    )
+            "skyrimse:fo4",
+            "alpha2",
+        ),
+    ],
+)
+def test_upgrade_plan_carries_forced_regen(tmp_path, body, pair_id, from_id):
+    manifest = _write_manifest(tmp_path, body)
     options = RegenOptions(
         upgrade=True,
-        upgrade_from="alpha2",
+        upgrade_from=from_id,
         upgrade_manifest_path=manifest,
     )
 
-    plan = _resolve_upgrade_plan(
-        _paths(tmp_path),
-        options,
-        get_pair("skyrimse:fo4"),
-    )
+    plan = _resolve_upgrade_plan(_paths(tmp_path), options, get_pair(pair_id))
 
     assert isinstance(plan, UpgradePlan)
     assert plan.force_regen is True
     assert plan.full_build is True
 
 
-def test_forced_regen_missing_extracted_dir_preserves_local_output(tmp_path):
+def test_all_upgrade_rejected_before_workspace_hydration(tmp_path, monkeypatch):
+    manifest = _write_manifest(
+        tmp_path,
+        """\
+current: alpha2
+versions:
+  - id: alpha1
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+  - id: alpha2
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+""",
+    )
     paths = _paths(tmp_path)
-    paths.output_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_hydrate_upgrade_workspace_from_deployed",
+        lambda *_args, **_kwargs: pytest.fail("deployed archives must not be restored"),
+    )
+
+    with pytest.raises(ValueError, match="requires a full conversion"):
+        regen_pipeline.run_full_regen(
+            paths,
+            RegenOptions(
+                upgrade=True,
+                hydrate_upgrade_from_deployed=True,
+                upgrade_from="alpha1",
+                upgrade_manifest_path=manifest,
+            ),
+            phases=PhaseSelection(),
+            runner=SimpleNamespace(emit_log=lambda *_args, **_kwargs: None),
+        )
+
+    assert not paths.output_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("body", "pair_id", "from_id", "target", "already_current"),
+    [
+        (
+            """\
+current: alpha3
+versions:
+  - id: alpha2
+    families_by_conversion:
+      'skyrimse:fo4': [ALL]
+  - id: alpha3
+    families_by_conversion:
+      'skyrimse:fo4': [NONE]
+    force_regen_by_conversion:
+      'skyrimse:fo4': false
+""",
+            "skyrimse:fo4",
+            "alpha2",
+            "alpha3",
+            False,
+        ),
+        (
+            """\
+current: alpha2
+versions:
+  - id: alpha1
+    families_by_conversion:
+      'fo76:fo4': [ALL]
+  - id: alpha2
+    families_by_conversion:
+      'fo76:fo4': [NONE]
+""",
+            "fo76:fo4",
+            "alpha2",
+            "alpha2",
+            True,
+        ),
+    ],
+)
+def test_upgrade_none_scope_returns_no_op(
+    tmp_path, body, pair_id, from_id, target, already_current
+):
+    manifest = _write_manifest(tmp_path, body)
+    options = RegenOptions(
+        upgrade=True,
+        upgrade_from=from_id,
+        upgrade_manifest_path=manifest,
+    )
+
+    plan = _resolve_upgrade_plan(_paths(tmp_path), options, get_pair(pair_id))
+
+    assert isinstance(plan, _UpgradeNoOp)
+    assert plan.target == target
+    assert plan.already_current is already_current
+
+
+@pytest.mark.parametrize("unsafe", ["missing_extracted", "inside_deploy_dir"])
+def test_forced_regen_refuses_unsafe_clean_and_preserves_output(tmp_path, unsafe):
+    if unsafe == "missing_extracted":
+        paths = _paths(tmp_path)
+        paths.output_root.mkdir(parents=True)
+        error, match = FileNotFoundError, "extracted directory"
+    else:
+        paths = _paths(tmp_path, deploy_data_dir=tmp_path / "deployed")
+        paths.source_extracted_dir.mkdir(parents=True)
+        paths.deploy_data_dir.mkdir(parents=True)
+        paths.output_root = paths.deploy_data_dir / "SeventySix"
+        paths.output_root.mkdir()
+        error, match = ValueError, "protected conversion path"
     sentinel = paths.output_root / "previous-run.ba2"
     sentinel.write_bytes(b"keep until preflight passes")
 
-    with pytest.raises(FileNotFoundError, match="extracted directory"):
+    with pytest.raises(error, match=match):
         _clean_forced_regen_output(
             paths,
             SimpleNamespace(emit_log=lambda *_a, **_k: None),
@@ -241,59 +305,6 @@ def test_forced_regen_clears_only_local_output(tmp_path):
     assert logs and logs[0][0] == "INFO"
 
 
-def test_forced_regen_refuses_output_inside_deploy_dir(tmp_path):
-    paths = _paths(tmp_path, deploy_data_dir=tmp_path / "deployed")
-    paths.source_extracted_dir.mkdir(parents=True)
-    paths.deploy_data_dir.mkdir(parents=True)
-    paths.output_root = paths.deploy_data_dir / "SeventySix"
-    paths.output_root.mkdir()
-
-    with pytest.raises(ValueError, match="protected conversion path"):
-        _clean_forced_regen_output(
-            paths,
-            SimpleNamespace(emit_log=lambda *_a, **_k: None),
-        )
-
-    assert paths.output_root.is_dir()
-
-
-def test_explicit_anim_text_data_overrides_upgrade_phase_selection(
-    tmp_path, monkeypatch
-):
-    manifest = _write_manifest(
-        tmp_path,
-        """\
-current: alpha2
-versions:
-  - id: alpha1
-    families_by_conversion:
-      'fo76:fo4': [ALL]
-  - id: alpha2
-    families_by_conversion:
-      'fo76:fo4': [Materials]
-""",
-    )
-    monkeypatch.setattr(
-        "bacup_lib.version_stamp.read_plugin_snam", lambda _p: "alpha1"
-    )
-
-    plan = _resolve_upgrade_plan(
-        _paths(tmp_path),
-        RegenOptions(upgrade=True, upgrade_manifest_path=manifest),
-    )
-
-    assert isinstance(plan, UpgradePlan)
-    assert not plan.phases.generate_anim_text_data
-    options = regen_pipeline._build_options(
-        records_only=False,
-        conversion_workers=1,
-        records_limit=None,
-        phases=plan.phases,
-        generate_anim_text_data=True,
-    )
-    assert options.generate_anim_text_data
-
-
 def test_no_deployed_esm_is_full_build(tmp_path, monkeypatch):
     manifest = _write_manifest(tmp_path, _ALPHA1_ALPHA2)
     monkeypatch.setattr(
@@ -308,78 +319,24 @@ def test_no_deployed_esm_is_full_build(tmp_path, monkeypatch):
     assert plan.regen_terrain
 
 
-def test_upgrade_from_override_beats_snam_read(tmp_path, monkeypatch):
-    manifest = _write_manifest(tmp_path, _ALPHA1_ALPHA2)
-
-    def _boom(_p):
-        raise AssertionError("read_plugin_snam must not run when upgrade_from is set")
-
-    monkeypatch.setattr(
-        "bacup_lib.version_stamp.read_plugin_snam", _boom
-    )
-    options = RegenOptions(
-        upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha1"
-    )
-
-    plan = _resolve_upgrade_plan(_paths(tmp_path), options)
-
-    assert isinstance(plan, UpgradePlan) and not plan.full_build
-    assert set(plan.swap_labels) == {"Meshes", "MeshesExtra", "Materials"}
-
-
-def test_from_equals_target_none_is_noop(tmp_path):
+@pytest.mark.parametrize(
+    ("families", "enabled_phases", "swap_labels"),
+    [
+        ("[Scripts]", ("convert_scripts",), {"Misc"}),
+        (
+            "[NIFs, Havok]",
+            ("convert_nifs", "convert_havok", "synthesize_drivers", "generate_anim_text_data"),
+            {"Meshes", "MeshesExtra", "Animations"},
+        ),
+        ("[LOD]", ("convert_lod",), {"LOD", "LODTextures"}),
+    ],
+)
+def test_from_equals_target_repeats_target_families(
+    tmp_path, families, enabled_phases, swap_labels
+):
     manifest = _write_manifest(
         tmp_path,
-        """\
-current: alpha2
-versions:
-  - id: alpha1
-    families_by_conversion:
-      'fo76:fo4': [ALL]
-  - id: alpha2
-    families_by_conversion:
-      'fo76:fo4': [NONE]
-""",
-    )
-    options = RegenOptions(
-        upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha2"
-    )
-
-    plan = _resolve_upgrade_plan(_paths(tmp_path), options)
-
-    assert isinstance(plan, _UpgradeNoOp)
-    assert plan.target == "alpha2"
-
-
-def test_from_equals_target_repeats_scripts_when_target_declares_it(tmp_path):
-    manifest = _write_manifest(
-        tmp_path,
-        """\
-current: alpha2
-versions:
-  - id: alpha1
-    families_by_conversion:
-      'fo76:fo4': [ALL]
-  - id: alpha2
-    families_by_conversion:
-      'fo76:fo4': [Scripts]
-""",
-    )
-    options = RegenOptions(
-        upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha2"
-    )
-
-    plan = _resolve_upgrade_plan(_paths(tmp_path), options)
-
-    assert isinstance(plan, UpgradePlan)
-    assert plan.phases.convert_scripts is True
-    assert plan.swap_labels == ("Misc",)
-
-
-def test_from_equals_target_repeats_nifs_and_havok(tmp_path):
-    manifest = _write_manifest(
-        tmp_path,
-        """\
+        f"""\
 current: alpha2.1
 versions:
   - id: alpha2
@@ -387,7 +344,7 @@ versions:
       'fo76:fo4': [ALL]
   - id: alpha2.1
     families_by_conversion:
-      'fo76:fo4': [NIFs, Havok]
+      'fo76:fo4': {families}
 """,
     )
     options = RegenOptions(
@@ -397,63 +354,28 @@ versions:
     plan = _resolve_upgrade_plan(_paths(tmp_path), options)
 
     assert isinstance(plan, UpgradePlan)
-    assert plan.phases.convert_nifs is True
-    assert plan.phases.convert_havok is True
-    assert plan.phases.synthesize_drivers is True
+    for phase in enabled_phases:
+        assert getattr(plan.phases, phase) is True, phase
     assert plan.phases.convert_animations is False
-    assert plan.phases.generate_anim_text_data is True
-    assert set(plan.swap_labels) == {"Meshes", "MeshesExtra", "Animations"}
+    assert set(plan.swap_labels) == swap_labels
 
 
-def test_from_equals_target_runs_lod_when_target_declares_it(tmp_path):
-    manifest = _write_manifest(
-        tmp_path,
-        """\
-current: alpha2.1
-versions:
-  - id: alpha2
-    families_by_conversion:
-      'fo76:fo4': [ALL]
-  - id: alpha2.1
-    families_by_conversion:
-      'fo76:fo4': [LOD]
-""",
-    )
-    options = RegenOptions(
-        upgrade=True, upgrade_manifest_path=manifest, upgrade_from="alpha2.1"
-    )
+@pytest.mark.parametrize(
+    ("option_kwargs", "error", "match"),
+    [
+        ({"upgrade_from": "alpha3", "mod_version": "alpha2"}, ValueError, "downgrade"),
+        ({"upgrade_manifest_path": None}, ValueError, "upgrade_manifest_path"),
+        ({"upgrade_manifest_path": "missing"}, FileNotFoundError, None),
+    ],
+)
+def test_invalid_upgrade_request_raises(tmp_path, option_kwargs, error, match):
+    kwargs = {"upgrade_manifest_path": _write_manifest(tmp_path, _ALPHA1_2_3)}
+    kwargs.update(option_kwargs)
+    if kwargs["upgrade_manifest_path"] == "missing":
+        kwargs["upgrade_manifest_path"] = tmp_path / "nope.yaml"
 
-    plan = _resolve_upgrade_plan(_paths(tmp_path), options)
-
-    assert isinstance(plan, UpgradePlan)
-    assert plan.phases.convert_lod is True
-    assert set(plan.swap_labels) == {"LOD", "LODTextures"}
-
-
-def test_downgrade_raises(tmp_path):
-    manifest = _write_manifest(tmp_path, _ALPHA1_2_3)
-    options = RegenOptions(
-        upgrade=True,
-        upgrade_manifest_path=manifest,
-        upgrade_from="alpha3",
-        mod_version="alpha2",
-    )
-
-    with pytest.raises(ValueError, match="downgrade"):
-        _resolve_upgrade_plan(_paths(tmp_path), options)
-
-
-def test_missing_manifest_path_raises(tmp_path):
-    with pytest.raises(ValueError, match="upgrade_manifest_path"):
-        _resolve_upgrade_plan(_paths(tmp_path), RegenOptions(upgrade=True))
-
-
-def test_missing_manifest_file_raises(tmp_path):
-    options = RegenOptions(
-        upgrade=True, upgrade_manifest_path=tmp_path / "nope.yaml"
-    )
-    with pytest.raises(FileNotFoundError):
-        _resolve_upgrade_plan(_paths(tmp_path), options)
+    with pytest.raises(error, match=match):
+        _resolve_upgrade_plan(_paths(tmp_path), RegenOptions(upgrade=True, **kwargs))
 
 
 def test_target_override_multi_step_union(tmp_path):
@@ -527,6 +449,7 @@ versions:
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4-built")
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -607,6 +530,7 @@ def test_run_full_regen_hydrated_upgrade_repacks_and_deploys_the_complete_mod(
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"TES4-built")
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},

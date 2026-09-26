@@ -358,12 +358,6 @@ mod tests {
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
     use crate::sym::StringInterner;
 
-    fn make_fnam_bytes(len: usize) -> smallvec::SmallVec<[u8; 32]> {
-        let mut sv: smallvec::SmallVec<[u8; 32]> = smallvec::SmallVec::new();
-        sv.resize(len, 0u8);
-        sv
-    }
-
     fn make_weap_record_with_fnam(
         eid: &str,
         fnam_bytes: Vec<u8>,
@@ -401,195 +395,81 @@ mod tests {
         )
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn apply_extra_data_unknown_field_warns_no_mutation() {
-        let mut interner = StringInterner::new();
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = make_mapper(&mut mapper_interner);
+    fn apply_extra_data_patches_only_a_mapped_projectile_override_into_full_fnam() {
+        for (name, fnam_len, extra, expect_changed, expected_warnings) in [
+            ("empty map", 50, vec![], false, 0),
+            (
+                "unknown field",
+                50,
+                vec![("UnknownField", "somevalue")],
+                false,
+                1,
+            ),
+            (
+                "non-formkey value",
+                50,
+                vec![("ProjectileOverride", "not_a_formkey")],
+                false,
+                1,
+            ),
+            (
+                "short fnam",
+                20,
+                vec![("ProjectileOverride", "7A316D:SeventySix.esm")],
+                false,
+                0,
+            ),
+            (
+                "mapped override",
+                50,
+                vec![("ProjectileOverride", "7A316D:SeventySix.esm")],
+                true,
+                0,
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let mapper_interner = StringInterner::new();
+            let mut mapper = make_mapper(&mapper_interner);
+            let src_fk = FormKey {
+                local: 0x7A316D,
+                plugin: mapper.interner.intern("SeventySix.esm"),
+            };
+            let tgt_fk = FormKey {
+                local: 0x001234,
+                plugin: mapper.interner.intern("Output.esp"),
+            };
+            mapper.add_mapping(src_fk, tgt_fk);
+            let mut record = make_weap_record_with_fnam("meltdown", vec![0u8; fnam_len], &interner);
+            let extra: FxHashMap<String, String> = extra
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect();
+            let mut report = FixupReport::empty();
 
-        let fnam_bytes = vec![0u8; 50];
-        let mut record = make_weap_record_with_fnam("meltdown", fnam_bytes, &mut interner);
+            let changed = apply_extra_data_to_record(
+                &mut record,
+                &extra,
+                &mut mapper,
+                &["Fallout4.esm".to_string()],
+                &mut report,
+            );
 
-        let mut extra: FxHashMap<String, String> = FxHashMap::default();
-        extra.insert("UnknownField".to_string(), "somevalue".to_string());
-
-        let mut report = FixupReport::empty();
-        let target_masters = vec!["Fallout4.esm".to_string()];
-        let changed = apply_extra_data_to_record(
-            &mut record,
-            &extra,
-            &mut mapper,
-            &target_masters,
-            &mut report,
-        );
-
-        assert!(!changed, "unknown field must not mutate the record");
-        assert_eq!(report.warnings.len(), 1, "should emit one warning");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_extra_data_short_fnam_is_no_op() {
-        let mut interner = StringInterner::new();
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = make_mapper(&mut mapper_interner);
-
-        let fnam_bytes = vec![0u8; 20]; // < FNAM_MIN_LEN
-        let mut record = make_weap_record_with_fnam("meltdown", fnam_bytes, &mut interner);
-
-        // Pre-register a source→target mapping so lookup succeeds.
-        let src_fk = FormKey {
-            local: 0x7A316D,
-            plugin: mapper.interner.intern("SeventySix.esm"),
-        };
-        let tgt_fk = FormKey {
-            local: 0x001234,
-            plugin: mapper.interner.intern("Output.esp"),
-        };
-        mapper.add_mapping(src_fk, tgt_fk);
-
-        let mut extra: FxHashMap<String, String> = FxHashMap::default();
-        extra.insert(
-            "ProjectileOverride".to_string(),
-            "7A316D:SeventySix.esm".to_string(),
-        );
-
-        let mut report = FixupReport::empty();
-        let target_masters = vec!["Fallout4.esm".to_string()];
-        let changed = apply_extra_data_to_record(
-            &mut record,
-            &extra,
-            &mut mapper,
-            &target_masters,
-            &mut report,
-        );
-
-        assert!(!changed, "short FNAM must not be mutated");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_extra_data_project_override_patches_fnam() {
-        let mut interner = StringInterner::new();
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = make_mapper(&mut mapper_interner);
-
-        // Register a source→target mapping.
-        let src_fk = FormKey {
-            local: 0x7A316D,
-            plugin: mapper.interner.intern("SeventySix.esm"),
-        };
-        let tgt_fk = FormKey {
-            local: 0x001234,
-            plugin: mapper.interner.intern("Output.esp"),
-        };
-        mapper.add_mapping(src_fk, tgt_fk);
-
-        let fnam_bytes = vec![0u8; 50]; // >= FNAM_MIN_LEN
-        let mut record = make_weap_record_with_fnam("meltdown", fnam_bytes, &mut interner);
-
-        let mut extra: FxHashMap<String, String> = FxHashMap::default();
-        extra.insert(
-            "ProjectileOverride".to_string(),
-            "7A316D:SeventySix.esm".to_string(),
-        );
-
-        let mut report = FixupReport::empty();
-        let target_masters = vec!["Fallout4.esm".to_string()];
-        let changed = apply_extra_data_to_record(
-            &mut record,
-            &extra,
-            &mut mapper,
-            &target_masters,
-            &mut report,
-        );
-
-        assert!(
-            changed,
-            "ProjectileOverride with mapped FK must mutate FNAM"
-        );
-
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            let raw = u32::from_le_bytes([
-                data[FNAM_OVERRIDE_PROJ_OFFSET],
-                data[FNAM_OVERRIDE_PROJ_OFFSET + 1],
-                data[FNAM_OVERRIDE_PROJ_OFFSET + 2],
-                data[FNAM_OVERRIDE_PROJ_OFFSET + 3],
-            ]);
-            assert_eq!(raw, 0x01_001234);
-        } else {
-            panic!("FNAM must be FieldValue::Bytes");
+            assert_eq!(changed, expect_changed, "{name}");
+            assert_eq!(report.warnings.len(), expected_warnings, "{name}");
+            let FieldValue::Bytes(ref data) = record.fields[0].value else {
+                panic!("{name}: FNAM must be FieldValue::Bytes");
+            };
+            let expected_proj = if expect_changed { 0x01_001234u32 } else { 0 };
+            if fnam_len >= FNAM_OVERRIDE_PROJ_OFFSET + 4 {
+                assert_eq!(
+                    data[FNAM_OVERRIDE_PROJ_OFFSET..FNAM_OVERRIDE_PROJ_OFFSET + 4],
+                    expected_proj.to_le_bytes(),
+                    "{name}"
+                );
+            }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_extra_data_non_fk_value_warns() {
-        let mut interner = StringInterner::new();
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = make_mapper(&mut mapper_interner);
-
-        let fnam_bytes = vec![0u8; 50];
-        let mut record = make_weap_record_with_fnam("meltdown", fnam_bytes, &mut interner);
-
-        let mut extra: FxHashMap<String, String> = FxHashMap::default();
-        extra.insert(
-            "ProjectileOverride".to_string(),
-            "not_a_formkey".to_string(),
-        );
-
-        let mut report = FixupReport::empty();
-        let target_masters = vec!["Fallout4.esm".to_string()];
-        let changed = apply_extra_data_to_record(
-            &mut record,
-            &extra,
-            &mut mapper,
-            &target_masters,
-            &mut report,
-        );
-
-        assert!(!changed, "non-FK value must not mutate");
-        assert!(!report.warnings.is_empty(), "should have a warning");
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_extra_data_empty_map_is_no_op() {
-        let mut interner = StringInterner::new();
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = make_mapper(&mut mapper_interner);
-
-        let fnam_bytes = vec![0u8; 50];
-        let mut record = make_weap_record_with_fnam("meltdown", fnam_bytes, &mut interner);
-
-        let extra: FxHashMap<String, String> = FxHashMap::default();
-        let mut report = FixupReport::empty();
-        let target_masters = vec!["Fallout4.esm".to_string()];
-        let changed = apply_extra_data_to_record(
-            &mut record,
-            &extra,
-            &mut mapper,
-            &target_masters,
-            &mut report,
-        );
-
-        assert!(!changed);
-        assert_eq!(report.warnings.len(), 0);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
 
     #[test]
     fn looks_like_form_key_correct_format() {

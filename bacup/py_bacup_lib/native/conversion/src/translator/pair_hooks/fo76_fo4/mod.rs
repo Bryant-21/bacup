@@ -6,6 +6,7 @@
 //! - `translate_effects_key` re-keys `Effects` fields on ALCH/ENCH/SPEL/PERK;
 //!   the orchestrator applies it during field dispatch.
 
+use super::fo4_layouts;
 use super::model_paths;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
@@ -19,7 +20,10 @@ mod actors;
 mod common;
 mod conditions;
 mod dialogue;
+mod emotes;
+mod enclave_events;
 mod expedition_aliases;
+mod fishing_quests;
 mod furniture;
 mod leveled_lists;
 mod lights;
@@ -31,6 +35,8 @@ mod packages;
 mod projectiles;
 mod quest_vmad;
 mod quests;
+mod repair_kits;
+mod sound;
 mod textures;
 mod vendors;
 mod weather;
@@ -40,41 +46,48 @@ mod world;
 use actors::*;
 use common::*;
 use conditions::*;
+#[cfg(test)]
 use dialogue::*;
-use expedition_aliases::*;
 use furniture::*;
 use leveled_lists::*;
+#[cfg(test)]
 use lights::*;
+#[cfg(test)]
 use magic::*;
 use misc::*;
+#[cfg(test)]
 use object_mods::*;
 use quest_vmad::*;
 use quests::*;
-use textures::*;
+#[cfg(test)]
 use workshop::*;
+#[cfg(test)]
 use world::*;
 
+#[cfg(test)]
+pub(crate) use conditions::{ConditionFormCatalog, fo76_catalog_test_guard};
 pub(crate) use conditions::{
-    ConditionFormCatalog, FO76_REMAPPED_CONDITION_FUNCTION_IDS, build_condition_form_catalog,
-    close_condition_gate, install_condition_form_catalog,
+    FO76_REMAPPED_CONDITION_FUNCTION_IDS, build_condition_form_catalog,
+    expand_source_condition_form_rows, install_condition_form_catalog,
     is_fo4_incompatible_condition_function_id,
 };
 #[allow(unused_imports)]
 pub(crate) use dialogue::{
     PlayerDialogueInfoSplit, ScenDialogueAction, XDI_MASTER_NAME, XDI_SCENE_KEYWORD_FORM_ID,
     XdiDialoguePlan, apply_xdi_dial_info_count, build_xdi_dialogue_plan,
-    combined_player_dialogue_info_candidates, info_tree_links, is_combined_player_dialogue_root,
+    combined_player_dialogue_info_candidates, info_tree_links, is_combined_player_dialogue_choice,
     retarget_player_info_tree_links, scen_dialogue_actions, scope_start_scene_info_to_actor_alias,
     split_fo76_combined_player_dialogue_info,
 };
 pub use magic::{EFFECTS_SYNTHETIC_RECORD_SIGS, EffectsKeyRoute};
 pub(crate) use misc::{fo76_misc_static_model_variant, rewritten_fo76_font_aliases_for_fo4};
+pub(crate) use object_mods::strip_raw_weapon_object_template_property_rows;
 pub(crate) use object_template_inherit::{
     build_inherited_object_template_catalog, install_inherited_object_template_catalog,
 };
-pub(crate) use quest_vmad::{
-    qust_has_untranslatable_event_alias, qust_has_untranslatable_event_alias_for_source,
-};
+#[cfg(test)]
+pub(crate) use quest_vmad::qust_has_untranslatable_event_alias;
+pub(crate) use quest_vmad::qust_has_untranslatable_event_alias_for_source;
 pub(crate) use quests::{
     qust_eid_is_dialogue_conversation, qust_uses_player_connect_autostart_fallback,
 };
@@ -86,10 +99,12 @@ pub struct Fo76Fo4Hook;
 impl PairHook for Fo76Fo4Hook {
     /// Drop FO76-only global fields before field translation begins.
     fn pre_translate(&self, ctx: &mut PairCtx<'_>, record: &mut Record) -> HookResult {
+        Self::lower_repair_kits(ctx.interner, record);
         Self::normalize_weapon_cone_force(ctx, record);
         Self::normalize_workshop_power_connection_keyword(ctx.interner, record);
         Self::route_skip_havok_misc_to_static_model(ctx.interner, record);
         Self::strip_bee_swarm_ant_limb_replacements(ctx.interner, record);
+        Self::drop_lunchbox_reward_area_effect(ctx.interner, record);
         // Before any condition normalization: the spliced-in rows must go
         // through the same remap / drop / FormID paths as the record's own.
         Self::inline_fo76_condition_forms(record);
@@ -124,16 +139,22 @@ impl PairHook for Fo76Fo4Hook {
         Self::normalize_note_scene_ref(record);
         Self::convert_innr_filter_to_fo4_target(ctx.interner, record);
         Self::convert_txst_decal_data_to_fo4_layout(record);
+        fo4_layouts::normalize_fo76_watr(record, ctx.interner);
         Self::convert_mgef_data_to_fo4_layout(record);
         Self::normalize_scen_headtracking_aliases(record);
         Self::normalize_wayward_blueprint_package_completion(record);
+        Self::adapt_emote_idle(ctx.interner, record);
         Self::normalize_scen_player_dialogue_choices(ctx.interner, record);
-        Self::convert_fo76_leveled_list_entries(ctx.interner, record);
+        Self::convert_fo76_leveled_list_entries(ctx, record);
         Self::convert_or_drop_cell_combined_reference_index(ctx.interner, record);
         Self::convert_qust_data_to_fo4_dnam(ctx.interner, record);
+        Self::adapt_fishing_quest_aliases(ctx.interner, record);
         Self::adapt_direct_start_quest_aliases(ctx.interner, record);
         Self::strip_qust_runtime_scopes(ctx.interner, record);
-        normalize_re_alias_vmad_properties(record);
+        normalize_re_alias_vmad_properties(ctx.interner, record);
+        normalize_placed_default_ref_properties(ctx.interner, record);
+        normalize_w05_perk_fragment_vmad(ctx.interner, record);
+        normalize_w05_quest_distance_script(ctx.interner, record);
         Self::translate_weather_volumetric_lighting(record);
         Ok(())
     }
@@ -177,8 +198,11 @@ impl PairHook for Fo76Fo4Hook {
         Self::ensure_light_fade_value(record);
         Self::translate_weather_visual_effect(ctx.interner, record);
         Self::ensure_flora_ingredient_production(record);
+        Self::repair_radshield_recipe_workbench(ctx.interner, record);
         Self::normalize_vending_machine_vendor_faction(record);
+        Self::sell_everything_without_vendor_buy_sell_list(record);
         model_paths::normalize_model_paths(ctx.interner, record);
+        Self::normalize_boss_sound_paths(ctx.interner, record);
         Ok(())
     }
 
@@ -204,10 +228,13 @@ mod tests {
     include!("tests/conditions.rs");
     include!("tests/leveled_lists.rs");
     include!("tests/quests.rs");
+    include!("tests/fishing_quests.rs");
     include!("tests/textures.rs");
+    include!("tests/water.rs");
     include!("tests/quest_vmad.rs");
     include!("tests/dialogue.rs");
     include!("tests/expedition_aliases.rs");
+    include!("tests/rd01_raid_quests.rs");
     include!("tests/w05_radical_dialogue.rs");
     include!("tests/object_mods.rs");
     include!("tests/lights.rs");
@@ -219,4 +246,6 @@ mod tests {
     include!("tests/world.rs");
     include!("tests/furniture.rs");
     include!("tests/misc.rs");
+    include!("tests/repair_kits.rs");
+    include!("tests/vendors.rs");
 }

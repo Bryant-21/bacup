@@ -221,7 +221,43 @@ Function Fragment_Stage_7100_Item_00()
 	SetObjectiveCompleted(30, True)
 	SetObjectiveDisplayed(50, False)
 	SetObjectiveDisplayed(60, True)
+	WatchForExecHideout()
 EndFunction
+
+; 7200 ("Investigate the apartment" done) gates the Exec's greeting and the kill alias,
+; and nothing in the record sets it; arriving in Loc_ExecHideout (alias 39) is the signal.
+Location Function ExecHideoutLocation()
+	LocationAlias hideoutAlias = GetAlias(39) as LocationAlias
+	If hideoutAlias != None && hideoutAlias.GetLocation() != None
+		Return hideoutAlias.GetLocation()
+	EndIf
+	Return Game.GetFormFromFile(0x008258EA, "SeventySix.esm") as Location
+EndFunction
+
+Function WatchForExecHideout()
+	Actor playerRef = Game.GetPlayer()
+	If playerRef == None || IsStageDone(7200)
+		Return
+	EndIf
+	Location hideout = ExecHideoutLocation()
+	If hideout != None && playerRef.IsInLocation(hideout)
+		SetStage(7200)
+		Return
+	EndIf
+	RegisterForRemoteEvent(playerRef, "OnLocationChange")
+EndFunction
+
+Event Actor.OnLocationChange(Actor akSender, Location akOldLoc, Location akNewLoc)
+	If IsStageDone(7200) || !IsStageDone(7100)
+		UnregisterForRemoteEvent(akSender, "OnLocationChange")
+		Return
+	EndIf
+	Location hideout = ExecHideoutLocation()
+	If hideout != None && akNewLoc != None && (akNewLoc == hideout || akNewLoc.IsChild(hideout))
+		UnregisterForRemoteEvent(akSender, "OnLocationChange")
+		SetStage(7200)
+	EndIf
+EndEvent
 
 Function Fragment_Stage_7200_Item_00()
 	SetObjectiveCompleted(60, True)
@@ -261,6 +297,10 @@ Function Fragment_Stage_8500_Item_00()
 	SetAliasAwayValue(20, Burn_MQ_BodhiAwayValue)
 	SetAliasAwayValue(40, Burn_MQ_ExecKillableAwayValue)
 	SetAliasAwayValue(41, Burn_MQ_ExecAwayValue)
+	; Bodhi's farewell line (8500) is the last step of "Return to Bodhi"; 9000 had no setter.
+	If (IsStageDone(7400) || IsStageDone(7450)) && !IsStageDone(9000)
+		SetStage(9000)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()

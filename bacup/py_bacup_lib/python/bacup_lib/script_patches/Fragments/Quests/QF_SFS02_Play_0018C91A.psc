@@ -150,6 +150,10 @@ Function Fragment_Stage_1000_Item_00()
 		playerRef.SetValue(SFS02_Play_QuestTrackingValue, 1.0)
 	EndIf
 	SFS02_Play_ActivityGlobal.SetValueInt(0)
+	; Stage 1000 carries a second log entry that the conversion appended to pay the
+	; currency reward (B21:CurrencyQuestRewards RewardStageItems = 1). Yield before
+	; stopping so that entry is dispatched first.
+	Utility.Wait(1.0)
 	CompleteQuest()
 	Stop()
 EndFunction

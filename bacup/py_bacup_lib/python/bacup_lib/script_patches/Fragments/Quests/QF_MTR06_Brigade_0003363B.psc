@@ -204,7 +204,12 @@ Function Fragment_Stage_0070_Item_00()
     SetObjectiveDisplayed(70)
     Alias_FinalExamRespawnTarget.Clear()
     If MTR06_TrainingMine != None && MTR06_TrainingMine.IsRunning()
-        MTR06_TrainingMine.Stop()
+        MTR06_MineKlaxonScript mineAlarm = MTR06_TrainingMine as MTR06_MineKlaxonScript
+        If mineAlarm != None
+            mineAlarm.StopMineAlarm()
+        Else
+            MTR06_TrainingMine.Stop()
+        EndIf
     EndIf
     If playerRef != None
         Alias_PlayerCanRegister.ForceRefTo(playerRef)
@@ -244,15 +249,30 @@ Function Fragment_Stage_0100_Item_00()
     If MTR06_PostMisc_QuestStartKeyword != None
         MTR06_PostMisc_QuestStartKeyword.SendStoryEvent(akRef1 = playerRef)
     EndIf
-    Bool nextQuestStarted = False
-    If playerRef != None && MTN_MQ_Missing_Quest_Keyword != None
-        nextQuestStarted = MTN_MQ_Missing_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
-    EndIf
-    If nextQuestStarted && playerRef != None
-        playerRef.SetValue(MTN_MQ_StartedValue, 1.0)
+    If !MTR06_TryStartMissingLink()
+        StartTimer(5.0, 100)
     EndIf
     MTR06_RecordStage(100)
 EndFunction
+
+Bool Function MTR06_TryStartMissingLink()
+    Quest nextQuest = Game.GetFormFromFile(0x003A5FA0, "SeventySix.esm") as Quest
+    Actor playerRef = MTR06_GetPlayer()
+    Bool started = nextQuest != None && (nextQuest.IsRunning() || nextQuest.IsCompleted())
+    If !started && playerRef != None && MTN_MQ_Missing_Quest_Keyword != None
+        started = MTN_MQ_Missing_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
+    EndIf
+    If started && playerRef != None && MTN_MQ_StartedValue != None
+        playerRef.SetValue(MTN_MQ_StartedValue, 1.0)
+    EndIf
+    Return started
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID == 100 && IsRunning() && IsStageDone(100) && !MTR06_TryStartMissingLink()
+        StartTimer(5.0, 100)
+    EndIf
+EndEvent
 
 Function Fragment_Stage_0999_Item_00()
     Alias_PlayerReadyForKnowledgeExam.Clear()
@@ -265,7 +285,12 @@ Function Fragment_Stage_0999_Item_00()
     Alias_PlayerRegistered.Clear()
     Alias_FinalExamRespawnTarget.Clear()
     If MTR06_TrainingMine != None && MTR06_TrainingMine.IsRunning()
-        MTR06_TrainingMine.Stop()
+        MTR06_MineKlaxonScript mineAlarm = MTR06_TrainingMine as MTR06_MineKlaxonScript
+        If mineAlarm != None
+            mineAlarm.StopMineAlarm()
+        Else
+            MTR06_TrainingMine.Stop()
+        EndIf
     EndIf
     If MTR06_Brigade_0035_FinalExamIntro != None && MTR06_Brigade_0035_FinalExamIntro.IsPlaying()
         MTR06_Brigade_0035_FinalExamIntro.Stop()

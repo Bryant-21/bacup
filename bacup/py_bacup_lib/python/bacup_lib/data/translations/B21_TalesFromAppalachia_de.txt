@@ -1,0 +1,128 @@
+$B21_TFA_Collections	SAMMLUNGEN
+$B21_TFA_Caps	Kronkorken
+$B21_TFA_ActiveEffects	AUSWIRKUNGEN
+$B21_TFA_Holo	HOLO
+$B21_TFA_Notes	ANMERKUNGEN
+$B21_TFA_Armor	RÜSTUNG
+$B21_TFA_FoodDrink	LEBENSMITTEL/GETRÄNK
+$B21_TFA_New	NEU
+$B21_TFA_PerkCoins	Perkmünzen
+$B21_TFA_Capacity	KAPAZITÄT
+$B21_TFA_Unlimited	UNBEGRENZT
+$B21_TFA_Legendary	Legendär
+$B21_TFA_SemiAutomatic	Halbautomatisch
+$B21_TFA_VATSAccuracy	V.A.T.S. Genauigkeit
+$B21_TFA_WeaponType_Melee	Melee
+$B21_TFA_WeaponType_OneHanded	Einhändig
+$B21_TFA_WeaponType_TwoHanded	Zweihändige
+$B21_TFA_WeaponType_Unarmed	Unbewaffnet
+$B21_TFA_WeaponType_Explosive	Sprengstoff
+$B21_TFA_WeaponType_Energy	Energie
+$B21_TFA_WeaponType_Ballistic	Ballistisch
+$B21_TFA_WeaponType_BigGun	Big Gun
+$B21_TFA_WeaponType_Shotgun	Schusswaffe
+$B21_TFA_WeaponType_Rifle	Gewehr
+$B21_TFA_WeaponType_Pistol	Pistole
+$B21_TFA_WeaponType_Bow	Bogen
+$B21_TFA_WeaponType_Thrown	geworfen
+$B21_TFA_Repair	REPARATUR
+$B21_TFA_BasicRepairKit	Basic Repair Kit
+$B21_TFA_ImprovedRepairKit	Verbessertes Reparatur-Kit
+$B21_TFA_WorkbenchRepair	Reparatur der Werkbank
+$B21_TFA_RepairUnavailable	Reparatur nicht verfügbar
+$B21_TFA_ConfirmRepair	REPARATUR BESTÄTIGEN
+$B21_TFA_RepairFailed	Reparatur konnte nicht abgeschlossen werden
+$B21_TFA_RepairStale	Item geändert. Wählen Sie es erneut aus.
+$B21_TFA_RepairComplete	Artikel repariert
+$B21_TFA_RepairNoKit	Keine Reparatursätze verfügbar
+$B21_TFA_SwitchToCraft	WECHSEL ZUM FAHRZEUG
+$B21_TFA_SwitchToModify	WECHSEL ZU MODIFIZIEREN
+$B21_TFA_NothingToModify	Sie haben an dieser Werkbank nichts zu ändern.
+$B21_TFA_RepairNoImprovement	Der Zustand befindet sich bereits auf oder über diesem Reparaturniveau.
+$B21_TFA_RepairMissingMaterials	Fehlende Reparaturmaterialien
+$B21_TFA_RepairControls	Auswählen: UP/DOWN   BESTÄTIGUNG: ENTER/A   ZURÜCK: TAB/B
+$B21_TFA_RepairHintKeyboard	[K] REPARATUR
+$B21_TFA_RepairHintController	[LS] REPARATUR
+$B21_TFA_RepairCancel	STORNIERUNG
+$B21_TFA_PerkCards_FilterAll	FILTER (ALLE)
+$B21_TFA_PerkCardPacks	PERK-KARTENPACKUNGEN
+$B21_TFA_AssignPermanentSPECIAL	DAUERHAFT SPECIAL ZUWEISEN
+$B21_TFA_AssignSPECIAL	ERHÖHUNG SPECIAL
+$B21_TFA_MoveSPECIAL	SPECIAL-PUNKT VERSCHIEBEN
+$B21_TFA_AddLoadout	LOADOUT HINZUFÜGEN
+$B21_PM_Salute	Salute (erfordert Live-Zeit)
+$B21_PM_FO4Poses	Fallout 4
+$B21_PM_Warm	Warm
+$B21_PM_Cool	kühl
+$B21_PM_Vintage	Jahrgang
+$B21_PM_Keepsake	Anhalten
+$B21_PM_PhotoFrames	Fotografien
+$B21_PM_FreezeTime	Frostzeit
+$B21_PM_Menu	FOTOMODUS
+$B21_PM_Saturated	gesättigt
+$B21_PM_BlackAndWhite	Schwarz und Weiß
+$B21_PM_Sepia	Sepia
+$B21_PM_PhotoFlash	Fotoblitz
+$B21_PM_Dandy	Dandy
+$B21_PM_Daytripper	Tagesausflug
+$B21_PM_Enhance	Verbessert
+$B21_PM_Gamma	Gamma
+$B21_PM_Nuke	Kern
+$B21_PM_Tintype	Zinntyp
+$B21_PM_Acid	Säure
+$B21_PM_Electric	Elektrisch
+$B21_PM_Jet	Jet Jet
+$B21_PM_3dViz	3D Viz
+$B21_PM_OnlyRed	Nur rot
+$B21_PM_Feral	Wild
+$B21_PM_SugarBomb	Zuckerbombe
+$B21_PM_VaultBlue	Vault Blue
+$B21_StatusHUD_Condition	CND
+$B21_StatusHUD_Broken	GEBROCHEN
+$B21_StatusHUD_Feral	WILD
+$B21_TFA_QuestMain	HAUPTVERWALTUNG
+$B21_TFA_QuestSide	SEITE
+$B21_TFA_QuestMisc	MISC
+$B21_TFA_QuestLeads	BLEI
+$B21_TFA_QuestEvents	VERANSTALTUNGEN
+$B21_RespawnTitle	Respawn
+$B21_RespawnBagNotice	Ihr abgeworfener Müll bleibt an der Todesstelle.
+$B21_RespawnNearestSafe	Verwenden Sie den nächstgelegenen sicheren Standort
+$B21_RespawnUnavailable	Dieser Standort ist nicht mehr verfügbar. Wähle einen anderen.
+$B21_RespawnMaximum	Maximale Reputation
+$B21_RespawnNextTier	auf die nächste Stufe
+$B21_TFA_SurvivalTent	ÜBERLEBENSZELT
+$B21_TFA_LegendaryPerks	LEGENDÄRE VERGÜNSTIGUNGEN
+$B21_TFA_PromptSelect	WÄHLEN
+$B21_TFA_PromptConfirm	BESTÄTIGUNG
+$B21_TFA_CharacterName	ZEICHENBEZEICHNUNG
+$B21_TFA_CharacterNameAccept	BESTÄTIGUNG
+$B21_TFA_CharacterNameCancel	RÜCKEN
+$B21_TFA_Perks_OpenPackPrompt	Sie haben ein ungeöffnetes Perk Pack! Möchten Sie es öffnen?
+$B21_TFA_Perks_NoPrompt	Nein (Fragen Sie nicht noch einmal)
+$B21_TFA_QB_ArmView	PIP-BOY
+$B21_TFA_QB_QuickView	QUICK-BOY
+$B21_TFA_EmoteExpand	EXPANSION
+$B21_TFA_EmoteCollapse	KOLLAPS
+$B21_TFA_EmoteSay	SAGEN
+$B21_TFA_EmoteBack	RÜCKEN
+$B21_TFA_EmoteClose	SCHLIESSEN
+$B21_TFA_EmoteTab	EMOTES
+$B21_TFA_EmoteScroll	SCROLL
+$B21_Settings_WorldFOV	Sichtfeld
+$B21_Settings_FirstPersonFOV	First-Person-Sichtfeld
+$B21_Settings_DepthOfField	Tiefe des Feldes
+$B21_Settings_MotionBlur	Motion Blur
+$B21_Settings_LensFlare	Linse Flare
+$B21_Settings_ShadowDistance	Schattenabstand
+$B21_Settings_ShadowQuality	Schattenqualität (Neustart)
+$B21_Settings_TextureQuality	Texturqualität (Neustart)
+$B21_Settings_WindowMode	Fenstermodus (Neustart)
+$B21_Settings_VSync	V-Sync (Neustart)
+$B21_Settings_Low	niedrig
+$B21_Settings_Medium	Medium
+$B21_Settings_High	hoch
+$B21_Settings_Ultra	Ultra
+$B21_Settings_Fullscreen	Vollbild
+$B21_Settings_Borderless	Grenzenlos
+$B21_Settings_Windowed	Fenster

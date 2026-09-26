@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn leveled_item_chance_none_writes_one_fo4_percent_byte() {
+    fn leveled_list_chance_and_flags_take_fo4_layout() {
         let interner = StringInterner::new();
         // LVLI 00B7C0 `LL_Loot_Legendary_Human_GeneralContainers_Large_Rare_ChanceNone`:
         // chance none 25.0, use all.
@@ -184,10 +184,7 @@ mod tests {
             written_fo4_subrecord(&record, "LVLF", &interner),
             Some(vec![0x04])
         );
-    }
 
-    #[test]
-    fn leveled_item_flags_keep_only_the_three_fo4_bits() {
         let interner = StringInterner::new();
         // LVLI 04B96E `LL_Loot_Book_Common_Any`: LVLF 0x011B is calc-from-all-levels,
         // each-item-in-count, both show-as-marker bits and do-all-before-repeating.
@@ -209,10 +206,7 @@ mod tests {
             written_fo4_subrecord(&record, "LVLD", &interner),
             Some(vec![0])
         );
-    }
 
-    #[test]
-    fn leveled_npc_flags_drop_allow_shift_up_and_do_all_before_repeating() {
         let interner = StringInterner::new();
         // LVLN 0042A2 `_SQ_Group_Occupation_LChar_Old`: LVLF 0x0143.
         let mut record = starfield_record(
@@ -236,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn vendor_radius_becomes_fo4_units_with_the_flag_bytes_in_place() {
+    fn vendor_radius_becomes_saturating_fo4_units_with_flag_bytes_in_place() {
         let interner = StringInterner::new();
         // FACT 09DBA6 `Vendor_City_CY_ManaakiFaction`: 0-24h, 20 m, fence,
         // specialized inventory, buys non-stolen.
@@ -253,10 +247,7 @@ mod tests {
         let venv = written_fo4_subrecord(&record, "VENV", &interner).unwrap();
         assert_eq!(hex::encode(&venv), "000018007805000001010100");
         assert_eq!(u16::from_le_bytes([venv[4], venv[5]]), 1400);
-    }
 
-    #[test]
-    fn vendor_radius_past_the_fo4_u16_range_saturates() {
         let interner = StringInterner::new();
         // FACT 15B0CE `Vendor_City_Neon_DietrichSieghart_Faction`: 10,000 m.
         let mut record = starfield_record(
@@ -276,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn moveable_static_mass_override_flags_become_fo4_on_local_map() {
+    fn mstt_and_kywd_data_take_fo4_meanings_and_others_are_untouched() {
         let interner = StringInterner::new();
         // MSTT 001621 `ThermalVentSmoke`: header 0x00010000, DATA 0x04 (Scale).
         let mut shown =
@@ -297,10 +288,7 @@ mod tests {
             written_fo4_subrecord(&hidden, "DATA", &interner),
             Some(vec![0])
         );
-    }
 
-    #[test]
-    fn keyword_attraction_rule_is_dropped() {
         let interner = StringInterner::new();
         // KYWD 200ADC `CCT_Enviro_Raking` -> AORU 0D8784 `CCT_Enviro_Raking_Rule`.
         let mut record = starfield_record(
@@ -325,10 +313,7 @@ mod tests {
             .map(|field| field.sig.as_str())
             .collect();
         assert_eq!(signatures, ["EDID", "CNAM", "TNAM", "FNAM"]);
-    }
 
-    #[test]
-    fn unrelated_data_subrecords_are_untouched() {
         let interner = StringInterner::new();
         let mut record = Record::new(
             crate::ids::SigCode(*b"STAT"),

@@ -17,6 +17,10 @@ Function Fragment_Stage_0001_Item_00()
     If !IsObjectiveCompleted(100)
         SetObjectiveDisplayed(100, True)
     EndIf
+    ; Stage 100 carries the opening journal entry (the lead on Abbie); no FO4 setter exists.
+    If !GetStageDone(100)
+        SetStage(100)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0002_Item_00()
@@ -83,6 +87,33 @@ Function Fragment_Stage_0400_Item_00()
     EndIf
     SetObjectiveCompleted(400, True)
     SetObjectiveDisplayed(500, True)
+    BoS01_RestoreAsylumPower()
+EndFunction
+
+Function BoS01_RestoreAsylumPower()
+    ; The converted breaker runs FO4 CircuitBreakerScript, which follows LinkCustom02, but the
+    ; placed breaker only links its FO76 LinkCircuitBreakerOnTrigger to the LC004 power-on
+    ; marker, so the lights never came on and the gate button stayed unpowered.
+    Actor playerRef = Game.GetPlayer()
+    ReferenceAlias breakerAlias = GetAlias(8) as ReferenceAlias
+    Keyword onTriggerLink = Game.GetFormFromFile(0x002ECB81, "SeventySix.esm") as Keyword
+    If breakerAlias != None && onTriggerLink != None
+        ObjectReference breakerRef = breakerAlias.GetReference()
+        If breakerRef != None
+            ObjectReference powerOnRef = breakerRef.GetLinkedRef(onTriggerLink)
+            If powerOnRef != None
+                powerOnRef.Activate(playerRef)
+            EndIf
+        EndIf
+    EndIf
+
+    ReferenceAlias buttonAlias = GetAlias(4) as ReferenceAlias
+    If buttonAlias != None
+        BoS01ToggleButtonScript button = buttonAlias.GetReference() as BoS01ToggleButtonScript
+        If button != None
+            button.UpdateLocalPowerState()
+        EndIf
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0500_Item_00()

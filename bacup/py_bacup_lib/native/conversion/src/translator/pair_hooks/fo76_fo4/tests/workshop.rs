@@ -15,6 +15,41 @@ fn workshop_cobj_form_key(record: &Record, sig: &[u8; 4]) -> FormKey {
 }
 
 #[test]
+fn radshield_recipe_uses_the_replacement_chemistry_bench_keywords() {
+    let interner = StringInterner::new();
+    let mut record = workshop_cobj(&interner, "SFM04_Organic_co_chem_RadShield", 0x102158);
+    record.form_key.local = 0x081FDD;
+    push_field(&mut record, "FNAM", FieldValue::List(vec![form_key_value(&interner, 0x102150)]));
+    let output = workshop_cobj_form_key(&record, b"CNAM");
+    Fo76Fo4Hook::repair_radshield_recipe_workbench(&interner, &mut record);
+    for sig in [b"BNAM", b"FNAM"] {
+        assert_eq!(interner.resolve(workshop_cobj_form_key(&record, sig).plugin), Some(FO4_MASTER_NAME));
+    }
+    assert_eq!(workshop_cobj_form_key(&record, b"CNAM"), output);
+    let once = format!("{:?}", record.fields);
+    Fo76Fo4Hook::repair_radshield_recipe_workbench(&interner, &mut record);
+    assert_eq!(format!("{:?}", record.fields), once);
+
+    for mismatch in 0..5 {
+        let mut record = workshop_cobj(&interner, "SFM04_Organic_co_chem_RadShield", 0x102158);
+        record.form_key.local = 0x081FDD;
+        match mismatch {
+            0 => record.form_key.local = 0x081FDC,
+            1 => record.form_key.plugin = interner.intern("Other.esm"),
+            2 => record.eid = Some(interner.intern("OtherRecipe")),
+            3 => record.sig = SigCode(*b"KYWD"),
+            _ => {
+                record.fields.iter_mut().find(|f| f.sig.0 == *b"BNAM").unwrap().value =
+                    form_key_value(&interner, 0x102159);
+            }
+        }
+        let before = format!("{:?}", record.fields);
+        Fo76Fo4Hook::repair_radshield_recipe_workbench(&interner, &mut record);
+        assert_eq!(format!("{:?}", record.fields), before, "mismatch case {mismatch}");
+    }
+}
+
+#[test]
 fn workshop_cobj_scope_accepts_only_intended_editor_ids() {
     let interner = StringInterner::new();
     for eid in [
@@ -50,117 +85,66 @@ fn workshop_cobj_scope_accepts_only_intended_editor_ids() {
 }
 
 #[test]
-fn post_translate_sets_matching_bnam_and_drops_fo76_recipe_filter() {
+fn post_translate_routes_workshop_recipes_to_fo4_workbenches_and_drops_recipe_filter() {
     let interner = StringInterner::new();
-    let mut record = workshop_cobj(
-        &interner,
-        "ATX_workshop_co_Lights_TrainHeadlight",
-        FO76_WORKSHOP_CATEGORY_LIGHTS,
-    );
-    let hook = Fo76Fo4Hook;
-    let mut ctx = make_ctx(&interner);
-    hook.post_translate(&mut ctx, &mut record).unwrap();
+    for (eid, category, has_created_object, bench, bench_plugin) in [
+        (
+            "ATX_workshop_co_Lights_TrainHeadlight",
+            FO76_WORKSHOP_CATEGORY_LIGHTS,
+            true,
+            FO4_WORKSHOP_WORKBENCH_POWER,
+            FO4_MASTER_NAME,
+        ),
+        (
+            "ATX_workshop_co_Furniture_Generic",
+            FO76_WORKSHOP_CATEGORY_MAIN_FURNITURE,
+            true,
+            FO4_WORKSHOP_WORKBENCH_FURNITURE,
+            FO4_MASTER_NAME,
+        ),
+        (
+            "SCORE_S25_workshop_co_Structure_VinesJailCell_WallFull",
+            FO76_WORKSHOP_WORKBENCH_ALL_TYPE,
+            true,
+            FO4_WORKSHOP_WORKBENCH_EXTERIOR,
+            FO4_MASTER_NAME,
+        ),
+        (
+            "workshop_co_Lights_CampFire01",
+            FO76_WORKSHOP_WORKBENCH_ALL_TYPE,
+            true,
+            FO4_WORKSHOP_WORKBENCH_FURNITURE,
+            FO4_MASTER_NAME,
+        ),
+        (
+            "ATX_workshop_co_mod_Weapon",
+            FO76_WORKSHOP_CATEGORY_LIGHTS,
+            true,
+            FO76_WORKSHOP_CATEGORY_LIGHTS,
+            FO76_MASTER_NAME,
+        ),
+        (
+            "SCORE_S25_workshop_co_Structure_VinesJailCell_WallFull",
+            FO76_WORKSHOP_CATEGORY_WALLS,
+            false,
+            FO76_WORKSHOP_CATEGORY_WALLS,
+            FO76_MASTER_NAME,
+        ),
+    ] {
+        let mut record = workshop_cobj(&interner, eid, category);
+        if !has_created_object {
+            record.fields.retain(|field| field.sig.0 != *b"CNAM");
+        }
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
 
-    let bench = workshop_cobj_form_key(&record, b"BNAM");
-    assert_eq!(bench.local, FO4_WORKSHOP_WORKBENCH_POWER);
-    assert_eq!(interner.resolve(bench.plugin), Some(FO4_MASTER_NAME));
-    assert!(record.fields.iter().all(|field| field.sig.0 != *b"FNAM"));
-}
-
-#[test]
-fn post_translate_handles_fo76_main_workshop_category_keyword() {
-    let interner = StringInterner::new();
-    let mut record = workshop_cobj(
-        &interner,
-        "ATX_workshop_co_Furniture_Generic",
-        FO76_WORKSHOP_CATEGORY_MAIN_FURNITURE,
-    );
-    let hook = Fo76Fo4Hook;
-    let mut ctx = make_ctx(&interner);
-    hook.post_translate(&mut ctx, &mut record).unwrap();
-
-    assert_eq!(
-        workshop_cobj_form_key(&record, b"BNAM").local,
-        FO4_WORKSHOP_WORKBENCH_FURNITURE
-    );
-    assert!(record.fields.iter().all(|field| field.sig.0 != *b"FNAM"));
-}
-
-#[test]
-fn post_translate_infers_category_for_workshop_all_type_recipe() {
-    let interner = StringInterner::new();
-    let mut record = workshop_cobj(
-        &interner,
-        "SCORE_S25_workshop_co_Structure_VinesJailCell_WallFull",
-        FO76_WORKSHOP_WORKBENCH_ALL_TYPE,
-    );
-    let hook = Fo76Fo4Hook;
-    let mut ctx = make_ctx(&interner);
-    hook.post_translate(&mut ctx, &mut record).unwrap();
-
-    assert_eq!(
-        workshop_cobj_form_key(&record, b"BNAM").local,
-        FO4_WORKSHOP_WORKBENCH_EXTERIOR
-    );
-    assert!(record.fields.iter().all(|field| field.sig.0 != *b"FNAM"));
-}
-
-#[test]
-fn post_translate_keeps_non_powered_fire_lights_on_furniture_workbench() {
-    let interner = StringInterner::new();
-    let mut record = workshop_cobj(
-        &interner,
-        "workshop_co_Lights_CampFire01",
-        FO76_WORKSHOP_WORKBENCH_ALL_TYPE,
-    );
-    let hook = Fo76Fo4Hook;
-    let mut ctx = make_ctx(&interner);
-    hook.post_translate(&mut ctx, &mut record).unwrap();
-
-    assert_eq!(
-        workshop_cobj_form_key(&record, b"BNAM").local,
-        FO4_WORKSHOP_WORKBENCH_FURNITURE
-    );
-    assert!(record.fields.iter().all(|field| field.sig.0 != *b"FNAM"));
-}
-
-#[test]
-fn post_translate_does_not_touch_excluded_workshop_recipe_family() {
-    let interner = StringInterner::new();
-    let mut record = workshop_cobj(
-        &interner,
-        "ATX_workshop_co_mod_Weapon",
-        FO76_WORKSHOP_CATEGORY_LIGHTS,
-    );
-    let hook = Fo76Fo4Hook;
-    let mut ctx = make_ctx(&interner);
-    hook.post_translate(&mut ctx, &mut record).unwrap();
-
-    assert_eq!(
-        workshop_cobj_form_key(&record, b"BNAM").local,
-        FO76_WORKSHOP_CATEGORY_LIGHTS
-    );
-    assert!(record.fields.iter().all(|field| field.sig.0 != *b"FNAM"));
-}
-
-#[test]
-fn post_translate_does_not_expose_workshop_recipe_without_created_object() {
-    let interner = StringInterner::new();
-    let mut record = workshop_cobj(
-        &interner,
-        "SCORE_S25_workshop_co_Structure_VinesJailCell_WallFull",
-        FO76_WORKSHOP_CATEGORY_WALLS,
-    );
-    record.fields.retain(|field| field.sig.0 != *b"CNAM");
-    let hook = Fo76Fo4Hook;
-    let mut ctx = make_ctx(&interner);
-    hook.post_translate(&mut ctx, &mut record).unwrap();
-
-    assert_eq!(
-        workshop_cobj_form_key(&record, b"BNAM").plugin,
-        interner.intern(FO76_MASTER_NAME)
-    );
-    assert!(record.fields.iter().all(|field| field.sig.0 != *b"FNAM"));
+        let label = format!("{eid} (created object: {has_created_object})");
+        let actual = workshop_cobj_form_key(&record, b"BNAM");
+        assert_eq!(actual.local, bench, "{label}");
+        assert_eq!(interner.resolve(actual.plugin), Some(bench_plugin), "{label}");
+        assert!(record.fields.iter().all(|field| field.sig.0 != *b"FNAM"), "{label}");
+    }
 }
 
 #[test]

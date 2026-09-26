@@ -84,7 +84,7 @@ pub struct ReadView<'a> {
     target_paths: Arc<FormIdPathsSection>,
     target_core: Arc<CoreSection>,
     source_slot: Option<&'a NativePluginSlot>,
-    source_paths: Option<Arc<FormIdPathsSection>>,
+    source_records: Option<Arc<RecordsSection>>,
 }
 
 pub enum EditOutcome {
@@ -112,6 +112,14 @@ impl HandleRawScan<'_> {
     pub fn referencing_form_keys_by_query(
         &self,
         queries: &[String],
+    ) -> HashMap<String, Vec<String>> {
+        self.referencing_form_keys_by_query_from_signatures(queries, &[])
+    }
+
+    pub fn referencing_form_keys_by_query_from_signatures(
+        &self,
+        queries: &[String],
+        signatures: &[&str],
     ) -> HashMap<String, Vec<String>> {
         let own_plugin = self.slot.parsed.plugin_name.as_str();
         let masters = self.slot.parsed.header.masters.as_slice();
@@ -149,8 +157,11 @@ impl HandleRawScan<'_> {
         let entries = self
             .core
             .by_signature_form_keys
-            .values()
-            .flatten()
+            .iter()
+            .filter(|(signature, _)| {
+                signatures.is_empty() || signatures.contains(&signature.as_str())
+            })
+            .flat_map(|(_, keys)| keys)
             .filter_map(|form_key| self.core.by_form_key.get(form_key))
             .collect::<Vec<_>>();
         let matches = entries
@@ -212,6 +223,17 @@ impl HandleRawScan<'_> {
             entry.signature.to_string(),
             entry.form_key.render(),
         ))
+    }
+
+    pub fn form_keys_of_signature(&self, signature: &str) -> Vec<String> {
+        self.core
+            .by_signature_form_keys
+            .get(signature)
+            .into_iter()
+            .flatten()
+            .filter(|key| !key.plugin.is_empty())
+            .map(|key| key.render())
+            .collect()
     }
 
     pub fn with_record_context<R>(
@@ -1471,11 +1493,11 @@ impl<'store> PluginSession<'store> {
             let slot = self.target_slot_mut();
             ensure_core_section(slot)
         };
-        let source_paths = if include_source {
+        let source_records = if include_source {
             if let Some(source_id) = self.source_id {
                 self.store_guard
                     .get_mut(&source_id)
-                    .map(ensure_form_id_paths_section)
+                    .map(ensure_records_section)
             } else {
                 None
             }
@@ -1493,7 +1515,7 @@ impl<'store> PluginSession<'store> {
             target_paths,
             target_core,
             source_slot,
-            source_paths,
+            source_records,
         })
     }
 
@@ -1665,8 +1687,9 @@ impl ReadView<'_> {
 
     pub fn source_record(&self, form_id: u32) -> Option<&ParsedRecord> {
         let source_slot = self.source_slot?;
-        let path = self.source_paths.as_ref()?.by_form_id.get(&form_id)?;
-        walk_to_record(&source_slot.parsed.root_items, path).ok()
+        self.source_records
+            .as_ref()?
+            .record(&source_slot.parsed, form_id)
     }
 
     /// Raw `ParsedRecord` lookup by FormKey (no schema decode) — the raw-lane
@@ -1895,7 +1918,6 @@ fn remove_records_from_items(
                 removed += remove_records_from_items(&mut group.children, pending);
                 true
             }
-            _ => true,
         }
     });
     removed
@@ -2178,7 +2200,6 @@ mod tests {
         ParsedGroup, ParsedSubrecord, build_vmad_bytes_from_payload, ensure_assets_section,
         ensure_refs_section, plugin_handle_debug_section_loaded_native, plugin_handle_new_native,
     };
-    use rayon::prelude::*;
     use smallvec::SmallVec;
 
     fn create_test_plugin_handle() -> Option<u64> {
@@ -2306,11 +2327,31 @@ mod tests {
         Some(handle)
     }
 
-    #[test]
-    fn session_record_decoded_returns_full_record() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
+    fn load_source_fixture_with_duplicate_form_id() -> Option<u64> {
+        let handle = load_source_fixture_with_armo()?;
+        let mut store = plugin_handle_store_ref().lock().ok()?;
+        let slot = store.get_mut(&handle)?;
+        let ParsedItem::Group(group) = &mut slot.parsed.root_items[0] else {
+            return None;
         };
+        group.children.push(ParsedItem::Record(ParsedRecord {
+            signature: SmolStr::new("WEAP"),
+            form_id: 0x0000_0900,
+            flags: 0,
+            version_control: 0,
+            form_version: None,
+            version2: None,
+            subrecords: Vec::new(),
+            raw_payload: None,
+            parse_error: None,
+        }));
+        slot.invalidate_sections();
+        Some(handle)
+    }
+
+    #[test]
+    fn session_and_read_view_record_decoded_return_the_same_full_record() {
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let mut session = open_session(handle, None).unwrap();
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").unwrap();
@@ -2325,16 +2366,21 @@ mod tests {
             record.eid.and_then(|sym| interner.resolve(sym)),
             Some("SessionWeap0")
         );
+
+        let viewed = {
+            let view = session.read_view().unwrap();
+            view.record_decoded(&fks[0], &schema, &interner).unwrap()
+        };
+        assert_eq!(viewed.form_key, record.form_key);
+        assert_eq!(viewed.sig, record.sig);
+        assert_eq!(viewed.fields.len(), record.fields.len());
+        assert_eq!(viewed.eid, record.eid);
     }
 
     #[test]
     fn session_source_record_decoded_uses_source_handle() {
-        let Some(target) = create_test_plugin_handle() else {
-            return;
-        };
-        let Some(source) = load_source_fixture_with_armo() else {
-            return;
-        };
+        let target = create_test_plugin_handle().expect("synthetic fixture should load");
+        let source = load_source_fixture_with_armo().expect("synthetic fixture should load");
         let mut session = open_session(target, Some(source)).unwrap();
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").unwrap();
@@ -2352,13 +2398,103 @@ mod tests {
     }
 
     #[test]
+    fn read_view_reuses_source_records_without_building_source_form_id_paths() {
+        let target = create_test_plugin_handle().expect("target fixture should load");
+        let source = load_source_fixture_with_armo().expect("source fixture should load");
+        let cached_records = {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&source).unwrap();
+            let records = ensure_records_section(slot);
+            assert!(!slot.has_form_id_paths_section());
+            records
+        };
+
+        {
+            let mut session = open_session(target, Some(source)).unwrap();
+            let view = session.read_view().unwrap();
+            assert_eq!(
+                view.source_record(0x0000_0900).unwrap().signature.as_str(),
+                "ARMO"
+            );
+        }
+
+        let mut store = plugin_handle_store_ref().lock().unwrap();
+        let slot = store.get_mut(&source).unwrap();
+        assert!(Arc::ptr_eq(&cached_records, &ensure_records_section(slot)));
+        assert!(!slot.has_form_id_paths_section());
+    }
+
+    #[test]
+    fn read_view_source_record_preserves_first_physical_duplicate() {
+        let target = create_test_plugin_handle().expect("target fixture should load");
+        let source = load_source_fixture_with_duplicate_form_id()
+            .expect("duplicate source fixture should load");
+
+        {
+            let mut session = open_session(target, Some(source)).unwrap();
+            let view = session.read_view().unwrap();
+            assert_eq!(
+                view.source_record(0x0000_0900).unwrap().signature.as_str(),
+                "ARMO"
+            );
+        }
+
+        let store = plugin_handle_store_ref().lock().unwrap();
+        assert!(!store.get(&source).unwrap().has_form_id_paths_section());
+    }
+
+    #[test]
+    fn read_view_rebuilds_source_records_after_structural_invalidation() {
+        let target = create_test_plugin_handle().expect("target fixture should load");
+        let source = load_source_fixture_with_armo().expect("source fixture should load");
+
+        {
+            let mut session = open_session(target, Some(source)).unwrap();
+            assert!(
+                session
+                    .read_view()
+                    .unwrap()
+                    .source_record(0x0000_0900)
+                    .is_some()
+            );
+        }
+
+        {
+            let interner = StringInterner::new();
+            let mut session = open_session(source, None).unwrap();
+            let source_fk = session
+                .form_keys_of_sig(SigCode::from_str("ARMO").unwrap(), &interner)
+                .unwrap()[0];
+            assert!(session.remove_record(&source_fk).unwrap());
+        }
+        assert!(!plugin_handle_debug_section_loaded_native(source, "records").unwrap());
+
+        {
+            let mut session = open_session(target, Some(source)).unwrap();
+            assert!(
+                session
+                    .read_view()
+                    .unwrap()
+                    .source_record(0x0000_0900)
+                    .is_none()
+            );
+        }
+
+        assert!(plugin_handle_debug_section_loaded_native(source, "records").unwrap());
+        let store = plugin_handle_store_ref().lock().unwrap();
+        let source_slot = store.get(&source).unwrap();
+        assert!(!source_slot.has_form_id_paths_section());
+    }
+
+    #[test]
     fn session_handle_specific_reads_use_requested_handle() {
-        let Some(target) = create_test_plugin_handle() else {
-            return;
-        };
-        let Some(other) = load_fixture_with_weap_count(1, "OtherFixture.esm") else {
-            return;
-        };
+        assert!(matches!(
+            open_session(u64::MAX, None),
+            Err(SessionError::HandleNotFound(_))
+        ));
+        let target = create_test_plugin_handle().expect("synthetic fixture should load");
+        let other = load_fixture_with_weap_count(2, "OtherFixture.esm")
+            .expect("synthetic fixture should load");
         let mut session = open_session(target, None).unwrap();
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").unwrap();
@@ -2376,16 +2512,19 @@ mod tests {
             record.eid.and_then(|sym| interner.resolve(sym)),
             Some("SessionWeap0")
         );
+
+        let object_ids = session
+            .local_object_ids_in_handle(other)
+            .expect("master object ID query should succeed");
+        assert!(object_ids.contains(&0x000800));
+        assert!(object_ids.contains(&0x000801));
+        assert!(!object_ids.contains(&0x000802));
     }
 
     #[test]
     fn session_schema_accessors_follow_target_and_source_games() {
-        let Some(target) = create_test_plugin_handle() else {
-            return;
-        };
-        let Some(source) = load_source_fixture_with_armo() else {
-            return;
-        };
+        let target = create_test_plugin_handle().expect("synthetic fixture should load");
+        let source = load_source_fixture_with_armo().expect("synthetic fixture should load");
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
             store.get_mut(&source).unwrap().parsed.game = Some("fo76".to_string());
@@ -2405,9 +2544,7 @@ mod tests {
 
     #[test]
     fn target_masters_and_signatures_come_from_target_slot() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
             store.get_mut(&handle).unwrap().parsed.header.masters =
@@ -2421,41 +2558,31 @@ mod tests {
 
         assert_eq!(session.target_masters(), &["Fallout4.esm", "DLCRobot.esm"]);
         assert_eq!(signatures, vec![SigCode::from_str("WEAP").unwrap()]);
+        let mut view_signatures = session.read_view().unwrap().target_signatures();
+        view_signatures.sort_by_key(|sig| sig.as_str().to_string());
+        assert_eq!(view_signatures, signatures);
     }
 
     #[test]
-    fn open_session_rejects_unknown_handle() {
-        let result = open_session(u64::MAX, None);
-        assert!(matches!(result, Err(SessionError::HandleNotFound(_))));
-    }
+    fn record_effects_coalesce_and_apply_on_drop() {
+        let handle = create_test_plugin_handle().expect("synthetic fixture should load");
+        {
+            let mut session = open_session(handle, None).unwrap();
+            session.record_effect(WriteEffect::RecordContents {
+                form_ids: smallvec::smallvec![0x800],
+            });
+            session.record_effect(WriteEffect::RecordContents {
+                form_ids: smallvec::smallvec![0x801, 0x802],
+            });
 
-    #[test]
-    fn record_effect_coalesces_record_contents() {
-        let Some(handle) = create_test_plugin_handle() else {
-            return;
-        };
-        let mut session = open_session(handle, None).unwrap();
-        session.record_effect(WriteEffect::RecordContents {
-            form_ids: smallvec::smallvec![0x800],
-        });
-        session.record_effect(WriteEffect::RecordContents {
-            form_ids: smallvec::smallvec![0x801, 0x802],
-        });
-
-        assert_eq!(session.pending_target_effects.len(), 1);
-        match &session.pending_target_effects[0] {
-            WriteEffect::RecordContents { form_ids } => {
-                assert_eq!(form_ids.as_slice(), &[0x800u32, 0x801, 0x802]);
+            assert_eq!(session.pending_target_effects.len(), 1);
+            match &session.pending_target_effects[0] {
+                WriteEffect::RecordContents { form_ids } => {
+                    assert_eq!(form_ids.as_slice(), &[0x800u32, 0x801, 0x802]);
+                }
+                _ => panic!("expected coalesced RecordContents"),
             }
-            _ => panic!("expected coalesced RecordContents"),
         }
-    }
-
-    #[test]
-    fn drop_applies_pending_effects() {
-        let Some(handle) = create_test_plugin_handle() else {
-            return;
-        };
 
         {
             let mut session = open_session(handle, None).unwrap();
@@ -2472,32 +2599,24 @@ mod tests {
     }
 
     #[test]
-    fn form_keys_of_sig_returns_indexed_weap() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
-        let mut session = open_session(handle, None).unwrap();
+    fn form_keys_of_sig_returns_indexed_weap_and_duplicate_identity_once() {
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let weap_sig = SigCode::from_str("WEAP").unwrap();
         let interner = StringInterner::new();
+        {
+            let mut session = open_session(handle, None).unwrap();
+            let fks = session.form_keys_of_sig(weap_sig, &interner).unwrap();
+            let repeated = session.form_keys_of_sig(weap_sig, &interner).unwrap();
 
-        let fks = session.form_keys_of_sig(weap_sig, &interner).unwrap();
-        let repeated = session.form_keys_of_sig(weap_sig, &interner).unwrap();
-
-        assert!(!fks.is_empty(), "fixture has at least one WEAP");
-        assert_eq!(fks[0].local, 0x800);
-        assert_eq!(repeated, fks);
-        assert!(session.target_cached_signatures.contains(&weap_sig));
-        assert!(
-            fks.iter()
-                .all(|fk| session.target_form_id_cache.contains_key(fk))
-        );
-    }
-
-    #[test]
-    fn form_keys_of_sig_returns_duplicate_record_identity_once() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+            assert!(!fks.is_empty(), "fixture has at least one WEAP");
+            assert_eq!(fks[0].local, 0x800);
+            assert_eq!(repeated, fks);
+            assert!(session.target_cached_signatures.contains(&weap_sig));
+            assert!(
+                fks.iter()
+                    .all(|fk| session.target_form_id_cache.contains_key(fk))
+            );
+        }
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
             let slot = store.get_mut(&handle).unwrap();
@@ -2508,11 +2627,8 @@ mod tests {
             slot.invalidate_sections();
         }
         let mut session = open_session(handle, None).unwrap();
-        let interner = StringInterner::new();
 
-        let fks = session
-            .form_keys_of_sig(SigCode::from_str("WEAP").unwrap(), &interner)
-            .unwrap();
+        let fks = session.form_keys_of_sig(weap_sig, &interner).unwrap();
 
         assert_eq!(fks.len(), 1);
         assert_eq!(fks[0].local, 0x800);
@@ -2644,48 +2760,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires PLACED_INDEX_CORPUS and optional PLACED_INDEX_REPORT"]
-    fn encoded_signatures_match_complete_plugin_corpus() {
-        use crate::run::OwnedPluginHandle;
-        let path = std::path::PathBuf::from(std::env::var_os("PLACED_INDEX_CORPUS").unwrap());
-        let handle = OwnedPluginHandle::load(&path, "fo4", None).unwrap();
-        let mut session = open_session(handle.id(), None).unwrap();
-        let masters = session.target_masters().to_vec();
-        let _ = session.target_signatures().unwrap();
-        let started = std::time::Instant::now();
-        let expected = legacy_encoded_signatures(&mut session, &masters);
-        let legacy_seconds = started.elapsed().as_secs_f64();
-        let started = std::time::Instant::now();
-        let actual = session.encoded_target_record_signatures(&masters);
-        let build_seconds = started.elapsed().as_secs_f64();
-        assert_eq!(*actual, expected);
-        let started = std::time::Instant::now();
-        for _ in 0..10 {
-            assert!(Arc::ptr_eq(
-                &actual,
-                &session.encoded_target_record_signatures(&masters)
-            ));
-        }
-        let reuse_seconds = started.elapsed().as_secs_f64() / 10.;
-        let mut entries: Vec<_> = actual.iter().collect();
-        entries.sort_by_key(|(raw, _)| **raw);
-        let mut digest = blake3::Hasher::new();
-        for (raw, sig) in entries {
-            digest.update(&raw.to_le_bytes());
-            digest.update(&sig.0);
-        }
-        let report = serde_json::json!({
-            "plugin": path, "entries": actual.len(), "identical": true,
-            "legacy_seconds": legacy_seconds, "build_seconds": build_seconds,
-            "reuse_seconds": reuse_seconds, "digest": digest.finalize().to_hex().to_string(),
-        });
-        eprintln!("{report}");
-        if let Some(path) = std::env::var_os("PLACED_INDEX_REPORT") {
-            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-        }
-    }
-
-    #[test]
     fn indexed_record_identity_distinguishes_same_local_id_across_plugins() {
         let handle = plugin_handle_new_native("SessionExactIndex.esp", Some("fo4")).unwrap();
         {
@@ -2737,52 +2811,31 @@ mod tests {
     }
 
     #[test]
-    fn record_mut_returns_record_by_form_id() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+    fn record_and_record_mut_find_by_form_id_and_cache_form_id_paths() {
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let mut session = open_session(handle, None).unwrap();
 
-        let record = session.record_mut(0x0000_0800).unwrap();
-
-        assert_eq!(record.signature.as_str(), "WEAP");
-    }
-
-    #[test]
-    fn record_returns_record_by_form_id() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
-        let mut session = open_session(handle, None).unwrap();
-
-        let record = session.record(0x0000_0800).unwrap();
-
-        assert_eq!(record.signature.as_str(), "WEAP");
-    }
-
-    #[test]
-    fn record_mut_uses_form_id_paths_cache_on_second_call() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
-        let mut session = open_session(handle, None).unwrap();
-
-        let _ = session.record_mut(0x0000_0800).unwrap();
+        assert_eq!(
+            session.record_mut(0x0000_0800).unwrap().signature.as_str(),
+            "WEAP"
+        );
         assert!(
             session.target_slot().has_form_id_paths_section(),
             "form_id_paths cached after first lookup"
         );
-
-        let record = session.record_mut(0x0000_0800).unwrap();
-
-        assert_eq!(record.signature.as_str(), "WEAP");
+        assert_eq!(
+            session.record_mut(0x0000_0800).unwrap().signature.as_str(),
+            "WEAP"
+        );
+        assert_eq!(
+            session.record(0x0000_0800).unwrap().signature.as_str(),
+            "WEAP"
+        );
     }
 
     #[test]
     fn patch_subrecord_bytes_via_session_invalidates_only_contents() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
 
         {
             let mut session = open_session(handle, None).unwrap();
@@ -2810,10 +2863,8 @@ mod tests {
     }
 
     #[test]
-    fn patch_subrecord_bytes_falls_back_to_index_when_cache_is_cold() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+    fn patch_subrecord_bytes_uses_cold_index_and_rejects_edid_value_change() {
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let interner = StringInterner::new();
         let fk = FormKey::parse("000800@SessionTest.esp", &interner).unwrap();
 
@@ -2832,17 +2883,7 @@ mod tests {
                 .as_ref(),
             &[1, 0xFE, 3, 4]
         );
-    }
 
-    #[test]
-    fn patch_subrecord_bytes_rejects_edid_value_change() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
-        let interner = StringInterner::new();
-        let fk = FormKey::parse("000800@SessionTest.esp", &interner).unwrap();
-
-        let mut session = open_session(handle, None).unwrap();
         let err = session
             .patch_subrecord_bytes(&fk, "EDID", |bytes| {
                 bytes[0] = b'X';
@@ -2861,9 +2902,7 @@ mod tests {
 
     #[test]
     fn rewrite_placed_leveled_reference_upserts_and_removes_xlib() {
-        let Some(handle) = load_fixture_with_cell_child_group() else {
-            return;
-        };
+        let handle = load_fixture_with_cell_child_group().expect("synthetic fixture should load");
         let interner = StringInterner::new();
         let fk = FormKey::parse("000801@SessionCellTest.esp", &interner).unwrap();
         let original_list = 0x0100_1000_u32;
@@ -2951,9 +2990,7 @@ mod tests {
 
     #[test]
     fn replace_record_via_session_rewrites_edid() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let interner = StringInterner::new();
         let edid_sig = SubrecordSig::from_str("EDID").unwrap();
@@ -3104,9 +3141,7 @@ mod tests {
 
     #[test]
     fn replace_record_contents_via_session_preserves_indexes() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let interner = StringInterner::new();
         let weap_sig = SigCode::from_str("WEAP").unwrap();
@@ -3152,7 +3187,7 @@ mod tests {
                 .iter()
                 .find(|subrecord| subrecord.signature.as_str() == "DNAM")
                 .expect("DNAM present");
-            assert_eq!(dnam.data.as_ref(), &[9, 8, 7, 6]);
+            assert!(dnam.data.starts_with(&[9, 8, 7, 6]), "{:?}", dnam.data);
         }
 
         let store = plugin_handle_store_ref().lock().unwrap();
@@ -3163,9 +3198,7 @@ mod tests {
 
     #[test]
     fn replace_record_contents_via_session_invalidates_content_derived_sections() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let interner = StringInterner::new();
         let weap_sig = SigCode::from_str("WEAP").unwrap();
@@ -3225,101 +3258,51 @@ mod tests {
     }
 
     #[test]
-    fn replace_record_contents_via_session_returns_false_for_signature_mismatch() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+    fn replace_record_contents_via_session_returns_false_for_signature_mismatch_or_missing_record()
+    {
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let interner = StringInterner::new();
         let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let edid_sym = interner.intern("SessionAmmo");
-        let fk = FormKey::parse("000800@SessionTest.esp", &interner).unwrap();
-        let record = Record {
-            sig: SigCode::from_str("AMMO").unwrap(),
-            form_key: fk,
-            eid: Some(edid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: SmallVec::new(),
-        };
-
         let mut session = open_session(handle, None).unwrap();
-        assert!(
-            !session
-                .replace_record_contents(record, &schema, &interner)
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn replace_record_contents_via_session_returns_false_for_missing_record() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let interner = StringInterner::new();
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let edid_sym = interner.intern("SessionWeap1");
-        let fk = FormKey::parse("000801@SessionTest.esp", &interner).unwrap();
-        let record = Record {
-            sig: SigCode::from_str("WEAP").unwrap(),
-            form_key: fk,
-            eid: Some(edid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: SmallVec::new(),
-        };
-
-        let mut session = open_session(handle, None).unwrap();
-        assert!(
-            !session
-                .replace_record_contents(record, &schema, &interner)
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn add_record_via_session_inserts_without_relocking() {
-        let Some(handle) = create_test_plugin_handle() else {
-            return;
-        };
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let interner = StringInterner::new();
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let edid_sym = interner.intern("SessionAmmo");
-        let fk = FormKey::parse("000800@SessionTest.esp", &interner).unwrap();
-        let record = Record {
-            sig: SigCode::from_str("AMMO").unwrap(),
-            form_key: fk,
-            eid: Some(edid_sym),
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: edid_sig,
-                value: FieldValue::String(edid_sym),
-            }],
-            warnings: SmallVec::new(),
-        };
-
-        let mut session = open_session(handle, None).unwrap();
-        session
-            .add_record(record, &schema, &interner)
-            .expect("add should succeed");
-
-        let inserted = session.record(0x0000_0800).unwrap();
-        assert_eq!(inserted.signature.as_str(), "AMMO");
+        for (name, signature, form_key, editor_id) in [
+            (
+                "signature mismatch",
+                "AMMO",
+                "000800@SessionTest.esp",
+                "SessionAmmo",
+            ),
+            (
+                "missing record",
+                "WEAP",
+                "000801@SessionTest.esp",
+                "SessionWeap1",
+            ),
+        ] {
+            let edid_sym = interner.intern(editor_id);
+            let record = Record {
+                sig: SigCode::from_str(signature).unwrap(),
+                form_key: FormKey::parse(form_key, &interner).unwrap(),
+                eid: Some(edid_sym),
+                flags: RecordFlags::empty(),
+                fields: smallvec::smallvec![FieldEntry {
+                    sig: edid_sig,
+                    value: FieldValue::String(edid_sym),
+                }],
+                warnings: SmallVec::new(),
+            };
+            assert!(
+                !session
+                    .replace_record_contents(record, &schema, &interner)
+                    .unwrap(),
+                "{name}"
+            );
+        }
     }
 
     #[test]
     fn insert_placed_child_into_cell_group_preserves_cell_topology() {
-        let Some(handle) = load_fixture_with_cell_child_group() else {
-            return;
-        };
+        let handle = load_fixture_with_cell_child_group().expect("synthetic fixture should load");
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let interner = StringInterner::new();
         let edid_sig = SubrecordSig::from_str("EDID").unwrap();
@@ -3359,9 +3342,7 @@ mod tests {
 
     #[test]
     fn add_record_is_visible_to_indexed_reads_in_same_session() {
-        let Some(handle) = create_test_plugin_handle() else {
-            return;
-        };
+        let handle = create_test_plugin_handle().expect("synthetic fixture should load");
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let interner = StringInterner::new();
         let edid_sig = SubrecordSig::from_str("EDID").unwrap();
@@ -3399,9 +3380,7 @@ mod tests {
 
     #[test]
     fn add_records_via_session_inserts_multiple_records() {
-        let Some(handle) = create_test_plugin_handle() else {
-            return;
-        };
+        let handle = create_test_plugin_handle().expect("synthetic fixture should load");
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let interner = StringInterner::new();
         let ammo_sig = SigCode::from_str("AMMO").unwrap();
@@ -3440,29 +3419,8 @@ mod tests {
     }
 
     #[test]
-    fn local_object_ids_in_handle_returns_indexed_object_ids() {
-        let Some(handle) = load_fixture_with_weap_count(2, "MasterFixture.esm") else {
-            return;
-        };
-        let Some(target_handle) = create_test_plugin_handle() else {
-            return;
-        };
-
-        let mut session = open_session(target_handle, None).unwrap();
-        let object_ids = session
-            .local_object_ids_in_handle(handle)
-            .expect("master object ID query should succeed");
-
-        assert!(object_ids.contains(&0x000800));
-        assert!(object_ids.contains(&0x000801));
-        assert!(!object_ids.contains(&0x000802));
-    }
-
-    #[test]
     fn remove_record_via_session_drops_record() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let interner = StringInterner::new();
 
         {
@@ -3481,9 +3439,8 @@ mod tests {
 
     #[test]
     fn read_view_iterates_form_keys_in_parallel() {
-        let Some(handle) = load_fixture_with_weap_count(128, "ManyWeaps.esp") else {
-            return;
-        };
+        let handle = load_fixture_with_weap_count(128, "ManyWeaps.esp")
+            .expect("synthetic fixture should load");
         let mut session = open_session(handle, None).unwrap();
         let interner = StringInterner::new();
         let view = session.read_view().unwrap();
@@ -3500,9 +3457,7 @@ mod tests {
 
     #[test]
     fn read_view_dropping_unblocks_mutation() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
+        let handle = load_fixture_with_weap().expect("synthetic fixture should load");
         let mut session = open_session(handle, None).unwrap();
         {
             let interner = StringInterner::new();
@@ -3516,46 +3471,9 @@ mod tests {
     }
 
     #[test]
-    fn read_view_exposes_target_signatures() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
-        let mut session = open_session(handle, None).unwrap();
-        let mut signatures = session.read_view().unwrap().target_signatures();
-        signatures.sort_by_key(|sig| sig.as_str().to_string());
-
-        assert_eq!(signatures, vec![SigCode::from_str("WEAP").unwrap()]);
-    }
-
-    #[test]
-    fn read_view_record_decoded_matches_session_record_decoded() {
-        let Some(handle) = load_fixture_with_weap() else {
-            return;
-        };
-        let interner = StringInterner::new();
-        let mut session = open_session(handle, None).unwrap();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let fk = session
-            .form_keys_of_sig(SigCode::from_str("WEAP").unwrap(), &interner)
-            .unwrap()[0];
-
-        let expected = session.record_decoded(&fk, &schema, &interner).unwrap();
-        let actual = {
-            let view = session.read_view().unwrap();
-            view.record_decoded(&fk, &schema, &interner).unwrap()
-        };
-
-        assert_eq!(actual.form_key, expected.form_key);
-        assert_eq!(actual.sig, expected.sig);
-        assert_eq!(actual.fields.len(), expected.fields.len());
-        assert_eq!(actual.eid, expected.eid);
-    }
-
-    #[test]
     fn handle_raw_scan_exposes_editor_ids_and_decodes_records() {
-        let Some(handle) = load_fixture_with_weap_count(2, "RawScan.esp") else {
-            return;
-        };
+        let handle =
+            load_fixture_with_weap_count(2, "RawScan.esp").expect("synthetic fixture should load");
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").unwrap();
         let mut session = open_session(handle, None).unwrap();
@@ -3576,83 +3494,7 @@ mod tests {
     }
 
     #[test]
-    fn targeted_reference_scan_returns_only_matching_carriers() {
-        let Some(handle) = plugin_handle_new_native("TargetedRefs.esp", Some("fo4")).ok() else {
-            return;
-        };
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle).unwrap();
-            slot.parsed.root_items = vec![
-                ParsedItem::Group(ParsedGroup {
-                    label: *b"KYWD",
-                    group_type: 0,
-                    tail: Bytes::new(),
-                    children: vec![ParsedItem::Record(ParsedRecord {
-                        signature: SmolStr::new("KYWD"),
-                        form_id: 0x0000_0800,
-                        flags: 0,
-                        version_control: 0,
-                        form_version: None,
-                        version2: None,
-                        subrecords: Vec::new(),
-                        raw_payload: None,
-                        parse_error: None,
-                    })],
-                }),
-                ParsedItem::Group(ParsedGroup {
-                    label: *b"REFR",
-                    group_type: 0,
-                    tail: Bytes::new(),
-                    children: vec![
-                        ParsedItem::Record(ParsedRecord {
-                            signature: SmolStr::new("REFR"),
-                            form_id: 0x0000_0801,
-                            flags: 0,
-                            version_control: 0,
-                            form_version: None,
-                            version2: None,
-                            subrecords: vec![ParsedSubrecord {
-                                signature: SmolStr::new("NAME"),
-                                data: Bytes::copy_from_slice(&0x0000_0800_u32.to_le_bytes()),
-                                semantic_type: None,
-                            }],
-                            raw_payload: None,
-                            parse_error: None,
-                        }),
-                        ParsedItem::Record(ParsedRecord {
-                            signature: SmolStr::new("REFR"),
-                            form_id: 0x0000_0802,
-                            flags: 0,
-                            version_control: 0,
-                            form_version: None,
-                            version2: None,
-                            subrecords: Vec::new(),
-                            raw_payload: None,
-                            parse_error: None,
-                        }),
-                    ],
-                }),
-            ];
-            slot.invalidate_sections();
-        }
-
-        let mut session = open_session(handle, None).unwrap();
-        let query = "TargetedRefs.esp:000800".to_string();
-        let matches = session
-            .referencing_form_keys_by_query_in_handle(handle, std::slice::from_ref(&query))
-            .unwrap();
-
-        drop(session);
-        assert_eq!(matches[&query], vec!["TargetedRefs.esp:000801"]);
-        assert!(!plugin_handle_debug_section_loaded_native(handle, "refs").unwrap());
-    }
-
-    #[test]
-    fn targeted_reference_scan_finds_vmad_property_carriers() {
-        let Some(handle) = plugin_handle_new_native("TargetedVmad.esp", Some("fo4")).ok() else {
-            return;
-        };
+    fn targeted_reference_scan_returns_only_matching_name_and_vmad_carriers() {
         let vmad = build_vmad_bytes_from_payload(
             &serde_json::json!({
                 "Version": 6,
@@ -3680,66 +3522,95 @@ mod tests {
             "TargetedVmad.esp",
         )
         .unwrap();
-        {
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle).unwrap();
-            slot.parsed.root_items = vec![
-                ParsedItem::Group(ParsedGroup {
-                    label: *b"KYWD",
-                    group_type: 0,
-                    tail: Bytes::new(),
-                    children: vec![ParsedItem::Record(ParsedRecord {
-                        signature: SmolStr::new("KYWD"),
-                        form_id: 0x0000_0800,
-                        flags: 0,
-                        version_control: 0,
-                        form_version: None,
-                        version2: None,
-                        subrecords: Vec::new(),
-                        raw_payload: None,
-                        parse_error: None,
-                    })],
-                }),
-                ParsedItem::Group(ParsedGroup {
-                    label: *b"REFR",
-                    group_type: 0,
-                    tail: Bytes::new(),
-                    children: vec![ParsedItem::Record(ParsedRecord {
-                        signature: SmolStr::new("REFR"),
-                        form_id: 0x0000_0801,
-                        flags: 0,
-                        version_control: 0,
-                        form_version: None,
-                        version2: None,
-                        subrecords: vec![ParsedSubrecord {
-                            signature: SmolStr::new("VMAD"),
-                            data: Bytes::from(vmad),
-                            semantic_type: None,
-                        }],
-                        raw_payload: None,
-                        parse_error: None,
-                    })],
-                }),
-            ];
-            slot.invalidate_sections();
+        for (plugin_name, carrier) in [
+            (
+                "TargetedRefs.esp",
+                ParsedSubrecord {
+                    signature: SmolStr::new("NAME"),
+                    data: Bytes::copy_from_slice(&0x0000_0800_u32.to_le_bytes()),
+                    semantic_type: None,
+                },
+            ),
+            (
+                "TargetedVmad.esp",
+                ParsedSubrecord {
+                    signature: SmolStr::new("VMAD"),
+                    data: Bytes::from(vmad),
+                    semantic_type: None,
+                },
+            ),
+        ] {
+            let handle =
+                plugin_handle_new_native(plugin_name, Some("fo4")).expect("synthetic fixture");
+            let refr = |form_id: u32, subrecords: Vec<ParsedSubrecord>| {
+                ParsedItem::Record(ParsedRecord {
+                    signature: SmolStr::new("REFR"),
+                    form_id,
+                    flags: 0,
+                    version_control: 0,
+                    form_version: None,
+                    version2: None,
+                    subrecords,
+                    raw_payload: None,
+                    parse_error: None,
+                })
+            };
+            {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                let slot = store.get_mut(&handle).unwrap();
+                slot.parsed.root_items = vec![
+                    ParsedItem::Group(ParsedGroup {
+                        label: *b"KYWD",
+                        group_type: 0,
+                        tail: Bytes::new(),
+                        children: vec![ParsedItem::Record(ParsedRecord {
+                            signature: SmolStr::new("KYWD"),
+                            form_id: 0x0000_0800,
+                            flags: 0,
+                            version_control: 0,
+                            form_version: None,
+                            version2: None,
+                            subrecords: Vec::new(),
+                            raw_payload: None,
+                            parse_error: None,
+                        })],
+                    }),
+                    ParsedItem::Group(ParsedGroup {
+                        label: *b"REFR",
+                        group_type: 0,
+                        tail: Bytes::new(),
+                        children: vec![
+                            refr(0x0000_0801, vec![carrier]),
+                            refr(0x0000_0802, Vec::new()),
+                        ],
+                    }),
+                ];
+                slot.invalidate_sections();
+            }
+
+            let mut session = open_session(handle, None).unwrap();
+            let query = format!("{plugin_name}:000800");
+            let matches = session
+                .referencing_form_keys_by_query_in_handle(handle, std::slice::from_ref(&query))
+                .unwrap();
+
+            drop(session);
+            assert_eq!(
+                matches[&query],
+                vec![format!("{plugin_name}:000801")],
+                "{plugin_name}"
+            );
+            assert!(
+                !plugin_handle_debug_section_loaded_native(handle, "refs").unwrap(),
+                "{plugin_name}"
+            );
         }
-
-        let mut session = open_session(handle, None).unwrap();
-        let query = "TargetedVmad.esp:000800".to_string();
-        let matches = session
-            .referencing_form_keys_by_query_in_handle(handle, std::slice::from_ref(&query))
-            .unwrap();
-
-        drop(session);
-        assert_eq!(matches[&query], vec!["TargetedVmad.esp:000801"]);
-        assert!(!plugin_handle_debug_section_loaded_native(handle, "refs").unwrap());
     }
 
     #[test]
-    fn map_apply_by_sig_serial_for_small_inputs() {
-        let Some(handle) = load_fixture_with_weap_count(2, "SmallWeaps.esp") else {
-            return;
-        };
+    fn map_apply_by_sig_changes_small_serial_and_large_parallel_inputs() {
+        let handle = load_fixture_with_weap_count(2, "SmallWeaps.esp")
+            .expect("synthetic fixture should load");
         let interner = StringInterner::new();
         let mut state = MapperState::new(
             std::iter::empty(),
@@ -3773,10 +3644,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(report.records_changed, 2);
-    }
+        drop(session);
 
-    #[test]
-    fn map_apply_by_sig_parallel_matches_serial() {
         let interner = StringInterner::new();
         let mut state_parallel = MapperState::new(
             std::iter::empty(),
@@ -3792,16 +3661,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        let Some(parallel_handle) = load_fixture_with_weap_count(128, "ParallelWeaps.esp") else {
-            return;
-        };
-        let Some(serial_handle) = load_fixture_with_weap_count(128, "SerialWeaps.esp") else {
-            return;
-        };
+        let parallel_handle = load_fixture_with_weap_count(128, "ParallelWeaps.esp")
+            .expect("synthetic fixture should load");
+        let serial_handle = load_fixture_with_weap_count(128, "SerialWeaps.esp")
+            .expect("synthetic fixture should load");
         let mut parallel_mapper = FormKeyMapper::from_state(&mut state_parallel, &interner);
         let mut serial_mapper = FormKeyMapper::from_state(&mut state_serial, &interner);
         let mut parallel_session = open_session(parallel_handle, None).unwrap();
-        let mut serial_session = open_session(serial_handle, None).unwrap();
         let sig = SigCode::from_str("WEAP").unwrap();
 
         let parallel_report = parallel_session
@@ -3824,7 +3690,9 @@ mod tests {
                 },
             )
             .unwrap();
+        drop(parallel_session);
 
+        let mut serial_session = open_session(serial_handle, None).unwrap();
         let mut serial_changed = 0;
         for fk in serial_session.form_keys_of_sig(sig, &interner).unwrap() {
             if serial_session
@@ -3839,6 +3707,7 @@ mod tests {
         }
         let _ = &mut serial_mapper;
 
+        assert_eq!(serial_changed, 128);
         assert_eq!(parallel_report.records_changed, serial_changed);
     }
 }

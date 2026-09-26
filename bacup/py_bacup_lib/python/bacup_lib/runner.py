@@ -10,6 +10,7 @@ import logging
 import queue
 import sys
 import threading
+import traceback
 from datetime import datetime
 from typing import Any, Callable
 
@@ -52,6 +53,18 @@ class ConversionRunner:
             self.error = e
             self.emit_log("ERROR", f"Conversion failed: {e}")
             _log.exception("Conversion runner error")
+            cause = e
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            message = str(cause)
+            for title in ("Damaged animation file", "Animation recovery could not complete conversion"):
+                if title + "\n" in message:
+                    message = message[message.index(title + "\n"):]
+                    break
+            self._queue.put({
+                "type": "error", "message": message,
+                "details": traceback.format_exc(),
+            })
         finally:
             self.done = True
 

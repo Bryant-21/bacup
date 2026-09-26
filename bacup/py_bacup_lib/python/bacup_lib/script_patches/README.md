@@ -78,24 +78,24 @@ Patch kinds distinguish member fills from compatibility directives and deliberat
 
 | Measure | Count |
 |---|---:|
-| Generated PSC sources | 6650 |
-| Patch files | 2341 |
-| Member patches | 2333 |
+| Generated PSC sources | 6714 |
+| Patch files | 2514 |
+| Member patches | 2506 |
 | Directive-only patches | 5 |
 | Deferred TODO markers | 3 |
 | Unclassified no-op patches | 0 |
-| Patches with a current generated source | 2341 |
+| Patches with a current generated source | 2514 |
 | Patch-only entries | 0 |
-| Unpatched candidates | 4089 |
-| Unpatched sources with an event declaration | 220 |
+| Unpatched candidates | 3977 |
+| Unpatched sources with an event declaration | 223 |
 
 ### Unpatched candidates by top-level namespace
 
 | Namespace | Count |
 |---|---:|
-| `fragments` | 2245 |
-| `(root)` | 1463 |
-| `QUESTS` | 202 |
+| `fragments` | 2188 |
+| `(root)` | 1408 |
+| `QUESTS` | 198 |
 | `Expeditions` | 28 |
 | `autotestclient` | 23 |
 | `SupplyRun` | 22 |
@@ -105,13 +105,14 @@ Patch kinds distinguish member fills from compatibility directives and deliberat
 | `raids` | 11 |
 | `Creatures` | 10 |
 | `Economy` | 10 |
-| `HostileTakeovers` | 6 |
+| `HostileTakeovers` | 8 |
 | `autotestserver` | 4 |
 | `autotestshared` | 4 |
 | `DailyOps_All` | 4 |
 | `Drifter` | 4 |
 | `Perks` | 4 |
 | `DailyOps_Mode02` | 3 |
+| `B21` | 2 |
 | `CAMPPets` | 2 |
 | `fishing` | 2 |
 | `bos` | 1 |
@@ -134,7 +135,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 </details>
 
 <details>
-<summary>Patch inventory (2341)</summary>
+<summary>Patch inventory (2514)</summary>
 
 | Patch | Source | Kind | Members | Directives |
 |---|---|---|---:|---:|
@@ -147,7 +148,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `ATX_VaultBoyBalloonStationScript.psc` | Present | Member patch | 2 | 0 |
 | `AddItemOnMenuItemRun.psc` | Present | Member patch | 1 | 0 |
 | `AddSpellOnFurnitureEnter.psc` | Present | Member patch | 2 | 0 |
-| `AddToGroupQuestOnMenuItemRun.psc` | Present | Member patch | 1 | 0 |
+| `AddToGroupQuestOnMenuItemRun.psc` | Present | Member patch | 5 | 1 |
 | `AliasOnPlayerHolotapeSetAV.psc` | Present | Member patch | 1 | 0 |
 | `AliasSendStoryEventOnActivate.psc` | Present | Member patch | 1 | 0 |
 | `ApplyVisualEffectToTarget.psc` | Present | Member patch | 1 | 0 |
@@ -169,10 +170,12 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `BoS01ToggleButtonScript.psc` | Present | Member patch | 4 | 0 |
 | `BoS01TrainingCampNoteScript.psc` | Present | Member patch | 1 | 0 |
 | `BoS02DMVTicketPrinterScript.psc` | Present | Member patch | 1 | 0 |
-| `BoS02PCSoldierInventoryScript.psc` | Present | Member patch | 2 | 0 |
+| `BoS02J47Script.psc` | Present | Member patch | 6 | 0 |
+| `BoS02PCSoldierInventoryScript.psc` | Present | Member patch | 6 | 0 |
 | `BoS02TriggerScript.psc` | Present | Member patch | 1 | 0 |
-| `BoS02_DMV_SupportScript.psc` | Present | Member patch | 2 | 0 |
+| `BoS02_DMV_SupportScript.psc` | Present | Member patch | 10 | 0 |
 | `BoS03SceneActivatorScript.psc` | Present | Member patch | 1 | 0 |
+| `BoS03Script.psc` | Present | Member patch | 1 | 0 |
 | `BoSActivateMessageScript.psc` | Present | Member patch | 1 | 0 |
 | `BoSSetStageTriggerScript.psc` | Present | Member patch | 3 | 0 |
 | `BoSStartQuestTriggerScript.psc` | Present | Member patch | 1 | 0 |
@@ -255,27 +258,29 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `D01C_StingsAndThingsScript.psc` | Present | Member patch | 7 | 0 |
 | `D01C_Tidy_DispenserActivate.psc` | Present | Member patch | 1 | 0 |
 | `DLC03HermitCrabSpawnChildScript.psc` | Present | Member patch | 4 | 0 |
-| `DeconArchScript.psc` | Present | Member patch | 1 | 0 |
-| `Default1StateSyncActivator.psc` | Present | Member patch | 4 | 0 |
+| `DeconArchScript.psc` | Present | Member patch | 8 | 0 |
+| `Default1StateSyncActivator.psc` | Present | Member patch | 9 | 0 |
 | `Default2State1WayActivatorScript.psc` | Present | Member patch | 1 | 0 |
 | `DefaultActivatorVendorFactionScript.psc` | Present | Member patch | 1 | 0 |
 | `DefaultActorIgnoreFriendlyHitsScript.psc` | Present | Member patch | 1 | 0 |
 | `DefaultActorSetAVOnDeathInstOwner.psc` | Present | Member patch | 3 | 0 |
-| `DefaultAliasInventoryManagement.psc` | Present | Member patch | 13 | 0 |
+| `DefaultAliasInventoryManagement.psc` | Present | Member patch | 15 | 0 |
 | `DefaultAliasMakeAliasRefForInventory.psc` | Present | Member patch | 3 | 0 |
 | `DefaultAliasOnActivateGiveItem.psc` | Present | Member patch | 1 | 0 |
 | `DefaultAliasOnActivateRemoveItems.psc` | Present | Member patch | 1 | 0 |
 | `DefaultAliasOnDistanceLessThan.psc` | Present | Member patch | 4 | 0 |
+| `DefaultAliasOnItemRemoved.psc` | Present | Member patch | 5 | 0 |
 | `DefaultAliasOnPlayerHolotape.psc` | Present | Member patch | 2 | 0 |
 | `DefaultAliasOnTriggerLeaveA.psc` | Present | Member patch | 1 | 0 |
-| `DefaultAliasSetStageOnKeypadSuccess.psc` | Present | Member patch | 8 | 0 |
+| `DefaultAliasProgressBarScript.psc` | Present | Member patch | 13 | 0 |
+| `DefaultAliasSetStageOnKeypadSuccess.psc` | Present | Member patch | 10 | 0 |
 | `DefaultAliasSetStageOnMenuItemRun.psc` | Present | Member patch | 5 | 0 |
 | `DefaultChallengeMessageOnActivateAlias.psc` | Present | Member patch | 2 | 0 |
 | `DefaultChallengeMessageOnActivateColl.psc` | Present | Member patch | 2 | 0 |
 | `DefaultChallengeMessageOnActivateRef.psc` | Present | Member patch | 1 | 0 |
 | `DefaultCheckpointingScript.psc` | Present | Member patch | 2 | 0 |
 | `DefaultCollAliasOnActivateGiveItems.psc` | Present | Member patch | 2 | 0 |
-| `DefaultCollClearGhostInstOwnerCombat.psc` | Present | Member patch | 1 | 0 |
+| `DefaultCollClearGhostInstOwnerCombat.psc` | Present | Member patch | 5 | 0 |
 | `DefaultCollectionAliasOnActivateGive.psc` | Present | Member patch | 1 | 0 |
 | `DefaultCollectionAliasOnDeathA.psc` | Present | Member patch | 1 | 0 |
 | `DefaultCollectionAliasOnMenuItemRun.psc` | Present | Member patch | 3 | 0 |
@@ -285,15 +290,16 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultDestructibleMultiStateActivator.psc` | Present | Member patch | 3 | 0 |
 | `DefaultExplosionOnActivate.psc` | Present | Member patch | 3 | 0 |
 | `DefaultExplosionOnTriggerEnter.psc` | Present | Member patch | 1 | 0 |
-| `DefaultFixable2StateActivator.psc` | Present | Member patch | 5 | 0 |
-| `DefaultInstanceAliasAddItemOnCreation.psc` | Present | Member patch | 1 | 0 |
-| `DefaultKeypadScript.psc` | Present | Member patch | 14 | 0 |
+| `DefaultFixable2StateActivator.psc` | Present | Member patch | 24 | 0 |
+| `DefaultInstanceAliasAddItemOnCreation.psc` | Present | Member patch | 8 | 0 |
+| `DefaultKeypadScript.psc` | Present | Member patch | 16 | 0 |
 | `DefaultLockRefOnUnload.psc` | Present | Member patch | 2 | 0 |
 | `DefaultMoveAliasWithSpawnMap.psc` | Present | Member patch | 1 | 0 |
 | `DefaultMultiStateActivator.psc` | Present | Member patch | 5 | 1 |
 | `DefaultMultiStateClientSideActivator.psc` | Present | Member patch | 1 | 0 |
 | `DefaultOnActivateChangePrompt.psc` | Present | Member patch | 2 | 0 |
 | `DefaultOnItemAddedScript.psc` | Present | Member patch | 3 | 0 |
+| `DefaultOnItemCraftedScript.psc` | Present | Member patch | 7 | 0 |
 | `DefaultOnPlayerConnect.psc` | Present | Member patch | 1 | 0 |
 | `DefaultOnReadAddToMap.psc` | Present | Member patch | 1 | 0 |
 | `DefaultOneWayContainerScript.psc` | Present | Member patch | 2 | 0 |
@@ -303,23 +309,29 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultQuestCleanupItemsOnShutdown.psc` | Present | Member patch | 2 | 0 |
 | `DefaultQuestEnterInstancedLocScript.psc` | Present | Member patch | 6 | 0 |
 | `DefaultQuestOnKillManager.psc` | Present | Member patch | 8 | 0 |
+| `DefaultQuestOnRadioDetectedSendEvent.psc` | Present | Member patch | 6 | 0 |
 | `DefaultQuestOnTuneRadioScript.psc` | Present | Member patch | 8 | 0 |
 | `DefaultQuestRemovePlayersScript.psc` | Present | Member patch | 5 | 0 |
 | `DefaultQuestSetStageOnTimerScript.psc` | Present | Member patch | 5 | 0 |
 | `DefaultQuestShowMapMarkerScript.psc` | Present | Member patch | 3 | 0 |
 | `DefaultQuestTriggerRespawnVIPScript.psc` | Present | Member patch | 3 | 0 |
+| `DefaultQuestlineRestartScript.psc` | Present | Member patch | 6 | 0 |
 | `DefaultRefDestroyOnLoad.psc` | Present | Member patch | 1 | 0 |
 | `DefaultRefKillTriggerScript.psc` | Present | Member patch | 1 | 0 |
 | `DefaultRefOnActivateSendEvent.psc` | Present | Member patch | 1 | 0 |
 | `DefaultRefOnDistanceSendEvent.psc` | Present | Member patch | 4 | 0 |
 | `DefaultRefOnTriggerEnterSendEvent.psc` | Present | Member patch | 1 | 0 |
+| `DefaultReleaseToHavokScript.psc` | Present | Member patch | 9 | 0 |
 | `DefaultRepairableActorScript.psc` | Present | Member patch | 1 | 0 |
-| `DefaultSendStoryEventOnMenuItemRun.psc` | Present | Member patch | 1 | 0 |
+| `DefaultSendStoryEventOnMenuItemRun.psc` | Present | Member patch | 2 | 0 |
 | `DefaultSetStageOnInstanceLoadQuest.psc` | Present | Member patch | 6 | 0 |
 | `DefaultShutdownQuestAliasOnChangeLoc.psc` | Present | Member patch | 3 | 0 |
 | `DefaultSimpleRespawnScript.psc` | Present | Member patch | 10 | 0 |
 | `DefaultStartQuestOnHolotapeEvent.psc` | Present | Member patch | 9 | 0 |
+| `DefaultTopicInfoGiveItemOnce.psc` | Present | Member patch | 3 | 0 |
+| `DefaultTopicInfoMarkForFaction.psc` | Present | Member patch | 2 | 0 |
 | `DefaultTopicInfoSetActorValue.psc` | Present | Member patch | 1 | 0 |
+| `DefaultTopicInfoSetMultActorValues.psc` | Present | Member patch | 4 | 0 |
 | `DefaultTopicInfoTriggerCombat.psc` | Present | Member patch | 2 | 0 |
 | `DefaultTopicSendStoryEvent.psc` | Present | Member patch | 3 | 0 |
 | `DefaultTriggerRespawnActorGroup.psc` | Present | Member patch | 4 | 0 |
@@ -358,45 +370,71 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `EN02_DecalParentScript.psc` | Present | Member patch | 1 | 0 |
 | `EN02_DeleteCollOnUnload.psc` | Present | Member patch | 1 | 0 |
 | `EN02_DisableAfterWait.psc` | Present | Member patch | 3 | 0 |
-| `EN02_ExamHandlerScript.psc` | Present | Member patch | 3 | 0 |
-| `EN02_ExamQuestionScript.psc` | Present | Member patch | 2 | 0 |
+| `EN02_ExamHandlerScript.psc` | Present | Member patch | 8 | 0 |
+| `EN02_ExamQuestionScript.psc` | Present | Member patch | 3 | 0 |
 | `EN02_ExamRoomAVTriggerScript.psc` | Present | Member patch | 2 | 0 |
 | `EN02_ExamWrapupScript.psc` | Present | Member patch | 2 | 0 |
 | `EN02_FillAliasOnTriggerEnter.psc` | Present | Member patch | 1 | 0 |
 | `EN02_FoodDispenserScript.psc` | Present | Member patch | 1 | 0 |
 | `EN02_IntroTerminalStateScript.psc` | Present | Member patch | 1 | 0 |
-| `EN02_MQ_QuestScript.psc` | Present | Member patch | 19 | 0 |
+| `EN02_MQ_QuestScript.psc` | Present | Member patch | 23 | 0 |
 | `EN02_Misc_QuestScript.psc` | Present | Member patch | 2 | 0 |
 | `EN02_ModuleHandlerScript.psc` | Present | Member patch | 5 | 0 |
 | `EN02_OrbitalStrikeMarkerScript.psc` | Present | Member patch | 4 | 0 |
 | `EN02_OrbitalStrikeShooterScript.psc` | Present | Member patch | 1 | 0 |
 | `EN02_RefCollRemoveOnActivate.psc` | Present | Member patch | 1 | 0 |
 | `EN02_RefreshLaserGridCollOnStageSet.psc` | Present | Member patch | 3 | 0 |
-| `EN05_Basic_PlayerAliasScript.psc` | Present | Member patch | 4 | 0 |
+| `EN05_Basic_MiscQuestScript.psc` | Present | Member patch | 3 | 0 |
+| `EN05_Basic_PlayerAliasScript.psc` | Present | Member patch | 6 | 0 |
 | `EN05_ButtonFeedbackScript.psc` | Present | Member patch | 1 | 0 |
+| `EN05_Intro_MiscScript.psc` | Present | Member patch | 4 | 0 |
+| `EN05_JimmyDiaryScript.psc` | Present | Member patch | 1 | 0 |
 | `EN05_MQ_PlayerAliasScript.psc` | Present | Member patch | 5 | 0 |
 | `EN05_MQ_QuestScript.psc` | Present | Member patch | 5 | 0 |
 | `EN05_MarksmanshipCourseScript.psc` | Present | Member patch | 8 | 0 |
 | `EN05_ObstacleAliasCollectionScript.psc` | Present | Member patch | 1 | 0 |
 | `EN05_ObstacleCourseQuestScript.psc` | Present | Member patch | 12 | 0 |
-| `EN05_PatriotismTrainingQuestScript.psc` | Present | Member patch | 6 | 0 |
-| `EN05_QuestScript.psc` | Present | Member patch | 1 | 0 |
+| `EN05_PatriotismTrainingQuestScript.psc` | Present | Member patch | 8 | 0 |
+| `EN05_PatriotismUpdateScriptVar.psc` | Present | Member patch | 1 | 0 |
+| `EN05_QuestScript.psc` | Present | Member patch | 12 | 0 |
 | `EN05_TargetAliasCollectionScript.psc` | Present | Member patch | 4 | 0 |
+| `EN05_TopicShowMessageInPA.psc` | Present | Member patch | 1 | 0 |
+| `EN05_UniformLogScript.psc` | Present | Member patch | 1 | 0 |
 | `EN06_DisableOnUnload.psc` | Present | Member patch | 1 | 0 |
 | `EN06_FireworksLauncherScript.psc` | Present | Member patch | 6 | 0 |
 | `EN06_PresEquipmentTerminalScript.psc` | Present | Member patch | 1 | 0 |
 | `EN06_SpeakerTrackingTriggerScript.psc` | Present | Member patch | 2 | 0 |
 | `EN07_AccessPanelAliasScript.psc` | Present | Member patch | 4 | 0 |
 | `EN07_CodeHuntQuestScript.psc` | Present | Member patch | 7 | 0 |
-| `EN07_ExternalKeypadAliasScript.psc` | Present | Member patch | 6 | 0 |
-| `EN07_FleeBlastQuestScript.psc` | Present | Member patch | 5 | 0 |
-| `EN07_FleeSiloScript.psc` | Present | Member patch | 7 | 0 |
-| `EN07_IntroMiscScript.psc` | Present | Member patch | 15 | 0 |
+| `EN07_Death_TutorialLightManagerScript.psc` | Present | Member patch | 2 | 0 |
+| `EN07_ExternalKeypadAliasScript.psc` | Present | Member patch | 9 | 0 |
+| `EN07_FissureQuestScript.psc` | Present | Member patch | 7 | 0 |
+| `EN07_FleeBlastQuestScript.psc` | Present | Member patch | 13 | 0 |
+| `EN07_FleeSiloScript.psc` | Present | Member patch | 14 | 0 |
+| `EN07_IntroMiscScript.psc` | Present | Member patch | 16 | 0 |
 | `EN07_LaunchCardReceptacleScript.psc` | Present | Member patch | 5 | 0 |
+| `EN07_MissileSoundRefScript.psc` | Present | Member patch | 9 | 0 |
 | `EN07_NukeBlastMarkerRefScript.psc` | Present | Member patch | 1 | 0 |
-| `EN07_NukeMasterScript.psc` | Present | Member patch | 10 | 0 |
+| `EN07_NukeMasterScript.psc` | Present | Member patch | 11 | 0 |
 | `EN07_NukeSoundCategoryMagicEffect.psc` | Present | Member patch | 3 | 0 |
-| `EN07_TargetingComputerAliasScript.psc` | Present | Member patch | 5 | 0 |
+| `EN07_PosterTutorialScript.psc` | Present | Member patch | 4 | 0 |
+| `EN07_TargetingComputerAliasScript.psc` | Present | Member patch | 6 | 0 |
+| `ENB_BunkerMasterScript.psc` | Present | Member patch | 11 | 0 |
+| `ENB_OpenVaultDoor.psc` | Present | Member patch | 3 | 0 |
+| `EN_MasterQuestScript.psc` | Present | Member patch | 8 | 0 |
+| `ENs02_BlastQuestScript.psc` | Present | Member patch | 28 | 0 |
+| `ENs02_DishStatusScript.psc` | Present | Member patch | 6 | 0 |
+| `ENs02_EnemyCollectionScript.psc` | Present | Member patch | 7 | 0 |
+| `ENs02_LureSiteCollectionScript.psc` | Present | Member patch | 1 | 0 |
+| `ENs02_OrientationCollectionScript.psc` | Present | Member patch | 1 | 0 |
+| `ENz01_AboveScript.psc` | Present | Member patch | 15 | 0 |
+| `ENz01_ActiveDishScript.psc` | Present | Member patch | 1 | 0 |
+| `ENz01_AnimScript.psc` | Present | Member patch | 3 | 0 |
+| `ENz01_ResourceDropRefScript.psc` | Present | Member patch | 6 | 0 |
+| `ENz04_BotScript.psc` | Present | Member patch | 20 | 0 |
+| `ENz04_EncounterWaveScript.psc` | Present | Member patch | 12 | 0 |
+| `ENz04_PatrolHandlerScript.psc` | Present | Member patch | 6 | 0 |
+| `ENz04_TrackDeathCollectionScript.psc` | Present | Member patch | 7 | 0 |
 | `ENz09_CollectionOnActivate.psc` | Present | Member patch | 2 | 0 |
 | `EWSDebugVisualizerScript.psc` | Present | Member patch | 4 | 0 |
 | `Economy/HalloweenCandyBowlScript.psc` | Present | Member patch | 1 | 0 |
@@ -406,6 +444,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `EggClusterContainerScript.psc` | Present | Member patch | 2 | 0 |
 | `ElevatorDoorAutoOpenTriggerScript.psc` | Present | Member patch | 3 | 0 |
 | `EnableDisableOnActivationScript.psc` | Present | Member patch | 1 | 0 |
+| `Enz04_PatrolCollectionScript.psc` | Present | Member patch | 5 | 0 |
 | `EpicCreatureRestoreHealthEffectScript.psc` | Present | Member patch | 1 | 0 |
 | `Expeditions/DialogueModuleHandler.psc` | Present | Member patch | 4 | 0 |
 | `Expeditions/Master.psc` | Present | Member patch | 13 | 0 |
@@ -438,13 +477,13 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `FS02_MQ_Reassembly_DetectorScript.psc` | Present | Member patch | 1 | 0 |
 | `FS02_MQ_Reassembly_PlayerAliasScript.psc` | Present | Member patch | 7 | 0 |
 | `FS02_MQ_Reassembly_QuestScript.psc` | Present | Member patch | 4 | 0 |
-| `FS03_MQ_Fruition_MasterHoloScript.psc` | Present | Member patch | 1 | 0 |
-| `FS03_MQ_Fruition_QuestScript.psc` | Present | Member patch | 3 | 0 |
+| `FS03_MQ_Fruition_MasterHoloScript.psc` | Present | Member patch | 2 | 1 |
+| `FS03_MQ_Fruition_QuestScript.psc` | Present | Member patch | 6 | 0 |
 | `FS03_MQ_Fruition_TerminalScript.psc` | Present | Member patch | 1 | 0 |
 | `FSDoorScript.psc` | Present | Member patch | 2 | 0 |
 | `Factory_IgnitionCoreTriggerScript.psc` | Present | Member patch | 3 | 0 |
 | `FirecrackerWhiskey_BurnAttackerScript.psc` | Present | Member patch | 4 | 0 |
-| `Fishing_BigFish_FishingScript.psc` | Present | Member patch | 3 | 0 |
+| `Fishing_BigFish_FishingScript.psc` | Present | Member patch | 5 | 0 |
 | `Fishing_BigFish_QuestScript.psc` | Present | Member patch | 2 | 0 |
 | `FlipCardSignScript.psc` | Present | Member patch | 6 | 0 |
 | `GQ_AirDropHolotapeTerminalScript.psc` | Present | Member patch | 1 | 0 |
@@ -459,11 +498,15 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `HouseOfScaresScript.psc` | Present | Member patch | 3 | 0 |
 | `KlaxonManagerScript.psc` | Present | Member patch | 1 | 1 |
 | `LC006_SecurityMarkerScript.psc` | Present | Member patch | 1 | 0 |
+| `LC060_DialogueAddToMapScript.psc` | Present | Member patch | 1 | 0 |
 | `LC060_WhitespringAutoCloseDoorScript.psc` | Present | Member patch | 5 | 0 |
 | `LC060_WhitespringBarberScript.psc` | Present | Member patch | 2 | 1 |
 | `LC080ConditionalElevatorScript.psc` | Present | Member patch | 1 | 0 |
-| `LC080_MODUSRevealManagerScript.psc` | Present | Member patch | 1 | 0 |
+| `LC080_MODUSRevealManagerScript.psc` | Present | Member patch | 4 | 0 |
+| `LC080_MODUSRevealObjectScript.psc` | Present | Member patch | 8 | 0 |
+| `LC080_MODUSSentryBotScript.psc` | Present | Member patch | 6 | 0 |
 | `LC080_MSiloMapLightScript.psc` | Present | Member patch | 2 | 0 |
+| `LC080_SpotlightManagerScript.psc` | Present | Member patch | 10 | 0 |
 | `LC080_WhitespringBunkerGearDoorScript.psc` | Present | Member patch | 6 | 0 |
 | `LC101ControlTerminalScript.psc` | Present | Member patch | 1 | 0 |
 | `LC101RotationScript.psc` | Present | Member patch | 1 | 1 |
@@ -478,7 +521,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `MOON_Ambush_SoundSpellCooldown.psc` | Present | Member patch | 2 | 0 |
 | `MPScriptTestServerRMIKeyword.psc` | Present | Member patch | 1 | 0 |
 | `MPScriptTestSyncPropertyKeyword.psc` | Present | Directive-only | 0 | 1 |
-| `MQ_OverseerPlayerScript.psc` | Present | Member patch | 19 | 0 |
+| `MQ_OverseerPlayerScript.psc` | Present | Member patch | 20 | 0 |
 | `MQ_OverseerQuestScript.psc` | Present | Member patch | 1 | 0 |
 | `MQ_Overseer_CacheRefScript.psc` | Present | Member patch | 5 | 0 |
 | `MQ_Overseer_HolotapeScript.psc` | Present | Member patch | 1 | 0 |
@@ -489,10 +532,10 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `MSiloLaserGridScript.psc` | Present | Member patch | 5 | 0 |
 | `MSiloOperationsPanelActivatorScript.psc` | Present | Member patch | 3 | 0 |
 | `MSiloPersonalQuestScript.psc` | Present | Member patch | 8 | 0 |
-| `MSiloQuestScript_Control.psc` | Present | Member patch | 10 | 0 |
+| `MSiloQuestScript_Control.psc` | Present | Member patch | 14 | 0 |
 | `MSiloQuestScript_Main.psc` | Present | Member patch | 3 | 0 |
 | `MSiloQuestScript_Operations.psc` | Present | Member patch | 7 | 0 |
-| `MSiloQuestScript_Reactor.psc` | Present | Member patch | 10 | 0 |
+| `MSiloQuestScript_Reactor.psc` | Present | Member patch | 16 | 0 |
 | `MSiloQuestScript_Residential.psc` | Present | Member patch | 7 | 0 |
 | `MSiloQuestScript_Storage.psc` | Present | Member patch | 8 | 0 |
 | `MSiloStartupQuestScript.psc` | Present | Member patch | 6 | 0 |
@@ -502,7 +545,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `MTNL01PlayerScript.psc` | Present | Member patch | 3 | 0 |
 | `MTNL01QuestScript.psc` | Present | Member patch | 11 | 0 |
 | `MTNL01TrapTrigger.psc` | Present | Member patch | 1 | 0 |
-| `MTNM01QuestScript.psc` | Present | Member patch | 5 | 0 |
+| `MTNM01QuestScript.psc` | Present | Member patch | 8 | 0 |
 | `MTNM01_BaitMineScript.psc` | Present | Member patch | 3 | 0 |
 | `MTNM01_ChemDartEffectScript.psc` | Present | Member patch | 1 | 0 |
 | `MTNM01_DeathclawFriendPerkScript.psc` | Present | Member patch | 1 | 0 |
@@ -531,10 +574,12 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `MTR05_RefColSendStoryEventOnActivate.psc` | Present | Member patch | 2 | 0 |
 | `MTR05_RepairBeaconActivatorScript.psc` | Present | Member patch | 1 | 0 |
 | `MTR05_SayOnActivate.psc` | Present | Member patch | 4 | 0 |
+| `MTR06_MineKlaxonScript.psc` | Present | Member patch | 8 | 0 |
+| `MTR06_OnReadSchematicCode.psc` | Present | Member patch | 1 | 0 |
 | `MTR06_QuestScript.psc` | Present | Member patch | 4 | 0 |
 | `MTR06_RaceQuestScript.psc` | Present | Member patch | 10 | 0 |
 | `MTR07_EarthGeneratorScript.psc` | Present | Member patch | 3 | 0 |
-| `MTR07_EarthQuestScript.psc` | Present | Member patch | 7 | 0 |
+| `MTR07_EarthQuestScript.psc` | Present | Member patch | 16 | 0 |
 | `MTR07_EarthReactorTriggerScript.psc` | Present | Member patch | 2 | 0 |
 | `MTR08_ClaimTokenTerminalScript.psc` | Present | Member patch | 1 | 0 |
 | `MTR10KeypadAliasScript.psc` | Present | Member patch | 1 | 0 |
@@ -543,20 +588,28 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `MTRZ01_TriggerQuestScript.psc` | Present | Member patch | 1 | 0 |
 | `MTRZ05MiningSiteScript.psc` | Present | Member patch | 2 | 0 |
 | `MTRZ05_MapScript.psc` | Present | Member patch | 2 | 0 |
+| `MTRz05VendScript.psc` | Present | Member patch | 5 | 0 |
 | `MeatSweatsScript.psc` | Present | Member patch | 3 | 0 |
 | `MineEntranceClosed.psc` | Present | Member patch | 1 | 0 |
 | `MissionQuestActivatorScript.psc` | Present | Member patch | 2 | 0 |
 | `MoM00CorpseScript.psc` | Present | Member patch | 5 | 0 |
-| `MoM00QuestScript.psc` | Present | Member patch | 1 | 0 |
-| `MoM01QuestScript.psc` | Present | Member patch | 1 | 0 |
-| `MoM02AQuestScript.psc` | Present | Member patch | 1 | 0 |
-| `MoM02BQuestScript.psc` | Present | Member patch | 10 | 0 |
+| `MoM00QuestScript.psc` | Present | Member patch | 4 | 0 |
+| `MoM00RECorpseAliasScript.psc` | Present | Member patch | 3 | 0 |
+| `MoM01QuestScript.psc` | Present | Member patch | 2 | 0 |
+| `MoM02AQuestScript.psc` | Present | Member patch | 2 | 0 |
+| `MoM02BQuestScript.psc` | Present | Member patch | 11 | 0 |
 | `MoM02BSwordActivatorScript.psc` | Present | Member patch | 3 | 0 |
-| `MoM03QuestScript.psc` | Present | Member patch | 7 | 0 |
+| `MoM02CQuestScript.psc` | Present | Member patch | 1 | 0 |
+| `MoM03QuestScript.psc` | Present | Member patch | 8 | 0 |
 | `MoM04QuestScript.psc` | Present | Member patch | 9 | 0 |
 | `MoMCryptosTerminalScript.psc` | Present | Member patch | 1 | 0 |
+| `MoMEquippableQuestItemScript.psc` | Present | Member patch | 3 | 0 |
 | `MoMHolotapeScript.psc` | Present | Member patch | 10 | 0 |
+| `MoMItemManagerQuestScript.psc` | Present | Member patch | 3 | 0 |
+| `MoMMasterQuestScript.psc` | Present | Member patch | 11 | 0 |
 | `MoMParlorEntryTriggerScript.psc` | Present | Member patch | 2 | 0 |
+| `MoMParlorLaserGridManagerScript.psc` | Present | Member patch | 3 | 0 |
+| `MoMParlorSecretEntranceScript.psc` | Present | Member patch | 7 | 0 |
 | `MoMSecretDoorTriggerScript.psc` | Present | Member patch | 3 | 0 |
 | `MoM_PhantomEffectScript.psc` | Present | Member patch | 2 | 0 |
 | `ModActorValueOnSpellTargetScript.psc` | Present | Member patch | 2 | 0 |
@@ -569,12 +622,13 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `NWOT_Fortune_CooldownEffectScript.psc` | Present | Member patch | 2 | 0 |
 | `NewPlayerExperience/LoadoutSelectTriggerScript.psc` | Present | Member patch | 1 | 0 |
 | `Nuke_CodePageRefScript.psc` | Present | Member patch | 1 | 0 |
-| `Nuke_CodeSolutionMasterScript.psc` | Present | Member patch | 1 | 0 |
-| `Nuke_CodesOfficerScript.psc` | Present | Member patch | 5 | 0 |
-| `Nuke_CodesScript.psc` | Present | Member patch | 2 | 0 |
+| `Nuke_CodeSolutionMasterScript.psc` | Present | Member patch | 5 | 0 |
+| `Nuke_CodesOfficerScript.psc` | Present | Member patch | 6 | 0 |
+| `Nuke_CodesScript.psc` | Present | Member patch | 5 | 0 |
+| `Nuke_CodesSolutionPrinterScript.psc` | Present | Member patch | 4 | 0 |
 | `Nuke_Codes_CodeHuntAliasScript.psc` | Present | Member patch | 1 | 0 |
 | `Nuke_LaunchCardPatrolTerminalScript.psc` | Present | Member patch | 6 | 0 |
-| `Nuke_MasterScript.psc` | Present | Member patch | 1 | 0 |
+| `Nuke_MasterScript.psc` | Present | Member patch | 17 | 0 |
 | `Objects/ATXHolidayNuclearTree.psc` | Present | Member patch | 4 | 0 |
 | `Objects/Audio2StateActivator.psc` | Present | Member patch | 4 | 0 |
 | `Objects/BeehiveContainerScript.psc` | Present | Member patch | 1 | 0 |
@@ -606,7 +660,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `PerkLastLaughScript.psc` | Present | Member patch | 2 | 0 |
 | `PerkPlayLocationalAudio.psc` | Present | Member patch | 4 | 0 |
 | `Perks/FrogCollectingPerkScript.psc` | Present | Member patch | 1 | 0 |
-| `PhysicalExamTerminalRefScript.psc` | Present | Member patch | 1 | 0 |
+| `PhysicalExamTerminalRefScript.psc` | Present | Member patch | 5 | 1 |
 | `PhysicalTrapHit.psc` | Present | Member patch | 5 | 0 |
 | `Player/PowerArmor/LibertyPrimeVoiceModuleScript.psc` | Present | Member patch | 4 | 0 |
 | `PowerBoxScript.psc` | Present | Member patch | 1 | 1 |
@@ -628,17 +682,20 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `QUESTS/AC_SQ01_HellsEagles/QuestScript.psc` | Present | Member patch | 4 | 0 |
 | `QUESTS/AC_SQ03_Custodial/MessActivatorScript.psc` | Present | Member patch | 3 | 0 |
 | `QUESTS/AC_SQ03_Custodial/propstorageactivatorscript.psc` | Present | Member patch | 2 | 0 |
+| `QUESTS/BS01_FortAtlasDungeon01_MasterQuest/PlayerScript.psc` | Present | Member patch | 5 | 0 |
 | `QUESTS/BS01_Invention/PlayerScript.psc` | Present | Member patch | 1 | 0 |
-| `QUESTS/BS01_Invention/QuestScript.psc` | Present | Member patch | 3 | 0 |
+| `QUESTS/BS01_Invention/QuestScript.psc` | Present | Member patch | 4 | 0 |
 | `QUESTS/BS01_MQ06_Settlers/OnEnterMine.psc` | Present | Member patch | 4 | 0 |
 | `QUESTS/BS01_MQ06_Settlers/SetAVonEnter.psc` | Present | Member patch | 1 | 0 |
-| `QUESTS/BS01_MQ07_Over/TransmitterAnimScript.psc` | Present | Member patch | 3 | 1 |
+| `QUESTS/BS01_MQ07_Over/TransmitterAnimScript.psc` | Present | Member patch | 6 | 1 |
 | `QUESTS/BS01_MQ08_Defense/QuestScript.psc` | Present | Member patch | 29 | 0 |
+| `QUESTS/BS02_MQ01_Penance/PlayerScript.psc` | Present | Member patch | 6 | 0 |
 | `QUESTS/BS02_MQ01_Penance/QuestScript.psc` | Present | Member patch | 9 | 0 |
 | `QUESTS/BS02_MQ03_Blue/BarstoolScript.psc` | Present | Member patch | 2 | 0 |
 | `QUESTS/BS02_MQ03_Blue/PostQuestExitInstance.psc` | Present | Member patch | 3 | 0 |
 | `QUESTS/BS02_MQ04_Conscience/ActivatorStartScene.psc` | Present | Member patch | 2 | 0 |
 | `QUESTS/BS02_MQ04_Conscience/SetStageOnExitFurniture.psc` | Present | Member patch | 2 | 0 |
+| `QUESTS/BS02_MQ05_Catalyst/BossScript.psc` | Present | Member patch | 12 | 0 |
 | `QUESTS/BS02_MQ05_Catalyst/MeetScientistsTrigger.psc` | Present | Member patch | 2 | 0 |
 | `QUESTS/BS02_MQ05_Catalyst/PlayerScript.psc` | Present | Member patch | 7 | 0 |
 | `QUESTS/BS02_MQ05_Catalyst/SMBehemothBossRaceScript.psc` | Present | Member patch | 7 | 0 |
@@ -690,21 +747,27 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `QUESTS/_Default/SetStageOnHealthPercent.psc` | Present | Member patch | 4 | 0 |
 | `QUESTS/_Default/setrandomstages.psc` | Present | Member patch | 1 | 0 |
 | `QUESTS/_Default/showmessageonactivatealias.psc` | Present | Member patch | 2 | 0 |
+| `QUESTS/bs01_dialogue_valdez/playerscript.psc` | Present | Member patch | 8 | 0 |
 | `QUESTS/e05_caravan/Master_QuestScript.psc` | Present | Member patch | 11 | 0 |
 | `QuestToggleActivatorScript.psc` | Present | Member patch | 4 | 0 |
+| `RDRRadioBoostedQuestscript.psc` | Present | Member patch | 5 | 0 |
+| `RDRRadioWeakQuestscript.psc` | Present | Member patch | 5 | 0 |
 | `RE_ObjectTS05_BombActivatorScript.psc` | Present | Member patch | 1 | 0 |
 | `RS02_Beat_KickoutTriggerScript.psc` | Present | Member patch | 1 | 0 |
 | `RS03_Balance_TerminalScript.psc` | Present | Member patch | 1 | 0 |
 | `RS03_PlayerScript.psc` | Present | Member patch | 4 | 0 |
+| `RSVP00_OnActivatePrintNewsletter.psc` | Present | Member patch | 1 | 0 |
 | `RSVP00_OnContainerChangedSetAV.psc` | Present | Member patch | 1 | 0 |
 | `RSVP00_OnItemCraftedSetStage.psc` | Present | Member patch | 6 | 0 |
 | `RSVP01_PlayerCollectWater.psc` | Present | Member patch | 6 | 0 |
 | `RSVP02_OnTerminalEnterSetAV.psc` | Present | Member patch | 1 | 0 |
+| `RSVP03_QuestScript.psc` | Present | Member patch | 10 | 0 |
 | `RadioDramaRadio_MasterScript.psc` | Present | Member patch | 13 | 0 |
 | `RadioGeneral_MasterScript.psc` | Present | Member patch | 9 | 0 |
 | `RaidHackMasterScript.psc` | Present | Member patch | 3 | 1 |
 | `ReclamationDay_QTTriggersScript.psc` | Present | Member patch | 2 | 0 |
 | `RefColAddToUniqueQuestOnActivate.psc` | Present | Member patch | 2 | 0 |
+| `RefCollOnDeathUpdateObjectiveScript.psc` | Present | Member patch | 8 | 0 |
 | `RegionManagerScript.psc` | Present | Member patch | 7 | 0 |
 | `RelayTowerActivationScript.psc` | Present | Member patch | 1 | 0 |
 | `ResourceGeneratorButtonScript.psc` | Present | Member patch | 3 | 1 |
@@ -714,7 +777,11 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `SFL02_Track_TriggerAliasScript.psc` | Present | Member patch | 2 | 0 |
 | `SFM01_Glow_CatalystConsoleAliasScript.psc` | Present | Member patch | 1 | 0 |
 | `SFM01_Glow_ChemConsoleAliasScript.psc` | Present | Member patch | 1 | 0 |
-| `SFM04_Organic_PlayerAliasScript.psc` | Present | Member patch | 4 | 0 |
+| `SFM04_Organic_BloomScript.psc` | Present | Member patch | 1 | 0 |
+| `SFM04_Organic_Blooms_QuestScript.psc` | Present | Member patch | 5 | 0 |
+| `SFM04_Organic_EllaHolotapeScript.psc` | Present | Member patch | 1 | 0 |
+| `SFM04_Organic_PlayerAliasScript.psc` | Present | Member patch | 5 | 0 |
+| `SFM04_Organic_QuestScript.psc` | Present | Member patch | 8 | 0 |
 | `SFZ03_Queen_CryptidAliasScript.psc` | Present | Member patch | 4 | 0 |
 | `SFZ03_Queen_PerkScript.psc` | Present | Member patch | 1 | 0 |
 | `SFZ03_Queen_PlayerScript.psc` | Present | Member patch | 1 | 0 |
@@ -751,11 +818,12 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `TEMP_EN05_StartOnTriggerEnterScript.psc` | Present | Member patch | 1 | 0 |
 | `TEST_Trigger_PlayerMoveToRef.psc` | Present | Member patch | 1 | 0 |
 | `TW002MarshalScript.psc` | Present | Member patch | 1 | 0 |
-| `TW002_Script.psc` | Present | Member patch | 3 | 0 |
+| `TW002_Script.psc` | Present | Member patch | 6 | 1 |
 | `TW005BreakActivator.psc` | Present | Member patch | 4 | 0 |
 | `TW007_PlayerScript.psc` | Present | Member patch | 6 | 0 |
 | `TW010_MeatGrillScript.psc` | Present | Member patch | 1 | 0 |
 | `TW010_VegeGrillScript.psc` | Present | Member patch | 1 | 0 |
+| `TWDialogueScript.psc` | Present | Member patch | 3 | 0 |
 | `TWZ03_TargetActivateScript.psc` | Present | Member patch | 1 | 0 |
 | `TWZ11_Script.psc` | Present | Member patch | 2 | 0 |
 | `TWZ13DirtTriggerBoxScript.psc` | Present | Member patch | 1 | 0 |
@@ -803,7 +871,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `Vault79MineCollapseScript.psc` | Present | Member patch | 1 | 0 |
 | `Vault79MotherlodeTunnelScript.psc` | Present | Member patch | 1 | 0 |
 | `Vault79MotherlodeVaultWallScrip.psc` | Present | Member patch | 2 | 0 |
-| `Vault79RaRaVentSoundScript.psc` | Present | Member patch | 6 | 0 |
+| `Vault79RaRaVentSoundScript.psc` | Present | Member patch | 7 | 0 |
 | `Vault79ReactorDoorOpenScript.psc` | Present | Member patch | 1 | 0 |
 | `Vault79ReactorSecurityActivateScript.psc` | Present | Member patch | 2 | 0 |
 | `Vault79ReactorVentilationScript.psc` | Present | Member patch | 1 | 0 |
@@ -830,23 +898,23 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `VendorInteractChoiceScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_001P_BatterAliasScript.psc` | Present | Member patch | 6 | 0 |
 | `W05_001P_Wayward_QuestScript.psc` | Present | Member patch | 5 | 0 |
-| `W05_002P_GangerOnHitScript.psc` | Present | Member patch | 1 | 0 |
+| `W05_002P_GangerOnHitScript.psc` | Present | Member patch | 6 | 0 |
 | `W05_002P_IntroSceneTriggerScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_002P_RadicalHostilityTrigger.psc` | Present | Member patch | 1 | 0 |
-| `W05_002P_Radical_QuestScript.psc` | Present | Member patch | 8 | 0 |
+| `W05_002P_Radical_QuestScript.psc` | Present | Member patch | 9 | 0 |
 | `W05_002P_TopicInfoRadicalsAttack.psc` | Present | Member patch | 1 | 0 |
 | `W05_002_RadicalCombatantCollScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_003P_AddObjectToCollection.psc` | Present | Member patch | 3 | 0 |
 | `W05_003P_AliasSetStageOnWeaponDrawn.psc` | Present | Member patch | 3 | 0 |
-| `W05_003P_ApplyPerkOnEnterRefScript.psc` | Present | Member patch | 1 | 0 |
+| `W05_003P_ApplyPerkOnEnterRefScript.psc` | Present | Member patch | 8 | 0 |
 | `W05_003P_EnterAnyTriggerRefColl.psc` | Present | Member patch | 1 | 0 |
 | `W05_003P_HiddenDoorTriggerScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_003P_LaserGridStateCollScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_003P_Muscle_QuestScript.psc` | Present | Member patch | 5 | 0 |
+| `W05_003P_Muscle_QuestScript.psc` | Present | Member patch | 6 | 0 |
 | `W05_003P_MusicOverrideTriggerScript.psc` | Present | Member patch | 2 | 0 |
 | `W05_003P_ScorchedBossCollDeathScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_003P_WakeUpEnemiesRefCollScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_004P_CraneAliasScript.psc` | Present | Member patch | 2 | 0 |
+| `W05_004P_CraneAliasScript.psc` | Present | Member patch | 8 | 0 |
 | `W05_004P_Crane_DispenserTriggerScript.psc` | Present | Member patch | 3 | 0 |
 | `W05_004P_WakeUpTurretsCollScript.psc` | Present | Member patch | 2 | 0 |
 | `W05_ActorNukeReactionScript.psc` | Present | Member patch | 10 | 0 |
@@ -872,20 +940,20 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_MQA_206P_QuestScript.psc` | Present | Member patch | 6 | 0 |
 | `W05_MQA_206P_SSTalkTriggerBoxScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_201P_IntercomTriggerScript.psc` | Present | Member patch | 3 | 0 |
-| `W05_MQR_201P_QuestScript.psc` | Present | Member patch | 3 | 0 |
+| `W05_MQR_201P_QuestScript.psc` | Present | Member patch | 7 | 0 |
 | `W05_MQR_202P_DummyActivateMarker.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_202P_IDCardReaderScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_202P_PlayerScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_MQR_202P_QuestScript.psc` | Present | Member patch | 15 | 0 |
+| `W05_MQR_202P_QuestScript.psc` | Present | Member patch | 25 | 0 |
 | `W05_MQR_202P_RaRaItemPickedUpScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_202P_VentMarkerScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_203P_ArenaDoorCloseLock.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_203P_BenchScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_203P_DoorPortalScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_MQR_203P_QuestScript.psc` | Present | Member patch | 1 | 0 |
+| `W05_MQR_203P_QuestScript.psc` | Present | Member patch | 16 | 0 |
 | `W05_MQR_203P_WinnersCupBlackOutScript.psc` | Present | Member patch | 2 | 0 |
 | `W05_MQR_204P_FreeLouPerkScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_MQR_204P_QuestScript.psc` | Present | Member patch | 12 | 0 |
+| `W05_MQR_204P_QuestScript.psc` | Present | Member patch | 13 | 0 |
 | `W05_MQR_205P_QuestScript.psc` | Present | Member patch | 2 | 0 |
 | `W05_MQR_205P_RaRaCombatScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_205P_RaRaCowerTriggerScript.psc` | Present | Member patch | 1 | 0 |
@@ -895,6 +963,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_MQR_205P_VentSequenceScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_PlayerVault79KeypadObjective.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQR_Vault79CodeNoteScript.psc` | Present | Member patch | 1 | 0 |
+| `W05_MQR_Vault79KeypadAliasScript.psc` | Present | Member patch | 5 | 0 |
 | `W05_MQS_202P_QuestScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQS_203P_BrainPrepPlacementScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQS_203P_BrainPrepScript.psc` | Present | Member patch | 1 | 0 |
@@ -916,14 +985,14 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_MQ_003P_RemoveItemTopicInfo.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_003P_SolAliasScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_004P_CacheLightMarkerScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_MQ_004P_Crane_DoorTriggerScript.psc` | Present | Member patch | 2 | 0 |
-| `W05_MQ_004P_Crane_QuestScript.psc` | Present | Member patch | 3 | 0 |
+| `W05_MQ_004P_Crane_DoorTriggerScript.psc` | Present | Member patch | 3 | 0 |
+| `W05_MQ_004P_Crane_QuestScript.psc` | Present | Member patch | 5 | 0 |
 | `W05_MQ_004p_UpstairDoorAliasScript.psc` | Present | Member patch | 3 | 0 |
 | `W05_MQ_101P_A_AldridgeOnLoadScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_101P_A_EWSBossScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_101P_A_HookUpHoloScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_101P_A_MegAliasScript.psc` | Present | Member patch | 2 | 0 |
-| `W05_MQ_101P_A_QuestScript.psc` | Present | Member patch | 5 | 0 |
+| `W05_MQ_101P_A_QuestScript.psc` | Present | Member patch | 14 | 0 |
 | `W05_MQ_101P_A_RepairSubTerminalScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_101P_A_RepairTerminalScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_101P_B_AubrieAliasScript.psc` | Present | Member patch | 3 | 0 |
@@ -932,7 +1001,8 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_MQ_102P_BlueprintsScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_102P_ProjectorScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MQ_SkinnerShoutOnOpenScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_MQ_TheWayward_QuestScript.psc` | Present | Member patch | 6 | 0 |
+| `W05_MQ_TheWayward_QuestScript.psc` | Present | Member patch | 13 | 0 |
+| `W05_ModRepScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_MortTapeQuestScript.psc` | Present | Member patch | 8 | 0 |
 | `W05_OverseerCAMP_TutTriggerScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_PurchaseBullionInfoScript.psc` | Present | Member patch | 3 | 0 |
@@ -958,16 +1028,18 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_RE_TravelBB02_ChickenScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_RE_TravelBB03_SquirrelScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_RE_V79KeypadActivatorScript.psc` | Present | Member patch | 1 | 0 |
-| `W05_RadicalCollectionScript.psc` | Present | Member patch | 2 | 0 |
+| `W05_RadicalCollectionScript.psc` | Present | Member patch | 3 | 0 |
 | `W05_RaiderBlock_Quest_Script.psc` | Present | Member patch | 2 | 0 |
 | `W05_Raider_BandAudienceScript.psc` | Present | Member patch | 2 | 0 |
 | `W05_RoperAliasScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_Vault79ElevatorDoorTriggerScript.psc` | Present | Member patch | 3 | 0 |
 | `W05_WaywardMiscPointerScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_WaywardStateSwapRefScript.psc` | Present | Member patch | 2 | 0 |
+| `W05_Wayward_ExtDialogueScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_Wayward_IntTriggerRCScript.psc` | Present | Member patch | 1 | 0 |
 | `W05_Wayward_PatronsColl.psc` | Present | Member patch | 1 | 0 |
-| `W05_Wayward_SwapMarkerOnCriteria.psc` | Present | Member patch | 3 | 0 |
+| `W05_Wayward_SetAVOnQuestlineComplete.psc` | Present | Member patch | 1 | 0 |
+| `W05_Wayward_SwapMarkerOnCriteria.psc` | Present | Member patch | 4 | 0 |
 | `W05_Wayward_TopicInfoSetValueOnAlias.psc` | Present | Member patch | 1 | 0 |
 | `WL019_BookshelfScript.psc` | Present | Member patch | 1 | 0 |
 | `WL019_DisarmFlamethrowersOnDeath.psc` | Present | Member patch | 1 | 0 |
@@ -1022,14 +1094,16 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `comp_rq_script.psc` | Present | Member patch | 11 | 0 |
 | `crOguaRaceScript.psc` | Present | Member patch | 7 | 0 |
 | `default2statesyncactivator.psc` | Present | Member patch | 17 | 0 |
+| `defaultclearghostedoninstownercombat.psc` | Present | Member patch | 8 | 0 |
 | `defaultkeypadtargetscript.psc` | Present | Member patch | 1 | 0 |
 | `defaultkillmylinkedrefondeathscript.psc` | Present | Member patch | 1 | 0 |
 | `defaultonactivategiveitems.psc` | Present | Member patch | 3 | 0 |
 | `defaultplayexplosiononactivate.psc` | Present | Member patch | 1 | 0 |
 | `defaultplayexplosiononpoweron.psc` | Present | Member patch | 3 | 0 |
 | `defaultquestemergencybroadcastscript.psc` | Present | Member patch | 3 | 0 |
-| `defaultquestencounterwavescript.psc` | Present | Member patch | 17 | 0 |
+| `defaultquestencounterwavescript.psc` | Present | Member patch | 23 | 0 |
 | `defaultquestonaddplayersaddtoalias.psc` | Present | Member patch | 1 | 0 |
+| `defaultquestsendstoryevent.psc` | Present | Member patch | 1 | 0 |
 | `defaultrefsendstoryevent.psc` | Present | Member patch | 1 | 0 |
 | `defaultsequentialstateactivator.psc` | Present | Member patch | 4 | 1 |
 | `defaultshutdownquestonchangelocation.psc` | Present | Member patch | 3 | 0 |
@@ -1046,12 +1120,12 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `en04_injectorscript.psc` | Present | Member patch | 1 | 1 |
 | `en05_combatcoursescript.psc` | Present | Member patch | 4 | 0 |
 | `en05_coursescript.psc` | Present | Member patch | 7 | 0 |
-| `enclaveeventquestscript.psc` | Present | Member patch | 1 | 0 |
+| `enclaveeventquestscript.psc` | Present | Member patch | 7 | 0 |
 | `ffz10_light_containerscript.psc` | Present | Member patch | 5 | 0 |
 | `ffz13_questscript.psc` | Present | Member patch | 1 | 0 |
-| `fishing/LindaLeeChumTroughScript.psc` | Present | Member patch | 1 | 0 |
+| `fishing/LindaLeeChumTroughScript.psc` | Present | Member patch | 2 | 0 |
 | `fishing/MQ01ChangeLocationQuestScript.psc` | Present | Member patch | 2 | 0 |
-| `fishing/MQ01PlayerAliasScript.psc` | Present | Member patch | 3 | 0 |
+| `fishing/MQ01PlayerAliasScript.psc` | Present | Member patch | 5 | 0 |
 | `flipcardsigncounterscript.psc` | Present | Member patch | 1 | 0 |
 | `flipcardsignmessagescript.psc` | Present | Member patch | 1 | 1 |
 | `fragments/Quests/QF_AC_MQ01_Opportunity_006C1F50.psc` | Present | Member patch | 34 | 0 |
@@ -1067,10 +1141,13 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_ArcadeNukaZapperRace_Obje_006751AF.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Quests/QF_BS01_Arms_005CB547.psc` | Present | Member patch | 38 | 0 |
 | `fragments/Quests/QF_BS01_Dialogue_DaggerThron_005CBED5.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/QF_BS01_Dialogue_PutnamBoys__005DC0E0.psc` | Present | Member patch | 6 | 0 |
+| `fragments/Quests/QF_BS01_Dialogue_PutnamFamil_005DC0DF.psc` | Present | Member patch | 6 | 0 |
 | `fragments/Quests/QF_BS01_Dialogue_Rahmani_005C6571.psc` | Present | Member patch | 1 | 0 |
-| `fragments/Quests/QF_BS01_Dialogue_VernonDodge_005CF0C6.psc` | Present | Member patch | 4 | 0 |
+| `fragments/Quests/QF_BS01_Dialogue_VernonDodge_005CF0C6.psc` | Present | Member patch | 7 | 0 |
 | `fragments/Quests/QF_BS01_FieldTesting_005C70CD.psc` | Present | Member patch | 25 | 0 |
-| `fragments/Quests/QF_BS01_Invention_005B79EB.psc` | Present | Member patch | 65 | 0 |
+| `fragments/Quests/QF_BS01_FortAtlasDungeon01_M_005EF38C.psc` | Present | Member patch | 8 | 0 |
+| `fragments/Quests/QF_BS01_Invention_005B79EB.psc` | Present | Member patch | 66 | 0 |
 | `fragments/Quests/QF_BS01_MQ00_Breadcrumb_005EAD3C.psc` | Present | Member patch | 6 | 0 |
 | `fragments/Quests/QF_BS01_MQ00_Breadcrumb_OnCo_005EAD3B.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_BS01_MQ00_Breadcrumb_OnIn_005EECB8.psc` | Present | Member patch | 3 | 0 |
@@ -1136,6 +1213,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_Burn_SQ04_Cache3_Misc_00848FEF.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/QF_Burn_SQ04_Visions_007F1922.psc` | Present | Member patch | 56 | 0 |
 | `fragments/Quests/QF_CB04_Mayor_002A93F5.psc` | Present | Member patch | 25 | 0 |
+| `fragments/Quests/QF_CB15_ScorchedEarth_003E271D.psc` | Present | Member patch | 7 | 0 |
 | `fragments/Quests/QF_CBZ03_Deputy_00116532.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/QF_CBZ03_Pre_MiscQuestObject_0050E620.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Quests/QF_COMP_Astronaut_Initial_0054EB40.psc` | Present | Member patch | 2 | 0 |
@@ -1154,6 +1232,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_DailyOps_VernonDodge_Misc_005CF0C7.psc` | Present | Member patch | 8 | 0 |
 | `fragments/Quests/QF_E01C_Tales_Dark_004648C3.psc` | Present | Member patch | 14 | 0 |
 | `fragments/Quests/QF_E01C_Tales_PennyDialogueQ_003EE22A.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/QF_E06_Colossus_00583D14.psc` | Present | Member patch | 14 | 0 |
 | `fragments/Quests/QF_E06_PocketWatch_00589140.psc` | Present | Member patch | 10 | 0 |
 | `fragments/Quests/QF_E06_PocketWatch_Colossus__00599357.psc` | Present | Member patch | 5 | 0 |
 | `fragments/Quests/QF_E06_PocketWatch_Misc_0058912C.psc` | Present | Member patch | 2 | 0 |
@@ -1161,31 +1240,36 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_E09C_LoveTunnel_0065B0A8.psc` | Present | Member patch | 13 | 0 |
 | `fragments/Quests/QF_EN01_Misc_000649C5.psc` | Present | Member patch | 7 | 0 |
 | `fragments/Quests/QF_EN01_Sam_000714FE.psc` | Present | Member patch | 43 | 0 |
-| `fragments/Quests/QF_EN02_MQ_Us_000293A3.psc` | Present | Member patch | 47 | 0 |
+| `fragments/Quests/QF_EN02_MQ_Us_000293A3.psc` | Present | Member patch | 69 | 0 |
 | `fragments/Quests/QF_EN02_Misc_000293A4.psc` | Present | Member patch | 2 | 0 |
-| `fragments/Quests/QF_EN05_Basic_0008C87F.psc` | Present | Member patch | 20 | 0 |
+| `fragments/Quests/QF_EN05_Basic_0008C87F.psc` | Present | Member patch | 25 | 0 |
 | `fragments/Quests/QF_EN05_Basic_Misc_002C5EB1.psc` | Present | Member patch | 2 | 0 |
-| `fragments/Quests/QF_EN05_CombatCourse_00052A62.psc` | Present | Member patch | 13 | 0 |
+| `fragments/Quests/QF_EN05_CombatCourse_00052A62.psc` | Present | Member patch | 17 | 0 |
 | `fragments/Quests/QF_EN05_Intro_Misc_00341B06.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Quests/QF_EN05_Intro_Promo_00341B07.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/QF_EN05_MQ_Officer_0010DBEA.psc` | Present | Member patch | 9 | 0 |
 | `fragments/Quests/QF_EN05_MarksmanshipTraining_0008D23B.psc` | Present | Member patch | 9 | 0 |
 | `fragments/Quests/QF_EN05_ObstacleCourse_0009C824.psc` | Present | Member patch | 12 | 0 |
-| `fragments/Quests/QF_EN05_PatriotismCourse_0008C881.psc` | Present | Member patch | 19 | 0 |
+| `fragments/Quests/QF_EN05_PatriotismCourse_0008C881.psc` | Present | Member patch | 20 | 0 |
 | `fragments/Quests/QF_EN06_Intro_0052BDCA.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Quests/QF_EN06_Seal_002B477C.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/QF_EN07_Death_FalloutQuest_004EB0F5.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Quests/QF_EN07_Death_LaunchCardQues_004EB0C2.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Quests/QF_EN07_Death_LaunchCodeQues_004EB0F4.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Quests/QF_EN07_Death_SilosQuest_004EB0F3.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Quests/QF_EN07_MQ_CodeHunt_002D0F6A.psc` | Present | Member patch | 8 | 0 |
-| `fragments/Quests/QF_EN07_MQ_Fissure_SpawnerQu_002D0F66.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/QF_EN07_MQ_Fissure_SpawnerQu_002D0F66.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/QF_EN07_MQ_FleeSilo_002D0F68.psc` | Present | Member patch | 10 | 0 |
 | `fragments/Quests/QF_EN07_MQ_IntroMisc_002D0F6B.psc` | Present | Member patch | 22 | 0 |
-| `fragments/Quests/QF_ENs02_Blast_0000D053.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/QF_ENs02_Blast_0000D053.psc` | Present | Member patch | 22 | 0 |
 | `fragments/Quests/QF_EXP14_HighRollersLounge_D_006F28D3.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_FF11_Raid_002D64EE.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_FFZ10_Light_00187531.psc` | Present | Member patch | 17 | 0 |
 | `fragments/Quests/QF_FFZ13_StrangeBrew_0004695D.psc` | Present | Member patch | 13 | 0 |
-| `fragments/Quests/QF_FS01_MQ_Warn_00002315.psc` | Present | Member patch | 38 | 0 |
-| `fragments/Quests/QF_FS02_MQ_Reassembly_004E0719.psc` | Present | Member patch | 23 | 0 |
+| `fragments/Quests/QF_FS01_MQ_Warn_00002315.psc` | Present | Member patch | 40 | 0 |
+| `fragments/Quests/QF_FS02_MQ_Reassembly_004E0719.psc` | Present | Member patch | 27 | 0 |
 | `fragments/Quests/QF_FS03_MQ_Fruition_00012566.psc` | Present | Member patch | 28 | 0 |
-| `fragments/Quests/QF_Fishing_BigFish_007B95E1.psc` | Present | Member patch | 12 | 0 |
+| `fragments/Quests/QF_Fishing_BigFish_007B95E1.psc` | Present | Member patch | 13 | 0 |
 | `fragments/Quests/QF_GHL00_Quest_0078DE64.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Quests/QF_GHL00_Quest_DisguisePoint_007D4961.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_GHL00_Quest_OnConnect_0078DB39.psc` | Present | Member patch | 1 | 0 |
@@ -1215,13 +1299,13 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_MOON_SQ07_Carver_006A21E3.psc` | Present | Member patch | 16 | 0 |
 | `fragments/Quests/QF_MOON_SQ08_Aries_006A21E4.psc` | Present | Member patch | 24 | 0 |
 | `fragments/Quests/QF_MQ_OverseerNukeHolotapeVi_00437987.psc` | Present | Member patch | 2 | 0 |
-| `fragments/Quests/QF_MQ_Overseer_004E49D9.psc` | Present | Member patch | 43 | 0 |
-| `fragments/Quests/QF_MTNM01_Mayhem_0009732E.psc` | Present | Member patch | 47 | 0 |
+| `fragments/Quests/QF_MQ_Overseer_004E49D9.psc` | Present | Member patch | 44 | 0 |
+| `fragments/Quests/QF_MTNM01_Mayhem_0009732E.psc` | Present | Member patch | 50 | 0 |
 | `fragments/Quests/QF_MTNM03_Meditation_0012E67E.psc` | Present | Member patch | 2 | 0 |
-| `fragments/Quests/QF_MTNS01_Intro_00031163.psc` | Present | Member patch | 21 | 0 |
+| `fragments/Quests/QF_MTNS01_Intro_00031163.psc` | Present | Member patch | 27 | 0 |
 | `fragments/Quests/QF_MTNS05_Voices_000043A2.psc` | Present | Member patch | 12 | 0 |
 | `fragments/Quests/QF_MTNS06_Uranium_Misc_000364D1.psc` | Present | Member patch | 1 | 0 |
-| `fragments/Quests/QF_MTN_MQ_Missing_003A5FA0.psc` | Present | Member patch | 8 | 0 |
+| `fragments/Quests/QF_MTN_MQ_Missing_003A5FA0.psc` | Present | Member patch | 10 | 0 |
 | `fragments/Quests/QF_MTR01_Intro_00056F63.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_MTR02_Miner_0033C4DE.psc` | Present | Member patch | 15 | 0 |
 | `fragments/Quests/QF_MTR03_Misc_00151C17.psc` | Present | Member patch | 2 | 0 |
@@ -1230,7 +1314,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_MTR04_Games_001ED40A.psc` | Present | Member patch | 13 | 0 |
 | `fragments/Quests/QF_MTR04_Lucky_00320E0A.psc` | Present | Member patch | 11 | 0 |
 | `fragments/Quests/QF_MTR05_Mother_0006A379.psc` | Present | Member patch | 28 | 0 |
-| `fragments/Quests/QF_MTR06_Brigade_0003363B.psc` | Present | Member patch | 24 | 0 |
+| `fragments/Quests/QF_MTR06_Brigade_0003363B.psc` | Present | Member patch | 26 | 0 |
 | `fragments/Quests/QF_MTR06_PhysicalExam_0000D783.psc` | Present | Member patch | 9 | 0 |
 | `fragments/Quests/QF_MTR07_Earth_003443FB.psc` | Present | Member patch | 12 | 0 |
 | `fragments/Quests/QF_MTR08_Lode_Token_Misc_0043C60D.psc` | Present | Member patch | 1 | 0 |
@@ -1247,6 +1331,8 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_MoM02_003472F4.psc` | Present | Member patch | 7 | 0 |
 | `fragments/Quests/QF_MoM03_00357E7E.psc` | Present | Member patch | 13 | 0 |
 | `fragments/Quests/QF_MoM04_00357E7A.psc` | Present | Member patch | 13 | 0 |
+| `fragments/Quests/QF_MoMDress_0035C8B5.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Quests/QF_MoMVeil_0035C8B6.psc` | Present | Member patch | 5 | 0 |
 | `fragments/Quests/QF_Moon_SQ01_Kieran_0068FD4A.psc` | Present | Member patch | 21 | 0 |
 | `fragments/Quests/QF_Moon_SQ02_Eugenie_006A173A.psc` | Present | Member patch | 15 | 0 |
 | `fragments/Quests/QF_Moon_SQ03_Libby_006A1030.psc` | Present | Member patch | 20 | 0 |
@@ -1495,19 +1581,20 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_RE_WhitespringAssaultSC12_003CB689.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_RE_WhitespringAssaultTemp_003CB61C.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_RS01A_Contact_003C4C22.psc` | Present | Member patch | 12 | 0 |
-| `fragments/Quests/QF_RS01B_Contact_003C4C23.psc` | Present | Member patch | 7 | 0 |
+| `fragments/Quests/QF_RS01B_Contact_003C4C23.psc` | Present | Member patch | 9 | 0 |
 | `fragments/Quests/QF_RS03_Balance_0001C035.psc` | Present | Member patch | 17 | 0 |
-| `fragments/Quests/QF_RS03_Inoculation_0022730F.psc` | Present | Member patch | 32 | 0 |
-| `fragments/Quests/QF_RSVP00_Quest_Master_0050A2EE.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/QF_RS03_Inoculation_0022730F.psc` | Present | Member patch | 34 | 0 |
+| `fragments/Quests/QF_RSVP00_Quest_Master_0050A2EE.psc` | Present | Member patch | 7 | 0 |
+| `fragments/Quests/QF_RSVP00_Quest_Vector_to_Th_003E98D5.psc` | Present | Member patch | 8 | 0 |
 | `fragments/Quests/QF_RSVP01_Water_003B32DC.psc` | Present | Member patch | 17 | 0 |
 | `fragments/Quests/QF_RSVP02_Hunger_003B32DA.psc` | Present | Member patch | 14 | 0 |
-| `fragments/Quests/QF_RSVP03_Quest_003A1FE0.psc` | Present | Member patch | 24 | 0 |
+| `fragments/Quests/QF_RSVP03_Quest_003A1FE0.psc` | Present | Member patch | 25 | 0 |
 | `fragments/Quests/QF_RSVP04_QuestPatrol_0050A2ED.psc` | Present | Member patch | 31 | 0 |
 | `fragments/Quests/QF_ReclamationDay_000D4D34.psc` | Present | Member patch | 7 | 0 |
 | `fragments/Quests/QF_SFL02_Track_00131033.psc` | Present | Member patch | 33 | 0 |
 | `fragments/Quests/QF_SFL02_Track_RadioQuest_00018ECF.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_SFL02_Track_VertibotQuest_0032BB59.psc` | Present | Member patch | 4 | 0 |
-| `fragments/Quests/QF_SFM04_Organic_Blooms_00049B4F.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/QF_SFM04_Organic_Blooms_00049B4F.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Quests/QF_SFM04_Organic_Radio_00052DBF.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_SFS02_Play_0018C91A.psc` | Present | Member patch | 22 | 0 |
 | `fragments/Quests/QF_SFS09_Habitat_005109AF.psc` | Present | Member patch | 12 | 0 |
@@ -1557,7 +1644,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_W05_DialogueRaidersCrater_0055E2BA.psc` | Present | Member patch | 5 | 0 |
 | `fragments/Quests/QF_W05_DialogueRaidersCrater_005832EF.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_W05_DialogueSettlers_Inte_00570D57.psc` | Present | Member patch | 1 | 0 |
-| `fragments/Quests/QF_W05_DialogueTheWayward_0040F5BF.psc` | Present | Member patch | 4 | 0 |
+| `fragments/Quests/QF_W05_DialogueTheWayward_0040F5BF.psc` | Present | Member patch | 5 | 0 |
 | `fragments/Quests/QF_W05_Dialogue_SecretServic_0054279C.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_W05_LGV01_PointerQuest_0059C22B.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Quests/QF_W05_MQA_206P_0054EDB9.psc` | Present | Member patch | 74 | 0 |
@@ -1574,7 +1661,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_W05_MQS_204P_0040C458.psc` | Present | Member patch | 36 | 0 |
 | `fragments/Quests/QF_W05_MQS_205P_0041CB6D.psc` | Present | Member patch | 33 | 0 |
 | `fragments/Quests/QF_W05_MQSettlers_201P_Indus_003F28C3.psc` | Present | Member patch | 59 | 0 |
-| `fragments/Quests/QF_W05_MQ_000P_005698E4.psc` | Present | Member patch | 16 | 0 |
+| `fragments/Quests/QF_W05_MQ_000P_005698E4.psc` | Present | Member patch | 26 | 0 |
 | `fragments/Quests/QF_W05_MQ_001P_Wayward_00405E14.psc` | Present | Member patch | 42 | 0 |
 | `fragments/Quests/QF_W05_MQ_001P_Wayward_Lacey_00405E15.psc` | Present | Member patch | 6 | 0 |
 | `fragments/Quests/QF_W05_MQ_001P_Wayward_Lacey_0053AF40.psc` | Present | Member patch | 4 | 0 |
@@ -1592,7 +1679,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_W05_MQ_101P_OnLocationCha_00591AB3.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_W05_MQ_101P_Radio_003FBBB3.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/QF_W05_MQ_102P_003FFACF.psc` | Present | Member patch | 49 | 0 |
-| `fragments/Quests/QF_W05_MQ_102P_B_003FFC00.psc` | Present | Member patch | 4 | 0 |
+| `fragments/Quests/QF_W05_MQ_102P_B_003FFC00.psc` | Present | Member patch | 5 | 0 |
 | `fragments/Quests/QF_W05_RE_Camp_JP11_RaiderCa_00586245.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/QF_W05_RE_SceneZW01_0056368E.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/QF_W05_RE_SceneZW02_005655E4.psc` | Present | Member patch | 3 | 0 |
@@ -1630,14 +1717,14 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/qf_e01c_tales_mary_new_0041a676.psc` | Present | Member patch | 8 | 0 |
 | `fragments/Quests/qf_e08b_evictionnotice_006431ce.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/qf_en07_mq_fleeblast_002d0f69.psc` | Present | Member patch | 3 | 0 |
-| `fragments/Quests/qf_enz01_above_00003af2.psc` | Present | Member patch | 1 | 0 |
-| `fragments/Quests/qf_enz04_bots_0000d02c.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Quests/qf_enz01_above_00003af2.psc` | Present | Member patch | 15 | 0 |
+| `fragments/Quests/qf_enz04_bots_0000d02c.psc` | Present | Member patch | 24 | 0 |
 | `fragments/Quests/qf_ff08_projectbeanstalk_0004695c.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/qf_ff_small01_00036191.psc` | Present | Member patch | 1 | 0 |
-| `fragments/Quests/qf_fishing_mq01_casting_007acb4c.psc` | Present | Member patch | 15 | 0 |
+| `fragments/Quests/qf_fishing_mq01_casting_007acb4c.psc` | Present | Member patch | 16 | 0 |
 | `fragments/Quests/qf_fss02_vigilant_000a73dc.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/qf_msilopersonal_003e03aa.psc` | Present | Member patch | 38 | 0 |
-| `fragments/Quests/qf_mtnl01_raiders_00045a40.psc` | Present | Member patch | 38 | 0 |
+| `fragments/Quests/qf_mtnl01_raiders_00045a40.psc` | Present | Member patch | 45 | 0 |
 | `fragments/Quests/qf_mtns06_uranium_000364d0.psc` | Present | Member patch | 8 | 0 |
 | `fragments/Quests/qf_mtnz05_messenger_0001a634.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/qf_mtr08_lode_00042f7e.psc` | Present | Member patch | 1 | 0 |
@@ -1649,7 +1736,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/qf_re_traveldwd06_005902f0.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/qf_re_traveldwd07_005902f1.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/qf_rs02_beat_0015d682.psc` | Present | Member patch | 9 | 0 |
-| `fragments/Quests/qf_sfm04_organic_0010ae02.psc` | Present | Member patch | 26 | 0 |
+| `fragments/Quests/qf_sfm04_organic_0010ae02.psc` | Present | Member patch | 32 | 0 |
 | `fragments/Quests/qf_sfz08_fear_00275bc5.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Quests/qf_storm_mq02_intropt1_00734c6b.psc` | Present | Member patch | 24 | 0 |
 | `fragments/Quests/qf_storm_mq09_oberlinpt3_006fbf37.psc` | Present | Member patch | 24 | 0 |
@@ -1663,7 +1750,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/qf_twz11_0015b1e2.psc` | Present | Member patch | 13 | 0 |
 | `fragments/Quests/qf_twz13_0010c1e3.psc` | Present | Member patch | 6 | 0 |
 | `fragments/Quests/qf_w05_daily_r01_0054fa50.psc` | Present | Member patch | 33 | 0 |
-| `fragments/Quests/qf_w05_mq_102p_a_003ffc02.psc` | Present | Member patch | 7 | 0 |
+| `fragments/Quests/qf_w05_mq_102p_a_003ffc02.psc` | Present | Member patch | 8 | 0 |
 | `fragments/Quests/qf_w05_mqs_choice_00592500.psc` | Present | Member patch | 3 | 0 |
 | `fragments/Quests/qf_w05_re_assaultaf01_0055de89.psc` | Present | Member patch | 5 | 0 |
 | `fragments/Quests/qf_w05_re_assaultbb02_0056f035.psc` | Present | Member patch | 4 | 0 |
@@ -1744,12 +1831,24 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Scenes/SF_BS02_MQ01_Penance_MineS_005F72AF_1.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_BS02_MQ03_Tunnel_AriesRea_005FB561.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_BoS02_DMV_Support_100_Fir_0027E576.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Scenes/SF_BoS03_Transponder_Radio_0026B311.psc` | Present | Member patch | 5 | 0 |
 | `fragments/Scenes/SF_CB04_Mayor_RoofC_004ECF09.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_E05_Radiation_FailureScen_0056FB66.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_EN05_Basic_0000_StartUpSc_004E8A9E.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Scenes/SF_EN05_Basic_0005_Intro_NoU_004E8A93.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_EN05_Basic_0020_StartTrai_001820C4.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_EN07_LaunchCardPosterQues_004EB0D4.psc` | Present | Member patch | 4 | 0 |
+| `fragments/Scenes/SF_EN07_LaunchCodePosterQues_004EB13A.psc` | Present | Member patch | 3 | 0 |
+| `fragments/Scenes/SF_EN07_MQ_FleeSilo_0010_Sta_002D115A.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Scenes/SF_EN07_Poster_FalloutQuest__004EB140.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Scenes/SF_EN07_Poster_SilosQuest_Sc_004EB13D.psc` | Present | Member patch | 3 | 0 |
+| `fragments/Scenes/SF_ENz04_Bots_0005_IntroAttr_0039748B.psc` | Present | Member patch | 5 | 0 |
+| `fragments/Scenes/SF_ENz04_Bots_0060_IncomingH_00394345.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_FF08_Initalizing_0035678A.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_FF11_Raid_VertibotScene_0055CCED.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_M01C_Archery_Failure_0041F517.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_M01C_Archery_Success_00417C09.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_MTN_MQ_Rose_MadiganScene_003A5FCB.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_MTR04_Chow_Failure_004E23AF.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_MTR04_Chow_Success_004E23C9.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_MTR04_Dross_Failure_004E20F0.psc` | Present | Member patch | 1 | 0 |
@@ -1759,10 +1858,29 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Scenes/SF_W05_Community_BB_Quest_Do_0054B106.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_W05_MQA_206P_Johnny_002_S_0054EF63.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_W05_MQA_206P_LiveOrDie_0054EE32.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_061_0056B73A.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_061_00577EC7.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_080_00577EC8.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_097_00577EC9.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_097_00577ECA.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_101_00577ECB.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_105_0056B759.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_105_00577ECC.psc` | Present | Member patch | 4 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_105_00577ECD.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_150_0056B76F.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_150_00577ECE.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_160_0056B778.psc` | Present | Member patch | 4 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_165_0056B772.psc` | Present | Member patch | 3 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_1_0056B750_1.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_202P_RaRa_ExitIns_005A2150.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_W05_MQR_203P_GuardArena_E_005A2CD4.psc` | Present | Member patch | 2 | 0 |
+| `fragments/Scenes/SF_W05_MQR_203P_Johnny_ExitL_0042F5DD.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_203P_SargentoPA_0_0042F577.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQR_205P_005_Security_00548CFE.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_W05_MQR_Choice_StartHeist_00593C90.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_W05_MQS_202P_Scene1a_005600D6.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQ_002P_Radical_1000__005852E3.psc` | Present | Member patch | 1 | 0 |
+| `fragments/Scenes/SF_W05_MQ_004P_Crane_1250_Sh_0055ADEE.psc` | Present | Member patch | 1 | 0 |
 | `fragments/Scenes/SF_W05_RE_ObjectAF01_Attack_0056BC6B.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Scenes/SF_W05_RE_ObjectAF01_Explosi_0056A252.psc` | Present | Member patch | 2 | 0 |
 | `fragments/Scenes/SF_W05_RE_ObjectAF01_FixRobo_0056A251.psc` | Present | Member patch | 1 | 0 |
@@ -1786,6 +1904,8 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/packages/PF_ATX_COMP_Inspector_Daphne_0061F708.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_ATX_COMP_MasterPackage_In_0061F709.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_AmbushFromLinkRefChain_001B5900.psc` | Present | Member patch | 1 | 0 |
+| `fragments/packages/PF_BS01_MQ02_Invention_Valde_005D05E3.psc` | Present | Member patch | 1 | 0 |
+| `fragments/packages/PF_BS01_MQ06A_Raiders_Packag_005D2B38.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_BS01_MQ07_Over_Package_Tr_005E9EB2.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_BS02_MQ05_Catalyst_Dorsey_0060D85A.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_BS02_MQ05_Catalyst_Rahman_0060D339.psc` | Present | Member patch | 1 | 0 |
@@ -1810,17 +1930,21 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/packages/PF_W05_MQA_206P_LeaveVault_005674A3.psc` | Present | Member patch | 2 | 0 |
 | `fragments/packages/PF_W05_MQA_206P_RaRa_Entranc_00558977.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQR_203P_0200_Johnny__00593DC7.psc` | Present | Member patch | 1 | 0 |
+| `fragments/packages/PF_W05_MQR_203P_8100_CrowdMe_00594A84.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQR_203P_Johnny_GetCl_005A1F24.psc` | Present | Member patch | 1 | 0 |
+| `fragments/packages/PF_W05_MQR_203P_Sargento_Exi_0042F5D1.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQS_202P_HQ_JenTravel_00583E9A.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQS_202P_HQ_JenTravel_005A1232.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQS_202P_HQ_JenTravel_005A1233.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQS_204P_RaidersTrave_00574019.psc` | Present | Member patch | 1 | 0 |
+| `fragments/packages/PF_W05_MQS_205P_07_PennyLeav_00570D66.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_001P_Wayward_Batte_0040BD22.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543873.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543874.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_First_0040F68B.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_First_00411F79.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_Secon_0040F68A.psc` | Present | Member patch | 1 | 0 |
+| `fragments/packages/PF_W05_MQ_003P_Muscle_SolExi_0041A4E5.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_101P_A_TravelToD_0041B853_1.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_MQ_101P_B_AubriePacka_0059F653.psc` | Present | Member patch | 1 | 0 |
 | `fragments/packages/PF_W05_RE_CampAF03_TravelToL_00573891.psc` | Present | Member patch | 1 | 0 |
@@ -1856,6 +1980,11 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/TERM_Arcade_PrizeTerminal_Ti_0065CEC7.psc` | Present | Member patch | 12 | 0 |
 | `fragments/terminals/TERM_Arcade_PrizeTerminal_Ti_0065CEC8.psc` | Present | Member patch | 12 | 0 |
 | `fragments/terminals/TERM_Arcade_PrizeTerminal__0065CEC9_1.psc` | Present | Member patch | 11 | 0 |
+| `fragments/terminals/TERM_BS01_Invention_CentralT_005C3D65.psc` | Present | Member patch | 5 | 0 |
+| `fragments/terminals/TERM_BS01_Invention_Diagnost_005C2FFC.psc` | Present | Member patch | 1 | 0 |
+| `fragments/terminals/TERM_BS01_MQ06A_Raiders_Shee_005D2B48.psc` | Present | Member patch | 3 | 0 |
+| `fragments/terminals/TERM_BS01_MQ06_Settlers_SubT_005DB4FE.psc` | Present | Member patch | 1 | 0 |
+| `fragments/terminals/TERM_BS01_MQ06_Settlers_Term_005DB4FD.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_BS02_MQ05_Catalyst_View_00606757.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_BoS02DMVMainTerminalSub_00274582.psc` | Present | Member patch | 4 | 0 |
 | `fragments/terminals/TERM_BoS02DMVMainTerminalSub_00274586.psc` | Present | Member patch | 4 | 0 |
@@ -1868,7 +1997,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/TERM_BoSZ04_PowerTerminal_0015A020.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_BoSZ04_VTUTestTerminal_001D616D.psc` | Present | Member patch | 5 | 0 |
 | `fragments/terminals/TERM_BoS_GrantTerminal_002C5442.psc` | Present | Member patch | 1 | 0 |
-| `fragments/terminals/TERM_BoS_TaggerdyTerminal_0034B443.psc` | Present | Member patch | 1 | 0 |
+| `fragments/terminals/TERM_BoS_TaggerdyTerminal_0034B443.psc` | Present | Member patch | 2 | 0 |
 | `fragments/terminals/TERM_BoS_WilsonTerminal_0026B2BD.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_CB04_MayorTerminal_Impo_00044F89.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_CB04_SaboteurTerminal_H_0033CE9D.psc` | Present | Member patch | 1 | 0 |
@@ -1884,6 +2013,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/TERM_FS03_MQ_Fruition_Armory_00002CD5.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_FS03_MQ_Fruition_Armory_004EA3B4.psc` | Present | Member patch | 6 | 0 |
 | `fragments/terminals/TERM_FS_AbbiePersonalTermina_003D75B5.psc` | Present | Member patch | 1 | 0 |
+| `fragments/terminals/TERM_HornwrightEstateTermina_00591A49.psc` | Present | Member patch | 6 | 0 |
 | `fragments/terminals/TERM_LC006_FacilityAccessCon_0013DB7B.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_LC006_ReactorAccessCont_00240B54.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_LC006_ReactorAccessCont_003C2E3D.psc` | Present | Member patch | 2 | 0 |
@@ -1896,6 +2026,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/TERM_LC084_nativeResidential_004E7844.psc` | Present | Member patch | 5 | 0 |
 | `fragments/terminals/TERM_LC084_nativeStorageRobo_004E7849.psc` | Present | Member patch | 5 | 0 |
 | `fragments/terminals/TERM_LC101ControlTerminal_0014E6F0.psc` | Present | Member patch | 5 | 0 |
+| `fragments/terminals/TERM_LC145_PlanningRoom_Term_003A0BA9.psc` | Present | Member patch | 2 | 0 |
 | `fragments/terminals/TERM_LC179_MonorailTerminal_004E22DF.psc` | Present | Member patch | 3 | 0 |
 | `fragments/terminals/TERM_LC184_SecurityTerminalH_002E1535.psc` | Present | Member patch | 5 | 0 |
 | `fragments/terminals/TERM_MSilo_Control_LaunchCon_003E4837.psc` | Present | Member patch | 1 | 0 |
@@ -1930,6 +2061,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/TERM_MoM_Cryptos_Administrat_003694FF.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_MoM_Cryptos_Administrat_00369500.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_MoM_Cryptos_Administrat_004EB0B9.psc` | Present | Member patch | 1 | 0 |
+| `fragments/terminals/TERM_MoM_Cryptos_HandbookSub_00369503.psc` | Present | Member patch | 1 | 0 |
 | `fragments/terminals/TERM_MoM_Cryptos_RequestSupp_0034730C.psc` | Present | Member patch | 5 | 0 |
 | `fragments/terminals/TERM_MoM_Cryptos_Terminal_000471C5.psc` | Present | Member patch | 6 | 0 |
 | `fragments/terminals/TERM_MoM_Cryptos_ViewMission_00347309.psc` | Present | Member patch | 5 | 0 |
@@ -2085,6 +2217,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/topicinfos/TIF_EN02_MQ_Us_0027DB1A.psc` | Present | Member patch | 2 | 0 |
 | `fragments/topicinfos/TIF_EN02_MQ_Us_004DF64B_1.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_EN02_MQ_Us_0052F516.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_EN05_Basic_00182058.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_HolotapeQuest_CT_002C60DC.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_LC129_TrickOrTreat_0052B651.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_LC129_TrickOrTreat_0052B653.psc` | Present | Member patch | 1 | 0 |
@@ -2327,23 +2460,64 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982BF.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982C0.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_Dialogue_JonahIto_005982CE.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_202P_0041CADB.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_202P_0041CAF7.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0042F457.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0042F469.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB96.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB98.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB99.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB9B.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DBA0.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DBA4.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7B.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7C.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7D.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7E.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A74.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A75.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A76.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A77.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A78.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7A.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7B.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7C.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7D.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7E.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7F.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD16.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD18.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD1C.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD1E.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD20.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD22.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQR_Choice_0053635B.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A164.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A173.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A174.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Lace_0056A18B.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_001P_Wayward_Penn_005852B7.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543828.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543836.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543839.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543869.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_0054386B.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Anch_00589599.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Anch_0058959A.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Ty_0058958C_1.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_00589564.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_00589570.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_002P_Radical_Tyle_005895DE.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A46F.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4BC.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4C8.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4C9.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0055380D.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_102P_00401072.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_102P_0040107B.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_102P_004010A0.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_MQ_102P_004010A6.psc` | Present | Member patch | 1 | 0 |
-| `fragments/topicinfos/TIF_W05_MQ_102P_004010A8.psc` | Present | Member patch | 1 | 0 |
+| `fragments/topicinfos/TIF_W05_MQ_102P_004010A8.psc` | Present | Member patch | 2 | 0 |
 | `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAA.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAB.psc` | Present | Member patch | 1 | 0 |
 | `fragments/topicinfos/TIF_W05_RE_AssaultBB02_0056F078.psc` | Present | Member patch | 1 | 0 |
@@ -2424,7 +2598,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `moon_ambush_givecargoscript.psc` | Present | Member patch | 3 | 0 |
 | `moon_onactivateenableref.psc` | Present | Member patch | 1 | 0 |
 | `mtnm01_cannibalperkentryscript.psc` | Present | Member patch | 1 | 0 |
-| `mtnm01_playerscript.psc` | Present | Member patch | 6 | 0 |
+| `mtnm01_playerscript.psc` | Present | Member patch | 7 | 0 |
 | `mtns01_playerscript.psc` | Present | Member patch | 4 | 0 |
 | `mtr02_equipmentterminalscript.psc` | Present | Member patch | 1 | 0 |
 | `mtr02_miraclesignboardrefscript.psc` | Present | Member patch | 1 | 0 |
@@ -2471,7 +2645,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `testactivatechairscript.psc` | Present | Member patch | 1 | 0 |
 | `testchargenstartinganimsscript.psc` | Present | Member patch | 2 | 0 |
 | `traptriggermain.psc` | Present | Member patch | 2 | 0 |
-| `tw002securitystationscript.psc` | Present | Member patch | 1 | 0 |
+| `tw002securitystationscript.psc` | Present | Member patch | 5 | 1 |
 | `tw002wardentalk.psc` | Present | Member patch | 1 | 0 |
 | `tw004script.psc` | Present | Member patch | 7 | 0 |
 | `v96_vaultexteriorgeardoorscript.psc` | Present | Member patch | 1 | 0 |
@@ -2483,7 +2657,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 </details>
 
 <details>
-<summary>Full unpatched candidate inventory (4089)</summary>
+<summary>Full unpatched candidate inventory (3977)</summary>
 
 | Script |
 |---|
@@ -2500,6 +2674,10 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `ArcadeNukaZapperRace_ObjectiveScript.psc` |
 | `ArcadePointsQuestLinkerScript.psc` |
 | `ArktosPharmaQuestScript.psc` |
+| `B21/EnclaveEventSupport.psc` |
+| `B21/KeypadNative.psc` |
+| `B21_PlayerFear.psc` |
+| `B21_WaywardState.psc` |
 | `BS00_Radio_EndOnGlobalValue.psc` |
 | `BURN_E02_DestroyNestScript.psc` |
 | `BURN_EquipHelmet.psc` |
@@ -2510,9 +2688,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `BloodEagleSpotterAlarmActivatorScript.psc` |
 | `BoS01Script.psc` |
 | `BoS02AmmendmentScript.psc` |
-| `BoS02J47Script.psc` |
 | `BoS02Script.psc` |
-| `BoS03Script.psc` |
 | `BoS03TransponderQuestScript.psc` |
 | `BoSDMVTerminalScript.psc` |
 | `BoSZ03Script.psc` |
@@ -2655,7 +2831,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultAliasOnDistanceLessThanC.psc` |
 | `DefaultAliasOnDistanceLessThanD.psc` |
 | `DefaultAliasOnDistanceLessThanE.psc` |
-| `DefaultAliasOnItemRemoved.psc` |
 | `DefaultAliasOnObjectRepaired.psc` |
 | `DefaultAliasOnPlayerHolotapeA.psc` |
 | `DefaultAliasOnPlayerHolotapeD.psc` |
@@ -2663,7 +2838,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultAliasOnTriggerEnterB.psc` |
 | `DefaultAliasPlayerChangeLocationA.psc` |
 | `DefaultAliasPlayerChangeLocationB.psc` |
-| `DefaultAliasProgressBarScript.psc` |
 | `DefaultApplyDiseaseOnTriggerEnter.psc` |
 | `DefaultCollAliasMakeAliasRefForInv.psc` |
 | `DefaultCollectionAddPlayerOnHitScript.psc` |
@@ -2680,10 +2854,10 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultKeypadSwitchDoorScript.psc` |
 | `DefaultKeypadTimedSwitchScript.psc` |
 | `DefaultKillObjective.psc` |
+| `DefaultLegendaryLTTCreatureRef.psc` |
 | `DefaultLightningQuestTrigger.psc` |
 | `DefaultLightningSpawnGroupScript.psc` |
 | `DefaultLightningSpawningScript.psc` |
-| `DefaultOnItemCraftedScript.psc` |
 | `DefaultOnReadSendStoryEvent.psc` |
 | `DefaultQuestAddPlayers.psc` |
 | `DefaultQuestAddPlayersDistanceCheck.psc` |
@@ -2700,9 +2874,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultQuestOnAddPlayersAddItem.psc` |
 | `DefaultQuestOnKillManagerB.psc` |
 | `DefaultQuestOnKillManagerC.psc` |
-| `DefaultQuestOnRadioDetectedSendEvent.psc` |
 | `DefaultQuestRewardEnemyDamageScript.psc` |
-| `DefaultQuestlineRestartScript.psc` |
 | `DefaultQuestlineRestartScriptB.psc` |
 | `DefaultRandomConversationScript.psc` |
 | `DefaultRefClearGhostOnInstOwnerCombat.psc` |
@@ -2717,9 +2889,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultToggleRefOnAliasFill.psc` |
 | `DefaultTopicInfoAddPlayerScript.psc` |
 | `DefaultTopicInfoDisplayTutorial.psc` |
-| `DefaultTopicInfoGiveItemOnce.psc` |
-| `DefaultTopicInfoMarkForFaction.psc` |
-| `DefaultTopicInfoSetMultActorValues.psc` |
 | `DefaultTriggerEncounterWaveQuestScript.psc` |
 | `DefaultTriggerEncounterWaveScript.psc` |
 | `DenizenDialogueScript.psc` |
@@ -2770,12 +2939,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `E09D_PlayerAliasScript.psc` |
 | `E09D_WagonAliasScript.psc` |
 | `E09b_ExplosiveFinishScript.psc` |
-| `EN05_Basic_MiscQuestScript.psc` |
-| `EN05_Intro_MiscScript.psc` |
-| `EN05_JimmyDiaryScript.psc` |
-| `EN05_PatriotismUpdateScriptVar.psc` |
-| `EN05_TopicShowMessageInPA.psc` |
-| `EN05_UniformLogScript.psc` |
 | `EN06MasterQuestScript.psc` |
 | `EN06MiscQuestScript.psc` |
 | `EN06QuestScript.psc` |
@@ -2794,35 +2957,16 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `EN07_ActivePrinterAliasScript.psc` |
 | `EN07_DebugQuestScript.psc` |
 | `EN07_FissureMarkerStateScript.psc` |
-| `EN07_FissureQuestScript.psc` |
 | `EN07_KeypadCooldownScript.psc` |
-| `EN07_MissileSoundRefScript.psc` |
-| `EN07_PosterTutorialScript.psc` |
 | `EN07_ScorchbeastCleanUpScript.psc` |
 | `EN07_SiloStateTerminalScript.psc` |
-| `ENB_BunkerMasterScript.psc` |
 | `ENB_ModusRefStateScript.psc` |
-| `ENB_OpenVaultDoor.psc` |
 | `ENB_QuestScript.psc` |
 | `EN_07_MQ_CodeHuntRestartScript.psc` |
-| `EN_MasterQuestScript.psc` |
 | `ENs02_BlastMarkerScript.psc` |
-| `ENs02_BlastQuestScript.psc` |
-| `ENs02_DishStatusScript.psc` |
-| `ENs02_EnemyCollectionScript.psc` |
 | `ENs02_LureRefScript.psc` |
-| `ENs02_LureSiteCollectionScript.psc` |
-| `ENs02_OrientationCollectionScript.psc` |
-| `ENz01_AboveScript.psc` |
-| `ENz01_ActiveDishScript.psc` |
-| `ENz01_AnimScript.psc` |
 | `ENz01_DecalParentScript.psc` |
-| `ENz01_ResourceDropRefScript.psc` |
-| `ENz04_BotScript.psc` |
-| `ENz04_EncounterWaveScript.psc` |
-| `ENz04_PatrolHandlerScript.psc` |
 | `ENz04_SpawnTubeRefScript.psc` |
-| `ENz04_TrackDeathCollectionScript.psc` |
 | `ENz09_QuestScript.psc` |
 | `EWSModuleQuest.psc` |
 | `EWSModuleRef.psc` |
@@ -2842,7 +2986,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `EnableLinkedRefOnLoad.psc` |
 | `EncounterManagementQuestScript.psc` |
 | `EncumberedTutorialScript.psc` |
-| `Enz04_PatrolCollectionScript.psc` |
 | `EpicCreatureEffectScript.psc` |
 | `EpicCreaturesScript.psc` |
 | `ExamScoreTextReplacementScript.psc` |
@@ -2926,11 +3069,13 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `HabitatSpawnController.psc` |
 | `HalloweenCandyRandomEffectScript.psc` |
 | `HighTechBBQGrillScript.psc` |
+| `HostileTakeovers/Creatures/HTO_ExplosiveDeathScript.psc` |
 | `HostileTakeovers/Creatures/HTO_SuiciderEyebotScript.psc` |
 | `HostileTakeovers/HTO_FactionScript.psc` |
 | `HostileTakeovers/HTO_MarkerScript.psc` |
 | `HostileTakeovers/HTO_MasterScript.psc` |
 | `HostileTakeovers/HTO_MutationScript.psc` |
+| `HostileTakeovers/HTO_PlayMusicScript.psc` |
 | `HostileTakeovers/hto_playerscript.psc` |
 | `HouseOfScaresPlayerScript.psc` |
 | `HunterHuntedMasterQuestScript.psc` |
@@ -2938,11 +3083,9 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `HunterHuntedTerminalScript.psc` |
 | `LC004_PowerOnScript.psc` |
 | `LC043_SecurityMarkerScript.psc` |
-| `LC060_DialogueAddToMapScript.psc` |
 | `LC060_WhitespringDiningRoomChairScript.psc` |
 | `LC060_WhitespringDiningRoomScript.psc` |
 | `LC060_WhitespringRespawnScript.psc` |
-| `LC080_MODUSSentryBotScript.psc` |
 | `LC090_MonongahMineSafeScript.psc` |
 | `LC192_NoFly.psc` |
 | `LDActorEscortQuestScript.psc` |
@@ -3026,8 +3169,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `MTR05_BreachQuestScript.psc` |
 | `MTR05_EnemyDeathCounter.psc` |
 | `MTR05_FilingStatusNoteScript.psc` |
-| `MTR06_MineKlaxonScript.psc` |
-| `MTR06_OnReadSchematicCode.psc` |
 | `MTR08_AutoMinerAliasScript.psc` |
 | `MTR08_ClearAliasOnEnterBleedout.psc` |
 | `MTR08_MasterScript.psc` |
@@ -3039,18 +3180,10 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `MTRZ01_LostQuestScript.psc` |
 | `MTRZ05QuestRestartScript.psc` |
 | `MTRZ05_QuestScript.psc` |
-| `MTRz05VendScript.psc` |
 | `MineDefenderSpawner.psc` |
-| `MoM00RECorpseAliasScript.psc` |
-| `MoM02CQuestScript.psc` |
 | `MoM02QuestScript.psc` |
 | `MoMActivatorScript.psc` |
 | `MoMDressQuestScript.psc` |
-| `MoMEquippableQuestItemScript.psc` |
-| `MoMItemManagerQuestScript.psc` |
-| `MoMMasterQuestScript.psc` |
-| `MoMParlorLaserGridManagerScript.psc` |
-| `MoMParlorSecretEntranceScript.psc` |
 | `MoMPhantomDeviceDelayedSpellScript.psc` |
 | `MoMVeilQuestScript.psc` |
 | `ModLegendaryOnCritHealPlayerTeamScript.psc` |
@@ -3072,7 +3205,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `Nukacade_PrizeDispenserScript.psc` |
 | `Nukacade_PrizeTerminalClaimChecker.psc` |
 | `NukeWeatherTutorialScript.psc` |
-| `Nuke_CodesSolutionPrinterScript.psc` |
 | `Nuke_CodesSolutionPrintersScript.psc` |
 | `Nuke_LaunchCardPatrolScript.psc` |
 | `OBSOLETEQuestCleanupItemsOnShutdown.psc` |
@@ -3123,14 +3255,11 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `QUESTS/AC_SQ04_Reopening/QuestScript.psc` |
 | `QUESTS/BS01_COMP_Chef/AllyChefScript.psc` |
 | `QUESTS/BS01_COMP_Medic/AllyMedicScript.psc` |
-| `QUESTS/BS01_FortAtlasDungeon01_MasterQuest/PlayerScript.psc` |
 | `QUESTS/BS02_E01_Metal/GladiatorBleedoutScript.psc` |
 | `QUESTS/BS02_E01_Metal/PlayerScript.psc` |
 | `QUESTS/BS02_E01_Metal/QuestScript.psc` |
 | `QUESTS/BS02_E01_Metal/goldeneyebotstealthscript.psc` |
-| `QUESTS/BS02_MQ01_Penance/PlayerScript.psc` |
 | `QUESTS/BS02_MQ04_Conscience/setoutfitonquestcompleted.psc` |
-| `QUESTS/BS02_MQ05_Catalyst/BossScript.psc` |
 | `QUESTS/BS02_SpecialVendor_Dialogue/MasterScript.psc` |
 | `QUESTS/BS_RE_CampJN01/BS_RE_CampJN01.psc` |
 | `QUESTS/BS_RE_SceneJN01/BS_RE_SceneJN01.psc` |
@@ -3307,7 +3436,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `QUESTS/_Default/progressbar/masterscript.psc` |
 | `QUESTS/_Default/refcollectionaliascastspellonactivate.psc` |
 | `QUESTS/_Default/stopquestonplayerinstanceexit.psc` |
-| `QUESTS/bs01_dialogue_valdez/playerscript.psc` |
 | `QUESTS/bs01_mq02/wavedebugbutton.psc` |
 | `QUESTS/e05_caravan/brahminscript.psc` |
 | `QUESTS/e05_caravan/questscript.psc` |
@@ -3324,8 +3452,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `QUESTS/sfs09/habitatquestscript.psc` |
 | `QuestDebuggerScript.psc` |
 | `RB_MasterQuestScript.psc` |
-| `RDRRadioBoostedQuestscript.psc` |
-| `RDRRadioWeakQuestscript.psc` |
 | `REAddMapMarkerQuestScript.psc` |
 | `REAssaultParticipationScript.psc` |
 | `REFactionAssaultQuestScript.psc` |
@@ -3359,19 +3485,23 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `RE_TravelTS02QuestScript.psc` |
 | `RE_sceneKMK06Script.psc` |
 | `RS01AContactPlayerConnectScript.psc` |
-| `RSVP00_OnActivatePrintNewsletter.psc` |
 | `RSVP02_QuestScript.psc` |
-| `RSVP03_QuestScript.psc` |
 | `RadioMN2_MasterScript.psc` |
 | `RadioNWOT_MasterScript.psc` |
 | `RefCollAddToCollectionOnMenuItemRun.psc` |
-| `RefCollOnDeathUpdateObjectiveScript.psc` |
 | `RelayTowerLootCacheQuestScript.psc` |
 | `RepairEquippedArmor.psc` |
 | `RepairEquippedWeapon.psc` |
 | `RestrictedAreaTriggerScript.psc` |
 | `ReturnToPreviousLocOnActivate.psc` |
 | `RobotSelfDestructEffectScript.psc` |
+| `SDOWAliasOnActivateIfItemEquipped.psc` |
+| `SDOW_DebunkerRadio_MasterScript.psc` |
+| `SDOW_MQ02_ItemCountQuest.psc` |
+| `SDOW_MQ05_BWVision.psc` |
+| `SDOW_SQ00_UpdateLCPObjective.psc` |
+| `SDOW_SQ01_MapScript.psc` |
+| `SDOW_SQ01_TrackQuest.psc` |
 | `SF05_MainQuestScript.psc` |
 | `SF06_MainQuestScript.psc` |
 | `SF07_CostumeScript.psc` |
@@ -3383,10 +3513,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `SFM01_Glow_ChemConsoleLightScript.psc` |
 | `SFM01_Glow_QuestScript.psc` |
 | `SFM04_MiscRegionPointerBookScript.psc` |
-| `SFM04_Organic_BloomScript.psc` |
-| `SFM04_Organic_Blooms_QuestScript.psc` |
-| `SFM04_Organic_EllaHolotapeScript.psc` |
-| `SFM04_Organic_QuestScript.psc` |
 | `SFS01_Brew_BoilerScript.psc` |
 | `SFS01_Brew_DistillerScript.psc` |
 | `SFS01_Brew_HarvestablesScript.psc` |
@@ -3477,7 +3603,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `TW009TriggerBoxChooseScript.psc` |
 | `TW010PointerScript.psc` |
 | `TW043QuestScript.psc` |
-| `TWDialogueScript.psc` |
 | `TWZ03_Script.psc` |
 | `TWZ03_TargetStandScript.psc` |
 | `TWZ05Script.psc` |
@@ -3618,7 +3743,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_MQR_203P_TurretScript.psc` |
 | `W05_MQR_204P_LevScript.psc` |
 | `W05_MQR_205P_A_QuestScript.psc` |
-| `W05_MQR_Vault79KeypadAliasScript.psc` |
 | `W05_MQS_201P_MotherlodeWaveScript.psc` |
 | `W05_MQS_203P_QuestScript.psc` |
 | `W05_MQS_204P_QuestScript.psc` |
@@ -3626,7 +3750,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_MQ_001P_Wayward_LaceyIselaTrigger.psc` |
 | `W05_MQ_002P_RadicalCombatScript.psc` |
 | `W05_MQ_004P_BunkerQuestScript.psc` |
-| `W05_ModRepScript.psc` |
 | `W05_RE_AddToRefCollection.psc` |
 | `W05_RE_AssaultAF01_QuestScript.psc` |
 | `W05_RE_CampAF01_Quest_Script.psc` |
@@ -3645,9 +3768,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `W05_ReputationQuestScript.psc` |
 | `W05_Vault79EntranceDoorTriggerScript.psc` |
 | `W05_Vaut79EntranceKeypadScript.psc` |
-| `W05_Wayward_ExtDialogueScript.psc` |
 | `W05_Wayward_RC_MortsClueRCScript.psc` |
-| `W05_Wayward_SetAVOnQuestlineComplete.psc` |
 | `W05_Wayward_SettlementQuestScript.psc` |
 | `WL005_BombActivateFurnitureScript.psc` |
 | `WL005_DeathBoxMachineScript.psc` |
@@ -3806,7 +3927,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `defaultapplyspell.psc` |
 | `defaultapplyspellonlightningstrike.psc` |
 | `defaultcheckitemequipped.psc` |
-| `defaultclearghostedoninstownercombat.psc` |
 | `defaultcollaliasonlightningstrike.psc` |
 | `defaultcollaliassendeventonactivate.psc` |
 | `defaultcollaliassetstageonitemadd.psc` |
@@ -3841,7 +3961,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `defaultquestcounteventsmanager.psc` |
 | `defaultquestonaddplayers.psc` |
 | `defaultquestonaddplayerssetactorvalue.psc` |
-| `defaultquestsendstoryevent.psc` |
 | `defaultrandomconversationinstancedcell.psc` |
 | `defaultrefcolaliasondeathchangevar.psc` |
 | `defaultrefonlightningstrike.psc` |
@@ -3941,6 +4060,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_AC_MQ_Dialogue_VinRusso_O_0076A38E.psc` |
 | `fragments/Quests/QF_ATX_COMP_PetDog_Quest_Cam_006209CE.psc` |
 | `fragments/Quests/QF_ATX_COMP_Quest_Camp_Lit_006A436A_2.psc` |
+| `fragments/Quests/QF_ATX_COMP_Quest_Camp_Lit_008B43D2_1.psc` |
 | `fragments/Quests/QF_ATX_COMP_Quest_Camp_Lite__0061E040.psc` |
 | `fragments/Quests/QF_ATX_COMP_Quest_Camp_Lite__0061E062.psc` |
 | `fragments/Quests/QF_ATX_COMP_Quest_Camp_Lite__0062CA7E.psc` |
@@ -3956,9 +4076,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_Achievement_Level50_003A10C3.psc` |
 | `fragments/Quests/QF_BS01_COMP_Medic_Camp_005C40FD.psc` |
 | `fragments/Quests/QF_BS01_COMP_Quest_Camp_Lite_005DBE6D.psc` |
-| `fragments/Quests/QF_BS01_Dialogue_PutnamBoys__005DC0E0.psc` |
-| `fragments/Quests/QF_BS01_Dialogue_PutnamFamil_005DC0DF.psc` |
-| `fragments/Quests/QF_BS01_FortAtlasDungeon01_M_005EF38C.psc` |
 | `fragments/Quests/QF_BS01_LeonePointer_Misc_005E65F1.psc` |
 | `fragments/Quests/QF_BS02_SpecialVendor_Dialog_00602AFA.psc` |
 | `fragments/Quests/QF_BS_RE_AssaultCMB01_005C8E8A.psc` |
@@ -4012,7 +4129,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_CB01_MineRepair_00098969.psc` |
 | `fragments/Quests/QF_CB02_MonsterMash_0002443A.psc` |
 | `fragments/Quests/QF_CB05_Artist_0008F5CA.psc` |
-| `fragments/Quests/QF_CB15_ScorchedEarth_003E271D.psc` |
 | `fragments/Quests/QF_CBZ04_ReclaimGear_00118545.psc` |
 | `fragments/Quests/QF_CB_Master_003329DC.psc` |
 | `fragments/Quests/QF_CBxxA_Beavers_0010AEFD.psc` |
@@ -4067,20 +4183,14 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_E03A_Mischief_Misc_0056BE35.psc` |
 | `fragments/Quests/QF_E05_Caravan_Misc_005913E5.psc` |
 | `fragments/Quests/QF_E05_Radiation_00562877.psc` |
-| `fragments/Quests/QF_E06_Colossus_00583D14.psc` |
 | `fragments/Quests/QF_E06_PocketWatch_Maggie_00599355.psc` |
 | `fragments/Quests/QF_E07A_Mothman_Dialogue_006173A2.psc` |
 | `fragments/Quests/QF_E07B_Invaders_00620F7B.psc` |
 | `fragments/Quests/QF_E09B_Wheel_00634B0B.psc` |
 | `fragments/Quests/QF_E09D_GWWS_0065E071.psc` |
-| `fragments/Quests/QF_EN05_Intro_Promo_00341B07.psc` |
 | `fragments/Quests/QF_EN06_Debate_Master_002B4780.psc` |
 | `fragments/Quests/QF_EN06_Misc_002B477D.psc` |
 | `fragments/Quests/QF_EN06_Pres_002B477F.psc` |
-| `fragments/Quests/QF_EN07_Death_FalloutQuest_004EB0F5.psc` |
-| `fragments/Quests/QF_EN07_Death_LaunchCardQues_004EB0C2.psc` |
-| `fragments/Quests/QF_EN07_Death_LaunchCodeQues_004EB0F4.psc` |
-| `fragments/Quests/QF_EN07_Death_SilosQuest_004EB0F3.psc` |
 | `fragments/Quests/QF_ENB_DialogueEnclaveBunker_000977BC.psc` |
 | `fragments/Quests/QF_ENB_ScienceWing_Intro_002B7F8C.psc` |
 | `fragments/Quests/QF_ENz09_Room_00002AA8.psc` |
@@ -4165,9 +4275,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_MTR03_Demerits_00018E0F.psc` |
 | `fragments/Quests/QF_MTR07_Earth_Misc_000070B6.psc` |
 | `fragments/Quests/QF_MTR08_Misc_00042F7D.psc` |
-| `fragments/Quests/QF_MoMDress_0035C8B5.psc` |
 | `fragments/Quests/QF_MoMItemManager_004E6051_1.psc` |
-| `fragments/Quests/QF_MoMVeil_0035C8B6.psc` |
 | `fragments/Quests/QF_NPE_MQ01_Enjoy_006FB1F7.psc` |
 | `fragments/Quests/QF_NWOT_NukacadePointer_Band_0067AE09.psc` |
 | `fragments/Quests/QF_NWOT_NukacadePointer_Bott_0067AE08.psc` |
@@ -4217,12 +4325,29 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/QF_RE_SceneTS02_GQ_00430010.psc` |
 | `fragments/Quests/QF_RE_TravelTemplateNEW_0039EFE2.psc` |
 | `fragments/Quests/QF_RSVP00_Quest_Note_004FC02F.psc` |
-| `fragments/Quests/QF_RSVP00_Quest_Vector_to_Th_003E98D5.psc` |
 | `fragments/Quests/QF_RSVP01_Quest_Note_004FC02A.psc` |
 | `fragments/Quests/QF_RSVP03_MiscPointer_004FC083.psc` |
 | `fragments/Quests/QF_RSVP03_Quest_Note_004FC023.psc` |
 | `fragments/Quests/QF_RelayTowerLootCacheQuest_0008C5B3.psc` |
 | `fragments/Quests/QF_ResourceGeneratorQuest_0012DB3F.psc` |
+| `fragments/Quests/QF_SDOW_MQ01_Bodies_008F15C1.psc` |
+| `fragments/Quests/QF_SDOW_MQ01_OnConnect_008F15C4.psc` |
+| `fragments/Quests/QF_SDOW_MQ02_Graves_008F15A1.psc` |
+| `fragments/Quests/QF_SDOW_MQ02_OnConnect_008F15C5.psc` |
+| `fragments/Quests/QF_SDOW_MQ03_DailyOps_008F15EE.psc` |
+| `fragments/Quests/QF_SDOW_MQ03_OnConnect_008F15C6.psc` |
+| `fragments/Quests/QF_SDOW_MQ04_Infestations_008F15C2.psc` |
+| `fragments/Quests/QF_SDOW_MQ04_OnConnect_008F15C7.psc` |
+| `fragments/Quests/QF_SDOW_MQ05_Headhunt_008F15C3.psc` |
+| `fragments/Quests/QF_SDOW_MQ05_OnConnect_008F15C8.psc` |
+| `fragments/Quests/QF_SDOW_RE_Assault_Slasher_0_00904CD4.psc` |
+| `fragments/Quests/QF_SDOW_RE_Travel_Slasher_01_008FF2EA.psc` |
+| `fragments/Quests/QF_SDOW_RE_Travel_Slasher_02_0090E2BA.psc` |
+| `fragments/Quests/QF_SDOW_Radio02_008EDF33_1.psc` |
+| `fragments/Quests/QF_SDOW_SQ00_UmbrellaQuest_0092A0A2.psc` |
+| `fragments/Quests/QF_SDOW_SQ01_Graves_Repeatab_008F1665.psc` |
+| `fragments/Quests/QF_SDOW_SQ01_Radio01_008EDF2F.psc` |
+| `fragments/Quests/QF_SDOW_SQ_DebunkerRadio_008EDF32.psc` |
 | `fragments/Quests/QF_SF05_ReturnToNormalcy_00011A5A.psc` |
 | `fragments/Quests/QF_SF06_Radio_00354E17.psc` |
 | `fragments/Quests/QF_SF06_RespectTheDead_00004158.psc` |
@@ -4453,6 +4578,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/qf__0100098d.psc` |
 | `fragments/Quests/qf__010009b6.psc` |
 | `fragments/Quests/qf__010009ed.psc` |
+| `fragments/Quests/qf__01000a21.psc` |
 | `fragments/Quests/qf__01000a22.psc` |
 | `fragments/Quests/qf__01000ab2.psc` |
 | `fragments/Quests/qf__01000ae8.psc` |
@@ -4494,12 +4620,18 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/qf__01001672.psc` |
 | `fragments/Quests/qf__01001b91.psc` |
 | `fragments/Quests/qf__01001c5d.psc` |
+| `fragments/Quests/qf__01001ccd.psc` |
+| `fragments/Quests/qf__01001cd1.psc` |
+| `fragments/Quests/qf__01001cd2.psc` |
+| `fragments/Quests/qf__01001cd3.psc` |
+| `fragments/Quests/qf__01001cd4.psc` |
 | `fragments/Quests/qf__01001cfc.psc` |
 | `fragments/Quests/qf__01001d10.psc` |
 | `fragments/Quests/qf__01001d18.psc` |
 | `fragments/Quests/qf__010027dc.psc` |
 | `fragments/Quests/qf__0100292f.psc` |
 | `fragments/Quests/qf__010033b8.psc` |
+| `fragments/Quests/qf__01003855.psc` |
 | `fragments/Quests/qf__01003ad8.psc` |
 | `fragments/Quests/qf__01003e6e.psc` |
 | `fragments/Quests/qf__0100418f.psc` |
@@ -4679,6 +4811,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Quests/qf_rs06_manual_final_01000b27.psc` |
 | `fragments/Quests/qf_rs06_manual_stims_01000dcc.psc` |
 | `fragments/Quests/qf_rsz00_rsvp_003b32db.psc` |
+| `fragments/Quests/qf_sdow_mq04_infestations_kw_00900674.psc` |
 | `fragments/Quests/qf_sfs08_heart_00093187.psc` |
 | `fragments/Quests/qf_sq_reconscope_000a07f3.psc` |
 | `fragments/Quests/qf_storm_misc_craigitems_01000eaa.psc` |
@@ -4732,7 +4865,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Scenes/SF_ALLY_Astronaut_Scene_Intr_005A06A6.psc` |
 | `fragments/Scenes/SF_ATX_COMP_Ghoul_Services_L_0062CB96.psc` |
 | `fragments/Scenes/SF_BS01_MQ05_Raiders_PierceW_005D2B44.psc` |
-| `fragments/Scenes/SF_BoS03_Transponder_Radio_0026B311.psc` |
 | `fragments/Scenes/SF_CB01_Interrogation_Intro_0009ABAB.psc` |
 | `fragments/Scenes/SF_CB01_Interrogation_Tortur_002996CB.psc` |
 | `fragments/Scenes/SF_CB15_ScorchbeastQueen_Lan_004845CA.psc` |
@@ -4744,16 +4876,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Scenes/SF_DRIVE_CaravanEscort_Modul_00769D7B.psc` |
 | `fragments/Scenes/SF_E01C_Tales_Dark_Scene_03_004648D7.psc` |
 | `fragments/Scenes/SF_EN01_AgentGreyScene_003113C8.psc` |
-| `fragments/Scenes/SF_EN05_Basic_0000_StartUpSc_004E8A9E.psc` |
-| `fragments/Scenes/SF_EN05_Basic_0005_Intro_NoU_004E8A93.psc` |
-| `fragments/Scenes/SF_EN05_Basic_0020_StartTrai_001820C4.psc` |
-| `fragments/Scenes/SF_EN07_LaunchCardPosterQues_004EB0D4.psc` |
-| `fragments/Scenes/SF_EN07_LaunchCodePosterQues_004EB13A.psc` |
-| `fragments/Scenes/SF_EN07_MQ_FleeSilo_0010_Sta_002D115A.psc` |
-| `fragments/Scenes/SF_EN07_Poster_FalloutQuest__004EB140.psc` |
-| `fragments/Scenes/SF_EN07_Poster_SilosQuest_Sc_004EB13D.psc` |
-| `fragments/Scenes/SF_ENz04_Bots_0005_IntroAttr_0039748B.psc` |
-| `fragments/Scenes/SF_ENz04_Bots_0060_IncomingH_00394345.psc` |
 | `fragments/Scenes/SF_GHL00_Quest_TransformPlay_007B280A.psc` |
 | `fragments/Scenes/SF_GQ_SuperMutantMerchant_Sc_0017F0B0.psc` |
 | `fragments/Scenes/SF_HunterHuntedQuestSceneC_003CFB1D_1.psc` |
@@ -4769,7 +4891,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Scenes/SF_MILE_Strategist_Tier_Dial_00774281.psc` |
 | `fragments/Scenes/SF_MTNM04_Billingsley_IntroS_0006E19E.psc` |
 | `fragments/Scenes/SF_MTNZ05_Messenger_FailureS_003C473F.psc` |
-| `fragments/Scenes/SF_MTN_MQ_Rose_MadiganScene_003A5FCB.psc` |
 | `fragments/Scenes/SF_MTR05_Mother_Breach_0050__002C3EE4.psc` |
 | `fragments/Scenes/SF_MTR05_Mother_Breach_0060__001D8084.psc` |
 | `fragments/Scenes/SF_MTR08_Lode_StartButtonSFX_00573B3B.psc` |
@@ -4987,27 +5108,8 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/Scenes/SF_W05_Com_RFC_MirelurkTurnI_0057CF7C.psc` |
 | `fragments/Scenes/SF_W05_Daily_F01_Return_00559C7F_1.psc` |
 | `fragments/Scenes/SF_W05_MQR_201P_Track_RadioQ_0040D4DD.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_061_0056B73A.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_061_00577EC7.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_080_00577EC8.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_097_00577EC9.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_097_00577ECA.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_101_00577ECB.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_105_0056B759.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_105_00577ECC.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_105_00577ECD.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_150_0056B76F.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_150_00577ECE.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_165_0056B772.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRaVent_1_0056B750_1.psc` |
-| `fragments/Scenes/SF_W05_MQR_202P_RaRa_ExitIns_005A2150.psc` |
-| `fragments/Scenes/SF_W05_MQR_203P_Johnny_ExitL_0042F5DD.psc` |
-| `fragments/Scenes/SF_W05_MQR_203P_SargentoPA_0_0042F577.psc` |
 | `fragments/Scenes/SF_W05_MQR_205P_004A_JohnnyD_00572D92.psc` |
-| `fragments/Scenes/SF_W05_MQR_205P_005_Security_00548CFE.psc` |
-| `fragments/Scenes/SF_W05_MQ_002P_Radical_1000__005852E3.psc` |
 | `fragments/Scenes/SF_W05_MQ_004P_Crane_1200_Ro_0055ADEC.psc` |
-| `fragments/Scenes/SF_W05_MQ_004P_Crane_1250_Sh_0055ADEE.psc` |
 | `fragments/Scenes/SF_W05_MQ_004P_Crane_1300_Du_0055ADEF.psc` |
 | `fragments/Scenes/SF_W05_RE_JP07_Camp_BloodEag_0056D230.psc` |
 | `fragments/Scenes/SF_W05_RE_Scene_JP04_Settler_00563844.psc` |
@@ -5062,14 +5164,13 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/packages/PF_AC_MQ02_Stage_StayAtSelfS_0076AAD2.psc` |
 | `fragments/packages/PF_AC_MQ03_HonorBound_GeneMa_007452BE.psc` |
 | `fragments/packages/PF_AC_MQ04_AntonioPostGeneCo_006F9A01.psc` |
-| `fragments/packages/PF_BS01_MQ02_Invention_Valde_005D05E3.psc` |
-| `fragments/packages/PF_BS01_MQ06A_Raiders_Packag_005D2B38.psc` |
 | `fragments/packages/PF_BS01_MQ08_Defense_Rahmani_005E584D.psc` |
 | `fragments/packages/PF_BS01_MQ08_Defense_Rahmani_005E8B6C.psc` |
 | `fragments/packages/PF_BS01_MQ08_Defense_Shin_Go_005E584E.psc` |
 | `fragments/packages/PF_BS01_MQ08_Defense_Shin_Go_005E8B6E.psc` |
 | `fragments/packages/PF_BS01_MQ08_Defense_Valdez__005E584C.psc` |
 | `fragments/packages/PF_BS01_MQ08_Defense_Valdez__005E8B6D.psc` |
+| `fragments/packages/PF_BS02_MQ02_Missing_Marci_0060E191_2.psc` |
 | `fragments/packages/PF_BURN_SQ01_Eugene_LeaveAre_00851492.psc` |
 | `fragments/packages/PF_CAMPPets_PetTravelToPlaye_007ABE14.psc` |
 | `fragments/packages/PF_COMP_Astronaut_Package_As_00573B15.psc` |
@@ -5103,8 +5204,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/packages/PF_W05_MQR_201P_1420_FollowP_005A043D.psc` |
 | `fragments/packages/PF_W05_MQR_201P_1620_FollowP_005A043E.psc` |
 | `fragments/packages/PF_W05_MQR_202P_RaRaVent_131_0056B767.psc` |
-| `fragments/packages/PF_W05_MQR_203P_8100_CrowdMe_00594A84.psc` |
-| `fragments/packages/PF_W05_MQR_203P_Sargento_Exi_0042F5D1.psc` |
 | `fragments/packages/PF_W05_MQS_201P_HQ_PaigeTrav_00597801.psc` |
 | `fragments/packages/PF_W05_MQS_201P_HWS_DefaultS_00590450.psc` |
 | `fragments/packages/PF_W05_MQS_201P_HWS_DefaultS_00590451.psc` |
@@ -5123,9 +5222,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/packages/PF_W05_MQS_203P_HoldPosition_0056BF20.psc` |
 | `fragments/packages/PF_W05_MQS_203P_RadcliffRobc_005A26E2.psc` |
 | `fragments/packages/PF_W05_MQS_203P_Robobrain_En_005A26E3.psc` |
-| `fragments/packages/PF_W05_MQS_205P_07_PennyLeav_00570D66.psc` |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_Secon_0040F690.psc` |
-| `fragments/packages/PF_W05_MQ_003P_Muscle_SolExi_0041A4E5.psc` |
 | `fragments/packages/PF_W05_MQ_004P_Crane_ExitWay_0055ADC7.psc` |
 | `fragments/packages/PF_W05_RE_SceneAF04_TravelTo_00584A26.psc` |
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_00569407.psc` |
@@ -5135,6 +5232,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_00587BE0.psc` |
 | `fragments/packages/PF_W05_RE_TravelAF02_TravelT_0059DD34.psc` |
 | `fragments/packages/PF_W05_TravelToNukeLinkRef_0053820F.psc` |
+| `fragments/packages/PF_WorldPets_PetTravelToPlay_008B0509.psc` |
 | `fragments/packages/PF_XPD_AC01_AuditorsExit_Pac_0074428C.psc` |
 | `fragments/packages/PF_XPD_AC01_BillyTravel_Pack_006DF543.psc` |
 | `fragments/packages/PF_XPD_AC01_TaxmanLeave_Pack_006F274B.psc` |
@@ -5207,15 +5305,11 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/perks/PRKF_SURV_CollectWater_NeedB_0051857C.psc` |
 | `fragments/perks/PRKF_TestTamePerk_00004168.psc` |
 | `fragments/perks/prkf__01000ce0.psc` |
+| `fragments/terminals/TERM_ATX_Shelter_VTTC_Screen_0091EA8C.psc` |
 | `fragments/terminals/TERM_AgCenterQuestCentralTer_00379692.psc` |
 | `fragments/terminals/TERM_AgCenterQuestTerminal_000125AF.psc` |
 | `fragments/terminals/TERM_BMO_BunkerKey02_Cabin_T_00377F2D.psc` |
 | `fragments/terminals/TERM_BMO_BunkerKey07_Ingram__003F1BD3.psc` |
-| `fragments/terminals/TERM_BS01_Invention_CentralT_005C3D65.psc` |
-| `fragments/terminals/TERM_BS01_Invention_Diagnost_005C2FFC.psc` |
-| `fragments/terminals/TERM_BS01_MQ06A_Raiders_Shee_005D2B48.psc` |
-| `fragments/terminals/TERM_BS01_MQ06_Settlers_SubT_005DB4FE.psc` |
-| `fragments/terminals/TERM_BS01_MQ06_Settlers_Term_005DB4FD.psc` |
 | `fragments/terminals/TERM_BoSZ01_HolorecorderTerm_0010DB23.psc` |
 | `fragments/terminals/TERM_BoSZ01_RelayTerminal_0010DB25.psc` |
 | `fragments/terminals/TERM_BoSr01_DefenseTerminal_00311444.psc` |
@@ -5223,13 +5317,10 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/TERM_CB02_Vending_Terminal_T_0051AA03.psc` |
 | `fragments/terminals/TERM_DebugSteveCTerminal4_003C2CC8.psc` |
 | `fragments/terminals/TERM_FSTransitionTerminal_00631D72.psc` |
-| `fragments/terminals/TERM_HornwrightEstateTermina_00591A49.psc` |
 | `fragments/terminals/TERM_HunterHuntedQuestTermin_003B25F7.psc` |
 | `fragments/terminals/TERM_LC072_SalsGrindersTermi_002028DA.psc` |
 | `fragments/terminals/TERM_LC095_ApartmentTerminal_003DCA4F.psc` |
-| `fragments/terminals/TERM_LC145_PlanningRoom_Term_003A0BA9.psc` |
 | `fragments/terminals/TERM_LC184_ResearchWingAcces_002E1402.psc` |
-| `fragments/terminals/TERM_MoM_Cryptos_HandbookSub_00369503.psc` |
 | `fragments/terminals/TERM_P01B_Lying_02_RobotWork_003F0764.psc` |
 | `fragments/terminals/TERM_P01B_Lying_02_RobotWork_003F0766.psc` |
 | `fragments/terminals/TERM_P01B_Lying_02_RobotWork_00403154.psc` |
@@ -5419,6 +5510,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/term_arcade_prizeterminal_ti_01004f63.psc` |
 | `fragments/terminals/term_arcade_prizeterminal_ti_01004f64.psc` |
 | `fragments/terminals/term_arcade_prizeterminal_ti_01004f65.psc` |
+| `fragments/terminals/term_atx_shelter_vttc_scre_01000bde_1.psc` |
 | `fragments/terminals/term_cb16_dutyterminal_00527acb.psc` |
 | `fragments/terminals/term_defaultterminaldesk_000f616a.psc` |
 | `fragments/terminals/term_defaultterminaldesk_000f616a_1.psc` |
@@ -5467,6 +5559,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/terminals/term_wl006_securitydoorcontr_0100143c.psc` |
 | `fragments/terminals/term_x01x_playerterminal_ale_010008cd.psc` |
 | `fragments/terminals/term_x01x_playerterminal_ale_010008ce.psc` |
+| `fragments/terminals/term_x01x_playerterminal_sta_01001dc9.psc` |
 | `fragments/terminals/term_xpd_hub_trainingtermina_010009b4.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_PetDog_Quest_Ca_00620A05.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_PetDog_Quest_Ca_00620A06.psc` |
@@ -5481,6 +5574,10 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Li_007FDF89_1.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Li_007FDF8A_1.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Li_007FDF8B_1.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Li_008B44A2_1.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Li_008B44A3_1.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Li_008B44A4_1.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Li_008B44AB_1.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_0061E161.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_0061E162.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_0061E163.psc` |
@@ -5570,6 +5667,13 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_007FDF94.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_007FDF95.psc` |
 | `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_007FDF96.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_008B4470.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_008B4483.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_008B449C.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_008B449D.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_008B44B6.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_008B44BB.psc` |
+| `fragments/topicinfos/TIF_ATX_COMP_Quest_Camp_Lite_008B4C19.psc` |
 | `fragments/topicinfos/TIF_BS01_COMP_Medic_Camp_005C41AA.psc` |
 | `fragments/topicinfos/TIF_BS01_COMP_Medic_Camp_005C41B4.psc` |
 | `fragments/topicinfos/TIF_BS01_COMP_Medic_Camp_005C41BD.psc` |
@@ -5607,7 +5711,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/topicinfos/TIF_Dialogue_E07B_Invaders_H_00629DD3.psc` |
 | `fragments/topicinfos/TIF_Dialogue_MTNS03_QuestGiv_00027DF1.psc` |
 | `fragments/topicinfos/TIF_E05_Caravan_Dialogue_00584D80.psc` |
-| `fragments/topicinfos/TIF_EN05_Basic_00182058.psc` |
 | `fragments/topicinfos/TIF_ENB_DialogueEnclaveBunke_0002A75E.psc` |
 | `fragments/topicinfos/TIF_ENs02_Blast_00363986.psc` |
 | `fragments/topicinfos/TIF_MILE_AmmoMerchant_Tier1_0078B86C.psc` |
@@ -5831,53 +5934,12 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0058393D.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0058393E.psc` |
 | `fragments/topicinfos/TIF_W05_DialogueTheWayward_I_0058393F.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_202P_0041CADB.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_202P_0041CAF7.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_202P_0041CB1A.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_203P_0042F44F.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_203P_0042F454.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0042F457.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0042F469.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_203P_0042F4A1.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_203P_0042F4B3.psc` |
 | `fragments/topicinfos/TIF_W05_MQR_203P_0055C5F2.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB96.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB98.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB99.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DB9B.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DBA0.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DBA4.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7B.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7C.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7D.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_0055DE7E.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A74.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A75.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A76.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A77.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A78.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7A.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7B.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7C.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7D.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7E.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_203P_00594A7F.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD16.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD18.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD1C.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD1E.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD20.psc` |
-| `fragments/topicinfos/TIF_W05_MQR_204P_0056DD22.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543828.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543836.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543839.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_00543869.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_002P_Radical_0054386B.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A46F.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4BC.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4C8.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0041A4C9.psc` |
-| `fragments/topicinfos/TIF_W05_MQ_003P_Muscle_0055380D.psc` |
 | `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEA2.psc` |
 | `fragments/topicinfos/TIF_W05_RE_AssaultAF01_0055DEAF.psc` |
 | `fragments/topicinfos/TIF_W05_RE_AssaultBB02_0056F076.psc` |
@@ -6580,24 +6642,30 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 </details>
 
 <details>
-<summary>Unpatched sources with an event declaration (220)</summary>
+<summary>Unpatched sources with an event declaration (223)</summary>
 
 | Script |
 |---|
+| `ATX_BodyScannerScript.psc` |
 | `ApplyFXToLocalPlayer.psc` |
 | `Archeology_MoundActivator.psc` |
 | `AudioActivator1State.psc` |
+| `B21/CurrencyQuestRewards.psc` |
 | `B21/ExpeditionMissionRewards.psc` |
 | `B21/FurnitureBuff.psc` |
 | `B21/HolotapeStageOnPlay.psc` |
 | `B21/LocalEncounterMaterializer.psc` |
 | `B21/PlanLearnOnRead.psc` |
 | `B21/QuestRewards.psc` |
+| `B21/RandomEncounterStartup.psc` |
 | `B21/StoryEventOnActivateStartScene.psc` |
 | `B21/StoryEventOnTriggerEnter.psc` |
 | `B21/WorkshopCollector.psc` |
 | `B21MusicInstrumentScript.psc` |
 | `B21TwoStateActivator76.psc` |
+| `B21_ActivateAliasWithRequiredItem.psc` |
+| `B21_ShowMessageOnActivateAlias.psc` |
+| `B21_W05QuestDistanceCheckScript.psc` |
 | `BountyCollectionSystemRefScript.psc` |
 | `BucketWheelActivatorScript.psc` |
 | `Burn_E02_StompingAnimationScript.psc` |
@@ -6643,7 +6711,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `DefaultPlayAnimOnDestructionStage.psc` |
 | `DefaultPlayClientSoundOnActivate.psc` |
 | `DefaultPlaySoundScript.psc` |
-| `DefaultReleaseToHavokScript.psc` |
 | `DefaultSetImpactMaterial.psc` |
 | `DrillRotateHelper.psc` |
 | `E01F_Fasnacht_Bonfire.psc` |
@@ -6658,7 +6725,6 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `E09D_CappyBottleCutoutScript.psc` |
 | `E09D_GWWS_ButtonScript.psc` |
 | `EN07_ApplyVaporizeImod.psc` |
-| `EN07_Death_TutorialLightManagerScript.psc` |
 | `EN07_ExplosionMeshRefScript.psc` |
 | `ENz09_CardPrinterRefScript.psc` |
 | `ENz09_JobBoardRefScript.psc` |
@@ -6672,12 +6738,11 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 | `FSS02_Vigilant_EyebotVFXScript.psc` |
 | `FlipCardSignCounterContainerScript.psc` |
 | `GPUBenchFakePlayerScript.psc` |
+| `HostileTakeovers/Creatures/HTO_SuiciderMoleratScript.psc` |
 | `HostileTakeovers/Creatures/HTO_SuiciderScorchedScript.psc` |
 | `HostileTakeovers/Creatures/HTO_SuiciderSuperMutantScript.psc` |
 | `KlaxonScript.psc` |
 | `LC006_PoseidonSecurityTerminalScript.psc` |
-| `LC080_MODUSRevealObjectScript.psc` |
-| `LC080_SpotlightManagerScript.psc` |
 | `LegendaryVoltaicSprintCheckScript.psc` |
 | `LostElectricDischargeScript.psc` |
 | `MN2_BonfireScript.psc` |
@@ -6808,7 +6873,7 @@ These scripts are deliberately deferred, not repaired. Their blockers and remova
 </details>
 
 <details>
-<summary>Likely activator/control scripts by filename (668)</summary>
+<summary>Likely activator/control scripts by filename (673)</summary>
 
 This is a filename heuristic for activators, triggers, buttons, switches, doors, keypads, panels, levers, pressure plates, decon arches, and terminals.
 
@@ -6817,9 +6882,12 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `AliasSendStoryEventOnActivate.psc` | Patched |
 | `Archeology_MoundActivator.psc` | Has event declaration |
 | `AudioActivator1State.psc` | Has event declaration |
+| `B21/KeypadNative.psc` | Unpatched candidate |
 | `B21/StoryEventOnActivateStartScene.psc` | Has event declaration |
 | `B21/StoryEventOnTriggerEnter.psc` | Has event declaration |
 | `B21TwoStateActivator76.psc` | Has event declaration |
+| `B21_ActivateAliasWithRequiredItem.psc` | Has event declaration |
+| `B21_ShowMessageOnActivateAlias.psc` | Has event declaration |
 | `BloodEagleSpotterAlarmActivatorScript.psc` | Unpatched candidate |
 | `BoS01PerPlayerSetStageTriggerScript.psc` | Patched |
 | `BoS01ToggleButtonScript.psc` | Patched |
@@ -6926,7 +6994,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `EN07_ExternalKeypadAliasScript.psc` | Patched |
 | `EN07_KeypadCooldownScript.psc` | Unpatched candidate |
 | `EN07_SiloStateTerminalScript.psc` | Unpatched candidate |
-| `ENB_OpenVaultDoor.psc` | Unpatched candidate |
+| `ENB_OpenVaultDoor.psc` | Patched |
 | `ENz09_CollectionOnActivate.psc` | Patched |
 | `EWSTestButton.psc` | Unpatched candidate |
 | `Economy/AmmoConverterTerminalScript.psc` | Unpatched candidate |
@@ -7046,13 +7114,14 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `RE_ObjectTS05_BombActivatorScript.psc` | Patched |
 | `RS02_Beat_KickoutTriggerScript.psc` | Patched |
 | `RS03_Balance_TerminalScript.psc` | Patched |
-| `RSVP00_OnActivatePrintNewsletter.psc` | Unpatched candidate |
+| `RSVP00_OnActivatePrintNewsletter.psc` | Patched |
 | `RSVP02_OnTerminalEnterSetAV.psc` | Patched |
 | `ReclamationDay_QTTriggersScript.psc` | Patched |
 | `RefColAddToUniqueQuestOnActivate.psc` | Patched |
 | `ResourceGeneratorButtonScript.psc` | Patched |
 | `RestrictedAreaTriggerScript.psc` | Unpatched candidate |
 | `ReturnToPreviousLocOnActivate.psc` | Unpatched candidate |
+| `SDOWAliasOnActivateIfItemEquipped.psc` | Unpatched candidate |
 | `SF05_Trigger.psc` | Patched |
 | `SFL02_Track_TriggerAliasScript.psc` | Patched |
 | `SPECIALActivator.psc` | Patched |
@@ -7140,7 +7209,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `W05_MQR_205P_RaRaCowerTriggerScript.psc` | Patched |
 | `W05_MQR_205P_SecurityTriggerScript.psc` | Patched |
 | `W05_MQR_PlayerVault79KeypadObjective.psc` | Patched |
-| `W05_MQR_Vault79KeypadAliasScript.psc` | Unpatched candidate |
+| `W05_MQR_Vault79KeypadAliasScript.psc` | Patched |
 | `W05_MQ_001P_Wayward_LaceyIselaTrigger.psc` | Unpatched candidate |
 | `W05_MQ_002P_RadioTerminalScript.psc` | Patched |
 | `W05_MQ_002P_StartSceneOnTriggerEnter.psc` | Patched |
@@ -7400,6 +7469,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/term_wl006_securitydoorcontr_0100143c.psc` | Unpatched candidate |
 | `fragments/terminals/term_x01x_playerterminal_ale_010008cd.psc` | Unpatched candidate |
 | `fragments/terminals/term_x01x_playerterminal_ale_010008ce.psc` | Unpatched candidate |
+| `fragments/terminals/term_x01x_playerterminal_sta_01001dc9.psc` | Unpatched candidate |
 | `fs_ontriggersendeventscript.psc` | Unpatched candidate |
 | `lc080_2stateactivatortriggerscript.psc` | Patched |
 | `lightningopendoorscript.psc` | Unpatched candidate |
@@ -7549,7 +7619,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 </details>
 
 <details>
-<summary>Package fragments (205)</summary>
+<summary>Package fragments (207)</summary>
 
 | Script | Status |
 |---|---|
@@ -7574,8 +7644,8 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_ATX_COMP_Inspector_Daphne_0061F708.psc` | Patched |
 | `fragments/packages/PF_ATX_COMP_MasterPackage_In_0061F709.psc` | Patched |
 | `fragments/packages/PF_AmbushFromLinkRefChain_001B5900.psc` | Patched |
-| `fragments/packages/PF_BS01_MQ02_Invention_Valde_005D05E3.psc` | Unpatched candidate |
-| `fragments/packages/PF_BS01_MQ06A_Raiders_Packag_005D2B38.psc` | Unpatched candidate |
+| `fragments/packages/PF_BS01_MQ02_Invention_Valde_005D05E3.psc` | Patched |
+| `fragments/packages/PF_BS01_MQ06A_Raiders_Packag_005D2B38.psc` | Patched |
 | `fragments/packages/PF_BS01_MQ07_Over_Package_Tr_005E9EB2.psc` | Patched |
 | `fragments/packages/PF_BS01_MQ08_Defense_Rahmani_005E584D.psc` | Unpatched candidate |
 | `fragments/packages/PF_BS01_MQ08_Defense_Rahmani_005E8B6C.psc` | Unpatched candidate |
@@ -7583,6 +7653,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_BS01_MQ08_Defense_Shin_Go_005E8B6E.psc` | Unpatched candidate |
 | `fragments/packages/PF_BS01_MQ08_Defense_Valdez__005E584C.psc` | Unpatched candidate |
 | `fragments/packages/PF_BS01_MQ08_Defense_Valdez__005E8B6D.psc` | Unpatched candidate |
+| `fragments/packages/PF_BS02_MQ02_Missing_Marci_0060E191_2.psc` | Unpatched candidate |
 | `fragments/packages/PF_BS02_MQ05_Catalyst_Dorsey_0060D85A.psc` | Patched |
 | `fragments/packages/PF_BS02_MQ05_Catalyst_Rahman_0060D339.psc` | Patched |
 | `fragments/packages/PF_BS02_MQ05_Catalyst_ShinTr_0060D33A.psc` | Patched |
@@ -7639,9 +7710,9 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_W05_MQR_201P_1620_FollowP_005A043E.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQR_202P_RaRaVent_131_0056B767.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQR_203P_0200_Johnny__00593DC7.psc` | Patched |
-| `fragments/packages/PF_W05_MQR_203P_8100_CrowdMe_00594A84.psc` | Unpatched candidate |
+| `fragments/packages/PF_W05_MQR_203P_8100_CrowdMe_00594A84.psc` | Patched |
 | `fragments/packages/PF_W05_MQR_203P_Johnny_GetCl_005A1F24.psc` | Patched |
-| `fragments/packages/PF_W05_MQR_203P_Sargento_Exi_0042F5D1.psc` | Unpatched candidate |
+| `fragments/packages/PF_W05_MQR_203P_Sargento_Exi_0042F5D1.psc` | Patched |
 | `fragments/packages/PF_W05_MQS_201P_HQ_PaigeTrav_00597801.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQS_201P_HWS_DefaultS_00590450.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQS_201P_HWS_DefaultS_00590451.psc` | Unpatched candidate |
@@ -7664,7 +7735,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_W05_MQS_203P_RadcliffRobc_005A26E2.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQS_203P_Robobrain_En_005A26E3.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQS_204P_RaidersTrave_00574019.psc` | Patched |
-| `fragments/packages/PF_W05_MQS_205P_07_PennyLeav_00570D66.psc` | Unpatched candidate |
+| `fragments/packages/PF_W05_MQS_205P_07_PennyLeav_00570D66.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_001P_Wayward_Batte_0040BD22.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543873.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_002P_Radical_Secon_00543874.psc` | Patched |
@@ -7672,7 +7743,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_W05_MQ_002P_Wayward_First_00411F79.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_Secon_0040F68A.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_002P_Wayward_Secon_0040F690.psc` | Unpatched candidate |
-| `fragments/packages/PF_W05_MQ_003P_Muscle_SolExi_0041A4E5.psc` | Unpatched candidate |
+| `fragments/packages/PF_W05_MQ_003P_Muscle_SolExi_0041A4E5.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_004P_Crane_ExitWay_0055ADC7.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_MQ_101P_A_TravelToD_0041B853_1.psc` | Patched |
 | `fragments/packages/PF_W05_MQ_101P_B_AubriePacka_0059F653.psc` | Patched |
@@ -7687,6 +7758,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/packages/PF_W05_RE_Scene_TravelersJM0_00587BE0.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_RE_TravelAF02_TravelT_0059DD34.psc` | Unpatched candidate |
 | `fragments/packages/PF_W05_TravelToNukeLinkRef_0053820F.psc` | Unpatched candidate |
+| `fragments/packages/PF_WorldPets_PetTravelToPlay_008B0509.psc` | Unpatched candidate |
 | `fragments/packages/PF_XPD_AC01_AuditorsExit_Pac_0074428C.psc` | Unpatched candidate |
 | `fragments/packages/PF_XPD_AC01_BillyTravel_Pack_006DF543.psc` | Unpatched candidate |
 | `fragments/packages/PF_XPD_AC01_SalDespawn_Packa_006F58A7.psc` | Patched |
@@ -7762,10 +7834,11 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 </details>
 
 <details>
-<summary>Terminal fragments (397)</summary>
+<summary>Terminal fragments (400)</summary>
 
 | Script | Status |
 |---|---|
+| `fragments/terminals/TERM_ATX_Shelter_VTTC_Screen_0091EA8C.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_AgCenterQuestCentralTer_00379692.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_AgCenterQuestTerminal_000125AF.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_Arcade_PrizeTerminal_Ti_0065CEC5.psc` | Patched |
@@ -7775,11 +7848,11 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/TERM_Arcade_PrizeTerminal__0065CEC9_1.psc` | Patched |
 | `fragments/terminals/TERM_BMO_BunkerKey02_Cabin_T_00377F2D.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_BMO_BunkerKey07_Ingram__003F1BD3.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_BS01_Invention_CentralT_005C3D65.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_BS01_Invention_Diagnost_005C2FFC.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_BS01_MQ06A_Raiders_Shee_005D2B48.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_BS01_MQ06_Settlers_SubT_005DB4FE.psc` | Unpatched candidate |
-| `fragments/terminals/TERM_BS01_MQ06_Settlers_Term_005DB4FD.psc` | Unpatched candidate |
+| `fragments/terminals/TERM_BS01_Invention_CentralT_005C3D65.psc` | Patched |
+| `fragments/terminals/TERM_BS01_Invention_Diagnost_005C2FFC.psc` | Patched |
+| `fragments/terminals/TERM_BS01_MQ06A_Raiders_Shee_005D2B48.psc` | Patched |
+| `fragments/terminals/TERM_BS01_MQ06_Settlers_SubT_005DB4FE.psc` | Patched |
+| `fragments/terminals/TERM_BS01_MQ06_Settlers_Term_005DB4FD.psc` | Patched |
 | `fragments/terminals/TERM_BS02_MQ05_Catalyst_View_00606757.psc` | Patched |
 | `fragments/terminals/TERM_BoS02DMVMainTerminalSub_00274582.psc` | Patched |
 | `fragments/terminals/TERM_BoS02DMVMainTerminalSub_00274586.psc` | Patched |
@@ -7815,7 +7888,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/TERM_FS03_MQ_Fruition_Armory_004EA3B4.psc` | Patched |
 | `fragments/terminals/TERM_FSTransitionTerminal_00631D72.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_FS_AbbiePersonalTermina_003D75B5.psc` | Patched |
-| `fragments/terminals/TERM_HornwrightEstateTermina_00591A49.psc` | Unpatched candidate |
+| `fragments/terminals/TERM_HornwrightEstateTermina_00591A49.psc` | Patched |
 | `fragments/terminals/TERM_HunterHuntedQuestTermin_003B25F7.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_LC006_FacilityAccessCon_0013DB7B.psc` | Patched |
 | `fragments/terminals/TERM_LC006_ReactorAccessCont_00240B54.psc` | Patched |
@@ -7831,7 +7904,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/TERM_LC084_nativeStorageRobo_004E7849.psc` | Patched |
 | `fragments/terminals/TERM_LC095_ApartmentTerminal_003DCA4F.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_LC101ControlTerminal_0014E6F0.psc` | Patched |
-| `fragments/terminals/TERM_LC145_PlanningRoom_Term_003A0BA9.psc` | Unpatched candidate |
+| `fragments/terminals/TERM_LC145_PlanningRoom_Term_003A0BA9.psc` | Patched |
 | `fragments/terminals/TERM_LC179_MonorailTerminal_004E22DF.psc` | Patched |
 | `fragments/terminals/TERM_LC184_ResearchWingAcces_002E1402.psc` | Unpatched candidate |
 | `fragments/terminals/TERM_LC184_SecurityTerminalH_002E1535.psc` | Patched |
@@ -7867,7 +7940,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/TERM_MoM_Cryptos_Administrat_003694FF.psc` | Patched |
 | `fragments/terminals/TERM_MoM_Cryptos_Administrat_00369500.psc` | Patched |
 | `fragments/terminals/TERM_MoM_Cryptos_Administrat_004EB0B9.psc` | Patched |
-| `fragments/terminals/TERM_MoM_Cryptos_HandbookSub_00369503.psc` | Unpatched candidate |
+| `fragments/terminals/TERM_MoM_Cryptos_HandbookSub_00369503.psc` | Patched |
 | `fragments/terminals/TERM_MoM_Cryptos_RequestSupp_0034730C.psc` | Patched |
 | `fragments/terminals/TERM_MoM_Cryptos_Terminal_000471C5.psc` | Patched |
 | `fragments/terminals/TERM_MoM_Cryptos_ViewMission_00347309.psc` | Patched |
@@ -8106,6 +8179,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/term_arcade_prizeterminal_ti_01004f63.psc` | Unpatched candidate |
 | `fragments/terminals/term_arcade_prizeterminal_ti_01004f64.psc` | Unpatched candidate |
 | `fragments/terminals/term_arcade_prizeterminal_ti_01004f65.psc` | Unpatched candidate |
+| `fragments/terminals/term_atx_shelter_vttc_scre_01000bde_1.psc` | Unpatched candidate |
 | `fragments/terminals/term_cb16_dutyterminal_00527acb.psc` | Unpatched candidate |
 | `fragments/terminals/term_defaultterminaldesk_000f616a.psc` | Unpatched candidate |
 | `fragments/terminals/term_defaultterminaldesk_000f616a_1.psc` | Unpatched candidate |
@@ -8162,6 +8236,7 @@ This is a filename heuristic for activators, triggers, buttons, switches, doors,
 | `fragments/terminals/term_wl006_securitydoorcontr_0100143c.psc` | Unpatched candidate |
 | `fragments/terminals/term_x01x_playerterminal_ale_010008cd.psc` | Unpatched candidate |
 | `fragments/terminals/term_x01x_playerterminal_ale_010008ce.psc` | Unpatched candidate |
+| `fragments/terminals/term_x01x_playerterminal_sta_01001dc9.psc` | Unpatched candidate |
 | `fragments/terminals/term_xpd_hub_trainingtermina_010009b4.psc` | Unpatched candidate |
 
 </details>

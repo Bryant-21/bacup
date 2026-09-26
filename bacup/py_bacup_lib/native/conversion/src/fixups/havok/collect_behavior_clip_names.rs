@@ -6,7 +6,7 @@
 //! `animationBundleNameData.assetNames`. `InjectAnimationNamesFixup` prefers
 //! these over a disk scan.
 
-use std::collections::HashSet;
+#[cfg(test)]
 use std::path::Path;
 
 // Re-export the inner implementation from inject_animation_names so there is

@@ -389,10 +389,6 @@ mod tests {
         }
     }
 
-    fn ptda(kind: i32, fk: u32) -> FieldEntry {
-        union_sub(b"PTDA", kind, fk)
-    }
-
     fn record_of(sig: &str, fields: Vec<FieldEntry>) -> Record {
         let interner = StringInterner::new();
         let mut record = Record::new(
@@ -401,10 +397,6 @@ mod tests {
         );
         record.fields = SmallVec::from_vec(fields);
         record
-    }
-
-    fn pack(fields: Vec<FieldEntry>) -> Record {
-        record_of("PACK", fields)
     }
 
     fn fk_bytes(entry: &FieldEntry) -> u32 {
@@ -450,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn remaps_hidden_race_atkd_attack_type_keyword() {
+    fn race_atkd_attack_type_remaps_only_to_target_keywords() {
         let mut encoded_targets = FxHashMap::default();
         encoded_targets.insert(0x0085_4686, 0x0885_4686);
         let encoded_target_keywords = FxHashSet::from_iter([0x0885_4686]);
@@ -464,10 +456,7 @@ mod tests {
 
         assert_eq!(remapped, 1);
         assert_eq!(race_atkd_keyword(&record), 0x0885_4686);
-    }
 
-    #[test]
-    fn leaves_race_atkd_float_collision_when_target_is_not_keyword() {
         let mut encoded_targets = FxHashMap::default();
         encoded_targets.insert(0x0085_4686, 0x0885_4686);
         let mut record = race_atkd(0x0085_4686);
@@ -483,137 +472,89 @@ mod tests {
     }
 
     #[test]
-    fn remaps_ptda_reference_target_keeping_scalar_type2() {
-        // type 0 (reference) → remapped to target-encoded; type 2 (object_type, a
-        // u32 form-type code — NOT a FormID) left alone even though its offset-4
-        // u32 collides with a map key.
-        let mut encoded = FxHashMap::default();
-        encoded.insert(0x008A483A, 0x078A483A); // source-local → 07-encoded
-        encoded.insert(0x0000000F, 0x0700000F); // would corrupt the type-2 scalar
-        let mut record = pack(vec![ptda(0, 0x008A483A), ptda(2, 0x0000000F)]);
+    fn value_selected_unions_remap_formid_variants_and_skip_scalars() {
+        let cust_le = u32::from_le_bytes(*b"CUST");
+        // Every map also holds the scalar's value, so only the type gate can protect it.
+        for (name, sig, entries, encoded, expected_remapped, expected) in [
+            (
+                "PTDA reference remapped, type-2 object_type scalar kept",
+                "PACK",
+                vec![(*b"PTDA", 0, 0x008A483A), (*b"PTDA", 2, 0x0000000F)],
+                vec![(0x008A483A, 0x078A483A), (0x0000000F, 0x0700000F)],
+                1,
+                vec![0x078A483A, 0x0000000F],
+            ),
+            (
+                "PTDA kind-3 keyword master byte 00 to 07",
+                "PACK",
+                vec![(*b"PTDA", 3, 0x00793507)],
+                vec![(0x00793507, 0x07793507)],
+                1,
+                vec![0x07793507],
+            ),
+            (
+                "PTDA kind-7 keyword master byte 00 to 07",
+                "PACK",
+                vec![(*b"PTDA", 7, 0x00796A01)],
+                vec![(0x00796A01, 0x07796A01)],
+                1,
+                vec![0x07796A01],
+            ),
+            (
+                "already encoded and unmapped targets",
+                "PACK",
+                vec![(*b"PTDA", 0, 0x07112233), (*b"PTDA", 1, 0x00999999)],
+                vec![(0x008A483A, 0x078A483A)],
+                0,
+                vec![0x07112233, 0x00999999],
+            ),
+            (
+                "PDTO topic ref remapped, subtype fourCC kept",
+                "PACK",
+                vec![(*b"PDTO", 0, 0x00548B7F), (*b"PDTO", 1, cust_le)],
+                vec![(0x00548B7F, 0x07548B7F), (cust_le, 0x07000001)],
+                1,
+                vec![0x07548B7F, cust_le],
+            ),
+            (
+                "FACT PLVD location reference",
+                "FACT",
+                vec![(*b"PLVD", 0, 0x0037D921)],
+                vec![(0x0037D921, 0x0737D921)],
+                1,
+                vec![0x0737D921],
+            ),
+            (
+                "PLDT keyword and object id remapped, object type enum kept",
+                "PACK",
+                vec![
+                    (*b"PLDT", 6, 0x0005D5E6),
+                    (*b"PLDT", 4, 0x00112233),
+                    (*b"PLDT", 5, 0x00000005),
+                ],
+                vec![
+                    (0x0005D5E6, 0x0705D5E6),
+                    (0x00112233, 0x07112233),
+                    (0x00000005, 0x07000005),
+                ],
+                2,
+                vec![0x0705D5E6, 0x07112233, 0x00000005],
+            ),
+        ] {
+            let encoded: FxHashMap<u32, u32> = encoded.into_iter().collect();
+            let mut record = record_of(
+                sig,
+                entries
+                    .iter()
+                    .map(|(sub, kind, fk)| union_sub(sub, *kind, *fk))
+                    .collect(),
+            );
 
-        let n = remap_value_selected_union_formids(&mut record, &encoded);
+            let remapped = remap_value_selected_union_formids(&mut record, &encoded);
 
-        assert_eq!(n, 1, "only the type-0 reference FK is remapped");
-        assert_eq!(fk_bytes(&record.fields[0]), 0x078A483A);
-        assert_eq!(
-            fk_bytes(&record.fields[1]),
-            0x0000000F,
-            "type-2 object_type scalar must be untouched"
-        );
-    }
-
-    #[test]
-    fn repairs_ptda_keyword_type3_master_byte_00_to_07() {
-        // A FO76 PTDA keyword target at kind 3 carries
-        // a truncated 00 master byte. The FO4 union schema models kind 3 as a
-        // FormID-bearing `keyword` (→KYWD) variant, so the gate must let it through
-        // and the remap rewrites 00793507 → 07793507 (the emitted output KYWD).
-        let mut encoded = FxHashMap::default();
-        encoded.insert(0x00793507, 0x07793507);
-        let mut record = pack(vec![ptda(3, 0x00793507)]);
-
-        let n = remap_value_selected_union_formids(&mut record, &encoded);
-
-        assert_eq!(n, 1, "kind-3 keyword PTDA must be remapped 00→07");
-        assert_eq!(fk_bytes(&record.fields[0]), 0x07793507);
-    }
-
-    #[test]
-    fn repairs_ptda_type7_master_byte_00_to_07() {
-        // kind 7 is also a FormID-bearing keyword variant in the FO4 union schema.
-        let mut encoded = FxHashMap::default();
-        encoded.insert(0x00796A01, 0x07796A01);
-        let mut record = pack(vec![ptda(7, 0x00796A01)]);
-
-        let n = remap_value_selected_union_formids(&mut record, &encoded);
-
-        assert_eq!(n, 1, "kind-7 keyword PTDA must be remapped 00→07");
-        assert_eq!(fk_bytes(&record.fields[0]), 0x07796A01);
-    }
-
-    #[test]
-    fn leaves_already_encoded_and_unmapped_targets() {
-        let mut encoded = FxHashMap::default();
-        encoded.insert(0x008A483A, 0x078A483A);
-        // type 0 but FK already carries a non-zero master byte (foreign/converted)
-        // → rewrite_formid_at skips it; type 1 with an unmapped id → unchanged.
-        let mut record = pack(vec![ptda(0, 0x07112233), ptda(1, 0x00999999)]);
-
-        let n = remap_value_selected_union_formids(&mut record, &encoded);
-
-        assert_eq!(n, 0);
-        assert_eq!(fk_bytes(&record.fields[0]), 0x07112233);
-        assert_eq!(fk_bytes(&record.fields[1]), 0x00999999);
-    }
-
-    #[test]
-    fn remaps_pack_pdto_topic_ref_but_not_subtype_fourcc() {
-        // PDTO type 0 = Topic Ref (DIAL FK) → remapped. type 1 = Topic Subtype,
-        // a 4-byte fourCC ("CUST") at offset 4 — must be left intact even though
-        // its little-endian u32 (0x54535543) is not in the map anyway. Use a
-        // fourCC that DOES collide with a map key to prove the type gate, not the
-        // map miss, is what protects it.
-        let cust_le = u32::from_le_bytes(*b"CUST"); // 0x54535543
-        let mut encoded = FxHashMap::default();
-        encoded.insert(0x00548B7F, 0x07548B7F); // emitted DIAL → 07
-        encoded.insert(cust_le, 0x07000001); // would corrupt the subtype fourCC
-        let mut record = pack(vec![
-            union_sub(b"PDTO", 0, 0x00548B7F),
-            union_sub(b"PDTO", 1, cust_le),
-        ]);
-
-        let n = remap_value_selected_union_formids(&mut record, &encoded);
-
-        assert_eq!(n, 1, "only the type-0 DIAL topic-ref FK is remapped");
-        assert_eq!(fk_bytes(&record.fields[0]), 0x07548B7F);
-        assert_eq!(
-            fk_bytes(&record.fields[1]),
-            cust_le,
-            "type-1 subtype fourCC must be untouched"
-        );
-    }
-
-    #[test]
-    fn remaps_fact_plvd_location_reference() {
-        // FACT PLVD shares PLDT's location_enum: type 0 = Reference FK. The
-        // record-sig gate must visit FACT (not just PACK) for this to fire.
-        let mut encoded = FxHashMap::default();
-        encoded.insert(0x0037D921, 0x0737D921);
-        let mut record = record_of("FACT", vec![union_sub(b"PLVD", 0, 0x0037D921)]);
-
-        let n = remap_value_selected_union_formids(&mut record, &encoded);
-
-        assert_eq!(n, 1);
-        assert_eq!(fk_bytes(&record.fields[0]), 0x0737D921);
-    }
-
-    #[test]
-    fn plvd_keyword_and_objectid_variants_remap_scalars_skip() {
-        // location_enum: type 4 = Object ID FK, type 6 = Keyword FK (both
-        // remapped); type 5 = Object Type enum scalar — skipped.
-        let mut encoded = FxHashMap::default();
-        encoded.insert(0x0005D5E6, 0x0705D5E6); // keyword
-        encoded.insert(0x00112233, 0x07112233); // object_id
-        encoded.insert(0x00000005, 0x07000005); // would corrupt the type-5 enum
-        let mut record = record_of(
-            "PACK",
-            vec![
-                union_sub(b"PLDT", 6, 0x0005D5E6),
-                union_sub(b"PLDT", 4, 0x00112233),
-                union_sub(b"PLDT", 5, 0x00000005),
-            ],
-        );
-
-        let n = remap_value_selected_union_formids(&mut record, &encoded);
-
-        assert_eq!(n, 2, "keyword + object_id remap; object_type enum skipped");
-        assert_eq!(fk_bytes(&record.fields[0]), 0x0705D5E6);
-        assert_eq!(fk_bytes(&record.fields[1]), 0x07112233);
-        assert_eq!(
-            fk_bytes(&record.fields[2]),
-            0x00000005,
-            "type-5 object-type enum must be untouched"
-        );
+            assert_eq!(remapped, expected_remapped, "{name}");
+            let actual: Vec<u32> = record.fields.iter().map(fk_bytes).collect();
+            assert_eq!(actual, expected, "{name}");
+        }
     }
 }

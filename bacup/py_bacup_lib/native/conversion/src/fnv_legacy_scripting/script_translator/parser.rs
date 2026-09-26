@@ -635,30 +635,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_scriptname() {
-        let ast = parse_src("ScriptName MyScript\nbegin GameMode\nend\n");
-        assert_eq!(ast.script_name.as_deref(), Some("MyScript"));
+    fn parse_scriptname_and_var_decl() {
+        {
+            let ast = parse_src("ScriptName MyScript\nbegin GameMode\nend\n");
+            assert_eq!(ast.script_name.as_deref(), Some("MyScript"));
+        }
+        {
+            let ast = parse_src("short myVar\nbegin GameMode\nend\n");
+            assert_eq!(ast.vars.len(), 1);
+            assert_eq!(ast.vars[0].source_type, "short");
+            assert_eq!(ast.vars[0].name, "myVar");
+        }
     }
 
     #[test]
-    fn parse_var_decl() {
-        let ast = parse_src("short myVar\nbegin GameMode\nend\n");
-        assert_eq!(ast.vars.len(), 1);
-        assert_eq!(ast.vars[0].source_type, "short");
-        assert_eq!(ast.vars[0].name, "myVar");
-    }
-
-    #[test]
-    fn parse_if_stmt() {
-        let src = "begin GameMode\nif x == 1\nset y to 2\nendif\nend\n";
-        let ast = parse_src(src);
-        assert!(matches!(&ast.blocks[0].body[0], StmtAst::If { .. }));
-    }
-
-    #[test]
-    fn parse_return_stmt() {
-        let ast = parse_src("begin GameMode\nreturn\nend\n");
-        assert!(matches!(&ast.blocks[0].body[0], StmtAst::Return));
+    fn parse_if_and_return_statements() {
+        {
+            let src = "begin GameMode\nif x == 1\nset y to 2\nendif\nend\n";
+            let ast = parse_src(src);
+            assert!(matches!(&ast.blocks[0].body[0], StmtAst::If { .. }));
+        }
+        {
+            let ast = parse_src("begin GameMode\nreturn\nend\n");
+            assert!(matches!(&ast.blocks[0].body[0], StmtAst::Return));
+        }
     }
 
     #[test]

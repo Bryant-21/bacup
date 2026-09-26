@@ -772,240 +772,270 @@ mod tests {
     }
 
     #[test]
-    fn topic_info_begin_vmad_matches_fo4_fragment_contract() {
-        let vmad = synthesize_topic_info_vmad(
-            "TIF__001234",
-            &[InfoFragmentPhase::Begin],
-            &compiled("TIF__001234"),
-        )
-        .unwrap();
-        assert_eq!(vmad["Version"], 6);
-        assert_eq!(vmad["Object Format"], 2);
-        assert_eq!(vmad["Script Fragments"]["Version"], 3);
-        assert_eq!(vmad["Script Fragments"]["Flags"], 1);
-        assert_eq!(
-            vmad["Script Fragments"]["Script"]["ScriptName"],
-            "TIF__001234"
-        );
-        let frags = vmad["Script Fragments"]["Fragments"].as_array().unwrap();
-        assert_eq!(frags.len(), 1);
-        assert_eq!(frags[0]["Unknown"], 1);
-        assert_eq!(frags[0]["FragmentName"], "Fragment_Begin");
-    }
-
-    #[test]
-    fn topic_info_end_and_combined_vmad_preserve_phase_flags() {
-        let end = synthesize_topic_info_vmad(
-            "TIF__134B9B",
-            &[InfoFragmentPhase::End],
-            &compiled("TIF__134B9B"),
-        )
-        .unwrap();
-        assert_eq!(end["Script Fragments"]["Flags"], 2);
-        assert_eq!(
-            end["Script Fragments"]["Fragments"][0]["FragmentName"],
-            "Fragment_End"
-        );
-
-        let both = synthesize_topic_info_vmad(
-            "TIF__001234",
-            &[InfoFragmentPhase::Begin, InfoFragmentPhase::End],
-            &compiled("TIF__001234"),
-        )
-        .unwrap();
-        assert_eq!(both["Script Fragments"]["Flags"], 3);
-        assert_eq!(
-            both["Script Fragments"]["Fragments"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
-    }
-
-    #[test]
-    fn topic_info_vmad_binds_typed_quest_script_property() {
-        let vmad = synthesize_topic_info_vmad_with_properties(
-            "TIF__130161",
-            &[InfoFragmentPhase::Begin],
-            &[ScriptProperty {
-                name: "VTechatticup".into(),
-                prop_type: "FNV_FO3_S_11FC64".into(),
-                value: Some(json!("21F935:FalloutNV.esm")),
-            }],
-            &compiled("TIF__130161"),
-        )
-        .unwrap();
-        let properties = vmad["Script Fragments"]["Script"]["Properties"]
-            .as_array()
+    fn topic_info_vmad_matches_fo4_fragment_contract_phases_and_properties() {
+        {
+            let vmad = synthesize_topic_info_vmad(
+                "TIF__001234",
+                &[InfoFragmentPhase::Begin],
+                &compiled("TIF__001234"),
+            )
             .unwrap();
-        assert_eq!(properties.len(), 1);
-        assert_eq!(properties[0]["propertyName"], "VTechatticup");
-        assert_eq!(properties[0]["Type"], "Object");
-        assert_eq!(
-            properties[0]["Value"]["FormID"]["reference"],
-            json!({
-                "plugin": "FalloutNV.esm",
-                "object_id": "21F935"
-            })
-        );
-    }
+            assert_eq!(vmad["Version"], 6);
+            assert_eq!(vmad["Object Format"], 2);
+            assert_eq!(vmad["Script Fragments"]["Version"], 3);
+            assert_eq!(vmad["Script Fragments"]["Flags"], 1);
+            assert_eq!(
+                vmad["Script Fragments"]["Script"]["ScriptName"],
+                "TIF__001234"
+            );
+            let frags = vmad["Script Fragments"]["Fragments"].as_array().unwrap();
+            assert_eq!(frags.len(), 1);
+            assert_eq!(frags[0]["Unknown"], 1);
+            assert_eq!(frags[0]["FragmentName"], "Fragment_Begin");
+        }
+        {
+            let end = synthesize_topic_info_vmad(
+                "TIF__134B9B",
+                &[InfoFragmentPhase::End],
+                &compiled("TIF__134B9B"),
+            )
+            .unwrap();
+            assert_eq!(end["Script Fragments"]["Flags"], 2);
+            assert_eq!(
+                end["Script Fragments"]["Fragments"][0]["FragmentName"],
+                "Fragment_End"
+            );
 
-    #[test]
-    fn quest_vmad_fragments_and_aliases() {
-        let frags = vec![
-            QuestStageFragment {
-                stage_index: 10,
-                stage_item_index: 0,
-                psc_function_name: "Fragment_10".into(),
-            },
-            QuestStageFragment {
-                stage_index: 20,
-                stage_item_index: 2,
-                psc_function_name: "Fragment_20".into(),
-            },
-        ];
-        let aliases = vec![QuestAliasBinding {
-            alias_id: 7,
-            target_quest_form_key: "201234:Output.esm".into(),
-            target_form_key: "202345:Output.esm".into(),
-            scripts: Vec::new(),
-        }];
-        let vmad = synthesize_quest_vmad(
-            "QF_B21_001234",
-            &frags,
-            &aliases,
-            &compiled("QF_B21_001234"),
-        )
-        .unwrap();
-        assert_eq!(vmad["Version"], 5);
-        let frag_list = vmad["Script Fragments"]["Fragments"].as_array().unwrap();
-        assert_eq!(frag_list.len(), 2);
-        assert_eq!(frag_list[0]["Quest Stage"], 10);
-        assert_eq!(frag_list[1]["FragmentName"], "Fragment_20");
-        let aliases = vmad["Script Fragments"]["Aliases"].as_array().unwrap();
-        assert_eq!(frag_list[1]["Quest Stage Index"], 2);
-        assert_eq!(aliases.len(), 1);
-        assert_eq!(aliases[0]["Object"]["Alias"], 7);
-        assert_eq!(
-            aliases[0]["Object"]["FormID"]["reference"],
-            json!({ "plugin": "Output.esm", "object_id": "201234" })
-        );
-        let alias_json = serde_json::to_string(aliases).unwrap();
-        assert!(!alias_json.contains(":-1"));
-        assert!(!alias_json.contains("null"));
-    }
-
-    #[test]
-    fn quest_vmad_preserves_fragment_perk_and_alias_package_properties() {
-        let aliases = vec![QuestAliasBinding {
-            alias_id: 2,
-            target_quest_form_key: "201234:Output.esm".into(),
-            target_form_key: "202345:Output.esm".into(),
-            scripts: vec![QuestAliasScriptBinding {
-                script_class_name: "B21_TecMineHostageEscapeAlias".into(),
-                properties: vec![ScriptProperty {
-                    name: "TecMineHostageEscape".into(),
-                    prop_type: "Package".into(),
-                    value: Some(json!("209ABC:Output.esm")),
+            let both = synthesize_topic_info_vmad(
+                "TIF__001234",
+                &[InfoFragmentPhase::Begin, InfoFragmentPhase::End],
+                &compiled("TIF__001234"),
+            )
+            .unwrap();
+            assert_eq!(both["Script Fragments"]["Flags"], 3);
+            assert_eq!(
+                both["Script Fragments"]["Fragments"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+        {
+            let vmad = synthesize_topic_info_vmad_with_properties(
+                "TIF__130161",
+                &[InfoFragmentPhase::Begin],
+                &[ScriptProperty {
+                    name: "VTechatticup".into(),
+                    prop_type: "FNV_FO3_S_11FC64".into(),
+                    value: Some(json!("21F935:FalloutNV.esm")),
                 }],
-            }],
-        }];
-        let vmad = synthesize_quest_vmad_with_properties(
-            "QF_B21_06136D",
-            &[],
-            &[ScriptProperty {
-                name: "PowerArmorTraining".into(),
-                prop_type: "Perk".into(),
-                value: Some(json!("208FDF:Output.esm")),
-            }],
-            &aliases,
-            &compiled("QF_B21_06136D"),
-        )
-        .unwrap();
-        assert_eq!(
-            vmad["Script Fragments"]["Script"]["Properties"][0]["propertyName"],
-            "PowerArmorTraining"
-        );
-        assert_eq!(
-            vmad["Script Fragments"]["Aliases"][0]["Alias Scripts"][0]["ScriptName"],
-            "B21_TecMineHostageEscapeAlias"
-        );
-        assert_eq!(
-            vmad["Script Fragments"]["Aliases"][0]["Alias Scripts"][0]["Properties"][0]["propertyName"],
-            "TecMineHostageEscape"
-        );
+                &compiled("TIF__130161"),
+            )
+            .unwrap();
+            let properties = vmad["Script Fragments"]["Script"]["Properties"]
+                .as_array()
+                .unwrap();
+            assert_eq!(properties.len(), 1);
+            assert_eq!(properties[0]["propertyName"], "VTechatticup");
+            assert_eq!(properties[0]["Type"], "Object");
+            assert_eq!(
+                properties[0]["Value"]["FormID"]["reference"],
+                json!({
+                    "plugin": "FalloutNV.esm",
+                    "object_id": "21F935"
+                })
+            );
+        }
     }
 
     #[test]
-    fn scene_vmad_fragment_count() {
-        let vmad =
-            synthesize_scene_vmad("SF_MyScene_001234", 3, &compiled("SF_MyScene_001234")).unwrap();
-        let frags = vmad["Script Fragments"]["Fragments"].as_array().unwrap();
-        assert_eq!(frags.len(), 3);
-        assert_eq!(frags[0]["FragmentName"], "Fragment_1");
-        assert_eq!(frags[2]["FragmentName"], "Fragment_3");
-    }
-
-    #[test]
-    fn synthesize_vmad_empty_class_name_errors() {
-        let intent = ScriptBindingIntent {
-            target_form_key: "001234:Test.esm".into(),
-            script_class_name: String::new(),
-            properties: vec![],
-            fragment_kind: FragmentKind::Object,
-            compiled_evidence: compiled(""),
-        };
-        assert!(synthesize_vmad(&intent).is_err());
-    }
-
-    #[test]
-    fn synthesize_vmad_with_properties() {
-        let intent = ScriptBindingIntent {
-            target_form_key: "001234:Test.esm".into(),
-            script_class_name: "MyScript".into(),
-            properties: vec![
-                ScriptProperty {
-                    name: "myInt".into(),
-                    prop_type: "int".into(),
-                    value: Some(json!(42)),
+    fn quest_vmad_preserves_fragments_aliases_and_package_properties() {
+        {
+            let frags = vec![
+                QuestStageFragment {
+                    stage_index: 10,
+                    stage_item_index: 0,
+                    psc_function_name: "Fragment_10".into(),
                 },
-                ScriptProperty {
-                    name: "myStr".into(),
-                    prop_type: "string".into(),
-                    value: Some(json!("hello")),
+                QuestStageFragment {
+                    stage_index: 20,
+                    stage_item_index: 2,
+                    psc_function_name: "Fragment_20".into(),
                 },
-            ],
-            fragment_kind: FragmentKind::Object,
-            compiled_evidence: compiled("MyScript"),
-        };
-        let vmad = synthesize_vmad(&intent).unwrap();
-        let scripts = vmad["Scripts"].as_array().unwrap();
-        assert_eq!(scripts.len(), 1);
-        let props = scripts[0]["Properties"].as_array().unwrap();
-        assert_eq!(props.len(), 2);
-        assert_eq!(props[0]["Type"], "Int32");
-        assert_eq!(props[1]["Type"], "String");
+            ];
+            let aliases = vec![QuestAliasBinding {
+                alias_id: 7,
+                target_quest_form_key: "201234:Output.esm".into(),
+                target_form_key: "202345:Output.esm".into(),
+                scripts: Vec::new(),
+            }];
+            let vmad = synthesize_quest_vmad(
+                "QF_B21_001234",
+                &frags,
+                &aliases,
+                &compiled("QF_B21_001234"),
+            )
+            .unwrap();
+            assert_eq!(vmad["Version"], 5);
+            let frag_list = vmad["Script Fragments"]["Fragments"].as_array().unwrap();
+            assert_eq!(frag_list.len(), 2);
+            assert_eq!(frag_list[0]["Quest Stage"], 10);
+            assert_eq!(frag_list[1]["FragmentName"], "Fragment_20");
+            let aliases = vmad["Script Fragments"]["Aliases"].as_array().unwrap();
+            assert_eq!(frag_list[1]["Quest Stage Index"], 2);
+            assert_eq!(aliases.len(), 1);
+            assert_eq!(aliases[0]["Object"]["Alias"], 7);
+            assert_eq!(
+                aliases[0]["Object"]["FormID"]["reference"],
+                json!({ "plugin": "Output.esm", "object_id": "201234" })
+            );
+            let alias_json = serde_json::to_string(aliases).unwrap();
+            assert!(!alias_json.contains(":-1"));
+            assert!(!alias_json.contains("null"));
+        }
+        {
+            let aliases = vec![QuestAliasBinding {
+                alias_id: 2,
+                target_quest_form_key: "201234:Output.esm".into(),
+                target_form_key: "202345:Output.esm".into(),
+                scripts: vec![QuestAliasScriptBinding {
+                    script_class_name: "B21_TecMineHostageEscapeAlias".into(),
+                    properties: vec![ScriptProperty {
+                        name: "TecMineHostageEscape".into(),
+                        prop_type: "Package".into(),
+                        value: Some(json!("209ABC:Output.esm")),
+                    }],
+                }],
+            }];
+            let vmad = synthesize_quest_vmad_with_properties(
+                "QF_B21_06136D",
+                &[],
+                &[ScriptProperty {
+                    name: "PowerArmorTraining".into(),
+                    prop_type: "Perk".into(),
+                    value: Some(json!("208FDF:Output.esm")),
+                }],
+                &aliases,
+                &compiled("QF_B21_06136D"),
+            )
+            .unwrap();
+            assert_eq!(
+                vmad["Script Fragments"]["Script"]["Properties"][0]["propertyName"],
+                "PowerArmorTraining"
+            );
+            assert_eq!(
+                vmad["Script Fragments"]["Aliases"][0]["Alias Scripts"][0]["ScriptName"],
+                "B21_TecMineHostageEscapeAlias"
+            );
+            assert_eq!(
+                vmad["Script Fragments"]["Aliases"][0]["Alias Scripts"][0]["Properties"][0]["propertyName"],
+                "TecMineHostageEscape"
+            );
+        }
     }
 
     #[test]
-    fn vmad_rejects_missing_or_mismatched_compile_evidence() {
-        let mut intent = intent("MyScript");
-        intent.compiled_evidence.compiled_success = false;
-        assert!(synthesize_vmad(&intent).is_err());
-        intent.compiled_evidence.compiled_success = true;
-        intent.compiled_evidence.class_name = "OtherScript".into();
-        assert!(synthesize_vmad(&intent).is_err());
+    fn synthesize_vmad_encodes_scene_fragments_properties_and_rejects_bad_input() {
+        {
+            let vmad =
+                synthesize_scene_vmad("SF_MyScene_001234", 3, &compiled("SF_MyScene_001234"))
+                    .unwrap();
+            let frags = vmad["Script Fragments"]["Fragments"].as_array().unwrap();
+            assert_eq!(frags.len(), 3);
+            assert_eq!(frags[0]["FragmentName"], "Fragment_1");
+            assert_eq!(frags[2]["FragmentName"], "Fragment_3");
+        }
+        {
+            let intent = ScriptBindingIntent {
+                target_form_key: "001234:Test.esm".into(),
+                script_class_name: "MyScript".into(),
+                properties: vec![
+                    ScriptProperty {
+                        name: "myInt".into(),
+                        prop_type: "int".into(),
+                        value: Some(json!(42)),
+                    },
+                    ScriptProperty {
+                        name: "myStr".into(),
+                        prop_type: "string".into(),
+                        value: Some(json!("hello")),
+                    },
+                ],
+                fragment_kind: FragmentKind::Object,
+                compiled_evidence: compiled("MyScript"),
+            };
+            let vmad = synthesize_vmad(&intent).unwrap();
+            let scripts = vmad["Scripts"].as_array().unwrap();
+            assert_eq!(scripts.len(), 1);
+            let props = scripts[0]["Properties"].as_array().unwrap();
+            assert_eq!(props.len(), 2);
+            assert_eq!(props[0]["Type"], "Int32");
+            assert_eq!(props[1]["Type"], "String");
+        }
+        {
+            let intent = ScriptBindingIntent {
+                target_form_key: "001234:Test.esm".into(),
+                script_class_name: String::new(),
+                properties: vec![],
+                fragment_kind: FragmentKind::Object,
+                compiled_evidence: compiled(""),
+            };
+            assert!(synthesize_vmad(&intent).is_err());
+        }
+        {
+            let prop = ScriptProperty {
+                name: "bad".into(),
+                prop_type: "unknown_type".into(),
+                value: None,
+            };
+            assert!(property_payload(&prop).is_err());
+        }
     }
 
     #[test]
-    fn property_payload_unsupported_type_errors() {
-        let prop = ScriptProperty {
-            name: "bad".into(),
-            prop_type: "unknown_type".into(),
-            value: None,
-        };
-        assert!(property_payload(&prop).is_err());
+    fn vmad_binding_requires_compile_evidence_and_mapped_properties() {
+        {
+            let mut intent = intent("MyScript");
+            intent.compiled_evidence.compiled_success = false;
+            assert!(synthesize_vmad(&intent).is_err());
+            intent.compiled_evidence.compiled_success = true;
+            intent.compiled_evidence.class_name = "OtherScript".into();
+            assert!(synthesize_vmad(&intent).is_err());
+        }
+        {
+            let scripts = vec![make_translated("Foo", "001ABC:FNV.esm")];
+            let targets = vec![VmadTarget {
+                target_form_key: "T1:Output.esp".into(),
+                source_scpt_form_key: "001ABC:FNV.esm".into(),
+            }];
+            assert!(build_scpt_vmad_intents(&targets, &scripts).is_empty());
+        }
+        {
+            let mut script = make_translated("Foo", "001ABC:FNV.esm");
+            script
+                .properties
+                .push(super::super::script_synthesizer::TranslatedProperty {
+                    source_name: "SomeActor".into(),
+                    papyrus_name: "SomeActor".into(),
+                    papyrus_type: "Actor".into(),
+                    source_form_key: "111111:FNV.esm".into(),
+                    target_form_key: None,
+                });
+            let targets = vec![VmadTarget {
+                target_form_key: "T1:Output.esp".into(),
+                source_scpt_form_key: "001ABC:FNV.esm".into(),
+            }];
+            let evidence = vec![CompiledScriptEvidence {
+                class_name: "Foo".into(),
+                relative_pex_path: "data/Scripts/Foo.pex".into(),
+                compiled_success: true,
+            }];
+            assert!(
+                build_scpt_vmad_intents_with_compiled_evidence(&targets, &[script], &evidence)
+                    .is_err()
+            );
+        }
     }
 
     #[test]
@@ -1046,134 +1076,98 @@ mod tests {
     }
 
     #[test]
-    fn build_intents_pairs_targets_with_scripts() {
-        let scripts = vec![
-            make_translated("B21_nv_FooScript", "001234:FNV.esm"),
-            make_translated("B21_nv_BarScript", "00ABCD:FNV.esm"),
-        ];
-        let targets = vec![
-            VmadTarget {
-                target_form_key: "BB0001:Output.esp".into(),
-                source_scpt_form_key: "001234:FNV.esm".into(),
-            },
-            VmadTarget {
-                target_form_key: "BB0002:Output.esp".into(),
-                source_scpt_form_key: "00ABCD:FNV.esm".into(),
-            },
-        ];
-        let evidence = scripts
-            .iter()
-            .map(|script| CompiledScriptEvidence {
-                class_name: script.script_class_name.clone(),
-                relative_pex_path: format!("data/Scripts/{}.pex", script.script_class_name),
+    fn build_intents_pairs_targets_with_scripts_case_insensitively() {
+        {
+            let scripts = vec![
+                make_translated("B21_nv_FooScript", "001234:FNV.esm"),
+                make_translated("B21_nv_BarScript", "00ABCD:FNV.esm"),
+            ];
+            let targets = vec![
+                VmadTarget {
+                    target_form_key: "BB0001:Output.esp".into(),
+                    source_scpt_form_key: "001234:FNV.esm".into(),
+                },
+                VmadTarget {
+                    target_form_key: "BB0002:Output.esp".into(),
+                    source_scpt_form_key: "00ABCD:FNV.esm".into(),
+                },
+            ];
+            let evidence = scripts
+                .iter()
+                .map(|script| CompiledScriptEvidence {
+                    class_name: script.script_class_name.clone(),
+                    relative_pex_path: format!("data/Scripts/{}.pex", script.script_class_name),
+                    compiled_success: true,
+                })
+                .collect::<Vec<_>>();
+            let intents =
+                build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence)
+                    .unwrap();
+            assert_eq!(intents.len(), 2);
+            assert_eq!(intents[0].target_form_key, "BB0001:Output.esp");
+            assert_eq!(intents[0].script_class_name, "B21_nv_FooScript");
+            assert_eq!(intents[1].script_class_name, "B21_nv_BarScript");
+            assert!(intents[0].properties.is_empty());
+            assert_eq!(intents[0].fragment_kind, FragmentKind::Object);
+        }
+        {
+            let scripts = vec![make_translated("Known", "001234:FNV.esm")];
+            let targets = vec![
+                VmadTarget {
+                    target_form_key: "T1:Output.esp".into(),
+                    source_scpt_form_key: "001234:FNV.esm".into(),
+                },
+                VmadTarget {
+                    target_form_key: "T2:Output.esp".into(),
+                    source_scpt_form_key: "deadbeef:FNV.esm".into(),
+                },
+            ];
+            let evidence = vec![CompiledScriptEvidence {
+                class_name: "Known".into(),
+                relative_pex_path: "data/Scripts/Known.pex".into(),
                 compiled_success: true,
-            })
-            .collect::<Vec<_>>();
-        let intents =
-            build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence).unwrap();
-        assert_eq!(intents.len(), 2);
-        assert_eq!(intents[0].target_form_key, "BB0001:Output.esp");
-        assert_eq!(intents[0].script_class_name, "B21_nv_FooScript");
-        assert_eq!(intents[1].script_class_name, "B21_nv_BarScript");
-        assert!(intents[0].properties.is_empty());
-        assert_eq!(intents[0].fragment_kind, FragmentKind::Object);
-    }
-
-    #[test]
-    fn build_intents_skips_targets_without_matching_script() {
-        let scripts = vec![make_translated("Known", "001234:FNV.esm")];
-        let targets = vec![
-            VmadTarget {
+            }];
+            let intents =
+                build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence)
+                    .unwrap();
+            assert_eq!(intents.len(), 1);
+            assert_eq!(intents[0].target_form_key, "T1:Output.esp");
+        }
+        {
+            let scripts = vec![make_translated("Foo", "001ABC:FNV.esm")];
+            let targets = vec![VmadTarget {
+                target_form_key: "T1:Output.esp".into(),
+                source_scpt_form_key: "001abc:fnv.esm".into(),
+            }];
+            let evidence = vec![CompiledScriptEvidence {
+                class_name: "Foo".into(),
+                relative_pex_path: "data/Scripts/Foo.pex".into(),
+                compiled_success: true,
+            }];
+            let intents =
+                build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence)
+                    .unwrap();
+            assert_eq!(intents.len(), 1);
+        }
+        {
+            let mut script = make_translated("Orphan", "");
+            // Empty source_form_key — should not index into the matching map.
+            script.source_form_key = String::new();
+            let scripts = vec![script];
+            let targets = vec![VmadTarget {
                 target_form_key: "T1:Output.esp".into(),
                 source_scpt_form_key: "001234:FNV.esm".into(),
-            },
-            VmadTarget {
-                target_form_key: "T2:Output.esp".into(),
-                source_scpt_form_key: "deadbeef:FNV.esm".into(),
-            },
-        ];
-        let evidence = vec![CompiledScriptEvidence {
-            class_name: "Known".into(),
-            relative_pex_path: "data/Scripts/Known.pex".into(),
-            compiled_success: true,
-        }];
-        let intents =
-            build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence).unwrap();
-        assert_eq!(intents.len(), 1);
-        assert_eq!(intents[0].target_form_key, "T1:Output.esp");
-    }
-
-    #[test]
-    fn build_intents_matches_case_insensitively() {
-        let scripts = vec![make_translated("Foo", "001ABC:FNV.esm")];
-        let targets = vec![VmadTarget {
-            target_form_key: "T1:Output.esp".into(),
-            source_scpt_form_key: "001abc:fnv.esm".into(),
-        }];
-        let evidence = vec![CompiledScriptEvidence {
-            class_name: "Foo".into(),
-            relative_pex_path: "data/Scripts/Foo.pex".into(),
-            compiled_success: true,
-        }];
-        let intents =
-            build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence).unwrap();
-        assert_eq!(intents.len(), 1);
-    }
-
-    #[test]
-    fn build_intents_ignores_scripts_without_source_form_key() {
-        let mut script = make_translated("Orphan", "");
-        // Empty source_form_key — should not index into the matching map.
-        script.source_form_key = String::new();
-        let scripts = vec![script];
-        let targets = vec![VmadTarget {
-            target_form_key: "T1:Output.esp".into(),
-            source_scpt_form_key: "001234:FNV.esm".into(),
-        }];
-        let evidence = vec![CompiledScriptEvidence {
-            class_name: "Orphan".into(),
-            relative_pex_path: "data/Scripts/Orphan.pex".into(),
-            compiled_success: true,
-        }];
-        let intents =
-            build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence).unwrap();
-        assert!(intents.is_empty());
-    }
-
-    #[test]
-    fn source_generation_without_compile_evidence_never_binds_vmad() {
-        let scripts = vec![make_translated("Foo", "001ABC:FNV.esm")];
-        let targets = vec![VmadTarget {
-            target_form_key: "T1:Output.esp".into(),
-            source_scpt_form_key: "001ABC:FNV.esm".into(),
-        }];
-        assert!(build_scpt_vmad_intents(&targets, &scripts).is_empty());
-    }
-
-    #[test]
-    fn compiled_binding_requires_mapped_property_formkey() {
-        let mut script = make_translated("Foo", "001ABC:FNV.esm");
-        script
-            .properties
-            .push(super::super::script_synthesizer::TranslatedProperty {
-                source_name: "SomeActor".into(),
-                papyrus_name: "SomeActor".into(),
-                papyrus_type: "Actor".into(),
-                source_form_key: "111111:FNV.esm".into(),
-                target_form_key: None,
-            });
-        let targets = vec![VmadTarget {
-            target_form_key: "T1:Output.esp".into(),
-            source_scpt_form_key: "001ABC:FNV.esm".into(),
-        }];
-        let evidence = vec![CompiledScriptEvidence {
-            class_name: "Foo".into(),
-            relative_pex_path: "data/Scripts/Foo.pex".into(),
-            compiled_success: true,
-        }];
-        assert!(
-            build_scpt_vmad_intents_with_compiled_evidence(&targets, &[script], &evidence).is_err()
-        );
+            }];
+            let evidence = vec![CompiledScriptEvidence {
+                class_name: "Orphan".into(),
+                relative_pex_path: "data/Scripts/Orphan.pex".into(),
+                compiled_success: true,
+            }];
+            let intents =
+                build_scpt_vmad_intents_with_compiled_evidence(&targets, &scripts, &evidence)
+                    .unwrap();
+            assert!(intents.is_empty());
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1191,87 +1185,81 @@ mod tests {
     }
 
     #[test]
-    fn attach_vmad_inserts_at_index_zero_when_absent() {
-        let mut record = json!({
-            "fields": [
-                { "EDID": "MyRecord" },
-                { "FULL": "Display Name" },
-            ]
-        });
-        attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
-        let fields = record["fields"].as_array().unwrap();
-        assert_eq!(fields.len(), 3);
-        // First field is now the VMAD.
-        assert!(
-            fields[0]
-                .as_object()
-                .unwrap()
-                .contains_key("VirtualMachineAdapter")
-        );
-        assert_eq!(
-            fields[1].as_object().unwrap().keys().next().unwrap(),
-            "EDID"
-        );
-    }
-
-    #[test]
-    fn attach_vmad_merges_existing_virtual_machine_adapter() {
-        let mut record = json!({
-            "fields": [
-                { "EDID": "MyRecord" },
-                { "VirtualMachineAdapter": { "stale": true } },
-                { "FULL": "Display Name" },
-            ]
-        });
-        attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
-        let fields = record["fields"].as_array().unwrap();
-        assert_eq!(fields.len(), 3);
-        // Same position as the stale entry.
-        let new_vmad = &fields[1]["VirtualMachineAdapter"];
-        assert_eq!(new_vmad["Version"], 5);
-        assert_eq!(new_vmad["stale"], true);
-        assert_eq!(new_vmad["Scripts"][0]["ScriptName"], "Foo");
-    }
-
-    #[test]
-    fn attach_vmad_replaces_existing_short_form_vmad() {
-        let mut record = json!({
-            "fields": [
-                { "VMAD": { "stale": true } },
-            ]
-        });
-        attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
-        let fields = record["fields"].as_array().unwrap();
-        // VMAD entry replaced with the canonical VirtualMachineAdapter key.
-        assert!(
-            fields[0]
-                .as_object()
-                .unwrap()
-                .contains_key("VirtualMachineAdapter")
-        );
-        assert!(!fields[0].as_object().unwrap().contains_key("VMAD"));
-    }
-
-    #[test]
-    fn attach_vmad_empty_class_name_errors_and_leaves_record_alone() {
-        let mut record = json!({ "fields": [{ "EDID": "X" }] });
-        let original = record.clone();
-        let bad_intent = intent("");
-        assert!(attach_vmad_to_record(&mut record, &bad_intent).is_err());
-        assert_eq!(record, original);
-    }
-
-    #[test]
-    fn attach_vmad_creates_fields_when_missing() {
-        let mut record = json!({ "form_id": "001234" });
-        attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
-        let fields = record["fields"].as_array().unwrap();
-        assert_eq!(fields.len(), 1);
-        assert!(
-            fields[0]
-                .as_object()
-                .unwrap()
-                .contains_key("VirtualMachineAdapter")
-        );
+    fn attach_vmad_inserts_merges_replaces_and_rejects_empty_class() {
+        {
+            let mut record = json!({
+                "fields": [
+                    { "EDID": "MyRecord" },
+                    { "FULL": "Display Name" },
+                ]
+            });
+            attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
+            let fields = record["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 3);
+            // First field is now the VMAD.
+            assert!(
+                fields[0]
+                    .as_object()
+                    .unwrap()
+                    .contains_key("VirtualMachineAdapter")
+            );
+            assert_eq!(
+                fields[1].as_object().unwrap().keys().next().unwrap(),
+                "EDID"
+            );
+        }
+        {
+            let mut record = json!({
+                "fields": [
+                    { "EDID": "MyRecord" },
+                    { "VirtualMachineAdapter": { "stale": true } },
+                    { "FULL": "Display Name" },
+                ]
+            });
+            attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
+            let fields = record["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 3);
+            // Same position as the stale entry.
+            let new_vmad = &fields[1]["VirtualMachineAdapter"];
+            assert_eq!(new_vmad["Version"], 5);
+            assert_eq!(new_vmad["stale"], true);
+            assert_eq!(new_vmad["Scripts"][0]["ScriptName"], "Foo");
+        }
+        {
+            let mut record = json!({
+                "fields": [
+                    { "VMAD": { "stale": true } },
+                ]
+            });
+            attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
+            let fields = record["fields"].as_array().unwrap();
+            // VMAD entry replaced with the canonical VirtualMachineAdapter key.
+            assert!(
+                fields[0]
+                    .as_object()
+                    .unwrap()
+                    .contains_key("VirtualMachineAdapter")
+            );
+            assert!(!fields[0].as_object().unwrap().contains_key("VMAD"));
+        }
+        {
+            let mut record = json!({ "fields": [{ "EDID": "X" }] });
+            let original = record.clone();
+            let bad_intent = intent("");
+            assert!(attach_vmad_to_record(&mut record, &bad_intent).is_err());
+            assert_eq!(record, original);
+        }
+        {
+            let mut record = json!({ "form_id": "001234" });
+            attach_vmad_to_record(&mut record, &intent("Foo")).unwrap();
+            let fields = record["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 1);
+            assert!(
+                fields[0]
+                    .as_object()
+                    .unwrap()
+                    .contains_key("VirtualMachineAdapter")
+            );
+        }
     }
 }

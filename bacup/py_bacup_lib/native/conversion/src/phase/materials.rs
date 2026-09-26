@@ -25,7 +25,6 @@ pub(crate) fn phase_log_level(level: ConvertLogLevel) -> LogLevel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::phase::{Phase, PhaseCtx, PhaseReport};
     use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
     use crate::translator::Game;

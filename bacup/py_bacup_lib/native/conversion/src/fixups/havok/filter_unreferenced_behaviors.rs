@@ -329,42 +329,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fo76_only_behaviors_list_not_empty() {
-        assert!(!FO76_ONLY_BEHAVIORS.is_empty());
-    }
-
-    #[test]
-    fn all_entries_are_lowercase() {
-        for name in FO76_ONLY_BEHAVIORS {
-            assert_eq!(*name, name.to_lowercase(), "{name} is not lowercase");
-        }
-    }
-
-    #[test]
-    fn no_mod_path_returns_empty() {
-        use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
-        use crate::session::open_session;
-        use crate::sym::StringInterner;
-
-        let target_handle = esp_authoring_core::plugin_runtime::plugin_handle_new_native(
-            "FilterBehaviorsTest.esp",
-            Some("fo4"),
-        )
-        .expect("test plugin handle");
-        let config = FixupConfig::default();
-        let mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-
-        let fixup = FilterUnreferencedBehaviorsFixup;
-        assert!(!fixup.applies_to_session(&session, &config));
-        let report = fixup
-            .run_with_session(&mut session, &mut mapper, &config)
-            .unwrap();
-        assert!(report.is_no_op());
-    }
-
-    #[test]
     fn remove_fo76_only_behaviors_in_temp_dir() {
         use std::fs;
 

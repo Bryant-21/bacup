@@ -17,6 +17,15 @@ Event OnAliasInit()
     EndIf
 EndEvent
 
+Bool Function HasCurrentLocalCode(Actor player)
+    Nuke_MasterScript codeMaster = Game.GetFormFromFile(0x003CD064, "SeventySix.esm") as Nuke_MasterScript
+    If codeMaster == None || !B21:KeypadNative.Ready()
+        Return False
+    EndIf
+    codeMaster.UpdateLocalCodeCycle()
+    Return player.GetValue(CodeEnteredIndexValue) == (codeMaster.LocalCodeRevision(iSiloID) + 1) as Float
+EndFunction
+
 Event OnActivate(ObjectReference akActionRef)
     Actor player = Game.GetPlayer()
     If akActionRef != player || bPermitActivation
@@ -34,7 +43,7 @@ Event OnActivate(ObjectReference akActionRef)
         bPermitActivation = False
         Return
     EndIf
-    If player.GetValue(CodeEnteredIndexValue) < 1.0
+    If !HasCurrentLocalCode(player)
         SayLocalTopic(EN07_EnterCode)
         bPermitActivation = False
         Return

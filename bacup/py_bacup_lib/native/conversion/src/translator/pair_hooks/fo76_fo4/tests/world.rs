@@ -1,8 +1,56 @@
 
 
     #[test]
-    fn pre_translate_keeps_scol_with_a_usable_part() {
+    fn pre_translate_converts_only_nif_backed_empty_scol_to_stat() {
         let interner = StringInterner::new();
+        let mut record = make_record("SCOL", &interner);
+        let original_form_key = record.form_key;
+        let eid = interner.intern("ToxicCreeperSC01_Copy02");
+        record.eid = Some(eid);
+        push_field(&mut record, "EDID", FieldValue::String(eid));
+        push_field(
+            &mut record,
+            "OBND",
+            FieldValue::Bytes(SmallVec::from_slice(&[0; 12])),
+        );
+        push_field(
+            &mut record,
+            "MODL",
+            FieldValue::String(interner.intern("SCOL\\SeventySix.esm\\CM007D2AB2.NIF")),
+        );
+        push_field(
+            &mut record,
+            "MODT",
+            FieldValue::Bytes(SmallVec::from_slice(&[1, 2, 3, 4])),
+        );
+        push_field(
+            &mut record,
+            "ONAM",
+            FieldValue::Bytes(SmallVec::from_slice(&[0; 8])),
+        );
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Bytes(SmallVec::from_slice(&[0; 28])),
+        );
+        push_field(&mut record, "DEFL", FieldValue::Uint(0xA4E1));
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        assert_eq!(record.sig, SigCode::from_str("STAT").unwrap());
+        assert_eq!(record.form_key, original_form_key);
+        assert_eq!(record.eid, Some(eid));
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .map(|entry| entry.sig.as_str())
+                .collect::<Vec<_>>(),
+            vec!["EDID", "OBND", "MODL", "MODT"]
+        );
+
         let mut record = make_record("SCOL", &interner);
         push_field(
             &mut record,
@@ -14,18 +62,12 @@
             "ONAM",
             FieldValue::Bytes(SmallVec::from_slice(&[0x12, 0x58, 0x03, 0x00, 0, 0, 0, 0])),
         );
-
         Fo76Fo4Hook
             .pre_translate(&mut make_ctx(&interner), &mut record)
             .unwrap();
-
-        assert_eq!(record.sig, SigCode::from_str("SCOL").unwrap());
+        assert_eq!(record.sig, SigCode::from_str("SCOL").unwrap(), "usable part");
         assert!(record.fields.iter().any(|entry| entry.sig.0 == *b"ONAM"));
-    }
 
-    #[test]
-    fn pre_translate_keeps_empty_scol_without_a_non_empty_model() {
-        let interner = StringInterner::new();
         for model in [None, Some(" \t\0 ")] {
             let mut record = make_record("SCOL", &interner);
             if let Some(model) = model {
@@ -41,7 +83,11 @@
                 .pre_translate(&mut make_ctx(&interner), &mut record)
                 .unwrap();
 
-            assert_eq!(record.sig, SigCode::from_str("SCOL").unwrap());
+            assert_eq!(
+                record.sig,
+                SigCode::from_str("SCOL").unwrap(),
+                "model {model:?}"
+            );
         }
     }
 
@@ -102,72 +148,40 @@
     }
 
     #[test]
-    fn post_translate_strips_wsbunker_intercom_radio() {
+    fn strips_only_zero_health_cont_destructibles_across_fo76_interstitials() {
         let interner = StringInterner::new();
-        let mut record = make_record("ACTI", &interner);
-        record.eid = Some(interner.intern(WSBUNKER_INTERCOM_EDITOR_ID));
-        push_field(
-            &mut record,
-            "MODL",
-            FieldValue::String(interner.intern("SetDressing\\WallPanels\\Intercom_Panel.nif")),
-        );
-        push_field(&mut record, "FNAM", FieldValue::None);
-        push_field(&mut record, "RADR", raw_bytes(&[0_u8; 14]));
+        for (health, expected) in [
+            (0, vec!["EDID", "DATA"]),
+            (
+                50,
+                vec![
+                    "EDID", "DEST", "HGLB", "DSTD", "DMDL", "DMDT", "ENLT", "ENLS", "AUUV", "DSTF",
+                    "DATA",
+                ],
+            ),
+        ] {
+            let mut record = make_record("CONT", &interner);
+            push_field(&mut record, "EDID", FieldValue::None);
+            push_field(&mut record, "DEST", raw_bytes(&i32::to_le_bytes(health)));
+            push_field(&mut record, "HGLB", raw_bytes(&[1, 0, 0, 0]));
+            push_field(&mut record, "DSTD", raw_bytes(&[0; 28]));
+            push_field(&mut record, "DMDL", raw_bytes(b"destroyed.nif\0"));
+            push_field(&mut record, "DMDT", raw_bytes(&[0; 20]));
+            push_field(&mut record, "ENLT", raw_bytes(&[0; 4]));
+            push_field(&mut record, "ENLS", raw_bytes(&[0; 4]));
+            push_field(&mut record, "AUUV", raw_bytes(&[0; 32]));
+            push_field(&mut record, "DSTF", FieldValue::None);
+            push_field(&mut record, "DATA", raw_bytes(&[1]));
 
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
+            Fo76Fo4Hook::strip_zero_health_cont_destructibles(&interner, &mut record);
 
-        assert_eq!(
-            record
+            let sigs: Vec<&str> = record
                 .fields
                 .iter()
                 .map(|field| field.sig.as_str())
-                .collect::<Vec<_>>(),
-            vec!["MODL"]
-        );
-    }
-
-    #[test]
-    fn pre_translate_does_not_rewrite_non_refr_tnam() {
-        let interner = StringInterner::new();
-        let mut record = make_record("TERM", &interner);
-        push_field(&mut record, "TNAM", raw_bytes(&64_u32.to_le_bytes()));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        match &record.fields[0].value {
-            FieldValue::Bytes(bytes) => assert_eq!(bytes.as_slice(), &64_u32.to_le_bytes()),
-            value => panic!("expected TNAM bytes, got {value:?}"),
+                .collect();
+            assert_eq!(sigs, expected, "health {health}");
         }
-    }
-
-    #[test]
-    fn zero_health_cont_destructible_strip_spans_fo76_interstitials() {
-        let interner = StringInterner::new();
-        let mut record = make_record("CONT", &interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "DEST", raw_bytes(&0_i32.to_le_bytes()));
-        push_field(&mut record, "HGLB", raw_bytes(&[1, 0, 0, 0]));
-        push_field(&mut record, "DSTD", raw_bytes(&[0; 28]));
-        push_field(&mut record, "DMDL", raw_bytes(b"destroyed.nif\0"));
-        push_field(&mut record, "DMDT", raw_bytes(&[0; 20]));
-        push_field(&mut record, "ENLT", raw_bytes(&[0; 4]));
-        push_field(&mut record, "ENLS", raw_bytes(&[0; 4]));
-        push_field(&mut record, "AUUV", raw_bytes(&[0; 32]));
-        push_field(&mut record, "DSTF", FieldValue::None);
-        push_field(&mut record, "DATA", raw_bytes(&[1]));
-
-        Fo76Fo4Hook::strip_zero_health_cont_destructibles(&interner, &mut record);
-
-        let sigs: Vec<&str> = record
-            .fields
-            .iter()
-            .map(|field| field.sig.as_str())
-            .collect();
-        assert_eq!(sigs, vec!["EDID", "DATA"]);
     }
 
     #[test]
@@ -209,7 +223,7 @@
     // `reference_count=9482` (2x 4741). Read as a row count, the size check
     // rejects every dense FO76 CELL and XCRI is dropped.
     #[test]
-    fn convert_cell_xcri_raw_to_fo4_accepts_fo76_2x_reference_count_layout() {
+    fn cell_xcri_converts_fo76_layouts_to_fo4() {
         let mesh_count: u32 = 3;
         let row_count: u32 = 5;
         let reference_count_field: u64 = u64::from(row_count) * 2;
@@ -246,12 +260,37 @@
             expected.extend_from_slice(&(0x1000 + (i % mesh_count)).to_le_bytes());
         }
         assert_eq!(converted, expected);
-    }
 
-    #[test]
-    fn pre_translate_converts_structured_cell_xcri() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("CELL", &mut interner);
+        let interner = StringInterner::new();
+        let hook = Fo76Fo4Hook;
+        let mut ctx = make_ctx(&interner);
+
+        let mut record = make_record("CELL", &interner);
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&2_u64.to_le_bytes());
+        raw.extend_from_slice(&2_u64.to_le_bytes());
+        for (mesh_or_reference, unknown) in [
+            (0x1111_1111_u32, [1, 2, 3, 4]),
+            (0x2222_2222, [5, 6, 7, 8]),
+            (0xAABB_CCDD, [9, 10, 11, 12]),
+            (0x3333_3333, [13, 14, 15, 16]),
+        ] {
+            raw.extend_from_slice(&mesh_or_reference.to_le_bytes());
+            raw.extend_from_slice(&unknown);
+        }
+        push_field(&mut record, "EDID", FieldValue::None);
+        push_field(&mut record, "XCRI", raw_bytes(&raw));
+        push_field(&mut record, "XCLC", FieldValue::None);
+        hook.pre_translate(&mut ctx, &mut record).unwrap();
+        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
+        assert_eq!(sigs, vec!["EDID", "XCRI", "XCLC"]);
+        let expected: Vec<u8> = [2_u32, 2, 0x1111_1111, 0x2222_2222, 0xAABB_CCDD, 0x3333_3333]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        assert_eq!(record.fields[1].value, raw_bytes(&expected), "raw XCRI");
+
+        let mut record = make_record("CELL", &interner);
         let xcri = FieldValue::Struct(vec![
             (interner.intern("meshes_count"), FieldValue::Uint(1)),
             (interner.intern("references_count"), FieldValue::Uint(2)),
@@ -267,9 +306,7 @@
                 FieldValue::List(vec![FieldValue::Struct(vec![
                     (
                         interner.intern("reference"),
-                        FieldValue::Bytes(SmallVec::from_vec(
-                            0x1234_5678_u32.to_le_bytes().to_vec(),
-                        )),
+                        raw_bytes(&0x1234_5678_u32.to_le_bytes()),
                     ),
                     (interner.intern("unknown_u8_1"), FieldValue::Uint(255)),
                     (interner.intern("combined_mesh"), FieldValue::Uint(7)),
@@ -277,11 +314,7 @@
             ),
         ]);
         push_field(&mut record, "XCRI", xcri);
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
         hook.pre_translate(&mut ctx, &mut record).unwrap();
-
         assert_eq!(record.fields.len(), 1);
         let schema = AuthoringSchema::for_game("fo4").expect("FO4 schema loads");
         let encoded = crate::target_write::encode_field_pub(
@@ -290,50 +323,23 @@
             &interner,
         )
         .expect("converted XCRI encodes");
-        let mut expected = Vec::new();
-        expected.extend_from_slice(&1_u32.to_le_bytes());
-        expected.extend_from_slice(&2_u32.to_le_bytes());
-        expected.extend_from_slice(&7_u32.to_le_bytes());
-        expected.extend_from_slice(&0x1234_5678_u32.to_le_bytes());
-        expected.extend_from_slice(&7_u32.to_le_bytes());
-        assert_eq!(encoded, expected);
-    }
+        let expected: Vec<u8> = [1_u32, 2, 7, 0x1234_5678, 7]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        assert_eq!(encoded, expected, "structured XCRI");
 
-    #[test]
-    fn pre_translate_drops_malformed_cell_xcri() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("CELL", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(
-            &mut record,
-            "XCRI",
-            FieldValue::Bytes(SmallVec::from_vec(vec![1, 2, 3])),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert_eq!(sigs, vec!["EDID"]);
-    }
-
-    #[test]
-    fn pre_translate_keeps_xcri_on_non_cell_records() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("STAT", &mut interner);
-        push_field(
-            &mut record,
-            "XCRI",
-            FieldValue::Bytes(SmallVec::from_vec(vec![0; 32])),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert_eq!(sigs, vec!["XCRI"]);
+        for (name, sig, xcri, expected) in [
+            ("malformed_cell_xcri_dropped", "CELL", vec![1, 2, 3], vec!["EDID"]),
+            ("non_cell_xcri_kept", "STAT", vec![0; 32], vec!["EDID", "XCRI"]),
+        ] {
+            let mut record = make_record(sig, &interner);
+            push_field(&mut record, "EDID", FieldValue::None);
+            push_field(&mut record, "XCRI", raw_bytes(&xcri));
+            hook.pre_translate(&mut ctx, &mut record).unwrap();
+            let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
+            assert_eq!(sigs, expected, "{name}");
+        }
     }
 
     /// `CELL.XCLL` reaches a pair hook as raw bytes, never a typed
@@ -402,129 +408,36 @@
     }
 
     #[test]
-    fn pre_translate_storm_interior_inherits_fo4_template_fog() {
+    fn pre_translate_cell_lighting_inherits_table() {
         let interner = StringInterner::new();
-        for editor_id in ["StormStolzManor", "StormWeatherLab01"] {
-            let mut record = lit_cell(
-                &interner,
-                editor_id,
-                CELL_INTERIOR_FLAG,
-                xcll_bytes(0x04E0, 90, 90),
-                Some(0x002FEB),
-            );
-
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            assert_eq!(cell_inherits(&record), 0x07FC);
-            // The fog inherit must not scribble over the ambient colour at +0.
-            assert_eq!(cell_ambient_byte(&record), 90);
-        }
-    }
-
-    #[test]
-    fn pre_translate_unlit_interior_inherits_template_ambient() {
-        let interner = StringInterner::new();
-        // FortAtlas01 (fully black) and XPDPitt01Industrial (near-black).
-        for ambient in [0, 3, 47] {
-            let mut record = lit_cell(
-                &interner,
-                "FortAtlas01",
-                CELL_INTERIOR_FLAG,
-                xcll_bytes(0, ambient, ambient),
-                Some(0x002FE3),
-            );
-
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            assert_eq!(cell_inherits(&record), 0x0003);
-        }
-    }
-
-    #[test]
-    fn pre_translate_unlit_interior_keeps_authored_fog_bits() {
-        let interner = StringInterner::new();
-        // DebugZachW: bit 0 clear, every other bit authored. Only ambient and
-        // directional colour may be added; the fog/fade bits stay as authored.
-        let mut record = lit_cell(
-            &interner,
-            "DebugZachW",
-            CELL_INTERIOR_FLAG,
-            xcll_bytes(0x079E, 29, 29),
-            Some(0x000DD38D),
-        );
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        assert_eq!(cell_inherits(&record), 0x079F);
-    }
-
-    #[test]
-    fn pre_translate_leaves_lit_and_templateless_cells_alone() {
-        let interner = StringInterner::new();
-        let cases = [
-            // Bright enough to light itself.
-            (xcll_bytes(0, 48, 48), Some(0x002FE3), 0x0000),
-            // Dark, but already inheriting ambient from its template.
-            (xcll_bytes(0x0001, 0, 0), Some(0x002FE3), 0x0001),
-            // Dark with no template — nothing to inherit from.
-            (xcll_bytes(0, 0, 0), None, 0x0000),
-        ];
-
-        for (xcll, template, expected) in cases {
-            let mut record = lit_cell(&interner, "SomeCell", CELL_INTERIOR_FLAG, xcll, template);
-
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            assert_eq!(cell_inherits(&record), expected);
-        }
-    }
-
-    #[test]
-    fn pre_translate_leaves_exterior_cells_alone() {
-        let interner = StringInterner::new();
-        let mut record = lit_cell(
-            &interner,
-            "SomeExterior",
-            0,
-            xcll_bytes(0, 0, 0),
-            Some(0x002FE3),
-        );
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        assert_eq!(cell_inherits(&record), 0x0000);
-    }
-
-    #[test]
-    fn pre_translate_keeps_non_storm_and_exterior_cell_fog() {
-        let interner = StringInterner::new();
-        for (editor_id, flags) in [
-            ("Vault63Meteorology", CELL_INTERIOR_FLAG),
-            ("StormExterior", 0),
+        let interior = CELL_INTERIOR_FLAG;
+        for (name, editor_id, flags, xcll, template, expected) in [
+            ("storm_interior_inherits_template_fog", "StormStolzManor", interior, xcll_bytes(0x04E0, 90, 90), Some(0x002FEB), 0x07FC),
+            ("storm_lab_inherits_template_fog", "StormWeatherLab01", interior, xcll_bytes(0x04E0, 90, 90), Some(0x002FEB), 0x07FC),
+            ("black_interior_inherits_ambient", "FortAtlas01", interior, xcll_bytes(0, 0, 0), Some(0x002FE3), 0x0003),
+            ("near_black_interior_inherits_ambient", "FortAtlas01", interior, xcll_bytes(0, 47, 47), Some(0x002FE3), 0x0003),
+            // Bit 0 clear, every other bit authored: only ambient and directional may be added.
+            ("unlit_interior_keeps_authored_fog_bits", "DebugZachW", interior, xcll_bytes(0x079E, 29, 29), Some(0x000DD38D), 0x079F),
+            ("lit_interior_untouched", "SomeCell", interior, xcll_bytes(0, 48, 48), Some(0x002FE3), 0x0000),
+            ("already_inheriting_untouched", "SomeCell", interior, xcll_bytes(0x0001, 0, 0), Some(0x002FE3), 0x0001),
+            ("templateless_untouched", "SomeCell", interior, xcll_bytes(0, 0, 0), None, 0x0000),
+            ("exterior_untouched", "SomeExterior", 0, xcll_bytes(0, 0, 0), Some(0x002FE3), 0x0000),
+            ("non_storm_fog_kept", "Vault63Meteorology", interior, xcll_bytes(0x04E0, 90, 90), Some(0x002FEB), 0x04E0),
+            ("storm_exterior_fog_kept", "StormExterior", 0, xcll_bytes(0x04E0, 90, 90), Some(0x002FEB), 0x04E0),
         ] {
-            let mut record = lit_cell(
-                &interner,
-                editor_id,
-                flags,
-                xcll_bytes(0x04E0, 90, 90),
-                Some(0x002FEB),
-            );
+            let FieldValue::Bytes(source) = &xcll else {
+                unreachable!("xcll_bytes builds raw XCLL");
+            };
+            let ambient = source[0];
+            let mut record = lit_cell(&interner, editor_id, flags, xcll, template);
 
             Fo76Fo4Hook
                 .pre_translate(&mut make_ctx(&interner), &mut record)
                 .unwrap();
 
-            assert_eq!(cell_inherits(&record), 0x04E0);
+            assert_eq!(cell_inherits(&record), expected, "{name}");
+            // The inherit rewrite must not scribble over the ambient colour at +0.
+            assert_eq!(cell_ambient_byte(&record), ambient, "{name}");
         }
     }
 
@@ -609,48 +522,36 @@
     }
 
     #[test]
-    fn post_translate_does_not_mark_named_border_region_when_flag_is_missing() {
+    fn post_translate_border_region_flag_follows_only_the_source_flag() {
         let interner = StringInterner::new();
-        let mut record = make_record("REGN", &interner);
-        record.eid = Some(interner.intern("BurningSpringsBorderRegion01"));
+        for (name, editor_id, source_flag, rcbn, expected) in [
+            ("named_border_without_flag", "BurningSpringsBorderRegion01", false, false, false),
+            ("source_flag_preserved", "BurningSpringsRegion", true, false, true),
+            ("rcbn_does_not_mark_border", "ForestObjectRegion", false, true, false),
+        ] {
+            let mut record = make_record("REGN", &interner);
+            record.eid = Some(interner.intern(editor_id));
+            if source_flag {
+                record.flags.insert(RecordFlags::BORDER_REGION);
+            }
+            if rcbn {
+                push_field(&mut record, "RCBN", raw_bytes(&[1]));
+            }
 
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
+            Fo76Fo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
 
-        assert!(!record.flags.contains(RecordFlags::BORDER_REGION));
+            assert_eq!(
+                record.flags.contains(RecordFlags::BORDER_REGION),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
-    fn post_translate_preserves_source_border_region_flag() {
-        let interner = StringInterner::new();
-        let mut record = make_record("REGN", &interner);
-        record.eid = Some(interner.intern("BurningSpringsRegion"));
-        record.flags.insert(RecordFlags::BORDER_REGION);
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        assert!(record.flags.contains(RecordFlags::BORDER_REGION));
-    }
-
-    #[test]
-    fn post_translate_does_not_use_rcbn_to_mark_region_border() {
-        let interner = StringInterner::new();
-        let mut record = make_record("REGN", &interner);
-        record.eid = Some(interner.intern("ForestObjectRegion"));
-        push_field(&mut record, "RCBN", raw_bytes(&[1]));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        assert!(!record.flags.contains(RecordFlags::BORDER_REGION));
-    }
-
-    #[test]
-    fn post_translate_adds_ingredient_production_to_harvestable_flora() {
+    fn post_translate_adds_ingredient_production_only_to_harvestable_flora_without_one() {
         let interner = StringInterner::new();
         let mut record = make_record("FLOR", &interner);
         record.eid = Some(interner.intern("FloraRadDecayVine01"));
@@ -682,43 +583,33 @@
         )
         .expect("synthesized PFPC encodes");
         assert_eq!(encoded, vec![100, 100, 100, 100]);
-    }
 
-    #[test]
-    fn post_translate_preserves_existing_flora_ingredient_production() {
-        let interner = StringInterner::new();
         let mut record = make_record("FLOR", &interner);
         push_field(&mut record, "PFIG", form_key_value(&interner, 0x2D_DD4D));
         push_field(&mut record, "PFPC", raw_bytes(&[25, 50, 75, 100]));
-
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let production = record
+        hook.post_translate(&mut ctx, &mut record).unwrap();
+        let production: Vec<&FieldValue> = record
             .fields
             .iter()
-            .find(|field| field.sig.0 == *b"PFPC")
-            .expect("source PFPC remains");
-        assert_eq!(production.value, raw_bytes(&[25, 50, 75, 100]));
-    }
+            .filter(|field| field.sig.0 == *b"PFPC")
+            .map(|field| &field.value)
+            .collect();
+        assert_eq!(production, vec![&raw_bytes(&[25, 50, 75, 100])], "source PFPC kept");
 
-    #[test]
-    fn post_translate_does_not_add_ingredient_production_without_an_ingredient() {
-        let interner = StringInterner::new();
         let mut record = make_record("FLOR", &interner);
         push_field(&mut record, "SNAM", form_key_value(&interner, 0x22_3D06));
-
-        Fo76Fo4Hook
-            .post_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        assert!(!record.fields.iter().any(|field| field.sig.0 == *b"PFPC"));
+        hook.post_translate(&mut ctx, &mut record).unwrap();
+        assert!(
+            !record.fields.iter().any(|field| field.sig.0 == *b"PFPC"),
+            "no ingredient, no PFPC"
+        );
     }
 
     #[test]
-    fn post_translate_converts_structured_regn_rdot_to_fo4_rows() {
-        let mut interner = StringInterner::new();
+    fn post_translate_converts_regn_rdot_and_drops_raw_rows() {
+        let interner = StringInterner::new();
+        let hook = Fo76Fo4Hook;
+        let mut ctx = make_ctx(&interner);
         let masters = vec!["SeventySix.esm".to_string()];
         let mut payload = vec![0_u8; 76];
         payload[12..16].copy_from_slice(&1.0f32.to_le_bytes());
@@ -740,8 +631,6 @@
         push_field(&mut record, "RDOT", decoded);
         push_field(&mut record, "RDWT", FieldValue::None);
 
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
         hook.post_translate(&mut ctx, &mut record).unwrap();
 
         let rdot = record
@@ -759,24 +648,19 @@
             crate::target_write::encode_field_pub(rdot, schema.record_def("REGN"), &interner)
                 .expect("converted RDOT encodes");
         assert_eq!(encoded.len(), 52);
-    }
 
-    #[test]
-    fn post_translate_keeps_rdot_on_non_region_records() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("STAT", &mut interner);
-        push_field(
-            &mut record,
-            "RDOT",
-            FieldValue::Bytes(SmallVec::from_vec(vec![0_u8; 456])),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.post_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"RDOT"));
+        for (name, sig, expected) in [
+            ("raw_region_rdot_dropped", "REGN", vec!["RDAT", "RDWT"]),
+            ("non_region_rdot_kept", "STAT", vec!["RDAT", "RDOT", "RDWT"]),
+        ] {
+            let mut record = make_record(sig, &interner);
+            push_field(&mut record, "RDAT", FieldValue::None);
+            push_field(&mut record, "RDOT", raw_bytes(&[0_u8; 456]));
+            push_field(&mut record, "RDWT", FieldValue::None);
+            hook.post_translate(&mut ctx, &mut record).unwrap();
+            let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
+            assert_eq!(sigs, expected, "{name}");
+        }
     }
 
     #[test]
@@ -799,3 +683,4 @@
         };
         assert_eq!(interner.resolve(sym), Some("Landscape\\Trees\\Tree.nif"));
     }
+

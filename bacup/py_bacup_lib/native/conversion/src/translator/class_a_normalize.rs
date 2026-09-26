@@ -134,8 +134,19 @@ fn normalize_record_against_def(
     let mut in_qust_aliases = false;
     let mut in_scen_phases = false;
     let mut in_scen_actions = false;
+    let mut in_perk_effect = false;
     for entry in record.fields.iter_mut() {
         let sub_sig = entry.sig.as_str();
+        if rec_sig == "PERK" {
+            if sub_sig == "PRKE" {
+                in_perk_effect = true;
+            } else if sub_sig == "PRKF" {
+                in_perk_effect = false;
+            } else if sub_sig == "DATA" && in_perk_effect {
+                // The unscoped DATA schema describes Trait, not the effect union.
+                continue;
+            }
+        }
         if rec_sig == "QUST" && sub_sig == "ANAM" {
             in_qust_aliases = true;
         }
@@ -555,25 +566,6 @@ mod tests {
     }
 
     #[test]
-    fn clears_flor_visible_when_distant_header_flag() {
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let mut record = Record {
-            sig: SigCode::from_str("FLOR").unwrap(),
-            form_key: FormKey::parse("3916F2@SeventySix.esm", &interner).unwrap(),
-            eid: None,
-            flags: RecordFlags::from_bits_retain(0x0000_8000),
-            fields: SmallVec::new(),
-            warnings: SmallVec::new(),
-        };
-
-        let report = normalize_flags_and_enums(&mut record, &schema, &interner);
-
-        assert_eq!(report.header_flag_bits_cleared, 0x0000_8000);
-        assert_eq!(record.flags.bits(), 0);
-    }
-
-    #[test]
     fn qust_alias_fnam_uses_alias_mask_after_anam() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
@@ -638,12 +630,9 @@ mod tests {
         // masking an alias row with it would be catastrophic.
         let blind = schema.enum_def_at("QUST", "FNAM").expect("QUST.FNAM");
         assert_eq!(blind.valid_flag_mask(), 0x3);
-    }
 
-    /// Every alias FNAM bit observed in Fallout4.esm and in the converted
-    /// SeventySix.esm output must pass the mask unchanged.
-    #[test]
-    fn qust_alias_mask_preserves_every_shipped_alias_flag_bit() {
+        // Every alias FNAM bit observed in Fallout4.esm and in the converted
+        // SeventySix.esm output must pass the mask unchanged.
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         // Union of all alias-FNAM bits measured in Fallout4.esm (0x1FF_FFFF).
@@ -758,7 +747,7 @@ mod tests {
     /// Asserts the VALUE survives, not the schema mask, so it keeps passing if
     /// `equip_type` is widened in schema_forge.
     #[test]
-    fn race_vnam_equipment_flags_survive_class_a() {
+    fn race_vnam_equipment_flags_survive_class_a_as_scalar_or_bytes() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         // FO76 LiberatorRace 002ECF source value.
@@ -783,13 +772,10 @@ mod tests {
             out, raw,
             "RACE.VNAM must survive Class A intact; upper equipment bits were stripped"
         );
-    }
 
-    /// The same value must survive when VNAM decoded to raw bytes rather than a
-    /// scalar — the exemption is keyed at the dispatch point so representation
-    /// cannot reintroduce the strip.
-    #[test]
-    fn race_vnam_survives_class_a_as_raw_bytes() {
+        // The same value must survive when VNAM decoded to raw bytes rather than a
+        // scalar — the exemption is keyed at the dispatch point so representation
+        // cannot reintroduce the strip.
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let raw: u32 = 0xF8FF_E201;
@@ -822,7 +808,7 @@ mod tests {
     /// OLD-format layout (leading byte ⇒ fields at offsets 1/5/9) would zero
     /// blend_op@4 + z_test@8 (`<Unknown:0>`). Values from output EFSH 863000.
     #[test]
-    fn efsh_dnam_membrane_enums_survive_at_fv131_layout() {
+    fn efsh_dnam_membrane_enums_are_masked_at_fv131_layout() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
 
@@ -865,12 +851,9 @@ mod tests {
             "Ambient Sound formlink@108 must survive intact (was corrupted to \
              0x249100 by the old-format-layout enum write — the wrong-type errors)"
         );
-    }
 
-    /// An out-of-domain enum value still clamps under the fv131 layout: a
-    /// blend_operation of 99 (invalid in FO4's 1..=5 set) clamps to fallback.
-    #[test]
-    fn efsh_dnam_invalid_enum_still_clamps_at_correct_offset() {
+        // An out-of-domain enum value still clamps under the fv131 layout: a
+        // blend_operation of 99 (invalid in FO4's 1..=5 set) clamps to fallback.
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let mut dnam = vec![0u8; 157];
@@ -903,7 +886,7 @@ mod tests {
     /// A must preserve it rather than clamp the 0xFF int8 to the fallback (0),
     /// which silently rewrote a whole quest package's schedule to Sunday/00:00.
     #[test]
-    fn pack_psdt_any_schedule_sentinel_survives_class_a() {
+    fn pack_schedule_sentinels_and_shipped_package_flags_survive_class_a() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         // month, DayOfWeek(-1), date, Hour(-1), Minute(-1), unk×3, duration.
@@ -934,10 +917,7 @@ mod tests {
             &[0xab, 0xab, 0xab],
             "non-enum unknowns untouched"
         );
-    }
 
-    #[test]
-    fn wayward_duchess_sit_package_preserves_preferred_speed_flag() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let source = hex::decode("0020000012000000D0FE0000").unwrap();
@@ -959,10 +939,7 @@ mod tests {
             panic!("PKDT must stay Bytes");
         };
         assert_eq!(output.as_slice(), source);
-    }
 
-    #[test]
-    fn boomer_disabled_package_preserves_ignore_combat_flags() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         let source = hex::decode("00001008120002B0FFFE0000").unwrap();
@@ -991,7 +968,7 @@ mod tests {
     /// bits FO4 does not define (`0x40` on WorkbenchTinkersA 012FF0); Class A
     /// masks those away while keeping the FO4-defined ones.
     #[test]
-    fn furn_fnam_masks_fo76_only_flag_bits() {
+    fn furn_fnam_and_flor_header_mask_fo76_only_flag_bits() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
         for (raw, expected) in [(0x0040_u16, 0x0000_u16), (0x0042, 0x0002)] {
@@ -1014,5 +991,21 @@ mod tests {
             };
             assert_eq!(u16::from_le_bytes(bytes[..2].try_into().unwrap()), expected);
         }
+
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
+        let mut record = Record {
+            sig: SigCode::from_str("FLOR").unwrap(),
+            form_key: FormKey::parse("3916F2@SeventySix.esm", &interner).unwrap(),
+            eid: None,
+            flags: RecordFlags::from_bits_retain(0x0000_8000),
+            fields: SmallVec::new(),
+            warnings: SmallVec::new(),
+        };
+
+        let report = normalize_flags_and_enums(&mut record, &schema, &interner);
+
+        assert_eq!(report.header_flag_bits_cleared, 0x0000_8000);
+        assert_eq!(record.flags.bits(), 0);
     }
 }

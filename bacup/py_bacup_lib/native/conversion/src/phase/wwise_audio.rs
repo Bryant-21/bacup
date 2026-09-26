@@ -804,7 +804,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn resolve_source_audio_prefers_xwm_over_wav() {
+    fn resolve_source_audio_prefers_xwm_then_wav_then_none() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("music/creationclub/_shared");
         std::fs::create_dir_all(&dir).unwrap();
@@ -817,10 +817,7 @@ mod tests {
         .expect("should resolve to the .xwm sibling");
         assert_eq!(key, "music/creationclub/_shared/explore_01.xwm");
         assert!(path.is_file());
-    }
 
-    #[test]
-    fn resolve_source_audio_falls_back_to_wav() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("sound/fx");
         std::fs::create_dir_all(&dir).unwrap();
@@ -829,10 +826,7 @@ mod tests {
         let (key, _path) =
             resolve_source_audio(tmp.path(), r"Sound\fx\boom.wav").expect("should resolve to .wav");
         assert_eq!(key, "sound/fx/boom.wav");
-    }
 
-    #[test]
-    fn resolve_source_audio_returns_none_when_neither_extension_exists() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(resolve_source_audio(tmp.path(), r"data\Music\missing.wav").is_none());
     }
@@ -1120,15 +1114,12 @@ mod tests {
     }
 
     #[test]
-    fn bank_name_strips_esm_extension() {
+    fn bank_name_strips_esm_and_placeholder_accepts_either_param() {
         assert_eq!(
             bank_name_from_output_plugin("Fallout4_SF.esm"),
             "Fallout4_SF"
         );
-    }
 
-    #[test]
-    fn is_placeholder_accepts_either_param_name() {
         assert!(is_placeholder(&json!({ "placeholder_audio": true })));
         assert!(is_placeholder(&json!({ "placeholder_events": true })));
         assert!(!is_placeholder(&json!({})));

@@ -159,3 +159,10 @@ EndFunction
 Function Fragment_Stage_0150_Item_00()
     Stop()
 EndFunction
+
+Function Fragment_Stage_0151_Item_00()
+    EN05_PatriotismTrainingQuestScript course = EN05PTF_GetCourse()
+    If course != None
+        course.EN05PT_ShutdownCourse()
+    EndIf
+EndFunction

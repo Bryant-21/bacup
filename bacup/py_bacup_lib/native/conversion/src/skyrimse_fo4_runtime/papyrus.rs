@@ -352,81 +352,79 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mismatched_script_name_before_writing() {
-        let root = tempfile::tempdir().unwrap();
-        let error = emit_script_sources(
-            root.path(),
-            &[SkyrimPscSourceArtifact {
-                class_name: "Expected".to_string(),
-                source: "ScriptName Different Extends Quest\n".to_string(),
-                kind: SkyrimPscKind::Helper,
+    fn compiler_evidence_is_bound_to_source_name_and_real_pex() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let error = emit_script_sources(
+                root.path(),
+                &[SkyrimPscSourceArtifact {
+                    class_name: "Expected".to_string(),
+                    source: "ScriptName Different Extends Quest\n".to_string(),
+                    kind: SkyrimPscKind::Helper,
+                    required: true,
+                }],
+            )
+            .unwrap_err();
+            assert!(error.contains("declares ScriptName"));
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let artifact = SkyrimPscSourceArtifact {
+                class_name: "B21_SkyQF_000123".to_string(),
+                source: "ScriptName B21_SkyQF_000123 Extends Quest\n".to_string(),
+                kind: SkyrimPscKind::QuestFragment,
                 required: true,
-            }],
-        )
-        .unwrap_err();
-        assert!(error.contains("declares ScriptName"));
-    }
+            };
+            let manifest = psc_manifest_row(&artifact).unwrap();
+            let (mut evidence, pex_bytes) = compile_evidence(root.path(), &artifact, &manifest);
+            let validated = validate_compiler_evidence(&manifest, Some(&evidence)).unwrap();
+            assert_eq!(
+                validated.pex_blake3,
+                blake3::hash(&pex_bytes).to_hex().to_string()
+            );
 
-    #[test]
-    fn compiler_evidence_is_bound_to_the_source_and_real_pex() {
-        let root = tempfile::tempdir().unwrap();
-        let artifact = SkyrimPscSourceArtifact {
-            class_name: "B21_SkyQF_000123".to_string(),
-            source: "ScriptName B21_SkyQF_000123 Extends Quest\n".to_string(),
-            kind: SkyrimPscKind::QuestFragment,
-            required: true,
-        };
-        let manifest = psc_manifest_row(&artifact).unwrap();
-        let (mut evidence, pex_bytes) = compile_evidence(root.path(), &artifact, &manifest);
-        let validated = validate_compiler_evidence(&manifest, Some(&evidence)).unwrap();
-        assert_eq!(
-            validated.pex_blake3,
-            blake3::hash(&pex_bytes).to_hex().to_string()
-        );
+            evidence.source_blake3 = blake3::hash(b"stale source").to_hex().to_string();
+            let error = validate_compiler_evidence(&manifest, Some(&evidence)).unwrap_err();
+            assert!(error.contains("stale"));
+            assert!(
+                validate_compiler_evidence(&manifest, None)
+                    .unwrap_err()
+                    .contains("no compiler evidence")
+            );
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let artifact = SkyrimPscSourceArtifact {
+                class_name: "B21_SkyQF_000124".to_string(),
+                source: "ScriptName B21_SkyQF_000124 Extends Quest\n".to_string(),
+                kind: SkyrimPscKind::QuestFragment,
+                required: true,
+            };
+            let manifest = psc_manifest_row(&artifact).unwrap();
+            let (mut evidence, pex_bytes) = compile_evidence(root.path(), &artifact, &manifest);
 
-        evidence.source_blake3 = blake3::hash(b"stale source").to_hex().to_string();
-        let error = validate_compiler_evidence(&manifest, Some(&evidence)).unwrap_err();
-        assert!(error.contains("stale"));
-        assert!(
-            validate_compiler_evidence(&manifest, None)
-                .unwrap_err()
-                .contains("no compiler evidence")
-        );
-    }
+            std::fs::remove_file(&evidence.pex_artifact_path).unwrap();
+            assert!(
+                validate_compiler_evidence(&manifest, Some(&evidence))
+                    .unwrap_err()
+                    .contains("read compiled Skyrim PEX")
+            );
 
-    #[test]
-    fn compiler_evidence_rejects_missing_empty_and_hash_mismatched_pex() {
-        let root = tempfile::tempdir().unwrap();
-        let artifact = SkyrimPscSourceArtifact {
-            class_name: "B21_SkyQF_000124".to_string(),
-            source: "ScriptName B21_SkyQF_000124 Extends Quest\n".to_string(),
-            kind: SkyrimPscKind::QuestFragment,
-            required: true,
-        };
-        let manifest = psc_manifest_row(&artifact).unwrap();
-        let (mut evidence, pex_bytes) = compile_evidence(root.path(), &artifact, &manifest);
+            std::fs::write(&evidence.pex_artifact_path, []).unwrap();
+            evidence.pex_blake3 = blake3::hash(&[]).to_hex().to_string();
+            assert!(
+                validate_compiler_evidence(&manifest, Some(&evidence))
+                    .unwrap_err()
+                    .contains("is empty")
+            );
 
-        std::fs::remove_file(&evidence.pex_artifact_path).unwrap();
-        assert!(
-            validate_compiler_evidence(&manifest, Some(&evidence))
-                .unwrap_err()
-                .contains("read compiled Skyrim PEX")
-        );
-
-        std::fs::write(&evidence.pex_artifact_path, []).unwrap();
-        evidence.pex_blake3 = blake3::hash(&[]).to_hex().to_string();
-        assert!(
-            validate_compiler_evidence(&manifest, Some(&evidence))
-                .unwrap_err()
-                .contains("is empty")
-        );
-
-        std::fs::write(&evidence.pex_artifact_path, &pex_bytes).unwrap();
-        evidence.pex_blake3 = blake3::hash(b"another pex").to_hex().to_string();
-        assert!(
-            validate_compiler_evidence(&manifest, Some(&evidence))
-                .unwrap_err()
-                .contains("does not match compiler evidence")
-        );
+            std::fs::write(&evidence.pex_artifact_path, &pex_bytes).unwrap();
+            evidence.pex_blake3 = blake3::hash(b"another pex").to_hex().to_string();
+            assert!(
+                validate_compiler_evidence(&manifest, Some(&evidence))
+                    .unwrap_err()
+                    .contains("does not match compiler evidence")
+            );
+        }
     }
 }

@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn returns_none_for_any_fk() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let fk = FormKey {
             local: 0x166729,
             plugin: interner.intern("Fallout4.esm"),

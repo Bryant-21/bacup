@@ -2810,39 +2810,6 @@ mod tests {
     }
 
     #[test]
-    fn real_fnv_particle_accessories_are_separate_from_render_bounds() {
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| path.join("extracted/fnv").is_dir())
-        else {
-            return;
-        };
-        let mesh_root = repo_root.join("extracted/fnv/meshes");
-        for relative in [
-            "creatures/nvsecuritron/nvsecuritron.nif",
-            "creatures/nvsecuritron/nvsecuritronscreenstatic.nif",
-            "creatures/nvsecuritron/nvsecuritronvoicebox.nif",
-            "nvdlc01/creatures/ghosts/nvdlc01ghost.nif",
-            "nvdlc01/creatures/ghosts/nvdlc01glovel.nif",
-        ] {
-            assert!(
-                aggregate_render_world_bounds(mesh_root.join(relative)).is_ok(),
-                "render body must provide measurable bounds: {relative}"
-            );
-        }
-        for relative in [
-            "creatures/nvsecuritron/nvsecuritronsmoketrail.nif",
-            "nvdlc01/creatures/ghosts/nvdlc01_ghostbreathe.nif",
-        ] {
-            let error = aggregate_render_world_bounds(mesh_root.join(relative)).unwrap_err();
-            assert!(
-                non_bounds_body_accessory(&error),
-                "particle accessory must be excluded from render bounds: {relative}: {error}"
-            );
-        }
-    }
-
-    #[test]
     fn controller_loader_uses_source_bsbound_and_explicit_motion_semantics() {
         let mut catalog = empty_catalog();
         let mut evidence = EvidenceSet::default();

@@ -292,11 +292,7 @@ mod tests {
             FieldValue::String(interner.intern("B21_FO76_MSWP_3A5B64"))
         );
         assert!(!promote_custom_material_swap(&mut record, &interner));
-    }
 
-    #[test]
-    fn preserves_descriptive_editor_id_while_clearing_custom_status() {
-        let interner = StringInterner::new();
         let mut record = Record::new(
             SigCode::from_str("MSWP").unwrap(),
             FormKey {
@@ -312,11 +308,17 @@ mod tests {
             record.eid.and_then(|eid| interner.resolve(eid)),
             Some("BrickFactorySwap")
         );
-    }
 
-    #[test]
-    fn repairs_whitespring_x01_display_with_enclave_swap_before_data() {
-        let interner = StringInterner::new();
+        assert_eq!(
+            own_material_swap_object_id(&0x073A_5B64_u32.to_le_bytes(), 7),
+            Some(0x003A_5B64)
+        );
+        assert_eq!(
+            own_material_swap_object_id(&0x003A_5B64_u32.to_le_bytes(), 7),
+            None
+        );
+        assert_eq!(own_material_swap_object_id(&[0, 0, 0], 7), None);
+
         let own_plugin = interner.intern("SeventySix.esm");
         let mut record = Record::new(
             SigCode::from_str("REFR").unwrap(),
@@ -366,19 +368,6 @@ mod tests {
             &mut record,
             own_plugin
         ));
-    }
-
-    #[test]
-    fn selects_only_own_plugin_material_swap_targets() {
-        assert_eq!(
-            own_material_swap_object_id(&0x073A_5B64_u32.to_le_bytes(), 7),
-            Some(0x003A_5B64)
-        );
-        assert_eq!(
-            own_material_swap_object_id(&0x003A_5B64_u32.to_le_bytes(), 7),
-            None
-        );
-        assert_eq!(own_material_swap_object_id(&[0, 0, 0], 7), None);
     }
 
     #[test]

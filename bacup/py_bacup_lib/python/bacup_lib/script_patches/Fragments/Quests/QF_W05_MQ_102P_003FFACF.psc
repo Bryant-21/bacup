@@ -48,6 +48,10 @@ EndFunction
 
 Function Fragment_Stage_0530_Item_00()
     SetObjectiveDisplayed(100)
+    ; The security terminal sets 550 on download; cover a recording taken before Brass asked.
+    If Game.GetPlayer().GetItemCount(W05_MQ_102P_VTec_Holotape01) > 0 && !IsStageDone(550) && !IsStageDone(560)
+        SetStage(550)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0540_Item_00()

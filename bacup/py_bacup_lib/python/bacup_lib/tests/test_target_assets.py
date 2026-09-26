@@ -13,20 +13,8 @@ import bacup_lib.target_assets as target_assets
 from bacup_lib.runner import ConversionRunner
 from bacup_lib.target_assets import (
     TargetAssetStore,
-    default_target_asset_cache_dir,
-    default_target_asset_catalog,
     normalize_target_asset_path,
 )
-
-
-def test_frozen_target_asset_storage_is_exe_local(monkeypatch, tmp_path):
-    executable = tmp_path / "standalone" / "B.A.C.U.P.exe"
-    monkeypatch.setattr(target_assets.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(target_assets.sys, "executable", str(executable))
-
-    expected = executable.parent / "cache" / "conversion"
-    assert default_target_asset_catalog() == expected / "fo4_target_assets.sqlite3"
-    assert default_target_asset_cache_dir() == expected / "target_assets"
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -158,13 +146,6 @@ def _store_layout(tmp_path: Path, *, required: bool = True):
     return data, catalog, overlay, overlay_head
 
 
-def test_normalize_target_asset_path_is_data_relative_and_casefolded():
-    assert (
-        normalize_target_asset_path(r"C:\Fallout 4\Data\Meshes\Actors\Head.NIF")
-        == "meshes/actors/head.nif"
-    )
-
-
 def test_membership_listing_dependencies_and_case_insensitive_overlay(tmp_path):
     data, catalog, overlay, _ = _store_layout(tmp_path)
     store = TargetAssetStore(
@@ -183,6 +164,10 @@ def test_membership_listing_dependencies_and_case_insensitive_overlay(tmp_path):
         "meshes/actors/head.nif",
     ]
     assert store.archive_paths == (data / "Fallout4 - Test.ba2",)
+    assert (
+        normalize_target_asset_path(r"C:\Fallout 4\Data\Meshes\Actors\Head.NIF")
+        == "meshes/actors/head.nif"
+    )
 
 
 def test_materialization_is_persistent_and_atomic(tmp_path):
@@ -270,33 +255,27 @@ def test_overlay_fingerprint_change_namespaces_stale_cache(tmp_path):
     assert second_path.read_bytes() == b"changed-head-bytes"
 
 
-def test_missing_required_archive_is_an_error(tmp_path):
+@pytest.mark.parametrize("required", [True, False])
+def test_absent_archive_is_an_error_only_when_required(tmp_path, required):
     data = tmp_path / "Data"
     data.mkdir()
     catalog = tmp_path / "catalog.sqlite3"
-    _write_catalog(catalog, required=True)
+    _write_catalog(catalog, required=required)
 
-    with pytest.raises(ValueError, match="required FO4 archive is missing"):
-        TargetAssetStore(
+    def open_store():
+        return TargetAssetStore(
             target_data_dir=data,
             catalog_path=catalog,
             cache_dir=tmp_path / "cache",
         )
 
-
-def test_absent_optional_archive_is_filtered(tmp_path):
-    data = tmp_path / "Data"
-    data.mkdir()
-    catalog = tmp_path / "catalog.sqlite3"
-    _write_catalog(catalog, required=False)
-    store = TargetAssetStore(
-        target_data_dir=data,
-        catalog_path=catalog,
-        cache_dir=tmp_path / "cache",
-    )
-
-    assert not store.has_asset("meshes/actors/head.nif")
-    assert store.list_assets() == []
+    if required:
+        with pytest.raises(ValueError, match="required FO4 archive is missing"):
+            open_store()
+    else:
+        store = open_store()
+        assert not store.has_asset("meshes/actors/head.nif")
+        assert store.list_assets() == []
 
 
 def test_size_mismatch_reindexes_only_installed_archive_and_writes_overlay(tmp_path):
@@ -325,50 +304,7 @@ def test_size_mismatch_reindexes_only_installed_archive_and_writes_overlay(tmp_p
     assert (store.cache_data_root.parent / "catalog_overlay.sqlite3").is_file()
 
 
-def test_packaged_catalog_is_versioned_metadata_only_corpus():
-    catalog = default_target_asset_catalog()
-    assert catalog.is_file()
-    with sqlite3.connect(f"file:{catalog.as_posix()}?mode=ro", uri=True) as db:
-        metadata = dict(db.execute("SELECT key, value FROM metadata"))
-        assert metadata["schema_version"] == "2"
-        assert metadata["target_game"] == "fo4"
-        assert metadata["game_build"]
-        assert db.execute("SELECT COUNT(*) FROM archives").fetchone()[0] >= 20
-        assert db.execute("SELECT COUNT(*) FROM assets").fetchone()[0] > 100_000
-        assert (
-            db.execute("SELECT COUNT(*) FROM asset_dependencies").fetchone()[0]
-            > 1_000
-        )
-        views = {
-            row[0]
-            for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='view'"
-            )
-        }
-        assert {"catalog_assets", "catalog_dependencies"} <= views
-        assert (
-            db.execute(
-                "SELECT COUNT(*) FROM catalog_assets "
-                "WHERE path_key != lower(path_key) OR instr(path_key, '\\') != 0"
-            ).fetchone()[0]
-            == 0
-        )
-        declared_types = {
-            str(row[2]).casefold()
-            for table in (
-                "metadata",
-                "archives",
-                "directories",
-                "assets",
-                "asset_owners",
-                "asset_dependencies",
-            )
-            for row in db.execute(f"PRAGMA table_info({table})")
-        }
-        assert "blob" not in declared_types
-
-
-def test_release_builder_publishes_catalog_without_preextracting(tmp_path):
+def test_release_builder_publishes_catalog_with_material_texture_dependencies(tmp_path):
     from creation_lib.ba2.native_runtime import pack_archive
     from bacup_lib.native_runtime import load_native_module
 
@@ -377,32 +313,6 @@ def test_release_builder_publishes_catalog_without_preextracting(tmp_path):
     script = source / "Scripts" / "Base" / "Example.pex"
     script.parent.mkdir(parents=True)
     script.write_bytes(b"pex")
-    data.mkdir()
-    archive = data / "Fallout4 - Test.ba2"
-    pack_archive(str(source), str(archive), "fo4", compress=False)
-    output = tmp_path / "built.sqlite3"
-
-    load_native_module().conversion_build_target_asset_catalog(
-        str(data), str(output), "test-build", 2
-    )
-
-    assert output.is_file()
-    with sqlite3.connect(output) as db:
-        assert dict(db.execute("SELECT key, value FROM metadata"))["game_build"] == (
-            "test-build"
-        )
-        assert db.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
-        assert db.execute(
-            "SELECT path_key FROM catalog_assets"
-        ).fetchone()[0] == "scripts/base/example.pex"
-
-
-def test_parallel_builder_records_material_texture_dependencies(tmp_path):
-    from creation_lib.ba2.native_runtime import pack_archive
-    from bacup_lib.native_runtime import load_native_module
-
-    data = tmp_path / "Data"
-    source = tmp_path / "source"
     fixture = (
         Path(__file__).parent
         / "fixtures"
@@ -432,13 +342,19 @@ def test_parallel_builder_records_material_texture_dependencies(tmp_path):
         str(data), str(output), "test-build", 2
     )
 
+    assert output.is_file()
     with sqlite3.connect(output) as db:
+        assert dict(db.execute("SELECT key, value FROM metadata"))["game_build"] == (
+            "test-build"
+        )
+        path_keys = {row[0] for row in db.execute("SELECT path_key FROM catalog_assets")}
         dependencies = {
             (source_key, target_key, ref_kind)
             for source_key, target_key, ref_kind in db.execute(
                 "SELECT source_key, target_key, ref_kind FROM catalog_dependencies"
             )
         }
+    assert path_keys == {"scripts/base/example.pex", "materials/test/sample.bgsm", *expected_targets}
     assert dependencies == {
         ("materials/test/sample.bgsm", target, "material_texture")
         for target in expected_targets

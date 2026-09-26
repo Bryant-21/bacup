@@ -14,11 +14,19 @@ Function StartLocalWave(ObjectReference spawnCenter, Int completionStage)
         Return
     EndIf
     If completionStage == 1500
-        If !IsStageDone(1400) || IsStageDone(1500)
+        If IsStageDone(1500)
+            Return
+        EndIf
+        If !IsStageDone(1400)
+            StartTimer(0.1, 1400)
             Return
         EndIf
     ElseIf completionStage == 2300
-        If !IsStageDone(2200) || IsStageDone(2300)
+        If IsStageDone(2300)
+            Return
+        EndIf
+        If !IsStageDone(2200)
+            StartTimer(0.1, 2200)
             Return
         EndIf
     Else
@@ -190,6 +198,24 @@ Function AttemptMissingHandoff(Quest missingQuest, Keyword startKeyword)
 EndFunction
 
 Event OnTimer(Int aiTimerID)
+    If !IsRunning()
+        Return
+    EndIf
+    If aiTimerID == 1400 || aiTimerID == 2200
+        ReferenceAlias spawnAlias
+        Int completionStage
+        If aiTimerID == 1400
+            spawnAlias = GetAlias(27) as ReferenceAlias
+            completionStage = 1500
+        Else
+            spawnAlias = GetAlias(37) as ReferenceAlias
+            completionStage = 2300
+        EndIf
+        If spawnAlias != None
+            StartLocalWave(spawnAlias.GetReference(), completionStage)
+        EndIf
+        Return
+    EndIf
     If aiTimerID != 9000 || !IsStageDone(9000)
         Return
     EndIf

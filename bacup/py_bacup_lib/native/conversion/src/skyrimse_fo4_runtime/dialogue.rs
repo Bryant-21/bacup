@@ -2202,61 +2202,61 @@ mod tests {
     }
 
     #[test]
-    fn subtype_capability_matrix_is_explicit_and_stable() {
-        assert_eq!(map_topic_subtype(0, 0).unwrap(), (0, 0, *b"CUST"));
-        assert_eq!(map_topic_subtype(0, 1).unwrap(), (0, 1, *b"FGRE"));
-        assert_eq!(map_topic_subtype(0, 2).unwrap(), (0, 2, *b"RUMO"));
-        assert_eq!(map_topic_subtype(7, 73).unwrap(), (7, 82, *b"HELO"));
-        assert!(map_topic_subtype(1, 12).is_err());
-        assert!(map_topic_subtype(7, 79).is_err());
-    }
+    fn subtype_and_condition_capabilities_are_explicit() {
+        {
+            assert_eq!(map_topic_subtype(0, 0).unwrap(), (0, 0, *b"CUST"));
+            assert_eq!(map_topic_subtype(0, 1).unwrap(), (0, 1, *b"FGRE"));
+            assert_eq!(map_topic_subtype(0, 2).unwrap(), (0, 2, *b"RUMO"));
+            assert_eq!(map_topic_subtype(7, 73).unwrap(), (7, 82, *b"HELO"));
+            assert!(map_topic_subtype(1, 12).is_err());
+            assert!(map_topic_subtype(7, 79).is_err());
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("FixtureSource.esm");
+            let form = fk(0x1234, plugin);
 
-    #[test]
-    fn condition_capabilities_cover_form_alias_and_vm_variable_shapes() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("FixtureSource.esm");
-        let form = fk(0x1234, plugin);
+            let form_entry = condition_field(47, form.local, 0, 1);
+            let form_scope = ConditionScope {
+                ctda: &form_entry,
+                companions: &[],
+            };
+            let parsed = parse_source_condition(&form_scope, plugin, &interner).unwrap();
+            assert_eq!(parsed.parameter_kind, ConditionParameterKind::Form);
+            assert_eq!(parsed.run_on, 1);
 
-        let form_entry = condition_field(47, form.local, 0, 1);
-        let form_scope = ConditionScope {
-            ctda: &form_entry,
-            companions: &[],
-        };
-        let parsed = parse_source_condition(&form_scope, plugin, &interner).unwrap();
-        assert_eq!(parsed.parameter_kind, ConditionParameterKind::Form);
-        assert_eq!(parsed.run_on, 1);
+            let alias_entry = condition_field(566, 3, 0, 0);
+            let alias_scope = ConditionScope {
+                ctda: &alias_entry,
+                companions: &[],
+            };
+            let parsed = parse_source_condition(&alias_scope, plugin, &interner).unwrap();
+            assert_eq!(parsed.parameter_kind, ConditionParameterKind::Alias);
+            assert_eq!(parsed.parameter_1, 3);
 
-        let alias_entry = condition_field(566, 3, 0, 0);
-        let alias_scope = ConditionScope {
-            ctda: &alias_entry,
-            companions: &[],
-        };
-        let parsed = parse_source_condition(&alias_scope, plugin, &interner).unwrap();
-        assert_eq!(parsed.parameter_kind, ConditionParameterKind::Alias);
-        assert_eq!(parsed.parameter_1, 3);
+            let vm_entry = condition_field(629, form.local, 1, 0);
+            let companions = [field(
+                b"CIS2",
+                FieldValue::String(interner.intern("::QuestVariable_var")),
+            )];
+            let vm_scope = ConditionScope {
+                ctda: &vm_entry,
+                companions: &companions,
+            };
+            let parsed = parse_source_condition(&vm_scope, plugin, &interner).unwrap();
+            assert_eq!(parsed.vm_variable.as_deref(), Some("::QuestVariable_var"));
 
-        let vm_entry = condition_field(629, form.local, 1, 0);
-        let companions = [field(
-            b"CIS2",
-            FieldValue::String(interner.intern("::QuestVariable_var")),
-        )];
-        let vm_scope = ConditionScope {
-            ctda: &vm_entry,
-            companions: &companions,
-        };
-        let parsed = parse_source_condition(&vm_scope, plugin, &interner).unwrap();
-        assert_eq!(parsed.vm_variable.as_deref(), Some("::QuestVariable_var"));
-
-        let invalid_alias = condition_field(566, 3, 0, 1);
-        let invalid_scope = ConditionScope {
-            ctda: &invalid_alias,
-            companions: &[],
-        };
-        assert!(
-            parse_source_condition(&invalid_scope, plugin, &interner)
-                .unwrap_err()
-                .contains("unsupported run-on")
-        );
+            let invalid_alias = condition_field(566, 3, 0, 1);
+            let invalid_scope = ConditionScope {
+                ctda: &invalid_alias,
+                companions: &[],
+            };
+            assert!(
+                parse_source_condition(&invalid_scope, plugin, &interner)
+                    .unwrap_err()
+                    .contains("unsupported run-on")
+            );
+        }
     }
 
     #[test]
@@ -2342,29 +2342,53 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_topic_topology_rejects_the_component() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("FixtureSource.esm");
-        let quest = fk(1, plugin);
-        let speaker = fk(2, plugin);
-        let first_topic = fk(3, plugin);
-        let second_topic = fk(4, plugin);
-        let info_key = fk(5, plugin);
-        let records = vec![
-            minimal_topic(first_topic, quest, 1, &interner),
-            minimal_topic(second_topic, quest, 1, &interner),
-            minimal_info(info_key, speaker, &interner),
-        ];
-        let topology = HashMap::from([
-            (first_topic, vec![info_key]),
-            (second_topic, vec![info_key]),
-        ]);
-        let plan = SkyrimDialoguePlan::derive(&records, &topology, &interner).unwrap();
-        assert!(
-            plan.unsupported_reason()
-                .unwrap()
-                .contains("multiple parents")
-        );
+    fn duplicate_topics_and_non_text_localization_reject_the_component() {
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("FixtureSource.esm");
+            let quest = fk(1, plugin);
+            let speaker = fk(2, plugin);
+            let first_topic = fk(3, plugin);
+            let second_topic = fk(4, plugin);
+            let info_key = fk(5, plugin);
+            let records = vec![
+                minimal_topic(first_topic, quest, 1, &interner),
+                minimal_topic(second_topic, quest, 1, &interner),
+                minimal_info(info_key, speaker, &interner),
+            ];
+            let topology = HashMap::from([
+                (first_topic, vec![info_key]),
+                (second_topic, vec![info_key]),
+            ]);
+            let plan = SkyrimDialoguePlan::derive(&records, &topology, &interner).unwrap();
+            assert!(
+                plan.unsupported_reason()
+                    .unwrap()
+                    .contains("multiple parents")
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("FixtureSource.esm");
+            let quest = fk(1, plugin);
+            let speaker = fk(2, plugin);
+            let topic_key = fk(3, plugin);
+            let info_key = fk(4, plugin);
+            let topic = minimal_topic(topic_key, quest, 1, &interner);
+            let mut info = minimal_info(info_key, speaker, &interner);
+            info.fields.push(field(b"RNAM", FieldValue::Uint(1)));
+            let plan = SkyrimDialoguePlan::derive(
+                &[topic, info],
+                &HashMap::from([(topic_key, vec![info_key])]),
+                &interner,
+            )
+            .unwrap();
+            assert!(
+                plan.unsupported_reason()
+                    .unwrap()
+                    .contains("RNAM is not text")
+            );
+        }
     }
 
     #[test]
@@ -2439,30 +2463,6 @@ mod tests {
             plan.unsupported_reason()
                 .unwrap()
                 .contains("explicit response sound")
-        );
-    }
-
-    #[test]
-    fn non_text_localization_rejects_the_component() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("FixtureSource.esm");
-        let quest = fk(1, plugin);
-        let speaker = fk(2, plugin);
-        let topic_key = fk(3, plugin);
-        let info_key = fk(4, plugin);
-        let topic = minimal_topic(topic_key, quest, 1, &interner);
-        let mut info = minimal_info(info_key, speaker, &interner);
-        info.fields.push(field(b"RNAM", FieldValue::Uint(1)));
-        let plan = SkyrimDialoguePlan::derive(
-            &[topic, info],
-            &HashMap::from([(topic_key, vec![info_key])]),
-            &interner,
-        )
-        .unwrap();
-        assert!(
-            plan.unsupported_reason()
-                .unwrap()
-                .contains("RNAM is not text")
         );
     }
 }

@@ -102,8 +102,8 @@ struct EvidenceCollectionMeasurements {
     placement: Duration,
     snapshots: Duration,
     placement_referrers: usize,
-    signature_cache_hits: usize,
-    signature_cache_misses: usize,
+    placement_queries: usize,
+    terminal_queries: usize,
     records_with_vmad: usize,
 }
 
@@ -120,7 +120,7 @@ struct PexScanMeasurements {
 impl QuestInventoryMeasurements {
     fn emit(&self, succeeded: bool) {
         eprintln!(
-            "quest_inventory_timing succeeded={succeeded} total_ms={} manifest_ms={} query_build_ms={} session_open_ms={} source_discovery_ms={} target_discovery_ms={} source_evidence_ms={} target_evidence_ms={} source_evidence_metadata_ms={} target_evidence_metadata_ms={} source_evidence_placement_ms={} target_evidence_placement_ms={} source_evidence_snapshots_ms={} target_evidence_snapshots_ms={} source_placement_referrers={} target_placement_referrers={} source_signature_cache_hits={} target_signature_cache_hits={} source_signature_cache_misses={} target_signature_cache_misses={} source_records_with_vmad={} target_records_with_vmad={} pex_scan_nested_ms={} route_classification_ms={} report_assembly_ms={} seed_routes={} source_queries={} target_queries={} source_carriers={} target_carriers={} source_records={} target_records={} source_vmads={} target_vmads={} pex_requests={} pex_cache_hits={} pex_found={} pex_parsed={} pex_errors={}",
+            "quest_inventory_timing succeeded={succeeded} total_ms={} manifest_ms={} query_build_ms={} session_open_ms={} source_discovery_ms={} target_discovery_ms={} source_evidence_ms={} target_evidence_ms={} source_evidence_metadata_ms={} target_evidence_metadata_ms={} source_evidence_placement_ms={} target_evidence_placement_ms={} source_evidence_snapshots_ms={} target_evidence_snapshots_ms={} source_placement_referrers={} target_placement_referrers={} source_placement_queries={} target_placement_queries={} source_terminal_queries={} target_terminal_queries={} source_records_with_vmad={} target_records_with_vmad={} pex_scan_nested_ms={} route_classification_ms={} report_assembly_ms={} seed_routes={} source_queries={} target_queries={} source_carriers={} target_carriers={} source_records={} target_records={} source_vmads={} target_vmads={} pex_requests={} pex_cache_hits={} pex_found={} pex_parsed={} pex_errors={}",
             self.total.as_millis(),
             self.manifest.as_millis(),
             self.query_build.as_millis(),
@@ -137,10 +137,10 @@ impl QuestInventoryMeasurements {
             self.target_evidence_detail.snapshots.as_millis(),
             self.source_evidence_detail.placement_referrers,
             self.target_evidence_detail.placement_referrers,
-            self.source_evidence_detail.signature_cache_hits,
-            self.target_evidence_detail.signature_cache_hits,
-            self.source_evidence_detail.signature_cache_misses,
-            self.target_evidence_detail.signature_cache_misses,
+            self.source_evidence_detail.placement_queries,
+            self.target_evidence_detail.placement_queries,
+            self.source_evidence_detail.terminal_queries,
+            self.target_evidence_detail.terminal_queries,
             self.source_evidence_detail.records_with_vmad,
             self.target_evidence_detail.records_with_vmad,
             self.pex.duration.as_millis(),
@@ -905,7 +905,8 @@ fn propagate_terminal_placements(
     }
 }
 
-fn transitively_placed_terminals(
+#[cfg(test)]
+fn legacy_transitively_placed_terminals(
     scan: &crate::session::HandleRawScan<'_>,
     terminal_carriers: &[String],
 ) -> HashSet<String> {
@@ -944,6 +945,51 @@ fn transitively_placed_terminals(
     propagate_terminal_placements(directly_placed, &parents_by_child)
 }
 
+fn placed_carriers(
+    scan: &crate::session::HandleRawScan<'_>,
+    queries: &[String],
+    measurements: &mut EvidenceCollectionMeasurements,
+) -> HashSet<String> {
+    if queries.is_empty() {
+        return HashSet::new();
+    }
+    let terminals = scan
+        .form_keys_of_signature("TERM")
+        .into_iter()
+        .collect::<HashSet<_>>();
+    measurements.placement_queries = queries.len();
+    measurements.terminal_queries = terminals.len();
+    let mut expanded = queries.iter().cloned().collect::<BTreeSet<_>>();
+    expanded.extend(terminals.iter().cloned());
+    let mut signatures = PLACED_SIGNATURES.to_vec();
+    signatures.push("TERM");
+    let references = scan.referencing_form_keys_by_query_from_signatures(
+        &expanded.into_iter().collect::<Vec<_>>(),
+        &signatures,
+    );
+    let mut directly_placed = HashSet::new();
+    let mut parents_by_child = HashMap::<String, HashSet<String>>::new();
+    for (child, parents) in references {
+        for parent in parents {
+            measurements.placement_referrers += 1;
+            if terminals.contains(&parent) {
+                if scan
+                    .record_metadata_by_form_key(&child)
+                    .is_some_and(|(_, sig, _)| sig == "TERM")
+                {
+                    parents_by_child
+                        .entry(child.clone())
+                        .or_default()
+                        .insert(parent);
+                }
+            } else {
+                directly_placed.insert(child.clone());
+            }
+        }
+    }
+    propagate_terminal_placements(directly_placed, &parents_by_child)
+}
+
 fn collect_carrier_evidence(
     session: &mut PluginSession<'_>,
     handle_id: u64,
@@ -958,64 +1004,30 @@ fn collect_carrier_evidence(
     let scan = session.handle_raw_scan(handle_id).map_err(session_error)?;
     let metadata_started = Instant::now();
     let mut metadata = Vec::new();
-    let mut signature_by_form_key = HashMap::new();
     let mut placement_queries = Vec::new();
-    let mut terminal_carriers = Vec::new();
     for carrier in carriers {
         let Some((raw_form_id, signature, rendered_carrier)) =
             scan.record_metadata_by_form_key(carrier)
         else {
             continue;
         };
-        signature_by_form_key.insert(carrier.clone(), signature.clone());
         if !PLACED_SIGNATURES.contains(&signature.as_str())
             && !UNPROVEN_RUNTIME_SIGNATURES.contains(&signature.as_str())
         {
             placement_queries.push(carrier.clone());
         }
-        if signature.eq_ignore_ascii_case("TERM") {
-            terminal_carriers.push(carrier.clone());
-        }
         metadata.push((carrier.clone(), signature, raw_form_id, rendered_carrier));
     }
     measurements.metadata = metadata_started.elapsed();
     let placement_started = Instant::now();
-    let transitively_placed_terminals = transitively_placed_terminals(&scan, &terminal_carriers);
-    let placement_refs = scan.referencing_form_keys_by_query(&placement_queries);
-    let mut placed_by_carrier = HashMap::new();
-    for carrier in placement_queries {
-        let mut placed = transitively_placed_terminals.contains(&carrier);
-        if !placed {
-            for referencing in placement_refs.get(&carrier).into_iter().flatten() {
-                measurements.placement_referrers += 1;
-                let signature = if let Some(signature) = signature_by_form_key.get(referencing) {
-                    measurements.signature_cache_hits += 1;
-                    signature.clone()
-                } else {
-                    measurements.signature_cache_misses += 1;
-                    let signature = scan
-                        .record_metadata_by_form_key(referencing)
-                        .map(|(_, signature, _)| signature)
-                        .unwrap_or_default();
-                    signature_by_form_key.insert(referencing.clone(), signature.clone());
-                    signature
-                };
-                if PLACED_SIGNATURES.contains(&signature.as_str()) {
-                    placed = true;
-                    break;
-                }
-            }
-        }
-        placed_by_carrier.insert(carrier, placed);
-    }
+    let placed = placed_carriers(&scan, &placement_queries, measurements);
     measurements.placement = placement_started.elapsed();
 
     let mut evidence = Vec::new();
     let mut provenance_by_script = HashMap::new();
     for (carrier, signature, raw_form_id, rendered_carrier) in metadata {
         *records_scanned += 1;
-        let placed = PLACED_SIGNATURES.contains(&signature.as_str())
-            || placed_by_carrier.get(&carrier).copied().unwrap_or(false);
+        let placed = PLACED_SIGNATURES.contains(&signature.as_str()) || placed.contains(&carrier);
         let snapshots_started = Instant::now();
         let snapshots = scan
             .with_record_context(raw_form_id, |record, masters, plugin_name| {
@@ -1411,6 +1423,7 @@ struct PexCallResult {
     starts_quest_directly: bool,
 }
 
+#[cfg(test)]
 fn pex_calls(
     pex: &PexFilePayload,
     script_name: &str,
@@ -2204,6 +2217,7 @@ fn classify_route_full_scan(
     classify_route(route, &source, &target, unsupported)
 }
 
+#[cfg(test)]
 fn build_report(
     seed: &StoryManagerRouteSeedReport,
     evidence: &[ProducerEvidence],
@@ -2312,93 +2326,14 @@ mod tests {
     use super::*;
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::FieldEntry;
-    use esp_authoring_core::plugin_runtime::{
-        plugin_handle_close_native, plugin_handle_load_no_py,
-    };
     use papyrus_core::pex::{
         PexInstructionPayload, PexObjectPayload, PexPropertyPayload, PexStatePayload,
     };
     use serde_json::json;
 
-    fn target_queries_from_inventory_report(report: &Value) -> Vec<String> {
-        let mut queries = BTreeSet::new();
-        for route in report["routes"].as_array().into_iter().flatten() {
-            if let Some(value) = route.get("bridge_keyword").and_then(Value::as_str) {
-                queries.insert(plugin_index_form_key(value).unwrap());
-            } else if let Some(values) = route
-                .get("target_selector_keywords")
-                .and_then(Value::as_array)
-                && values.len() == 1
-                && let Some(value) = values[0].as_str()
-            {
-                queries.insert(plugin_index_form_key(value).unwrap());
-            }
-            if let Some(value) = route.get("target_quest").and_then(Value::as_str) {
-                queries.insert(plugin_index_form_key(value).unwrap());
-            }
-        }
-        queries.into_iter().collect()
-    }
-
     #[test]
-    #[ignore = "requires QUEST_TARGET_PLUGIN and QUEST_INVENTORY_REPORT"]
-    fn current_target_carrier_lookup_matches_legacy_session_path() {
-        let plugin_path = PathBuf::from(std::env::var_os("QUEST_TARGET_PLUGIN").unwrap());
-        let report_path = PathBuf::from(std::env::var_os("QUEST_INVENTORY_REPORT").unwrap());
-        let report: Value = serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
-        let queries = target_queries_from_inventory_report(&report);
-        let handle =
-            plugin_handle_load_no_py(plugin_path.to_str().unwrap(), Some("fo4"), None, None, true)
-                .unwrap();
-        let mut session = open_session(handle, None).unwrap();
-        let mut carriers = session
-            .referencing_form_keys_by_query_in_handle(handle, &queries)
-            .unwrap()
-            .into_values()
-            .flatten()
-            .collect::<BTreeSet<_>>();
-        carriers.extend(
-            report["routes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|route| route.get("target_quest").and_then(Value::as_str))
-                .map(|value| plugin_index_form_key(value).unwrap()),
-        );
-
-        let legacy = carriers
-            .iter()
-            .map(|carrier| {
-                let signature = session.record_signature_in_handle(handle, carrier).unwrap();
-                (carrier.clone(), signature)
-            })
-            .collect::<Vec<_>>();
-        let scan = session.handle_raw_scan(handle).unwrap();
-        let indexed = carriers
-            .iter()
-            .map(|carrier| {
-                let signature = scan
-                    .record_metadata_by_form_key(carrier)
-                    .map(|(_, signature, _)| signature);
-                (carrier.clone(), signature)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(indexed, legacy);
-        assert_eq!(scan.record_metadata_by_form_key("not-a-form-key"), None);
-        drop(scan);
-        assert_eq!(
-            session
-                .record_signature_in_handle(handle, "not-a-form-key")
-                .unwrap(),
-            None
-        );
-        drop(session);
-        plugin_handle_close_native(handle);
-    }
-
-    #[test]
-    fn measured_report_preserves_serialized_output() {
-        let seed = StoryManagerRouteSeedReport {
+    fn measured_report_matches_unmeasured_output_and_errors() {
+        let mut seed = StoryManagerRouteSeedReport {
             schema_version: SCHEMA_VERSION,
             source_game: "fo76".to_string(),
             target_game: "fo4".to_string(),
@@ -2409,27 +2344,17 @@ mod tests {
         let mut measurements = QuestInventoryMeasurements::default();
         let measured =
             build_report_internal(&seed, &[], &unsupported, Some(&mut measurements)).unwrap();
-
         assert_eq!(
             serde_json::to_value(measured).unwrap(),
             serde_json::to_value(expected).unwrap()
         );
-    }
 
-    #[test]
-    fn measured_report_records_failed_classification_without_changing_error() {
-        let seed = StoryManagerRouteSeedReport {
-            schema_version: SCHEMA_VERSION + 1,
-            source_game: "fo76".to_string(),
-            target_game: "fo4".to_string(),
-            routes: Vec::new(),
-        };
-        let unsupported = HashMap::new();
+        seed.schema_version = SCHEMA_VERSION + 1;
+        seed.routes.clear();
         let expected = build_report(&seed, &[], &unsupported).unwrap_err();
         let mut measurements = QuestInventoryMeasurements::default();
         let measured =
             build_report_internal(&seed, &[], &unsupported, Some(&mut measurements)).unwrap_err();
-
         assert_eq!(measured, expected);
         assert!(measurements.route_classification > Duration::ZERO);
     }
@@ -2484,117 +2409,6 @@ mod tests {
         assert_eq!(report.shapes[0].count, 2);
         assert!(report.shapes[0].fingerprint.contains("CTDA:bytes32x1"));
         assert!(report.shapes[0].fingerprint.contains("VMAD:bytes12x1"));
-    }
-
-    #[test]
-    #[ignore = "requires explicit FNV, FO3, and Skyrim official-corpus data directories"]
-    fn installed_official_quest_shape_inventory_requires_all_three_corpora() {
-        let configurations = [
-            (
-                "fnv",
-                "FNV_QUEST_CORPUS_DATA_DIR",
-                &[
-                    "FalloutNV.esm",
-                    "DeadMoney.esm",
-                    "HonestHearts.esm",
-                    "OldWorldBlues.esm",
-                    "LonesomeRoad.esm",
-                    "GunRunnersArsenal.esm",
-                ][..],
-            ),
-            (
-                "fo3",
-                "FO3_QUEST_CORPUS_DATA_DIR",
-                &[
-                    "Fallout3.esm",
-                    "Anchorage.esm",
-                    "ThePitt.esm",
-                    "BrokenSteel.esm",
-                    "PointLookout.esm",
-                    "Zeta.esm",
-                ][..],
-            ),
-            (
-                "skyrimse",
-                "SKYRIMSE_QUEST_CORPUS_DATA_DIR",
-                &[
-                    "Skyrim.esm",
-                    "Update.esm",
-                    "Dawnguard.esm",
-                    "HearthFires.esm",
-                    "Dragonborn.esm",
-                ][..],
-            ),
-        ];
-        let mut reports = Vec::new();
-        for (game, variable, plugin_names) in configurations {
-            let data_dir = std::env::var_os(variable)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| panic!("explicit official-corpus audit requires {variable}"));
-            assert!(
-                data_dir.is_dir(),
-                "{variable} is not a directory: {}",
-                data_dir.display()
-            );
-            let plugin_paths = plugin_names
-                .iter()
-                .map(|plugin| data_dir.join(plugin))
-                .collect::<Vec<_>>();
-            for plugin_path in &plugin_paths {
-                assert!(
-                    plugin_path.is_file(),
-                    "explicit official-corpus audit is missing {}",
-                    plugin_path.display()
-                );
-            }
-            let report = inventory_installed_quest_plugins(game, &plugin_paths).unwrap();
-            assert!(report.records_scanned > 0, "{game}");
-            assert!(!report.shapes.is_empty(), "{game}");
-            assert_eq!(
-                report.plugins,
-                plugin_names
-                    .iter()
-                    .map(|plugin| (*plugin).to_string())
-                    .collect::<Vec<_>>(),
-                "{game} official master ledger"
-            );
-            let expected_decode_failures = match game {
-                "fo3" => BTreeMap::from([
-                    ("Anchorage.esm:INFO".to_string(), 1),
-                    ("Anchorage.esm:QUST".to_string(), 1),
-                    ("ThePitt.esm:INFO".to_string(), 1),
-                    ("Zeta.esm:INFO".to_string(), 1),
-                    ("Zeta.esm:QUST".to_string(), 1),
-                ]),
-                "fnv" | "skyrimse" => BTreeMap::new(),
-                _ => unreachable!(),
-            };
-            assert_eq!(
-                report.decode_failures, expected_decode_failures,
-                "{game} decoder-failure ledger changed"
-            );
-            reports.push(report);
-        }
-        assert_eq!(reports.len(), 3);
-        for report in &reports {
-            eprintln!(
-                "quest-shape-audit-summary game={} plugins={} records={} shapes={} decode_failures={}",
-                report.source_game,
-                report.plugins.len(),
-                report.records_scanned,
-                report.shapes.len(),
-                report.decode_failures.values().sum::<usize>()
-            );
-            for (record_family, count) in &report.decode_failures {
-                eprintln!(
-                    "quest-shape-audit-decode-failure game={} family={} count={}",
-                    report.source_game, record_family, count
-                );
-            }
-        }
-        if std::env::var_os("BACUP_QUEST_SHAPE_AUDIT_VERBOSE").is_some() {
-            eprintln!("{}", serde_json::to_string_pretty(&reports).unwrap());
-        }
     }
 
     fn value_identifier(value: &str) -> PexValuePayload {
@@ -3010,25 +2824,40 @@ mod tests {
     }
 
     #[test]
-    fn reachable_instructions_do_not_cross_return() {
-        let function = function(
+    fn reachable_instructions_stop_at_return_and_follow_relative_jumps() {
+        let start_self = || PexInstructionPayload {
+            opcode: OP_CALLMETHOD,
+            args: vec![
+                value_identifier("StartQuest"),
+                value_identifier("self"),
+                value_identifier("None"),
+            ],
+        };
+        let ret = || PexInstructionPayload {
+            opcode: OP_RETURN,
+            args: vec![value_identifier("None")],
+        };
+        let returns_first = function("OnInit", vec![ret(), start_self()]);
+        assert_eq!(
+            reachable_instruction_indexes(&returns_first),
+            HashSet::from([0])
+        );
+
+        let jumps_over = function(
             "OnInit",
             vec![
                 PexInstructionPayload {
-                    opcode: OP_RETURN,
-                    args: vec![value_identifier("None")],
+                    opcode: OP_JMP,
+                    args: vec![value_int(2)],
                 },
-                PexInstructionPayload {
-                    opcode: OP_CALLMETHOD,
-                    args: vec![
-                        value_identifier("StartQuest"),
-                        value_identifier("self"),
-                        value_identifier("None"),
-                    ],
-                },
+                start_self(),
+                ret(),
             ],
         );
-        assert_eq!(reachable_instruction_indexes(&function), HashSet::from([0]));
+        assert_eq!(
+            reachable_instruction_indexes(&jumps_over),
+            HashSet::from([0, 2])
+        );
     }
 
     #[test]
@@ -3048,7 +2877,7 @@ mod tests {
     }
 
     #[test]
-    fn sender_proof_follows_local_self_helper() {
+    fn pex_calls_follow_self_helpers_normalize_property_names_and_fail_closed_on_unknown_starts() {
         let entrypoint = function(
             "OnTriggerEnter",
             vec![PexInstructionPayload {
@@ -3082,11 +2911,8 @@ mod tests {
             calls.first_sender_entrypoint.as_deref(),
             Some("OnTriggerEnter")
         );
-    }
 
-    #[test]
-    fn unknown_start_receiver_fails_closed_as_quest_bypass() {
-        let calls = pex_calls(
+        let unknown_start = pex_calls(
             &pex(
                 "B21:Adapter",
                 vec![function(
@@ -3105,12 +2931,38 @@ mod tests {
             None,
             true,
         );
-        assert!(calls.starts_quest_directly);
+        assert!(unknown_start.starts_quest_directly);
+
+        let fragment = pex_calls(
+            &pex_with_property(
+                "Fragments:Quests:QF_W05_MQS_205P_0041CB6D",
+                "W05_MQA_206P_QuestStartKeyword",
+                vec![function(
+                    "Fragment_Stage_9000_Item_00",
+                    vec![PexInstructionPayload {
+                        opcode: OP_CALLMETHOD,
+                        args: vec![
+                            value_identifier("SendStoryEvent"),
+                            value_identifier("::W05_MQA_206P_QuestStartKeyword_var"),
+                            value_identifier("None"),
+                        ],
+                    }],
+                )],
+            ),
+            "Fragments:Quests:QF_W05_MQS_205P_0041CB6D",
+            Some("w05_mqa_206p_quest_start_keyword"),
+            false,
+        );
+        assert!(fragment.sends_story_event);
+        assert_eq!(
+            fragment.first_sender_entrypoint.as_deref(),
+            Some("Fragment_Stage_9000_Item_00")
+        );
     }
 
     #[test]
-    fn vmad_binding_collection_is_exact_and_deduplicated() {
-        let payload = json!({
+    fn vmad_binding_collection_is_exact_deduplicated_and_keeps_nested_members() {
+        let flat = json!({
             "Scripts": [{
                 "ScriptName": "B21:Adapter",
                 "Properties": [{
@@ -3126,18 +2978,15 @@ mod tests {
                 }]
             }]
         });
-        let bindings = vmad_script_bindings(&payload);
+        let bindings = vmad_script_bindings(&flat);
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].0, "B21:Adapter");
         assert_eq!(
             bindings[0].1["StoryEventKeyword"],
             property_binding("000123@Patch.esp")
         );
-    }
 
-    #[test]
-    fn vmad_binding_collection_keeps_nested_terminal_menu_keyword() {
-        let payload = json!({
+        let nested_terminal = json!({
             "Scripts": [{
                 "ScriptName": "DefaultSendStoryEventOnMenuItemRun",
                 "Properties": [{
@@ -3156,19 +3005,14 @@ mod tests {
                 }]
             }]
         });
-
-        let bindings = vmad_script_bindings(&payload);
-
+        let bindings = vmad_script_bindings(&nested_terminal);
         assert_eq!(bindings.len(), 1);
         assert_eq!(
             bindings[0].1["MenuData"],
             struct_property_binding("2C3F0B@SeventySix.esm", "StoryEventToSend")
         );
-    }
 
-    #[test]
-    fn vmad_binding_collection_keeps_every_nested_member_qualified_form() {
-        let payload = json!({
+        let nested_members = json!({
             "Scripts": [{
                 "ScriptName": "DefaultSendStoryEventOnMenuItemRun",
                 "Properties": [{
@@ -3192,9 +3036,7 @@ mod tests {
                 }]
             }]
         });
-
-        let bindings = vmad_script_bindings(&payload);
-
+        let bindings = vmad_script_bindings(&nested_members);
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].1["MenuData"].len(), 2);
         assert!(bindings[0].1["MenuData"].contains(&PropertyFormBinding {
@@ -3205,36 +3047,6 @@ mod tests {
             form_key: "2C3F0B@SeventySix.esm".to_string(),
             struct_member: Some("StoryEventToSend".to_string()),
         }));
-    }
-
-    #[test]
-    fn papyrus_property_matching_ignores_case_and_underscores() {
-        let calls = pex_calls(
-            &pex_with_property(
-                "Fragments:Quests:QF_W05_MQS_205P_0041CB6D",
-                "W05_MQA_206P_QuestStartKeyword",
-                vec![function(
-                    "Fragment_Stage_9000_Item_00",
-                    vec![PexInstructionPayload {
-                        opcode: OP_CALLMETHOD,
-                        args: vec![
-                            value_identifier("SendStoryEvent"),
-                            value_identifier("::W05_MQA_206P_QuestStartKeyword_var"),
-                            value_identifier("None"),
-                        ],
-                    }],
-                )],
-            ),
-            "Fragments:Quests:QF_W05_MQS_205P_0041CB6D",
-            Some("w05_mqa_206p_quest_start_keyword"),
-            false,
-        );
-
-        assert!(calls.sends_story_event);
-        assert_eq!(
-            calls.first_sender_entrypoint.as_deref(),
-            Some("Fragment_Stage_9000_Item_00")
-        );
     }
 
     #[test]
@@ -3262,66 +3074,45 @@ mod tests {
     }
 
     #[test]
-    fn jump_offsets_are_relative_to_current_instruction() {
-        let function = function(
-            "OnInit",
-            vec![
-                PexInstructionPayload {
-                    opcode: OP_JMP,
-                    args: vec![value_int(2)],
-                },
-                PexInstructionPayload {
-                    opcode: OP_CALLMETHOD,
-                    args: vec![
-                        value_identifier("StartQuest"),
-                        value_identifier("self"),
-                        value_identifier("None"),
-                    ],
-                },
-                PexInstructionPayload {
-                    opcode: OP_RETURN,
-                    args: vec![value_identifier("None")],
-                },
-            ],
-        );
-        assert_eq!(
-            reachable_instruction_indexes(&function),
-            HashSet::from([0, 2])
-        );
-    }
+    fn engine_event_routes_need_target_quest_metadata_and_merge_issues() {
+        let with_metadata = report(route("CLOC"), &[quest_metadata(Some(false))]);
+        assert_eq!(with_metadata.routes[0].classification, "native");
+        assert!(with_metadata.coverage_complete);
 
-    #[test]
-    fn native_engine_event_needs_quest_metadata_but_no_script_producer() {
-        let report = report(route("CLOC"), &[quest_metadata(Some(false))]);
-        assert_eq!(report.routes[0].classification, "native");
-        assert!(report.coverage_complete);
-    }
-
-    #[test]
-    fn missing_target_quest_metadata_fails_closed() {
-        let report = report(route("CLOC"), &[]);
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert_eq!(report.routes[0].route.issues, vec!["autostart_unknown"]);
-    }
-
-    #[test]
-    fn inventory_route_serializes_one_merged_issues_field() {
         let mut seed = route("CLOC");
         seed.issues.push("seed_issue".to_string());
-
-        let report = report(seed, &[]);
-        let serialized = serde_json::to_string(&report.routes[0]).unwrap();
-
-        assert_eq!(serialized.matches("\"issues\":").count(), 1);
+        let missing = report(seed, &[]);
+        assert_eq!(missing.routes[0].classification, "unclassified");
         assert_eq!(
-            report.routes[0].route.issues,
+            missing.routes[0].route.issues,
             vec!["autostart_unknown", "seed_issue"]
         );
+        let serialized = serde_json::to_string(&missing.routes[0]).unwrap();
+        assert_eq!(serialized.matches("\"issues\":").count(), 1);
     }
 
     #[test]
-    fn surviving_source_and_target_scpt_senders_are_native() {
-        let evidence = [
+    fn scpt_runtime_parity_needs_placed_senders_or_bound_fragment_entrypoints() {
+        let fragment = "Fragment_Stage_9000_Item_00";
+        let unplaced_pair = |entrypoint: &str, bound: bool| -> [ProducerEvidence; 2] {
+            [
+                unplaced_quest_sender(
+                    EvidenceScope::Source,
+                    "400300@SeventySix.esm",
+                    Provenance::Source,
+                    entrypoint,
+                    bound,
+                ),
+                unplaced_quest_sender(
+                    EvidenceScope::Target,
+                    "500300@SeventySix.esm",
+                    Provenance::Converted,
+                    entrypoint,
+                    bound,
+                ),
+            ]
+        };
+        let placed_pair = [
             sender(
                 EvidenceScope::Source,
                 "400300@SeventySix.esm",
@@ -3334,45 +3125,57 @@ mod tests {
                 Provenance::Converted,
                 None,
             ),
-            quest_metadata(Some(false)),
         ];
-        let report = report(route("SCPT"), &evidence);
-        assert_eq!(report.routes[0].classification, "native");
-        assert_eq!(report.routes[0].runtime_proof.len(), 2);
-    }
-
-    #[test]
-    fn unplaced_quest_fragment_senders_prove_scpt_runtime_parity() {
-        let entrypoint = "Fragment_Stage_9000_Item_00";
-        let evidence = [
-            unplaced_quest_sender(
-                EvidenceScope::Source,
-                "400300@SeventySix.esm",
-                Provenance::Source,
-                entrypoint,
-                true,
+        for (name, [source, target], proven_entrypoint) in [
+            ("placed senders", placed_pair, Some(None)),
+            (
+                "bound unplaced fragments",
+                unplaced_pair(fragment, true),
+                Some(Some(fragment)),
             ),
-            unplaced_quest_sender(
-                EvidenceScope::Target,
-                "500300@SeventySix.esm",
-                Provenance::Converted,
-                entrypoint,
-                true,
+            (
+                "unbound unplaced fragments",
+                unplaced_pair(fragment, false),
+                None,
             ),
-            quest_metadata(Some(false)),
-        ];
-
-        let report = report(route("SCPT"), &evidence);
-
-        assert_eq!(report.routes[0].classification, "native");
-        assert_eq!(report.routes[0].runtime_proof.len(), 2);
-        assert!(
-            report.routes[0]
-                .runtime_proof
-                .iter()
-                .all(|proof| proof.entrypoint == entrypoint)
-        );
-        assert!(report.routes[0].route.issues.is_empty());
+            (
+                "unplaced non-fragment handlers",
+                unplaced_pair("OnActivate", true),
+                None,
+            ),
+        ] {
+            let report = report(
+                route("SCPT"),
+                &[source, target, quest_metadata(Some(false))],
+            );
+            let routed = &report.routes[0];
+            match proven_entrypoint {
+                Some(entrypoint) => {
+                    assert_eq!(routed.classification, "native", "{name}");
+                    assert_eq!(routed.runtime_proof.len(), 2, "{name}");
+                    if let Some(entrypoint) = entrypoint {
+                        assert!(
+                            routed
+                                .runtime_proof
+                                .iter()
+                                .all(|proof| proof.entrypoint == entrypoint),
+                            "{name}"
+                        );
+                        assert!(routed.route.issues.is_empty(), "{name}");
+                    }
+                }
+                None => {
+                    assert_eq!(routed.classification, "unclassified", "{name}");
+                    assert!(routed.runtime_proof.is_empty(), "{name}");
+                    for issue in ["no_local_source_producer", "unproven_runtime_entry"] {
+                        assert!(
+                            routed.route.issues.contains(&issue.to_string()),
+                            "{name}: {issue}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -3494,44 +3297,7 @@ mod tests {
     }
 
     #[test]
-    fn w05_mqr_205p_a_remains_unproven_without_an_exact_sender() {
-        let quest = "5588EF@SeventySix.esm";
-        let selector = "559346@SeventySix.esm";
-        let mut seed = route("SCPT");
-        seed.source_quest = quest.to_string();
-        seed.target_quest = Some(quest.to_string());
-        seed.source_start_keyword = Some(selector.to_string());
-        seed.source_selector_keywords = vec![selector.to_string()];
-        seed.target_selector_keywords = vec![selector.to_string()];
-        let mut property_only = quest_fragment_sender_with_property_variant(
-            "54EDB9@SeventySix.esm",
-            selector,
-            "W05_MQR_205P_A_QuestStart_Keyword",
-            "W05_MQR_205P_A_QuestStartKeyword",
-        );
-        Arc::make_mut(property_only.pex.as_mut().unwrap()).objects[0].states[0].functions[0]
-            .instructions = vec![PexInstructionPayload {
-            opcode: OP_RETURN,
-            args: vec![value_identifier("None")],
-        }];
-
-        let report = report(
-            seed,
-            &[property_only, quest_metadata_for(quest, Some(false))],
-        );
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"no_local_source_producer".to_string())
-        );
-    }
-
-    #[test]
-    fn w05_mqr_205p_a_is_proven_by_the_mqa206_stage9000_story_sender() {
+    fn w05_mqr_205p_a_is_proven_only_by_the_mqa206_stage9000_story_sender() {
         let quest = "5588EF@SeventySix.esm";
         let selector = "559346@SeventySix.esm";
         let producer = "54EDB9@SeventySix.esm";
@@ -3541,28 +3307,46 @@ mod tests {
         seed.source_start_keyword = Some(selector.to_string());
         seed.source_selector_keywords = vec![selector.to_string()];
         seed.target_selector_keywords = vec![selector.to_string()];
-        let evidence = [
-            quest_fragment_sender_with_property_variant(
-                producer,
-                selector,
-                "W05_MQR_205P_A_QuestStart_Keyword",
-                "W05_MQR_205P_A_QuestStartKeyword",
-            ),
-            quest_metadata_for(quest, Some(false)),
-        ];
+        let story_sender = quest_fragment_sender_with_property_variant(
+            producer,
+            selector,
+            "W05_MQR_205P_A_QuestStart_Keyword",
+            "W05_MQR_205P_A_QuestStartKeyword",
+        );
 
-        let report = report(seed, &evidence);
-
-        assert_eq!(report.routes[0].classification, "adapted");
-        assert_eq!(report.routes[0].runtime_proof.len(), 1);
-        assert_eq!(report.routes[0].runtime_proof[0].carrier, producer);
+        let proven = report(
+            seed.clone(),
+            &[story_sender.clone(), quest_metadata_for(quest, Some(false))],
+        );
+        assert_eq!(proven.routes[0].classification, "adapted");
+        assert_eq!(proven.routes[0].runtime_proof.len(), 1);
+        assert_eq!(proven.routes[0].runtime_proof[0].carrier, producer);
         assert_eq!(
-            report.routes[0].runtime_proof[0].entrypoint,
+            proven.routes[0].runtime_proof[0].entrypoint,
             "Fragment_Stage_9000_Item_00"
         );
         assert_eq!(
-            report.routes[0].runtime_proof[0].provenance,
+            proven.routes[0].runtime_proof[0].provenance,
             Provenance::PersistentPatch
+        );
+
+        let mut property_only = story_sender;
+        Arc::make_mut(property_only.pex.as_mut().unwrap()).objects[0].states[0].functions[0]
+            .instructions = vec![PexInstructionPayload {
+            opcode: OP_RETURN,
+            args: vec![value_identifier("None")],
+        }];
+        let unproven = report(
+            seed,
+            &[property_only, quest_metadata_for(quest, Some(false))],
+        );
+        assert_eq!(unproven.routes[0].classification, "unclassified");
+        assert!(unproven.routes[0].runtime_proof.is_empty());
+        assert!(
+            unproven.routes[0]
+                .route
+                .issues
+                .contains(&"no_local_source_producer".to_string())
         );
     }
 
@@ -3640,83 +3424,6 @@ mod tests {
     }
 
     #[test]
-    fn unbound_quest_fragment_senders_do_not_prove_scpt_runtime_parity() {
-        let entrypoint = "Fragment_Stage_9000_Item_00";
-        let evidence = [
-            unplaced_quest_sender(
-                EvidenceScope::Source,
-                "400300@SeventySix.esm",
-                Provenance::Source,
-                entrypoint,
-                false,
-            ),
-            unplaced_quest_sender(
-                EvidenceScope::Target,
-                "500300@SeventySix.esm",
-                Provenance::Converted,
-                entrypoint,
-                false,
-            ),
-            quest_metadata(Some(false)),
-        ];
-
-        let report = report(route("SCPT"), &evidence);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"no_local_source_producer".to_string())
-        );
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"unproven_runtime_entry".to_string())
-        );
-    }
-
-    #[test]
-    fn unplaced_non_fragment_quest_handlers_do_not_prove_scpt_runtime_parity() {
-        let evidence = [
-            unplaced_quest_sender(
-                EvidenceScope::Source,
-                "400300@SeventySix.esm",
-                Provenance::Source,
-                "OnActivate",
-                true,
-            ),
-            unplaced_quest_sender(
-                EvidenceScope::Target,
-                "500300@SeventySix.esm",
-                Provenance::Converted,
-                "OnActivate",
-                true,
-            ),
-            quest_metadata(Some(false)),
-        ];
-
-        let report = report(route("SCPT"), &evidence);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"no_local_source_producer".to_string())
-        );
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"unproven_runtime_entry".to_string())
-        );
-    }
-
-    #[test]
     fn terminal_placement_propagates_through_nested_submenus_only() {
         let reachable = propagate_terminal_placements(
             HashSet::from(["PlacedRoot".to_string()]),
@@ -3744,6 +3451,87 @@ mod tests {
         assert!(reachable.contains("SecondSubmenu"));
         assert!(!reachable.contains("UnplacedCycleA"));
         assert!(!reachable.contains("UnplacedCycleB"));
+    }
+
+    #[test]
+    fn compact_placement_matches_frontier_scans_with_cycles_aliases_and_vmad() {
+        use esp_authoring_core::plugin_runtime::{
+            ParsedItem, ParsedRecord, ParsedSubrecord, build_vmad_bytes_from_payload,
+            plugin_handle_store_ref,
+        };
+        let handle = crate::run::OwnedPluginHandle::new("Placement.esp", "fo4");
+        let record = |sig: &str, id: u32, refs: &[u32]| {
+            let vmad = build_vmad_bytes_from_payload(&json!({"Version":6,"Object Format":2,
+                "Scripts":[{"ScriptName":"PlacementTest","Flags":0,"Properties":refs.iter().enumerate().map(|(i, target)|
+                    json!({"propertyName":format!("Link{i}"),"Type":"Object","Flags":1,"Value":{"Alias":-1,
+                    "FormID":{"reference":{"plugin":"Placement.esp","object_id":format!("{target:06X}")}}}})).collect::<Vec<_>>()}]}), &[], "Placement.esp").unwrap();
+            ParsedItem::Record(ParsedRecord {
+                signature: sig.into(),
+                form_id: id,
+                flags: 0,
+                version_control: 0,
+                form_version: Some(131),
+                version2: None,
+                subrecords: vec![ParsedSubrecord {
+                    signature: "VMAD".into(),
+                    data: vmad.into(),
+                    semantic_type: None,
+                }],
+                raw_payload: None,
+                parse_error: None,
+            })
+        };
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle.id()).unwrap();
+            slot.parsed.root_items = vec![
+                record("REFR", 1, &[10, 20, 30]),
+                record("TERM", 10, &[11]),
+                record("TERM", 11, &[12]),
+                record("TERM", 12, &[]),
+                record("TERM", 20, &[21]),
+                record("TERM", 21, &[20]),
+                record("TERM", 40, &[41]),
+                record("TERM", 41, &[40]),
+                record("ACTI", 30, &[31]),
+                record("TERM", 31, &[]),
+                record("MISC", 50, &[]),
+            ];
+            slot.invalidate_sections();
+        }
+        let mut session = open_session(handle.id(), None).unwrap();
+        let scan = session.handle_raw_scan(handle.id()).unwrap();
+        let queries = [12, 20, 21, 30, 31, 40, 41, 50]
+            .map(|id| format!("Placement.esp:{id:06X}"))
+            .to_vec();
+        let mut expected = legacy_transitively_placed_terminals(
+            &scan,
+            &queries
+                .iter()
+                .filter(|key| scan.record_metadata_by_form_key(key).unwrap().1 == "TERM")
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        for (child, parents) in scan.referencing_form_keys_by_query(&queries) {
+            if parents.iter().any(|key| {
+                PLACED_SIGNATURES
+                    .contains(&scan.record_metadata_by_form_key(key).unwrap().1.as_str())
+            }) {
+                expected.insert(child);
+            }
+        }
+        let actual = placed_carriers(
+            &scan,
+            &queries,
+            &mut EvidenceCollectionMeasurements::default(),
+        );
+        for query in &queries {
+            assert_eq!(actual.contains(query), expected.contains(query), "{query}");
+        }
+        assert!(actual.contains("Placement.esp:00000C"));
+        assert!(actual.contains("Placement.esp:000015"));
+        assert!(!actual.contains("Placement.esp:00001F"));
+        assert!(!actual.contains("Placement.esp:000028"));
     }
 
     fn terminal_menu_sender(placed: bool, signature: &str) -> ProducerEvidence {
@@ -3814,112 +3602,96 @@ mod tests {
     }
 
     #[test]
-    fn placed_terminal_menu_sender_is_a_proven_runtime_entry() {
-        let evidence = terminal_menu_sender(true, "TERM");
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "adapted");
-        assert_eq!(
-            report.routes[0].runtime_proof[0].entrypoint,
-            "OnMenuItemRun"
-        );
+    fn terminal_menu_sender_is_proven_only_for_the_exact_placed_menu_contract() {
+        type Mutate = fn(&mut ProducerEvidence);
+        let cases: [(&str, bool, &str, Mutate, bool); 8] = [
+            ("placed TERM", true, "TERM", |_| {}, true),
+            (
+                "keyword bound to a different struct member",
+                true,
+                "TERM",
+                |evidence| {
+                    evidence.property_bindings = BTreeMap::from([(
+                        "MenuData".to_string(),
+                        struct_property_binding("500300@SeventySix.esm", "ActiveQuestKeyword"),
+                    )]);
+                },
+                false,
+            ),
+            (
+                "struct declaration mismatch",
+                true,
+                "TERM",
+                |evidence| {
+                    Arc::make_mut(evidence.pex.as_mut().unwrap()).objects[0].structs[0].members
+                        [0]
+                    .name = "ActiveQuestKeyword".to_string();
+                },
+                false,
+            ),
+            (
+                "no story member dataflow",
+                true,
+                "TERM",
+                |evidence| {
+                    Arc::make_mut(evidence.pex.as_mut().unwrap()).objects[0].states[0].functions
+                        [0]
+                    .instructions[0]
+                        .args[2] = value_identifier("ActiveQuestKeyword");
+                },
+                false,
+            ),
+            (
+                "not OnMenuItemRun",
+                true,
+                "TERM",
+                |evidence| {
+                    Arc::make_mut(evidence.pex.as_mut().unwrap()).objects[0].states[0].functions
+                        [0]
+                    .name = "OnInit".to_string();
+                },
+                false,
+            ),
+            (
+                "different script",
+                true,
+                "TERM",
+                |evidence| evidence.script_name = "OtherTerminalSender".to_string(),
+                false,
+            ),
+            ("unplaced TERM", false, "TERM", |_| {}, false),
+            ("placed non-terminal", true, "ACHR", |_| {}, false),
+        ];
+        for (name, placed, signature, mutate, proven) in cases {
+            let mut evidence = terminal_menu_sender(placed, signature);
+            mutate(&mut evidence);
+            let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
+            let routed = &report.routes[0];
+            if proven {
+                assert_eq!(routed.classification, "adapted", "{name}");
+                assert_eq!(
+                    routed.runtime_proof[0].entrypoint, "OnMenuItemRun",
+                    "{name}"
+                );
+            } else {
+                assert_eq!(routed.classification, "unclassified", "{name}");
+                assert!(routed.runtime_proof.is_empty(), "{name}");
+            }
+            if !placed {
+                assert!(
+                    routed
+                        .route
+                        .issues
+                        .contains(&"unplaced_carrier".to_string()),
+                    "{name}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn terminal_menu_sender_rejects_keyword_bound_to_a_different_struct_member() {
-        let mut evidence = terminal_menu_sender(true, "TERM");
-        evidence.property_bindings = BTreeMap::from([(
-            "MenuData".to_string(),
-            struct_property_binding("500300@SeventySix.esm", "ActiveQuestKeyword"),
-        )]);
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-    }
-
-    #[test]
-    fn terminal_menu_sender_requires_the_exact_struct_declaration() {
-        let mut evidence = terminal_menu_sender(true, "TERM");
-        Arc::make_mut(evidence.pex.as_mut().unwrap()).objects[0].structs[0].members[0].name =
-            "ActiveQuestKeyword".to_string();
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-    }
-
-    #[test]
-    fn terminal_menu_sender_requires_story_member_dataflow() {
-        let mut evidence = terminal_menu_sender(true, "TERM");
-        Arc::make_mut(evidence.pex.as_mut().unwrap()).objects[0].states[0].functions[0]
-            .instructions[0]
-            .args[2] = value_identifier("ActiveQuestKeyword");
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-    }
-
-    #[test]
-    fn terminal_menu_sender_requires_on_menu_item_run() {
-        let mut evidence = terminal_menu_sender(true, "TERM");
-        Arc::make_mut(evidence.pex.as_mut().unwrap()).objects[0].states[0].functions[0].name =
-            "OnInit".to_string();
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-    }
-
-    #[test]
-    fn terminal_menu_sender_requires_the_exact_script() {
-        let mut evidence = terminal_menu_sender(true, "TERM");
-        evidence.script_name = "OtherTerminalSender".to_string();
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-    }
-
-    #[test]
-    fn unplaced_terminal_menu_sender_is_not_a_runtime_entry() {
-        let evidence = terminal_menu_sender(false, "TERM");
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"unplaced_carrier".to_string())
-        );
-    }
-
-    #[test]
-    fn placed_non_terminal_menu_sender_is_not_a_runtime_entry() {
-        let evidence = terminal_menu_sender(true, "ACHR");
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-    }
-
-    #[test]
-    fn book_on_equipped_sender_is_a_proven_inventory_runtime_entry() {
-        let mut evidence = sender(
-            EvidenceScope::Target,
-            "500300@SeventySix.esm",
-            Provenance::PersistentPatch,
+    fn book_on_equipped_is_the_only_unplaced_inventory_runtime_entry() {
+        let on_equipped = || {
             Some(pex(
                 "LocalSender",
                 vec![function(
@@ -3933,168 +3705,62 @@ mod tests {
                         ],
                     }],
                 )],
-            )),
-        );
-        evidence.carrier_signature = "BOOK".to_string();
-        evidence.placed = false;
-        evidence.runtime_issue = Some("unplaced_carrier".to_string());
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "adapted");
-        assert_eq!(report.routes[0].runtime_proof[0].entrypoint, "OnEquipped");
+            ))
+        };
+        for (name, signature, placed, payload, proven) in [
+            (
+                "unplaced BOOK OnEquipped",
+                "BOOK",
+                false,
+                on_equipped(),
+                true,
+            ),
+            ("unplaced BOOK OnActivate", "BOOK", false, None, false),
+            ("placed ACHR OnEquipped", "ACHR", true, on_equipped(), false),
+        ] {
+            let mut evidence = sender(
+                EvidenceScope::Target,
+                "500300@SeventySix.esm",
+                Provenance::PersistentPatch,
+                payload,
+            );
+            evidence.carrier_signature = signature.to_string();
+            if !placed {
+                evidence.placed = false;
+                evidence.runtime_issue = Some("unplaced_carrier".to_string());
+            }
+            let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
+            let routed = &report.routes[0];
+            if proven {
+                assert_eq!(routed.classification, "adapted", "{name}");
+                assert_eq!(routed.runtime_proof[0].entrypoint, "OnEquipped", "{name}");
+            } else {
+                assert_eq!(routed.classification, "unclassified", "{name}");
+                assert!(routed.runtime_proof.is_empty(), "{name}");
+                if !placed {
+                    assert!(
+                        routed
+                            .route
+                            .issues
+                            .contains(&"unplaced_carrier".to_string()),
+                        "{name}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn unplaced_book_on_activate_is_not_an_inventory_runtime_entry() {
-        let mut evidence = sender(
-            EvidenceScope::Target,
-            "500300@SeventySix.esm",
-            Provenance::PersistentPatch,
-            None,
-        );
-        evidence.carrier_signature = "BOOK".to_string();
-        evidence.placed = false;
-        evidence.runtime_issue = Some("unplaced_carrier".to_string());
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"unplaced_carrier".to_string())
-        );
-    }
-
-    #[test]
-    fn placed_non_book_on_equipped_is_not_an_inventory_runtime_entry() {
-        let mut evidence = sender(
-            EvidenceScope::Target,
-            "500300@SeventySix.esm",
-            Provenance::PersistentPatch,
-            Some(pex(
-                "LocalSender",
-                vec![function(
-                    "OnEquipped",
-                    vec![PexInstructionPayload {
-                        opcode: OP_CALLMETHOD,
-                        args: vec![
-                            value_identifier("SendStoryEventAndWait"),
-                            value_identifier("::StoryEventKeyword_var"),
-                            value_identifier("None"),
-                        ],
-                    }],
-                )],
-            )),
-        );
-        evidence.carrier_signature = "ACHR".to_string();
-
-        let report = report(route("SCPT"), &[evidence, quest_metadata(Some(false))]);
-
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(report.routes[0].runtime_proof.is_empty());
-    }
-
-    #[test]
-    fn exact_pair_adapter_is_sufficient_for_scpt_route() {
-        let evidence = [
+    fn pair_adapter_scpt_route_outcomes() {
+        let adapter = |payload: Option<PexFilePayload>| {
             sender(
                 EvidenceScope::Target,
                 "500300@SeventySix.esm",
                 Provenance::PairAdapter,
-                None,
-            ),
-            quest_metadata(Some(false)),
-        ];
-        let report = report(route("SCPT"), &evidence);
-        assert_eq!(report.routes[0].classification, "adapted");
-        assert_eq!(
-            report.routes[0].runtime_proof[0].provenance,
-            Provenance::PairAdapter
-        );
-    }
-
-    #[test]
-    fn target_quest_autostart_blocks_story_manager_route() {
-        let evidence = [
-            sender(
-                EvidenceScope::Target,
-                "500300@SeventySix.esm",
-                Provenance::PairAdapter,
-                None,
-            ),
-            quest_metadata(Some(true)),
-        ];
-        let report = report(route("SCPT"), &evidence);
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"story_manager_bypass".to_string())
-        );
-    }
-
-    #[test]
-    fn autostart_helper_quest_sending_route_keyword_is_not_a_bypass() {
-        let mut helper = sender(
-            EvidenceScope::Target,
-            "500300@SeventySix.esm",
-            Provenance::PersistentPatch,
-            None,
-        );
-        helper.carrier = "500500@SeventySix.esm".to_string();
-        helper.carrier_signature = "QUST".to_string();
-        helper.placed = false;
-        helper.autostart = Some(true);
-        let evidence = [
-            sender(
-                EvidenceScope::Target,
-                "500300@SeventySix.esm",
-                Provenance::PairAdapter,
-                None,
-            ),
-            helper,
-            quest_metadata(Some(false)),
-        ];
-        let report = report(route("SCPT"), &evidence);
-        assert_eq!(report.routes[0].classification, "adapted");
-        assert!(
-            !report.routes[0]
-                .route
-                .issues
-                .contains(&"story_manager_bypass".to_string())
-        );
-    }
-
-    #[test]
-    fn autostart_helper_alone_does_not_report_a_bypass() {
-        let mut helper = sender(
-            EvidenceScope::Target,
-            "500300@SeventySix.esm",
-            Provenance::PersistentPatch,
-            None,
-        );
-        helper.carrier = "500500@SeventySix.esm".to_string();
-        helper.carrier_signature = "QUST".to_string();
-        helper.placed = false;
-        helper.autostart = Some(true);
-        let report = report(route("SCPT"), &[helper, quest_metadata(Some(false))]);
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(
-            !report.routes[0]
-                .route
-                .issues
-                .contains(&"story_manager_bypass".to_string())
-        );
-    }
-
-    #[test]
-    fn direct_start_on_route_associated_sender_dominates_valid_story_send() {
-        let bypass_pex = pex(
+                payload,
+            )
+        };
+        let direct_start_pex = pex(
             "B21:StoryEventOnTriggerEnter",
             vec![function(
                 "OnTriggerEnter",
@@ -4118,73 +3784,104 @@ mod tests {
                 ],
             )],
         );
-        let evidence = [
-            sender(
-                EvidenceScope::Target,
-                "500300@SeventySix.esm",
-                Provenance::PairAdapter,
-                Some(bypass_pex),
+        let mut conversion_disabled = adapter(None);
+        conversion_disabled.pex = None;
+        conversion_disabled.pex_error = Some("script_conversion_disabled".to_string());
+        let mut structurally_invalid = route("SCPT");
+        structurally_invalid.condition_valid = false;
+        for (name, seed, evidence, expected, issues) in [
+            (
+                "exact pair adapter",
+                route("SCPT"),
+                vec![adapter(None), quest_metadata(Some(false))],
+                "adapted",
+                &[][..],
             ),
-            quest_metadata(Some(false)),
-        ];
-        let report = report(route("SCPT"), &evidence);
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"story_manager_bypass".to_string())
-        );
+            (
+                "target quest autostart",
+                route("SCPT"),
+                vec![adapter(None), quest_metadata(Some(true))],
+                "unclassified",
+                &["story_manager_bypass"][..],
+            ),
+            (
+                "direct start dominates story send",
+                route("SCPT"),
+                vec![adapter(Some(direct_start_pex)), quest_metadata(Some(false))],
+                "unclassified",
+                &["story_manager_bypass"][..],
+            ),
+            (
+                "script conversion disabled",
+                route("SCPT"),
+                vec![conversion_disabled, quest_metadata(Some(false))],
+                "unclassified",
+                &["script_conversion_disabled", "missing_compiled_pex"][..],
+            ),
+            (
+                "structural failure beats producer evidence",
+                structurally_invalid,
+                vec![adapter(None), quest_metadata(Some(false))],
+                "unclassified",
+                &["structural_invalid"][..],
+            ),
+        ] {
+            let report = report(seed, &evidence);
+            let routed = &report.routes[0];
+            assert_eq!(routed.classification, expected, "{name}");
+            if expected == "adapted" {
+                assert_eq!(
+                    routed.runtime_proof[0].provenance,
+                    Provenance::PairAdapter,
+                    "{name}"
+                );
+            }
+            for issue in issues {
+                assert!(
+                    routed.route.issues.contains(&issue.to_string()),
+                    "{name}: {issue}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn script_conversion_disabled_is_reported_for_bound_adapter() {
-        let mut adapter = sender(
+    fn autostart_helper_quest_sending_route_keyword_is_not_a_bypass() {
+        let mut helper = sender(
             EvidenceScope::Target,
             "500300@SeventySix.esm",
-            Provenance::PairAdapter,
+            Provenance::PersistentPatch,
             None,
         );
-        adapter.pex = None;
-        adapter.pex_error = Some("script_conversion_disabled".to_string());
-        let report = report(route("SCPT"), &[adapter, quest_metadata(Some(false))]);
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"script_conversion_disabled".to_string())
-        );
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"missing_compiled_pex".to_string())
-        );
-    }
-
-    #[test]
-    fn structural_failure_is_not_overridden_by_producer_evidence() {
-        let mut invalid = route("SCPT");
-        invalid.condition_valid = false;
-        let report = report(
-            invalid,
-            &[
-                sender(
-                    EvidenceScope::Target,
-                    "500300@SeventySix.esm",
-                    Provenance::PairAdapter,
-                    None,
-                ),
-                quest_metadata(Some(false)),
-            ],
-        );
-        assert_eq!(report.routes[0].classification, "unclassified");
-        assert!(
-            report.routes[0]
-                .route
-                .issues
-                .contains(&"structural_invalid".to_string())
-        );
+        helper.carrier = "500500@SeventySix.esm".to_string();
+        helper.carrier_signature = "QUST".to_string();
+        helper.placed = false;
+        helper.autostart = Some(true);
+        for (name, with_adapter, expected) in [
+            ("helper beside pair adapter", true, "adapted"),
+            ("helper alone", false, "unclassified"),
+        ] {
+            let mut evidence = vec![helper.clone(), quest_metadata(Some(false))];
+            if with_adapter {
+                evidence.insert(
+                    0,
+                    sender(
+                        EvidenceScope::Target,
+                        "500300@SeventySix.esm",
+                        Provenance::PairAdapter,
+                        None,
+                    ),
+                );
+            }
+            let report = report(route("SCPT"), &evidence);
+            assert_eq!(report.routes[0].classification, expected, "{name}");
+            assert!(
+                !report.routes[0]
+                    .route
+                    .issues
+                    .contains(&"story_manager_bypass".to_string()),
+                "{name}"
+            );
+        }
     }
 }

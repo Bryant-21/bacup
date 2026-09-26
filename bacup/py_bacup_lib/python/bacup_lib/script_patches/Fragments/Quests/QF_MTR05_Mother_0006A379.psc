@@ -84,7 +84,34 @@ EndFunction
 Function Fragment_Stage_0210_Item_00()
     SetObjectiveCompleted(200, True)
     SetObjectiveDisplayed(210, True)
+    MTR05_RegisterBeaconKeypad()
 EndFunction
+
+; MTR05_RnDKeypadScript (the FO76 keypad that issued the beacon and set 240 through
+; MTR05QuestScript.BeaconIssued) lost its binding on the keypad furniture in conversion.
+; Once the code terminal has revealed the requisition code, using the keypad issues it.
+Function MTR05_RegisterBeaconKeypad()
+    ReferenceAlias keypadAlias = GetAlias(50) as ReferenceAlias
+    ObjectReference keypadRef
+    If keypadAlias
+        keypadRef = keypadAlias.GetReference()
+    EndIf
+    If keypadRef
+        RegisterForRemoteEvent(keypadRef, "OnActivate")
+    EndIf
+EndFunction
+
+Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akActionRef)
+    If akActionRef != Game.GetPlayer() || !IsStageDone(210) || IsStageDone(240)
+        Return
+    EndIf
+    MTR05QuestScript questScript = (Self as Quest) as MTR05QuestScript
+    If questScript
+        questScript.BeaconIssued()
+    Else
+        SetStage(240)
+    EndIf
+EndEvent
 
 Function Fragment_Stage_0240_Item_00()
     SetObjectiveCompleted(210, True)

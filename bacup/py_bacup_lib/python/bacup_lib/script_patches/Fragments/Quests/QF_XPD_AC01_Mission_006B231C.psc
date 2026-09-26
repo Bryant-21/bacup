@@ -205,6 +205,9 @@ Function Fragment_Stage_1875_Item_00()
 EndFunction
 
 Function Fragment_Stage_1880_Item_00()
+	If XPD_AC02_Mission_Twins_PierFightConcluded != None && !XPD_AC02_Mission_Twins_PierFightConcluded.IsPlaying()
+		XPD_AC02_Mission_Twins_PierFightConcluded.Start()
+	EndIf
 EndFunction
 
 Function Fragment_Stage_1885_Item_00()
@@ -326,9 +329,15 @@ Function Fragment_Stage_4510_Item_00()
 EndFunction
 
 Function Fragment_Stage_4530_Item_00()
+	If IsStageDone(4540)
+		SetLocalSensationStage(4700)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_4540_Item_00()
+	If IsStageDone(4530)
+		SetLocalSensationStage(4700)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_4699_Item_00()

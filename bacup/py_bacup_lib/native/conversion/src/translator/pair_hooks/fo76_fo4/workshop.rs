@@ -54,6 +54,46 @@ pub(super) const FO76_WORKSHOP_CATEGORY_MAIN_UTILITY: u32 = 0x822A19;
 pub(super) const FO76_WORKSHOP_CATEGORY_MAIN_DWELLERS: u32 = 0x8229E7;
 pub(super) const FO76_WORKSHOP_CATEGORY_MAIN_QUEST: u32 = 0x8229DD;
 impl Fo76Fo4Hook {
+    pub(super) fn repair_radshield_recipe_workbench(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.sig.0 != *b"COBJ"
+            || record.form_key.local != 0x081FDD
+            || !interner
+                .resolve(record.form_key.plugin)
+                .is_some_and(|name| name.eq_ignore_ascii_case("SeventySix.esm"))
+            || !record
+                .eid
+                .and_then(|eid| interner.resolve(eid))
+                .is_some_and(|eid| eid.eq_ignore_ascii_case("SFM04_Organic_co_chem_RadShield"))
+        {
+            return;
+        }
+        for field in &mut record.fields {
+            let expected = match &field.sig.0 {
+                b"BNAM" => 0x102158,
+                b"FNAM" => 0x102150,
+                _ => continue,
+            };
+            let fix = |value: &mut FieldValue| {
+                if let FieldValue::FormKey(key) = value {
+                    if key.local == expected
+                        && interner
+                            .resolve(key.plugin)
+                            .is_some_and(|name| name.eq_ignore_ascii_case("SeventySix.esm"))
+                    {
+                        key.plugin = interner.intern(FO4_MASTER_NAME);
+                    }
+                }
+            };
+            match &mut field.value {
+                FieldValue::List(values) => values.iter_mut().for_each(fix),
+                value => fix(value),
+            }
+        }
+    }
+
     pub(super) fn normalize_workshop_power_connection_keyword(
         interner: &crate::sym::StringInterner,
         record: &mut Record,

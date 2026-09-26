@@ -11,6 +11,7 @@ use crate::sym::StringInterner;
 
 // The source plugins contain 3,129 winners before the cross-game merge maps 446
 // duplicate FO3 EditorIDs onto their FNV counterparts.
+#[cfg(test)]
 pub const EXPECTED_FULL_SOURCE_CREA_WINNERS: usize = 3_129;
 pub const EXPECTED_FULL_MERGED_CREA_WINNERS: usize = 2_683;
 
@@ -1156,6 +1157,35 @@ mod tests {
             EXPECTED_FULL_SOURCE_CREA_WINNERS - EXPECTED_FULL_MERGED_CREA_WINNERS,
             446
         );
+
+        let interner = StringInterner::new();
+        let records = (0..EXPECTED_FULL_MERGED_CREA_WINNERS)
+            .map(|offset| {
+                self::record(
+                    "CREA",
+                    0x800 + offset as u32,
+                    "FalloutNV.esm",
+                    &format!("Creature{offset}"),
+                    Vec::new(),
+                    &interner,
+                )
+            })
+            .collect::<Vec<_>>();
+        let sources = records
+            .iter()
+            .map(|record| source(record, LegacyCreatureGame::Fnv, "FalloutNV.esm", 0))
+            .collect::<Vec<_>>();
+        let plan = build_full_merged_creature_corpus_plan(&sources, None, &interner).unwrap();
+        assert_eq!(
+            plan.accounting.winning_creatures,
+            EXPECTED_FULL_MERGED_CREA_WINNERS
+        );
+        assert_eq!(
+            plan.accounting.dispositions,
+            EXPECTED_FULL_MERGED_CREA_WINNERS
+        );
+        assert_eq!(plan.accounting.specials, EXPECTED_FULL_MERGED_CREA_WINNERS);
+        assert_eq!(plan.records.len(), EXPECTED_FULL_MERGED_CREA_WINNERS);
     }
 
     fn fk(local: u32, plugin: &str, interner: &StringInterner) -> FormKey {
@@ -1231,7 +1261,7 @@ mod tests {
         body: &str,
         interner: &StringInterner,
     ) -> Record {
-        record(
+        self::record(
             "CREA",
             local,
             plugin,
@@ -1252,38 +1282,6 @@ mod tests {
     }
 
     #[test]
-    fn accounts_for_every_expected_merged_winner_exactly_once() {
-        let interner = StringInterner::new();
-        let records = (0..EXPECTED_FULL_MERGED_CREA_WINNERS)
-            .map(|offset| {
-                record(
-                    "CREA",
-                    0x800 + offset as u32,
-                    "FalloutNV.esm",
-                    &format!("Creature{offset}"),
-                    Vec::new(),
-                    &interner,
-                )
-            })
-            .collect::<Vec<_>>();
-        let sources = records
-            .iter()
-            .map(|record| source(record, LegacyCreatureGame::Fnv, "FalloutNV.esm", 0))
-            .collect::<Vec<_>>();
-        let plan = build_full_merged_creature_corpus_plan(&sources, None, &interner).unwrap();
-        assert_eq!(
-            plan.accounting.winning_creatures,
-            EXPECTED_FULL_MERGED_CREA_WINNERS
-        );
-        assert_eq!(
-            plan.accounting.dispositions,
-            EXPECTED_FULL_MERGED_CREA_WINNERS
-        );
-        assert_eq!(plan.accounting.specials, EXPECTED_FULL_MERGED_CREA_WINNERS);
-        assert_eq!(plan.records.len(), EXPECTED_FULL_MERGED_CREA_WINNERS);
-    }
-
-    #[test]
     fn resolves_crea_template_and_nested_lvlc_proxies_and_reports_cycles() {
         let interner = StringInterner::new();
         let owner = visual(
@@ -1294,7 +1292,7 @@ mod tests {
             "dog.nif\0",
             &interner,
         );
-        let list = record(
+        let list = self::record(
             "LVLC",
             0x900,
             "FalloutNV.esm",
@@ -1308,7 +1306,7 @@ mod tests {
             )],
             &interner,
         );
-        let proxy = record(
+        let proxy = self::record(
             "CREA",
             0x801,
             "FalloutNV.esm",
@@ -1316,7 +1314,7 @@ mod tests {
             vec![field("TPLT", FieldValue::FormKey(list.form_key))],
             &interner,
         );
-        let chained = record(
+        let chained = self::record(
             "CREA",
             0x802,
             "FalloutNV.esm",
@@ -1324,7 +1322,7 @@ mod tests {
             vec![field("TPLT", FieldValue::FormKey(proxy.form_key))],
             &interner,
         );
-        let cycle_a = record(
+        let cycle_a = self::record(
             "CREA",
             0x803,
             "FalloutNV.esm",
@@ -1335,7 +1333,7 @@ mod tests {
             )],
             &interner,
         );
-        let cycle_b = record(
+        let cycle_b = self::record(
             "CREA",
             0x804,
             "FalloutNV.esm",
@@ -1343,7 +1341,7 @@ mod tests {
             vec![field("TPLT", FieldValue::FormKey(cycle_a.form_key))],
             &interner,
         );
-        let leveled_cycle_a = record(
+        let leveled_cycle_a = self::record(
             "LVLC",
             0x901,
             "FalloutNV.esm",
@@ -1357,7 +1355,7 @@ mod tests {
             )],
             &interner,
         );
-        let leveled_cycle_b = record(
+        let leveled_cycle_b = self::record(
             "LVLC",
             0x902,
             "FalloutNV.esm",
@@ -1371,7 +1369,7 @@ mod tests {
             )],
             &interner,
         );
-        let leveled_cycle_proxy = record(
+        let leveled_cycle_proxy = self::record(
             "CREA",
             0x805,
             "FalloutNV.esm",
@@ -1454,7 +1452,7 @@ mod tests {
     }
 
     #[test]
-    fn dlc_robot_and_missing_body_remain_typed_catalog_entries() {
+    fn body_variants_and_missing_bodies_remain_typed_catalog_entries() {
         let interner = StringInterner::new();
         let temp = TempDir::new().unwrap();
         let family = temp.path().join("nvdlc03/creatures/brainbot");
@@ -1500,10 +1498,7 @@ mod tests {
             BodyReadiness::MissingAssets(ref missing)
                 if missing == &["nvdlc03/creatures/brainbot/missing_brainbot.nif"]
         ));
-    }
 
-    #[test]
-    fn body_variant_is_ready_when_at_least_one_declared_part_exists() {
         let temp = TempDir::new().unwrap();
         let family = temp.path().join("creatures/ghoul");
         fs::create_dir_all(&family).unwrap();
@@ -1563,7 +1558,7 @@ mod tests {
     #[test]
     fn equal_precedence_override_collision_fails_closed() {
         let interner = StringInterner::new();
-        let base = record(
+        let base = self::record(
             "CREA",
             0x800,
             "FalloutNV.esm",
@@ -1571,7 +1566,7 @@ mod tests {
             Vec::new(),
             &interner,
         );
-        let override_record = record(
+        let override_record = self::record(
             "CREA",
             0x800,
             "FalloutNV.esm",

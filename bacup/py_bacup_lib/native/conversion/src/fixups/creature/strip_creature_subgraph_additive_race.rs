@@ -243,13 +243,12 @@ mod tests {
     #[test]
     fn applies_to_false_for_weap_root() {
         let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let mut ctx_interner = StringInterner::new();
         let mut mapper_interner = StringInterner::new();
         let config = FixupConfig {
             root_sig: Some(SigCode::from_str("WEAP").unwrap()),
             ..Default::default()
         };
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
+        let mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
         let ctx = FixupContext {
             source_handle_id: 1,
             target_handle_id: 2,
@@ -268,13 +267,12 @@ mod tests {
     #[test]
     fn applies_to_true_for_npc_root() {
         let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let mut ctx_interner = StringInterner::new();
         let mut mapper_interner = StringInterner::new();
         let config = FixupConfig {
             root_sig: Some(SigCode::from_str("NPC_").unwrap()),
             ..Default::default()
         };
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
+        let mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
         let ctx = FixupContext {
             source_handle_id: 1,
             target_handle_id: 2,

@@ -493,7 +493,490 @@ const BURN_GRUNT_WAVES: &[WaveSpec] = &[WaveSpec {
     candidates: BURN_GRUNT_TARGET_CANDIDATES,
 }];
 
+const EN05_NORMAL_SOURCE: &[CandidateSpec] = &[
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 0,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 1,
+    },
+    CandidateSpec {
+        source_actor: 0x440C80,
+        spawn_slot: 2,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 3,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 4,
+    },
+    CandidateSpec {
+        source_actor: 0x440C80,
+        spawn_slot: 5,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 6,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 7,
+    },
+    CandidateSpec {
+        source_actor: 0x440C80,
+        spawn_slot: 8,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 9,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 10,
+    },
+    CandidateSpec {
+        source_actor: 0x440C80,
+        spawn_slot: 11,
+    },
+];
+const EN05_NORMAL_CONTRACT: &[SourceWaveContract] = &[SourceWaveContract {
+    source_wave: 0x4F60F3,
+    source_wave_eid: "WaveType_SpecialEN05CombatExercise",
+    candidates: EN05_NORMAL_SOURCE,
+}];
+const EN05_BOSS_SOURCE: &[CandidateSpec] = &[
+    CandidateSpec {
+        source_actor: 0x43C423,
+        spawn_slot: 0,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 1,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 2,
+    },
+    CandidateSpec {
+        source_actor: 0x440C80,
+        spawn_slot: 3,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 4,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 5,
+    },
+    CandidateSpec {
+        source_actor: 0x440C80,
+        spawn_slot: 6,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 7,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 8,
+    },
+    CandidateSpec {
+        source_actor: 0x440C80,
+        spawn_slot: 9,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 10,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 11,
+    },
+];
+const EN05_BOSS_CONTRACT: &[SourceWaveContract] = &[SourceWaveContract {
+    source_wave: 0x45311B,
+    source_wave_eid: "WaveType_SpecialEN05CombatExerciseBoss",
+    candidates: EN05_BOSS_SOURCE,
+}];
+const EN05_LACKEYS: &[CandidateSpec] = &[
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 0,
+    },
+    CandidateSpec {
+        source_actor: 0x15E058,
+        spawn_slot: 1,
+    },
+];
+const EN05_COMBAT_WAVES: &[WaveSpec] = &[
+    WaveSpec {
+        source_wave: 0x4F60F3,
+        source_wave_eid: "WaveType_SpecialEN05CombatExercise",
+        source_wave_contracts: EN05_NORMAL_CONTRACT,
+        collection_alias: 6,
+        spawn_marker_alias: 8,
+        preparation_stage: 20,
+        stage_after_preparation: -1,
+        replace_collection: false,
+        actor_count: 3,
+        spawn_slot_count: 3,
+        start_stage: 20,
+        end_stage: 30,
+        candidates: EN05_NORMAL_SOURCE,
+    },
+    WaveSpec {
+        source_wave: 0x4F60F3,
+        source_wave_eid: "WaveType_SpecialEN05CombatExercise",
+        source_wave_contracts: EN05_NORMAL_CONTRACT,
+        collection_alias: 6,
+        spawn_marker_alias: 8,
+        preparation_stage: 32,
+        stage_after_preparation: -1,
+        replace_collection: true,
+        actor_count: 3,
+        spawn_slot_count: 3,
+        start_stage: 32,
+        end_stage: 40,
+        candidates: EN05_NORMAL_SOURCE,
+    },
+    WaveSpec {
+        source_wave: 0x45311B,
+        source_wave_eid: "WaveType_SpecialEN05CombatExerciseBoss",
+        source_wave_contracts: EN05_BOSS_CONTRACT,
+        collection_alias: 13,
+        spawn_marker_alias: 8,
+        preparation_stage: 42,
+        stage_after_preparation: -1,
+        replace_collection: false,
+        actor_count: 1,
+        spawn_slot_count: 1,
+        start_stage: 42,
+        end_stage: 100,
+        candidates: EN05_BOSS_SOURCE,
+    },
+    WaveSpec {
+        source_wave: 0x45311B,
+        source_wave_eid: "WaveType_SpecialEN05CombatExerciseBoss",
+        source_wave_contracts: EN05_BOSS_CONTRACT,
+        collection_alias: 6,
+        spawn_marker_alias: 8,
+        preparation_stage: 42,
+        stage_after_preparation: -1,
+        replace_collection: true,
+        actor_count: 2,
+        spawn_slot_count: 2,
+        start_stage: 42,
+        end_stage: 100,
+        candidates: EN05_LACKEYS,
+    },
+];
+
+const MTNS01_SOURCE_CANDIDATES: &[CandidateSpec] = &[
+    CandidateSpec {
+        source_actor: 0x075341,
+        spawn_slot: 0,
+    },
+    CandidateSpec {
+        source_actor: 0x117D85,
+        spawn_slot: 0,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 1,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 1,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 2,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 3,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 4,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 4,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 5,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 6,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 7,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 7,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 8,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 9,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 10,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 10,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 11,
+    },
+];
+// Three occupied source slots are the bounded single-player substitute for server difficulty scaling.
+const MTNS01_WAVES: &[WaveSpec] = &[WaveSpec {
+    source_wave: 0x43D199,
+    source_wave_eid: "WaveTypeSuperMutantBoss",
+    source_wave_contracts: &[SourceWaveContract {
+        source_wave: 0x43D199,
+        source_wave_eid: "WaveTypeSuperMutantBoss",
+        candidates: MTNS01_SOURCE_CANDIDATES,
+    }],
+    collection_alias: 101,
+    spawn_marker_alias: 86,
+    preparation_stage: 401,
+    stage_after_preparation: -1,
+    replace_collection: false,
+    actor_count: 3,
+    spawn_slot_count: 3,
+    start_stage: 401,
+    end_stage: 420,
+    candidates: MTNS01_SOURCE_CANDIDATES,
+}];
+
+const FS02_SOURCE_CANDIDATES: &[CandidateSpec] = &[
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 0,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 1,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 1,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 2,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 3,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 4,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 4,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 5,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 6,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 7,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 7,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 8,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 9,
+    },
+    CandidateSpec {
+        source_actor: 0x088F14,
+        spawn_slot: 10,
+    },
+    CandidateSpec {
+        source_actor: 0x0948B3,
+        spawn_slot: 10,
+    },
+    CandidateSpec {
+        source_actor: 0x075335,
+        spawn_slot: 11,
+    },
+];
+// Three occupied source slots are the bounded single-player substitute for server difficulty scaling.
+const FS02_WAVES: &[WaveSpec] = &[WaveSpec {
+    source_wave: 0x4F60F1,
+    source_wave_eid: "WaveTypeSuperMutant",
+    source_wave_contracts: &[SourceWaveContract {
+        source_wave: 0x4F60F1,
+        source_wave_eid: "WaveTypeSuperMutant",
+        candidates: FS02_SOURCE_CANDIDATES,
+    }],
+    collection_alias: 22,
+    spawn_marker_alias: 25,
+    preparation_stage: 205,
+    stage_after_preparation: -1,
+    replace_collection: false,
+    actor_count: 3,
+    spawn_slot_count: 3,
+    start_stage: 205,
+    end_stage: 260,
+    candidates: FS02_SOURCE_CANDIDATES,
+}];
+
+const MTNL01_GLOWING_ONE: &[CandidateSpec] = &[CandidateSpec {
+    source_actor: 0x48F2AC,
+    spawn_slot: 0,
+}];
+const MTNL01_WENDIGO: &[CandidateSpec] = &[CandidateSpec {
+    source_actor: 0x48F2AD,
+    spawn_slot: 0,
+}];
+const MTNL01_DAVID: &[CandidateSpec] = &[CandidateSpec {
+    source_actor: 0x4EA3FB,
+    spawn_slot: 0,
+}];
+
+const MTNL01_WAVES: &[WaveSpec] = &[
+    WaveSpec {
+        source_wave: 0x43C0C8,
+        source_wave_eid: "WaveType_SpecialMTNL01GlowingOne",
+        source_wave_contracts: &[SourceWaveContract {
+            source_wave: 0x43C0C8,
+            source_wave_eid: "WaveType_SpecialMTNL01GlowingOne",
+            candidates: MTNL01_GLOWING_ONE,
+        }],
+        collection_alias: 25,
+        spawn_marker_alias: 40,
+        preparation_stage: -1,
+        stage_after_preparation: -1,
+        replace_collection: false,
+        actor_count: 1,
+        spawn_slot_count: 1,
+        start_stage: 211,
+        end_stage: -1,
+        candidates: MTNL01_GLOWING_ONE,
+    },
+    WaveSpec {
+        source_wave: 0x43C0CC,
+        source_wave_eid: "WaveType_SpecialMTNL01ProgenitorWendigoBoss",
+        source_wave_contracts: &[SourceWaveContract {
+            source_wave: 0x43C0CC,
+            source_wave_eid: "WaveType_SpecialMTNL01ProgenitorWendigoBoss",
+            candidates: MTNL01_WENDIGO,
+        }],
+        collection_alias: 26,
+        spawn_marker_alias: 41,
+        preparation_stage: -1,
+        stage_after_preparation: -1,
+        replace_collection: false,
+        actor_count: 1,
+        spawn_slot_count: 1,
+        start_stage: 511,
+        end_stage: -1,
+        candidates: MTNL01_WENDIGO,
+    },
+    WaveSpec {
+        source_wave: 0x43C0CD,
+        source_wave_eid: "WaveType_SpecialMTNL01DavidScorchedBoss",
+        source_wave_contracts: &[SourceWaveContract {
+            source_wave: 0x43C0CD,
+            source_wave_eid: "WaveType_SpecialMTNL01DavidScorchedBoss",
+            candidates: MTNL01_DAVID,
+        }],
+        collection_alias: 35,
+        spawn_marker_alias: 42,
+        preparation_stage: -1,
+        stage_after_preparation: -1,
+        replace_collection: false,
+        actor_count: 1,
+        spawn_slot_count: 1,
+        start_stage: 611,
+        end_stage: -1,
+        candidates: MTNL01_DAVID,
+    },
+];
+
+const SFM04_DEATHCLAW: &[CandidateSpec] = &[CandidateSpec {
+    source_actor: 0x075338,
+    spawn_slot: 0,
+}];
+const SFM04_WAVES: &[WaveSpec] = &[WaveSpec {
+    source_wave: 0x4F60B0,
+    source_wave_eid: "WaveTypeDeathclaw",
+    source_wave_contracts: &[SourceWaveContract {
+        source_wave: 0x4F60B0,
+        source_wave_eid: "WaveTypeDeathclaw",
+        candidates: SFM04_DEATHCLAW,
+    }],
+    collection_alias: 50,
+    spawn_marker_alias: 13,
+    preparation_stage: 300,
+    stage_after_preparation: -1,
+    replace_collection: false,
+    actor_count: 1,
+    spawn_slot_count: 1,
+    start_stage: 330,
+    end_stage: -1,
+    candidates: SFM04_DEATHCLAW,
+}];
+
 const QUEST_SPECS: &[QuestSpec] = &[
+    QuestSpec {
+        source_quest: 0x10AE02,
+        source_quest_eid: "SFM04_Organic",
+        waves: SFM04_WAVES,
+    },
+    QuestSpec {
+        source_quest: 0x052A62,
+        source_quest_eid: "EN05_CombatCourse",
+        waves: EN05_COMBAT_WAVES,
+    },
+    QuestSpec {
+        source_quest: 0x4E0719,
+        source_quest_eid: "FS02_MQ_Reassembly",
+        waves: FS02_WAVES,
+    },
+    QuestSpec {
+        source_quest: 0x031163,
+        source_quest_eid: "MTNS01_Intro",
+        waves: MTNS01_WAVES,
+    },
+    QuestSpec {
+        source_quest: 0x045A40,
+        source_quest_eid: "MTNL01_Raiders",
+        waves: MTNL01_WAVES,
+    },
     QuestSpec {
         source_quest: 0x41A39D,
         source_quest_eid: "W05_MQ_003P_Muscle",
@@ -525,6 +1008,127 @@ const QUEST_SPECS: &[QuestSpec] = &[
         waves: BURN_GRUNT_WAVES,
     },
 ];
+
+#[cfg(test)]
+mod legacy_quest_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_quest_wave_contracts_match_source_waves() {
+        let wave = &SFM04_WAVES[0];
+        assert_eq!(
+            (wave.source_wave, wave.candidates[0].source_actor),
+            (0x4F60B0, 0x075338)
+        );
+        assert_eq!((wave.collection_alias, wave.spawn_marker_alias), (50, 13));
+        assert_eq!((wave.actor_count, wave.spawn_slot_count), (1, 1));
+        assert_eq!(
+            (wave.preparation_stage, wave.start_stage, wave.end_stage),
+            (300, 330, -1)
+        );
+        assert_eq!(wave.stage_after_preparation, -1);
+        assert_eq!(wave.source_wave_contracts[0].candidates, wave.candidates);
+        assert!(!wave.replace_collection);
+        assert!(
+            QUEST_SPECS
+                .iter()
+                .any(|quest| quest.source_quest == 0x10AE02 && quest.waves == SFM04_WAVES)
+        );
+
+        let rows = EN05_COMBAT_WAVES
+            .iter()
+            .map(|wave| {
+                (
+                    wave.collection_alias,
+                    wave.spawn_marker_alias,
+                    wave.preparation_stage,
+                    wave.actor_count,
+                    wave.replace_collection,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                (6, 8, 20, 3, false),
+                (6, 8, 32, 3, true),
+                (13, 8, 42, 1, false),
+                (6, 8, 42, 2, true),
+            ]
+        );
+        assert_eq!(EN05_COMBAT_WAVES[2].candidates[0].source_actor, 0x43C423);
+        assert_eq!(EN05_COMBAT_WAVES[2].spawn_slot_count, 1);
+        assert!(
+            EN05_LACKEYS
+                .iter()
+                .all(|candidate| candidate.source_actor == 0x15E058)
+        );
+        assert!(
+            EN05_COMBAT_WAVES
+                .iter()
+                .all(|wave| wave.stage_after_preparation == -1)
+        );
+
+        for (wave, collection, marker, start, stop) in [
+            (&MTNS01_WAVES[0], 101, 86, 401, 420),
+            (&FS02_WAVES[0], 22, 25, 205, 260),
+        ] {
+            assert_eq!(
+                (wave.collection_alias, wave.spawn_marker_alias),
+                (collection, marker)
+            );
+            assert_eq!(
+                (wave.preparation_stage, wave.start_stage, wave.end_stage),
+                (start, start, stop)
+            );
+            assert_eq!((wave.actor_count, wave.spawn_slot_count), (3, 3));
+            assert_eq!(wave.source_wave_contracts[0].candidates, wave.candidates);
+            assert_eq!(wave.stage_after_preparation, -1);
+            for slot in 0..3 {
+                assert!(
+                    wave.candidates
+                        .iter()
+                        .any(|candidate| candidate.spawn_slot == slot)
+                );
+            }
+        }
+        assert_eq!(MTNS01_WAVES[0].source_wave, 0x43D199);
+        assert_eq!(FS02_WAVES[0].source_wave, 0x4F60F1);
+
+        let rows = MTNL01_WAVES
+            .iter()
+            .map(|wave| {
+                (
+                    wave.source_wave,
+                    wave.candidates[0].source_actor,
+                    wave.collection_alias,
+                    wave.spawn_marker_alias,
+                    wave.start_stage,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                (0x43C0C8, 0x48F2AC, 25, 40, 211),
+                (0x43C0CC, 0x48F2AD, 26, 41, 511),
+                (0x43C0CD, 0x4EA3FB, 35, 42, 611),
+            ]
+        );
+        for wave in MTNL01_WAVES {
+            assert_eq!(wave.actor_count, 1);
+            assert_eq!(wave.spawn_slot_count, 1);
+            assert_eq!(wave.source_wave_contracts[0].candidates, wave.candidates);
+            assert_eq!(wave.end_stage, -1);
+            assert!(!wave.replace_collection);
+        }
+        assert!(
+            QUEST_SPECS
+                .iter()
+                .any(|q| q.source_quest == 0x045A40 && q.waves == MTNL01_WAVES)
+        );
+    }
+}
 
 impl Fixup for MaterializeFo76LocalEncounterWavesFixup {
     fn name(&self) -> &'static str {
@@ -1041,92 +1645,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn contracts_preserve_authoritative_aliases_counts_and_endpoints() {
-        assert_eq!(
-            MQ003_WAVES
-                .iter()
-                .map(|wave| (
-                    wave.collection_alias,
-                    wave.spawn_marker_alias,
-                    wave.actor_count,
-                    wave.start_stage,
-                    wave.end_stage,
-                ))
-                .collect::<Vec<_>>(),
-            vec![(17, 43, 4, 710, 715), (17, 69, 3, 725, 800)]
-        );
-        assert_eq!(
-            MQR203_WAVES
-                .iter()
-                .map(|wave| (
-                    wave.collection_alias,
-                    wave.spawn_marker_alias,
-                    wave.actor_count,
-                    wave.start_stage,
-                    wave.end_stage,
-                ))
-                .collect::<Vec<_>>(),
-            vec![(15, 24, 1, 800, 810), (16, 24, 5, 1200, 1210)]
-        );
-        assert_eq!(
-            MQS203_WAVES
-                .iter()
-                .map(|wave| (
-                    wave.collection_alias,
-                    wave.spawn_marker_alias,
-                    wave.actor_count,
-                    wave.start_stage,
-                    wave.end_stage,
-                ))
-                .collect::<Vec<_>>(),
-            vec![
-                (120, 108, 5, 1001, -1),
-                (121, 109, 3, 2000, 2050),
-                (121, 109, 3, 2100, 2150),
-            ]
-        );
-        assert_eq!(
-            ASTRONAUT_WAVES
-                .iter()
-                .map(|wave| (
-                    wave.collection_alias,
-                    wave.spawn_marker_alias,
-                    wave.actor_count,
-                    wave.start_stage,
-                    wave.end_stage,
-                ))
-                .collect::<Vec<_>>(),
-            vec![(2, 0, 3, 10, 9000)]
-        );
-        assert_eq!(
-            BECKETT_NARROW_ESCAPE_WAVES
-                .iter()
-                .map(|wave| (
-                    wave.collection_alias,
-                    wave.spawn_marker_alias,
-                    wave.actor_count,
-                    wave.start_stage,
-                    wave.end_stage,
-                ))
-                .collect::<Vec<_>>(),
-            vec![(24, 27, 8, 595, -1)]
-        );
-        assert_eq!(
-            BURN_GRUNT_WAVES
-                .iter()
-                .map(|wave| (
-                    wave.collection_alias,
-                    wave.spawn_marker_alias,
-                    wave.actor_count,
-                    wave.start_stage,
-                    wave.end_stage,
-                ))
-                .collect::<Vec<_>>(),
-            vec![(17, 3, 1, 200, 300)]
-        );
-    }
-
-    #[test]
     fn shared_collections_are_replaced_only_at_prior_wave_endpoints() {
         assert_eq!(MQ003_WAVES[1].preparation_stage, MQ003_WAVES[0].end_stage);
         assert!(MQ003_WAVES[1].replace_collection);
@@ -1147,155 +1665,6 @@ mod tests {
                 .filter(|wave| wave.stage_after_preparation >= 0)
                 .all(|wave| wave.source_wave == 0x59BBDD)
         );
-    }
-
-    #[test]
-    fn candidate_pools_preserve_source_wave_spawn_slots() {
-        assert_eq!(
-            MQ003_WAVE0_CANDIDATES,
-            &[
-                CandidateSpec {
-                    source_actor: 0x08E624,
-                    spawn_slot: 0,
-                },
-                CandidateSpec {
-                    source_actor: 0x31B1FF,
-                    spawn_slot: 1,
-                },
-                CandidateSpec {
-                    source_actor: 0x08E624,
-                    spawn_slot: 2,
-                },
-                CandidateSpec {
-                    source_actor: 0x31B1FF,
-                    spawn_slot: 2,
-                },
-                CandidateSpec {
-                    source_actor: 0x31B1FF,
-                    spawn_slot: 3,
-                },
-            ]
-        );
-        assert_eq!(
-            MQR203_WAVE1_CANDIDATES
-                .iter()
-                .map(|candidate| candidate.source_actor)
-                .collect::<Vec<_>>(),
-            vec![0x572552, 0x572359, 0x572353]
-        );
-        assert_eq!(
-            MQS203_TOOL_WAVE_CANDIDATES
-                .iter()
-                .map(|candidate| (candidate.source_actor, candidate.spawn_slot))
-                .collect::<Vec<_>>(),
-            vec![(0x186E01, 0), (0x186E01, 1), (0x43E946, 1), (0x10EAE6, 2),]
-        );
-        assert_eq!(BURN_GRUNT_SOURCE_WAVES.len(), 7);
-        assert!(
-            BURN_GRUNT_SOURCE_WAVES
-                .iter()
-                .all(|wave| wave.candidates.len() == 2)
-        );
-        assert_eq!(
-            BURN_GRUNT_TARGET_CANDIDATES
-                .iter()
-                .map(|candidate| (candidate.source_actor, candidate.spawn_slot))
-                .collect::<Vec<_>>(),
-            vec![
-                (0x7D1086, 0),
-                (0x7D107F, 0),
-                (0x7D1085, 0),
-                (0x7D107E, 0),
-                (0x7D1084, 0),
-                (0x7D107C, 0),
-                (0x7D1083, 0),
-                (0x7D107D, 0),
-                (0x7D1082, 0),
-                (0x7D107B, 0),
-                (0x7D1081, 0),
-                (0x7D107A, 0),
-                (0x7D1080, 0),
-                (0x7D1079, 0),
-            ]
-        );
-        assert!(
-            BURN_GRUNT_TARGET_CANDIDATES
-                .iter()
-                .all(|candidate| ![0x7F0A6A, 0x80282B].contains(&candidate.source_actor))
-        );
-        assert_eq!(
-            ASTRONAUT_WAVE_CANDIDATES,
-            &[
-                CandidateSpec {
-                    source_actor: 0x075335,
-                    spawn_slot: 0,
-                },
-                CandidateSpec {
-                    source_actor: 0x075335,
-                    spawn_slot: 0,
-                },
-                CandidateSpec {
-                    source_actor: 0x14AE58,
-                    spawn_slot: 0,
-                },
-            ]
-        );
-        assert_eq!(ASTRONAUT_SOURCE_WAVES[0].candidates.len(), 3);
-        assert_eq!(
-            ASTRONAUT_WAVES[0].source_wave_contracts,
-            ASTRONAUT_SOURCE_WAVES
-        );
-        assert_eq!(ASTRONAUT_WAVES[0].preparation_stage, -1);
-        assert_eq!(ASTRONAUT_WAVES[0].stage_after_preparation, -1);
-        assert!(!ASTRONAUT_WAVES[0].replace_collection);
-        assert_eq!(ASTRONAUT_WAVES[0].spawn_slot_count, 1);
-        assert!(QUEST_SPECS.iter().any(|quest| {
-            quest.source_quest == 0x5A0675
-                && quest.source_quest_eid == "COMP_Quest_Intro_Astronaut_CrashSpawnQuest"
-                && quest.waves == ASTRONAUT_WAVES
-        }));
-        assert_eq!(
-            BECKETT_NARROW_ESCAPE_WAVE_CANDIDATES,
-            &[
-                CandidateSpec {
-                    source_actor: 0x53C52F,
-                    spawn_slot: 0,
-                },
-                CandidateSpec {
-                    source_actor: 0x53C531,
-                    spawn_slot: 1,
-                },
-                CandidateSpec {
-                    source_actor: 0x588087,
-                    spawn_slot: 1,
-                },
-                CandidateSpec {
-                    source_actor: 0x53C52F,
-                    spawn_slot: 2,
-                },
-                CandidateSpec {
-                    source_actor: 0x53C531,
-                    spawn_slot: 2,
-                },
-                CandidateSpec {
-                    source_actor: 0x53C531,
-                    spawn_slot: 3,
-                },
-            ]
-        );
-        assert_eq!(
-            BECKETT_NARROW_ESCAPE_WAVES[0].source_wave_contracts,
-            BECKETT_NARROW_ESCAPE_SOURCE_WAVES
-        );
-        assert_eq!(BECKETT_NARROW_ESCAPE_WAVES[0].preparation_stage, 595);
-        assert_eq!(BECKETT_NARROW_ESCAPE_WAVES[0].stage_after_preparation, -1);
-        assert!(!BECKETT_NARROW_ESCAPE_WAVES[0].replace_collection);
-        assert_eq!(BECKETT_NARROW_ESCAPE_WAVES[0].spawn_slot_count, 4);
-        assert!(QUEST_SPECS.iter().any(|quest| {
-            quest.source_quest == 0x574625
-                && quest.source_quest_eid == "COMP_Quest_Intro_Full_Beckett"
-                && quest.waves == BECKETT_NARROW_ESCAPE_WAVES
-        }));
     }
 
     #[test]

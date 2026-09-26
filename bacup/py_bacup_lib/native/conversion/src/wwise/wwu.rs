@@ -192,55 +192,53 @@ mod tests {
     }
 
     #[test]
-    fn actor_mixer_wwu_carries_pinned_media_id() {
-        let xml = actor_mixer_wwu(
-            "aaaaaaaa-0000-0000-0000-000000000000",
-            "bbbbbbbb-0000-0000-0000-000000000000",
-            &[draft()],
-        );
-        assert!(xml.contains(r#"MediaID ID="12345""#));
-        assert!(xml.contains("FO4SF_MUS_TRACK"));
-        assert!(xml.contains(CONVERSION_MUS_SCORE_GUID));
-        assert!(xml.contains(BUS_MUS_GUID));
+    fn wwu_documents_carry_media_id_play_action_and_filter() {
+        {
+            let xml = actor_mixer_wwu(
+                "aaaaaaaa-0000-0000-0000-000000000000",
+                "bbbbbbbb-0000-0000-0000-000000000000",
+                &[draft()],
+            );
+            assert!(xml.contains(r#"MediaID ID="12345""#));
+            assert!(xml.contains("FO4SF_MUS_TRACK"));
+            assert!(xml.contains(CONVERSION_MUS_SCORE_GUID));
+            assert!(xml.contains(BUS_MUS_GUID));
+        }
+        {
+            let xml = events_wwu(
+                "cccccccc-0000-0000-0000-000000000000",
+                "aaaaaaaa-0000-0000-0000-000000000000",
+                &[draft()],
+            );
+            assert!(xml.contains(r#"Property Name="ActionType" Type="int16" Value="1""#));
+            assert!(xml.contains("33333333-3333-3333-3333-333333333333"));
+        }
+        {
+            let xml = soundbank_entry_xml(
+                "Fallout4_SF",
+                "dddddddd-0000-0000-0000-000000000000",
+                "aaaaaaaa-0000-0000-0000-000000000000",
+                "cccccccc-0000-0000-0000-000000000000",
+            );
+            assert!(xml.contains(r#"Filter="3""#));
+            assert!(xml.contains("Fallout4_SF"));
+        }
     }
 
     #[test]
-    fn events_wwu_action_type_is_play() {
-        let xml = events_wwu(
-            "cccccccc-0000-0000-0000-000000000000",
-            "aaaaaaaa-0000-0000-0000-000000000000",
-            &[draft()],
-        );
-        assert!(xml.contains(r#"Property Name="ActionType" Type="int16" Value="1""#));
-        assert!(xml.contains("33333333-3333-3333-3333-333333333333"));
-    }
-
-    #[test]
-    fn soundbank_entry_uses_filter_three() {
-        let xml = soundbank_entry_xml(
-            "Fallout4_SF",
-            "dddddddd-0000-0000-0000-000000000000",
-            "aaaaaaaa-0000-0000-0000-000000000000",
-            "cccccccc-0000-0000-0000-000000000000",
-        );
-        assert!(xml.contains(r#"Filter="3""#));
-        assert!(xml.contains("Fallout4_SF"));
-    }
-
-    #[test]
-    fn append_soundbank_entry_inserts_before_last_children_close() {
-        let existing =
-            "<WorkUnit><ChildrenList><SoundBank Name=\"Init\"/></ChildrenList></WorkUnit>";
-        let out = append_soundbank_entry(Some(existing), "<SoundBank Name=\"New\"/>");
-        assert!(out.contains("Init"));
-        assert!(out.contains("New"));
-        assert!(out.find("Init").unwrap() < out.find("New").unwrap());
-    }
-
-    #[test]
-    fn append_soundbank_entry_synthesizes_wrapper_when_missing() {
-        let out = append_soundbank_entry(None, "<SoundBank Name=\"New\"/>");
-        assert!(out.contains("<WwiseDocument"));
-        assert!(out.contains("New"));
+    fn append_soundbank_entry_inserts_or_synthesizes_wrapper() {
+        {
+            let existing =
+                "<WorkUnit><ChildrenList><SoundBank Name=\"Init\"/></ChildrenList></WorkUnit>";
+            let out = append_soundbank_entry(Some(existing), "<SoundBank Name=\"New\"/>");
+            assert!(out.contains("Init"));
+            assert!(out.contains("New"));
+            assert!(out.find("Init").unwrap() < out.find("New").unwrap());
+        }
+        {
+            let out = append_soundbank_entry(None, "<SoundBank Name=\"New\"/>");
+            assert!(out.contains("<WwiseDocument"));
+            assert!(out.contains("New"));
+        }
     }
 }

@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn splices_donor_block_immediately_before_cnam() {
+    fn splices_donor_block_immediately_before_cnam_only() {
         let interner = StringInterner::new();
         let mut record = npc(&interner);
         for sig in ["EDID", "ACBS", "KSIZ", "KWDA", "CNAM", "FULL", "DNAM"] {
@@ -381,16 +381,11 @@ mod tests {
                 "EDID", "ACBS", "KSIZ", "KWDA", "OBTE", "OBTS", "STOP", "CNAM", "FULL", "DNAM"
             ]
         );
-    }
 
-    #[test]
-    fn declines_to_guess_a_position_without_cnam() {
-        let interner = StringInterner::new();
         let mut record = npc(&interner);
         for sig in ["EDID", "ACBS", "DNAM"] {
             push(&mut record, sig);
         }
-
         assert!(!splice_object_template_block(&mut record, &donor_block()));
         assert_eq!(sigs(&record), vec!["EDID", "ACBS", "DNAM"]);
     }
@@ -420,6 +415,10 @@ mod tests {
         let mut seen = rustc_hash::FxHashSet::default();
         let found = resolve_donor_block(0x00_2ECE, 0, &npcs, &leveled, 0, &mut seen);
         assert_eq!(found, Some(&donor_block()));
+
+        let mut seen = rustc_hash::FxHashSet::default();
+        // own_master_index 1: a 0x00-prefixed id belongs to a master, not us.
+        assert!(resolve_donor_block(0x0000_75FE, 1, &npcs, &leveled, 0, &mut seen).is_none());
     }
 
     #[test]
@@ -431,16 +430,5 @@ mod tests {
 
         let mut seen = rustc_hash::FxHashSet::default();
         assert!(resolve_donor_block(0x00_0001, 0, &npcs, &leveled, 0, &mut seen).is_none());
-    }
-
-    #[test]
-    fn ignores_form_ids_owned_by_a_master() {
-        let mut npcs = FxHashMap::default();
-        npcs.insert(0x00_0002, source_npc(0, 0, 0, true));
-        let leveled = FxHashMap::default();
-
-        let mut seen = rustc_hash::FxHashSet::default();
-        // own_master_index 1: a 0x00-prefixed id belongs to a master, not us.
-        assert!(resolve_donor_block(0x0000_0002, 1, &npcs, &leveled, 0, &mut seen).is_none());
     }
 }

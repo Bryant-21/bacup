@@ -23,10 +23,9 @@
 //! pass and still drops other unresolved NULL quest parameters. Records with nothing
 //! to repair or drop stay byte-identical.
 //!
-//! CTDAs whose function needs a non-null FLST/KYWD/LCTN Parameter #2 (e.g.
-//! `GetInCurrentLocFormList`, 576, the `GQ_MiscRegionPointer*` family) but ship it
-//! NULL are dropped too: FO4 rejects it ("Found a NULL reference, expected:
-//! FLST,KYWD,LCTN"), and the owning quest can't supply Parameter #2.
+//! GetEventData predicates that compare a form need Parameter #2. Numeric
+//! GetValue/GetItemValue predicates use no form argument and keep their NULL
+//! Parameter #2; dropping them erases Story Manager payload routing gates.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
@@ -69,12 +68,7 @@ const CTDA_RUN_ON_QUEST_ALIAS: u32 = 5;
 const VMAD_NO_ALIAS: u16 = u16::MAX;
 const QUST_ALIAS_ANCHOR_SIGS: &[[u8; 4]] = &[*b"ALST", *b"ALLS", *b"ALCS"];
 
-/// FO4 condition functions whose Parameter #2 is a required FLST/KYWD/LCTN
-/// formlink, notably `GetInCurrentLocFormList` (576). FO76 quests (e.g. the
-/// `GQ_MiscRegionPointer*` family) ship it NULL, which xEdit reports as "Found a NULL
-/// reference, expected: FLST,KYWD,LCTN". Unrepairable, so the CTDA and its trailing
-/// CIS1/CIS2 are dropped on every record sig, quest-context types included.
-const QUEST_PARAMETER_2_REQUIRED_FORMLINK_FUNCTION_IDS: &[u16] = &[576];
+const GET_EVENT_DATA_FUNCTION_ID: u16 = 576;
 
 /// `GetInWorldspace`: Parameter #1 is a required WRLD FormID. FO76 conditions
 /// can retain the source plugin's load byte (`00`) after the WRLD itself has
@@ -511,7 +505,6 @@ fn collect_info_owner_quests(items: &[ParsedItem]) -> FxHashMap<u32, u32> {
                     }
                     walk(&group.children, topic_quests, info_topics);
                 }
-                _ => {}
             }
         }
     }
@@ -1402,13 +1395,15 @@ fn restore_missing_source_pack_stage_conditions(
     changed
 }
 
-/// True when a CTDA's function requires a non-null FLST/KYWD/LCTN in Parameter #2
-/// (e.g. `GetInCurrentLocFormList`, 576) but Parameter #2 is NULL — an FO4-invalid
-/// condition that cannot be repaired.
 fn is_null_required_formlink_param(bytes: &[u8]) -> bool {
-    let function_id = raw_condition_function_id(bytes).unwrap_or(0);
-    let parameter_2 = raw_condition_parameter_2(bytes).unwrap_or(0);
-    QUEST_PARAMETER_2_REQUIRED_FORMLINK_FUNCTION_IDS.contains(&function_id) && parameter_2 == 0
+    if raw_condition_function_id(bytes) != Some(GET_EVENT_DATA_FUNCTION_ID)
+        || raw_condition_parameter_2(bytes) != Some(0)
+    {
+        return false;
+    }
+    // xEdit wbEventFunctionEnum: GetIsID=0, IsInList=1, GetValue=2,
+    // HasKeyword=3, GetItemValue=4. The selector occupies the low 16 bits.
+    raw_condition_parameter_1(bytes).is_some_and(|selector| matches!(selector & 0xFFFF, 0 | 1 | 3))
 }
 
 /// True when the "Use Aliases" flag makes Parameter #1 a quest alias index
@@ -1626,6 +1621,7 @@ fn drop_conditions_matching(
     dropped
 }
 
+#[cfg(test)]
 /// Drop every CTDA/CTDT whose function requires a non-null Parameter #2 formlink
 /// that is NULL, along with its trailing CIS1/CIS2. Returns `true` when at least
 /// one was removed. Idempotent on records without such a condition.
@@ -1633,6 +1629,7 @@ pub(crate) fn drop_null_required_formlink_conditions(record: &mut Record) -> boo
     drop_conditions_matching(record, |bytes| is_null_required_formlink_param(bytes))
 }
 
+#[cfg(test)]
 /// Legacy focused helper for condition cases that cannot be repaired by an
 /// owning quest context: procedural alias ids and NULL required Parameter #2
 /// formlinks.
@@ -1780,6 +1777,7 @@ fn neutralize_dangling_pack_alias_data_targets(
     changed
 }
 
+#[cfg(test)]
 /// Drop every CTDA/CTDT that is either (a) a function taking a QUST in
 /// Parameter #1 whose Parameter #1 is non-zero but not a known QUST, or (b) a
 /// quest-alias function (GetIsAliasRef) whose Parameter #1 is a FO76 procedural
@@ -2543,148 +2541,215 @@ mod tests {
     }
 
     #[test]
-    fn drops_quest_param_ctda_pointing_at_non_quest_and_its_cis() {
-        let mut valid = FxHashSet::default();
-        valid.insert(0x0700_1234); // a real converted QUST
-        // GetStageDone(59) with Param1=500 (a FO76 stage number) → not a QUST → drop.
-        let mut rec = record(
-            "ACTI",
-            vec![
-                field("EDID", b"X\0"),
-                ctda(59, 500),
-                field("CIS2", b"alias\0"),
-            ],
-        );
-        assert!(drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["EDID"], "CTDA and its CIS2 both dropped");
+    fn drop_invalid_quest_conditions_drops_only_non_quest_params_with_their_cis() {
+        let real_quest: FxHashSet<u32> = [0x0700_1234].into_iter().collect();
+        let none = FxHashSet::default();
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &str,
+            &str,
+            Vec<FieldEntry>,
+            &FxHashSet<u32>,
+            bool,
+            Vec<&str>,
+            Option<u32>,
+        )> = vec![
+            (
+                "GetStageDone Param1=500 is a FO76 stage number, not a QUST",
+                "ACTI",
+                vec![
+                    field("EDID", b"X\0"),
+                    ctda(59, 500),
+                    field("CIS2", b"alias\0"),
+                ],
+                &real_quest,
+                true,
+                vec!["EDID"],
+                None,
+            ),
+            (
+                "CITC follows the drop, else FO4 evaluates a phantom condition and crashes",
+                "MUST",
+                vec![
+                    field("CITC", &2u32.to_le_bytes()),
+                    ctda(58, 0x0700_1234),
+                    ctda(58, 0x0040_0500),
+                ],
+                &real_quest,
+                true,
+                vec!["CITC", "CTDA"],
+                Some(1),
+            ),
+            (
+                "real quest kept",
+                "ACTI",
+                vec![ctda(58, 0x0700_1234), field("CIS1", b"a\0")],
+                &real_quest,
+                false,
+                vec!["CTDA", "CIS1"],
+                None,
+            ),
+            (
+                "Param1 0 is the pair hook's job, even with an empty valid set",
+                "ACTI",
+                vec![ctda(58, 0)],
+                &none,
+                false,
+                vec!["CTDA"],
+                None,
+            ),
+            (
+                "function 560 does not take a QUST",
+                "TERM",
+                vec![ctda(560, 500)],
+                &none,
+                false,
+                vec!["CTDA"],
+                None,
+            ),
+            (
+                "only the offending CTDA in a run",
+                "TERM",
+                vec![
+                    ctda(58, 0x0700_1234),
+                    field("CIS1", b"keep\0"),
+                    ctda(59, 9000),
+                    field("CIS2", b"drop\0"),
+                    field("FULL", b"name\0"),
+                ],
+                &real_quest,
+                true,
+                vec!["CTDA", "CIS1", "FULL"],
+                None,
+            ),
+            (
+                "INFO Param1=0x32 resolves to a vanilla STAT (COCMarkerHeading)",
+                "INFO",
+                vec![ctda(59, 0x0000_0032), field("CIS2", b"alias\0")],
+                &real_quest,
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "GetIsAliasRef 0x07A00016 procedural sentinel can never be an alias",
+                "INFO",
+                vec![ctda(566, 0x07A0_0016), field("CIS1", b"alias\0")],
+                &none,
+                true,
+                vec![],
+                None,
+            ),
+            (
+                "small in-range alias index kept",
+                "INFO",
+                vec![ctda(566, 0x0000_000A)],
+                &none,
+                false,
+                vec!["CTDA"],
+                None,
+            ),
+            (
+                "procedural param on a non-alias function left to other owners",
+                "INFO",
+                vec![ctda(560, 0x07A0_0016)],
+                &none,
+                false,
+                vec!["CTDA"],
+                None,
+            ),
+            (
+                "fn576 null Param2 caught on non-context records",
+                "TERM",
+                vec![
+                    ctda_p2(576, 0, 0),
+                    field("CIS1", b"a\0"),
+                    field("FULL", b"n\0"),
+                ],
+                &none,
+                true,
+                vec!["FULL"],
+                None,
+            ),
+        ];
+        for (name, record_sig, fields, valid, changed, expected, citc) in cases {
+            let mut rec = record(record_sig, fields);
+            assert_eq!(
+                drop_invalid_quest_conditions(&mut rec, valid),
+                changed,
+                "{name}"
+            );
+            assert_eq!(sigs(&rec), expected, "{name}");
+            if let Some(citc) = citc {
+                let actual = rec
+                    .fields
+                    .iter()
+                    .find(|f| f.sig.as_str() == "CITC")
+                    .unwrap();
+                assert_eq!(
+                    actual.value,
+                    FieldValue::Bytes(SmallVec::from_slice(&citc.to_le_bytes())),
+                    "{name}: CITC reconciled to surviving CTDA count"
+                );
+            }
+        }
     }
 
     #[test]
-    fn dropping_ctda_reconciles_citc_count() {
-        let mut valid = FxHashSet::default();
-        valid.insert(0x0700_1234);
-        // A CITC-bearing record (e.g. MUST) with two conditions, one of which
-        // points at a non-quest and is dropped. CITC must follow 2 -> 1, else
-        // FO4 evaluates a phantom condition and crashes.
-        let mut rec = record(
-            "MUST",
-            vec![
-                field("CITC", &2u32.to_le_bytes()),
-                ctda(58, 0x0700_1234), // valid quest → kept
-                ctda(58, 0x0040_0500), // non-quest → dropped
-            ],
-        );
-        assert!(drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["CITC", "CTDA"], "one CTDA survives");
-        let citc = rec
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "CITC")
-            .unwrap();
-        assert_eq!(
-            citc.value,
-            FieldValue::Bytes(SmallVec::from_slice(&1u32.to_le_bytes())),
-            "CITC reconciled to surviving CTDA count"
-        );
-    }
-
-    #[test]
-    fn keeps_quest_param_ctda_pointing_at_real_quest() {
-        let mut valid = FxHashSet::default();
-        valid.insert(0x0700_1234);
-        let mut rec = record("ACTI", vec![ctda(58, 0x0700_1234), field("CIS1", b"a\0")]);
-        assert!(!drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(
-            sigs(&rec),
-            vec!["CTDA", "CIS1"],
-            "valid quest ref preserved"
-        );
-    }
-
-    #[test]
-    fn keeps_zero_param_ctda_handled_by_pair_hook() {
-        let valid = FxHashSet::default();
-        // Param1==0 is the pair-hook's job; this fixup must not touch it (and an
-        // empty valid set must not cause a null param to be dropped here).
-        let mut rec = record("ACTI", vec![ctda(58, 0)]);
-        assert!(!drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["CTDA"]);
-    }
-
-    #[test]
-    fn keeps_non_quest_function_with_bogus_param() {
-        let valid = FxHashSet::default();
-        // Function 560 does not take a QUST in Param1 → leave its param alone.
-        let mut rec = record("TERM", vec![ctda(560, 500)]);
-        assert!(!drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["CTDA"]);
-    }
-
-    #[test]
-    fn drops_only_the_offending_ctda_in_a_run() {
-        let mut valid = FxHashSet::default();
-        valid.insert(0x0700_1234);
-        let mut rec = record(
-            "TERM",
-            vec![
-                ctda(58, 0x0700_1234), // valid → keep
-                field("CIS1", b"keep\0"),
-                ctda(59, 9000), // bogus → drop with its CIS2
-                field("CIS2", b"drop\0"),
-                field("FULL", b"name\0"), // unrelated, keep
-            ],
-        );
-        assert!(drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["CTDA", "CIS1", "FULL"]);
-    }
-
-    #[test]
-    fn drops_quest_param_ctda_with_non_quest_param_on_info() {
-        let mut valid = FxHashSet::default();
-        valid.insert(0x0700_1234);
-        // GetStageDone(59) with Param1=0x32 — the FO76 INFO case that resolves to
-        // a vanilla STAT (COCMarkerHeading).
-        let mut rec = record(
-            "INFO",
-            vec![ctda(59, 0x0000_0032), field("CIS2", b"alias\0")],
-        );
-        assert!(drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(
-            sigs(&rec),
-            Vec::<&str>::new(),
-            "CTDA and CIS2 dropped on INFO"
-        );
-    }
-
-    #[test]
-    fn scrub_drops_wrong_type_quest_param_on_info_without_alias_context() {
-        let interner = StringInterner::new();
-        let index = quest_index(&[0x0700_1234], &[(0x0700_1234, &[2])]);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x900,
-            vec![ctda(59, 0x0000_0032), field("CIS2", b"alias\0")],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), Vec::<&str>::new());
-    }
-
-    #[test]
-    fn scrub_drops_wrong_type_quest_param_on_scen_context() {
-        let interner = StringInterner::new();
-        let index = quest_index(&[0x0000_1234], &[]);
-        // SCEN phase/start conditions from xEdit: Function GetStage(58) with
-        // Parameter #1 resolving to a STAT/WEAP/etc. is still invalid even
-        // though SCEN has an owning quest context.
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x900,
-            vec![ctda(58, 0x0000_0064), field("CIS2", b"stage\0")],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), Vec::<&str>::new());
+    fn context_and_formlink_droppers_drop_only_invalid_conditions() {
+        let context = drop_invalid_context_quest_conditions as fn(&mut Record) -> bool;
+        let formlink = drop_null_required_formlink_conditions as fn(&mut Record) -> bool;
+        for (name, dropper, fields, changed, expected) in [
+            (
+                "procedural alias CTDA + CIS dropped on QUST",
+                context,
+                vec![
+                    field("FULL", b"q\0"),
+                    ctda(566, 0x07A0_002E),
+                    field("CIS1", b"alias\0"),
+                    field("NEXT", b"x\0"),
+                ],
+                true,
+                vec!["FULL", "NEXT"],
+            ),
+            (
+                "small alias index kept on QUST",
+                context,
+                vec![ctda(566, 10), field("CIS1", b"alias\0")],
+                false,
+                vec!["CTDA", "CIS1"],
+            ),
+            (
+                "GetEventData.GetIsID (fn576) needs a form in Param2",
+                formlink,
+                vec![
+                    field("FULL", b"q\0"),
+                    ctda_p2(576, 0, 0),
+                    field("CIS2", b"loc\0"),
+                    field("NEXT", b"x\0"),
+                ],
+                true,
+                vec!["FULL", "NEXT"],
+            ),
+            (
+                "fn576 with a real Param2 kept",
+                formlink,
+                vec![ctda_p2(576, 0, 0x0001_2345)],
+                false,
+                vec!["CTDA"],
+            ),
+            (
+                "other function with a legal null Param2 kept",
+                formlink,
+                vec![ctda_p2(561, 0, 0)],
+                false,
+                vec!["CTDA"],
+            ),
+        ] {
+            let mut rec = record("QUST", fields);
+            assert_eq!(dropper(&mut rec), changed, "{name}");
+            assert_eq!(sigs(&rec), expected, "{name}");
+        }
     }
 
     #[test]
@@ -2715,92 +2780,121 @@ mod tests {
     }
 
     #[test]
-    fn scrub_lowers_source_shaped_get_stage_done_on_scene() {
+    fn scrub_lowers_source_shaped_get_stage_done_in_scene_and_info_context() {
         let interner = StringInterner::new();
-        let owner = 0x0700_1234;
-        let stage = 20;
-        let index = quest_index_with_stages(owner, &[stage]);
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x900,
-            vec![
-                field("PNAM", &owner.to_le_bytes()),
-                pack_stage_ctda(GET_STAGE_DONE_FUNCTION_ID, stage, 0, 1.0, 0),
-            ],
-            &interner,
-        );
+        const OWNER: u32 = 0x0700_1234;
+        let stage_ctda = |stage| pack_stage_ctda(GET_STAGE_DONE_FUNCTION_ID, stage, 0, 1.0, 0);
+        for (name, record_sig, local, fields, condition_index, stage, info_owner) in [
+            (
+                "SCEN owner from PNAM",
+                "SCEN",
+                0x900,
+                vec![field("PNAM", &OWNER.to_le_bytes()), stage_ctda(20)],
+                1,
+                20,
+                false,
+            ),
+            (
+                "SCEN uses the terminal PNAM after a package action PNAM",
+                "SCEN",
+                0x40BD15,
+                vec![
+                    stage_ctda(410),
+                    field("ANAM", &1_u16.to_le_bytes()),
+                    field("PNAM", &0x0700_4321_u32.to_le_bytes()),
+                    field("ANAM", &[]),
+                    field("PNAM", &OWNER.to_le_bytes()),
+                ],
+                0,
+                410,
+                false,
+            ),
+            (
+                "INFO owner from dialogue topology",
+                "INFO",
+                0x900,
+                vec![stage_ctda(50)],
+                0,
+                50,
+                true,
+            ),
+        ] {
+            let mut index = quest_index_with_stages(OWNER, &[stage]);
+            if info_owner {
+                index.info_owner_quest_by_local.insert(local, OWNER);
+            }
+            let mut rec = record_with_interner(record_sig, local, fields, &interner);
 
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[1].value else {
-            panic!("raw CTDA expected");
-        };
-        assert_eq!(raw_condition_parameter_1(bytes), Some(owner));
-        assert_eq!(raw_condition_parameter_2(bytes), Some(stage));
+            assert!(
+                scrub_invalid_quest_references(&mut rec, &index, &interner),
+                "{name}"
+            );
+            let FieldValue::Bytes(bytes) = &rec.fields[condition_index].value else {
+                panic!("{name}: raw CTDA expected");
+            };
+            assert_eq!(raw_condition_parameter_1(bytes), Some(OWNER), "{name}");
+            assert_eq!(raw_condition_parameter_2(bytes), Some(stage), "{name}");
+        }
     }
 
     #[test]
-    fn scrub_uses_terminal_scene_owner_after_package_action_pnam() {
+    fn scrub_lowers_crash_landing_and_forging_trust_info_stage_gates() {
         let interner = StringInterner::new();
-        let package = 0x0700_4321_u32;
-        let owner = 0x0700_1234_u32;
-        let stage = 410_u32;
-        let index = quest_index_with_stages(owner, &[stage]);
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x40BD15,
-            vec![
-                pack_stage_ctda(GET_STAGE_DONE_FUNCTION_ID, stage, 0, 1.0, 0),
-                field("ANAM", &1_u16.to_le_bytes()),
-                field("PNAM", &package.to_le_bytes()),
-                field("ANAM", &[]),
-                field("PNAM", &owner.to_le_bytes()),
-            ],
-            &interner,
-        );
+        for (name, owner, quest_stages, local, rows, lowered) in [
+            (
+                "Crash Landing quest-alias stage gate; the PANDORA speaker gate survives",
+                0x0754_EB40,
+                &[1300][..],
+                0x55F670,
+                &[
+                    "000000000000803F3602000000000000000000000100000000000000FFFFFFFF",
+                    "00000000000000003B0000001405000000000000050000000000000000000000",
+                ][..],
+                &[(1, 1300)][..],
+            ),
+            (
+                "Forging Trust target stage gates",
+                0x075C_70CC,
+                &[100, 110][..],
+                0x5C715F,
+                &[
+                    "00000000000000003B0000006E000000000000000100000000000000FFFFFFFF",
+                    "000000000000803F3B00000064000000000000000100000000000000FFFFFFFF",
+                ][..],
+                &[(0, 110), (1, 100)][..],
+            ),
+        ] {
+            let mut index = quest_index_with_stages(owner, quest_stages);
+            index.info_owner_quest_by_local.insert(local, owner);
+            let mut rec = record_with_interner(
+                "INFO",
+                local,
+                rows.iter()
+                    .map(|hex| field("CTDA", &hex::decode(hex).unwrap()))
+                    .collect(),
+                &interner,
+            );
 
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
-            panic!("raw CTDA expected");
-        };
-        assert_eq!(raw_condition_parameter_1(bytes), Some(owner));
-        assert_eq!(raw_condition_parameter_2(bytes), Some(stage));
-    }
-
-    /// A QUST's own alias-fill gates carry `GetStageDone` with the stage in
-    /// Parameter #1 and Parameter #2 = 0 — the same source shape as SCEN/INFO.
-    /// `W05_MQ_001P_Wayward` (405E14) ships seven of them (stages 300/400/105/
-    /// 301/302, operator 0x00, comparison 0.0) and every one was being dropped
-    /// instead of lowered, taking the quest's alias gating with it.
-    #[test]
-    fn scrub_lowers_source_shaped_get_stage_done_on_qust() {
-        let interner = StringInterner::new();
-        let stage = 300;
-        let mut rec = record_with_interner(
-            "QUST",
-            0x0040_5E14,
-            vec![pack_stage_ctda(
-                GET_STAGE_DONE_FUNCTION_ID,
-                stage,
-                0,
-                0.0,
-                0,
-            )],
-            &interner,
-        );
-        let owner = encode_form_id(
-            &rec.form_key,
-            &interner,
-            &quest_index(&[], &[]).target_masters,
-        )
-        .expect("QUST form key must encode");
-        let index = quest_index_with_stages(owner, &[stage]);
-
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
-            panic!("raw CTDA expected");
-        };
-        assert_eq!(raw_condition_parameter_1(bytes), Some(owner));
-        assert_eq!(raw_condition_parameter_2(bytes), Some(stage));
+            assert!(
+                scrub_invalid_quest_references(&mut rec, &index, &interner),
+                "{name}"
+            );
+            assert_eq!(rec.fields.len(), rows.len(), "{name}");
+            for &(position, stage) in lowered {
+                let FieldValue::Bytes(bytes) = &rec.fields[position].value else {
+                    panic!("{name}: raw CTDA expected");
+                };
+                assert_eq!(raw_condition_parameter_1(bytes), Some(owner), "{name}");
+                assert_eq!(raw_condition_parameter_2(bytes), Some(stage), "{name}");
+                assert_eq!(
+                    raw_condition_run_on(bytes),
+                    Some(CTDA_RUN_ON_SUBJECT),
+                    "{name}"
+                );
+                assert_eq!(raw_condition_run_on_reference(bytes), Some(0), "{name}");
+                assert_eq!(raw_condition_parameter_3(bytes), Some(u32::MAX), "{name}");
+            }
+        }
     }
 
     /// Every `GetStageDone` row a source QUST carries must lower, not just some.
@@ -2877,119 +2971,6 @@ mod tests {
     }
 
     #[test]
-    fn scrub_lowers_source_shaped_get_stage_done_on_info() {
-        let interner = StringInterner::new();
-        let owner = 0x0700_1234;
-        let stage = 50;
-        let mut index = quest_index_with_stages(owner, &[stage]);
-        index.info_owner_quest_by_local.insert(0x900, owner);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x900,
-            vec![pack_stage_ctda(
-                GET_STAGE_DONE_FUNCTION_ID,
-                stage,
-                0,
-                1.0,
-                0,
-            )],
-            &interner,
-        );
-
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
-            panic!("raw CTDA expected");
-        };
-        assert_eq!(raw_condition_parameter_1(bytes), Some(owner));
-        assert_eq!(raw_condition_parameter_2(bytes), Some(stage));
-    }
-
-    #[test]
-    fn scrub_lowers_crash_landing_quest_alias_stage_gate_on_info() {
-        let interner = StringInterner::new();
-        let owner = 0x0754_EB40;
-        let stage = 1300;
-        let mut index = quest_index_with_stages(owner, &[stage]);
-        index.info_owner_quest_by_local.insert(0x55F670, owner);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x55F670,
-            vec![
-                field(
-                    "CTDA",
-                    &hex::decode(
-                        "000000000000803F3602000000000000000000000100000000000000FFFFFFFF",
-                    )
-                    .unwrap(),
-                ),
-                field(
-                    "CTDA",
-                    &hex::decode(
-                        "00000000000000003B0000001405000000000000050000000000000000000000",
-                    )
-                    .unwrap(),
-                ),
-            ],
-            &interner,
-        );
-
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(rec.fields.len(), 2, "the PANDORA speaker gate must survive");
-        let FieldValue::Bytes(bytes) = &rec.fields[1].value else {
-            panic!("raw CTDA expected");
-        };
-        assert_eq!(raw_condition_parameter_1(bytes), Some(owner));
-        assert_eq!(raw_condition_parameter_2(bytes), Some(stage));
-        assert_eq!(raw_condition_run_on(bytes), Some(CTDA_RUN_ON_SUBJECT));
-        assert_eq!(raw_condition_run_on_reference(bytes), Some(0));
-        assert_eq!(raw_condition_parameter_3(bytes), Some(u32::MAX));
-    }
-
-    #[test]
-    fn scrub_lowers_forging_trust_target_stage_gates_on_info() {
-        let interner = StringInterner::new();
-        let owner = 0x075C_70CC;
-        let quest_stages = [100, 110];
-        let source_condition_stages = [110, 100];
-        let mut index = quest_index_with_stages(owner, &quest_stages);
-        index.info_owner_quest_by_local.insert(0x5C715F, owner);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x5C715F,
-            vec![
-                field(
-                    "CTDA",
-                    &hex::decode(
-                        "00000000000000003B0000006E000000000000000100000000000000FFFFFFFF",
-                    )
-                    .unwrap(),
-                ),
-                field(
-                    "CTDA",
-                    &hex::decode(
-                        "000000000000803F3B00000064000000000000000100000000000000FFFFFFFF",
-                    )
-                    .unwrap(),
-                ),
-            ],
-            &interner,
-        );
-
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(rec.fields.len(), source_condition_stages.len());
-        for (entry, stage) in rec.fields.iter().zip(source_condition_stages) {
-            let FieldValue::Bytes(bytes) = &entry.value else {
-                panic!("raw CTDA expected");
-            };
-            assert_eq!(raw_condition_parameter_1(bytes), Some(owner));
-            assert_eq!(raw_condition_parameter_2(bytes), Some(stage));
-            assert_eq!(raw_condition_run_on(bytes), Some(CTDA_RUN_ON_SUBJECT));
-            assert_eq!(raw_condition_run_on_reference(bytes), Some(0));
-            assert_eq!(raw_condition_parameter_3(bytes), Some(u32::MAX));
-        }
-    }
-
-    #[test]
     fn scrub_does_not_lower_pack_stage_conditions_outside_fo76_to_fo4() {
         let interner = StringInterner::new();
         let owner = 0x0040_5E14;
@@ -3028,125 +3009,58 @@ mod tests {
     }
 
     #[test]
-    fn scrub_lowers_exact_wayward_pack_get_stage_done_conditions() {
-        let interner = StringInterner::new();
-        let owner = 0x0040_5E14;
-        let index = quest_index_with_stages(owner, &[450, 470, 530, 550]);
-        let fixtures = [
+    fn scrub_lowers_every_audited_w05_settler_pack_stage_condition() {
+        const FIXTURES: &[(u32, u32, &[u32], &[&str])] = &[
+            // W05_MQ_001P_Wayward packages.
             (
                 0x0040_BD1E,
-                "000000000000803F3B000000C2010000000000000000000000000000FFFFFFFF",
-                450,
+                0x0040_5E14,
+                &[450, 470, 530, 550],
+                &["000000000000803F3B000000C2010000000000000000000000000000FFFFFFFF"],
             ),
             (
                 0x0040_BD1E,
-                "00000000000000003B000000D6010000000000000000000000000000FFFFFFFF",
-                470,
+                0x0040_5E14,
+                &[450, 470, 530, 550],
+                &["00000000000000003B000000D6010000000000000000000000000000FFFFFFFF"],
             ),
             (
                 0x0040_BD22,
-                "000000000000803F3B00944312020000000000000000000000000000FFFFFFFF",
-                530,
+                0x0040_5E14,
+                &[450, 470, 530, 550],
+                &["000000000000803F3B00944312020000000000000000000000000000FFFFFFFF"],
             ),
             (
                 0x0058_52E4,
-                "000000000000803F3B00944326020000000000000000000000000000FFFFFFFF",
-                550,
+                0x0040_5E14,
+                &[450, 470, 530, 550],
+                &["000000000000803F3B00944326020000000000000000000000000000FFFFFFFF"],
             ),
-        ];
-
-        for (local, raw_hex, stage) in fixtures {
-            let source = hex::decode(raw_hex).unwrap();
-            let mut rec = record_with_interner(
-                "PACK",
-                local,
-                vec![field("QNAM", &owner.to_le_bytes()), field("CTDA", &source)],
-                &interner,
-            );
-
-            assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-            let FieldValue::Bytes(lowered) = &rec.fields[1].value else {
-                panic!("raw CTDA expected");
-            };
-            let mut expected = source;
-            expected[12..16].copy_from_slice(&owner.to_le_bytes());
-            expected[16..20].copy_from_slice(&(stage as u32).to_le_bytes());
-            assert_eq!(lowered.as_slice(), expected);
-        }
-    }
-
-    #[test]
-    fn scrub_lowers_exact_mqa206_pack_get_stage_done_conditions() {
-        let interner = StringInterner::new();
-        let owner = 0x0054_EDB9;
-        let index = quest_index_with_stages(owner, &[200, 600, 9999]);
-        let fixtures = [
+            // MQA206 packages.
             (
                 0x0055_8978,
-                vec![
-                    (
-                        "000000000000803F3B009443C8000000000000000000000000000000FFFFFFFF",
-                        200,
-                    ),
-                    (
-                        "00000000000000003B0094430F270000000000000000000000000000FFFFFFFF",
-                        9999,
-                    ),
+                0x0054_EDB9,
+                &[200, 600, 9999],
+                &[
+                    "000000000000803F3B009443C8000000000000000000000000000000FFFFFFFF",
+                    "00000000000000003B0094430F270000000000000000000000000000FFFFFFFF",
                 ],
             ),
             (
                 0x0055_8977,
-                vec![
-                    (
-                        "000000000000803F3B009443C8000000000000000000000000000000FFFFFFFF",
-                        200,
-                    ),
-                    (
-                        "00000000000000003B0094430F270000000000000000000000000000FFFFFFFF",
-                        9999,
-                    ),
+                0x0054_EDB9,
+                &[200, 600, 9999],
+                &[
+                    "000000000000803F3B009443C8000000000000000000000000000000FFFFFFFF",
+                    "00000000000000003B0094430F270000000000000000000000000000FFFFFFFF",
                 ],
             ),
             (
                 0x0056_74A3,
-                vec![(
-                    "000000000000803F3B00944358020000000000000000000000000000FFFFFFFF",
-                    600,
-                )],
+                0x0054_EDB9,
+                &[200, 600, 9999],
+                &["000000000000803F3B00944358020000000000000000000000000000FFFFFFFF"],
             ),
-        ];
-
-        for (local, conditions) in fixtures {
-            let mut fields = vec![field("QNAM", &owner.to_le_bytes())];
-            for (raw, _) in &conditions {
-                fields.push(field("CTDA", &hex::decode(raw).unwrap()));
-            }
-            let mut record = record_with_interner("PACK", local, fields, &interner);
-
-            assert!(scrub_invalid_quest_references(
-                &mut record,
-                &index,
-                &interner
-            ));
-            assert_eq!(
-                sigs(&record),
-                std::iter::once("QNAM")
-                    .chain(std::iter::repeat_n("CTDA", conditions.len()))
-                    .collect::<Vec<_>>()
-            );
-            for (entry, (_, stage)) in record.fields.iter().skip(1).zip(&conditions) {
-                let FieldValue::Bytes(bytes) = &entry.value else {
-                    panic!("raw CTDA expected");
-                };
-                assert_eq!(raw_condition_parameter_1(bytes), Some(owner));
-                assert_eq!(raw_condition_parameter_2(bytes), Some(*stage));
-            }
-        }
-    }
-
-    #[test]
-    fn scrub_lowers_every_audited_w05_settler_pack_stage_condition() {
-        const FIXTURES: &[(u32, u32, &[u32], &[&str])] = &[
             (
                 0x0059_7801,
                 0x003F_28C3,
@@ -3770,381 +3684,375 @@ mod tests {
         index
     }
 
-    /// Regression: the owning quest's target-side alias table is read from the
-    /// output plugin mid-pipeline. When it is incomplete, a valid speaker gate
-    /// must survive because the source quest still declares the alias.
-    #[test]
-    fn scrub_keeps_info_alias_condition_the_source_quest_declares() {
-        let interner = StringInterner::new();
-        let owner = 0x0800_F66B;
-        // Target table missing 9 and 14 (the mid-pipeline snapshot); source
-        // quest DebugKurtQuest02 declares the full FO76 alias table.
-        let index = quest_index_with_source_aliases(
-            &[owner],
-            &[(owner, &[0, 1, 3, 4, 5, 7, 8, 10, 11, 12, 13, 16])],
-            &[(
-                owner,
-                &[
-                    0, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 20, 21, 22, 23, 24, 25,
-                ],
-            )],
-        );
-        let mut index = index;
-        index.info_owner_quest_by_local.insert(0x00_D6AC, owner);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x00_D6AC,
-            vec![
-                field("ENAM", &[0u8; 4]),
-                info_00d6ac_get_is_alias_ref(),
-                ctda(566, 14),
-                field("NAM0", &[0u8]),
-            ],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ENAM", "CTDA", "CTDA", "NAM0"]);
+    fn with_info_owner(
+        mut index: QuestConditionIndex,
+        local: u32,
+        owner: u32,
+    ) -> QuestConditionIndex {
+        index.info_owner_quest_by_local.insert(local, owner);
+        index
     }
 
-    /// The source alias table came back empty (source handle/schema/decode or
-    /// encoded-id resolution degraded), so there is no corroboration. Consulting it
-    /// opportunistically would fall back to the target-only verdict and drop the
-    /// gate; the guard must have no opinion (the `00D6AC` case).
-    #[test]
-    fn scrub_keeps_info_alias_condition_when_source_alias_table_is_unavailable() {
-        let interner = StringInterner::new();
-        let owner = 0x0800_F66B;
-        let mut index = quest_index_with_source_aliases(
-            &[owner],
-            &[(owner, &[0, 1, 3, 4, 5, 7, 8, 10, 11, 12, 13, 16])],
-            &[],
-        );
-        index.info_owner_quest_by_local.insert(0x00_D6AC, owner);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x00_D6AC,
-            vec![
-                field("ENAM", &[0u8; 4]),
-                info_00d6ac_get_is_alias_ref(),
-                ctda(566, 14),
-                field("NAM0", &[0u8]),
-            ],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ENAM", "CTDA", "CTDA", "NAM0"]);
+    fn with_unknown_aliases(mut index: QuestConditionIndex, quest: u32) -> QuestConditionIndex {
+        index.quest_alias_ids_by_encoded_quest.insert(quest, None);
+        index
     }
 
-    /// Negative: an alias id that neither the target quest nor the source quest
-    /// declares is a genuine dangle and is still dropped, with its CIS1.
+    fn alias_run_on(alias: u32) -> FieldEntry {
+        let mut bytes = vec![0u8; 32];
+        bytes[8..10].copy_from_slice(&72u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&CTDA_RUN_ON_QUEST_ALIAS.to_le_bytes());
+        bytes[28..32].copy_from_slice(&alias.to_le_bytes());
+        FieldEntry {
+            sig: SubrecordSig::from_str("CTDA").unwrap(),
+            value: FieldValue::Bytes(SmallVec::from_vec(bytes)),
+        }
+    }
+
+    /// Every row is also scrubbed a second time to prove the pass is idempotent.
     #[test]
-    fn scrub_drops_info_alias_condition_absent_from_target_and_source() {
+    fn scrub_keeps_or_drops_quest_alias_typed_and_external_alias_references() {
         let interner = StringInterner::new();
-        let owner = 0x0800_F66B;
-        let mut index =
-            quest_index_with_source_aliases(&[owner], &[(owner, &[9, 10])], &[(owner, &[9, 10])]);
-        index.info_owner_quest_by_local.insert(0x00_D6AC, owner);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x00_D6AC,
+        // DebugKurtQuest02: the mid-pipeline target alias table is missing 9 and
+        // 14, while the source quest declares the full FO76 alias table.
+        const KURT: u32 = 0x0800_F66B;
+        const KURT_TARGET: &[u32] = &[0, 1, 3, 4, 5, 7, 8, 10, 11, 12, 13, 16];
+        const KURT_SOURCE: &[u32] = &[
+            0, 1, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 19, 20, 21, 22, 23, 24, 25,
+        ];
+        const SELF: u32 = 0x0000_0800;
+        const EXTERNAL: u32 = 0x0000_1234;
+        let self_aliases = || quest_index(&[SELF], &[(SELF, &[2])]);
+        let kurt_info = |target: &[u32], source: &[(u32, &[u32])]| {
+            with_info_owner(
+                quest_index_with_source_aliases(&[KURT], &[(KURT, target)], source),
+                0x00_D6AC,
+                KURT,
+            )
+        };
+        let kurt_fields = |alias: u32| {
             vec![
                 field("ENAM", &[0u8; 4]),
                 info_00d6ac_get_is_alias_ref(),
-                ctda(566, 77),
+                ctda(566, alias),
                 field("CIS1", b"alias\0"),
                 field("NAM0", &[0u8]),
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ENAM", "CTDA", "NAM0"]);
-    }
-
-    /// The source corroboration applies to every consumer of the shared alias
-    /// guard, not just `GetIsAliasRef`: a RunOn=Quest-Alias condition naming a
-    /// source-declared alias survives, one naming an unknown alias does not.
-    #[test]
-    fn scrub_alias_run_on_follows_source_corroboration() {
-        let interner = StringInterner::new();
-        let owner = 0x0800_F66B;
-        let mut index =
-            quest_index_with_source_aliases(&[owner], &[(owner, &[10])], &[(owner, &[9, 10])]);
-        index.info_owner_quest_by_local.insert(0x00_D6AC, owner);
-
-        let alias_run_on = |alias: u32| {
-            let mut bytes = vec![0u8; 32];
-            bytes[8..10].copy_from_slice(&72u16.to_le_bytes());
-            bytes[20..24].copy_from_slice(&CTDA_RUN_ON_QUEST_ALIAS.to_le_bytes());
-            bytes[28..32].copy_from_slice(&alias.to_le_bytes());
-            FieldEntry {
-                sig: SubrecordSig::from_str("CTDA").unwrap(),
-                value: FieldValue::Bytes(SmallVec::from_vec(bytes)),
-            }
+            ]
         };
-
-        let mut kept = record_with_interner("INFO", 0x00_D6AC, vec![alias_run_on(9)], &interner);
-        assert!(!scrub_invalid_quest_references(
-            &mut kept, &index, &interner
-        ));
-        assert_eq!(sigs(&kept), vec!["CTDA"]);
-
-        let mut dropped =
-            record_with_interner("INFO", 0x00_D6AC, vec![alias_run_on(77)], &interner);
-        assert!(scrub_invalid_quest_references(
-            &mut dropped,
-            &index,
-            &interner
-        ));
-        assert!(sigs(&dropped).is_empty());
-    }
-
-    #[test]
-    fn scrub_keeps_bs01_radio_scene_player_alias_conditions() {
-        let interner = StringInterner::new();
-        let owner = 0x0800_F66B;
-        let index = quest_index_with_source_aliases(&[owner], &[(owner, &[3])], &[(owner, &[3])]);
+        let typed = |typed_rows: &[(u16, &[u32])]| {
+            quest_index_with_typed(&[SELF], &[(SELF, &[2])], typed_rows)
+        };
         let radio_on =
             hex::decode("000000000000803F650200000000000000000000050000000000000003000000")
                 .unwrap();
         let radio_frequency =
             hex::decode("000000009A99A642660200000000000000000000050000000000000003000000")
                 .unwrap();
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x5E9598,
-            vec![
-                field("CTDA", &radio_on),
-                field("CTDA", &radio_frequency),
-                field("PNAM", &owner.to_le_bytes()),
-            ],
-            &interner,
-        );
-
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["CTDA", "CTDA", "PNAM"]);
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &str,
+            QuestConditionIndex,
+            &str,
+            u32,
+            Vec<FieldEntry>,
+            bool,
+            Vec<&str>,
+        )> = vec![
+            (
+                "wrong-type quest param on INFO without alias context",
+                quest_index(&[0x0700_1234], &[(0x0700_1234, &[2])]),
+                "INFO",
+                0x900,
+                vec![ctda(59, 0x0000_0032), field("CIS2", b"alias\0")],
+                true,
+                vec![],
+            ),
+            (
+                "SCEN GetStage Param1 resolving to a STAT despite quest context",
+                quest_index(&[0x0000_1234], &[]),
+                "SCEN",
+                0x900,
+                vec![ctda(58, 0x0000_0064), field("CIS2", b"stage\0")],
+                true,
+                vec![],
+            ),
+            (
+                "INFO 00D6AC alias the source quest declares survives an incomplete target table",
+                kurt_info(KURT_TARGET, &[(KURT, KURT_SOURCE)]),
+                "INFO",
+                0x00_D6AC,
+                kurt_fields(14),
+                false,
+                vec!["ENAM", "CTDA", "CTDA", "CIS1", "NAM0"],
+            ),
+            (
+                "INFO 00D6AC alias survives when the source alias table is unavailable",
+                kurt_info(KURT_TARGET, &[]),
+                "INFO",
+                0x00_D6AC,
+                kurt_fields(14),
+                false,
+                vec!["ENAM", "CTDA", "CTDA", "CIS1", "NAM0"],
+            ),
+            (
+                "alias neither target nor source declares dropped with its CIS1",
+                kurt_info(&[9, 10], &[(KURT, &[9, 10])]),
+                "INFO",
+                0x00_D6AC,
+                kurt_fields(77),
+                true,
+                vec!["ENAM", "CTDA", "NAM0"],
+            ),
+            (
+                "RunOn quest alias the source declares survives",
+                kurt_info(&[10], &[(KURT, &[9, 10])]),
+                "INFO",
+                0x00_D6AC,
+                vec![alias_run_on(9)],
+                false,
+                vec!["CTDA"],
+            ),
+            (
+                "RunOn unknown quest alias dropped",
+                kurt_info(&[10], &[(KURT, &[9, 10])]),
+                "INFO",
+                0x00_D6AC,
+                vec![alias_run_on(77)],
+                true,
+                vec![],
+            ),
+            (
+                "BS01 radio scene player alias conditions kept",
+                quest_index_with_source_aliases(&[KURT], &[(KURT, &[3])], &[(KURT, &[3])]),
+                "SCEN",
+                0x5E9598,
+                vec![
+                    field("CTDA", &radio_on),
+                    field("CTDA", &radio_frequency),
+                    field("PNAM", &KURT.to_le_bytes()),
+                ],
+                false,
+                vec!["CTDA", "CTDA", "PNAM"],
+            ),
+            (
+                "QUST stage alias missing from target and source dropped",
+                quest_index_with_source_aliases(&[SELF], &[(SELF, &[2])], &[(SELF, &[2])]),
+                "QUST",
+                0x800,
+                vec![
+                    field("ALST", &2u32.to_le_bytes()),
+                    ctda(566, 1),
+                    field("CIS1", b"alias\0"),
+                ],
+                true,
+                vec!["ALST"],
+            ),
+            (
+                "QUST alias present in the alias table kept",
+                self_aliases(),
+                "QUST",
+                0x800,
+                vec![
+                    field("ALST", &2u32.to_le_bytes()),
+                    ctda(566, 2),
+                    field("CIS1", b"alias\0"),
+                ],
+                false,
+                vec!["ALST", "CTDA", "CIS1"],
+            ),
+            (
+                "INFO alias without owner context kept",
+                self_aliases(),
+                "INFO",
+                0x900,
+                vec![ctda(566, 11), field("CIS1", b"alias\0")],
+                false,
+                vec!["CTDA", "CIS1"],
+            ),
+            (
+                "INFO procedural alias without owner context dropped",
+                self_aliases(),
+                "INFO",
+                0x900,
+                vec![ctda(566, 0x07A0_000A), field("CIS1", b"alias\0")],
+                true,
+                vec![],
+            ),
+            (
+                "SCEN procedural alias with known owner dropped",
+                self_aliases(),
+                "SCEN",
+                0x900,
+                vec![
+                    field("PNAM", &SELF.to_le_bytes()),
+                    ctda(566, 0x07A0_002E),
+                    field("CIS2", b"alias\0"),
+                ],
+                true,
+                vec!["PNAM"],
+            ),
+            (
+                "QUST procedural alias dropped",
+                self_aliases(),
+                "QUST",
+                0x800,
+                vec![
+                    field("ALST", &2u32.to_le_bytes()),
+                    ctda(566, 0x07A0_0031),
+                    field("CIS1", b"alias\0"),
+                ],
+                true,
+                vec!["ALST"],
+            ),
+            (
+                "low alias without known owner kept",
+                self_aliases(),
+                "SCEN",
+                0x900,
+                vec![ctda(566, 6), field("CIS1", b"alias\0")],
+                false,
+                vec!["CTDA", "CIS1"],
+            ),
+            (
+                "null required typed Param1 dropped",
+                typed(&[]),
+                "INFO",
+                0x900,
+                vec![ctda(74, 0), field("CIS1", b"global\0")],
+                true,
+                vec![],
+            ),
+            (
+                "typed Param1 of the wrong type dropped when the target set is known",
+                typed(&[(163, &[0x0000_0123])]),
+                "SCEN",
+                0x900,
+                vec![ctda(163, 0x0000_0456), field("CIS1", b"target\0")],
+                true,
+                vec![],
+            ),
+            (
+                "typed Param1 whose target exists kept",
+                typed(&[(163, &[0x0000_0456])]),
+                "SCEN",
+                0x900,
+                vec![ctda(163, 0x0000_0456), field("CIS1", b"target\0")],
+                false,
+                vec!["CTDA", "CIS1"],
+            ),
+            (
+                "GetInWorldspace of the wrong type dropped",
+                quest_index_with_worldspaces(&[0x0725_DA15], &[(0x0025_DA15, 0x0725_DA15)]),
+                "QUST",
+                0x800,
+                vec![ctda(310, 0x0700_1234), field("CIS2", b"wrong-type\0")],
+                true,
+                vec![],
+            ),
+            (
+                "ALEQ/ALEA pair naming a missing alias dropped, alias row kept",
+                self_aliases(),
+                "QUST",
+                0x800,
+                vec![
+                    field("ALST", &2u32.to_le_bytes()),
+                    field("ALEQ", &SELF.to_le_bytes()),
+                    field("ALEA", &6u32.to_le_bytes()),
+                    field("ALED", &[]),
+                ],
+                true,
+                vec!["ALST", "ALED"],
+            ),
+            (
+                "ALEQ/ALEA pair naming an existing external alias kept",
+                quest_index(&[SELF, EXTERNAL], &[(SELF, &[2]), (EXTERNAL, &[6])]),
+                "QUST",
+                0x800,
+                vec![
+                    field("ALST", &2u32.to_le_bytes()),
+                    field("ALEQ", &EXTERNAL.to_le_bytes()),
+                    field("ALEA", &6u32.to_le_bytes()),
+                    field("ALED", &[]),
+                ],
+                false,
+                vec!["ALST", "ALEQ", "ALEA", "ALED"],
+            ),
+            (
+                "external alias kept when its alias table is unknown",
+                with_unknown_aliases(quest_index(&[SELF, EXTERNAL], &[(SELF, &[2])]), EXTERNAL),
+                "QUST",
+                0x800,
+                vec![
+                    field("ALST", &2u32.to_le_bytes()),
+                    field("ALEQ", &EXTERNAL.to_le_bytes()),
+                    field("ALEA", &99u32.to_le_bytes()),
+                    field("ALED", &[]),
+                ],
+                false,
+                vec!["ALST", "ALEQ", "ALEA", "ALED"],
+            ),
+        ];
+        for (name, index, record_sig, local, fields, changed, expected) in cases {
+            let mut rec = record_with_interner(record_sig, local, fields, &interner);
+            assert_eq!(
+                scrub_invalid_quest_references(&mut rec, &index, &interner),
+                changed,
+                "{name}"
+            );
+            assert_eq!(sigs(&rec), expected, "{name}");
+            assert!(
+                !scrub_invalid_quest_references(&mut rec, &index, &interner),
+                "{name}: second scrub must be a no-op"
+            );
+        }
     }
 
     #[test]
-    fn scrub_drops_qust_stage_alias_condition_missing_from_alias_table() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        // Neither the target nor the source quest declares alias 1 — a proven
-        // dangle. The source row is what authorizes the drop at all.
-        let index = quest_index_with_source_aliases(
-            &[self_quest],
-            &[(self_quest, &[2])],
-            &[(self_quest, &[2])],
-        );
-        // QUST \ Stages ... CTDA Parameter #1 -> Quest Alias [1] not found.
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![
-                field("ALST", &2u32.to_le_bytes()),
-                ctda(566, 1),
-                field("CIS1", b"alias\0"),
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ALST"]);
-    }
-
-    #[test]
-    fn scrub_keeps_qust_alias_condition_present_in_alias_table() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let index = quest_index(&[self_quest], &[(self_quest, &[2])]);
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![
-                field("ALST", &2u32.to_le_bytes()),
-                ctda(566, 2),
-                field("CIS1", b"alias\0"),
-            ],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ALST", "CTDA", "CIS1"]);
-    }
-
-    #[test]
-    fn scrub_keeps_info_alias_condition_without_owner_context() {
-        let interner = StringInterner::new();
-        let index = quest_index(&[0x0000_0800], &[(0x0000_0800, &[2])]);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x900,
-            vec![ctda(566, 11), field("CIS1", b"alias\0")],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["CTDA", "CIS1"]);
-    }
-
-    #[test]
-    fn scrub_drops_info_procedural_alias_without_owner_context() {
-        let interner = StringInterner::new();
-        let index = quest_index(&[0x0000_0800], &[(0x0000_0800, &[2])]);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x900,
-            vec![ctda(566, 0x07A0_000A), field("CIS1", b"alias\0")],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), Vec::<&str>::new());
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-    }
-
-    #[test]
-    fn scrub_drops_scen_procedural_alias_with_known_owner() {
-        let interner = StringInterner::new();
-        let owner_quest = 0x0000_0800;
-        let index = quest_index(&[owner_quest], &[(owner_quest, &[2])]);
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x900,
-            vec![
-                field("PNAM", &owner_quest.to_le_bytes()),
-                ctda(566, 0x07A0_002E),
-                field("CIS2", b"alias\0"),
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["PNAM"]);
-    }
-
-    #[test]
-    fn scrub_drops_qust_procedural_alias_with_known_owner() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let index = quest_index(&[self_quest], &[(self_quest, &[2])]);
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![
-                field("ALST", &2u32.to_le_bytes()),
-                ctda(566, 0x07A0_0031),
-                field("CIS1", b"alias\0"),
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ALST"]);
-    }
-
-    #[test]
-    fn scrub_keeps_low_alias_without_known_owner() {
-        let interner = StringInterner::new();
-        let index = quest_index(&[0x0000_0800], &[(0x0000_0800, &[2])]);
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x900,
-            vec![ctda(566, 6), field("CIS1", b"alias\0")],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["CTDA", "CIS1"]);
-    }
-
-    #[test]
-    fn scrub_drops_null_required_typed_param1_condition() {
-        let interner = StringInterner::new();
-        let index = quest_index_with_typed(&[0x0000_0800], &[(0x0000_0800, &[2])], &[]);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x900,
-            vec![ctda(74, 0), field("CIS1", b"global\0")],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), Vec::<&str>::new());
-    }
-
-    #[test]
-    fn scrub_drops_wrong_type_typed_param1_condition_when_target_set_known() {
-        let interner = StringInterner::new();
-        let index = quest_index_with_typed(
-            &[0x0000_0800],
-            &[(0x0000_0800, &[2])],
-            &[(163, &[0x0000_0123])],
-        );
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x900,
-            vec![ctda(163, 0x0000_0456), field("CIS1", b"target\0")],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), Vec::<&str>::new());
-    }
-
-    #[test]
-    fn scrub_keeps_typed_param1_condition_when_target_exists() {
-        let interner = StringInterner::new();
-        let index = quest_index_with_typed(
-            &[0x0000_0800],
-            &[(0x0000_0800, &[2])],
-            &[(163, &[0x0000_0456])],
-        );
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x900,
-            vec![ctda(163, 0x0000_0456), field("CIS1", b"target\0")],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["CTDA", "CIS1"]);
-    }
-
-    #[test]
-    fn scrub_repairs_get_in_worldspace_source_load_byte_to_output() {
-        let interner = StringInterner::new();
-        let index = quest_index_with_worldspaces(&[0x0725_DA15], &[(0x0025_DA15, 0x0725_DA15)]);
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![ctda(310, 0x0025_DA15), field("CIS1", b"world\0")],
-            &interner,
-        );
-
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(condition_param1(&rec), 0x0725_DA15);
-        assert_eq!(sigs(&rec), vec!["CTDA", "CIS1"]);
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-    }
-
-    #[test]
-    fn scrub_preserves_valid_master_and_output_worldspaces() {
+    fn scrub_repairs_or_preserves_get_in_worldspace_targets() {
         let interner = StringInterner::new();
         let index = quest_index_with_worldspaces(
             &[0x0000_003C, 0x0725_DA15],
             &[(0x0025_DA15, 0x0725_DA15)],
         );
-        for parameter in [0x0000_003C, 0x0725_DA15] {
-            let mut rec =
-                record_with_interner("QUST", 0x800, vec![ctda(310, parameter)], &interner);
-            assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-            assert_eq!(condition_param1(&rec), parameter);
+        for (name, parameter, changed, expected) in [
+            (
+                "source load byte repaired to the output",
+                0x0025_DA15,
+                true,
+                0x0725_DA15,
+            ),
+            (
+                "valid master worldspace kept",
+                0x0000_003C,
+                false,
+                0x0000_003C,
+            ),
+            (
+                "valid output worldspace kept",
+                0x0725_DA15,
+                false,
+                0x0725_DA15,
+            ),
+        ] {
+            let mut rec = record_with_interner(
+                "QUST",
+                0x800,
+                vec![ctda(310, parameter), field("CIS1", b"world\0")],
+                &interner,
+            );
+
+            assert_eq!(
+                scrub_invalid_quest_references(&mut rec, &index, &interner),
+                changed,
+                "{name}"
+            );
+            assert_eq!(condition_param1(&rec), expected, "{name}");
+            assert_eq!(sigs(&rec), vec!["CTDA", "CIS1"], "{name}");
+            assert!(
+                !scrub_invalid_quest_references(&mut rec, &index, &interner),
+                "{name}"
+            );
         }
-    }
-
-    #[test]
-    fn scrub_drops_get_in_worldspace_with_wrong_type() {
-        let interner = StringInterner::new();
-        let index = quest_index_with_worldspaces(&[0x0725_DA15], &[(0x0025_DA15, 0x0725_DA15)]);
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![ctda(310, 0x0700_1234), field("CIS2", b"wrong-type\0")],
-            &interner,
-        );
-
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), Vec::<&str>::new());
     }
 
     #[test]
@@ -4292,10 +4200,7 @@ mod tests {
             vec!["ALST", "CTDA", "CIS1", "CTDA", "CTDA", "ALED"]
         );
         assert!(!repair_final_quest_alias_conditions(&mut rec, &index));
-    }
 
-    #[test]
-    fn final_alias_pass_preserves_valid_master_and_output_references() {
         let index =
             final_reference_index(&[0x0000_1234, 0x0700_5678], &[(0x0000_5678, 0x0700_5678)]);
         let mut rec = record(
@@ -4307,8 +4212,17 @@ mod tests {
                 field("ALED", &[]),
             ],
         );
+        assert!(
+            !repair_final_quest_alias_conditions(&mut rec, &index),
+            "valid master and output references kept"
+        );
 
-        assert!(!repair_final_quest_alias_conditions(&mut rec, &index));
+        let mut rec = record("QUST", vec![ctda(1, 0x0000_BEEF)]);
+        assert!(
+            !repair_final_quest_alias_conditions(&mut rec, &final_reference_index(&[], &[])),
+            "quest-level conditions outside an alias block are untouched"
+        );
+        assert_eq!(sigs(&rec), vec!["CTDA"]);
     }
 
     #[test]
@@ -4339,14 +4253,6 @@ mod tests {
     }
 
     #[test]
-    fn final_alias_pass_does_not_touch_quest_level_conditions() {
-        let index = final_reference_index(&[], &[]);
-        let mut rec = record("QUST", vec![ctda(1, 0x0000_BEEF)]);
-        assert!(!repair_final_quest_alias_conditions(&mut rec, &index));
-        assert_eq!(sigs(&rec), vec!["CTDA"]);
-    }
-
-    #[test]
     fn output_reference_requires_persistent_group_and_flag() {
         let persistent = RecordFlags::PERSISTENT.bits();
         let items = vec![
@@ -4374,269 +4280,167 @@ mod tests {
         assert_eq!(output, [0x1001].into_iter().collect());
     }
 
-    #[test]
-    fn scrub_drops_qust_alea_pair_when_alias_is_missing() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let index = quest_index(&[self_quest], &[(self_quest, &[2])]);
-        // QUST \ Aliases \ External Alias Reference \ ALEA - Alias -> Quest
-        // Alias [6] not found. Drop the ALEQ/ALEA pair, leave the alias row.
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![
-                field("ALST", &2u32.to_le_bytes()),
-                field("ALEQ", &self_quest.to_le_bytes()),
-                field("ALEA", &6u32.to_le_bytes()),
-                field("ALED", &[]),
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ALST", "ALED"]);
-    }
-
-    #[test]
-    fn scrub_keeps_qust_alea_pair_when_external_alias_exists() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let external_quest = 0x0000_1234;
-        let index = quest_index(
-            &[self_quest, external_quest],
-            &[(self_quest, &[2]), (external_quest, &[6])],
-        );
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![
-                field("ALST", &2u32.to_le_bytes()),
-                field("ALEQ", &external_quest.to_le_bytes()),
-                field("ALEA", &6u32.to_le_bytes()),
-                field("ALED", &[]),
-            ],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ALST", "ALEQ", "ALEA", "ALED"]);
-    }
-
-    #[test]
-    fn scrub_preserves_external_alias_when_alias_table_is_unknown() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let external_quest = 0x0000_1234;
-        let mut index = quest_index(&[self_quest, external_quest], &[(self_quest, &[2])]);
-        index
-            .quest_alias_ids_by_encoded_quest
-            .insert(external_quest, None);
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![
-                field("ALST", &2u32.to_le_bytes()),
-                field("ALEQ", &external_quest.to_le_bytes()),
-                field("ALEA", &99u32.to_le_bytes()),
-                field("ALED", &[]),
-            ],
-            &interner,
-        );
-
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(sigs(&rec), vec!["ALST", "ALEQ", "ALEA", "ALED"]);
-    }
-
-    #[test]
-    fn scrub_clears_invalid_qust_vmad_alias_property() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let index = quest_index(&[self_quest], &[(self_quest, &[2])]);
-        let (vmad, alias_offset) = vmad_object_property(31, 0x0000_1234);
-        let mut rec = record_with_interner(
-            "QUST",
-            0x800,
-            vec![
-                field("ALST", &2u32.to_le_bytes()),
-                FieldEntry {
-                    sig: SubrecordSig::from_str("VMAD").unwrap(),
-                    value: FieldValue::Bytes(SmallVec::from_vec(vmad)),
-                },
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let vmad = rec
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "VMAD")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &vmad.value else {
-            panic!("VMAD should remain bytes");
-        };
-        assert_eq!(alias_at(bytes, alias_offset), -1);
-    }
-
-    #[test]
-    fn scrub_preserves_pack_vmad_alias_when_owner_is_not_quest() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let index = quest_index(&[self_quest], &[(self_quest, &[2])]);
-        let (vmad, alias_offset) = vmad_object_property(2, 0x0000_1234);
-        let mut rec = record_with_interner(
-            "PACK",
-            0x900,
-            vec![
-                field("QNAM", &0x0000_0555u32.to_le_bytes()),
-                FieldEntry {
-                    sig: SubrecordSig::from_str("VMAD").unwrap(),
-                    value: FieldValue::Bytes(SmallVec::from_vec(vmad)),
-                },
-            ],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[1].value else {
-            panic!("VMAD should remain bytes");
-        };
-        assert_eq!(alias_at(bytes, alias_offset), 2);
-    }
-
-    #[test]
-    fn scrub_preserves_pack_vmad_alias_when_owner_alias_table_is_unknown() {
-        let interner = StringInterner::new();
-        let owner_quest = 0x0000_0800;
-        for explicit_unknown in [false, true] {
-            let mut index = quest_index(&[owner_quest], &[]);
-            if explicit_unknown {
-                index
-                    .quest_alias_ids_by_encoded_quest
-                    .insert(owner_quest, None);
-            }
-            let (vmad, alias_offset) = vmad_object_property(10, owner_quest);
-            let mut rec = record_with_interner(
-                "PACK",
-                0x900,
-                vec![
-                    field("QNAM", &owner_quest.to_le_bytes()),
-                    FieldEntry {
-                        sig: SubrecordSig::from_str("VMAD").unwrap(),
-                        value: FieldValue::Bytes(SmallVec::from_vec(vmad)),
-                    },
-                ],
-                &interner,
-            );
-
-            assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-            let FieldValue::Bytes(bytes) = &rec.fields[1].value else {
-                panic!("VMAD should remain bytes");
-            };
-            assert_eq!(alias_at(bytes, alias_offset), 10);
+    fn vmad_field(bytes: Vec<u8>) -> FieldEntry {
+        FieldEntry {
+            sig: SubrecordSig::from_str("VMAD").unwrap(),
+            value: FieldValue::Bytes(SmallVec::from_vec(bytes)),
         }
     }
 
     #[test]
-    fn scrub_preserves_pack_fragment_alias_bound_to_a_different_quest() {
+    fn scrub_clears_only_proven_dangling_vmad_alias_properties() {
         let interner = StringInterner::new();
-        let owner_quest = 0x0000_0800;
-        let bound_quest = 0x0000_0900;
-        let index = quest_index(
-            &[owner_quest, bound_quest],
-            &[(owner_quest, &[2]), (bound_quest, &[23, 24, 25])],
-        );
-        let (vmad, alias_offset) = info_fragment_vmad_object_property(25, bound_quest);
-        let mut rec = record_with_interner(
-            "PACK",
-            0x900,
-            vec![
-                field("QNAM", &owner_quest.to_le_bytes()),
-                FieldEntry {
-                    sig: SubrecordSig::from_str("VMAD").unwrap(),
-                    value: FieldValue::Bytes(SmallVec::from_vec(vmad)),
-                },
-            ],
-            &interner,
-        );
-
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[1].value else {
-            panic!("VMAD should remain bytes");
+        const OWNER: u32 = 0x0000_0800;
+        const BOUND: u32 = 0x0000_0900;
+        const FF08_COBJ: u32 = 0x0004_695C;
+        let owner_aliases = || quest_index(&[OWNER], &[(OWNER, &[2])]);
+        let scen_fragment = {
+            let (mut vmad, offset) = info_fragment_vmad_object_property(7, 0x0000_1234);
+            vmad.extend_from_slice(&0u16.to_le_bytes());
+            (vmad, offset)
         };
-        assert_eq!(alias_at(bytes, alias_offset), 25);
-        assert_eq!(form_id_at(bytes, alias_offset), bound_quest);
-    }
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &str,
+            QuestConditionIndex,
+            &str,
+            u32,
+            Option<(&str, u32)>,
+            (Vec<u8>, usize),
+            bool,
+            i16,
+            Option<u32>,
+        )> = vec![
+            (
+                "QUST script alias property missing from its own alias table",
+                owner_aliases(),
+                "QUST",
+                0x800,
+                Some(("ALST", 2)),
+                vmad_object_property(31, 0x0000_1234),
+                true,
+                -1,
+                None,
+            ),
+            (
+                "PACK whose QNAM owner is not a quest",
+                owner_aliases(),
+                "PACK",
+                0x900,
+                Some(("QNAM", 0x0000_0555)),
+                vmad_object_property(2, 0x0000_1234),
+                false,
+                2,
+                None,
+            ),
+            (
+                "PACK owner alias table not indexed",
+                quest_index(&[OWNER], &[]),
+                "PACK",
+                0x900,
+                Some(("QNAM", OWNER)),
+                vmad_object_property(10, OWNER),
+                false,
+                10,
+                None,
+            ),
+            (
+                "PACK owner alias table explicitly unknown",
+                with_unknown_aliases(quest_index(&[OWNER], &[]), OWNER),
+                "PACK",
+                0x900,
+                Some(("QNAM", OWNER)),
+                vmad_object_property(10, OWNER),
+                false,
+                10,
+                None,
+            ),
+            (
+                "PACK fragment alias bound to a different quest",
+                quest_index(&[OWNER, BOUND], &[(OWNER, &[2]), (BOUND, &[23, 24, 25])]),
+                "PACK",
+                0x900,
+                Some(("QNAM", OWNER)),
+                info_fragment_vmad_object_property(25, BOUND),
+                false,
+                25,
+                Some(BOUND),
+            ),
+            (
+                "FF08 shutdown PACK fragment keeps an unowned alias",
+                owner_aliases(),
+                "PACK",
+                0x2B_00CE,
+                Some(("QNAM", FF08_COBJ)),
+                info_fragment_vmad_object_property(10, FF08_COBJ),
+                false,
+                10,
+                Some(FF08_COBJ),
+            ),
+            (
+                "SCEN fragment alias missing from the owner quest",
+                owner_aliases(),
+                "SCEN",
+                0x900,
+                Some(("PNAM", OWNER)),
+                scen_fragment,
+                true,
+                -1,
+                None,
+            ),
+            (
+                "INFO fragment alias without owner context kept",
+                owner_aliases(),
+                "INFO",
+                0x900,
+                None,
+                info_fragment_vmad_object_property(11, 0x0000_1234),
+                false,
+                11,
+                None,
+            ),
+        ];
+        for (
+            name,
+            index,
+            record_sig,
+            local,
+            owner_field,
+            (vmad, alias_offset),
+            changed,
+            alias,
+            form_id,
+        ) in cases
+        {
+            let mut fields: Vec<FieldEntry> = owner_field
+                .map(|(sig, value)| field(sig, &value.to_le_bytes()))
+                .into_iter()
+                .collect();
+            fields.push(vmad_field(vmad));
+            let mut rec = record_with_interner(record_sig, local, fields, &interner);
 
-    #[test]
-    fn scrub_ff08_shutdown_pack_fragment_preserves_unowned_alias() {
-        let interner = StringInterner::new();
-        let index = quest_index(&[0x0000_0800], &[(0x0000_0800, &[2])]);
-        let cobj = 0x0004_695C;
-        let (vmad, alias_offset) = info_fragment_vmad_object_property(10, cobj);
-        let mut rec = record_with_interner(
-            "PACK",
-            0x2B_00CE,
-            vec![
-                field("QNAM", &cobj.to_le_bytes()),
-                FieldEntry {
-                    sig: SubrecordSig::from_str("VMAD").unwrap(),
-                    value: FieldValue::Bytes(SmallVec::from_vec(vmad)),
-                },
-            ],
-            &interner,
-        );
-
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[1].value else {
-            panic!("VMAD should remain bytes");
-        };
-        assert_eq!(alias_at(bytes, alias_offset), 10);
-        assert_eq!(form_id_at(bytes, alias_offset), cobj);
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-    }
-
-    #[test]
-    fn scrub_clears_scen_fragment_vmad_alias_missing_from_owner_quest() {
-        let interner = StringInterner::new();
-        let self_quest = 0x0000_0800;
-        let index = quest_index(&[self_quest], &[(self_quest, &[2])]);
-        let (mut vmad, alias_offset) = info_fragment_vmad_object_property(7, 0x0000_1234);
-        vmad.extend_from_slice(&0u16.to_le_bytes());
-        let mut rec = record_with_interner(
-            "SCEN",
-            0x900,
-            vec![
-                field("PNAM", &self_quest.to_le_bytes()),
-                FieldEntry {
-                    sig: SubrecordSig::from_str("VMAD").unwrap(),
-                    value: FieldValue::Bytes(SmallVec::from_vec(vmad)),
-                },
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[1].value else {
-            panic!("VMAD should remain bytes");
-        };
-        assert_eq!(alias_at(bytes, alias_offset), -1);
-    }
-
-    #[test]
-    fn scrub_keeps_info_fragment_vmad_alias_without_owner_context() {
-        let interner = StringInterner::new();
-        let index = quest_index(&[0x0000_0800], &[(0x0000_0800, &[2])]);
-        let (vmad, alias_offset) = info_fragment_vmad_object_property(11, 0x0000_1234);
-        let mut rec = record_with_interner(
-            "INFO",
-            0x900,
-            vec![FieldEntry {
-                sig: SubrecordSig::from_str("VMAD").unwrap(),
-                value: FieldValue::Bytes(SmallVec::from_vec(vmad)),
-            }],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        let FieldValue::Bytes(bytes) = &rec.fields[0].value else {
-            panic!("VMAD should remain bytes");
-        };
-        assert_eq!(alias_at(bytes, alias_offset), 11);
+            assert_eq!(
+                scrub_invalid_quest_references(&mut rec, &index, &interner),
+                changed,
+                "{name}"
+            );
+            let vmad = rec
+                .fields
+                .iter()
+                .find(|f| f.sig.as_str() == "VMAD")
+                .unwrap();
+            let FieldValue::Bytes(bytes) = &vmad.value else {
+                panic!("{name}: VMAD should remain bytes");
+            };
+            assert_eq!(alias_at(bytes, alias_offset), alias, "{name}");
+            if let Some(form_id) = form_id {
+                assert_eq!(form_id_at(bytes, alias_offset), form_id, "{name}");
+            }
+            assert!(
+                !scrub_invalid_quest_references(&mut rec, &index, &interner),
+                "{name}: second scrub must be a no-op"
+            );
+        }
     }
 
     fn ptda_field(type_value: i32, target: u32) -> FieldEntry {
@@ -4668,197 +4472,96 @@ mod tests {
     }
 
     #[test]
-    fn pack_alias_target_preserved_when_owner_quest_has_alias() {
-        // The reported 6C2DAF case: a Ref-Alias package target whose owning quest
-        // converted WITH that alias — must survive translation intact.
+    fn pack_alias_targets_severed_only_when_the_owner_quest_lacks_the_alias() {
+        // 6C2DAF: a Ref-Alias package target whose owning quest converted with the
+        // alias must survive intact; a proven dangle becomes the benign non-alias
+        // kind; an unresolvable owner (alias table unknown, or QNAM not a known
+        // quest) cannot prove the dangle and preserves it.
         let interner = StringInterner::new();
-        let owner_quest = 0x0000_0800;
-        let index = quest_index(&[owner_quest], &[(owner_quest, &[18])]);
-        let mut rec = record_with_interner(
-            "PACK",
-            0x900,
-            vec![
-                field("QNAM", &owner_quest.to_le_bytes()),
-                ptda_field(4, 18),         // target: Ref Alias 18
-                pldt_field("PLDT", 8, 18), // location: Ref Alias 18
-            ],
-            &interner,
-        );
-        assert!(!scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(union_type_and_value(&rec, "PTDA"), (4, 18));
-        assert_eq!(union_type_and_value(&rec, "PLDT"), (8, 18));
-    }
-
-    #[test]
-    fn pack_alias_target_severed_when_owner_quest_lacks_alias() {
-        // Owning quest converted, but this alias index was dropped during QUST
-        // conversion — a proven dangle → neutralize to the benign non-alias kind.
-        let interner = StringInterner::new();
-        let owner_quest = 0x0000_0800;
-        let index = quest_index_with_source_aliases(
-            &[owner_quest],
-            &[(owner_quest, &[2])],
-            &[(owner_quest, &[2])],
-        );
-        let mut rec = record_with_interner(
-            "PACK",
-            0x900,
-            vec![
-                field("QNAM", &owner_quest.to_le_bytes()),
-                ptda_field(4, 18),
-                pldt_field("PLVD", 14, 18),
-            ],
-            &interner,
-        );
-        assert!(scrub_invalid_quest_references(&mut rec, &index, &interner));
-        assert_eq!(union_type_and_value(&rec, "PTDA"), (6, 0)); // Self
-        assert_eq!(union_type_and_value(&rec, "PLVD"), (2, 0)); // Near Package Start
-    }
-
-    #[test]
-    fn pack_alias_target_preserved_when_owner_context_unresolvable() {
-        // Unknown (quest present, alias table not indexed) and None (QNAM not a
-        // known quest) both preserve — we cannot prove the alias dangles.
-        let interner = StringInterner::new();
-        let owner_quest = 0x0000_0800;
-        let mut unknown = quest_index(&[owner_quest], &[]);
-        unknown
-            .quest_alias_ids_by_encoded_quest
-            .insert(owner_quest, None);
-        let none = quest_index(&[owner_quest], &[(owner_quest, &[2])]);
-
-        for (index, qnam) in [(&unknown, owner_quest), (&none, 0x0000_0555u32)] {
+        const OWNER: u32 = 0x0000_0800;
+        for (name, index, qnam, location_sig, location_type, changed, target, location) in [
+            (
+                "owner quest has the alias",
+                quest_index(&[OWNER], &[(OWNER, &[18])]),
+                OWNER,
+                "PLDT",
+                8,
+                false,
+                (4, 18),
+                (8, 18),
+            ),
+            (
+                "owner quest lacks the alias: Self / Near Package Start",
+                quest_index_with_source_aliases(&[OWNER], &[(OWNER, &[2])], &[(OWNER, &[2])]),
+                OWNER,
+                "PLVD",
+                14,
+                true,
+                (6, 0),
+                (2, 0),
+            ),
+            (
+                "owner alias table unknown",
+                with_unknown_aliases(quest_index(&[OWNER], &[]), OWNER),
+                OWNER,
+                "PLDT",
+                8,
+                false,
+                (4, 18),
+                (8, 18),
+            ),
+            (
+                "QNAM is not a known quest",
+                quest_index(&[OWNER], &[(OWNER, &[2])]),
+                0x0000_0555,
+                "PLDT",
+                8,
+                false,
+                (4, 18),
+                (8, 18),
+            ),
+        ] {
             let mut rec = record_with_interner(
                 "PACK",
                 0x900,
                 vec![
                     field("QNAM", &qnam.to_le_bytes()),
                     ptda_field(4, 18),
-                    pldt_field("PLDT", 8, 18),
+                    pldt_field(location_sig, location_type, 18),
                 ],
                 &interner,
             );
-            assert!(!scrub_invalid_quest_references(&mut rec, index, &interner));
-            assert_eq!(union_type_and_value(&rec, "PTDA"), (4, 18));
-            assert_eq!(union_type_and_value(&rec, "PLDT"), (8, 18));
+            assert_eq!(
+                scrub_invalid_quest_references(&mut rec, &index, &interner),
+                changed,
+                "{name}"
+            );
+            assert_eq!(union_type_and_value(&rec, "PTDA"), target, "{name}");
+            assert_eq!(union_type_and_value(&rec, location_sig), location, "{name}");
         }
     }
 
     #[test]
-    fn drops_procedural_alias_ctda_and_its_cis() {
-        // GetIsAliasRef(566) with Param1=0x07A00016 (the 127926294 sentinel) —
-        // a FO76 procedural id that can never be a valid alias → drop.
-        let valid = FxHashSet::default();
-        let mut rec = record(
-            "INFO",
-            vec![ctda(566, 0x07A0_0016), field("CIS1", b"alias\0")],
-        );
-        assert!(drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(
-            sigs(&rec),
-            Vec::<&str>::new(),
-            "procedural alias CTDA + CIS dropped"
-        );
-    }
-
-    #[test]
-    fn drops_procedural_alias_ctda_on_quest_context_record() {
-        let mut rec = record(
-            "QUST",
-            vec![
-                field("FULL", b"q\0"),
-                ctda(566, 0x07A0_002E),
-                field("CIS1", b"alias\0"),
-                field("NEXT", b"x\0"),
-            ],
-        );
-        assert!(drop_invalid_context_quest_conditions(&mut rec));
-        assert_eq!(
-            sigs(&rec),
-            vec!["FULL", "NEXT"],
-            "procedural alias CTDA + CIS dropped on QUST"
-        );
-    }
-
-    #[test]
-    fn keeps_small_alias_index_on_quest_context_record() {
-        let mut rec = record("QUST", vec![ctda(566, 10), field("CIS1", b"alias\0")]);
-        assert!(!drop_invalid_context_quest_conditions(&mut rec));
-        assert_eq!(sigs(&rec), vec!["CTDA", "CIS1"]);
-    }
-
-    #[test]
-    fn keeps_non_procedural_alias_index_ctda() {
-        // GetIsAliasRef(566) with a small in-range alias index (10) — a legitimate
-        // alias reference the owning quest can resolve → keep.
-        let valid = FxHashSet::default();
-        let mut rec = record("INFO", vec![ctda(566, 0x0000_000A)]);
-        assert!(!drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["CTDA"]);
-    }
-
-    #[test]
-    fn keeps_procedural_param_on_non_alias_function() {
-        // A 0x07A0xxxx param on a function that is neither a quest-param nor the
-        // alias function must be left alone (other owners handle it).
-        let valid = FxHashSet::default();
-        let mut rec = record("INFO", vec![ctda(560, 0x07A0_0016)]);
-        assert!(!drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["CTDA"]);
-    }
-
-    #[test]
-    fn drops_fn576_null_param2_on_quest_context_record() {
-        // GetInCurrentLocFormList(576) with Parameter #2 == NULL — the FO76
-        // GQ_MiscRegionPointer pattern. The QUEST_CONTEXT path uses this helper.
-        let mut rec = record(
-            "QUST",
-            vec![
-                field("FULL", b"q\0"),
-                ctda_p2(576, 0, 0),
-                field("CIS2", b"loc\0"),
-                field("NEXT", b"x\0"),
-            ],
-        );
-        assert!(drop_null_required_formlink_conditions(&mut rec));
-        assert_eq!(
-            sigs(&rec),
-            vec!["FULL", "NEXT"],
-            "fn576 null-param2 CTDA and its CIS2 dropped, surrounding fields kept"
-        );
-    }
-
-    #[test]
-    fn keeps_fn576_with_non_null_param2() {
-        // A real FLST/KYWD/LCTN in Parameter #2 is valid → keep.
-        let mut rec = record("QUST", vec![ctda_p2(576, 0, 0x0001_2345)]);
-        assert!(!drop_null_required_formlink_conditions(&mut rec));
-        assert_eq!(sigs(&rec), vec!["CTDA"]);
-    }
-
-    #[test]
-    fn keeps_other_function_with_null_param2() {
-        // A different function with NULL Parameter #2 (where NULL is legal) must
-        // not be dropped by the param2 rule.
-        let mut rec = record("QUST", vec![ctda_p2(561, 0, 0)]);
-        assert!(!drop_null_required_formlink_conditions(&mut rec));
-        assert_eq!(sigs(&rec), vec!["CTDA"]);
-    }
-
-    #[test]
-    fn drop_invalid_quest_conditions_also_drops_fn576_null_param2() {
-        // On non-context records the combined predicate must catch the param2 rule
-        // too, with its trailing CIS dropped.
-        let valid = FxHashSet::default();
-        let mut rec = record(
-            "TERM",
-            vec![
-                ctda_p2(576, 0, 0),
-                field("CIS1", b"a\0"),
-                field("FULL", b"n\0"),
-            ],
-        );
-        assert!(drop_invalid_quest_conditions(&mut rec, &valid));
-        assert_eq!(sigs(&rec), vec!["FULL"]);
+    fn keeps_numeric_event_payload_conditions_with_no_form_argument() {
+        for signature in ["QUST", "SMQN", "SMBN", "SMEN"] {
+            for selector in [0x3156_0002, 0x3256_0002, 0x3152_0004] {
+                let mut condition = ctda_p2(576, selector, 0);
+                let FieldValue::Bytes(bytes) = &mut condition.value else {
+                    unreachable!()
+                };
+                bytes[4..8].copy_from_slice(&11.0_f32.to_le_bytes());
+                bytes[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+                let original = condition.clone();
+                let mut rec = record(signature, vec![condition, field("NEXT", b"")]);
+                assert!(!drop_null_required_formlink_conditions(&mut rec));
+                assert!(!drop_invalid_context_quest_conditions(&mut rec));
+                assert!(!drop_invalid_quest_conditions(
+                    &mut rec,
+                    &FxHashSet::default()
+                ));
+                assert_eq!(rec.fields[0], original);
+                assert_eq!(sigs(&rec), vec!["CTDA", "NEXT"]);
+            }
+        }
     }
 }

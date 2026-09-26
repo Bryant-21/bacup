@@ -1242,29 +1242,21 @@ mod tests {
     }
 
     #[test]
-    fn source_record_decision_tree_is_disabled_for_same_source_and_output_plugin() {
-        let masters = vec!["Fallout4.esm".to_string(), "SeventySix.esm".to_string()];
-
+    fn source_record_decision_tree_requires_distinct_source_master() {
         assert!(!use_source_record_decision_tree(
             "SeventySix.esm",
             "SeventySix.esm",
-            &masters
+            &["Fallout4.esm".to_string(), "SeventySix.esm".to_string()]
         ));
-    }
-
-    #[test]
-    fn source_record_decision_tree_is_enabled_for_distinct_source_master() {
-        let masters = vec!["Fallout4.esm".to_string(), "Source.esm".to_string()];
-
         assert!(use_source_record_decision_tree(
             "Source.esm",
             "Output.esp",
-            &masters
+            &["Fallout4.esm".to_string(), "Source.esm".to_string()]
         ));
     }
 
     #[test]
-    fn full_plugin_sweep_worklist_uses_only_unresolved_ref_owners() {
+    fn full_plugin_sweep_worklist_uses_unresolved_ref_owners_plus_supplemental() {
         let interner = StringInterner::new();
         let source_plugin = interner.intern("Source.esp");
         let output_plugin = interner.intern("Output.esp");
@@ -1313,50 +1305,14 @@ mod tests {
             sweep_worklist_owners(&refs_by_owner, Vec::new()),
             vec![owner]
         );
-    }
-
-    #[test]
-    fn full_plugin_sweep_worklist_includes_supplemental_owners() {
-        let interner = StringInterner::new();
-        let source_plugin = interner.intern("Source.esp");
-        let output_plugin = interner.intern("Output.esp");
-        let owner = FormKey {
-            local: 0x800,
-            plugin: output_plugin,
-        };
-        let supplemental_owner = FormKey {
-            local: 0x801,
-            plugin: output_plugin,
-        };
-        let unresolved_ref = FormKey {
-            local: 0x900,
-            plugin: source_plugin,
-        };
-        let owner_sig = SigCode::from_str("WEAP").unwrap();
-        let mut state = FullPluginRunState::default();
-        state
-            .unresolved_source_ref_owners
-            .entry(unresolved_ref)
-            .or_default()
-            .push(RefOwner { owner, owner_sig });
-        let mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &interner,
-        );
-        let refs_by_owner = unresolved_source_refs_by_owner(&state, &mapper);
-
         assert_eq!(
-            sweep_worklist_owners(&refs_by_owner, vec![owner, supplemental_owner]),
-            vec![owner, supplemental_owner]
+            sweep_worklist_owners(&refs_by_owner, vec![owner, unrelated_owner]),
+            vec![owner, unrelated_owner]
         );
     }
 
     #[test]
-    fn unresolved_source_refs_by_owner_skips_identity_mapped_refs() {
+    fn unresolved_source_refs_by_owner_skips_identity_mapped_refs_unless_missing_from_target() {
         let interner = StringInterner::new();
         let source_plugin = interner.intern("SeventySix.esm");
         let output_plugin = source_plugin;
@@ -1376,7 +1332,6 @@ mod tests {
             local: 0x901,
             plugin: source_plugin,
         };
-        let owner_sig = SigCode::from_str("WEAP").unwrap();
         let mut state = FullPluginRunState::default();
         state
             .unresolved_source_ref_owners
@@ -1384,7 +1339,7 @@ mod tests {
             .or_default()
             .push(RefOwner {
                 owner: identity_owner,
-                owner_sig,
+                owner_sig: SigCode::from_str("NPC_").unwrap(),
             });
         state
             .unresolved_source_ref_owners
@@ -1392,7 +1347,7 @@ mod tests {
             .or_default()
             .push(RefOwner {
                 owner: unresolved_owner,
-                owner_sig,
+                owner_sig: SigCode::from_str("WEAP").unwrap(),
             });
 
         let mut mapper = FormKeyMapper::new(
@@ -1406,7 +1361,6 @@ mod tests {
         mapper.add_mapping(identity_ref, identity_ref);
 
         let refs_by_owner = unresolved_source_refs_by_owner(&state, &mapper);
-
         assert!(!refs_by_owner.contains_key(&identity_owner));
         assert_eq!(
             refs_by_owner.get(&unresolved_owner).unwrap(),
@@ -1416,44 +1370,13 @@ mod tests {
             sweep_worklist_owners(&refs_by_owner, Vec::new()),
             vec![unresolved_owner]
         );
-    }
 
-    #[test]
-    fn unresolved_source_refs_by_owner_keeps_identity_mapped_refs_missing_from_target() {
-        let interner = StringInterner::new();
-        let source_plugin = interner.intern("SeventySix.esm");
-        let output_plugin = source_plugin;
-        let owner = FormKey {
-            local: 0x800,
-            plugin: output_plugin,
-        };
-        let identity_ref = FormKey {
-            local: 0x900,
-            plugin: source_plugin,
-        };
-        let owner_sig = SigCode::from_str("NPC_").unwrap();
-        let mut state = FullPluginRunState::default();
-        state
-            .unresolved_source_ref_owners
-            .entry(identity_ref)
-            .or_default()
-            .push(RefOwner { owner, owner_sig });
-
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "SeventySix.esm".into(),
-                ..Default::default()
-            },
-            &interner,
-        );
-        mapper.add_mapping(identity_ref, identity_ref);
         let refs_by_owner =
             unresolved_source_refs_by_owner_with_target_check(&state, &mapper, &mut |_| false);
-
         assert_eq!(
-            refs_by_owner.get(&owner).unwrap(),
-            &FxHashSet::from_iter([identity_ref])
+            refs_by_owner.get(&identity_owner).unwrap(),
+            &FxHashSet::from_iter([identity_ref]),
+            "identity-mapped ref missing from the target is still unresolved"
         );
     }
 
@@ -1704,509 +1627,292 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Branch 1: packed data → null
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_nulls_packed_data_fk() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let packed_fk = make_fk(0x300000, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(packed_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_none(),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1);
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0);
-            assert_eq!(fk.plugin, null_sym);
-        } else {
-            panic!("expected FormKey field");
+    fn boxed_lookup(
+        source: Option<(&'static str, Option<&'static str>)>,
+    ) -> Box<dyn Fn(&FormKey, &StringInterner) -> Option<SourceInfo>> {
+        match source {
+            None => Box::new(lookup_none()),
+            Some((sig, eid)) => Box::new(lookup_returning(sig, eid)),
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Branch 2: unreadable source → null + warn
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_nulls_unreadable_source_fk() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_none(),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1);
-        assert!(
-            !outcome.warnings.is_empty(),
-            "expected warning for unreadable FK"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Branch 3: source record exists but no EID → null + warn
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_nulls_eid_missing_in_source() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("WEAP", None),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1);
-        assert!(!outcome.warnings.is_empty(), "expected no_eid warning");
-    }
-
-    // -----------------------------------------------------------------------
-    // Branch 4: creature root + race + not in mapping → null
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_creature_root_nulls_unwalked_race() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let race_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(race_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("RACE", Some("HumanRace")),
-            &injector_none(),
-            &skip,
-            &masters,
-            true, // creature_root
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1);
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0);
-        } else {
-            panic!("expected FormKey field");
+    fn output_mapper_options(preserve_source_ids: bool) -> MapperOptions {
+        MapperOptions {
+            output_plugin_name: "Output.esp".into(),
+            preserve_source_ids,
+            ..Default::default()
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Branch 5: creature root + COBJ → null
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_creature_root_nulls_cobj() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let cobj_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(cobj_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("COBJ", Some("SomeRecipe")),
-            &injector_none(),
-            &skip,
-            &masters,
-            true, // creature_root
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1);
+    fn has_warning(outcome: &SweepOutcome, mapper: &FormKeyMapper, needle: &str) -> bool {
+        outcome
+            .warnings
+            .iter()
+            .any(|s| mapper.interner.resolve(*s).unwrap_or("").contains(needle))
     }
 
-    // -----------------------------------------------------------------------
-    // Branch 6: skip-record-type sig → null
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn apply_to_record_nulls_skip_record_type() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
+    fn apply_to_record_null_branches() {
+        #[allow(clippy::type_complexity)]
+        let cases: [(
+            &str,
+            u32,
+            Option<(&str, Option<&str>)>,
+            Option<&str>,
+            bool,
+            bool,
+            Option<&str>,
+        ); 7] = [
+            ("1: packed data", 0x300000, None, None, false, false, None),
+            (
+                "2: unreadable source warns",
+                0x001234,
+                None,
+                None,
+                false,
+                false,
+                Some(""),
+            ),
+            (
+                "3: source without EID warns",
+                0x001234,
+                Some(("WEAP", None)),
+                None,
+                false,
+                false,
+                Some(""),
+            ),
+            (
+                "4: creature root, unwalked RACE",
+                0x001234,
+                Some(("RACE", Some("HumanRace"))),
+                None,
+                true,
+                false,
+                None,
+            ),
+            (
+                "5: creature root, COBJ",
+                0x001234,
+                Some(("COBJ", Some("SomeRecipe"))),
+                None,
+                true,
+                false,
+                None,
+            ),
+            (
+                "6: skip record type",
+                0x001234,
+                Some(("NAVM", Some("NavMeshSomething"))),
+                Some("NAVM"),
+                false,
+                false,
+                None,
+            ),
+            (
+                "10: unresolved without stub injection",
+                0x001234,
+                Some(("AMMO", Some("UnknownAmmo"))),
+                None,
+                false,
+                true,
+                Some("stub_unavailable"),
+            ),
+        ];
+        for (name, local, source, skip_sig, creature_root, output_named, warning) in cases {
+            let interner = StringInterner::new();
+            let source_sym = interner.intern("SeventySix.esm");
+            let null_sym = interner.intern("__null__");
+            let mut record = make_record(
+                vec![fk_field(make_fk(local, "SeventySix.esm", &interner))],
+                &interner,
+            );
+            let mapper_interner = StringInterner::new();
+            let options = if output_named {
+                output_mapper_options(false)
+            } else {
+                MapperOptions::default()
+            };
+            let mut mapper = FormKeyMapper::new([], options, &mapper_interner);
+            let skip = skip_sig.map_or_else(empty_skip, skip_with);
 
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
+            let outcome = apply_to_record_with(
+                &mut record,
+                source_sym,
+                null_sym,
+                &boxed_lookup(source),
+                &injector_none(),
+                &skip,
+                &[],
+                creature_root,
+                &mut mapper,
+            );
 
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-
-        let skip = skip_with("NAVM");
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("NAVM", Some("NavMeshSomething")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // Branch 7+8: weapon snowball gate — KYWD remap into base master is kept
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_weapon_root_keeps_base_master_remap() {
-        // Non-creature root, KYWD sig, EID resolves via find_vanilla_fk to a
-        // FormKey under Fallout4.esm (a registered target master). Outcome
-        // should be a rewrite (not a null).
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let kywd_sig = SigCode::from_str("KYWD").unwrap();
-        // Pre-seed EID index so find_vanilla_fk returns a Fallout4.esm FK.
-        let eid_sym = mapper_interner.intern("weapontyperifle");
-        let vanilla_fk = FormKey {
-            local: 0x0009A7,
-            plugin: mapper_interner.intern("Fallout4.esm"),
-        };
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, kywd_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        let masters = vec!["Fallout4.esm".to_string()];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("KYWD", Some("WeaponTypeRifle")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false, // non-creature root
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 0, "base-master remap must not be nulled");
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0x0009A7);
-        } else {
-            panic!("expected FormKey field");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Branch 8: weapon snowball gate — DLC remap for KYWD is nulled
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_weapon_root_nulls_dlc_remap_for_keywords() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let kywd_sig = SigCode::from_str("KYWD").unwrap();
-        // EID resolves to a DLC plugin, not Fallout4.esm.
-        let eid_sym = mapper_interner.intern("AnimsHandmadeAssaultRifle");
-        let dlc_fk = FormKey {
-            local: 0x00ABCD,
-            plugin: mapper_interner.intern("DLCNukaWorld.esm"),
-        };
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, dlc_fk, kywd_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        // Master list does NOT include DLCNukaWorld.esm.
-        let masters = vec!["Fallout4.esm".to_string()];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("KYWD", Some("AnimsHandmadeAssaultRifle")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1, "DLC remap for keyword must be nulled");
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0);
-        } else {
-            panic!("expected FormKey field");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Branch 7: non-creature root uses vanilla remap for non-snowball sigs
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_non_creature_uses_vanilla_remap() {
-        // AMMO is not in the weapon snowball gate, so a vanilla_remap is kept.
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let ammo_sig = SigCode::from_str("AMMO").unwrap();
-        let eid_sym = mapper_interner.intern("ammo308");
-        let vanilla_fk = FormKey {
-            local: 0x000C5C,
-            plugin: mapper_interner.intern("Fallout4.esm"),
-        };
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_fk, ammo_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        let masters = vec!["Fallout4.esm".to_string()];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("AMMO", Some("Ammo308")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 0);
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0x000C5C);
-        } else {
-            panic!("expected FormKey field");
+            assert!(outcome.changed, "{name}");
+            assert_eq!(outcome.nulled, 1, "{name}");
+            let FieldValue::FormKey(fk) = &record.fields[0].value else {
+                panic!("{name}: expected FormKey field");
+            };
+            assert_eq!((fk.local, fk.plugin), (0, null_sym), "{name}");
+            if let Some(needle) = warning {
+                assert!(
+                    has_warning(&outcome, &mapper, needle),
+                    "{name}: warning {needle:?}"
+                );
+            }
         }
     }
 
     #[test]
-    fn apply_to_scol_onam_remaps_member_static_to_base_game_stat() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
+    fn apply_to_record_vanilla_eid_remaps() {
+        // Branch 7 remaps through the vanilla EID index; branch 8 (weapon snowball
+        // gate) only keeps KYWD remaps that land in a listed target master.
+        #[allow(clippy::type_complexity)]
+        let cases: [(
+            &str,
+            &str,
+            &str,
+            u32,
+            (&str, &str),
+            (&str, u32, &str, &str),
+            u32,
+            u32,
+            Option<&str>,
+        ); 5] = [
+            (
+                "KYWD remap into base master kept",
+                "WEAP",
+                "KWDA",
+                0x001234,
+                ("KYWD", "WeaponTypeRifle"),
+                ("weapontyperifle", 0x0009A7, "Fallout4.esm", "KYWD"),
+                0,
+                0x0009A7,
+                None,
+            ),
+            (
+                "KYWD remap into unlisted DLC nulled",
+                "WEAP",
+                "KWDA",
+                0x001234,
+                ("KYWD", "AnimsHandmadeAssaultRifle"),
+                (
+                    "AnimsHandmadeAssaultRifle",
+                    0x00ABCD,
+                    "DLCNukaWorld.esm",
+                    "KYWD",
+                ),
+                1,
+                0,
+                None,
+            ),
+            (
+                "AMMO outside the snowball gate keeps vanilla remap",
+                "WEAP",
+                "KWDA",
+                0x001234,
+                ("AMMO", "Ammo308"),
+                ("ammo308", 0x000C5C, "Fallout4.esm", "AMMO"),
+                0,
+                0x000C5C,
+                None,
+            ),
+            (
+                "SCOL ONAM member static remapped to base-game STAT",
+                "SCOL",
+                "ONAM",
+                0x00FC7F,
+                ("STAT", "StaticCollectionMember"),
+                ("staticcollectionmember", 0x012345, "Fallout4.esm", "STAT"),
+                0,
+                0x012345,
+                Some("Fallout4.esm"),
+            ),
+            (
+                "FO76 currency remapped to FO4 caps MISC",
+                "WEAP",
+                "KWDA",
+                0x00000F,
+                ("CNCY", "Caps001"),
+                ("caps001", 0x00000F, "Fallout4.esm", "MISC"),
+                0,
+                0x00000F,
+                Some("Fallout4.esm"),
+            ),
+        ];
+        for (
+            name,
+            record_sig,
+            field_sig,
+            local,
+            (lookup_sig, lookup_eid),
+            (index_eid, index_local, index_plugin, index_sig),
+            nulled,
+            expected_local,
+            expected_plugin,
+        ) in cases
+        {
+            let interner = StringInterner::new();
+            let source_sym = interner.intern("SeventySix.esm");
+            let null_sym = interner.intern("__null__");
+            let mut record = make_record(
+                vec![FieldEntry {
+                    sig: SubrecordSig::from_str(field_sig).unwrap(),
+                    value: FieldValue::FormKey(make_fk(local, "SeventySix.esm", &interner)),
+                }],
+                &interner,
+            );
+            record.sig = SigCode::from_str(record_sig).unwrap();
+            let mapper_interner = StringInterner::new();
+            let index_fk = FormKey {
+                local: index_local,
+                plugin: mapper_interner.intern(index_plugin),
+            };
+            let mut mapper = FormKeyMapper::new(
+                [(
+                    mapper_interner.intern(index_eid),
+                    index_fk,
+                    SigCode::from_str(index_sig).unwrap(),
+                )],
+                output_mapper_options(false),
+                &mapper_interner,
+            );
 
-        let source_static_fk = make_fk(0x00FC7F, "SeventySix.esm", &mut interner);
-        let mut record = Record {
-            sig: SigCode::from_str("SCOL").unwrap(),
-            form_key: make_fk(0x200000, "Output.esp", &mut interner),
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: vec![FieldEntry {
-                sig: SubrecordSig::from_str("ONAM").unwrap(),
-                value: FieldValue::FormKey(source_static_fk),
-            }]
-            .into_iter()
-            .collect(),
-            warnings: smallvec::SmallVec::new(),
-        };
+            let outcome = apply_to_record_with(
+                &mut record,
+                source_sym,
+                null_sym,
+                &lookup_returning(lookup_sig, Some(lookup_eid)),
+                &injector_none(),
+                &empty_skip(),
+                &["Fallout4.esm".to_string()],
+                false,
+                &mut mapper,
+            );
 
-        let mut mapper_interner = StringInterner::new();
-        let stat_sig = SigCode::from_str("STAT").unwrap();
-        let eid_sym = mapper_interner.intern("staticcollectionmember");
-        let vanilla_static_fk = FormKey {
-            local: 0x012345,
-            plugin: mapper_interner.intern("Fallout4.esm"),
-        };
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, vanilla_static_fk, stat_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        let masters = vec!["Fallout4.esm".to_string()];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("STAT", Some("StaticCollectionMember")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 0);
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0x012345);
-            assert_eq!(mapper.interner.resolve(fk.plugin), Some("Fallout4.esm"));
-        } else {
-            panic!("expected SCOL ONAM FormKey field");
-        }
-    }
-
-    #[test]
-    fn apply_to_record_remaps_fo76_currency_to_fo4_caps_misc() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let caps_ref = make_fk(0x00000F, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(caps_ref)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let misc_sig = SigCode::from_str("MISC").unwrap();
-        let eid_sym = mapper_interner.intern("caps001");
-        let fo4_caps = FormKey {
-            local: 0x00000F,
-            plugin: mapper_interner.intern("Fallout4.esm"),
-        };
-        let mut mapper = FormKeyMapper::new(
-            [(eid_sym, fo4_caps, misc_sig)],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        let masters = vec!["Fallout4.esm".to_string()];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("CNCY", Some("Caps001")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 0);
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0x00000F);
-            assert_eq!(mapper.interner.resolve(fk.plugin), Some("Fallout4.esm"));
-        } else {
-            panic!("expected FormKey field");
+            assert!(outcome.changed, "{name}");
+            assert_eq!(outcome.nulled, nulled, "{name}");
+            let FieldValue::FormKey(fk) = &record.fields[0].value else {
+                panic!("{name}: expected FormKey field");
+            };
+            assert_eq!(fk.local, expected_local, "{name}");
+            if let Some(plugin) = expected_plugin {
+                assert_eq!(mapper.interner.resolve(fk.plugin), Some(plugin), "{name}");
+            }
         }
     }
 
     #[test]
     fn apply_to_record_injects_fo76_currency_stub_as_misc() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let source_sym = interner.intern("SeventySix.esm");
         let null_sym = interner.intern("__null__");
 
-        let currency_ref = make_fk(0x3F7410, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(currency_ref)], &mut interner);
+        let currency_ref = make_fk(0x3F7410, "SeventySix.esm", &interner);
+        let mut record = make_record(vec![fk_field(currency_ref)], &interner);
 
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                preserve_source_ids: false,
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
+        let mapper_interner = StringInterner::new();
+        let mut mapper = FormKeyMapper::new([], output_mapper_options(false), &mapper_interner);
 
         let seen_sig = std::cell::Cell::new(None::<SigCode>);
         let injector =
@@ -2220,16 +1926,14 @@ mod tests {
                 Some(m.allocate_or_resolve(src, eid_sym, sig))
             };
 
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
         let outcome = apply_to_record_with(
             &mut record,
             source_sym,
             null_sym,
             &lookup_returning("CNCY", Some("LegendaryTokens")),
             &injector,
-            &skip,
-            &masters,
+            &empty_skip(),
+            &[],
             false,
             &mut mapper,
         );
@@ -2237,29 +1941,24 @@ mod tests {
         assert!(outcome.changed);
         assert_eq!(outcome.nulled, 0);
         assert_eq!(seen_sig.get().unwrap().as_str(), "MISC");
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0x0000_0800);
-            assert_eq!(mapper.interner.resolve(fk.plugin), Some("Output.esp"));
-        } else {
+        let FieldValue::FormKey(fk) = &record.fields[0].value else {
             panic!("expected FormKey field");
-        }
+        };
+        assert_eq!(fk.local, 0x0000_0800);
+        assert_eq!(mapper.interner.resolve(fk.plugin), Some("Output.esp"));
     }
-
-    // -----------------------------------------------------------------------
-    // Branch 7+9: creature root uses mapper.lookup (skipping find_vanilla_fk)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn apply_to_record_creature_root_uses_mapper_lookup() {
-        let mut interner = StringInterner::new();
+        // Branch 7+9: creature roots skip find_vanilla_fk and use the direct mapping.
+        let interner = StringInterner::new();
         let source_sym = interner.intern("SeventySix.esm");
         let null_sym = interner.intern("__null__");
 
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
+        let stale_fk = make_fk(0x001234, "SeventySix.esm", &interner);
+        let mut record = make_record(vec![fk_field(stale_fk)], &interner);
 
-        // The mapper has a direct source→target mapping for the stale FK.
-        let mut mapper_interner = StringInterner::new();
+        let mapper_interner = StringInterner::new();
         let src_in_mapper = FormKey {
             local: 0x001234,
             plugin: mapper_interner.intern("SeventySix.esm"),
@@ -2268,213 +1967,91 @@ mod tests {
             local: 0x000900,
             plugin: mapper_interner.intern("Output.esp"),
         };
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
+        let mut mapper = FormKeyMapper::new([], output_mapper_options(false), &mapper_interner);
         mapper.add_mapping(src_in_mapper, tgt_in_mapper);
 
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        // Use an AMMO sig — not creature support, not RACE, so we fall through
-        // to Branch 7 then Branch 9.
         let outcome = apply_to_record_with(
             &mut record,
             source_sym,
             null_sym,
             &lookup_returning_for("AMMO", Some("SomeAmmo"), 0x001234),
             &injector_none(),
-            &skip,
-            &masters,
-            true, // creature_root
+            &empty_skip(),
+            &[],
+            true,
             &mut mapper,
         );
         assert!(outcome.changed);
         assert_eq!(outcome.nulled, 0);
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(fk.local, 0x000900);
-        } else {
+        let FieldValue::FormKey(fk) = &record.fields[0].value else {
             panic!("expected FormKey field");
-        }
+        };
+        assert_eq!(fk.local, 0x000900);
     }
 
-    // -----------------------------------------------------------------------
-    // Branch 10: unresolved → null + stub_unavailable warning
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn apply_to_record_unresolved_nulls_with_warning() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        // AMMO sig + no mapping + non-creature root + not in snowball gate
-        // → branch 10 (stub-injection unavailable).
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("AMMO", Some("UnknownAmmo")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 1);
-        assert!(
-            outcome.warnings.iter().any(|s| mapper
-                .interner
-                .resolve(*s)
-                .unwrap_or("")
-                .contains("stub_unavailable")),
-            "expected stub_unavailable warning"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Branch 10: stub injection succeeds → FK rewritten to allocated target,
-    //            stub_injected warning emitted, nothing nulled
-    //            (new_allocation strategy)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_branch10_injects_stub_new_allocation() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x001234, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                preserve_source_ids: false,
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("AMMO", Some("UnknownAmmo")),
-            &injector_allocate("Output.esp"),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 0, "stub injection must not null");
-        // FK should now point at the newly allocated target.
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(
-                fk.local, 0x0000_0800,
-                "new_allocation must use FIRST_ALLOCATION_ID"
+    fn apply_to_record_branch10_injects_stub_and_registers_mapping() {
+        for (name, local, preserve_source_ids, eid, expected_local) in [
+            (
+                "new_allocation uses FIRST_ALLOCATION_ID",
+                0x001234,
+                false,
+                "UnknownAmmo",
+                0x0000_0800,
+            ),
+            (
+                "source_id_preserved reuses source object id",
+                0x003456,
+                true,
+                "PreservedAmmo",
+                0x003456,
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let source_sym = interner.intern("SeventySix.esm");
+            let null_sym = interner.intern("__null__");
+            let mut record = make_record(
+                vec![fk_field(make_fk(local, "SeventySix.esm", &interner))],
+                &interner,
             );
-            let plugin_name = mapper.interner.resolve(fk.plugin).unwrap();
-            assert_eq!(plugin_name, "Output.esp", "FK plugin must be output plugin");
-        } else {
-            panic!("expected FormKey field");
-        }
-        // Suppress unused warning — null_sym is needed to call apply_to_record_with
-        // but the FK is now valid, not nulled.
-        let _ = null_sym;
-        // Mapping is registered for downstream rewrites. (We can't query by the
-        // record's source FK directly since the record was built with the test's
-        // local interner; instead, iterate source→target and verify exactly one
-        // mapping exists pointing at the freshly allocated local id.)
-        let pairs: Vec<_> = mapper.source_to_target_iter().collect();
-        assert_eq!(pairs.len(), 1, "exactly one mapping should be registered");
-        assert_eq!(pairs[0].0.local, 0x001234);
-        assert_eq!(pairs[0].1.local, 0x0000_0800);
-        // Warning trail records the injection.
-        assert!(
-            outcome.warnings.iter().any(|s| mapper
-                .interner
-                .resolve(*s)
-                .unwrap_or("")
-                .contains("stub_injected")),
-            "expected stub_injected warning"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Branch 10: stub injection succeeds → FK reuses source object-id when
-    //            preserve_source_ids=true (source_id_preserved strategy)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn apply_to_record_branch10_injects_stub_source_id_preserved() {
-        let mut interner = StringInterner::new();
-        let source_sym = interner.intern("SeventySix.esm");
-        let null_sym = interner.intern("__null__");
-
-        let stale_fk = make_fk(0x003456, "SeventySix.esm", &mut interner);
-        let mut record = make_record(vec![fk_field(stale_fk)], &mut interner);
-
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                preserve_source_ids: true,
-                ..Default::default()
-            },
-            &mut mapper_interner,
-        );
-
-        let skip = empty_skip();
-        let masters: Vec<String> = vec![];
-        let outcome = apply_to_record_with(
-            &mut record,
-            source_sym,
-            null_sym,
-            &lookup_returning("AMMO", Some("PreservedAmmo")),
-            &injector_allocate("Output.esp"),
-            &skip,
-            &masters,
-            false,
-            &mut mapper,
-        );
-        assert!(outcome.changed);
-        assert_eq!(outcome.nulled, 0);
-        if let FieldValue::FormKey(fk) = &record.fields[0].value {
-            assert_eq!(
-                fk.local, 0x003456,
-                "source_id_preserved must reuse source object-id"
+            let mapper_interner = StringInterner::new();
+            let mut mapper = FormKeyMapper::new(
+                [],
+                output_mapper_options(preserve_source_ids),
+                &mapper_interner,
             );
-            let plugin_name = mapper.interner.resolve(fk.plugin).unwrap();
-            assert_eq!(plugin_name, "Output.esp");
-        } else {
-            panic!("expected FormKey field");
+
+            let outcome = apply_to_record_with(
+                &mut record,
+                source_sym,
+                null_sym,
+                &lookup_returning("AMMO", Some(eid)),
+                &injector_allocate("Output.esp"),
+                &empty_skip(),
+                &[],
+                false,
+                &mut mapper,
+            );
+
+            assert!(outcome.changed, "{name}");
+            assert_eq!(outcome.nulled, 0, "{name}: stub injection must not null");
+            let FieldValue::FormKey(fk) = &record.fields[0].value else {
+                panic!("{name}: expected FormKey field");
+            };
+            assert_eq!(fk.local, expected_local, "{name}");
+            assert_eq!(
+                mapper.interner.resolve(fk.plugin),
+                Some("Output.esp"),
+                "{name}"
+            );
+            let pairs: Vec<_> = mapper.source_to_target_iter().collect();
+            assert_eq!(pairs.len(), 1, "{name}: exactly one mapping registered");
+            assert_eq!(
+                (pairs[0].0.local, pairs[0].1.local),
+                (local, expected_local),
+                "{name}"
+            );
+            assert!(has_warning(&outcome, &mapper, "stub_injected"), "{name}");
         }
     }
 
@@ -2540,85 +2117,34 @@ mod tests {
     }
 
     #[test]
-    fn sweep_lctn_lcep_placed_child_nulled_when_not_deferred() {
-        // With defer=false, branch 6 nulls the LCEP ref because the placed-child
-        // target sig (ACHR) is in skip_record_sigs.
-        let interner = StringInterner::new();
-        let null_sym = interner.intern("__null__");
-        let source_sym = interner.intern("SeventySix.esm");
-        let ref_leaf = make_fk(0x7ACB4D, "SeventySix.esm", &interner);
-        let mut record = lctn_lcep_record(ref_leaf, &interner);
-        let skip = skip_with("ACHR");
-        let masters: Vec<String> = vec![];
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &interner,
-        );
-        let outcome = apply_to_record_with_persisted_source_refs(
-            &mut record,
-            source_sym,
-            null_sym,
-            None,
-            None,
-            &lookup_returning("ACHR", Some("SomePlacedActor")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            false, // defer_placed_child = false
-            &mut mapper,
-        );
-        assert!(outcome.changed, "without deferral the LCEP ref is nulled");
-        assert_eq!(outcome.nulled, 1);
-        assert_eq!(lcep_ref_local(&record), 0);
-    }
-
-    #[test]
-    fn sweep_lctn_lcep_placed_child_deferred_left_intact() {
-        // With defer=true the LCTN LCEP class is skipped entirely, so the
-        // source-ref leaf survives for the post-copy repair.
-        let interner = StringInterner::new();
-        let null_sym = interner.intern("__null__");
-        let source_sym = interner.intern("SeventySix.esm");
-        let ref_leaf = make_fk(0x7ACB4D, "SeventySix.esm", &interner);
-        let mut record = lctn_lcep_record(ref_leaf, &interner);
-        let skip = skip_with("ACHR");
-        let masters: Vec<String> = vec![];
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-            &interner,
-        );
-        let outcome = apply_to_record_with_persisted_source_refs(
-            &mut record,
-            source_sym,
-            null_sym,
-            None,
-            None,
-            &lookup_returning("ACHR", Some("SomePlacedActor")),
-            &injector_none(),
-            &skip,
-            &masters,
-            false,
-            true, // defer_placed_child = true
-            &mut mapper,
-        );
-        assert!(
-            !outcome.changed,
-            "deferred LCTN LCEP class must be untouched"
-        );
-        assert_eq!(outcome.nulled, 0);
-        assert_eq!(
-            lcep_ref_local(&record),
-            0x7ACB4D,
-            "ref left intact for repair"
-        );
+    fn sweep_lctn_lcep_placed_child_nulled_unless_deferred() {
+        for (defer_placed_child, changed, nulled, local) in
+            [(false, true, 1, 0), (true, false, 0, 0x7ACB4D)]
+        {
+            let interner = StringInterner::new();
+            let null_sym = interner.intern("__null__");
+            let source_sym = interner.intern("SeventySix.esm");
+            let ref_leaf = make_fk(0x7ACB4D, "SeventySix.esm", &interner);
+            let mut record = lctn_lcep_record(ref_leaf, &interner);
+            let skip = skip_with("ACHR");
+            let mut mapper = FormKeyMapper::new([], output_mapper_options(false), &interner);
+            let outcome = apply_to_record_with_persisted_source_refs(
+                &mut record,
+                source_sym,
+                null_sym,
+                None,
+                None,
+                &lookup_returning("ACHR", Some("SomePlacedActor")),
+                &injector_none(),
+                &skip,
+                &[],
+                false,
+                defer_placed_child,
+                &mut mapper,
+            );
+            assert_eq!(outcome.changed, changed, "defer={defer_placed_child}");
+            assert_eq!(outcome.nulled, nulled, "defer={defer_placed_child}");
+            assert_eq!(lcep_ref_local(&record), local, "defer={defer_placed_child}");
+        }
     }
 }

@@ -454,37 +454,33 @@ mod tests {
     }
 
     #[test]
-    fn interiors_inside_the_limit_stay_put() {
-        assert_eq!(
-            plan_interior_offset(&[[-24_276.0, 16_668.0, 0.0], [100.0, -29_999.0, 0.0]]),
-            RecentrePlan::Unchanged
-        );
-        assert_eq!(plan_interior_offset(&[]), RecentrePlan::Unchanged);
+    fn interior_offset_plan_by_extent() {
+        for (name, extents, expected) in [
+            (
+                "inside the limit",
+                vec![[-24_276.0, 16_668.0, 0.0], [100.0, -29_999.0, 0.0]],
+                RecentrePlan::Unchanged,
+            ),
+            ("no extents", vec![], RecentrePlan::Unchanged),
+            (
+                "silo crosses one axis",
+                vec![[-15_252.0, -37_728.0, 1792.0], [-1216.0, -22_594.0, 6080.0]],
+                RecentrePlan::Shift(SILO_OFFSET),
+            ),
+            (
+                "wider than the limit is reported",
+                vec![[-216_060.0, -172_548.0, 0.0], [195_323.0, 223_090.0, 0.0]],
+                RecentrePlan::TooWide {
+                    span: [411_383.0, 395_638.0],
+                },
+            ),
+        ] {
+            assert_eq!(plan_interior_offset(&extents), expected, "{name}");
+        }
     }
 
     #[test]
-    fn silo_extents_centre_only_the_crossing_axis() {
-        let silo = [[-15_252.0, -37_728.0, 1792.0], [-1216.0, -22_594.0, 6080.0]];
-        assert_eq!(
-            plan_interior_offset(&silo),
-            RecentrePlan::Shift(SILO_OFFSET)
-        );
-    }
-
-    #[test]
-    fn cells_wider_than_the_limit_are_reported_not_moved() {
-        let plan =
-            plan_interior_offset(&[[-216_060.0, -172_548.0, 0.0], [195_323.0, 223_090.0, 0.0]]);
-        assert_eq!(
-            plan,
-            RecentrePlan::TooWide {
-                span: [411_383.0, 395_638.0]
-            }
-        );
-    }
-
-    #[test]
-    fn shifts_decoded_position_and_keeps_rotation() {
+    fn placed_position_reads_and_shifts_decoded_and_raw_data() {
         let interner = StringInterner::new();
         let data = position_struct(
             [
@@ -506,11 +502,7 @@ mod tests {
             panic!("DATA stays a struct");
         };
         assert!(matches!(fields[3].1, FieldValue::Float(rotation) if rotation == 1.85));
-    }
 
-    #[test]
-    fn reads_snake_case_position_names() {
-        let interner = StringInterner::new();
         let data = position_struct(
             [
                 "position_rotation_position_x",
@@ -523,11 +515,7 @@ mod tests {
         );
         let record = record_with("REFR", 0x10, vec![("DATA", data)], &interner);
         assert_eq!(placed_position(&record, &interner), Some([1.0, 2.0, 3.0]));
-    }
 
-    #[test]
-    fn shifts_raw_position_bytes_only() {
-        let interner = StringInterner::new();
         let raw = f32s(&[-10_000.0, -35_000.0, 50.0, 0.1, 0.2, 0.3]);
         let mut record = record_with("REFR", 0x10, vec![("DATA", bytes(raw.clone()))], &interner);
         assert!(shift_placed_position(&mut record, SILO_OFFSET, &interner));
@@ -589,10 +577,7 @@ mod tests {
             shift_nvmi_positions(&mut data, SILO_OFFSET).unwrap();
             assert_eq!(data, expected, "island={island}");
         }
-    }
 
-    #[test]
-    fn truncated_nvmi_is_rejected_untouched() {
         let (mut data, _) = nvmi(0x0100_0400, true);
         data.truncate(data.len() - 20);
         let before = data.clone();

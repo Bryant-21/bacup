@@ -1351,177 +1351,194 @@ mod tests {
     }
 
     #[test]
-    fn plans_exact_supported_shapes_and_rejects_pack() {
-        for fragment_class in [
-            SkyrimFragmentClass::QuestStage,
-            SkyrimFragmentClass::TopicInfo,
-            SkyrimFragmentClass::Scene,
-            SkyrimFragmentClass::ReferenceAlias,
-            SkyrimFragmentClass::LocationAlias,
-        ] {
-            let plan = plan_fragment_binding(request(fragment_class)).unwrap();
-            assert_eq!(plan.fragment_class, fragment_class);
-            assert_eq!(plan.parent_class, fragment_class.parent_class());
+    fn plans_supported_shapes_and_rejects_mismatched_evidence() {
+        {
+            for fragment_class in [
+                SkyrimFragmentClass::QuestStage,
+                SkyrimFragmentClass::TopicInfo,
+                SkyrimFragmentClass::Scene,
+                SkyrimFragmentClass::ReferenceAlias,
+                SkyrimFragmentClass::LocationAlias,
+            ] {
+                let plan = plan_fragment_binding(request(fragment_class)).unwrap();
+                assert_eq!(plan.fragment_class, fragment_class);
+                assert_eq!(plan.parent_class, fragment_class.parent_class());
+            }
+            assert!(
+                plan_fragment_binding(request(SkyrimFragmentClass::Package))
+                    .unwrap_err()
+                    .contains("no proven")
+            );
         }
-        assert!(
-            plan_fragment_binding(request(SkyrimFragmentClass::Package))
-                .unwrap_err()
-                .contains("no proven")
-        );
+        {
+            let mut wrong_signature = request(SkyrimFragmentClass::TopicInfo);
+            wrong_signature.owner.signature = "QUST".to_string();
+            assert!(
+                plan_fragment_binding(wrong_signature)
+                    .unwrap_err()
+                    .contains("requires INFO")
+            );
+
+            let mut wrong_parent = request(SkyrimFragmentClass::Scene);
+            wrong_parent.source.parent_class = "Quest".to_string();
+            assert!(
+                plan_fragment_binding(wrong_parent)
+                    .unwrap_err()
+                    .contains("source parent")
+            );
+
+            let mut unsupported = request(SkyrimFragmentClass::TopicInfo);
+            unsupported
+                .source
+                .properties
+                .insert(SkyrimFragmentPropertyIntent {
+                    name: "Unsupported".to_string(),
+                    type_name: "Actor[]".to_string(),
+                    target_value: "[]".to_string(),
+                    required: true,
+                });
+            assert!(
+                plan_fragment_binding(unsupported)
+                    .unwrap_err()
+                    .contains("unsupported Skyrim fragment property")
+            );
+
+            let mut unsupported = request(SkyrimFragmentClass::Scene);
+            unsupported
+                .source
+                .api_calls
+                .insert("PlayAnimation".to_string());
+            assert!(
+                plan_fragment_binding(unsupported)
+                    .unwrap_err()
+                    .contains("unsupported Skyrim Scene fragment API call")
+            );
+        }
+        {
+            for fragment_class in [
+                SkyrimFragmentClass::TopicInfo,
+                SkyrimFragmentClass::Scene,
+                SkyrimFragmentClass::ReferenceAlias,
+                SkyrimFragmentClass::LocationAlias,
+            ] {
+                let root = tempfile::tempdir().unwrap();
+                let plan = plan_fragment_binding(request(fragment_class)).unwrap();
+                let evidence = compile_evidence(root.path(), &plan);
+                let intent = build_fragment_vmad_attachment_intents(&[plan], &[evidence]).unwrap();
+                assert_eq!(intent[0].parent_class, fragment_class.parent_class());
+            }
+        }
     }
 
     #[test]
-    fn rejects_signature_class_properties_and_api_mismatches() {
-        let mut wrong_signature = request(SkyrimFragmentClass::TopicInfo);
-        wrong_signature.owner.signature = "QUST".to_string();
-        assert!(
-            plan_fragment_binding(wrong_signature)
-                .unwrap_err()
-                .contains("requires INFO")
-        );
+    fn attachment_requires_fresh_pex_entrypoint_and_unique_target() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let plan = plan_fragment_binding(request(SkyrimFragmentClass::QuestStage)).unwrap();
+            assert!(
+                build_fragment_vmad_attachment_intents(std::slice::from_ref(&plan), &[])
+                    .unwrap_err()
+                    .contains("no compiler evidence")
+            );
 
-        let mut wrong_parent = request(SkyrimFragmentClass::Scene);
-        wrong_parent.source.parent_class = "Quest".to_string();
-        assert!(
-            plan_fragment_binding(wrong_parent)
-                .unwrap_err()
-                .contains("source parent")
-        );
-
-        let mut unsupported = request(SkyrimFragmentClass::TopicInfo);
-        unsupported
-            .source
-            .properties
-            .insert(SkyrimFragmentPropertyIntent {
-                name: "Unsupported".to_string(),
-                type_name: "Actor[]".to_string(),
-                target_value: "[]".to_string(),
-                required: true,
-            });
-        assert!(
-            plan_fragment_binding(unsupported)
-                .unwrap_err()
-                .contains("unsupported Skyrim fragment property")
-        );
-
-        let mut unsupported = request(SkyrimFragmentClass::Scene);
-        unsupported
-            .source
-            .api_calls
-            .insert("PlayAnimation".to_string());
-        assert!(
-            plan_fragment_binding(unsupported)
-                .unwrap_err()
-                .contains("unsupported Skyrim Scene fragment API call")
-        );
-    }
-
-    #[test]
-    fn attachment_requires_real_nonempty_fresh_pex_with_entrypoint() {
-        let root = tempfile::tempdir().unwrap();
-        let plan = plan_fragment_binding(request(SkyrimFragmentClass::QuestStage)).unwrap();
-        assert!(
-            build_fragment_vmad_attachment_intents(std::slice::from_ref(&plan), &[])
-                .unwrap_err()
-                .contains("no compiler evidence")
-        );
-
-        let mut evidence = compile_evidence(root.path(), &plan);
-        let intents = build_fragment_vmad_attachment_intents(
-            std::slice::from_ref(&plan),
-            std::slice::from_ref(&evidence),
-        )
-        .unwrap();
-        assert_eq!(intents[0].pex_blake3, evidence.pex_blake3);
-
-        evidence.source_blake3 = hash("stale-target-psc");
-        assert!(
-            build_fragment_vmad_attachment_intents(&[plan], &[evidence])
-                .unwrap_err()
-                .contains("stale")
-        );
-    }
-
-    #[test]
-    fn attachment_rejects_missing_entrypoint_and_duplicate_target() {
-        let root = tempfile::tempdir().unwrap();
-        let plan = plan_fragment_binding(request(SkyrimFragmentClass::QuestStage)).unwrap();
-        let mut missing_request = request(SkyrimFragmentClass::QuestStage);
-        missing_request.source.entrypoints = ["Fragment_Stage_0020_Item_00".to_string()]
-            .into_iter()
-            .collect();
-        missing_request.target_psc.source =
-            missing_request.target_psc.source.replace("0010", "0020");
-        let missing_plan = plan_fragment_binding(missing_request).unwrap();
-        let evidence = compile_evidence(root.path(), &plan);
-        let mut missing_evidence = evidence.clone();
-        missing_evidence.manifest_id = missing_plan.compiler_manifest.manifest_id.clone();
-        missing_evidence.source_blake3 = missing_plan.compiler_manifest.source_blake3.clone();
-        assert!(
-            build_fragment_vmad_attachment_intents(&[missing_plan], &[missing_evidence])
-                .unwrap_err()
-                .contains("missing entrypoint")
-        );
-
-        let evidence = compile_evidence(root.path(), &plan);
-        assert!(
-            build_fragment_vmad_attachment_intents(
-                &[plan.clone(), plan],
+            let mut evidence = compile_evidence(root.path(), &plan);
+            let intents = build_fragment_vmad_attachment_intents(
+                std::slice::from_ref(&plan),
                 std::slice::from_ref(&evidence),
             )
-            .unwrap_err()
-            .contains("duplicate Skyrim QuestStage VMAD attachment")
-        );
-    }
+            .unwrap();
+            assert_eq!(intents[0].pex_blake3, evidence.pex_blake3);
 
-    #[test]
-    fn info_scene_and_alias_evidence_enforces_parent_and_parameters() {
-        for fragment_class in [
-            SkyrimFragmentClass::TopicInfo,
-            SkyrimFragmentClass::Scene,
-            SkyrimFragmentClass::ReferenceAlias,
-            SkyrimFragmentClass::LocationAlias,
-        ] {
+            evidence.source_blake3 = hash("stale-target-psc");
+            assert!(
+                build_fragment_vmad_attachment_intents(&[plan], &[evidence])
+                    .unwrap_err()
+                    .contains("stale")
+            );
+        }
+        {
             let root = tempfile::tempdir().unwrap();
-            let plan = plan_fragment_binding(request(fragment_class)).unwrap();
+            let plan = plan_fragment_binding(request(SkyrimFragmentClass::QuestStage)).unwrap();
+            let mut missing_request = request(SkyrimFragmentClass::QuestStage);
+            missing_request.source.entrypoints = ["Fragment_Stage_0020_Item_00".to_string()]
+                .into_iter()
+                .collect();
+            missing_request.target_psc.source =
+                missing_request.target_psc.source.replace("0010", "0020");
+            let missing_plan = plan_fragment_binding(missing_request).unwrap();
             let evidence = compile_evidence(root.path(), &plan);
-            let intent = build_fragment_vmad_attachment_intents(&[plan], &[evidence]).unwrap();
-            assert_eq!(intent[0].parent_class, fragment_class.parent_class());
+            let mut missing_evidence = evidence.clone();
+            missing_evidence.manifest_id = missing_plan.compiler_manifest.manifest_id.clone();
+            missing_evidence.source_blake3 = missing_plan.compiler_manifest.source_blake3.clone();
+            assert!(
+                build_fragment_vmad_attachment_intents(&[missing_plan], &[missing_evidence])
+                    .unwrap_err()
+                    .contains("missing entrypoint")
+            );
+
+            let evidence = compile_evidence(root.path(), &plan);
+            assert!(
+                build_fragment_vmad_attachment_intents(
+                    &[plan.clone(), plan],
+                    std::slice::from_ref(&evidence),
+                )
+                .unwrap_err()
+                .contains("duplicate Skyrim QuestStage VMAD attachment")
+            );
         }
     }
 
     #[test]
-    fn materializes_info_vmad_and_verifies_exact_properties_from_record() {
-        let root = tempfile::tempdir().unwrap();
-        let intents = attachment_intents(
-            root.path(),
-            vec![with_string_property(request(
-                SkyrimFragmentClass::TopicInfo,
-            ))],
-        );
-        let interner = StringInterner::new();
-        let mut record = target_record("INFO", &interner);
-        let receipt = materialize_fragment_vmad_attachment(
-            &intents[0],
-            &mut record,
-            &interner,
-            &[],
-            "Output.esm",
-        )
-        .unwrap();
-        assert!(receipt.vmad_size > 6);
-        assert_eq!(receipt.property_names, ["Greeting".to_string()].into());
-        assert_eq!(receipt.entrypoints, ["Fragment_End".to_string()].into());
+    fn materializes_info_scene_alias_and_quest_stage_vmads() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let intents = attachment_intents(
+                root.path(),
+                vec![with_string_property(request(
+                    SkyrimFragmentClass::TopicInfo,
+                ))],
+            );
+            let interner = StringInterner::new();
+            let mut record = target_record("INFO", &interner);
+            let receipt = materialize_fragment_vmad_attachment(
+                &intents[0],
+                &mut record,
+                &interner,
+                &[],
+                "Output.esm",
+            )
+            .unwrap();
+            assert!(receipt.vmad_size > 6);
+            assert_eq!(receipt.property_names, ["Greeting".to_string()].into());
+            assert_eq!(receipt.entrypoints, ["Fragment_End".to_string()].into());
 
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw VMAD bytes")
-        };
-        let decoded = compact_vmad_payload_json(bytes, &[], "Output.esm", Some("INFO")).unwrap();
-        assert_eq!(
-            decoded["Script Fragments"]["Script"]["Properties"][0]["Value"],
-            "hello"
-        );
-        assert!(
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("expected raw VMAD bytes")
+            };
+            let decoded =
+                compact_vmad_payload_json(bytes, &[], "Output.esm", Some("INFO")).unwrap();
+            assert_eq!(
+                decoded["Script Fragments"]["Script"]["Properties"][0]["Value"],
+                "hello"
+            );
+            assert!(
+                materialize_fragment_vmad_attachment(
+                    &intents[0],
+                    &mut record,
+                    &interner,
+                    &[],
+                    "Output.esm",
+                )
+                .unwrap_err()
+                .contains("already has a VMAD")
+            );
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let intents =
+                attachment_intents(root.path(), vec![request(SkyrimFragmentClass::Scene)]);
+            let interner = StringInterner::new();
+            let mut record = target_record("SCEN", &interner);
             materialize_fragment_vmad_attachment(
                 &intents[0],
                 &mut record,
@@ -1529,218 +1546,208 @@ mod tests {
                 &[],
                 "Output.esm",
             )
-            .unwrap_err()
-            .contains("already has a VMAD")
-        );
-    }
-
-    #[test]
-    fn materializes_scene_phase_vmad_without_action_fragment_substitution() {
-        let root = tempfile::tempdir().unwrap();
-        let intents = attachment_intents(root.path(), vec![request(SkyrimFragmentClass::Scene)]);
-        let interner = StringInterner::new();
-        let mut record = target_record("SCEN", &interner);
-        materialize_fragment_vmad_attachment(
-            &intents[0],
-            &mut record,
-            &interner,
-            &[],
-            "Output.esm",
-        )
-        .unwrap();
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw VMAD bytes")
-        };
-        let decoded = compact_vmad_payload_json(bytes, &[], "Output.esm", Some("SCEN")).unwrap();
-        assert_eq!(
-            decoded["Script Fragments"]["Fragments"]
-                .as_array()
-                .unwrap()
-                .len(),
-            0
-        );
-        assert_eq!(
-            decoded["Script Fragments"]["Phase Fragments"][0]["FragmentName"],
-            "Fragment_Phase_01_Begin"
-        );
-        assert_eq!(
-            decoded["Script Fragments"]["Phase Fragments"][0]["Phase Flag"],
-            1
-        );
-    }
-
-    #[test]
-    fn materializes_distinct_reference_and_location_aliases_on_one_quest() {
-        let root = tempfile::tempdir().unwrap();
-        let reference = request(SkyrimFragmentClass::ReferenceAlias);
-        let mut location = request(SkyrimFragmentClass::LocationAlias);
-        location.alias_id = Some(2);
-        let intents = attachment_intents(root.path(), vec![reference, location]);
-        let interner = StringInterner::new();
-        let mut record = target_record("QUST", &interner);
-        let receipt = materialize_fragment_vmad_attachments(
-            &intents,
-            &mut record,
-            &interner,
-            &[],
-            "Output.esm",
-        )
-        .unwrap();
-        assert_eq!(receipt.attachment_keys.len(), 2);
-        assert_eq!(receipt.script_classes.len(), 2);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw VMAD bytes")
-        };
-        let decoded = compact_vmad_payload_json(bytes, &[], "Output.esm", Some("QUST")).unwrap();
-        let aliases = decoded["Script Fragments"]["Aliases"].as_array().unwrap();
-        assert_eq!(aliases.len(), 2);
-        assert_eq!(aliases[0]["Object"]["Alias"], 1);
-        assert_eq!(aliases[1]["Object"]["Alias"], 2);
-        assert_eq!(decoded["Script Fragments"]["Script"]["ScriptName"], "");
-    }
-
-    #[test]
-    fn materializes_quest_stage_and_aliases_as_one_signature_correct_vmad() {
-        let root = tempfile::tempdir().unwrap();
-        let mut reference = request(SkyrimFragmentClass::ReferenceAlias);
-        reference.alias_id = Some(7);
-        let intents = attachment_intents(
-            root.path(),
-            vec![request(SkyrimFragmentClass::QuestStage), reference],
-        );
-        let interner = StringInterner::new();
-        let mut record = target_record("QUST", &interner);
-        materialize_fragment_vmad_attachments(&intents, &mut record, &interner, &[], "Output.esm")
             .unwrap();
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected raw VMAD bytes")
-        };
-        let decoded = compact_vmad_payload_json(bytes, &[], "Output.esm", Some("QUST")).unwrap();
-        assert_eq!(
-            decoded["Script Fragments"]["Fragments"][0]["FragmentName"],
-            "Fragment_Stage_0010_Item_00"
-        );
-        assert_eq!(
-            decoded["Script Fragments"]["Aliases"][0]["Object"]["Alias"],
-            7
-        );
-    }
-
-    #[test]
-    fn materialization_rejects_pack_mismatch_missing_entrypoint_and_duplicate_alias() {
-        let root = tempfile::tempdir().unwrap();
-        let mut intent =
-            attachment_intents(root.path(), vec![request(SkyrimFragmentClass::Scene)]).remove(0);
-        let interner = StringInterner::new();
-
-        let mut wrong_record = target_record("INFO", &interner);
-        assert!(
-            materialize_fragment_vmad_attachment(
-                &intent,
-                &mut wrong_record,
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("expected raw VMAD bytes")
+            };
+            let decoded =
+                compact_vmad_payload_json(bytes, &[], "Output.esm", Some("SCEN")).unwrap();
+            assert_eq!(
+                decoded["Script Fragments"]["Fragments"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                0
+            );
+            assert_eq!(
+                decoded["Script Fragments"]["Phase Fragments"][0]["FragmentName"],
+                "Fragment_Phase_01_Begin"
+            );
+            assert_eq!(
+                decoded["Script Fragments"]["Phase Fragments"][0]["Phase Flag"],
+                1
+            );
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let reference = request(SkyrimFragmentClass::ReferenceAlias);
+            let mut location = request(SkyrimFragmentClass::LocationAlias);
+            location.alias_id = Some(2);
+            let intents = attachment_intents(root.path(), vec![reference, location]);
+            let interner = StringInterner::new();
+            let mut record = target_record("QUST", &interner);
+            let receipt = materialize_fragment_vmad_attachments(
+                &intents,
+                &mut record,
                 &interner,
                 &[],
                 "Output.esm",
             )
-            .unwrap_err()
-            .contains("does not match intent owner")
-        );
-
-        intent.entrypoints.clear();
-        let mut scene = target_record("SCEN", &interner);
-        assert!(
-            materialize_fragment_vmad_attachment(
-                &intent,
-                &mut scene,
-                &interner,
-                &[],
-                "Output.esm",
-            )
-            .unwrap_err()
-            .contains("no entrypoint")
-        );
-
-        let mut class_mismatch =
-            attachment_intents(root.path(), vec![request(SkyrimFragmentClass::Scene)]).remove(0);
-        class_mismatch.parent_class = "Quest".to_string();
-        assert!(
-            materialize_fragment_vmad_attachment(
-                &class_mismatch,
-                &mut scene,
-                &interner,
-                &[],
-                "Output.esm",
-            )
-            .unwrap_err()
-            .contains("signature/class/parent mismatch")
-        );
-
-        intent.key.fragment_class = SkyrimFragmentClass::Package;
-        intent.key.owner = QuestRecordKey::new("PACK", "000001@Output.esm");
-        let mut package = target_record("PACK", &interner);
-        assert!(
-            materialize_fragment_vmad_attachment(
-                &intent,
-                &mut package,
-                &interner,
-                &[],
-                "Output.esm",
-            )
-            .unwrap_err()
-            .contains("no proven")
-        );
-
-        let mut reference = request(SkyrimFragmentClass::ReferenceAlias);
-        reference.alias_id = Some(3);
-        let mut location = request(SkyrimFragmentClass::LocationAlias);
-        location.alias_id = Some(3);
-        let duplicates = attachment_intents(root.path(), vec![reference, location]);
-        let mut quest = target_record("QUST", &interner);
-        assert!(
+            .unwrap();
+            assert_eq!(receipt.attachment_keys.len(), 2);
+            assert_eq!(receipt.script_classes.len(), 2);
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("expected raw VMAD bytes")
+            };
+            let decoded =
+                compact_vmad_payload_json(bytes, &[], "Output.esm", Some("QUST")).unwrap();
+            let aliases = decoded["Script Fragments"]["Aliases"].as_array().unwrap();
+            assert_eq!(aliases.len(), 2);
+            assert_eq!(aliases[0]["Object"]["Alias"], 1);
+            assert_eq!(aliases[1]["Object"]["Alias"], 2);
+            assert_eq!(decoded["Script Fragments"]["Script"]["ScriptName"], "");
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut reference = request(SkyrimFragmentClass::ReferenceAlias);
+            reference.alias_id = Some(7);
+            let intents = attachment_intents(
+                root.path(),
+                vec![request(SkyrimFragmentClass::QuestStage), reference],
+            );
+            let interner = StringInterner::new();
+            let mut record = target_record("QUST", &interner);
             materialize_fragment_vmad_attachments(
-                &duplicates,
-                &mut quest,
+                &intents,
+                &mut record,
                 &interner,
                 &[],
                 "Output.esm",
             )
-            .unwrap_err()
-            .contains("alias 3")
-        );
+            .unwrap();
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("expected raw VMAD bytes")
+            };
+            let decoded =
+                compact_vmad_payload_json(bytes, &[], "Output.esm", Some("QUST")).unwrap();
+            assert_eq!(
+                decoded["Script Fragments"]["Fragments"][0]["FragmentName"],
+                "Fragment_Stage_0010_Item_00"
+            );
+            assert_eq!(
+                decoded["Script Fragments"]["Aliases"][0]["Object"]["Alias"],
+                7
+            );
+        }
     }
 
     #[test]
-    fn strict_receipt_rejects_tampered_record_and_stale_intent_evidence() {
-        let root = tempfile::tempdir().unwrap();
-        let mut intents =
-            attachment_intents(root.path(), vec![request(SkyrimFragmentClass::TopicInfo)]);
-        let interner = StringInterner::new();
-        let mut record = target_record("INFO", &interner);
-        materialize_fragment_vmad_attachment(
-            &intents[0],
-            &mut record,
-            &interner,
-            &[],
-            "Output.esm",
-        )
-        .unwrap();
-        let FieldValue::Bytes(bytes) = &mut record.fields[0].value else {
-            panic!("expected raw VMAD bytes")
-        };
-        let last = bytes.len() - 1;
-        bytes[last] ^= 1;
-        assert!(
-            fragment_vmad_receipt_from_record(&intents, &record, &interner, &[], "Output.esm",)
-                .unwrap_err()
-                .contains("does not exactly match")
-        );
+    fn materialization_and_strict_receipt_reject_mismatched_or_tampered_evidence() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut intent =
+                attachment_intents(root.path(), vec![request(SkyrimFragmentClass::Scene)])
+                    .remove(0);
+            let interner = StringInterner::new();
 
-        intents[0].pex_blake3 = "stale".to_string();
-        let clean = target_record("INFO", &interner);
-        assert!(
-            fragment_vmad_receipt_from_record(&intents, &clean, &interner, &[], "Output.esm",)
+            let mut wrong_record = target_record("INFO", &interner);
+            assert!(
+                materialize_fragment_vmad_attachment(
+                    &intent,
+                    &mut wrong_record,
+                    &interner,
+                    &[],
+                    "Output.esm",
+                )
                 .unwrap_err()
-                .contains("incomplete compiler evidence")
-        );
+                .contains("does not match intent owner")
+            );
+
+            intent.entrypoints.clear();
+            let mut scene = target_record("SCEN", &interner);
+            assert!(
+                materialize_fragment_vmad_attachment(
+                    &intent,
+                    &mut scene,
+                    &interner,
+                    &[],
+                    "Output.esm",
+                )
+                .unwrap_err()
+                .contains("no entrypoint")
+            );
+
+            let mut class_mismatch =
+                attachment_intents(root.path(), vec![request(SkyrimFragmentClass::Scene)])
+                    .remove(0);
+            class_mismatch.parent_class = "Quest".to_string();
+            assert!(
+                materialize_fragment_vmad_attachment(
+                    &class_mismatch,
+                    &mut scene,
+                    &interner,
+                    &[],
+                    "Output.esm",
+                )
+                .unwrap_err()
+                .contains("signature/class/parent mismatch")
+            );
+
+            intent.key.fragment_class = SkyrimFragmentClass::Package;
+            intent.key.owner = QuestRecordKey::new("PACK", "000001@Output.esm");
+            let mut package = target_record("PACK", &interner);
+            assert!(
+                materialize_fragment_vmad_attachment(
+                    &intent,
+                    &mut package,
+                    &interner,
+                    &[],
+                    "Output.esm",
+                )
+                .unwrap_err()
+                .contains("no proven")
+            );
+
+            let mut reference = request(SkyrimFragmentClass::ReferenceAlias);
+            reference.alias_id = Some(3);
+            let mut location = request(SkyrimFragmentClass::LocationAlias);
+            location.alias_id = Some(3);
+            let duplicates = attachment_intents(root.path(), vec![reference, location]);
+            let mut quest = target_record("QUST", &interner);
+            assert!(
+                materialize_fragment_vmad_attachments(
+                    &duplicates,
+                    &mut quest,
+                    &interner,
+                    &[],
+                    "Output.esm",
+                )
+                .unwrap_err()
+                .contains("alias 3")
+            );
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mut intents =
+                attachment_intents(root.path(), vec![request(SkyrimFragmentClass::TopicInfo)]);
+            let interner = StringInterner::new();
+            let mut record = target_record("INFO", &interner);
+            materialize_fragment_vmad_attachment(
+                &intents[0],
+                &mut record,
+                &interner,
+                &[],
+                "Output.esm",
+            )
+            .unwrap();
+            let FieldValue::Bytes(bytes) = &mut record.fields[0].value else {
+                panic!("expected raw VMAD bytes")
+            };
+            let last = bytes.len() - 1;
+            bytes[last] ^= 1;
+            assert!(
+                fragment_vmad_receipt_from_record(&intents, &record, &interner, &[], "Output.esm",)
+                    .unwrap_err()
+                    .contains("does not exactly match")
+            );
+
+            intents[0].pex_blake3 = "stale".to_string();
+            let clean = target_record("INFO", &interner);
+            assert!(
+                fragment_vmad_receipt_from_record(&intents, &clean, &interner, &[], "Output.esm",)
+                    .unwrap_err()
+                    .contains("incomplete compiler evidence")
+            );
+        }
     }
 }

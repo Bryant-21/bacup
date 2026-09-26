@@ -208,90 +208,8 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn no_prps_is_no_op() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000800, "Output.esp", &[], &mut interner);
-
-        let stripped = apply_to_record(&mut record);
-        assert_eq!(stripped, 0);
-        assert!(record.fields.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn all_valid_entries_kept() {
-        let mut interner = StringInterner::new();
-        let rows = &[(0x00_001234u32, 1.0f32), (0x00_005678u32, 2.0f32)];
-        let mut record = make_race(0x000800, "Output.esp", rows, &mut interner);
-
-        let stripped = apply_to_record(&mut record);
-        assert_eq!(stripped, 0, "no orphan entries, nothing should be stripped");
-
-        // PRPS field must still be present with both rows.
-        assert_eq!(record.fields.len(), 1);
-        if let FieldValue::Bytes(data) = &record.fields[0].value {
-            assert_eq!(data.len(), 2 * PRPS_ROW_SIZE);
-        } else {
-            panic!("expected Bytes");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn null_formid_entry_stripped() {
-        let mut interner = StringInterner::new();
-        // Second entry has null formid → orphan.
-        let rows = &[(0x00_001234u32, 1.0f32), (0x00_000000u32, 0.5f32)];
-        let mut record = make_race(0x000800, "Output.esp", rows, &mut interner);
-
-        let stripped = apply_to_record(&mut record);
-        assert_eq!(stripped, 1, "one orphan entry should be stripped");
-
-        // PRPS field must still be present with only the valid row.
-        assert_eq!(record.fields.len(), 1);
-        if let FieldValue::Bytes(data) = &record.fields[0].value {
-            assert_eq!(data.len(), PRPS_ROW_SIZE, "only one row should remain");
-            let form_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-            assert_eq!(form_id, 0x00_001234);
-        } else {
-            panic!("expected Bytes");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn all_orphan_entries_produces_empty_prps() {
-        let mut interner = StringInterner::new();
-        let rows = &[(0x00_000000u32, 1.0f32), (0x00_000000u32, 2.0f32)];
-        let mut record = make_race(0x000800, "Output.esp", rows, &mut interner);
-
-        let stripped = apply_to_record(&mut record);
-        assert_eq!(stripped, 2);
-
-        // PRPS remains but is empty.
-        assert_eq!(record.fields.len(), 1);
-        if let FieldValue::Bytes(data) = &record.fields[0].value {
-            assert!(data.is_empty(), "all orphans stripped → empty PRPS bytes");
-        } else {
-            panic!("expected Bytes");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn non_prps_fields_preserved() {
+    fn non_prps_fields_and_malformed_prps_are_preserved() {
         let mut interner = StringInterner::new();
         let edid_sym = interner.intern("HumanRace");
 
@@ -319,14 +237,8 @@ mod tests {
         assert_eq!(record.fields.len(), 2);
         assert_eq!(record.fields[0].sig.as_str(), "EDID");
         assert_eq!(record.fields[1].sig.as_str(), "PRPS");
-    }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn malformed_prps_left_intact() {
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let prps_sig = SubrecordSig::from_str("PRPS").unwrap();
         let sig = SigCode::from_str("RACE").unwrap();
         let fk = FormKey {
@@ -360,32 +272,46 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn mixed_keeps_valid_strips_orphans() {
-        let mut interner = StringInterner::new();
-        let rows = &[
-            (0x00_001111u32, 1.0f32), // valid
-            (0x00_000000u32, 0.0f32), // orphan
-            (0x00_002222u32, 3.0f32), // valid
-            (0x00_000000u32, 0.0f32), // orphan
-        ];
-        let mut record = make_race(0x000800, "Output.esp", rows, &mut interner);
+    fn null_formid_rows_are_stripped_in_order() {
+        let interner = StringInterner::new();
+        let encoded = |rows: &[(u32, f32)]| {
+            FieldValue::Bytes(
+                rows.iter()
+                    .flat_map(|&(form_id, value)| {
+                        form_id.to_le_bytes().into_iter().chain(value.to_le_bytes())
+                    })
+                    .collect(),
+            )
+        };
 
-        let stripped = apply_to_record(&mut record);
-        assert_eq!(stripped, 2);
+        let mut record = make_race(0x000800, "Output.esp", &[], &interner);
+        assert_eq!(apply_to_record(&mut record), 0);
+        assert!(record.fields.is_empty());
 
-        if let FieldValue::Bytes(data) = &record.fields[0].value {
-            assert_eq!(data.len(), 2 * PRPS_ROW_SIZE, "two valid rows must remain");
-            // Verify order preserved: 0x1111 first, 0x2222 second.
-            let id1 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-            let id2 = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-            assert_eq!(id1, 0x00_001111);
-            assert_eq!(id2, 0x00_002222);
-        } else {
-            panic!("expected Bytes");
+        for (name, rows, kept) in [
+            (
+                "all valid",
+                vec![(0x1234, 1.0), (0x5678, 2.0)],
+                vec![(0x1234, 1.0), (0x5678, 2.0)],
+            ),
+            (
+                "one null",
+                vec![(0x1234, 1.0), (0, 0.5)],
+                vec![(0x1234, 1.0)],
+            ),
+            ("all null", vec![(0, 1.0), (0, 2.0)], vec![]),
+            (
+                "mixed",
+                vec![(0x1111, 1.0), (0, 0.0), (0x2222, 3.0), (0, 0.0)],
+                vec![(0x1111, 1.0), (0x2222, 3.0)],
+            ),
+        ] {
+            let mut record = make_race(0x000800, "Output.esp", &rows, &interner);
+            let stripped = apply_to_record(&mut record);
+            assert_eq!(stripped as usize, rows.len() - kept.len(), "{name}");
+            assert_eq!(record.fields.len(), 1, "{name}");
+            assert_eq!(record.fields[0].value, encoded(&kept), "{name}");
         }
     }
 }

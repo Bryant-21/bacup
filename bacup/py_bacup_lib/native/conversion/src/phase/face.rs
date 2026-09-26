@@ -49,12 +49,6 @@ use crate::skyrimse_fo4_runtime::humanoid::{SkyrimHumanoidFaceKind, source_human
 use crate::source_read::{
     form_key_to_read_str, iter_form_keys_of_sig, parse_form_key_str, read_record,
 };
-use crate::source_rig::{
-    CreatureAncillaryNpcArtifactKind, CreatureAncillaryNpcArtifactReceipt,
-    CreatureAncillaryNpcFacegenGenerationReceipt, CreatureAncillaryNpcSourceArtifactKind,
-    CreatureAncillaryNpcSourceArtifactReceipt, CreatureAncillaryNpcTemplateReceipt, TargetFormKey,
-    creature_ancillary_npc_facegen_generation_receipt,
-};
 use crate::sym::StringInterner;
 use crate::target_write::replace_records_native;
 
@@ -141,82 +135,6 @@ enum RaceClass {
 enum SourceHeadProfile {
     Standard,
     Old,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LegacyCreatureFacegenProfile {
-    HumanMale,
-    HumanFemale,
-    GhoulMale,
-    GhoulFemale,
-    ChildMale,
-    ChildFemale,
-}
-
-impl LegacyCreatureFacegenProfile {
-    fn race_class(self) -> RaceClass {
-        match self {
-            Self::HumanMale => RaceClass::HumanMale,
-            Self::HumanFemale => RaceClass::HumanFemale,
-            Self::GhoulMale => RaceClass::GhoulMale,
-            Self::GhoulFemale => RaceClass::GhoulFemale,
-            Self::ChildMale => RaceClass::ChildMale,
-            Self::ChildFemale => RaceClass::ChildFemale,
-        }
-    }
-
-    fn resource_name(self) -> &'static str {
-        match self {
-            Self::HumanMale => "male",
-            Self::HumanFemale => "female",
-            Self::GhoulMale => "ghoul_male",
-            Self::GhoulFemale => "ghoul_female",
-            Self::ChildMale => "child_male",
-            Self::ChildFemale => "child_female",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LegacyCreatureFacegenSourceArtifactInput {
-    pub path: PathBuf,
-    pub receipt: CreatureAncillaryNpcSourceArtifactReceipt,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LegacyCreatureFacegenPartInput {
-    pub source_model: Option<LegacyCreatureFacegenSourceArtifactInput>,
-    pub target_model_nif: PathBuf,
-    pub shapes: Vec<LegacyCreatureFacegenShapeInput>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LegacyCreatureFacegenShapeInput {
-    pub source_shape_name: String,
-    pub target_shape_name: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LegacyCreatureFacegenBuildInput {
-    pub profile: LegacyCreatureFacegenProfile,
-    pub target_npc: TargetFormKey,
-    pub template_receipt: CreatureAncillaryNpcTemplateReceipt,
-    pub target_appearance_closure_blake3: String,
-    pub symmetric_morph_bytes: Vec<u8>,
-    pub asymmetric_morph_bytes: Vec<u8>,
-    pub source_head_tri: LegacyCreatureFacegenSourceArtifactInput,
-    pub source_head_egm: LegacyCreatureFacegenSourceArtifactInput,
-    pub source_facetint_dds: LegacyCreatureFacegenSourceArtifactInput,
-    pub target_base_head_nif: PathBuf,
-    pub target_facegeom_template_nif: PathBuf,
-    pub selected_parts: Vec<LegacyCreatureFacegenPartInput>,
-    pub private_staging_data_root: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LegacyCreatureFacegenBuildOutput {
-    pub artifacts: Vec<CreatureAncillaryNpcArtifactReceipt>,
-    pub generation: CreatureAncillaryNpcFacegenGenerationReceipt,
 }
 
 fn classify_source_head_profile(
@@ -920,6 +838,7 @@ fn parse_egm_basis(path: &Path) -> Result<(usize, usize, Vec<f32>), String> {
 #[derive(Debug)]
 struct ParsedEgmBasis {
     symmetric_count: usize,
+    #[cfg(test)]
     asymmetric_count: usize,
     vertex_count: usize,
     basis: Vec<f32>,
@@ -968,6 +887,7 @@ fn parse_egm_basis_full(path: &Path) -> Result<ParsedEgmBasis, String> {
 
     Ok(ParsedEgmBasis {
         symmetric_count: num_differences,
+        #[cfg(test)]
         asymmetric_count: num_asymmetric,
         vertex_count: num_vertices,
         basis,
@@ -1157,46 +1077,6 @@ fn extract_struct_f32(
 // ---------------------------------------------------------------------------
 // Write facegeom NIF
 // ---------------------------------------------------------------------------
-
-#[cfg(test)]
-fn write_facegeom_nif(
-    template_nif_path: &Path,
-    neutral_vertices: &[[f32; 3]],
-    deformation: &[[f32; 3]],
-    race_class: RaceClass,
-    out_path: &Path,
-) -> Result<(), String> {
-    use nif_core_native::model::{NifFile, NifValue};
-
-    let nif = NifFile::load(template_nif_path.to_path_buf())
-        .map_err(|e| format!("load FaceGen template NIF: {e}"))?;
-    let schema = nif_core_native::schema::NifSchema::from_generated();
-    let expected_name = race_class
-        .primary_head_shape_name()
-        .ok_or_else(|| "unknown race has no primary head shape".to_string())?;
-
-    let shape_ids: Vec<usize> = (0..nif.blocks.len())
-        .filter(|&i| {
-            if let Some(b) = nif.get_block(i) {
-                schema.is_subtype_of(&b.type_name, "BSTriShape")
-                    && matches!(b.get_field("Name"), Some(NifValue::String(name)) if name.trim_end_matches('\0').eq_ignore_ascii_case(expected_name))
-                    && matches!(b.get_field("Vertex Data"), Some(NifValue::Array(_)))
-            } else {
-                false
-            }
-        })
-        .collect();
-
-    if shape_ids.len() != 1 {
-        return Err(format!(
-            "Expected one {expected_name} shape in FaceGen template {}, got {}",
-            template_nif_path.display(),
-            shape_ids.len(),
-        ));
-    }
-
-    write_facegeom_nif_from_template(&nif, shape_ids[0], neutral_vertices, deformation, out_path)
-}
 
 fn write_facegeom_nif_from_template(
     template: &nif_core_native::model::NifFile,
@@ -1389,316 +1269,7 @@ fn write_facetint_dds_with_uv(
     write_fallback_facetint_dds(out_path, fallback_color)
 }
 
-pub(crate) fn generate_legacy_creature_facegen(
-    input: LegacyCreatureFacegenBuildInput,
-) -> Result<LegacyCreatureFacegenBuildOutput, String> {
-    if input.target_npc.local == 0
-        || input.target_npc.plugin.trim().is_empty()
-        || input.target_npc.plugin.contains(['/', '\\'])
-    {
-        return Err("legacy creature FaceGen target NPC is invalid".to_string());
-    }
-    if input.selected_parts.is_empty() {
-        return Err("legacy creature FaceGen has no exact selected head parts".to_string());
-    }
-    validate_hash_text(
-        &input.target_appearance_closure_blake3,
-        "target appearance closure",
-    )?;
-    let symmetric = decode_exact_f32_payload(&input.symmetric_morph_bytes, "FGGS")?;
-    let asymmetric = decode_exact_f32_payload(&input.asymmetric_morph_bytes, "FGGA")?;
-    validate_source_facegen_input(
-        &input.source_head_tri,
-        CreatureAncillaryNpcSourceArtifactKind::Tri,
-    )?;
-    validate_source_facegen_input(
-        &input.source_head_egm,
-        CreatureAncillaryNpcSourceArtifactKind::Egm,
-    )?;
-    validate_source_facegen_input(
-        &input.source_facetint_dds,
-        CreatureAncillaryNpcSourceArtifactKind::Dds,
-    )?;
-
-    let parsed = parse_egm_basis_full(&input.source_head_egm.path)?;
-    if symmetric.len() != parsed.symmetric_count || asymmetric.len() != parsed.asymmetric_count {
-        return Err(format!(
-            "legacy creature FaceGen morph counts FGGS {}/FGGA {} do not match EGM {}/{}",
-            symmetric.len(),
-            asymmetric.len(),
-            parsed.symmetric_count,
-            parsed.asymmetric_count
-        ));
-    }
-    let mut coefficients = symmetric;
-    coefficients.extend(asymmetric);
-    let source_neutral = parse_tri_neutral_vertices(&input.source_head_tri.path)?;
-    let source_deformed = reconstruct_fnv_face_from_basis(
-        &source_neutral,
-        parsed.symmetric_count + parsed.asymmetric_count,
-        parsed.vertex_count,
-        &parsed.basis,
-        &coefficients,
-    )?;
-
-    let resource_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phase/resources/face");
-    let profile_name = input.profile.resource_name();
-    let correspondence_path =
-        resource_root.join(format!("fnv_to_fo4_correspondence_{profile_name}.npz"));
-    let uv_lut_path = resource_root.join(format!("fnv_to_fo4_facetint_uv_lut_{profile_name}.npz"));
-    let correspondence = Correspondence::load(&correspondence_path)?;
-    let target_neutral = load_fo4_neutral_vertices(&input.target_base_head_nif)?;
-    if correspondence.sample_count != target_neutral.len() {
-        return Err(format!(
-            "legacy creature FaceGen correspondence output {} does not match target head vertices {}",
-            correspondence.sample_count,
-            target_neutral.len()
-        ));
-    }
-    let deformation = correspondence.interpolate_deformation(&source_neutral, &source_deformed)?;
-
-    let mut template = load_fo4_facegen_nif(
-        &input.target_facegeom_template_nif,
-        "target FaceGeom template",
-    )?;
-    strip_all_face_shapes(&mut template)?;
-    let face_node = find_face_node(&template)
-        .ok_or_else(|| "target FaceGeom template has no face node".to_string())?;
-    let mut primary_shape_ids = Vec::new();
-    let mut facegeom_sources = vec![
-        input.source_head_egm.receipt.clone(),
-        input.source_head_tri.receipt.clone(),
-    ];
-    for (part_index, part) in input.selected_parts.iter().enumerate() {
-        if part.shapes.is_empty() {
-            return Err(format!(
-                "legacy creature FaceGen part {part_index} has no exact shapes"
-            ));
-        }
-        let target_part = load_fo4_facegen_nif(&part.target_model_nif, "target head part")?;
-        let (part_nif, skin_reference) = match &part.source_model {
-            Some(source) => {
-                validate_source_facegen_input(source, CreatureAncillaryNpcSourceArtifactKind::Nif)?;
-                let mut converted =
-                    nif_core_native::model::NifFile::load(&source.path).map_err(|error| {
-                        format!(
-                            "load legacy creature face part {}: {error}",
-                            source.path.display()
-                        )
-                    })?;
-                if nif_core_native::convert_file::prepare_legacy_face_part_for_fo4(&mut converted)
-                    == 0
-                {
-                    return Err(format!(
-                        "legacy creature face part {} has no target-convertible geometry",
-                        source.path.display()
-                    ));
-                }
-                facegeom_sources.push(source.receipt.clone());
-                (converted, Some(target_part))
-            }
-            None => (target_part, None),
-        };
-        let mut names = std::collections::BTreeSet::new();
-        for shape in &part.shapes {
-            let source_name = shape.source_shape_name.trim_end_matches('\0');
-            let target_name = shape.target_shape_name.trim_end_matches('\0');
-            if source_name.is_empty()
-                || target_name.is_empty()
-                || !names.insert(source_name.to_ascii_lowercase())
-            {
-                return Err(format!(
-                    "legacy creature FaceGen part {part_index} has invalid or duplicate shape identity"
-                ));
-            }
-            let source_shape = exact_face_shape_id(&part_nif, source_name)?;
-            let copied = append_face_part_shape(
-                &mut template,
-                &part_nif,
-                source_shape,
-                face_node,
-                target_name,
-            )?;
-            if let Some(reference) = skin_reference.as_ref() {
-                nif_core_native::skin::rig_facegen_shape_from_reference(
-                    &mut template,
-                    copied,
-                    reference,
-                )?;
-            }
-            if target_name.eq_ignore_ascii_case(
-                input
-                    .profile
-                    .race_class()
-                    .primary_head_shape_name()
-                    .ok_or_else(|| {
-                        "legacy creature FaceGen profile has no head shape".to_string()
-                    })?,
-            ) {
-                primary_shape_ids.push(copied);
-            }
-        }
-    }
-    if primary_shape_ids.len() != 1 {
-        return Err(format!(
-            "legacy creature FaceGen requires exactly one primary head shape, got {}",
-            primary_shape_ids.len()
-        ));
-    }
-    nif_core_native::convert_file::finalize_assembled_facegeom_for_fo4(&mut template);
-
-    let form_id = format!("{:08X}", input.target_npc.local);
-    let facegeom_runtime = facegeom_relpath(&input.target_npc.plugin, &form_id).replace('/', "\\");
-    let facetint_runtime = facetint_relpath(&input.target_npc.plugin, &form_id).replace('/', "\\");
-    let facegeom_path = input
-        .private_staging_data_root
-        .join(facegeom_runtime.replace('\\', std::path::MAIN_SEPARATOR_STR));
-    let facetint_path = input
-        .private_staging_data_root
-        .join(facetint_runtime.replace('\\', std::path::MAIN_SEPARATOR_STR));
-    write_facegeom_nif_from_template(
-        &template,
-        primary_shape_ids[0],
-        &target_neutral,
-        &deformation,
-        &facegeom_path,
-    )?;
-    validate_fo4_facegen_output(&facegeom_path)?;
-
-    let uv_lut = load_uv_lut(&uv_lut_path)?;
-    write_facetint_dds_with_required_uv(&facetint_path, &input.source_facetint_dds.path, &uv_lut)?;
-
-    facegeom_sources.sort_by_key(source_artifact_key);
-    facegeom_sources
-        .dedup_by(|left, right| source_artifact_key(left) == source_artifact_key(right));
-    let mut artifacts = vec![
-        artifact_receipt_from_file(
-            CreatureAncillaryNpcArtifactKind::Nif,
-            facegeom_sources,
-            facegeom_runtime,
-            &facegeom_path,
-        )?,
-        artifact_receipt_from_file(
-            CreatureAncillaryNpcArtifactKind::Dds,
-            vec![input.source_facetint_dds.receipt],
-            facetint_runtime,
-            &facetint_path,
-        )?,
-    ];
-    artifacts.sort_by(|left, right| {
-        left.target_data_path
-            .to_ascii_lowercase()
-            .cmp(&right.target_data_path.to_ascii_lowercase())
-    });
-    let pipeline_resources_blake3 = hash_facegen_pipeline_resources(
-        &correspondence_path,
-        &uv_lut_path,
-        &input.target_base_head_nif,
-        &input.target_facegeom_template_nif,
-        &input.selected_parts,
-    )?;
-    let generation = creature_ancillary_npc_facegen_generation_receipt(
-        &input.template_receipt,
-        pipeline_resources_blake3,
-        input.target_appearance_closure_blake3,
-        &artifacts,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(LegacyCreatureFacegenBuildOutput {
-        artifacts,
-        generation,
-    })
-}
-
-fn decode_exact_f32_payload(bytes: &[u8], label: &str) -> Result<Vec<f32>, String> {
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
-        return Err(format!("{label} is not an exact nonempty f32 payload"));
-    }
-    bytes
-        .chunks_exact(4)
-        .enumerate()
-        .map(|(index, chunk)| {
-            let value = f32::from_le_bytes(chunk.try_into().unwrap());
-            value
-                .is_finite()
-                .then_some(value)
-                .ok_or_else(|| format!("{label}[{index}] is non-finite"))
-        })
-        .collect()
-}
-
-fn validate_source_facegen_input(
-    input: &LegacyCreatureFacegenSourceArtifactInput,
-    expected_kind: CreatureAncillaryNpcSourceArtifactKind,
-) -> Result<(), String> {
-    if input.receipt.kind != expected_kind {
-        return Err(format!(
-            "legacy creature FaceGen input {:?} has kind {:?}, expected {expected_kind:?}",
-            input.path, input.receipt.kind
-        ));
-    }
-    let bytes = std::fs::read(&input.path)
-        .map_err(|error| format!("read FaceGen input {}: {error}", input.path.display()))?;
-    if input.receipt.byte_len != bytes.len() as u64
-        || input.receipt.blake3 != blake3::hash(&bytes).to_hex().as_str()
-    {
-        return Err(format!(
-            "legacy creature FaceGen input {} does not match its byte receipt",
-            input.path.display()
-        ));
-    }
-    Ok(())
-}
-
-fn validate_hash_text(hash: &str, label: &str) -> Result<(), String> {
-    if hash.len() != 64
-        || !hash
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(format!("{label} is not a lowercase BLAKE3 hash"));
-    }
-    Ok(())
-}
-
-fn load_fo4_facegen_nif(
-    path: &Path,
-    label: &str,
-) -> Result<nif_core_native::model::NifFile, String> {
-    let nif = nif_core_native::model::NifFile::load(path)
-        .map_err(|error| format!("load {label} {}: {error}", path.display()))?;
-    if nif.header.version != (20, 2, 0, 7)
-        || nif.header.user_version != 12
-        || nif.header.bs_version != 130
-    {
-        return Err(format!("{label} {} is not Fallout 4", path.display()));
-    }
-    Ok(nif)
-}
-
-fn exact_face_shape_id(nif: &nif_core_native::model::NifFile, name: &str) -> Result<usize, String> {
-    use nif_core_native::model::NifValue;
-
-    let schema = nif_core_native::schema::NifSchema::from_generated();
-    let ids = nif
-        .blocks
-        .iter()
-        .filter(|block| {
-            schema.is_subtype_of(&block.type_name, "BSTriShape")
-                && matches!(block.get_field("Vertex Data"), Some(NifValue::Array(_)))
-                && matches!(block.get_field("Name"), Some(NifValue::String(actual)) if actual.trim_end_matches('\0').eq_ignore_ascii_case(name))
-        })
-        .map(|block| block.block_id)
-        .collect::<Vec<_>>();
-    if ids.len() != 1 {
-        return Err(format!(
-            "legacy creature FaceGen shape {name:?} has {} exact matches",
-            ids.len()
-        ));
-    }
-    Ok(ids[0])
-}
-
+#[cfg(test)]
 fn write_facetint_dds_with_required_uv(
     output: &Path,
     source: &Path,
@@ -1727,79 +1298,6 @@ fn write_facetint_dds_with_required_uv(
         false,
     )
     .map_err(|error| format!("write exact remapped FaceTint DDS: {error}"))
-}
-
-fn validate_fo4_facegen_output(path: &Path) -> Result<(), String> {
-    load_fo4_facegen_nif(path, "generated FaceGeom").map(|_| ())
-}
-
-fn source_artifact_key(
-    artifact: &CreatureAncillaryNpcSourceArtifactReceipt,
-) -> (String, String, CreatureAncillaryNpcSourceArtifactKind) {
-    (
-        artifact.source_game.to_ascii_lowercase(),
-        artifact.source_data_path.to_ascii_lowercase(),
-        artifact.kind,
-    )
-}
-
-fn artifact_receipt_from_file(
-    kind: CreatureAncillaryNpcArtifactKind,
-    source_artifacts: Vec<CreatureAncillaryNpcSourceArtifactReceipt>,
-    target_data_path: String,
-    target_path: &Path,
-) -> Result<CreatureAncillaryNpcArtifactReceipt, String> {
-    let bytes = std::fs::read(target_path).map_err(|error| {
-        format!(
-            "read generated FaceGen artifact {}: {error}",
-            target_path.display()
-        )
-    })?;
-    Ok(CreatureAncillaryNpcArtifactReceipt {
-        kind,
-        source_artifacts,
-        target_data_path,
-        target_byte_len: bytes.len() as u64,
-        target_blake3: blake3::hash(&bytes).to_hex().to_string(),
-    })
-}
-
-fn hash_facegen_pipeline_resources(
-    correspondence: &Path,
-    uv_lut: &Path,
-    target_base_head: &Path,
-    target_template: &Path,
-    parts: &[LegacyCreatureFacegenPartInput],
-) -> Result<String, String> {
-    let mut paths = vec![
-        ("correspondence".to_string(), correspondence.to_path_buf()),
-        ("uv_lut".to_string(), uv_lut.to_path_buf()),
-        (
-            "target_base_head".to_string(),
-            target_base_head.to_path_buf(),
-        ),
-        ("target_template".to_string(), target_template.to_path_buf()),
-    ];
-    paths.extend(parts.iter().enumerate().map(|(index, part)| {
-        (
-            format!("target_part_{index:04}"),
-            part.target_model_nif.clone(),
-        )
-    }));
-    let mut receipts = Vec::with_capacity(paths.len());
-    for (label, path) in paths {
-        let bytes = std::fs::read(&path).map_err(|error| {
-            format!("read FaceGen pipeline resource {}: {error}", path.display())
-        })?;
-        receipts.push((
-            label,
-            bytes.len() as u64,
-            blake3::hash(&bytes).to_hex().to_string(),
-        ));
-    }
-    let json = serde_json::to_vec(&receipts)
-        .map_err(|error| format!("serialize FaceGen pipeline resources: {error}"))?;
-    Ok(blake3::hash(&json).to_hex().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2712,6 +2210,7 @@ fn facetint_relpath(output_plugin_name: &str, formid_hex: &str) -> String {
     format!("Textures/Actors/Character/FaceGenData/FaceTint/{output_plugin_name}/{formid_hex}.dds")
 }
 
+#[cfg(test)]
 fn normalize_formid_hex(form_key_str: &str) -> String {
     let object_id = form_key_str.split(':').next().unwrap_or(form_key_str);
     let object_id = object_id.trim_start_matches("0x").trim_start_matches("0X");
@@ -4921,7 +4420,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_npy_f32_roundtrip() {
+    fn parse_npy_f32_and_i32_roundtrip() {
         let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
         let bytes = make_npy_f32(&[2, 3], &data);
         let (floats, shape) = parse_npy_f32(&bytes).unwrap();
@@ -4930,10 +4429,7 @@ mod tests {
         for (a, &b) in floats.iter().zip(data.iter()) {
             assert!((a - b).abs() < 1e-6, "{a} != {b}");
         }
-    }
 
-    #[test]
-    fn parse_npy_i32_roundtrip() {
         let data = [0i32, 1, 2, 3, 4, 5];
         let bytes = make_npy_i32(&[3, 2], &data);
         let (ints, shape) = parse_npy_i32(&bytes).unwrap();
@@ -5049,33 +4545,19 @@ mod tests {
     // ── Race classification ──────────────────────────────────────────────────
 
     #[test]
-    fn classify_human_male_races() {
-        for oid in ["000019", "000023", "00001b", "00f43d"] {
-            assert_eq!(classify_race(oid), RaceClass::HumanMale, "oid={oid}");
+    fn race_classification_uses_race_id_and_npc_sex() {
+        for (oid, expected) in [
+            ("000019", RaceClass::HumanMale),
+            ("00f43d", RaceClass::HumanMale),
+            ("00001a", RaceClass::HumanFemale),
+            ("0038e9", RaceClass::HumanFemale),
+            ("ffffff", RaceClass::Unknown),
+        ] {
+            assert_eq!(classify_race(oid), expected, "oid={oid}");
         }
-    }
-
-    #[test]
-    fn classify_human_female_races() {
-        for oid in ["00001a", "00001c", "000024", "0038e9"] {
-            assert_eq!(classify_race(oid), RaceClass::HumanFemale, "oid={oid}");
-        }
-    }
-
-    #[test]
-    fn classify_unknown_race() {
-        assert_eq!(classify_race("ffffff"), RaceClass::Unknown);
-    }
-
-    #[test]
-    fn classify_source_ghoul_uses_npc_sex() {
         assert_eq!(classify_source_race("003b3e", false), RaceClass::GhoulMale);
         assert_eq!(classify_source_race("003b3e", true), RaceClass::GhoulFemale);
         assert_eq!(classify_source_race("0083d7", false), RaceClass::GhoulMale);
-    }
-
-    #[test]
-    fn classify_source_child_uses_npc_sex() {
         for object_id in FNV_CHILD_IDS {
             assert_eq!(classify_source_race(object_id, false), RaceClass::ChildMale);
             assert_eq!(
@@ -5083,40 +4565,76 @@ mod tests {
                 RaceClass::ChildFemale
             );
         }
+
+        let interner = StringInterner::new();
+        for (local, male, female) in [
+            (
+                FO4_HUMAN_RACE_LOCAL,
+                RaceClass::HumanMale,
+                RaceClass::HumanFemale,
+            ),
+            (
+                FO4_GHOUL_RACE_LOCAL,
+                RaceClass::GhoulMale,
+                RaceClass::GhoulFemale,
+            ),
+            (
+                FO4_HUMAN_CHILD_RACE_LOCAL,
+                RaceClass::ChildMale,
+                RaceClass::ChildFemale,
+            ),
+        ] {
+            let race = FormKey {
+                local,
+                plugin: interner.intern("Fallout4.esm"),
+            };
+            assert_eq!(classify_mapped_race(Some(race), false), male, "{local:06X}");
+            assert_eq!(
+                classify_mapped_race(Some(race), true),
+                female,
+                "{local:06X}"
+            );
+        }
+        assert_eq!(
+            RaceClass::GhoulMale.mandatory_head_parts(),
+            FO4_GHOUL_MALE_HEAD_PARTS
+        );
+        assert_eq!(
+            RaceClass::GhoulFemale.mandatory_head_parts(),
+            FO4_GHOUL_FEMALE_HEAD_PARTS
+        );
+        assert_eq!(
+            RaceClass::ChildMale.mandatory_head_parts(),
+            FO4_CHILD_MALE_HEAD_PARTS
+        );
+        assert_eq!(
+            RaceClass::ChildFemale.mandatory_head_parts(),
+            FO4_CHILD_FEMALE_HEAD_PARTS
+        );
     }
 
     // ── should_attempt_bake ──────────────────────────────────────────────────
 
     #[test]
-    fn should_bake_human_male_with_nonzero_coeffs() {
-        let coeffs = vec![0.5f32; 50];
-        assert!(should_attempt_bake(RaceClass::HumanMale, &coeffs));
-    }
-
-    #[test]
-    fn should_bake_ghoul_with_nonzero_coeffs() {
-        let coeffs = vec![0.5f32; 50];
-        assert!(should_attempt_bake(RaceClass::GhoulMale, &coeffs));
-        assert!(should_attempt_bake(RaceClass::GhoulFemale, &coeffs));
-    }
-
-    #[test]
-    fn should_bake_child_with_nonzero_coeffs() {
-        let coeffs = vec![0.5f32; 50];
-        assert!(should_attempt_bake(RaceClass::ChildMale, &coeffs));
-        assert!(should_attempt_bake(RaceClass::ChildFemale, &coeffs));
-    }
-
-    #[test]
-    fn should_not_bake_zero_coeffs() {
-        let coeffs = vec![0.0f32; 50];
-        assert!(!should_attempt_bake(RaceClass::HumanMale, &coeffs));
-    }
-
-    #[test]
-    fn should_not_bake_wrong_count() {
-        let coeffs = vec![0.5f32; 49];
-        assert!(!should_attempt_bake(RaceClass::HumanMale, &coeffs));
+    fn should_attempt_bake_requires_supported_race_and_nonzero_50_coeffs() {
+        let nonzero = vec![0.5f32; 50];
+        for race in [
+            RaceClass::HumanMale,
+            RaceClass::GhoulMale,
+            RaceClass::GhoulFemale,
+            RaceClass::ChildMale,
+            RaceClass::ChildFemale,
+        ] {
+            assert!(should_attempt_bake(race, &nonzero), "{race:?}");
+        }
+        assert!(!should_attempt_bake(
+            RaceClass::HumanMale,
+            &vec![0.0f32; 50]
+        ));
+        assert!(!should_attempt_bake(
+            RaceClass::HumanMale,
+            &vec![0.5f32; 49]
+        ));
     }
 
     // ── Bone solve ───────────────────────────────────────────────────────────
@@ -5172,56 +4690,33 @@ mod tests {
     // ── formid_hex normalization ─────────────────────────────────────────────
 
     #[test]
-    fn normalize_formid_hex_strips_plugin() {
+    fn facegen_relpaths_use_normalized_formid() {
         assert_eq!(normalize_formid_hex("000800:FalloutNV.esm"), "00000800");
-    }
-
-    #[test]
-    fn normalize_formid_hex_plain() {
         assert_eq!(normalize_formid_hex("000800"), "00000800");
-    }
-
-    // ── FaceGeom / FaceTint path helpers ────────────────────────────────────
-
-    #[test]
-    fn facegeom_relpath_format() {
-        let rel = facegeom_relpath("B21_Test.esp", "00000800");
         assert_eq!(
-            rel,
+            facegeom_relpath("B21_Test.esp", "00000800"),
             "Meshes/Actors/Character/FaceGenData/FaceGeom/B21_Test.esp/00000800.nif"
         );
-    }
-
-    #[test]
-    fn facetint_relpath_format() {
-        let rel = facetint_relpath("B21_Test.esp", "00000800");
         assert_eq!(
-            rel,
+            facetint_relpath("B21_Test.esp", "00000800"),
             "Textures/Actors/Character/FaceGenData/FaceTint/B21_Test.esp/00000800.dds"
         );
     }
 
-    // ── Hair table ──────────────────────────────────────────────────────────
+    // ── FaceGeom / FaceTint path helpers ────────────────────────────────────
 
-    #[test]
-    fn hair_table_loads_embedded() {
-        let table = HairTable::load(EMBEDDED_HAIR_LOOKUP_YAML).unwrap();
-        assert!(
-            table.male_default.is_some(),
-            "male_default should be present"
-        );
-        assert!(
-            table.female_default.is_some(),
-            "female_default should be present"
-        );
-    }
+    // ── Hair table ──────────────────────────────────────────────────────────
 
     #[test]
     fn hair_table_lookup_race_default() {
         let table = HairTable::load(EMBEDDED_HAIR_LOOKUP_YAML).unwrap();
-        let result = table.lookup(None, RaceClass::HumanMale);
-        assert!(result.is_some(), "Should find male default");
-        let r = result.unwrap();
+        assert!(
+            table.female_default.is_some(),
+            "female_default should be present"
+        );
+        let r = table
+            .lookup(None, RaceClass::HumanMale)
+            .expect("Should find male default");
         assert_eq!(r.plugin.to_ascii_lowercase(), "fallout4.esm");
     }
 
@@ -5280,18 +4775,7 @@ mod tests {
     }
 
     #[test]
-    fn source_eyebrows_are_not_misclassified_as_beards() {
-        for object_id in ["0B5BEA", "0B6DE4", "0B4016", "0B4017", "0B4018", "0B4019"] {
-            let source = HairRef {
-                plugin: "FalloutNV.esm".to_string(),
-                object_id: object_id.to_string(),
-            };
-            assert!(target_beard_spec(&source, RaceClass::HumanMale).is_none());
-        }
-    }
-
-    #[test]
-    fn known_source_beard_uses_the_matching_fo4_style() {
+    fn known_source_beard_uses_the_matching_fo4_style_and_eyebrows_are_not_beards() {
         let source = HairRef {
             plugin: "FalloutNV.esm".to_string(),
             object_id: "066FD0".to_string(),
@@ -5300,6 +4784,16 @@ mod tests {
 
         assert_eq!(target.local, 0x0002_9671);
         assert_eq!(target.shape_name, "Beard20");
+        for object_id in ["0B5BEA", "0B6DE4", "0B4016", "0B4019"] {
+            let source = HairRef {
+                plugin: "FalloutNV.esm".to_string(),
+                object_id: object_id.to_string(),
+            };
+            assert!(
+                target_beard_spec(&source, RaceClass::HumanMale).is_none(),
+                "{object_id}"
+            );
+        }
     }
 
     #[test]
@@ -5347,290 +4841,6 @@ mod tests {
     }
 
     #[test]
-    fn easy_pete_face_part_uses_converted_beard_full_old_geometry_when_assets_exist() {
-        use nif_core_native::model::{NifFile, NifValue};
-
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| {
-                path.join("extracted/fnv").is_dir() && path.join("extracted/fo4").is_dir()
-            })
-        else {
-            return;
-        };
-        let source_root = repo_root.join("extracted/fnv");
-        let source_path = source_root.join("Meshes/Characters/Hair/BeardFullOld.NIF");
-        if !source_path.is_file() {
-            return;
-        }
-        let source_nif = NifFile::load(&source_path).unwrap();
-        let source_vertices = source_nif
-            .blocks
-            .iter()
-            .find(|block| block.type_name == "NiTriShapeData")
-            .and_then(|block| block.get_field("Num Vertices"))
-            .and_then(|value| match value {
-                NifValue::UInt(value) => Some(*value),
-                _ => None,
-            })
-            .unwrap();
-        let asset = load_face_part_asset(
-            &repo_root.join("extracted/fo4"),
-            &source_root,
-            target_beard_spec(
-                &HairRef {
-                    plugin: "FalloutNV.esm".to_string(),
-                    object_id: "09F923".to_string(),
-                },
-                RaceClass::HumanMale,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let shape = asset.nif.get_block(asset.shape_ids[0]).unwrap();
-
-        assert_eq!(shape.type_name, "BSSubIndexTriShape");
-        assert!(matches!(
-            shape.get_field("Name"),
-            Some(NifValue::String(name)) if name == "BeardFullOld:0"
-        ));
-        assert_eq!(
-            shape.get_field("Num Vertices"),
-            Some(&NifValue::UInt(source_vertices))
-        );
-        assert!(asset.nif.blocks.iter().any(|block| {
-            block.type_name == "BSShaderTextureSet"
-                && matches!(block.get_field("Textures"), Some(NifValue::Array(paths)) if paths.iter().any(|path| matches!(path, NifValue::String(path) if path.eq_ignore_ascii_case("textures\\characters\\hair\\BeardFull.dds"))))
-        }));
-    }
-
-    #[test]
-    fn easy_pete_face_part_uses_only_the_source_hat_hair_variant_when_assets_exist() {
-        use nif_core_native::model::NifValue;
-
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| {
-                path.join("extracted/fnv").is_dir() && path.join("extracted/fo4").is_dir()
-            })
-        else {
-            return;
-        };
-        let source_root = repo_root.join("extracted/fnv");
-        if !source_root
-            .join("Meshes/Characters/Hair/HairBaseOld.NIF")
-            .is_file()
-        {
-            return;
-        }
-        let asset = load_face_part_asset(
-            &repo_root.join("extracted/fo4"),
-            &source_root,
-            exact_legacy_hair_spec(
-                0x0010_4C7F,
-                &HairRef {
-                    plugin: "FalloutNV.esm".to_string(),
-                    object_id: "0987D9".to_string(),
-                },
-                RaceClass::HumanMale,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(asset.shape_ids.len(), 1);
-        let shape = asset.nif.get_block(asset.shape_ids[0]).unwrap();
-        assert!(matches!(
-            shape.get_field("Name"),
-            Some(NifValue::String(name)) if name == "Hat"
-        ));
-    }
-
-    #[test]
-    fn easy_pete_source_beard_and_hair_are_valid_skinned_fo4_facegen_parts() {
-        use nif_core_native::model::{NifFile, NifValue};
-
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| {
-                path.join("extracted/fnv").is_dir() && path.join("extracted/fo4").is_dir()
-            })
-        else {
-            return;
-        };
-        let source_root = repo_root.join("extracted/fnv");
-        let target_root = repo_root.join("extracted/fo4");
-        let Some(template_path) = find_target_facegeom_template(&target_root, RaceClass::HumanMale)
-        else {
-            return;
-        };
-        let hair = load_face_part_asset(
-            &target_root,
-            &source_root,
-            exact_legacy_hair_spec(
-                0x0010_4C7F,
-                &HairRef {
-                    plugin: "FalloutNV.esm".to_string(),
-                    object_id: "0987D9".to_string(),
-                },
-                RaceClass::HumanMale,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let beard = load_face_part_asset(
-            &target_root,
-            &source_root,
-            target_beard_spec(
-                &HairRef {
-                    plugin: "FalloutNV.esm".to_string(),
-                    object_id: "09F923".to_string(),
-                },
-                RaceClass::HumanMale,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let variable_parts = vec![Arc::new(hair), Arc::new(beard)];
-        let refs = target_head_part_refs(RaceClass::HumanMale, &variable_parts);
-        assert!(refs.contains(&("Fallout4.esm".to_string(), "1477D0".to_string())));
-        assert!(refs.contains(&("Fallout4.esm".to_string(), "0617BC".to_string())));
-
-        let mut assembled = NifFile::load(template_path).unwrap();
-        strip_variable_face_shapes(&mut assembled);
-        let face_node = find_face_node(&assembled).unwrap();
-        let mut copied = Vec::new();
-        for asset in &variable_parts {
-            let reference = asset.skin_reference.as_ref().unwrap();
-            for source_shape_id in &asset.shape_ids {
-                let copied_shape = append_face_part_shape(
-                    &mut assembled,
-                    &asset.nif,
-                    *source_shape_id,
-                    face_node,
-                    &asset.spec.shape_name,
-                )
-                .unwrap();
-                nif_core_native::skin::rig_facegen_shape_from_reference(
-                    &mut assembled,
-                    copied_shape,
-                    reference,
-                )
-                .unwrap();
-                copied.push((asset.spec.shape_name.clone(), copied_shape));
-            }
-        }
-        nif_core_native::convert_file::finalize_assembled_facegeom_for_fo4(&mut assembled);
-
-        let temp = tempfile::tempdir().unwrap();
-        let saved_path = temp.path().join("00104C7F.nif");
-        assembled.save(Some(saved_path.clone())).unwrap();
-        let assembled = NifFile::load(saved_path).unwrap();
-
-        for (expected_name, shape_id) in copied {
-            let shape = assembled.get_block(shape_id).unwrap();
-            assert!(matches!(
-                shape.get_field("Name"),
-                Some(NifValue::String(name)) if name == &expected_name
-            ));
-            assert_eq!(shape.get_field("Flags"), Some(&NifValue::UInt(14)));
-            let skin_id = match shape.get_field("Skin") {
-                Some(NifValue::Ref(id)) if *id >= 0 => *id as usize,
-                other => panic!("{expected_name} has no FO4 skin: {other:?}"),
-            };
-            let skin = assembled.get_block(skin_id).unwrap();
-            assert_eq!(skin.type_name, "BSSkin::Instance");
-            assert!(
-                matches!(skin.get_field("Num Bones"), Some(NifValue::UInt(count)) if *count > 0)
-            );
-            let vertex_desc = shape
-                .get_field("Vertex Desc")
-                .map(NifValue::as_i64)
-                .unwrap();
-            assert_ne!(
-                (vertex_desc >> 44) & 0x40,
-                0,
-                "{expected_name} is not skinned"
-            );
-            let has_vertex_colors = ((vertex_desc >> 44) & 0x20) != 0;
-            assert_eq!(
-                ((vertex_desc >> 28) & 0xF) * 4,
-                if has_vertex_colors { 24 } else { 20 },
-                "{expected_name} has an invalid FO4 skin-data offset"
-            );
-            let vertices = match shape.get_field("Vertex Data") {
-                Some(NifValue::Array(vertices)) => vertices,
-                other => panic!("{expected_name} has no vertex data: {other:?}"),
-            };
-            assert!(vertices.iter().all(|vertex| {
-                matches!(vertex, NifValue::Struct(fields)
-                    if matches!(fields.get("Bone Weights"), Some(NifValue::Array(weights)) if weights.iter().any(|weight| matches!(weight, NifValue::Float(value) if *value > 0.0)))
-                    && matches!(fields.get("Bone Indices"), Some(NifValue::Array(indices)) if indices.len() == 4))
-            }));
-            let shader_id = match shape.get_field("Shader Property") {
-                Some(NifValue::Ref(id)) if *id >= 0 => *id as usize,
-                other => panic!("{expected_name} has no shader: {other:?}"),
-            };
-            let shader = assembled.get_block(shader_id).unwrap();
-            assert_ne!(
-                shader
-                    .get_field("Shader Flags 1")
-                    .map(NifValue::as_i64)
-                    .unwrap()
-                    & 0x02,
-                0
-            );
-        }
-    }
-
-    #[test]
-    fn easy_pete_old_face_tint_preserves_source_detail_instead_of_solid_fallback() {
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| {
-                path.join("extracted/fnv").is_dir() && path.join("extracted/fo4").is_dir()
-            })
-        else {
-            return;
-        };
-        let source_root = repo_root.join("extracted/fnv");
-        let source = find_source_facetint_dds(&source_root, "FalloutNV.esm", "00104C7F")
-            .expect("Easy Pete source FaceTint should be extracted");
-        assert!(source.ends_with("falloutnv.esm/00104c7f_0.dds"));
-
-        let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phase/resources/face");
-        let lut = load_uv_lut(&resources.join("fnv_to_fo4_facetint_uv_lut_male.npz")).unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let output = temp.path().join("00104C7F.dds");
-        let fallback = deterministic_facetint_color("00104C7F");
-        write_facetint_dds_with_uv(&output, Some(&source), Some(&lut), fallback).unwrap();
-
-        let source_image = directxtex_native::read_dds_rgba_image(&source).unwrap();
-        let output_image = directxtex_native::read_dds_rgba_image(&output).unwrap();
-        assert_eq!(output_image.width, lut.2 as u32);
-        assert_eq!(output_image.height, lut.1 as u32);
-
-        let distinct_rgb = |rgba: &[u8]| {
-            rgba.chunks_exact(4)
-                .filter(|pixel| pixel[3] != 0)
-                .map(|pixel| [pixel[0], pixel[1], pixel[2]])
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-        };
-        assert!(
-            distinct_rgb(&source_image.rgba) > 32,
-            "Easy Pete source FaceTint has no facial texture detail"
-        );
-        assert!(
-            distinct_rgb(&output_image.rgba) > 32,
-            "Easy Pete remapped FaceTint collapsed to a solid fallback"
-        );
-        assert!(output_image.rgba.chunks_exact(4).any(|pixel| {
-            pixel[3] != 0 && [pixel[0], pixel[1], pixel[2], pixel[3]] != fallback
-        }));
-    }
-
-    #[test]
     fn old_human_profile_selects_headold_assets() {
         let temp = tempfile::tempdir().unwrap();
         let head = temp.path().join("Meshes/Characters/Head");
@@ -5652,69 +4862,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn old_human_profile_loads_against_fo4_correspondence_when_assets_exist() {
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| {
-                path.join("extracted/fnv").is_dir() && path.join("extracted/fo4").is_dir()
-            })
-        else {
-            return;
-        };
-        let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phase/resources/face");
-        let face_resources = FaceResourcePaths {
-            human_male_correspondence: Some(resources.join("fnv_to_fo4_correspondence_male.npz")),
-            human_male_uv_lut: Some(resources.join("fnv_to_fo4_facetint_uv_lut_male.npz")),
-            ..Default::default()
-        };
-
-        load_face_bake_profile(
-            RaceClass::HumanMale,
-            SourceHeadProfile::Old,
-            &repo_root.join("extracted/fnv"),
-            &repo_root.join("extracted/fo4"),
-            &TargetFaceAssets::default(),
-            &face_resources,
-        )
-        .unwrap();
-    }
-
     // ── Named bones ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn named_bones_load_embedded() {
-        let bones = load_named_bones(EMBEDDED_NAMED_BONES_YAML).unwrap();
-        assert!(bones.len() >= 12, "expected ≥12 bones, got {}", bones.len());
-        let names: Vec<&str> = bones.iter().map(|b| b.name.as_str()).collect();
-        assert!(
-            names.contains(&"skin_bone_C_Chin"),
-            "missing skin_bone_C_Chin"
-        );
-    }
 
     // ── Body weight mapping ──────────────────────────────────────────────────
 
     #[test]
-    fn body_weight_positive_is_fat() {
+    fn body_weight_maps_sign_to_thin_or_fat_and_serializes_as_triple() {
         let (thin, musc, fat) = fnv_weight_to_fo4_morphs(0.5);
-        assert_eq!(thin, 0.0);
-        assert_eq!(musc, 0.0);
+        assert_eq!((thin, musc), (0.0, 0.0));
         assert!((fat - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn body_weight_negative_is_thin() {
         let (thin, musc, fat) = fnv_weight_to_fo4_morphs(-0.5);
         assert!((thin - 0.5).abs() < 1e-6);
-        assert_eq!(musc, 0.0);
-        assert_eq!(fat, 0.0);
-    }
+        assert_eq!((musc, fat), (0.0, 0.0));
 
-    #[test]
-    fn body_weight_serializes_as_fo4_morph_triple() {
         let bytes = fo4_body_morph_bytes(0.5);
-
         assert_eq!(bytes.len(), 12);
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0.0);
         assert_eq!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0.0);
@@ -5776,283 +4937,6 @@ mod tests {
         assert_eq!(
             deformation_scale(&source_neutral, &target_neutral).unwrap(),
             [5.0, 5.0, 5.0]
-        );
-    }
-
-    #[test]
-    #[ignore = "requires extracted Skyrim SE and Fallout 4 assets"]
-    fn real_skyrim_facegeom_transfers_to_fo4() {
-        let repo_root = std::env::var_os("MODKIT_REPO_ROOT")
-            .map(PathBuf::from)
-            .expect("MODKIT_REPO_ROOT must point at the repository");
-        let source_extracted = repo_root.join("extracted/skyrimse");
-        let target_extracted = repo_root.join("extracted/fo4");
-        let source_facegeom = source_extracted
-            .join("Meshes/Actors/Character/FaceGenData/FaceGeom/Skyrim.esm/000A2C8E.NIF");
-        let target_assets = TargetFaceAssets::from_params(&serde_json::json!({}));
-        let profile = load_skyrim_face_bake_profile(
-            RaceClass::HumanFemale,
-            &source_extracted,
-            &target_extracted,
-            &target_assets,
-        )
-        .unwrap();
-        let output_root = std::env::temp_dir().join("bacup-skyrim-face-smoke");
-        let named_bones = load_named_bones(EMBEDDED_NAMED_BONES_YAML).unwrap();
-        let hair_table = HairTable::load(EMBEDDED_HAIR_LOOKUP_YAML).unwrap();
-        let hair = hair_table
-            .lookup(None, RaceClass::HumanFemale)
-            .and_then(|hair| target_hair_spec(&hair))
-            .map(|spec| {
-                Arc::new(load_face_part_asset(&target_extracted, &source_extracted, spec).unwrap())
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        let result = attempt_skyrim_face_bake_cached(
-            "000A2C8E",
-            &source_facegeom,
-            &output_root,
-            "SkyrimFaceSmoke.esp",
-            &profile,
-            &named_bones,
-            &hair,
-            SkyrimHumanoidFaceKind::Human,
-            None,
-        )
-        .unwrap();
-        let output = output_root.join("data").join(
-            result
-                .facegeom_relpath
-                .replace('/', std::path::MAIN_SEPARATOR_STR),
-        );
-        assert!(output.is_file());
-        nif_core_native::model::NifFile::load(output).unwrap();
-    }
-
-    fn run_preserved_skyrim_facegeom_smoke(
-        source_relative: &str,
-        race_class: RaceClass,
-        source_face_kind: SkyrimHumanoidFaceKind,
-        expected_head_vertices: usize,
-        preserved_shape_fragment: &str,
-    ) {
-        use nif_core_native::model::NifValue;
-
-        let repo_root = std::env::var_os("MODKIT_REPO_ROOT")
-            .map(PathBuf::from)
-            .expect("MODKIT_REPO_ROOT must point at the repository");
-        let source_extracted = repo_root.join("extracted/skyrimse");
-        let target_extracted = repo_root.join("extracted/fo4");
-        let source_facegeom = source_extracted.join(source_relative);
-        let target_assets = TargetFaceAssets::from_params(&serde_json::json!({}));
-        let profile = load_skyrim_face_bake_profile(
-            race_class,
-            &source_extracted,
-            &target_extracted,
-            &target_assets,
-        )
-        .unwrap();
-        let output_root = tempfile::tempdir().unwrap();
-        let translation_maps_dir =
-            repo_root.join("bacup/py_bacup_lib/native/conversion/src/embedded/translation_maps");
-
-        let result = attempt_skyrim_face_bake_cached(
-            "00000001",
-            &source_facegeom,
-            output_root.path(),
-            "SkyrimBeastFaceSmoke.esp",
-            &profile,
-            &[],
-            &[],
-            source_face_kind,
-            Some(&translation_maps_dir),
-        )
-        .unwrap();
-        let output = output_root.path().join("data").join(
-            result
-                .facegeom_relpath
-                .replace('/', std::path::MAIN_SEPARATOR_STR),
-        );
-        let converted = nif_core_native::model::NifFile::load(output).unwrap();
-        assert_eq!(converted.header.bs_version, 130);
-        assert!(!converted.blocks.iter().any(|block| {
-            matches!(
-                block.type_name.as_str(),
-                "BSDynamicTriShape"
-                    | "NiSkinInstance"
-                    | "BSDismemberSkinInstance"
-                    | "NiSkinData"
-                    | "NiSkinPartition"
-            )
-        }));
-        let geometry = converted
-            .blocks
-            .iter()
-            .filter(|block| block.type_name == "BSSubIndexTriShape")
-            .collect::<Vec<_>>();
-        assert!(geometry.len() >= 3);
-        assert!(geometry.iter().all(|block| {
-            matches!(block.get_field("Skin"), Some(NifValue::Ref(id)) if *id >= 0)
-                && matches!(block.get_field("Vertex Data"), Some(NifValue::Array(vertices)) if !vertices.is_empty())
-        }));
-        let expected_head_name = race_class.primary_head_shape_name().unwrap();
-        let head = geometry
-            .iter()
-            .find(|block| {
-                matches!(block.get_field("Name"), Some(NifValue::String(name)) if name == expected_head_name)
-            })
-            .expect("preserved Skyrim head geometry");
-        assert_eq!(
-            match head.get_field("Vertex Data") {
-                Some(NifValue::Array(vertices)) => vertices.len(),
-                _ => 0,
-            },
-            expected_head_vertices
-        );
-        assert!(geometry.iter().any(|block| {
-            matches!(block.get_field("Name"), Some(NifValue::String(name)) if name.contains(preserved_shape_fragment))
-        }));
-        assert!(
-            output_root
-                .path()
-                .join("data")
-                .join(
-                    result
-                        .facetint_relpath
-                        .replace('/', std::path::MAIN_SEPARATOR_STR)
-                )
-                .is_file()
-        );
-    }
-
-    #[test]
-    #[ignore = "requires extracted Skyrim SE and Fallout 4 assets"]
-    fn real_argonian_facegeom_preserves_species_topology_in_fo4() {
-        run_preserved_skyrim_facegeom_smoke(
-            "Meshes/Actors/Character/FaceGenData/FaceGeom/Skyrim.esm/00103512.nif",
-            RaceClass::HumanMale,
-            SkyrimHumanoidFaceKind::Argonian,
-            1219,
-            "MaleEyesHumanBlue",
-        );
-    }
-
-    #[test]
-    #[ignore = "requires extracted Skyrim SE and Fallout 4 assets"]
-    fn real_female_argonian_facegeom_preserves_species_topology_in_fo4() {
-        run_preserved_skyrim_facegeom_smoke(
-            "Meshes/Actors/Character/FaceGenData/FaceGeom/Skyrim.esm/00103511.nif",
-            RaceClass::HumanFemale,
-            SkyrimHumanoidFaceKind::Argonian,
-            1219,
-            "FemaleEyesHumanHazelGreen",
-        );
-    }
-
-    #[test]
-    #[ignore = "requires extracted Skyrim SE and Fallout 4 assets"]
-    fn real_khajiit_facegeom_preserves_fur_and_hair_in_fo4() {
-        run_preserved_skyrim_facegeom_smoke(
-            "Meshes/Actors/Character/FaceGenData/FaceGeom/Skyrim.esm/00105553.nif",
-            RaceClass::HumanMale,
-            SkyrimHumanoidFaceKind::Khajiit,
-            1356,
-            "HairKhajiitMale09",
-        );
-    }
-
-    #[test]
-    #[ignore = "requires extracted Skyrim SE and Fallout 4 assets"]
-    fn real_female_khajiit_facegeom_preserves_fur_and_hair_in_fo4() {
-        run_preserved_skyrim_facegeom_smoke(
-            "Meshes/Actors/Character/FaceGenData/FaceGeom/Skyrim.esm/00103516.nif",
-            RaceClass::HumanFemale,
-            SkyrimHumanoidFaceKind::Khajiit,
-            1342,
-            "HairKhajiitFemale03",
-        );
-    }
-
-    #[test]
-    #[ignore = "requires extracted Skyrim SE and Fallout 4 assets"]
-    fn real_dremora_facegeom_preserves_horns_in_fo4() {
-        run_preserved_skyrim_facegeom_smoke(
-            "Meshes/Actors/Character/FaceGenData/FaceGeom/Dragonborn.esm/0001EEB1.nif",
-            RaceClass::HumanMale,
-            SkyrimHumanoidFaceKind::Dremora,
-            898,
-            "HairHornsMaleDremora02",
-        );
-    }
-
-    #[test]
-    fn mapped_human_race_uses_npc_sex() {
-        let interner = StringInterner::new();
-        let human = FormKey {
-            local: FO4_HUMAN_RACE_LOCAL,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-
-        assert_eq!(
-            classify_mapped_race(Some(human), false),
-            RaceClass::HumanMale
-        );
-        assert_eq!(
-            classify_mapped_race(Some(human), true),
-            RaceClass::HumanFemale
-        );
-    }
-
-    #[test]
-    fn mapped_ghoul_race_uses_npc_sex() {
-        let interner = StringInterner::new();
-        let ghoul = FormKey {
-            local: FO4_GHOUL_RACE_LOCAL,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-
-        assert_eq!(
-            classify_mapped_race(Some(ghoul), false),
-            RaceClass::GhoulMale
-        );
-        assert_eq!(
-            classify_mapped_race(Some(ghoul), true),
-            RaceClass::GhoulFemale
-        );
-        assert_eq!(
-            RaceClass::GhoulMale.mandatory_head_parts(),
-            FO4_GHOUL_MALE_HEAD_PARTS
-        );
-        assert_eq!(
-            RaceClass::GhoulFemale.mandatory_head_parts(),
-            FO4_GHOUL_FEMALE_HEAD_PARTS
-        );
-    }
-
-    #[test]
-    fn mapped_child_race_uses_npc_sex() {
-        let interner = StringInterner::new();
-        let child = FormKey {
-            local: FO4_HUMAN_CHILD_RACE_LOCAL,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-
-        assert_eq!(
-            classify_mapped_race(Some(child), false),
-            RaceClass::ChildMale
-        );
-        assert_eq!(
-            classify_mapped_race(Some(child), true),
-            RaceClass::ChildFemale
-        );
-        assert_eq!(
-            RaceClass::ChildMale.mandatory_head_parts(),
-            FO4_CHILD_MALE_HEAD_PARTS
-        );
-        assert_eq!(
-            RaceClass::ChildFemale.mandatory_head_parts(),
-            FO4_CHILD_FEMALE_HEAD_PARTS
         );
     }
 
@@ -6264,184 +5148,12 @@ mod tests {
         plugin_handle_close_native(target_handle);
     }
 
-    #[test]
-    fn facegeom_replaces_donor_variable_parts_with_selected_npc_parts_when_assets_exist() {
-        use nif_core_native::model::{NifFile, NifValue};
-
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| path.join("extracted/fo4").is_dir())
-        else {
-            return;
-        };
-        let target = repo_root.join("extracted/fo4");
-        let Some(base_head) = find_target_base_head_nif(&target, RaceClass::HumanMale) else {
-            return;
-        };
-        let Some(template) = find_target_facegeom_template(&target, RaceClass::HumanMale) else {
-            return;
-        };
-        let neutral = load_fo4_neutral_vertices(&base_head).unwrap();
-        let deformation = vec![[0.0; 3]; neutral.len()];
-        let temp = tempfile::tempdir().unwrap();
-        let output = temp.path().join("face.nif");
-
-        let mut assembled = NifFile::load(template).unwrap();
-        strip_variable_face_shapes(&mut assembled);
-        let face_node = find_face_node(&assembled).unwrap();
-        let primary_shape = assembled
-            .blocks
-            .iter()
-            .find(|block| {
-                matches!(block.get_field("Name"), Some(NifValue::String(name)) if name == "MaleHeadHuman")
-            })
-            .unwrap()
-            .block_id;
-        let hair = load_face_part_asset(
-            &target,
-            &target,
-            target_hair_spec(&HairRef {
-                plugin: "Fallout4.esm".to_string(),
-                object_id: "094D04".to_string(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        let beard = load_face_part_asset(
-            &target,
-            &target,
-            target_beard_spec(
-                &HairRef {
-                    plugin: "FalloutNV.esm".to_string(),
-                    object_id: "000013".to_string(),
-                },
-                RaceClass::HumanMale,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        for asset in [&hair, &beard] {
-            for &shape_id in &asset.shape_ids {
-                append_face_part_shape(
-                    &mut assembled,
-                    &asset.nif,
-                    shape_id,
-                    face_node,
-                    &asset.spec.shape_name,
-                )
-                .unwrap();
-            }
-        }
-        write_facegeom_nif_from_template(
-            &assembled,
-            primary_shape,
-            &neutral,
-            &deformation,
-            &output,
-        )
-        .unwrap();
-
-        let nif = NifFile::load(output).unwrap();
-        let names = nif
-            .blocks
-            .iter()
-            .filter_map(|block| match block.get_field("Name") {
-                Some(NifValue::String(name)) => Some(name.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        for expected in [
-            "MaleHeadHuman",
-            "MaleEyesHumanWet",
-            "MaleEyesHumanLashes",
-            "HairMale19",
-            "Beard20",
-            "MaleMouthHumanoidDefault",
-        ] {
-            assert!(names.contains(&expected), "missing {expected}");
-        }
-        assert!(!names.contains(&"HairMale20"), "donor hair survived");
-        assert!(!names.contains(&"Beard02"), "donor beard survived");
-    }
-
-    #[test]
-    fn cached_profile_supports_parallel_asset_bakes_when_assets_exist() {
-        let Some(repo_root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .find(|path| path.join("extracted/fo4").is_dir())
-        else {
-            return;
-        };
-        let source = repo_root.join("extracted/fnv");
-        let target = repo_root.join("extracted/fo4");
-        if !source.is_dir() {
-            return;
-        }
-
-        let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phase/resources/face");
-        let face_resources = FaceResourcePaths {
-            human_male_correspondence: Some(resources.join("fnv_to_fo4_correspondence_male.npz")),
-            human_male_uv_lut: Some(resources.join("fnv_to_fo4_facetint_uv_lut_male.npz")),
-            ..Default::default()
-        };
-        let profile = load_face_bake_profile(
-            RaceClass::HumanMale,
-            SourceHeadProfile::Standard,
-            &source,
-            &target,
-            &TargetFaceAssets::default(),
-            &face_resources,
-        )
-        .unwrap();
-        let named_bones = load_named_bones(EMBEDDED_NAMED_BONES_YAML).unwrap();
-        let output = tempfile::tempdir().unwrap();
-        let coefficients = vec![0.0; profile.egm_num_diffs];
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
-            .build()
-            .unwrap();
-
-        let results = pool.install(|| {
-            (1..=8u32)
-                .into_par_iter()
-                .map(|form_id| {
-                    attempt_face_bake_cached(
-                        &format!("{form_id:08X}"),
-                        &format!("{form_id:08X}"),
-                        &coefficients,
-                        &source,
-                        output.path(),
-                        "ParallelFaces.esp",
-                        "FalloutNV.esm",
-                        &profile,
-                        &named_bones,
-                        &[],
-                    )
-                })
-                .collect::<Vec<_>>()
-        });
-
-        assert!(results.iter().all(Result::is_ok));
-        assert_eq!(
-            std::fs::read_dir(
-                output
-                    .path()
-                    .join("data/Meshes/Actors/Character/FaceGenData/FaceGeom/ParallelFaces.esp")
-            )
-            .unwrap()
-            .count(),
-            8
-        );
-    }
-
     // ── Empty NPC list → zero report ────────────────────────────────────────
 
     #[test]
     fn convert_face_empty_list_produces_zero_report() {
         use crate::phase::PhaseCtx;
-        use crate::run::{
-            ConversionRun, RunConfig, RunError, RunParams, create_run, drop_run, with_run,
-        };
+        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
 

@@ -401,109 +401,93 @@ mod tests {
         FieldValue::Bytes(data)
     }
 
+    /// A 07-prefix master byte must NOT defeat the low-24 match, a dropped race
+    /// is Unknown (NOT a false creature), and an NPC that self-identifies by
+    /// keyword never consults its race.
     #[test]
-    fn npc_with_creature_keyword_list_shape_is_creature() {
+    fn npc_is_creature_by_keyword_or_race() {
         let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
+        let creature_race_fk = fk(0x00D191, "Output.esm", &interner);
+        let mut creature_race = empty_record("RACE", &interner);
         push(
-            &mut npc,
-            "KWDA",
-            kwda_list(
-                &[ACTOR_TYPE_CREATURE_LOW24, 0xABCDEF],
-                "Fallout4.esm",
-                &interner,
-            ),
-        );
-        let v = npc_is_creature(&npc, |_| None);
-        assert_eq!(v, CreatureVerdict::Creature);
-        assert!(v.is_creature());
-    }
-
-    #[test]
-    fn npc_with_creature_keyword_bytes_shape_is_creature() {
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        // 07-prefix master byte must NOT defeat the low-24 match.
-        push(&mut npc, "KWDA", kwda_bytes(&[0x07_013795]));
-        assert_eq!(npc_is_creature(&npc, |_| None), CreatureVerdict::Creature);
-    }
-
-    #[test]
-    fn npc_with_npc_keyword_is_not_creature() {
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        push(
-            &mut npc,
-            "KWDA",
-            kwda_list(&[ACTOR_TYPE_NPC_LOW24], "Fallout4.esm", &interner),
-        );
-        assert_eq!(
-            npc_is_creature(&npc, |_| None),
-            CreatureVerdict::NotCreature
-        );
-    }
-
-    #[test]
-    fn npc_without_keyword_resolves_via_race() {
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        let race_fk = fk(0x00D191, "Output.esm", &interner);
-        push(&mut npc, "RNAM", FieldValue::FormKey(race_fk));
-
-        // Race carries ActorTypeCreature → NPC is a creature.
-        let mut race = empty_record("RACE", &interner);
-        push(
-            &mut race,
+            &mut creature_race,
             "KWDA",
             kwda_list(&[ACTOR_TYPE_CREATURE_LOW24], "Fallout4.esm", &interner),
         );
-        let v = npc_is_creature(&npc, |asked| {
-            assert_eq!(asked, race_fk);
-            Some(race.clone())
-        });
-        assert_eq!(v, CreatureVerdict::Creature);
-    }
-
-    #[test]
-    fn npc_with_unresolvable_race_is_unknown() {
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        push(
-            &mut npc,
-            "RNAM",
-            FieldValue::FormKey(fk(0x0247C1, "Fallout4.esm", &interner)),
-        );
-        // Dropped race → resolver returns None → Unknown (NOT a false creature).
-        assert_eq!(npc_is_creature(&npc, |_| None), CreatureVerdict::Unknown);
-    }
-
-    #[test]
-    fn npc_with_no_keyword_and_no_rnam_is_unknown() {
-        let interner = StringInterner::new();
-        let npc = empty_record("NPC_", &interner);
-        assert_eq!(npc_is_creature(&npc, |_| None), CreatureVerdict::Unknown);
-    }
-
-    #[test]
-    fn npc_creature_keyword_wins_over_race_npc_keyword() {
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        push(
-            &mut npc,
-            "KWDA",
-            kwda_list(&[ACTOR_TYPE_CREATURE_LOW24], "Output.esm", &interner),
-        );
-        // Even if we (wrongly) had a race, the direct creature kwd short-circuits.
-        let called = std::cell::Cell::new(false);
-        let v = npc_is_creature(&npc, |_| {
-            called.set(true);
-            None
-        });
-        assert_eq!(v, CreatureVerdict::Creature);
-        assert!(
-            !called.get(),
-            "race resolver must not be called when NPC self-identifies"
-        );
+        for (name, kwda, rnam, expected) in [
+            (
+                "keyword_list",
+                Some(kwda_list(
+                    &[ACTOR_TYPE_CREATURE_LOW24, 0xABCDEF],
+                    "Fallout4.esm",
+                    &interner,
+                )),
+                None,
+                CreatureVerdict::Creature,
+            ),
+            (
+                "keyword_bytes",
+                Some(kwda_bytes(&[0x07_013795])),
+                None,
+                CreatureVerdict::Creature,
+            ),
+            (
+                "keyword_wins_over_race",
+                Some(kwda_list(
+                    &[ACTOR_TYPE_CREATURE_LOW24],
+                    "Output.esm",
+                    &interner,
+                )),
+                Some(fk(0x0247C1, "Fallout4.esm", &interner)),
+                CreatureVerdict::Creature,
+            ),
+            (
+                "npc_keyword",
+                Some(kwda_list(
+                    &[ACTOR_TYPE_NPC_LOW24],
+                    "Fallout4.esm",
+                    &interner,
+                )),
+                None,
+                CreatureVerdict::NotCreature,
+            ),
+            (
+                "creature_race",
+                None,
+                Some(creature_race_fk),
+                CreatureVerdict::Creature,
+            ),
+            (
+                "unresolvable_race",
+                None,
+                Some(fk(0x0247C1, "Fallout4.esm", &interner)),
+                CreatureVerdict::Unknown,
+            ),
+            ("no_keyword_no_race", None, None, CreatureVerdict::Unknown),
+        ] {
+            let mut npc = empty_record("NPC_", &interner);
+            let has_keyword = kwda.is_some();
+            if let Some(kwda) = kwda {
+                push(&mut npc, "KWDA", kwda);
+            }
+            if let Some(rnam) = rnam {
+                push(&mut npc, "RNAM", FieldValue::FormKey(rnam));
+            }
+            let called = std::cell::Cell::new(false);
+            let verdict = npc_is_creature(&npc, |asked| {
+                called.set(true);
+                (asked == creature_race_fk).then(|| creature_race.clone())
+            });
+            assert_eq!(verdict, expected, "{name}");
+            assert_eq!(
+                verdict.is_creature(),
+                expected == CreatureVerdict::Creature,
+                "{name}"
+            );
+            if has_keyword {
+                assert!(!called.get(), "{name}: race resolver must not be called");
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -555,76 +539,11 @@ mod tests {
             npc_is_creature_following_template(&npc, &resolve, &lvln),
             CreatureVerdict::Creature
         );
-    }
-
-    #[test]
-    fn traits_template_npc_ignores_literal_rnam() {
-        // UseTraits set, TPLT unresolved → Unknown (must NOT classify off the
-        // STAT RNAM, which would be a wrong NotCreature/garbage read).
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        push(
-            &mut npc,
-            "ACBS",
-            acbs_with_template_flags(ACBS_TEMPLATE_FLAG_USE_TRAITS),
-        );
-        push(
-            &mut npc,
-            "RNAM",
-            FieldValue::FormKey(fk(0x0247C1, "Fallout4.esm", &interner)),
-        );
-        push(
-            &mut npc,
-            "TPLT",
-            FieldValue::FormKey(fk(0x110D7D, "Output.esm", &interner)),
-        );
-        let resolve = |_: FormKey| None;
-        let lvln = |_: FormKey| Vec::new();
+        // TPLT unresolved → Unknown, never a classification off the STAT RNAM.
+        let unresolved = |_: FormKey| None;
         assert_eq!(
-            npc_is_creature_following_template(&npc, &resolve, &lvln),
+            npc_is_creature_following_template(&npc, &unresolved, &lvln),
             CreatureVerdict::Unknown
-        );
-    }
-
-    #[test]
-    fn traits_template_via_lvln_any_creature_entry_wins() {
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        push(
-            &mut npc,
-            "ACBS",
-            acbs_with_template_flags(ACBS_TEMPLATE_FLAG_USE_TRAITS),
-        );
-        let lvln_fk = fk(0x110D7D, "Output.esm", &interner);
-        push(&mut npc, "TPLT", FieldValue::FormKey(lvln_fk));
-
-        let lvln_rec = empty_record("LVLN", &interner);
-        let entry_fk = fk(0x200001, "Output.esm", &interner);
-        let mut entry_npc = empty_record("NPC_", &interner);
-        push(
-            &mut entry_npc,
-            "KWDA",
-            kwda_list(&[ACTOR_TYPE_CREATURE_LOW24], "Fallout4.esm", &interner),
-        );
-        let resolve = |asked: FormKey| -> Option<Record> {
-            if asked == lvln_fk {
-                Some(lvln_rec.clone())
-            } else if asked == entry_fk {
-                Some(entry_npc.clone())
-            } else {
-                None
-            }
-        };
-        let lvln = |asked: FormKey| {
-            if asked == lvln_fk {
-                vec![entry_fk]
-            } else {
-                Vec::new()
-            }
-        };
-        assert_eq!(
-            npc_is_creature_following_template(&npc, &resolve, &lvln),
-            CreatureVerdict::Creature
         );
     }
 
@@ -732,10 +651,21 @@ mod tests {
 
     #[test]
     fn non_traits_npc_uses_literal_rnam_in_template_aware_path() {
-        // UseTraits CLEAR → classify off RNAM even in the template-aware fn.
         let interner = StringInterner::new();
+        let mut traits = empty_record("NPC_", &interner);
+        push(&mut traits, "ACBS", acbs_with_template_flags(0x02b7));
+        assert_eq!(npc_acbs_template_flags(&traits), Some(0x02b7));
+        assert!(
+            npc_inherits_traits_from_template(&traits),
+            "0x02b7 & 0x0001 != 0"
+        );
+
         let mut npc = empty_record("NPC_", &interner);
-        push(&mut npc, "ACBS", acbs_with_template_flags(0)); // no UseTraits
+        push(&mut npc, "ACBS", acbs_with_template_flags(0x0230));
+        assert!(
+            !npc_inherits_traits_from_template(&npc),
+            "0x0230 & 0x0001 == 0"
+        );
         let race_fk = fk(0x00D191, "Output.esm", &interner);
         push(&mut npc, "RNAM", FieldValue::FormKey(race_fk));
         let mut race = empty_record("RACE", &interner);
@@ -754,19 +684,8 @@ mod tests {
         let lvln = |_: FormKey| Vec::new();
         assert_eq!(
             npc_is_creature_following_template(&npc, &resolve, &lvln),
-            CreatureVerdict::Creature
+            CreatureVerdict::Creature,
+            "UseTraits clear classifies off RNAM even in the template-aware path"
         );
-    }
-
-    #[test]
-    fn template_flags_read_at_offset_14() {
-        let interner = StringInterner::new();
-        let mut npc = empty_record("NPC_", &interner);
-        push(&mut npc, "ACBS", acbs_with_template_flags(0x02b7));
-        assert_eq!(npc_acbs_template_flags(&npc), Some(0x02b7));
-        assert!(npc_inherits_traits_from_template(&npc)); // 0x02b7 & 0x0001 != 0
-        let mut npc2 = empty_record("NPC_", &interner);
-        push(&mut npc2, "ACBS", acbs_with_template_flags(0x0230));
-        assert!(!npc_inherits_traits_from_template(&npc2)); // 0x0230 & 0x0001 == 0
     }
 }

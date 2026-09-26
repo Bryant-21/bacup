@@ -52,7 +52,7 @@ fn pre_translate_rebuilds_crashing_flame_projectile_data_and_drops_legacy_nam2()
 }
 
 #[test]
-fn pre_translate_relayouts_84_byte_proj_and_preserves_compatible_refs() {
+fn pre_translate_relayouts_or_defaults_legacy_proj_data() {
     let mut source = Vec::new();
     source.extend_from_slice(&0xffff_u16.to_le_bytes());
     source.extend_from_slice(&16_u16.to_le_bytes());
@@ -115,10 +115,7 @@ fn pre_translate_relayouts_84_byte_proj_and_preserves_compatible_refs() {
         assert_eq!(u32_at(dnam, offset), expected);
     }
     assert_eq!(&dnam[64..93], &[0; 29]);
-}
 
-#[test]
-fn pre_translate_defaults_malformed_proj_and_deduplicates_target_contract() {
     let interner = StringInterner::new();
     let mut record = make_record("PROJ", &interner);
     push_field(
@@ -154,3 +151,4 @@ fn pre_translate_defaults_malformed_proj_and_deduplicates_target_contract() {
             .all(|entry| entry.sig.as_str() != "NAM2")
     );
 }
+

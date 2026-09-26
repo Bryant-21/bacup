@@ -417,9 +417,17 @@ mod tests {
     ];
 
     #[test]
-    fn classify_family_matches_python_table() {
-        for (rel, expected) in CLASSIFY_TABLE {
-            assert_eq!(classify_family(rel), *expected, "classify_family({rel:?})");
+    fn classify_family_and_terrain_sidecar_registry_dedups() {
+        {
+            for (rel, expected) in CLASSIFY_TABLE {
+                assert_eq!(classify_family(rel), *expected, "classify_family({rel:?})");
+            }
+        }
+        {
+            let t = TerrainSidecarSink::default();
+            t.register("Terrain/APPALACHIA.btd4");
+            t.register("Terrain/APPALACHIA.btd4");
+            assert_eq!(t.list(), vec!["Terrain/APPALACHIA.btd4".to_string()]);
         }
     }
 
@@ -495,14 +503,6 @@ mod tests {
             vec!["meshes/b.nif".to_string()]
         );
         let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn terrain_sidecar_registry_dedups() {
-        let t = TerrainSidecarSink::default();
-        t.register("Terrain/APPALACHIA.btd4");
-        t.register("Terrain/APPALACHIA.btd4");
-        assert_eq!(t.list(), vec!["Terrain/APPALACHIA.btd4".to_string()]);
     }
 
     #[test]

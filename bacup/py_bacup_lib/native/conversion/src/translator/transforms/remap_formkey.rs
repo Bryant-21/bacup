@@ -190,7 +190,7 @@ mod tests {
     /// YAML usage: RGW3 field with source_esm/target_esm (fo76_to_fo4.yaml line 78-80).
     /// A string value containing "SeventySix.esm" should have the plugin name replaced.
     #[test]
-    fn remaps_plugin_name_in_plain_string() {
+    fn remaps_plugin_name_in_strings_and_lists_only() {
         let mut interner = StringInterner::new();
         let sym = interner.intern("001234@SeventySix.esm");
         let mut value = FieldValue::String(sym);
@@ -205,12 +205,9 @@ mod tests {
         } else {
             panic!("expected FieldValue::String");
         }
-    }
 
-    /// YAML usage: Keywords field (list of FormKey strings) (fo76_to_fo4.yaml line 101-104).
-    /// Each string in a List should have the plugin name replaced.
-    #[test]
-    fn remaps_plugin_name_in_list_of_strings() {
+        // YAML usage: Keywords field (list of FormKey strings) (fo76_to_fo4.yaml line 101-104).
+        // Each string in a List should have the plugin name replaced.
         let mut interner = StringInterner::new();
         let sym1 = interner.intern("000AAA@SeventySix.esm");
         let sym2 = interner.intern("000BBB@SeventySix.esm");
@@ -236,11 +233,8 @@ mod tests {
         } else {
             panic!("expected FieldValue::List");
         }
-    }
 
-    /// Non-string leaves (Int) inside a Struct should pass through unchanged.
-    #[test]
-    fn leaves_non_string_values_unchanged() {
+        // Non-string leaves (Int) inside a Struct should pass through unchanged.
         let mut interner = StringInterner::new();
         let key_sym = interner.intern("Count");
         let mut value = FieldValue::Struct(vec![(key_sym, FieldValue::Int(42))]);
@@ -255,6 +249,17 @@ mod tests {
         } else {
             panic!("expected FieldValue::Struct");
         }
+
+        // Missing config keys should return BadConfig error.
+        let mut interner = StringInterner::new();
+        let sym = interner.intern("001234@SeventySix.esm");
+        let mut value = FieldValue::String(sym);
+        let cfg = serde_json::json!({ "source_esm": "", "target_esm": "Fallout4.esm" });
+
+        let transform = RemapFormkeyTransform;
+        let mut ctx = make_ctx(&mut interner);
+        let result = transform.apply(&mut ctx, &mut value, &cfg);
+        assert!(matches!(result, Err(TransformError::BadConfig(_))));
     }
 
     #[test]
@@ -315,19 +320,5 @@ mod tests {
             }),
             Some("Keywords")
         );
-    }
-
-    /// Missing config keys should return BadConfig error.
-    #[test]
-    fn returns_error_on_empty_source_esm() {
-        let mut interner = StringInterner::new();
-        let sym = interner.intern("001234@SeventySix.esm");
-        let mut value = FieldValue::String(sym);
-        let cfg = serde_json::json!({ "source_esm": "", "target_esm": "Fallout4.esm" });
-
-        let transform = RemapFormkeyTransform;
-        let mut ctx = make_ctx(&mut interner);
-        let result = transform.apply(&mut ctx, &mut value, &cfg);
-        assert!(matches!(result, Err(TransformError::BadConfig(_))));
     }
 }

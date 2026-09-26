@@ -332,12 +332,14 @@ pub struct CreatureFamilyRecipeLedger {
 }
 
 impl CreatureFamilyRecipeLedger {
+    #[cfg(test)]
     pub fn canonical_json(&self) -> Result<String, CreatureRecipeBuildError> {
         self.validate()?;
         serde_json::to_string(self)
             .map_err(|error| CreatureRecipeBuildError::Serialization(error.to_string()))
     }
 
+    #[cfg(test)]
     pub fn from_json(json: &str) -> Result<Self, CreatureRecipeBuildError> {
         let ledger: Self = serde_json::from_str(json)
             .map_err(|error| CreatureRecipeBuildError::Serialization(error.to_string()))?;
@@ -415,6 +417,7 @@ pub enum CreatureRecipeBuildError {
     Serialization(String),
 }
 
+#[cfg(test)]
 pub fn build_full_merged_creature_family_recipe(
     mut input: CreatureRecipeBuildInput<'_>,
     interner: &StringInterner,
@@ -1883,7 +1886,7 @@ pub(super) mod tests {
                 game: LegacyCreatureGame::Fnv,
                 skeleton_path: "creatures/gecko/skeleton.nif".to_string(),
             };
-            let creature = record(
+            let creature = self::record(
                 "CREA",
                 creature_key.local,
                 plugin,
@@ -1909,7 +1912,7 @@ pub(super) mod tests {
                 ],
                 interner,
             );
-            let idle = record(
+            let idle = self::record(
                 "IDLE",
                 idle_key.local,
                 plugin,
@@ -1917,7 +1920,7 @@ pub(super) mod tests {
                 vec![],
                 interner,
             );
-            let base_speed = record(
+            let base_speed = self::record(
                 "GMST",
                 0x300,
                 plugin,
@@ -1925,7 +1928,7 @@ pub(super) mod tests {
                 vec![field("DATA", FieldValue::Float(77.0))],
                 interner,
             );
-            let run_mult = record(
+            let run_mult = self::record(
                 "GMST",
                 0x301,
                 plugin,
@@ -1993,28 +1996,28 @@ pub(super) mod tests {
             let material = "materials/creatures/gecko/gecko.bgsm";
             let texture = "textures/creatures/gecko/gecko_d.dds";
             let mut assets = vec![
-                asset(
+                self::asset(
                     LegacyCreatureGame::Fnv,
                     &rig.skeleton_path,
                     IndexedAssetKind::Skeleton,
                     vec![material],
                     vec!["Bip01"],
                 ),
-                asset(
+                self::asset(
                     LegacyCreatureGame::Fnv,
                     &body.body_paths[0],
                     IndexedAssetKind::Body,
                     vec![material],
                     vec![],
                 ),
-                asset(
+                self::asset(
                     LegacyCreatureGame::Fnv,
                     material,
                     IndexedAssetKind::Material,
                     vec![texture],
                     vec![],
                 ),
-                asset(
+                self::asset(
                     LegacyCreatureGame::Fnv,
                     texture,
                     IndexedAssetKind::Texture,
@@ -2023,7 +2026,7 @@ pub(super) mod tests {
                 ),
             ];
             assets.extend(clips.iter().map(|clip| {
-                asset(
+                self::asset(
                     LegacyCreatureGame::Fnv,
                     &clip.source_kf,
                     IndexedAssetKind::Kf,
@@ -2319,10 +2322,7 @@ pub(super) mod tests {
                 .len(),
             4
         );
-    }
 
-    #[test]
-    fn missing_optional_recursive_nif_is_not_claimed_in_a_ready_asset_closure() {
         let interner = StringInterner::new();
         let mut fixture = GroundFixture::new(&interner);
         fixture
@@ -2447,7 +2447,7 @@ pub(super) mod tests {
         let interner = StringInterner::new();
         let mut fixture = GroundFixture::new(&interner);
         let owner_key = fixture.records[0].form_key;
-        fixture.records.push(record(
+        fixture.records.push(self::record(
             "CREA",
             0x101,
             "FalloutNV.esm",
@@ -2458,7 +2458,7 @@ pub(super) mod tests {
         fixture
             .provenance
             .push(provenance(LegacyCreatureGame::Fnv, "FalloutNV.esm"));
-        let fo3 = record(
+        let fo3 = self::record(
             "CREA",
             0x500,
             "Fallout3.esm",
@@ -2515,7 +2515,7 @@ pub(super) mod tests {
     #[test]
     fn same_winner_collision_is_rejected_instead_of_erasing_game_provenance() {
         let interner = StringInterner::new();
-        let first = record(
+        let first = self::record(
             "CREA",
             0x100,
             "Collision.esm",
@@ -2523,7 +2523,7 @@ pub(super) mod tests {
             Vec::new(),
             &interner,
         );
-        let second = record(
+        let second = self::record(
             "CREA",
             0x100,
             "Collision.esm",
@@ -2567,7 +2567,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn canonical_json_hash_and_roundtrip_ignore_input_order() {
+    fn canonical_json_hash_roundtrip_and_asset_digests_are_strict() {
         let interner = StringInterner::new();
         let fixture = GroundFixture::new(&interner);
         let first = fixture.build(&interner).unwrap();
@@ -2591,10 +2591,7 @@ pub(super) mod tests {
         let reopened =
             CreatureFamilyRecipeLedger::from_json(&first.canonical_json().unwrap()).unwrap();
         assert_eq!(first, reopened);
-    }
 
-    #[test]
-    fn asset_hashes_require_real_canonical_blake3_digests() {
         let interner = StringInterner::new();
         let fixture = GroundFixture::new(&interner);
         assert!(
@@ -2631,7 +2628,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn strict_validation_rejects_tamper_accounting_hash_and_order_drift() {
+    fn strict_validation_and_census_gate_reject_drift() {
         let interner = StringInterner::new();
         let ledger = GroundFixture::new(&interner).build(&interner).unwrap();
 
@@ -2688,14 +2685,11 @@ pub(super) mod tests {
             CreatureFamilyRecipeLedger::from_json(&unknown_field.to_string()),
             Err(CreatureRecipeBuildError::Serialization(_))
         ));
-    }
 
-    #[test]
-    fn full_census_gate_accounts_for_every_expected_merged_winner() {
         let interner = StringInterner::new();
         let records = (0..super::super::creature_catalog::EXPECTED_FULL_MERGED_CREA_WINNERS)
             .map(|offset| {
-                record(
+                self::record(
                     "CREA",
                     0x1000 + offset as u32,
                     "FalloutNV.esm",

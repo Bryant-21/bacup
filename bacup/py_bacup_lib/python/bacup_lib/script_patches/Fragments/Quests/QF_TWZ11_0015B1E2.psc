@@ -1,3 +1,12 @@
+Event OnQuestShutdown()
+	; The region dispatcher stops an unfinished daily at the in-game day boundary, so the
+	; barrel-activation perk has to come off on any shutdown, not only the stage-1000 path.
+	Actor playerRef = Game.GetPlayer()
+	If playerRef != None && TWZ11_BarrelActivation != None && playerRef.HasPerk(TWZ11_BarrelActivation)
+		playerRef.RemovePerk(TWZ11_BarrelActivation)
+	EndIf
+EndEvent
+
 Function Fragment_Stage_0051_Item_00()
 	TWZ11_Script controller = (Self as Quest) as TWZ11_Script
 	If controller != None

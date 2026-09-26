@@ -270,6 +270,7 @@ pub fn build_target_index(root_items: &[ParsedItem], collect_ids: bool) -> Targe
     walk_parallel(root_items, None, None, collect_ids)
 }
 
+#[cfg(test)]
 pub fn build_cell_grid_index(root_items: &[ParsedItem]) -> CellGridIndex {
     build_target_index(root_items, false).grid
 }

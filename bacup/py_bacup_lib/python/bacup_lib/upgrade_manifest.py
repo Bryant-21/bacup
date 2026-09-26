@@ -73,6 +73,17 @@ class UpgradeVersion:
 class UpgradeManifest:
     current: str
     versions: tuple[UpgradeVersion, ...]  # oldest -> newest
+    known_issues_by_conversion: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def known_issues_for_conversion(self, conversion_id: str) -> tuple[str, ...]:
+        return next(
+            (
+                issues
+                for key, issues in self.known_issues_by_conversion
+                if key == conversion_id
+            ),
+            (),
+        )
 
     def index_of(self, version_id: str) -> int | None:
         for i, v in enumerate(self.versions):
@@ -178,7 +189,32 @@ def load_upgrade_manifest(path: Path) -> UpgradeManifest:
                 f"version {v.id!r} has unknown conversion entries: "
                 f"{', '.join(sorted(unknown))}"
             )
-    return UpgradeManifest(str(data["current"]), versions)
+    return UpgradeManifest(
+        str(data["current"]),
+        versions,
+        known_issues_by_conversion=_parse_known_issues(
+            data.get("known_issues_by_conversion") or {}
+        ),
+    )
+
+
+def _parse_known_issues(raw: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    if not isinstance(raw, dict):
+        raise ValueError("known_issues_by_conversion must be a mapping")
+    unknown = set(map(str, raw)).difference(SOURCE_PAIRS)
+    if unknown:
+        raise ValueError(
+            "known_issues_by_conversion has unknown conversion entries: "
+            f"{', '.join(sorted(unknown))}"
+        )
+    parsed = []
+    for conversion_id, issues in raw.items():
+        if not isinstance(issues, list):
+            raise ValueError(
+                f"known_issues_by_conversion[{conversion_id!r}] must be a list"
+            )
+        parsed.append((str(conversion_id), tuple(str(issue) for issue in issues)))
+    return tuple(parsed)
 
 
 def resolve_family_union(

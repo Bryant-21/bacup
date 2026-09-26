@@ -6,7 +6,7 @@ use super::manifest::{
     CapabilityGeneratorTransitionArray, CapabilityGraphManifest, CapabilityModifierNode,
     CapabilityRoleGenerator, CapabilityVariableBindingType, ClipDecl, CreatureClipRole,
     CreatureGraphTemplate, CreatureManifest, EventDecl, EventUsage, GraphDeclarations,
-    MvpGraphManifest, MvpMotionManifest, OverlayClipRole, PropertyDecl, RAGDOLL_ENTER_EVENTS,
+    MvpGraphManifest, MvpMotionManifest, PropertyDecl, RAGDOLL_ENTER_EVENTS,
     RAGDOLL_TRANSITION_EVENTS, RagdollDisposition, SourceOwnedPoweredRagdollConfig,
     ValidationErrors, VariableDecl, VariableType, VariableValue,
 };
@@ -1637,7 +1637,6 @@ fn emit_overlay_layers(
     for (index, overlay) in graph.overlays.iter().enumerate() {
         output.push_str(&emit_overlay_layer(
             index,
-            overlay,
             event_index(&overlay.start_event),
             event_index(&overlay.stop_event),
         ));
@@ -1661,12 +1660,7 @@ fn emit_overlay_layers(
     output
 }
 
-fn emit_overlay_layer(
-    index: usize,
-    overlay: &OverlayClipRole,
-    start_event_index: usize,
-    stop_event_index: usize,
-) -> String {
+fn emit_overlay_layer(index: usize, start_event_index: usize, stop_event_index: usize) -> String {
     format!(
         "    <hkobject name=\"#{layer_id:04}\" class=\"hkbLayer\" signature=\"0x2916a243\">\n\
       <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"generator\">#{clip_id:04}</hkparam><hkparam name=\"weight\">1.0</hkparam><hkparam name=\"boneWeights\">null</hkparam><hkparam name=\"fadeInDuration\">0.2</hkparam><hkparam name=\"fadeOutDuration\">0.2</hkparam><hkparam name=\"onEventId\">{start_event_index}</hkparam><hkparam name=\"offEventId\">{stop_event_index}</hkparam><hkparam name=\"onByDefault\">false</hkparam><hkparam name=\"useMotion\">false</hkparam><hkparam name=\"forceFullFadeDurations\">false</hkparam>\n\

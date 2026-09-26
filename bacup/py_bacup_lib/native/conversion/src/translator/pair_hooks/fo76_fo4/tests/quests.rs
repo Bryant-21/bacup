@@ -18,66 +18,65 @@
     }
 
     #[test]
-    fn build_fo4_qust_dnam_relayouts_16_byte_flags32_variant() {
+    fn build_fo4_qust_dnam_relayouts_masks_flags_and_maps_types() {
         let mut data = vec![0u8; FO76_QUST_DATA_FLAGS32_LEN];
         data[0..4].copy_from_slice(&0x0000_0111_u32.to_le_bytes());
         data[4] = 7; // priority
         data[8..12].copy_from_slice(&2.0_f32.to_le_bytes());
         data[12] = 2; // quest_type
-
-        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("dnam");
+        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("flags32 dnam");
         assert_eq!(u16::from_le_bytes([dnam[0], dnam[1]]), 0x0111);
         assert_eq!(dnam[2], 7);
         assert_eq!(f32::from_le_bytes(dnam[4..8].try_into().unwrap()), 2.0);
         assert_eq!(dnam[8], FO4_QUST_TYPE_SIDE_QUESTS);
-    }
 
-    #[test]
-    fn build_fo4_qust_dnam_clears_run_once_for_daily_quests() {
         let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
         data[0..8].copy_from_slice(&0x0000_0000_0000_8111_u64.to_le_bytes());
         data[16] = 5; // Real FO76 QUST Daily enum from the generated schema.
-
-        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("dnam");
+        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("daily dnam");
         let flags = u16::from_le_bytes([dnam[0], dnam[1]]);
-
-        assert_eq!(flags & QUST_DNAM_FLAG_RUN_ONCE, 0);
+        assert_eq!(flags & QUST_DNAM_FLAG_RUN_ONCE, 0, "daily clears run-once");
         assert_eq!(flags & QUST_DNAM_FLAG_START_GAME_ENABLED, 1);
         assert_eq!(dnam[8], FO4_QUST_TYPE_SIDE_QUESTS);
-    }
 
-    #[test]
-    fn build_fo4_qust_dnam_preserves_run_once_for_non_daily_quests() {
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8111_u64.to_le_bytes());
         data[16] = 2;
-
-        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("dnam");
-        let flags = u16::from_le_bytes([dnam[0], dnam[1]]);
-
-        assert_eq!(flags & QUST_DNAM_FLAG_RUN_ONCE, QUST_DNAM_FLAG_RUN_ONCE);
-    }
-
-    fn burn_grunt_autorestart_record(interner: &StringInterner) -> Record {
-        let mut record = make_record("QUST", interner);
-        record.form_key.local = BURN_GRUNT_HUNT_FORM_ID;
-        record.eid = Some(interner.intern("Burn_BountyHunt_GruntHunt"));
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0294_8500_u64.to_le_bytes());
-        data[16] = 2;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-        push_field(
-            &mut record,
-            "QSDD",
-            FieldValue::Struct(vec![(
-                interner.intern("flags"),
-                FieldValue::Uint(u64::from(FO76_QSDD_AUTO_RESTART_FLAG)),
-            )]),
+        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("side quest dnam");
+        assert_eq!(
+            u16::from_le_bytes([dnam[0], dnam[1]]) & QUST_DNAM_FLAG_RUN_ONCE,
+            QUST_DNAM_FLAG_RUN_ONCE,
+            "non-daily keeps run-once"
         );
-        record
+
+        // 0x80000 = holotape_only (FO76-only) ORed with 0x8311 standard low bits.
+        data[0..8].copy_from_slice(&0x0000_0000_0008_8311_u64.to_le_bytes());
+        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("masked dnam");
+        assert_eq!(
+            u16::from_le_bytes([dnam[0], dnam[1]]),
+            0x8311,
+            "FO76-only high flag bits masked off"
+        );
+
+        assert!(build_fo4_qust_dnam_from_fo76_data(&[0u8; 13]).is_none());
+
+        for (fo76, fo4) in [
+            (0, FO4_QUST_TYPE_NONE),
+            (1, FO4_QUST_TYPE_MAIN_QUEST),
+            (2, FO4_QUST_TYPE_SIDE_QUESTS),
+            (3, FO4_QUST_TYPE_SIDE_QUESTS),
+            (5, FO4_QUST_TYPE_SIDE_QUESTS),
+            (7, FO4_QUST_TYPE_MISCELLANEOUS),
+            (FO76_QUST_TYPE_PUBLIC_EVENT, FO4_QUST_TYPE_SIDE_QUESTS),
+            (FO76_QUST_TYPE_EVENT, FO4_QUST_TYPE_SIDE_QUESTS),
+        ] {
+            assert_eq!(fo76_qust_type_to_fo4(fo76), fo4, "FO76 quest type {fo76}");
+        }
     }
 
     fn translated_run_once_flag(record: &Record) -> u16 {
+        translated_qust_dnam(record).0 & QUST_DNAM_FLAG_RUN_ONCE
+    }
+
+    fn translated_qust_dnam(record: &Record) -> (u16, u8) {
         let dnam = record
             .fields
             .iter()
@@ -86,529 +85,294 @@
         let FieldValue::Bytes(bytes) = &dnam.value else {
             panic!("DNAM bytes")
         };
-        u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_DNAM_FLAG_RUN_ONCE
+        (u16::from_le_bytes([bytes[0], bytes[1]]), bytes[8])
     }
 
-    fn bosz01_repeatable_record(interner: &StringInterner) -> Record {
+    #[derive(Clone, Copy, Debug)]
+    struct QustCase {
+        form_id: u32,
+        plugin: Option<&'static str>,
+        eid: Option<&'static str>,
+        scripts: &'static [&'static str],
+        flags: u64,
+        quest_type: u8,
+        existing_dnam: bool,
+        qsdd_flags: Option<u64>,
+        enam: Option<&'static [u8; 4]>,
+        objectives: bool,
+    }
+
+    const QUST_CASE: QustCase = QustCase {
+        form_id: 0x0000_0800,
+        plugin: None,
+        eid: None,
+        scripts: &[],
+        flags: 0,
+        quest_type: 0,
+        existing_dnam: false,
+        qsdd_flags: None,
+        enam: None,
+        objectives: false,
+    };
+
+    fn qust_case_record(interner: &StringInterner, case: QustCase) -> Record {
         let mut record = make_record("QUST", interner);
-        record.form_key.local = BOSZ01_REPEATABLE_FORM_ID;
-        record.eid = Some(interner.intern("BoSZ01"));
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0290_8500_u64.to_le_bytes());
-        data[16] = 2;
-        push_field(&mut record, "DATA", raw_bytes(&data));
+        record.form_key.local = case.form_id;
+        if let Some(plugin) = case.plugin {
+            record.form_key.plugin = interner.intern(plugin);
+        }
+        record.eid = case.eid.map(|eid| interner.intern(eid));
+        if !case.scripts.is_empty() {
+            push_field(
+                &mut record,
+                "VMAD",
+                qust_vmad_with_top_level_scripts(case.scripts),
+            );
+        }
+        if case.existing_dnam {
+            let mut dnam = vec![0u8; FO4_QUST_DNAM_LEN];
+            dnam[0..2].copy_from_slice(&(case.flags as u16).to_le_bytes());
+            dnam[8] = case.quest_type;
+            push_field(&mut record, "DNAM", raw_bytes(&dnam));
+        } else {
+            let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
+            data[0..8].copy_from_slice(&case.flags.to_le_bytes());
+            data[16] = case.quest_type;
+            push_field(&mut record, "DATA", raw_bytes(&data));
+        }
+        if let Some(flags) = case.qsdd_flags {
+            push_field(
+                &mut record,
+                "QSDD",
+                FieldValue::Struct(vec![(interner.intern("flags"), FieldValue::Uint(flags))]),
+            );
+        }
+        if let Some(enam) = case.enam {
+            push_field(&mut record, "ENAM", raw_bytes(enam));
+        }
+        if case.objectives {
+            push_field(&mut record, "QOBJ", raw_bytes(&100u16.to_le_bytes()));
+        }
         record
     }
 
     #[test]
-    fn pre_translate_clears_run_once_for_exact_bosz01_repeatable_contract() {
+    fn pre_translate_run_once_repeatability_requires_exact_quest_identity() {
         let interner = StringInterner::new();
-        let mut record = bosz01_repeatable_record(&interner);
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        assert_eq!(translated_run_once_flag(&record), 0);
-    }
-
-    #[test]
-    fn pre_translate_preserves_run_once_for_bosz01_repeatable_lookalikes() {
-        let interner = StringInterner::new();
-        let mut lookalikes = Vec::new();
-
-        let mut wrong_form_id = bosz01_repeatable_record(&interner);
-        wrong_form_id.form_key.local += 1;
-        lookalikes.push(wrong_form_id);
-
-        let mut wrong_editor_id = bosz01_repeatable_record(&interner);
-        wrong_editor_id.eid = Some(interner.intern("BoSZ01_Copy"));
-        lookalikes.push(wrong_editor_id);
-
-        let mut wrong_plugin = bosz01_repeatable_record(&interner);
-        wrong_plugin.form_key.plugin = interner.intern("UnsafeCopy.esm");
-        lookalikes.push(wrong_plugin);
-
-        for mut record in lookalikes {
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-            assert_eq!(
-                translated_run_once_flag(&record),
-                QUST_DNAM_FLAG_RUN_ONCE
-            );
-        }
-    }
-
-    #[test]
-    fn pre_translate_clears_run_once_for_exact_burn_grunt_autorestart_contract() {
-        let interner = StringInterner::new();
-        let mut record = burn_grunt_autorestart_record(&interner);
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        assert_eq!(translated_run_once_flag(&record), 0);
-    }
-
-    #[test]
-    fn pre_translate_preserves_run_once_for_burn_grunt_autorestart_lookalikes() {
-        let interner = StringInterner::new();
-        let mut lookalikes = Vec::new();
-
-        let mut wrong_form_id = burn_grunt_autorestart_record(&interner);
-        wrong_form_id.form_key.local += 1;
-        lookalikes.push(wrong_form_id);
-
-        let mut wrong_editor_id = burn_grunt_autorestart_record(&interner);
-        wrong_editor_id.eid = Some(interner.intern("Burn_BountyHunt_GruntHunt_Copy"));
-        lookalikes.push(wrong_editor_id);
-
-        let mut wrong_plugin = burn_grunt_autorestart_record(&interner);
-        wrong_plugin.form_key.plugin = interner.intern("UnsafeCopy.esm");
-        lookalikes.push(wrong_plugin);
-
-        let mut missing_auto_restart = burn_grunt_autorestart_record(&interner);
-        let qsdd = missing_auto_restart
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "QSDD")
-            .expect("QSDD");
-        qsdd.value = FieldValue::Struct(vec![(
-            interner.intern("flags"),
-            FieldValue::Uint(0),
-        )]);
-        lookalikes.push(missing_auto_restart);
-
-        for mut record in lookalikes {
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-            assert_eq!(
-                translated_run_once_flag(&record),
-                QUST_DNAM_FLAG_RUN_ONCE
-            );
-        }
-    }
-
-    #[test]
-    fn pre_translate_clears_run_once_for_repeatable_daily_binding() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x0006_5DFE;
-        push_field(
-            &mut record,
-            "VMAD",
-            qust_vmad_with_top_level_scripts(&[
-                "DefaultQuestRemovePlayersScript",
-                "DefaultDailyQuestScript",
-            ]),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0390_8500_u64.to_le_bytes());
-        data[16] = FO76_QUST_TYPE_DAILY;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
+        let remove_players: &'static [&'static str] = &["DefaultQuestRemovePlayersScript"];
+        let engine_daily = QustCase {
+            scripts: remove_players,
+            flags: 0x0290_8500,
+            quest_type: FO76_QUST_TYPE_DAILY,
+            ..QUST_CASE
         };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_DNAM_FLAG_RUN_ONCE,
-            0
-        );
-    }
-
-    #[test]
-    fn pre_translate_clears_run_once_for_lookout_tower_quest() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x0013_FB17;
-        record.eid = Some(interner.intern("LookoutTowerQuest"));
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
+        let public_event = QustCase {
+            flags: 0x8500,
+            quest_type: FO76_QUST_TYPE_PUBLIC_EVENT,
+            ..QUST_CASE
         };
-        let flags = u16::from_le_bytes([bytes[0], bytes[1]]);
-        assert_eq!(flags & QUST_DNAM_FLAG_RUN_ONCE, 0);
-        assert_eq!(flags & QUST_DNAM_FLAG_START_GAME_ENABLED, 0);
-    }
+        let bosz01 = QustCase {
+            form_id: BOSZ01_REPEATABLE_FORM_ID,
+            eid: Some("BoSZ01"),
+            flags: 0x0290_8500,
+            quest_type: 2,
+            ..QUST_CASE
+        };
+        let grunt = QustCase {
+            form_id: BURN_GRUNT_HUNT_FORM_ID,
+            eid: Some("Burn_BountyHunt_GruntHunt"),
+            flags: 0x0294_8500,
+            quest_type: 2,
+            qsdd_flags: Some(u64::from(FO76_QSDD_AUTO_RESTART_FLAG)),
+            ..QUST_CASE
+        };
+        let companion = QustCase {
+            form_id: 0x0054_F1A4,
+            eid: Some("COMP_RQ_Fetch"),
+            flags: 0x8500,
+            ..QUST_CASE
+        };
 
-    #[test]
-    fn pre_translate_clears_run_once_for_companion_runtime_event_quests() {
-        let mut interner = StringInterner::new();
-        for (form_id, editor_id) in [
+        let mut cases = vec![
+            (bosz01, true),
+            (QustCase { form_id: BOSZ01_REPEATABLE_FORM_ID + 1, ..bosz01 }, false),
+            (QustCase { eid: Some("BoSZ01_Copy"), ..bosz01 }, false),
+            (QustCase { plugin: Some("UnsafeCopy.esm"), ..bosz01 }, false),
+            (grunt, true),
+            (QustCase { form_id: BURN_GRUNT_HUNT_FORM_ID + 1, ..grunt }, false),
+            (QustCase { eid: Some("Burn_BountyHunt_GruntHunt_Copy"), ..grunt }, false),
+            (QustCase { plugin: Some("UnsafeCopy.esm"), ..grunt }, false),
+            (QustCase { qsdd_flags: Some(0), ..grunt }, false),
+            (
+                QustCase {
+                    form_id: 0x0006_5DFE,
+                    scripts: &["DefaultQuestRemovePlayersScript", "DefaultDailyQuestScript"],
+                    flags: 0x0390_8500,
+                    quest_type: FO76_QUST_TYPE_DAILY,
+                    ..QUST_CASE
+                },
+                true,
+            ),
+            (
+                QustCase {
+                    form_id: 0x0006_5DFE,
+                    scripts: &["DefaultDailyQuestScript"],
+                    flags: 0x8500,
+                    quest_type: FO4_QUST_TYPE_SIDE_QUESTS,
+                    existing_dnam: true,
+                    ..QUST_CASE
+                },
+                true,
+            ),
+            (
+                QustCase {
+                    form_id: 0x001E_D40B,
+                    scripts: &[
+                        "DefaultQuestRemovePlayersScript",
+                        "mtr04_gamescomplete",
+                        "OBSOLETEQuestCleanupItemsOnShutdown",
+                    ],
+                    flags: 0x0390_8500,
+                    ..engine_daily
+                },
+                false,
+            ),
+            (
+                QustCase {
+                    form_id: 0x0045_E3D2,
+                    flags: 0x8500,
+                    quest_type: FO4_QUST_TYPE_SIDE_QUESTS,
+                    existing_dnam: true,
+                    ..engine_daily
+                },
+                true,
+            ),
+            (QustCase { form_id: 0x0045_E3D2, plugin: Some("Other.esm"), ..engine_daily }, false),
+            (
+                QustCase {
+                    form_id: 0x0013_FB17,
+                    eid: Some("LookoutTowerQuest"),
+                    flags: 0x8500,
+                    ..QUST_CASE
+                },
+                true,
+            ),
+            (QustCase { eid: Some("COMP_RQ_Fetch_UnsafeCopy"), ..companion }, false),
+            (QustCase { plugin: Some("Foreign.esm"), ..companion }, false),
+            (QustCase { form_id: 0x0058_3D15, ..public_event }, false),
+            (QustCase { form_id: 0x0058_3D14, plugin: Some("Other.esm"), ..public_event }, false),
+            // CB02_MaskTeam has no ENAM (CB02_QuestScript starts it), so
+            // repeatability must key on the quest, not on event scoping.
+            (
+                QustCase {
+                    form_id: 0x0051_AA0B,
+                    flags: 0x8100,
+                    quest_type: FO76_QUST_TYPE_PUBLIC_EVENT,
+                    ..QUST_CASE
+                },
+                true,
+            ),
+        ];
+        for existing_dnam in [false, true] {
+            for (form_id, eid, flags, repeatable) in [
+                (0x002D_0F69, "EN07_MQ_FleeBlast", 0x8100, true),
+                (0x002D_0F69, "EN07_MQ_FleeBlast_Copy", 0x8100, false),
+                (0x0034_43FB, "MTR07_Earth", 0x8108, true),
+                (0x0034_43FB, "MTR07_EarthMisc", 0x8108, false),
+            ] {
+                cases.push((
+                    QustCase {
+                        form_id,
+                        eid: Some(eid),
+                        flags,
+                        quest_type: 2,
+                        existing_dnam,
+                        ..QUST_CASE
+                    },
+                    repeatable,
+                ));
+            }
+        }
+        for (form_id, eid) in [
             (0x0054_F1A4, "COMP_RQ_Fetch"),
             (0x0056_FB76, "COMP_RQ_Kill"),
             (0x0057_27AD, "COMP_RQ_Rescue"),
             (0x0055_FD53, "COMP_Visitor"),
-            (
-                0x0058_215B,
-                "COMP_RQ_Fetch_SpecificAliases_Beckett_000_SadDiary",
-            ),
-            (
-                0x0058_2164,
-                "COMP_RQ_Rescue_SpecificAliases_Beckett_001_CultistSage",
-            ),
-            (
-                0x0058_2163,
-                "COMP_RQ_Fetch_SpecificAliases_Beckett_002_Key",
-            ),
-            (
-                0x0058_2160,
-                "COMP_RQ_Kill_SpecificAliases_Beckett_003_Bronx",
-            ),
-            (
-                0x0058_2167,
-                "COMP_RQ_Fetch_SpecificAliases_Beckett_004_Cave",
-            ),
-            (
-                0x0058_2165,
-                "COMP_RQ_Kill_SpecificAliases_Beckett_005_Blood",
-            ),
-            (
-                0x0058_215A,
-                "COMP_RQ_Rescue_SpecificAliases_Beckett_006_Pet",
-            ),
-            (
-                0x0058_215E,
-                "COMP_RQ_Kill_SpecificAliases_Beckett_007_DJ",
-            ),
-            (
-                0x0058_216A,
-                "COMP_RQ_Rescue_SpecificAliases_Beckett_008_MissNanny",
-            ),
-            (
-                0x0058_2168,
-                "COMP_RQ_Fetch_SpecificAliases_Beckett_009_Holotapes",
-            ),
-            (
-                0x0058_215F,
-                "COMP_RQ_Fetch_SpecificAliases_Beckett_010_PoisonedFood",
-            ),
-            (
-                0x0058_215D,
-                "COMP_RQ_Kill_SpecificAliases_Beckett_011_Eye",
-            ),
-            (
-                0x005A_272F,
-                "COMP_RQ_Kill_SpecificAliases_Beckett_BloodEagleRandomLoc",
-            ),
-            (
-                0x005A_2730,
-                "COMP_RQ_Kill_SpecificAliases_Beckett_BloodEagleDungeon",
-            ),
+            (0x0058_215B, "COMP_RQ_Fetch_SpecificAliases_Beckett_000_SadDiary"),
+            (0x0058_2164, "COMP_RQ_Rescue_SpecificAliases_Beckett_001_CultistSage"),
+            (0x0058_2163, "COMP_RQ_Fetch_SpecificAliases_Beckett_002_Key"),
+            (0x0058_2160, "COMP_RQ_Kill_SpecificAliases_Beckett_003_Bronx"),
+            (0x0058_2167, "COMP_RQ_Fetch_SpecificAliases_Beckett_004_Cave"),
+            (0x0058_2165, "COMP_RQ_Kill_SpecificAliases_Beckett_005_Blood"),
+            (0x0058_215A, "COMP_RQ_Rescue_SpecificAliases_Beckett_006_Pet"),
+            (0x0058_215E, "COMP_RQ_Kill_SpecificAliases_Beckett_007_DJ"),
+            (0x0058_216A, "COMP_RQ_Rescue_SpecificAliases_Beckett_008_MissNanny"),
+            (0x0058_2168, "COMP_RQ_Fetch_SpecificAliases_Beckett_009_Holotapes"),
+            (0x0058_215F, "COMP_RQ_Fetch_SpecificAliases_Beckett_010_PoisonedFood"),
+            (0x0058_215D, "COMP_RQ_Kill_SpecificAliases_Beckett_011_Eye"),
+            (0x005A_272F, "COMP_RQ_Kill_SpecificAliases_Beckett_BloodEagleRandomLoc"),
+            (0x005A_2730, "COMP_RQ_Kill_SpecificAliases_Beckett_BloodEagleDungeon"),
             (0x005A_272D, "COMP_RQ_Fetch_SpecificAliases_LegendaryArmor"),
             (0x005A_272E, "COMP_RQ_Fetch_SpecificAliases_LegendaryWeapon"),
         ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            record.eid = Some(interner.intern(editor_id));
-            let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-            push_field(&mut record, "DATA", raw_bytes(&data));
-
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            assert_eq!(translated_run_once_flag(&record), 0, "{editor_id}");
+            cases.push((QustCase { form_id, eid: Some(eid), ..companion }, true));
         }
-    }
-
-    #[test]
-    fn companion_runtime_repeatability_rejects_wrong_editor_id() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x0054_F1A4;
-        record.eid = Some(interner.intern("COMP_RQ_Fetch_UnsafeCopy"));
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        assert_eq!(translated_run_once_flag(&record), QUST_DNAM_FLAG_RUN_ONCE);
-    }
-
-    #[test]
-    fn companion_runtime_repeatability_does_not_match_foreign_plugins() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x0054_F1A4;
-        record.form_key.plugin = interner.intern("Foreign.esm");
-        record.eid = Some(interner.intern("COMP_RQ_Fetch"));
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        assert_eq!(
-            translated_run_once_flag(&record),
-            QUST_DNAM_FLAG_RUN_ONCE
-        );
-    }
-
-    #[test]
-    fn pre_translate_preserves_run_once_without_daily_repeat_binding() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x001E_D40B;
-        push_field(
-            &mut record,
-            "VMAD",
-            qust_vmad_with_top_level_scripts(&[
-                "DefaultQuestRemovePlayersScript",
-                "mtr04_gamescomplete",
-                "OBSOLETEQuestCleanupItemsOnShutdown",
-            ]),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0390_8500_u64.to_le_bytes());
-        data[16] = FO76_QUST_TYPE_DAILY;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_DNAM_FLAG_RUN_ONCE,
-            QUST_DNAM_FLAG_RUN_ONCE
-        );
-    }
-
-    #[test]
-    fn pre_translate_clears_run_once_for_engine_managed_repeatable_dailies() {
-        let mut interner = StringInterner::new();
         for form_id in [
-            0x001E_D40A,
-            0x0045_E3D2,
-            0x0045_E3D3,
-            0x0047_CF15,
-            0x0047_CF16,
-            0x0063_D33F,
-            0x0063_BED4,
-            0x0063_D5BD,
-            0x0062_1FB7,
-            0x006F_D072,
+            0x001E_D40A, 0x0045_E3D2, 0x0045_E3D3, 0x0047_CF15, 0x0047_CF16, 0x0063_D33F,
+            0x0063_BED4, 0x0063_D5BD, 0x0062_1FB7, 0x006F_D072,
         ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            push_field(
-                &mut record,
-                "VMAD",
-                qust_vmad_with_top_level_scripts(&["DefaultQuestRemovePlayersScript"]),
-            );
-            let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            data[0..8].copy_from_slice(&0x0000_0000_0290_8500_u64.to_le_bytes());
-            data[16] = FO76_QUST_TYPE_DAILY;
-            push_field(&mut record, "DATA", raw_bytes(&data));
-
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            let dnam = record
-                .fields
-                .iter()
-                .find(|field| field.sig.as_str() == "DNAM")
-                .expect("DNAM");
-            let FieldValue::Bytes(bytes) = &dnam.value else {
-                panic!("DNAM bytes")
-            };
-            assert_eq!(
-                u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_DNAM_FLAG_RUN_ONCE,
-                0,
-                "{form_id:08X}"
-            );
+            cases.push((QustCase { form_id, ..engine_daily }, true));
         }
-    }
-
-    #[test]
-    fn pre_translate_preserves_run_once_for_one_off_costa_dailies() {
-        let mut interner = StringInterner::new();
         for form_id in [
-            0x0068_FD4A,
-            0x006A_173A,
-            0x006A_0F94,
-            0x006A_1030,
-            0x006A_17A9,
-            0x0069_F2C7,
-            0x006A_21E3,
-            0x006A_21E4,
+            0x0068_FD4A, 0x006A_173A, 0x006A_0F94, 0x006A_1030, 0x006A_17A9, 0x0069_F2C7,
+            0x006A_21E3, 0x006A_21E4,
         ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            push_field(
-                &mut record,
-                "VMAD",
-                qust_vmad_with_top_level_scripts(&["DefaultQuestRemovePlayersScript"]),
-            );
-            let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            data[0..8].copy_from_slice(&0x0000_0000_0290_8500_u64.to_le_bytes());
-            data[16] = FO76_QUST_TYPE_DAILY;
-            push_field(&mut record, "DATA", raw_bytes(&data));
+            cases.push((QustCase { form_id, ..engine_daily }, false));
+        }
+        let repeatable_public_events = [
+            0x0058_3D14, 0x0068_F383, 0x007E_BDF4, 0x0046_48C3, 0x0073_3DB5, 0x0004_E257,
+            0x0045_4CB6, 0x0064_31CE, 0x0009_210E, 0x0049_8662, 0x007F_1E8A, 0x0012_E67E,
+            0x0009_3187, 0x0031_1433, 0x0004_2F7E, 0x0062_16DA, 0x0065_E071, 0x006A_D506,
+            0x0010_BAE1, 0x0051_09AF, 0x0056_2877, 0x0069_0659, 0x003E_271D, 0x0063_461B,
+            0x0080_BFD0, 0x0063_4B0B, 0x0025_C090, 0x0004_A357, 0x005F_E4D7, 0x0018_7531,
+            0x0065_B0A8, 0x0003_64D0,
+        ];
+        for form_id in repeatable_public_events {
+            cases.push((QustCase { form_id, ..public_event }, true));
+        }
+        // Riding Shotgun, Always Vigilant, Powering Up, Retake.
+        for form_id in [0x0056_0B13, 0x000A_73DC, 0x003E_4E89, 0x0000_9179] {
+            cases.push((
+                QustCase {
+                    form_id,
+                    flags: 0x8100,
+                    quest_type: FO76_QUST_TYPE_EVENT,
+                    ..QUST_CASE
+                },
+                true,
+            ));
+        }
 
+        for (case, repeatable) in cases {
+            let mut record = qust_case_record(&interner, case);
             Fo76Fo4Hook
                 .pre_translate(&mut make_ctx(&interner), &mut record)
                 .unwrap();
-
-            let dnam = record
-                .fields
-                .iter()
-                .find(|field| field.sig.as_str() == "DNAM")
-                .expect("DNAM");
-            let FieldValue::Bytes(bytes) = &dnam.value else {
-                panic!("DNAM bytes")
-            };
+            let (flags, quest_type) = translated_qust_dnam(&record);
             assert_eq!(
-                u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_DNAM_FLAG_RUN_ONCE,
-                QUST_DNAM_FLAG_RUN_ONCE,
-                "{form_id:08X}"
+                flags & QUST_DNAM_FLAG_RUN_ONCE,
+                if repeatable { 0 } else { QUST_DNAM_FLAG_RUN_ONCE },
+                "{case:?}"
             );
+            if case.quest_type == FO76_QUST_TYPE_PUBLIC_EVENT || case.eid == Some("LookoutTowerQuest") {
+                assert_eq!(flags & QUST_DNAM_FLAG_START_GAME_ENABLED, 0, "{case:?}");
+            }
+            if case.quest_type == FO76_QUST_TYPE_PUBLIC_EVENT {
+                assert_eq!(quest_type, FO4_QUST_TYPE_SIDE_QUESTS, "{case:?}");
+            }
         }
-    }
 
-    #[test]
-    fn pre_translate_does_not_match_repeatable_daily_ids_from_other_plugins() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x0045_E3D2;
-        record.form_key.plugin = interner.intern("Other.esm");
-        push_field(
-            &mut record,
-            "VMAD",
-            qust_vmad_with_top_level_scripts(&["DefaultQuestRemovePlayersScript"]),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0290_8500_u64.to_le_bytes());
-        data[16] = FO76_QUST_TYPE_DAILY;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_DNAM_FLAG_RUN_ONCE,
-            QUST_DNAM_FLAG_RUN_ONCE
-        );
-    }
-
-    #[test]
-    fn pre_translate_clears_run_once_for_requested_repeatable_public_events() {
-        let mut interner = StringInterner::new();
-        for form_id in [
-            0x0058_3D14,
-            0x0068_F383,
-            0x007E_BDF4,
-            0x0046_48C3,
-            0x0073_3DB5,
-            0x0004_E257,
-            0x0045_4CB6,
-            0x0064_31CE,
-            0x0009_210E,
-            0x0049_8662,
-            0x007F_1E8A,
-            0x0012_E67E,
-            0x0009_3187,
-            0x0031_1433,
-            0x0004_2F7E,
-            0x0062_16DA,
-            0x0065_E071,
-            0x006A_D506,
-            0x0010_BAE1,
-            0x0051_09AF,
-            0x0056_2877,
-            0x0069_0659,
-            0x003E_271D,
-            0x0063_461B,
-            0x0080_BFD0,
-            0x0063_4B0B,
-            0x0025_C090,
-            0x0004_A357,
-            0x005F_E4D7,
-            0x0018_7531,
-            0x0065_B0A8,
-            0x0003_64D0,
-        ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-            data[16] = FO76_QUST_TYPE_PUBLIC_EVENT;
-            push_field(&mut record, "DATA", raw_bytes(&data));
-
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            let dnam = record
-                .fields
-                .iter()
-                .find(|field| field.sig.as_str() == "DNAM")
-                .expect("DNAM");
-            let FieldValue::Bytes(bytes) = &dnam.value else {
-                panic!("DNAM bytes")
-            };
-            let flags = u16::from_le_bytes([bytes[0], bytes[1]]);
-            assert_eq!(flags & QUST_DNAM_FLAG_RUN_ONCE, 0, "{form_id:08X}");
-            assert_eq!(bytes[8], FO4_QUST_TYPE_SIDE_QUESTS, "{form_id:08X}");
-            assert_eq!(
-                flags & QUST_DNAM_FLAG_START_GAME_ENABLED,
-                0,
-                "{form_id:08X}"
-            );
-        }
-    }
-
-    #[test]
-    fn pre_translate_clears_run_once_for_repeatable_public_event_with_existing_dnam() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
+        let mut record = make_record("QUST", &interner);
         record.form_key.local = 0x0058_3D14;
         record.form_key.plugin = interner.intern("seVENTYsix.EsM");
         let mut dnam = vec![0x01, 0xA5, 73, 0xCC, 1, 2, 3, 4, 0, 5, 6, 7];
@@ -619,319 +383,78 @@
             & !QUST_DNAM_FLAG_START_GAME_ENABLED;
         expected[0..2].copy_from_slice(&expected_flags.to_le_bytes());
         push_field(&mut record, "DNAM", raw_bytes(&dnam));
-
         Fo76Fo4Hook
             .pre_translate(&mut make_ctx(&interner), &mut record)
             .unwrap();
-
         let dnam = record
             .fields
             .iter()
             .find(|field| field.sig.as_str() == "DNAM")
             .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(bytes.as_slice(), expected.as_slice());
-    }
-
-    #[test]
-    fn pre_translate_clears_run_once_for_repeatable_daily_with_existing_dnam() {
-        let mut interner = StringInterner::new();
-        for (form_id, scripts) in [
-            (0x0006_5DFE, vec!["DefaultDailyQuestScript"]),
-            (0x0045_E3D2, vec!["DefaultQuestRemovePlayersScript"]),
-        ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            push_field(
-                &mut record,
-                "VMAD",
-                qust_vmad_with_top_level_scripts(&scripts),
-            );
-            push_field(
-                &mut record,
-                "DNAM",
-                raw_bytes(&[
-                    0x00,
-                    0x85,
-                    50,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    FO4_QUST_TYPE_SIDE_QUESTS,
-                    0,
-                    0,
-                    0,
-                ]),
-            );
-
-            Fo76Fo4Hook
-                .pre_translate(&mut make_ctx(&interner), &mut record)
-                .unwrap();
-
-            let dnam = record
-                .fields
-                .iter()
-                .find(|field| field.sig.as_str() == "DNAM")
-                .expect("DNAM");
-            let FieldValue::Bytes(bytes) = &dnam.value else {
-                panic!("DNAM bytes")
-            };
-            assert_eq!(
-                u16::from_le_bytes([bytes[0], bytes[1]]) & QUST_DNAM_FLAG_RUN_ONCE,
-                0,
-                "{form_id:08X}"
-            );
-        }
-    }
-
-    #[test]
-    fn pre_translate_preserves_run_once_for_unlisted_public_event() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x0058_3D15;
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        data[16] = FO76_QUST_TYPE_PUBLIC_EVENT;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        let flags = u16::from_le_bytes([bytes[0], bytes[1]]);
-        assert_eq!(flags & QUST_DNAM_FLAG_RUN_ONCE, QUST_DNAM_FLAG_RUN_ONCE);
-        assert_eq!(flags & QUST_DNAM_FLAG_START_GAME_ENABLED, 0);
-    }
-
-    #[test]
-    fn pre_translate_does_not_match_repeatable_public_event_ids_from_other_plugins() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = 0x0058_3D14;
-        record.form_key.plugin = interner.intern("Other.esm");
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        data[16] = FO76_QUST_TYPE_PUBLIC_EVENT;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        let flags = u16::from_le_bytes([bytes[0], bytes[1]]);
-        assert_eq!(flags & QUST_DNAM_FLAG_RUN_ONCE, QUST_DNAM_FLAG_RUN_ONCE);
-        assert_eq!(flags & QUST_DNAM_FLAG_START_GAME_ENABLED, 0);
-    }
-
-    #[test]
-    fn build_fo4_qust_dnam_masks_fo76_only_high_flag_bits() {
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        // 0x80000 = holotape_only (FO76-only) ORed with 0x8311 standard low bits.
-        data[0..8].copy_from_slice(&0x0000_0000_0008_8311_u64.to_le_bytes());
-        let dnam = build_fo4_qust_dnam_from_fo76_data(&data).expect("dnam");
         assert_eq!(
-            u16::from_le_bytes([dnam[0], dnam[1]]),
-            0x8311,
-            "FO76-only high flag bits masked off"
+            dnam.value,
+            raw_bytes(&expected),
+            "existing DNAM keeps its other bytes; plugin match is case-insensitive"
         );
     }
 
     #[test]
-    fn build_fo4_qust_dnam_rejects_unknown_length() {
-        assert!(build_fo4_qust_dnam_from_fo76_data(&[0u8; 13]).is_none());
-    }
-
-    #[test]
-    fn build_fo4_qust_dnam_maps_quest_type_enums_between_games() {
-        assert_eq!(fo76_qust_type_to_fo4(0), FO4_QUST_TYPE_NONE);
-        assert_eq!(fo76_qust_type_to_fo4(1), FO4_QUST_TYPE_MAIN_QUEST);
-        assert_eq!(fo76_qust_type_to_fo4(2), FO4_QUST_TYPE_SIDE_QUESTS);
-        assert_eq!(fo76_qust_type_to_fo4(3), FO4_QUST_TYPE_SIDE_QUESTS);
-        assert_eq!(fo76_qust_type_to_fo4(5), FO4_QUST_TYPE_SIDE_QUESTS);
-        assert_eq!(fo76_qust_type_to_fo4(7), FO4_QUST_TYPE_MISCELLANEOUS);
-        assert_eq!(
-            fo76_qust_type_to_fo4(FO76_QUST_TYPE_PUBLIC_EVENT),
-            FO4_QUST_TYPE_SIDE_QUESTS
-        );
-        assert_eq!(
-            fo76_qust_type_to_fo4(FO76_QUST_TYPE_EVENT),
-            FO4_QUST_TYPE_SIDE_QUESTS
-        );
-    }
-
-    #[test]
-    fn pre_translate_converts_qust_data_to_fo4_dnam() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
+    fn convert_qust_data_to_fo4_dnam_only_for_qust_without_dnam() {
+        let interner = StringInterner::new();
+        let mut record = make_record("QUST", &interner);
         push_field(&mut record, "EDID", FieldValue::None);
         let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
         data[0..8].copy_from_slice(&0x0000_0000_0000_8311_u64.to_le_bytes());
         data[8] = 5;
         data[16] = 2;
         push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
         let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
         assert!(!sigs.contains(&"DATA"), "FO76 DATA renamed away");
-        assert!(sigs.contains(&"DNAM"), "FO4 DNAM emitted");
-        let dnam = record
+        let FieldValue::Bytes(bytes) = &record
             .fields
             .iter()
             .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
+            .expect("FO4 DNAM emitted")
+            .value
+        else {
             panic!("DNAM should be raw bytes");
         };
         assert_eq!(bytes.len(), FO4_QUST_DNAM_LEN);
         assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), 0x8311);
-    }
 
-    /// FO76 `holotape_only` hides a quest from the Pip-Boy but keeps it running.
-    /// Most flagged quests are objective-less holotape containers that must keep
-    /// auto-starting; only one that also carries objectives is a QA harness.
-    fn holotape_only_qust_data() -> Vec<u8> {
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        // holotape_only | has_dialogue_data | run_once | starts_enabled | start_game_enabled
-        data[0..8].copy_from_slice(&0x0000_0000_0008_8111_u64.to_le_bytes());
-        data[8] = 50;
-        data
-    }
-
-    fn dnam_flags_after_pre_translate(record: &Record) -> u16 {
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .expect("DNAM");
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes");
-        };
-        u16::from_le_bytes([bytes[0], bytes[1]])
-    }
-
-    #[test]
-    fn pre_translate_qust_disables_holotape_only_quest_with_objectives() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "DATA", raw_bytes(&holotape_only_qust_data()));
-        push_field(&mut record, "QOBJ", raw_bytes(&100u16.to_le_bytes()));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            dnam_flags_after_pre_translate(&record) & QUST_DNAM_FLAG_START_GAME_ENABLED,
-            0,
-            "QA harness quest must not auto-start"
-        );
-    }
-
-    #[test]
-    fn pre_translate_qust_keeps_objectiveless_holotape_container_starting() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "DATA", raw_bytes(&holotape_only_qust_data()));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            dnam_flags_after_pre_translate(&record) & QUST_DNAM_FLAG_START_GAME_ENABLED,
-            QUST_DNAM_FLAG_START_GAME_ENABLED,
-            "holotape container must keep running or its tapes go dead"
-        );
-    }
-
-    #[test]
-    fn pre_translate_qust_keeps_ordinary_quest_with_objectives_starting() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        let mut data = holotape_only_qust_data();
-        // Same quest, without the FO76 holotape_only bit.
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8111_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-        push_field(&mut record, "QOBJ", raw_bytes(&100u16.to_le_bytes()));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(
-            dnam_flags_after_pre_translate(&record) & QUST_DNAM_FLAG_START_GAME_ENABLED,
-            QUST_DNAM_FLAG_START_GAME_ENABLED,
-            "objectives alone must not suppress a normal quest"
-        );
-    }
-
-    #[test]
-    fn pre_translate_qust_keeps_existing_dnam_untouched() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
+        let mut record = make_record("QUST", &interner);
         push_field(&mut record, "EDID", FieldValue::None);
         push_field(
             &mut record,
             "DNAM",
             raw_bytes(&[0x01, 0x00, 9, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
         );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+        let FieldValue::Bytes(bytes) = &record
             .fields
             .iter()
             .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
+            .unwrap()
+            .value
+        else {
             panic!("DNAM bytes");
         };
         assert_eq!(bytes[2], 9, "existing DNAM priority preserved");
-    }
 
-    #[test]
-    fn pre_translate_qust_data_to_dnam_ignores_non_qust() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("WEAP", &mut interner);
+        let mut record = make_record("WEAP", &interner);
         push_field(
             &mut record,
             "DATA",
             raw_bytes(&[0u8; FO76_QUST_DATA_FLAGS64_LEN]),
         );
-
         Fo76Fo4Hook::convert_qust_data_to_fo4_dnam(&interner, &mut record);
-
         let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert!(sigs.contains(&"DATA"), "non-QUST DATA left untouched");
-        assert!(!sigs.contains(&"DNAM"));
+        assert_eq!(sigs, vec!["DATA"], "non-QUST DATA left untouched");
     }
 
     #[test]
@@ -1211,204 +734,120 @@
     }
 
     #[test]
-    fn pre_translate_does_not_force_start_dialogue_named_quest() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("XPD_Dialogue_WhitespringGreeter")),
-        );
-        // FO76 20-byte DATA: flags u64 low word 0x8500 (has_dialogue_data, NOT SGE).
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
+    fn pre_translate_start_game_enabled_policy() {
+        let interner = StringInterner::new();
+        let sge = QUST_DNAM_FLAG_START_GAME_ENABLED;
+        let named = |eid: &'static str, flags: u64| QustCase {
+            eid: Some(eid),
+            flags,
+            ..QUST_CASE
         };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            0,
-            "EditorID classification must not invent Start-Game-Enabled"
-        );
-    }
-
-    #[test]
-    fn pre_translate_preserves_instanced_story_manager_quest_autostart() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("WhitespringQuest")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0001_8111_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-        push_field(
-            &mut record,
-            "ENAM",
-            FieldValue::Bytes(SmallVec::from_vec(0x434F_4C49_u32.to_le_bytes().to_vec())),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
+        // FO76 holotape_only hides a quest from the Pip-Boy but keeps it running;
+        // only a flagged quest that also carries objectives is a QA harness.
+        let holotape = QustCase {
+            flags: 0x0008_8111,
+            ..QUST_CASE
         };
-        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001, 1);
-        assert_eq!(bytes[8], FO4_QUST_TYPE_NONE);
-        assert!(record.warnings.is_empty());
-    }
+        let no_warnings = Some("");
+        for (case, expected_sge, expected_type, reason) in [
+            (QustCase { objectives: true, ..holotape }, 0, None, None),
+            (holotape, sge, None, None),
+            (QustCase { flags: 0x8111, objectives: true, ..QUST_CASE }, sge, None, None),
+            (named("XPD_Dialogue_WhitespringGreeter", 0x8500), 0, None, None),
+            (named("RE_SceneKMK01", 0x8500), 0, None, None),
+            (named("test_VHarbison_Dialogue_Someone", 0x8500), 0, None, None),
+            (named("W05_MQ_003P_Radio", 0x8500), 0, None, None),
+            (
+                QustCase { enam: Some(b"ILOC"), ..named("WhitespringQuest", 0x0001_8111) },
+                sge,
+                Some(FO4_QUST_TYPE_NONE),
+                no_warnings,
+            ),
+            (
+                QustCase {
+                    enam: Some(b"ILOC"),
+                    ..named("W05_MQ_001P_Wayward_PenningtonScene", 0x0401_8511)
+                },
+                sge,
+                Some(FO4_QUST_TYPE_NONE),
+                None,
+            ),
+            (named("RE_SceneKMK01", 0x8501), sge, None, None),
+            (named("SQ_RadioAppalachia", 0x0401_8511), sge, None, None),
+            (named("BoS_Radio", 0x0001_8119), sge, None, None),
+            (named("CB_RegionPatrol", 0x0001_8111), sge, None, no_warnings),
+            (
+                QustCase { flags: 0x8501, quest_type: FO76_QUST_TYPE_PUBLIC_EVENT, ..QUST_CASE },
+                0,
+                Some(FO4_QUST_TYPE_SIDE_QUESTS),
+                None,
+            ),
+            (
+                QustCase {
+                    quest_type: FO76_QUST_TYPE_EVENT,
+                    ..named("Dialogue_EventActivity", 0x8501)
+                },
+                0,
+                Some(FO4_QUST_TYPE_SIDE_QUESTS),
+                Some("reason=quest_type_event"),
+            ),
+            (named("TestDialogueExpressions", 0x8501), 0, None, None),
+            (named("DebugCorrieQuest", 0x8319), 0, None, Some("reason=test_or_dev_editor_id")),
+            (
+                named("CB_HighSchoolPASystem_RadioScenes", 0x0400_8111),
+                0,
+                None,
+                Some("reason=explicit_high_school_pa_exclusion"),
+            ),
+            (
+                QustCase {
+                    flags: 0x8501,
+                    quest_type: FO76_QUST_TYPE_PUBLIC_EVENT,
+                    existing_dnam: true,
+                    ..QUST_CASE
+                },
+                0,
+                None,
+                None,
+            ),
+            (
+                QustCase {
+                    flags: 0x8501,
+                    quest_type: FO76_QUST_TYPE_EVENT,
+                    existing_dnam: true,
+                    ..QUST_CASE
+                },
+                0,
+                None,
+                None,
+            ),
+        ] {
+            let mut record = qust_case_record(&interner, case);
+            Fo76Fo4Hook
+                .pre_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+            let (flags, quest_type) = translated_qust_dnam(&record);
+            assert_eq!(flags & sge, expected_sge, "{case:?}");
+            if let Some(expected_type) = expected_type {
+                assert_eq!(quest_type, expected_type, "{case:?}");
+            }
+            match reason {
+                Some("") => assert!(record.warnings.is_empty(), "{case:?}"),
+                Some(reason) => assert!(
+                    record.warnings.iter().any(|warning| interner
+                        .resolve(*warning)
+                        .is_some_and(|message| message.contains(reason))),
+                    "{case:?} should warn {reason}"
+                ),
+                None => {}
+            }
+        }
 
-    #[test]
-    fn pre_translate_preserves_pennington_dialogue_controller_autostart() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("W05_MQ_001P_Wayward_PenningtonScene")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0401_8511_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-        push_field(
-            &mut record,
-            "ENAM",
-            FieldValue::Bytes(SmallVec::from_vec(0x434F_4C49_u32.to_le_bytes().to_vec())),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
+        let mut record = qust_case_record(&interner, named("EN07_MQ_Nuke_Master", 0x0001_8111));
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
             .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            1,
-            "Pennington's persistent dialogue carrier must initialize its aliases"
-        );
-        assert_eq!(bytes[8], FO4_QUST_TYPE_NONE);
-    }
-
-    #[test]
-    fn pre_translate_does_not_force_start_gameplay_quest() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("RE_SceneKMK01")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            0,
-            "gameplay quest left non-SGE"
-        );
-    }
-
-    #[test]
-    fn pre_translate_disables_event_quest_even_when_dialogue_named() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("Dialogue_EventActivity")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8501_u64.to_le_bytes());
-        data[16] = FO76_QUST_TYPE_EVENT;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001, 0);
-        assert_eq!(bytes[8], FO4_QUST_TYPE_SIDE_QUESTS);
-        assert!(record.warnings.iter().any(|warning| {
-            interner
-                .resolve(*warning)
-                .is_some_and(|message| message.contains("reason=quest_type_event"))
-        }));
-    }
-
-    #[test]
-    fn pre_translate_disables_en_event_quest_and_logs_reason() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("EN07_MQ_Nuke_Master")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0001_8111_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001, 0);
+        assert_eq!(translated_qust_dnam(&record).0 & sge, 0);
         let warning = record
             .warnings
             .iter()
@@ -1422,313 +861,7 @@
     }
 
     #[test]
-    fn pre_translate_preserves_public_event_title_without_autostart() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        let title = FieldValue::String(interner.intern("Event: Campfire Tales"));
-        push_field(&mut record, "FULL", title.clone());
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8501_u64.to_le_bytes());
-        data[16] = FO76_QUST_TYPE_PUBLIC_EVENT;
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001, 0);
-        assert_eq!(bytes[8], FO4_QUST_TYPE_SIDE_QUESTS);
-        assert_eq!(
-            record
-                .fields
-                .iter()
-                .find(|field| field.sig.0 == *b"FULL")
-                .unwrap()
-                .value,
-            title
-        );
-    }
-
-    #[test]
-    fn pre_translate_does_not_force_start_test_dialogue_quest() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("test_VHarbison_Dialogue_Someone")),
-        );
-        // has_dialogue_data, NOT start-game-enabled in source.
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            0,
-            "test/dev dialogue quest must NOT be force-started (scene CTD)"
-        );
-    }
-
-    #[test]
-    fn pre_translate_clears_sge_on_faithfully_sge_test_quest() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("TestDialogueExpressions")),
-        );
-        // has_dialogue_data AND start-game-enabled in source (FO76 data0=0x11 family).
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8501_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            0,
-            "developer test quest must never auto-start, even if FO76 marked it SGE"
-        );
-    }
-
-    #[test]
-    fn pre_translate_clears_sge_on_debug_quest() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("DebugCorrieQuest")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8319_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001, 0);
-        assert!(record.warnings.iter().any(|warning| {
-            interner
-                .resolve(*warning)
-                .is_some_and(|message| message.contains("reason=test_or_dev_editor_id"))
-        }));
-    }
-
-    #[test]
-    fn pre_translate_preserves_non_instanced_gameplay_quest_sge() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("RE_SceneKMK01")),
-        );
-        // has_dialogue_data AND start-game-enabled in source (0x8501).
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8501_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            1,
-            "ordinary source startup state must be preserved"
-        );
-    }
-
-    #[test]
-    fn pre_translate_preserves_persistent_radio_station_autostart() {
-        for (editor_id, flags) in [
-            ("SQ_RadioAppalachia", 0x0000_0000_0401_8511_u64),
-            ("BoS_Radio", 0x0000_0000_0001_8119_u64),
-        ] {
-            let mut interner = StringInterner::new();
-            let mut record = make_record("QUST", &mut interner);
-            push_field(
-                &mut record,
-                "EDID",
-                FieldValue::String(interner.intern(editor_id)),
-            );
-            let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            data[0..8].copy_from_slice(&flags.to_le_bytes());
-            push_field(&mut record, "DATA", raw_bytes(&data));
-
-            let hook = Fo76Fo4Hook;
-            let mut ctx = make_ctx(&interner);
-            hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-            let dnam = record
-                .fields
-                .iter()
-                .find(|f| f.sig.as_str() == "DNAM")
-                .unwrap();
-            let FieldValue::Bytes(bytes) = &dnam.value else {
-                panic!("DNAM bytes")
-            };
-            assert_eq!(
-                u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-                0x0001,
-                "{editor_id} keeps its FO76 start-game-enabled flag"
-            );
-        }
-    }
-
-    #[test]
-    fn pre_translate_hard_disables_high_school_pa_startup() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("CB_HighSchoolPASystem_RadioScenes")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        // Deliberately omit the unique-instance flag: the exact quest remains
-        // disabled even if its source flags change or radio policy broadens.
-        data[0..8].copy_from_slice(&0x0000_0000_0400_8111_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            0,
-            "High School PA scenes must never start in FO4"
-        );
-        assert!(record.warnings.iter().any(|warning| {
-            interner
-                .resolve(*warning)
-                .is_some_and(|message| message.contains("reason=explicit_high_school_pa_exclusion"))
-        }));
-    }
-
-    #[test]
-    fn pre_translate_preserves_other_cb_region_quest_autostart() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("CB_RegionPatrol")),
-        );
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0001_8111_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001, 1);
-        assert!(record.warnings.is_empty());
-    }
-
-    #[test]
-    fn pre_translate_does_not_enable_mq_radio_segment() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("W05_MQ_003P_Radio")),
-        );
-        // MQ radio segment: has_dialogue_data, NOT start-game-enabled in source.
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let dnam = record
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "DNAM")
-            .unwrap();
-        let FieldValue::Bytes(bytes) = &dnam.value else {
-            panic!("DNAM bytes")
-        };
-        assert_eq!(
-            u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-            0,
-            "radio quest with no FO76 SGE (main-quest segment) stays off"
-        );
-    }
-
-    #[test]
-    fn pre_translate_strips_fo76_only_story_manager_event() {
+    fn pre_translate_strips_fo76_only_quest_events_but_keeps_scpt() {
         let mut interner = StringInterner::new();
         let mut record = make_record("QUST", &mut interner);
         push_field(&mut record, "EDID", FieldValue::None);
@@ -1743,157 +876,89 @@
             FieldValue::Bytes(SmallVec::from_vec(0x434F_4C49_u32.to_le_bytes().to_vec())),
         );
         push_field(&mut record, "LNAM", FieldValue::None);
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
         let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
         assert_eq!(sigs, vec!["EDID", "DNAM", "LNAM"]);
         let FieldValue::Bytes(dnam) = &record.fields[1].value else {
             panic!("DNAM bytes")
         };
         assert_eq!(u16::from_le_bytes([dnam[0], dnam[1]]) & 1, 1);
-    }
 
-    #[test]
-    fn pre_translate_strips_all_fo76_only_quest_events_but_keeps_scpt() {
-        for event in [b"ADBO", b"CBGN", b"ILOC", b"LCPG", b"PCON", b"QPMT"] {
-            let mut interner = StringInterner::new();
+        for event in [b"ADBO", b"CBGN", b"ILOC", b"LCPG", b"PCON", b"QPMT", b"SCPT"] {
             let mut record = make_record("QUST", &mut interner);
             push_field(&mut record, "ENAM", raw_bytes(event));
-
-            let hook = Fo76Fo4Hook;
-            let mut ctx = make_ctx(&interner);
-            hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-            assert!(
-                record
-                    .fields
-                    .iter()
-                    .all(|field| field.sig.as_str() != "ENAM"),
-                "{} must not reach FO4",
+            Fo76Fo4Hook
+                .pre_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+            assert_eq!(
+                record.fields.iter().any(|field| field.sig.as_str() == "ENAM"),
+                event == b"SCPT",
+                "{}",
                 String::from_utf8_lossy(event)
             );
         }
-
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "ENAM", raw_bytes(b"SCPT"));
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        assert!(record
-            .fields
-            .iter()
-            .any(|field| field.sig.as_str() == "ENAM"));
     }
 
     #[test]
-    fn pre_translate_turns_breadcrumb_player_connect_into_safe_autostart() {
-        let mut interner = StringInterner::new();
-        for (form_id, editor_id) in [
+    fn pre_translate_player_connect_and_standing_radio_autostart_fallback() {
+        let interner = StringInterner::new();
+        let sge = QUST_DNAM_FLAG_START_GAME_ENABLED;
+        // Vanilla standing stations pair both bits (DN067_Radio 0x0011,
+        // DN125_Radio 0x0111); StartGameEnabled alone never enables the
+        // transmitter alias.
+        let station_bits = sge | QUST_DNAM_FLAG_STARTS_ENABLED;
+        let quest = |form_id: u32, eid: &'static str, flags: u64, enam: &'static [u8; 4]| QustCase {
+            form_id,
+            eid: Some(eid),
+            flags,
+            enam: Some(enam),
+            ..QUST_CASE
+        };
+        let mut cases = vec![
+            // FF06_Feed's transmitter is the event's distress beacon; starting it
+            // at load blocks the public-event scheduler.
+            (
+                QustCase {
+                    quest_type: FO76_QUST_TYPE_PUBLIC_EVENT,
+                    ..quest(0x0009_210E, "FF06_Feed", 0x0315_8500, b"SCPT")
+                },
+                false,
+                station_bits,
+                0,
+            ),
+            (
+                QustCase {
+                    plugin: Some("UnsafeCopy.esm"),
+                    ..quest(0x0072_A2A7, "Storm_MQ01_Breadcrumb_OnConnect", 0, b"PCON")
+                },
+                false,
+                sge,
+                0,
+            ),
+        ];
+        for (form_id, eid) in [
             (0x005E_AD3B, "BS01_MQ00_Breadcrumb_OnConnect"),
             (0x0072_A2A7, "Storm_MQ01_Breadcrumb_OnConnect"),
             (0x007F_79A9, "BURN_SQ01_OnConnect"),
         ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            record.eid = Some(interner.intern(editor_id));
-            let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            data[0..8].copy_from_slice(&0x0000_0000_0000_8500_u64.to_le_bytes());
-            push_field(&mut record, "DATA", raw_bytes(&data));
-            push_field(&mut record, "ENAM", raw_bytes(b"PCON"));
-
-            assert!(qust_uses_player_connect_autostart_fallback(
-                &interner, &record
-            ));
-
-            let hook = Fo76Fo4Hook;
-            let mut ctx = make_ctx(&interner);
-            hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-            let flags = dnam_flags_after_pre_translate(&record);
-            assert_eq!(
-                flags & QUST_DNAM_FLAG_START_GAME_ENABLED,
-                QUST_DNAM_FLAG_START_GAME_ENABLED,
-                "{editor_id}"
-            );
-            assert_eq!(
-                flags & QUST_DNAM_FLAG_RUN_ONCE,
-                QUST_DNAM_FLAG_RUN_ONCE,
-                "{editor_id}"
-            );
-            assert!(record
-                .fields
-                .iter()
-                .all(|field| field.sig.as_str() != "ENAM"));
+            let both = sge | QUST_DNAM_FLAG_RUN_ONCE;
+            cases.push((quest(form_id, eid, 0x8500, b"PCON"), true, both, both));
         }
-    }
-
-    #[test]
-    fn pre_translate_autostarts_standing_radio_station() {
-        // Storm_MQ01_Breadcrumb_Radio ships FO76 flags 0x06908500 (bit0 clear):
-        // FO76 started it from a server story event. FO4 cannot fire that event,
-        // so without the fallback its transmitter plays static forever.
-        assert_autostarts_standing_radio_station(0x0069_9466, "Storm_MQ01_Breadcrumb_Radio");
-    }
-
-    #[test]
-    fn pre_translate_autostarts_overseer_broadcast_station() {
-        // W05_MQ_101P_Radio has the same shape but fills its transmitter alias by
-        // location-ref-type instead of a forced ref, so it never appeared in an
-        // ALFR-keyed sweep of station quests.
-        assert_autostarts_standing_radio_station(0x003F_BBB3, "W05_MQ_101P_Radio");
-    }
-
-    #[test]
-    fn pre_translate_autostarts_every_vetted_standing_station() {
-        // Each owns an unshared transmitter and a BeginOnQuestStart scene.
-        for (local, editor_id) in [
+        // Storm_MQ01_Breadcrumb_Radio: FO76 started it from a server story event
+        // FO4 cannot fire. W05_MQ_101P_Radio fills its transmitter by
+        // location-ref-type, not a forced ref.
+        for (form_id, eid) in [
+            (0x0069_9466, "Storm_MQ01_Breadcrumb_Radio"),
+            (0x003F_BBB3, "W05_MQ_101P_Radio"),
             (0x0005_2DBF, "SFM04_Organic_Radio"),
-            (0x0009_210E, "FF06_Feed"),
             (0x0001_8ECF, "SFL02_Track_RadioQuest"),
         ] {
-            assert_autostarts_standing_radio_station(local, editor_id);
+            cases.push((quest(form_id, eid, 0x0690_8500, b"SCPT"), true, station_bits, station_bits));
         }
-    }
-
-    fn assert_autostarts_standing_radio_station(local: u32, editor_id: &str) {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        record.form_key.local = local;
-        record.eid = Some(interner.intern(editor_id));
-        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        data[0..8].copy_from_slice(&0x0000_0000_0690_8500_u64.to_le_bytes());
-        push_field(&mut record, "DATA", raw_bytes(&data));
-        push_field(&mut record, "ENAM", raw_bytes(b"SCPT"));
-
-        assert!(qust_uses_player_connect_autostart_fallback(
-            &interner, &record
-        ));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        // Vanilla standing stations pair both bits (DN067_Radio 0x0011,
-        // DN125_Radio 0x0111); StartGameEnabled alone starts the quest without
-        // enabling it, so the transmitter alias never goes on air.
-        let expected = QUST_DNAM_FLAG_START_GAME_ENABLED | QUST_DNAM_FLAG_STARTS_ENABLED;
-        assert_eq!(
-            dnam_flags_after_pre_translate(&record) & expected,
-            expected
-        );
-    }
-
-    #[test]
-    fn pre_translate_leaves_sequenced_story_broadcasts_off() {
-        // BS00_Maxson*/BS00_Paladin* are five quests per shared transmitter;
-        // auto-starting them would stack five segments on one station.
-        let mut interner = StringInterner::new();
-        for (form_id, editor_id) in [
+        // BS00_Maxson*/BS00_Paladin* share one transmitter per five quests.
+        for (form_id, eid) in [
             (0x005A_DC25, "BS00_MaxsonRadioQuest_01"),
             (0x005B_2BA1, "BS00_MaxsonRadioQuest_05"),
             (0x005A_DC24, "BS00_PaladinRadioQuest_01"),
@@ -1901,33 +966,9 @@
             (0x0069_9466, "Storm_MQ01_Breadcrumb_Radio_Copy"),
             (0x0069_9467, "Storm_MQ01_Breadcrumb_Radio"),
         ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            record.eid = Some(interner.intern(editor_id));
-            let data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            push_field(&mut record, "DATA", raw_bytes(&data));
-            push_field(&mut record, "ENAM", raw_bytes(b"SCPT"));
-
-            assert!(!qust_uses_player_connect_autostart_fallback(
-                &interner, &record
-            ));
-
-            let hook = Fo76Fo4Hook;
-            let mut ctx = make_ctx(&interner);
-            hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-            assert_eq!(
-                dnam_flags_after_pre_translate(&record) & QUST_DNAM_FLAG_START_GAME_ENABLED,
-                0,
-                "{form_id:08X}:{editor_id}"
-            );
+            cases.push((quest(form_id, eid, 0, b"SCPT"), false, sge, 0));
         }
-    }
-
-    #[test]
-    fn pre_translate_does_not_autostart_player_connect_lookalikes() {
-        let mut interner = StringInterner::new();
-        for (form_id, editor_id) in [
+        for (form_id, eid) in [
             (0x005E_AD3C, "BS01_MQ00_Breadcrumb_OnConnect"),
             (0x005E_AD3B, "BS01_MQ00_Breadcrumb_OnConnect_Copy"),
             (0x0072_A2A8, "Storm_MQ01_Breadcrumb_OnConnect"),
@@ -1936,76 +977,26 @@
             (0x007F_79AA, "BURN_SQ01_OnConnect"),
             (0x007F_79A9, "BURN_SQ01_OnConnect_Copy"),
         ] {
-            let mut record = make_record("QUST", &mut interner);
-            record.form_key.local = form_id;
-            record.eid = Some(interner.intern(editor_id));
-            let data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-            push_field(&mut record, "DATA", raw_bytes(&data));
-            push_field(&mut record, "ENAM", raw_bytes(b"PCON"));
-
-            assert!(!qust_uses_player_connect_autostart_fallback(
-                &interner, &record
-            ));
-
-            let hook = Fo76Fo4Hook;
-            let mut ctx = make_ctx(&interner);
-            hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-            assert_eq!(
-                dnam_flags_after_pre_translate(&record) & QUST_DNAM_FLAG_START_GAME_ENABLED,
-                0,
-                "{form_id:08X}:{editor_id}"
-            );
+            cases.push((quest(form_id, eid, 0, b"PCON"), false, sge, 0));
         }
 
-        let mut wrong_plugin = make_record("QUST", &mut interner);
-        wrong_plugin.form_key.local = 0x0072_A2A7;
-        wrong_plugin.form_key.plugin = interner.intern("UnsafeCopy.esm");
-        wrong_plugin.eid = Some(interner.intern("Storm_MQ01_Breadcrumb_OnConnect"));
-        let data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
-        push_field(&mut wrong_plugin, "DATA", raw_bytes(&data));
-        push_field(&mut wrong_plugin, "ENAM", raw_bytes(b"PCON"));
-        assert!(!qust_uses_player_connect_autostart_fallback(
-            &interner,
-            &wrong_plugin
-        ));
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&interner);
-        hook.pre_translate(&mut ctx, &mut wrong_plugin).unwrap();
-        assert_eq!(
-            dnam_flags_after_pre_translate(&wrong_plugin) & QUST_DNAM_FLAG_START_GAME_ENABLED,
-            0
-        );
-    }
-
-    #[test]
-    fn pre_translate_disables_existing_dnam_event_types() {
-        for quest_type in [FO76_QUST_TYPE_PUBLIC_EVENT, FO76_QUST_TYPE_EVENT] {
-            let mut interner = StringInterner::new();
-            let mut record = make_record("QUST", &mut interner);
-            let mut dnam = vec![0u8; FO4_QUST_DNAM_LEN];
-            dnam[0..2].copy_from_slice(&0x8501_u16.to_le_bytes());
-            dnam[8] = quest_type;
-            push_field(&mut record, "DNAM", raw_bytes(&dnam));
-
-            let hook = Fo76Fo4Hook;
-            let mut ctx = make_ctx(&interner);
-            hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-            let dnam = record
-                .fields
-                .iter()
-                .find(|field| field.sig.as_str() == "DNAM")
-                .unwrap();
-            let FieldValue::Bytes(bytes) = &dnam.value else {
-                panic!("DNAM bytes")
-            };
+        for (case, fallback, mask, expected) in cases {
+            let mut record = qust_case_record(&interner, case);
             assert_eq!(
-                u16::from_le_bytes([bytes[0], bytes[1]]) & 0x0001,
-                0,
-                "quest type {quest_type} must not start at game load"
+                qust_uses_player_connect_autostart_fallback(&interner, &record),
+                fallback,
+                "{case:?}"
             );
+            Fo76Fo4Hook
+                .pre_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+            assert_eq!(translated_qust_dnam(&record).0 & mask, expected, "{case:?}");
+            if fallback && case.enam == Some(b"PCON") {
+                assert!(
+                    record.fields.iter().all(|field| field.sig.as_str() != "ENAM"),
+                    "{case:?}"
+                );
+            }
         }
     }
 
@@ -2063,12 +1054,12 @@
         use esp_authoring_core::plugin_runtime::{ParsedRecord, ParsedSubrecord};
         use smol_str::SmolStr;
 
-        let mut interner = StringInterner::new();
+        let interner = StringInterner::new();
         let mut qsta = Vec::new();
         qsta.extend_from_slice(&3_i32.to_le_bytes());
         qsta.extend_from_slice(&512_u16.to_le_bytes());
         qsta.extend_from_slice(&0x0000_1234_u32.to_le_bytes());
-        qsta.extend_from_slice(&3000.0_f32.to_le_bytes());
+        qsta.extend_from_slice(&3000_u32.to_le_bytes());
         let mut ctda = vec![0u8; 32];
         ctda[8..10].copy_from_slice(&300_u16.to_le_bytes());
         let fo76 = AuthoringSchema::for_game("fo76").expect("fo76 schema");
@@ -2159,7 +1150,7 @@
         };
         assert_eq!(qsta.len(), 12);
         assert_eq!(i32::from_le_bytes(qsta[0..4].try_into().unwrap()), 3);
-        assert_eq!(u32::from_le_bytes(qsta[4..8].try_into().unwrap()), 512);
+        assert_eq!(u32::from_le_bytes(qsta[4..8].try_into().unwrap()), 0);
         assert_eq!(
             u32::from_le_bytes(qsta[8..12].try_into().unwrap()),
             0x0000_1234
@@ -2571,201 +1562,127 @@
         );
     }
 
-    #[test]
-    fn pre_translate_still_drops_unscoped_qust_alias_faction() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "ALFC", form_key_value(&interner, 0x0005_8610));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .expect("pre_translate");
-
-        assert!(!record
-            .fields
-            .iter()
-            .any(|field| field.sig.as_str() == "ALFC"));
-    }
 
     #[test]
-    fn pre_translate_drops_alias_faction_after_reference_alias_end() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "ANAM", FieldValue::Uint(10));
-        push_field(&mut record, "ALST", FieldValue::Uint(9));
-        push_field(&mut record, "ALED", FieldValue::None);
-        push_field(&mut record, "ALFC", form_key_value(&interner, 0x0005_8610));
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .expect("pre_translate");
-
-        assert!(!record
-            .fields
-            .iter()
-            .any(|field| field.sig.as_str() == "ALFC"));
-    }
-
-    #[test]
-    fn pre_translate_drops_alias_faction_from_non_reference_alias_rows() {
-        let mut interner = StringInterner::new();
-        for anchor in ["ALLS", "ALCS"] {
-            let mut record = make_record("QUST", &mut interner);
-            push_field(&mut record, "ANAM", FieldValue::Uint(10));
-            push_field(&mut record, anchor, FieldValue::Uint(9));
-            push_field(&mut record, "ALFC", form_key_value(&interner, 0x0005_8610));
-            push_field(&mut record, "ALED", FieldValue::None);
-
+    fn pre_translate_drops_unscoped_and_invalid_qust_alias_factions() {
+        let interner = StringInterner::new();
+        let faction = form_key_value(&interner, 0x0005_8610);
+        for (label, fields) in [
+            ("unscoped", vec![("EDID", FieldValue::None), ("ALFC", faction.clone())]),
+            (
+                "after ALED",
+                vec![
+                    ("ANAM", FieldValue::Uint(10)),
+                    ("ALST", FieldValue::Uint(9)),
+                    ("ALED", FieldValue::None),
+                    ("ALFC", faction.clone()),
+                ],
+            ),
+            (
+                "ALLS row",
+                vec![
+                    ("ANAM", FieldValue::Uint(10)),
+                    ("ALLS", FieldValue::Uint(9)),
+                    ("ALFC", faction.clone()),
+                    ("ALED", FieldValue::None),
+                ],
+            ),
+            (
+                "ALCS row",
+                vec![
+                    ("ANAM", FieldValue::Uint(10)),
+                    ("ALCS", FieldValue::Uint(9)),
+                    ("ALFC", faction.clone()),
+                    ("ALED", FieldValue::None),
+                ],
+            ),
+            (
+                "high-byte-only form id",
+                vec![
+                    ("ANAM", FieldValue::Uint(10)),
+                    ("ALST", FieldValue::Uint(9)),
+                    ("ALFC", form_key_value(&interner, 0x0100_0000)),
+                    ("ALED", FieldValue::None),
+                ],
+            ),
+        ] {
+            let mut record = make_record("QUST", &interner);
+            for (sig, value) in fields {
+                push_field(&mut record, sig, value);
+            }
             Fo76Fo4Hook
                 .pre_translate(&mut make_ctx(&interner), &mut record)
                 .expect("pre_translate");
-
             assert!(
-                !record
-                    .fields
-                    .iter()
-                    .any(|field| field.sig.as_str() == "ALFC"),
-                "{anchor} must not admit a reference-alias faction"
+                !record.fields.iter().any(|field| field.sig.as_str() == "ALFC"),
+                "{label}"
             );
         }
     }
 
+    // Fallout4.esm never authors a null ALFR (0 of 11,573 aliases); carried
+    // through, the always-failing forced fill aborts quest start (EN02_MQ_Us
+    // alias 55 then never protects MODUSHolotape).
     #[test]
-    fn pre_translate_drops_high_byte_only_alias_faction_form_id() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "ANAM", FieldValue::Uint(10));
-        push_field(&mut record, "ALST", FieldValue::Uint(9));
-        push_field(&mut record, "ALFC", form_key_value(&interner, 0x0100_0000));
-        push_field(&mut record, "ALED", FieldValue::None);
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .expect("pre_translate");
-
-        assert!(!record
-            .fields
-            .iter()
-            .any(|field| field.sig.as_str() == "ALFC"));
-    }
-
-    /// Real shape read from `SeventySix.esm` `EN02_MQ_Us` alias 55
-    /// (`ResourceDropContainerActual`, `FNAM = 0x00000A80` — Allow Disabled |
-    /// Allow Reserved | Forced By Aliases, **not** Optional) whose `ALFR`
-    /// payload is `00 00 00 00`. `Fallout4.esm` never authors a null `ALFR`
-    /// (0 of 11,573 aliases); it drops the fill subrecord instead. Carried
-    /// through, the always-failing forced-reference fill aborts quest start,
-    /// so `EN02_MQ_Us`'s Quest Object alias `MODUSHolotape` never protects the
-    /// holotape.
-    #[test]
-    fn pre_translate_drops_null_forced_reference_from_qust_alias() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::Uint(56));
-        push_field(&mut record, "ALST", FieldValue::Uint(55));
-        push_field(
-            &mut record,
-            "ALID",
-            raw_bytes(b"ResourceDropContainerActual\0"),
-        );
-        push_field(
-            &mut record,
-            "FNAM",
-            FieldValue::Bytes(SmallVec::from_vec(0x0000_0A80_u32.to_le_bytes().to_vec())),
-        );
-        push_field(&mut record, "ALFR", form_key_value(&interner, 0));
-        push_field(&mut record, "ALED", FieldValue::None);
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .expect("pre_translate");
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert_eq!(sigs, vec!["EDID", "ANAM", "ALST", "ALID", "FNAM", "ALED"]);
-        let fnam = record
-            .fields
-            .iter()
-            .find(|entry| entry.sig.as_str() == "FNAM")
-            .expect("alias FNAM");
-        match &fnam.value {
-            FieldValue::Bytes(bytes) => assert_eq!(
-                u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-                0x0000_0A80,
-                "dropping the dead fill must not rewrite the alias flags"
+    fn pre_translate_drops_only_null_qust_alias_forced_references() {
+        let interner = StringInterner::new();
+        let fnam = |flags: u32| FieldValue::Bytes(SmallVec::from_vec(flags.to_le_bytes().to_vec()));
+        for (label, fields, null_alfr) in [
+            (
+                "null ALFR",
+                vec![
+                    ("ANAM", FieldValue::Uint(56)),
+                    ("ALST", FieldValue::Uint(55)),
+                    ("ALID", raw_bytes(b"ResourceDropContainerActual\0")),
+                    ("FNAM", fnam(0x0000_0A80)),
+                    ("ALFR", form_key_value(&interner, 0)),
+                    ("ALED", FieldValue::None),
+                ],
+                true,
             ),
-            other => panic!("FNAM should stay raw bytes, got {other:?}"),
+            (
+                "populated ALFR with quest object flag",
+                vec![
+                    ("ANAM", FieldValue::Uint(41)),
+                    ("ALST", FieldValue::Uint(40)),
+                    ("ALID", raw_bytes(b"WhitespringHolotape\0")),
+                    ("FNAM", fnam(0x0000_0006)),
+                    ("ALFR", form_key_value(&interner, 0x0028_3EC8)),
+                    ("ALED", FieldValue::None),
+                ],
+                false,
+            ),
+            (
+                "empty ALFR beside a live ALFA/ALRT fill",
+                vec![
+                    ("ANAM", FieldValue::Uint(5)),
+                    ("ALST", FieldValue::Uint(4)),
+                    ("ALID", raw_bytes(b"HolotapeQuestTarget02\0")),
+                    ("FNAM", fnam(0x0000_0002)),
+                    ("ALFR", FieldValue::None),
+                    ("ALFA", FieldValue::Uint(5)),
+                    ("ALRT", form_key_value(&interner, 0x004E_49E6)),
+                    ("ALED", FieldValue::None),
+                ],
+                true,
+            ),
+        ] {
+            let mut record = make_record("QUST", &interner);
+            push_field(&mut record, "EDID", FieldValue::None);
+            for (sig, value) in fields {
+                push_field(&mut record, sig, value);
+            }
+            let expected: Vec<FieldEntry> = record
+                .fields
+                .iter()
+                .filter(|entry| !(null_alfr && entry.sig.as_str() == "ALFR"))
+                .cloned()
+                .collect();
+            Fo76Fo4Hook
+                .pre_translate(&mut make_ctx(&interner), &mut record)
+                .expect("pre_translate");
+            assert_eq!(record.fields.to_vec(), expected, "{label}");
         }
-    }
-
-    /// Real shape read from `SeventySix.esm` `EN01_MQ_Bunker` alias 40
-    /// (`WhitespringHolotape`, `FNAM = 0x06` — Optional | Quest Object) whose
-    /// forced reference resolves. A populated `ALFR` must survive untouched,
-    /// and the Quest Object bit must not be disturbed.
-    #[test]
-    fn pre_translate_keeps_populated_forced_reference_and_quest_object_flag() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::Uint(41));
-        push_field(&mut record, "ALST", FieldValue::Uint(40));
-        push_field(&mut record, "ALID", raw_bytes(b"WhitespringHolotape\0"));
-        push_field(
-            &mut record,
-            "FNAM",
-            FieldValue::Bytes(SmallVec::from_vec(0x0000_0006_u32.to_le_bytes().to_vec())),
-        );
-        push_field(&mut record, "ALFR", form_key_value(&interner, 0x0028_3EC8));
-        push_field(&mut record, "ALED", FieldValue::None);
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .expect("pre_translate");
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert_eq!(
-            sigs,
-            vec!["EDID", "ANAM", "ALST", "ALID", "FNAM", "ALFR", "ALED"]
-        );
-        let alfr = record
-            .fields
-            .iter()
-            .find(|entry| entry.sig.as_str() == "ALFR")
-            .expect("alias ALFR");
-        assert!(matches!(&alfr.value, FieldValue::FormKey(form_key) if form_key.local == 0x0028_3EC8));
-    }
-
-    /// A null `ALFR` on an alias that also carries a real fill (`ALFA`/`ALRT`,
-    /// the FO76 "find matching reference" shape used by `MQ_Overseer`'s
-    /// `HolotapeQuestTarget##` aliases) must lose only the dead `ALFR`.
-    #[test]
-    fn pre_translate_drops_null_forced_reference_beside_a_live_fill() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::Uint(5));
-        push_field(&mut record, "ALST", FieldValue::Uint(4));
-        push_field(&mut record, "ALID", raw_bytes(b"HolotapeQuestTarget02\0"));
-        push_field(
-            &mut record,
-            "FNAM",
-            FieldValue::Bytes(SmallVec::from_vec(0x0000_0002_u32.to_le_bytes().to_vec())),
-        );
-        push_field(&mut record, "ALFR", FieldValue::None);
-        push_field(&mut record, "ALFA", FieldValue::Uint(5));
-        push_field(&mut record, "ALRT", form_key_value(&interner, 0x004E_49E6));
-        push_field(&mut record, "ALED", FieldValue::None);
-
-        Fo76Fo4Hook
-            .pre_translate(&mut make_ctx(&interner), &mut record)
-            .expect("pre_translate");
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert_eq!(
-            sigs,
-            vec!["EDID", "ANAM", "ALST", "ALID", "FNAM", "ALFA", "ALRT", "ALED"]
-        );
     }
 
     #[test]
@@ -2807,56 +1724,6 @@
                 b"AliasDisplayName\0".as_slice()
             ]
         );
-    }
-
-    #[test]
-    fn pre_translate_keeps_qust_alias_like_sigs_before_anam() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("QUST", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "CTDA", FieldValue::Bytes(SmallVec::new()));
-        push_field(&mut record, "FNAM", FieldValue::Bytes(SmallVec::new()));
-        push_field(
-            &mut record,
-            "ANAM",
-            FieldValue::Bytes(SmallVec::from_vec(vec![0; 4])),
-        );
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        let sigs: Vec<&str> = record.fields.iter().map(|f| f.sig.as_str()).collect();
-        assert_eq!(sigs, vec!["EDID", "CTDA", "FNAM", "ANAM"]);
-    }
-
-    #[test]
-    fn pre_translate_is_noop_when_no_global_fields_present() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("WEAP", &mut interner);
-        push_field(&mut record, "EDID", FieldValue::None);
-        push_field(&mut record, "FULL", FieldValue::None);
-
-        let hook = Fo76Fo4Hook;
-        let mut ctx = make_ctx(&mut interner);
-        hook.pre_translate(&mut ctx, &mut record).unwrap();
-
-        assert_eq!(record.fields.len(), 2);
-    }
-
-    // -------------------------------------------------------------------------
-    // Behavior 2: synthetic-source-field identification
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn effects_synthetic_true_for_alch_ench_perk_spel() {
-        for sig in &["ALCH", "ENCH", "PERK", "SPEL"] {
-            let s = SigCode::from_str(sig).unwrap();
-            assert!(
-                Fo76Fo4Hook::is_effects_synthetic(s),
-                "{sig} should be synthetic"
-            );
-        }
     }
 
     fn mile_caravan_intro_record(interner: &StringInterner) -> Record {
@@ -2933,6 +1800,89 @@
         &record.fields[start..end]
     }
 
+    fn nuke_edge_marker_record(interner: &StringInterner) -> Record {
+        let mut record = make_record("QUST", interner);
+        record.form_key.local = 0x002D_0F69;
+        record.eid = Some(interner.intern("EN07_MQ_FleeBlast"));
+        push_field(&mut record, "ANAM", FieldValue::Uint(52));
+        push_field(&mut record, "ALCS", FieldValue::Uint(13));
+        push_field(&mut record, "ALMI", FieldValue::Uint(0));
+        push_field(&mut record, "ALST", FieldValue::Uint(13));
+        push_field(&mut record, "ALID", raw_bytes(b"AffectedEdgeMarkers\0"));
+        push_field(&mut record, "FNAM", raw_bytes(&0x128A_u32.to_le_bytes()));
+        push_field(&mut record, "ALCC", FieldValue::Uint(0));
+        push_field(
+            &mut record,
+            "CTDA",
+            raw_bytes(&hex::decode("A600000060112D000100000000000000000000000000000000000000FFFFFFFF").unwrap()),
+        );
+        push_field(&mut record, "ALDN", form_key_value(interner, 0));
+        push_field(&mut record, "ALFF", form_key_value(interner, 0x002D_116A));
+        push_field(&mut record, "ALED", FieldValue::None);
+        push_field(&mut record, "ALST", FieldValue::Uint(14));
+        push_field(&mut record, "ALID", raw_bytes(b"LaunchingPlayer\0"));
+        push_field(&mut record, "ALFR", form_key_value(interner, 0x14));
+        push_field(&mut record, "ALED", FieldValue::None);
+        record
+    }
+
+    #[test]
+    fn nuke_edge_marker_filter_survives_translation_without_widening_alias_fill() {
+        let interner = StringInterner::new();
+        let mut record = nuke_edge_marker_record(&interner);
+        let before = qust_alias_row(&record, 13).to_vec();
+        let neighbor = qust_alias_row(&record, 14).to_vec();
+        let translator = Translator::new(Game::Fo76, Game::Fo4).unwrap();
+        translator.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+        let alias = qust_alias_row(&record, 13);
+        let filter_index = alias.iter().position(|entry| entry.sig.0 == *b"CTDA").unwrap();
+        assert_eq!(
+            alias.iter().enumerate().filter(|(index, _)| *index != filter_index).map(|(_, entry)| entry.clone()).collect::<Vec<_>>(),
+            before.into_iter().filter(|entry| entry.sig.0 != *b"ALFF").collect::<Vec<_>>(),
+        );
+        assert_eq!(qust_alias_row(&record, 14), neighbor);
+        let once = record.fields.clone();
+        translator.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+        assert_eq!(record.fields, once, "repair must be idempotent");
+        let TranslateResult::Translated(record) = translator.translate(&record, &interner) else {
+            panic!("nuke quest must translate");
+        };
+        let fo76 = AuthoringSchema::for_game("fo76").unwrap();
+        let fo4 = AuthoringSchema::for_game("fo4").unwrap();
+        let normalizer = crate::target_normalize::TargetRecordNormalizer {
+            target_schema: &fo4,
+            source_record_def: fo76.record_def("QUST"),
+            interner: Some(&interner),
+        };
+        let crate::target_normalize::TargetRecordNormalization::Keep(record) = normalizer.normalize(record) else {
+            panic!("nuke quest must survive normalization");
+        };
+        let alias = qust_alias_row(&record, 13);
+        let conditions: Vec<_> = alias.iter().filter(|entry| entry.sig.0 == *b"CTDA").collect();
+        assert_eq!(conditions.len(), 2, "distance alone captures unrelated transmitters");
+        let FieldValue::Bytes(filter) = &conditions[0].value else { panic!("raw CTDA"); };
+        assert_eq!(filter.len(), 32);
+        assert_eq!(filter[0], 0, "AND, equal, subject; no alias/global flags");
+        assert_eq!(f32::from_le_bytes(filter[4..8].try_into().unwrap()), 1.0);
+        assert_eq!(u16::from_le_bytes(filter[8..10].try_into().unwrap()), 561);
+        assert_eq!(u32::from_le_bytes(filter[12..16].try_into().unwrap()), 0x002D_116A);
+        assert_eq!(&filter[16..28], &[0; 12]);
+        assert_eq!(u32::from_le_bytes(filter[28..32].try_into().unwrap()), u32::MAX);
+        assert_eq!(conditions[1].value, raw_bytes(&hex::decode("A600000060112D000100000000000000000000000000000000000000FFFFFFFF").unwrap()));
+
+        for mismatch in 0..4 {
+            let mut record = nuke_edge_marker_record(&interner);
+            match mismatch {
+                0 => record.form_key.local += 1,
+                1 => record.form_key.plugin = interner.intern("Other.esm"),
+                2 => record.eid = Some(interner.intern("EN07_MQ_FleeBlast_Copy")),
+                _ => record.fields.iter_mut().find(|entry| entry.sig.0 == *b"ALFF").unwrap().value = form_key_value(&interner, 0x002D_116B),
+            }
+            Fo76Fo4Hook.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+            assert_eq!(qust_alias_row(&record, 13).iter().filter(|entry| entry.sig.0 == *b"CTDA").count(), 1);
+        }
+    }
+
     fn tw043_record(interner: &StringInterner) -> Record {
         let mut record = make_record("QUST", interner);
         record.form_key.local = TW043_FORM_ID;
@@ -3005,11 +1955,6 @@
             .pre_translate(&mut make_ctx(&interner), &mut record)
             .expect("second pre_translate");
         assert_eq!(record.fields, after_first_pass);
-    }
-
-    #[test]
-    fn tw043_guard_startup_link_repair_rejects_lookalikes() {
-        let interner = StringInterner::new();
 
         let mut wrong_plugin = tw043_record(&interner);
         wrong_plugin.form_key.plugin = interner.intern("UnsafeCopy.esm");
@@ -3124,11 +2069,6 @@
             .pre_translate(&mut make_ctx(&interner), &mut record)
             .expect("second pre_translate");
         assert_eq!(record.fields, after_first_pass);
-    }
-
-    #[test]
-    fn mile_caravan_intro_cargo_alias_repair_rejects_guard_lookalikes() {
-        let interner = StringInterner::new();
 
         let mut wrong_plugin = mile_caravan_intro_record(&interner);
         wrong_plugin.form_key.plugin = interner.intern("UnsafeCopy.esm");
@@ -3195,11 +2135,7 @@
         let before = wrong_alfr.fields.clone();
         Fo76Fo4Hook::repair_mile_caravan_intro_cargo_alias(&interner, &mut wrong_alfr);
         assert_eq!(wrong_alfr.fields, before, "wrong ALFR");
-    }
 
-    #[test]
-    fn pre_translate_does_not_rewrite_mile_caravan_bad_ref_record_globally() {
-        let interner = StringInterner::new();
         let mut record = make_record("REFR", &interner);
         record.form_key.local = MILE_CARAVAN_BAD_CARGO_REF_FORM_ID;
         push_field(&mut record, "NAME", form_key_value(&interner, 0x0003_94D5));

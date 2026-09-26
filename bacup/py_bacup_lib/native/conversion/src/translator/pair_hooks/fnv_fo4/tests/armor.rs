@@ -1,5 +1,5 @@
 #[test]
-fn pre_translate_relayouts_fnv_arma_actor_models_and_drops_source_companions() {
+fn pre_translate_relayouts_legacy_arma_actor_models_and_drops_source_companions() {
     let interner = StringInterner::new();
     let male = interner.intern("Armor\\Male.nif");
     let female = interner.intern("Armor\\Female.nif");
@@ -50,10 +50,7 @@ fn pre_translate_relayouts_fnv_arma_actor_models_and_drops_source_companions() {
     assert!(record.warnings.iter().any(|warning| {
         interner.resolve(*warning) == Some("legacy_armor_alternate_textures_require_mswp_synthesis")
     }));
-}
 
-#[test]
-fn pre_translate_relayouts_structured_fnv_arma_model_rows() {
     let interner = StringInterner::new();
     let male = interner.intern("Armor\\Male.nif");
     let female = interner.intern("Armor\\Female.nif");
@@ -94,10 +91,7 @@ fn pre_translate_relayouts_structured_fnv_arma_model_rows() {
             ("MOD3", FieldValue::String(female)),
         ]
     );
-}
 
-#[test]
-fn pre_translate_relayouts_fo3_arma_actor_models() {
     let interner = StringInterner::new();
     let male = interner.intern("Armor\\Male.nif");
     let female = interner.intern("Armor\\Female.nif");
@@ -164,7 +158,7 @@ fn pre_translate_drops_fnv_armor_sound_template_instead_of_authoring_fo4_templat
 }
 
 #[test]
-fn pre_translate_drops_raw_and_structured_same_4cc_semantic_collisions() {
+fn pre_translate_drops_same_4cc_semantic_collisions_only_in_their_records() {
     let interner = StringInterner::new();
     for (record_sig, field_sig) in [
         ("MUSC", "FNAM"),
@@ -200,10 +194,7 @@ fn pre_translate_drops_raw_and_structured_same_4cc_semantic_collisions() {
             "{record_sig}.{field_sig} must not pass through"
         );
     }
-}
 
-#[test]
-fn pre_translate_preserves_collision_4ccs_in_unrelated_record_contexts() {
     let interner = StringInterner::new();
     let mut record = make_record("STAT", &interner);
     for sig in ["FNAM", "DNAM", "PNAM", "ANAM", "NNAM", "XRDO", "XRMR"] {
@@ -227,3 +218,4 @@ fn pre_translate_preserves_collision_4ccs_in_unrelated_record_contexts() {
         vec!["FNAM", "DNAM", "PNAM", "ANAM", "NNAM", "XRDO", "XRMR"]
     );
 }
+

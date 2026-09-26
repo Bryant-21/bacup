@@ -293,10 +293,7 @@ mod tests {
             interner.resolve(references[1].form_key.plugin),
             Some("FalloutNV.esm")
         );
-    }
 
-    #[test]
-    fn accepts_nine_and_ten_slot_legacy_shapes_and_rejects_other_lengths() {
         let interner = StringInterner::new();
         let make = |length| {
             let mut record = Record::new(
@@ -376,10 +373,7 @@ mod tests {
                 [0x6F, 0x75, 0x1C, 0, 0x00, 0x03, 0, 0].to_vec(),
             ]
         );
-    }
 
-    #[test]
-    fn lowers_nine_slot_blood_impact_without_phantom_materials() {
         let interner = StringInterner::new();
         let mut data = vec![0_u8; 36];
         data[24..28].copy_from_slice(&0x0002_ED48_u32.to_le_bytes());

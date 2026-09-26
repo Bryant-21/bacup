@@ -222,15 +222,12 @@ mod tests {
     }
 
     #[test]
-    fn candidate_count_is_single_plus_four_multi() {
+    fn fo76_lod_candidates_insert_lod_directory_and_single_suffix() {
         let c = derive_fo76_lod_candidates("Architecture\\Foo\\Bar01.nif");
         assert_eq!(c.len(), 5);
         assert_eq!(c.iter().filter(|c| c.multi).count(), 4);
         assert_eq!(c.iter().filter(|c| !c.multi).count(), 1);
-    }
 
-    #[test]
-    fn plain_path_inserts_lod_at_front() {
         let c = derive_fo76_lod_candidates("Architecture\\Airport\\AirportTerminalDestroyed01.nif");
         assert_eq!(
             single(&c).source_rel,
@@ -240,10 +237,7 @@ mod tests {
             single(&c).mnam,
             "LOD\\Architecture\\Airport\\AirportTerminalDestroyed01_LOD.nif"
         );
-    }
 
-    #[test]
-    fn dlc_prefixed_path_inserts_lod_after_dlc() {
         let c = derive_fo76_lod_candidates("DLC03\\Architecture\\Barn\\BarnCupolaMainRoof01.nif");
         assert_eq!(
             single(&c).source_rel,
@@ -253,26 +247,30 @@ mod tests {
             single(&c).mnam,
             "DLC03\\LOD\\Architecture\\Barn\\BarnCupolaMainRoof01_LOD.nif"
         );
+
+        let c = derive_fo76_lod_candidates("Meshes/Architecture/Foo/Bar01.nif");
+        assert_eq!(single(&c).source_rel, "lod/architecture/foo/bar01_lod.nif");
+        assert_eq!(single(&c).mnam, "LOD\\Architecture\\Foo\\Bar01_LOD.nif");
+
+        // `_lod0` (no underscore) does NOT occur — only `_lod` and `_lod_N`.
+        let c = derive_fo76_lod_candidates("Architecture\\Foo\\Bar01.nif");
+        assert!(!c.iter().any(|c| c.source_rel.contains("_lod0")));
+        assert!(!c.iter().any(|c| c.mnam.contains("_LOD0")));
+
+        assert!(derive_fo76_lod_candidates("").is_empty());
+        assert!(derive_fo76_lod_candidates("Foo\\Bar.dds").is_empty());
+        assert!(fo4_mnam_string("", 0, false).is_none());
+        assert!(fo4_mnam_string("Foo\\Bar.dds", 0, false).is_none());
     }
 
     #[test]
-    fn multi_level_naming_uses_underscore_index() {
+    fn multi_level_lod_naming_uses_underscore_index_after_stripping_fo76_namespace() {
         let c = derive_fo76_lod_candidates("DLC04\\Foo\\Bar01.nif");
         assert_eq!(multi(&c, 0).source_rel, "dlc04/lod/foo/bar01_lod_0.nif");
         assert_eq!(multi(&c, 3).source_rel, "dlc04/lod/foo/bar01_lod_3.nif");
         assert_eq!(multi(&c, 0).mnam, "DLC04\\LOD\\Foo\\Bar01_LOD_0.nif");
         assert_eq!(multi(&c, 3).mnam, "DLC04\\LOD\\Foo\\Bar01_LOD_3.nif");
-    }
 
-    #[test]
-    fn forward_slashes_and_meshes_prefix_are_normalized() {
-        let c = derive_fo76_lod_candidates("Meshes/Architecture/Foo/Bar01.nif");
-        assert_eq!(single(&c).source_rel, "lod/architecture/foo/bar01_lod.nif");
-        assert_eq!(single(&c).mnam, "LOD\\Architecture\\Foo\\Bar01_LOD.nif");
-    }
-
-    #[test]
-    fn converted_fo76_namespace_is_stripped_before_deriving_lod() {
         let c = derive_fo76_lod_candidates(
             "FO76\\Landscape\\Trees\\Chargen\\TreeMaplePreWar01Orange.nif",
         );
@@ -284,14 +282,6 @@ mod tests {
             multi(&c, 3).mnam,
             "LOD\\Landscape\\Trees\\Chargen\\TreeMaplePreWar01Orange_LOD_3.nif"
         );
-    }
-
-    #[test]
-    fn no_underscore_zero_form_is_not_produced() {
-        // `_lod0` (no underscore) does NOT occur — only `_lod` and `_lod_N`.
-        let c = derive_fo76_lod_candidates("Architecture\\Foo\\Bar01.nif");
-        assert!(!c.iter().any(|c| c.source_rel.contains("_lod0")));
-        assert!(!c.iter().any(|c| c.mnam.contains("_LOD0")));
     }
 
     #[test]
@@ -374,13 +364,5 @@ mod tests {
             fo4_mnam_string("Buildings\\Church\\ChurchMainAAdd01.nif", 0, true).as_deref(),
             Some("LOD\\Buildings\\Church\\ChurchMainAAdd01_LOD_0.nif")
         );
-    }
-
-    #[test]
-    fn non_nif_and_empty_yield_no_candidates() {
-        assert!(derive_fo76_lod_candidates("").is_empty());
-        assert!(derive_fo76_lod_candidates("Foo\\Bar.dds").is_empty());
-        assert!(fo4_mnam_string("", 0, false).is_none());
-        assert!(fo4_mnam_string("Foo\\Bar.dds", 0, false).is_none());
     }
 }

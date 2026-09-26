@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn ligh_reaches_the_target_as_dat2_not_as_a_dropped_data() {
+    fn ligh_watr_and_lgtm_payloads_reach_the_target_at_starfield_widths() {
         let interner = StringInterner::new();
         let translator = fo4_starfield_translator();
         let mut rec = source("LIGH", &interner);
@@ -131,10 +131,27 @@ mod tests {
             out.fields.iter().all(|e| e.sig.as_str() != "DATA"),
             "the map's DATA drop must still fire as the fail-closed backstop"
         );
+
+        let interner = StringInterner::new();
+        let translator = fo4_starfield_translator();
+
+        let mut water = source("WATR", &interner);
+        push_bytes(&mut water, "DNAM", vec![0u8; 201]);
+        assert_eq!(
+            payload_len(&translate(&translator, &interner, water), "DNAM"),
+            152
+        );
+
+        let mut template = source("LGTM", &interner);
+        push_bytes(&mut template, "DATA", vec![0u8; 136]);
+        push_bytes(&mut template, "DALC", vec![0u8; 32]);
+        let out = translate(&translator, &interner, template);
+        assert_eq!(payload_len(&out, "DATA"), 108);
+        assert_eq!(payload_len(&out, "DALC"), 24);
     }
 
     #[test]
-    fn scol_part_references_survive_the_map_drop_list() {
+    fn scol_part_references_and_placements_reach_the_target() {
         let interner = StringInterner::new();
         let translator = fo4_starfield_translator();
         let mut rec = source("SCOL", &interner);
@@ -155,10 +172,7 @@ mod tests {
             panic!("ONAM should be a Starfield-shaped struct");
         };
         assert_eq!(members[0].1, FieldValue::FormKey(part));
-    }
 
-    #[test]
-    fn scol_part_placements_reach_the_target_in_metres() {
         let interner = StringInterner::new();
         let translator = fo4_starfield_translator();
         let mut rec = source("SCOL", &interner);
@@ -242,43 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn watr_and_lgtm_visual_payloads_survive_at_starfield_widths() {
-        let interner = StringInterner::new();
-        let translator = fo4_starfield_translator();
-
-        let mut water = source("WATR", &interner);
-        push_bytes(&mut water, "DNAM", vec![0u8; 201]);
-        assert_eq!(
-            payload_len(&translate(&translator, &interner, water), "DNAM"),
-            152
-        );
-
-        let mut template = source("LGTM", &interner);
-        push_bytes(&mut template, "DATA", vec![0u8; 136]);
-        push_bytes(&mut template, "DALC", vec![0u8; 32]);
-        let out = translate(&translator, &interner, template);
-        assert_eq!(payload_len(&out, "DATA"), 108);
-        assert_eq!(payload_len(&out, "DALC"), 24);
-    }
-
-    #[test]
-    fn weather_records_are_still_skipped_wholesale() {
-        let interner = StringInterner::new();
-        let translator = fo4_starfield_translator();
-        for sig in ["WTHR", "CLMT"] {
-            let record = source(sig, &interner);
-            assert!(
-                matches!(
-                    translator.translate(&record, &interner),
-                    TranslateResult::Dropped { .. }
-                ),
-                "{sig} must stay a whole-record skip"
-            );
-        }
-    }
-
-    #[test]
-    fn worldspace_leaves_translation_with_a_vanilla_starfield_climate() {
+    fn worldspace_gains_vanilla_climate_and_weather_records_are_skipped() {
         let interner = StringInterner::new();
         let translator = fo4_starfield_translator();
         let mut rec = source("WRLD", &interner);
@@ -299,5 +277,18 @@ mod tests {
         };
         assert_eq!(interner.resolve(fk.plugin), Some("Starfield.esm"));
         assert_eq!(fk.local, 0x0001_5F);
+
+        let interner = StringInterner::new();
+        let translator = fo4_starfield_translator();
+        for sig in ["WTHR", "CLMT"] {
+            let record = source(sig, &interner);
+            assert!(
+                matches!(
+                    translator.translate(&record, &interner),
+                    TranslateResult::Dropped { .. }
+                ),
+                "{sig} must stay a whole-record skip"
+            );
+        }
     }
 }

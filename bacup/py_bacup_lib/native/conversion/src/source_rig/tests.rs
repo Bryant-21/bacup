@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 
 use super::emit::emit_capability_scaffold;
 use super::manifest::{
@@ -764,93 +763,160 @@ fn error_codes(result: Result<(), ValidationErrors>) -> Vec<&'static str> {
 }
 
 #[test]
-fn bethesda_runtime_paths_may_contain_spaces_inside_components() {
-    let mut manifest = wolf_manifest();
-    manifest.visual_skeleton_nif = "Actors\\Wolf\\Character Assets\\Skeleton.nif".to_string();
+fn manifest_validation_enforces_root_union_event_prefix_rig_binding_and_file_tree() {
+    {
+        let mut manifest = wolf_manifest();
+        manifest.visual_skeleton_nif = "Actors\\Wolf\\Character Assets\\Skeleton.nif".to_string();
 
-    manifest.validate().unwrap();
-}
-
-#[test]
-fn synthetic_wolf_emits_deterministic_idle_scaffold() {
-    let manifest = wolf_manifest();
-    let first = emit_idle_scaffold(&manifest).unwrap();
-    let second = emit_idle_scaffold(&manifest).unwrap();
-    assert_eq!(first, second);
-    assert_eq!(first.artifacts.len(), 4);
-    assert_eq!(
-        first.race_visual_skeleton_nif,
-        "CharacterAssets\\Skeleton.nif"
-    );
-
-    let character = first.artifact(&manifest.paths.character).unwrap();
-    assert!(
-        character
-            .xml
-            .contains("<hkparam name=\"rigName\">CharacterAssets\\Skeleton.hkx</hkparam>")
-    );
-    assert!(!character.xml.contains("Skeleton.nif"));
-    assert!(character.xml.contains(
-        "<hkparam name=\"behaviorFilename\">Behaviors\\SourceWolfRootBehavior.hkx</hkparam>"
-    ));
-
-    let root = first.artifact(&manifest.paths.root_behavior).unwrap();
-    assert!(root.xml.contains("class=\"BSBehaviorGraphSwapGenerator\""));
-    assert!(root.xml.contains("<hkparam name=\"userData\">1</hkparam>"));
-
-    let core = first.artifact(&manifest.paths.core_behavior).unwrap();
-    assert!(core.xml.contains("class=\"hkbClipGenerator\""));
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"animationName\">Animations\\Idle.hkx</hkparam>")
-    );
-    assert!(
-        first
-            .artifacts
-            .iter()
-            .all(|artifact| validate_havok_xml(&artifact.xml).is_ok())
-    );
-    assert!(
-        first
-            .artifacts
-            .iter()
-            .all(|artifact| validate_fo4_havok_xml_signatures(&artifact.xml).is_ok())
-    );
-}
-
-#[test]
-fn synthetic_wolf_packs_four_readable_fo4_hkx_files() {
-    let manifest = wolf_manifest();
-    let output = tempfile::tempdir().unwrap();
-    let report = pack_idle_scaffold(&manifest, output.path()).unwrap();
-
-    assert_eq!(report.artifacts.len(), 4);
-    assert!(
-        report
-            .runtime_manifest
-            .cross_file_paths()
-            .into_iter()
-            .all(|path| path.to_ascii_lowercase().ends_with(".hkx"))
-    );
-
-    for artifact in &report.artifacts {
-        assert!(artifact.xml_path.is_file());
-        assert!(artifact.hkx_path.is_file());
-        let bytes = fs::read(&artifact.hkx_path).unwrap();
-        let packed = havok_native::hkx::HkxFile::read(&bytes).unwrap();
-        assert_eq!(packed.class_version(), 11);
-        assert_eq!(packed.contents_version(), "hk_2014.1.0-r1");
-        assert_eq!(packed.packfile().header.pointer_size, 8);
-        assert!(
-            validate_fo4_havok_xml_signatures(&reread_packed_xml(&report, &artifact.runtime_path))
-                .is_ok()
+        manifest.validate().unwrap();
+    }
+    {
+        assert_eq!(VariableValue::Real(1.0).word_bits(), 1_065_353_216);
+        assert_eq!(
+            VariableValue::Real(-1.0).word_bits(),
+            i64::from((-1.0_f32).to_bits() as i32)
         );
     }
+    {
+        let mut manifest = wolf_manifest();
+        manifest.root.events.remove(0);
+        manifest.root.variables.remove(0);
+        manifest.root.character_properties.clear();
+        let codes = error_codes(manifest.validate());
+        assert_eq!(
+            codes
+                .iter()
+                .filter(|code| **code == "root_union_missing")
+                .count(),
+            3
+        );
+    }
+    {
+        let mut manifest = wolf_manifest();
+        manifest.core.events[0].name = "Bite".to_string();
+        manifest.root.events[0].name = "Bite".to_string();
+        let codes = error_codes(manifest.validate());
+        assert_eq!(
+            codes
+                .iter()
+                .filter(|code| **code == "melee_event_name")
+                .count(),
+            2
+        );
+    }
+    {
+        let mut manifest = wolf_manifest();
+        manifest.clips[0].binding.skeleton_path = "CharacterAssets\\DonorSkeleton.hkx".to_string();
+        manifest.clips[0].binding.declared_transform_tracks = 5;
+        manifest.clips[0].binding.transform_track_to_bone_indices = vec![1, 1, 9];
+        let codes = error_codes(manifest.validate());
+        for expected in [
+            "clip_rig_mismatch",
+            "clip_track_count",
+            "duplicate_clip_bone",
+            "clip_bone_index",
+        ] {
+            assert!(
+                codes.contains(&expected),
+                "missing error {expected}: {codes:?}"
+            );
+        }
+    }
+    {
+        let manifest = wolf_manifest();
+        let available: Vec<String> = manifest
+            .required_runtime_paths()
+            .into_iter()
+            .filter(|path| !path.ends_with("Skeleton.nif"))
+            .collect();
+        let codes = error_codes(manifest.validate_file_tree(&available));
+        assert_eq!(codes, vec!["missing_file"]);
+    }
+}
 
-    let character = report.artifact(&manifest.paths.character).unwrap();
-    let character_xml = fs::read_to_string(&character.xml_path).unwrap();
-    assert!(character_xml.contains("<hkparam name=\"ragdollName\"/>"));
-    assert!(!character_xml.to_ascii_lowercase().contains("ragdoll.hkx"));
+#[test]
+fn synthetic_wolf_emits_deterministic_idle_scaffold_and_packs_four_hkx() {
+    {
+        let manifest = wolf_manifest();
+        let first = emit_idle_scaffold(&manifest).unwrap();
+        let second = emit_idle_scaffold(&manifest).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.artifacts.len(), 4);
+        assert_eq!(
+            first.race_visual_skeleton_nif,
+            "CharacterAssets\\Skeleton.nif"
+        );
+
+        let character = first.artifact(&manifest.paths.character).unwrap();
+        assert!(
+            character
+                .xml
+                .contains("<hkparam name=\"rigName\">CharacterAssets\\Skeleton.hkx</hkparam>")
+        );
+        assert!(!character.xml.contains("Skeleton.nif"));
+        assert!(character.xml.contains(
+            "<hkparam name=\"behaviorFilename\">Behaviors\\SourceWolfRootBehavior.hkx</hkparam>"
+        ));
+
+        let root = first.artifact(&manifest.paths.root_behavior).unwrap();
+        assert!(root.xml.contains("class=\"BSBehaviorGraphSwapGenerator\""));
+        assert!(root.xml.contains("<hkparam name=\"userData\">1</hkparam>"));
+
+        let core = first.artifact(&manifest.paths.core_behavior).unwrap();
+        assert!(core.xml.contains("class=\"hkbClipGenerator\""));
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"animationName\">Animations\\Idle.hkx</hkparam>")
+        );
+        assert!(
+            first
+                .artifacts
+                .iter()
+                .all(|artifact| validate_havok_xml(&artifact.xml).is_ok())
+        );
+        assert!(
+            first
+                .artifacts
+                .iter()
+                .all(|artifact| validate_fo4_havok_xml_signatures(&artifact.xml).is_ok())
+        );
+    }
+    {
+        let manifest = wolf_manifest();
+        let output = tempfile::tempdir().unwrap();
+        let report = pack_idle_scaffold(&manifest, output.path()).unwrap();
+
+        assert_eq!(report.artifacts.len(), 4);
+        assert!(
+            report
+                .runtime_manifest
+                .cross_file_paths()
+                .into_iter()
+                .all(|path| path.to_ascii_lowercase().ends_with(".hkx"))
+        );
+
+        for artifact in &report.artifacts {
+            assert!(artifact.xml_path.is_file());
+            assert!(artifact.hkx_path.is_file());
+            let bytes = fs::read(&artifact.hkx_path).unwrap();
+            let packed = havok_native::hkx::HkxFile::read(&bytes).unwrap();
+            assert_eq!(packed.class_version(), 11);
+            assert_eq!(packed.contents_version(), "hk_2014.1.0-r1");
+            assert_eq!(packed.packfile().header.pointer_size, 8);
+            assert!(
+                validate_fo4_havok_xml_signatures(&reread_packed_xml(
+                    &report,
+                    &artifact.runtime_path
+                ))
+                .is_ok()
+            );
+        }
+
+        let character = report.artifact(&manifest.paths.character).unwrap();
+        let character_xml = fs::read_to_string(&character.xml_path).unwrap();
+        assert!(character_xml.contains("<hkparam name=\"ragdollName\"/>"));
+        assert!(!character_xml.to_ascii_lowercase().contains("ragdoll.hkx"));
+    }
 }
 
 #[test]
@@ -1083,463 +1149,521 @@ fn no_ragdoll_is_an_explicit_roundtrip_disposition() {
 }
 
 #[test]
-fn wolf_mvp_emits_exact_five_state_graph_without_annotation_duplication() {
-    let (manifest, graph) = wolf_mvp();
-    let first = emit_mvp_scaffold(&manifest, &graph).unwrap();
-    let second = emit_mvp_scaffold(&manifest, &graph).unwrap();
-    assert_eq!(first, second);
-    assert_eq!(
-        manifest.paths.project,
-        "Actors\\B21_SkyrimWolf\\B21_SkyrimWolfProject.hkx"
-    );
-    assert_eq!(
-        manifest.animation_skeleton.path,
-        "Actors\\B21_SkyrimWolf\\CharacterAssets\\Skeleton.hkx"
-    );
+fn wolf_mvp_emits_exact_five_state_graph_and_packs_four_hkx() {
+    {
+        let (manifest, graph) = wolf_mvp();
+        let first = emit_mvp_scaffold(&manifest, &graph).unwrap();
+        let second = emit_mvp_scaffold(&manifest, &graph).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            manifest.paths.project,
+            "Actors\\B21_SkyrimWolf\\B21_SkyrimWolfProject.hkx"
+        );
+        assert_eq!(
+            manifest.animation_skeleton.path,
+            "Actors\\B21_SkyrimWolf\\CharacterAssets\\Skeleton.hkx"
+        );
 
-    let project = first.artifact(&manifest.paths.project).unwrap();
-    for runtime_path in manifest.clips.iter().map(|clip| clip.path.as_str()) {
-        let internal_path = runtime_path
-            .strip_prefix("Actors\\B21_SkyrimWolf\\")
-            .unwrap();
-        assert!(project.xml.contains(internal_path));
-        assert!(!project.xml.contains(runtime_path));
-    }
+        let project = first.artifact(&manifest.paths.project).unwrap();
+        for runtime_path in manifest.clips.iter().map(|clip| clip.path.as_str()) {
+            let internal_path = runtime_path
+                .strip_prefix("Actors\\B21_SkyrimWolf\\")
+                .unwrap();
+            assert!(project.xml.contains(internal_path));
+            assert!(!project.xml.contains(runtime_path));
+        }
 
-    let core = first.artifact(&manifest.paths.core_behavior).unwrap();
-    for (state_name, file_name, mode) in [
-        ("Idle", "Animations\\mt_idle_wolf.hkx", "MODE_LOOPING"),
-        (
-            "WalkForward",
-            "Animations\\walkforward_wolf.hkx",
-            "MODE_LOOPING",
-        ),
-        (
+        let core = first.artifact(&manifest.paths.core_behavior).unwrap();
+        for (state_name, file_name, mode) in [
+            ("Idle", "Animations\\mt_idle_wolf.hkx", "MODE_LOOPING"),
+            (
+                "WalkForward",
+                "Animations\\walkforward_wolf.hkx",
+                "MODE_LOOPING",
+            ),
+            (
+                "TurnLeft90",
+                "Animations\\turncannedl90_wolf.hkx",
+                "MODE_SINGLE_PLAY",
+            ),
+            (
+                "TurnRight90",
+                "Animations\\turncannedr90_wolf.hkx",
+                "MODE_SINGLE_PLAY",
+            ),
+            ("Attack1", "Animations\\attack1.hkx", "MODE_SINGLE_PLAY"),
+        ] {
+            let clip_object = object_containing(
+                &core.xml,
+                &format!("<hkparam name=\"animationName\">{file_name}</hkparam>"),
+            );
+            assert!(
+                clip_object.contains(&format!("<hkparam name=\"name\">{state_name}</hkparam>"))
+            );
+            assert!(clip_object.contains(&format!("<hkparam name=\"mode\">{mode}</hkparam>")));
+            assert!(clip_object.contains("<hkparam name=\"triggers\">null</hkparam>"));
+        }
+        for trigger in [
+            "Idle",
+            "startWalk",
             "TurnLeft90",
-            "Animations\\turncannedl90_wolf.hkx",
-            "MODE_SINGLE_PLAY",
-        ),
-        (
             "TurnRight90",
-            "Animations\\turncannedr90_wolf.hkx",
-            "MODE_SINGLE_PLAY",
-        ),
-        ("Attack1", "Animations\\attack1.hkx", "MODE_SINGLE_PLAY"),
-    ] {
-        let clip_object = object_containing(
-            &core.xml,
-            &format!("<hkparam name=\"animationName\">{file_name}</hkparam>"),
+            "meleeWolfAttack1",
+        ] {
+            assert!(
+                core.xml
+                    .contains(&format!("<hkcstring>{trigger}</hkcstring>"))
+            );
+        }
+        assert_eq!(
+            core.xml
+                .matches("<hkparam name=\"flags\">16384</hkparam>")
+                .count(),
+            3
         );
-        assert!(clip_object.contains(&format!("<hkparam name=\"name\">{state_name}</hkparam>")));
-        assert!(clip_object.contains(&format!("<hkparam name=\"mode\">{mode}</hkparam>")));
-        assert!(clip_object.contains("<hkparam name=\"triggers\">null</hkparam>"));
-    }
-    for trigger in [
-        "Idle",
-        "startWalk",
-        "TurnLeft90",
-        "TurnRight90",
-        "meleeWolfAttack1",
-    ] {
         assert!(
             core.xml
-                .contains(&format!("<hkcstring>{trigger}</hkcstring>"))
+                .contains("class=\"hkbStateMachine\" signature=\"0xa5896bcf\"")
         );
-    }
-    assert_eq!(
-        core.xml
-            .matches("<hkparam name=\"flags\">16384</hkparam>")
-            .count(),
-        3
-    );
-    assert!(
-        core.xml
-            .contains("class=\"hkbStateMachine\" signature=\"0xa5896bcf\"")
-    );
-    assert!(!core.xml.contains("startAnimationDriven"));
-    assert!(!core.xml.contains("weaponSwing"));
-    assert!(!core.xml.contains("preHitFrame"));
-    assert!(!core.xml.contains("HitFrame"));
+        assert!(!core.xml.contains("startAnimationDriven"));
+        assert!(!core.xml.contains("weaponSwing"));
+        assert!(!core.xml.contains("preHitFrame"));
+        assert!(!core.xml.contains("HitFrame"));
 
-    let root = first.artifact(&manifest.paths.root_behavior).unwrap();
-    assert!(root.xml.contains("class=\"BSBehaviorGraphSwapGenerator\""));
-    for trigger in [
-        "Idle",
-        "startWalk",
-        "TurnLeft90",
-        "TurnRight90",
-        "meleeWolfAttack1",
-    ] {
+        let root = first.artifact(&manifest.paths.root_behavior).unwrap();
+        assert!(root.xml.contains("class=\"BSBehaviorGraphSwapGenerator\""));
+        for trigger in [
+            "Idle",
+            "startWalk",
+            "TurnLeft90",
+            "TurnRight90",
+            "meleeWolfAttack1",
+        ] {
+            assert!(
+                root.xml
+                    .contains(&format!("<hkcstring>{trigger}</hkcstring>"))
+            );
+        }
+
+        for artifact in &first.artifacts {
+            assert!(artifact.runtime_path.ends_with(".hkx"));
+            assert!(!artifact.xml.to_ascii_lowercase().contains(".hkt"));
+            assert!(!artifact.xml.contains(">.xml<"));
+        }
+    }
+    {
+        let (manifest, graph) = wolf_mvp();
+        let output = tempfile::tempdir().unwrap();
+        let report = pack_mvp_scaffold(&manifest, &graph, output.path()).unwrap();
+
+        assert_eq!(report.artifacts.len(), 4);
+        assert_eq!(report.runtime_manifest.animation_clips.len(), 5);
         assert!(
-            root.xml
-                .contains(&format!("<hkcstring>{trigger}</hkcstring>"))
+            report
+                .runtime_manifest
+                .cross_file_paths()
+                .into_iter()
+                .all(|path| path.to_ascii_lowercase().ends_with(".hkx"))
         );
-    }
-
-    for artifact in &first.artifacts {
-        assert!(artifact.runtime_path.ends_with(".hkx"));
-        assert!(!artifact.xml.to_ascii_lowercase().contains(".hkt"));
-        assert!(!artifact.xml.contains(">.xml<"));
-    }
-}
-
-#[test]
-fn wolf_mvp_packs_four_readable_fo4_hkx_files() {
-    let (manifest, graph) = wolf_mvp();
-    let output = tempfile::tempdir().unwrap();
-    let report = pack_mvp_scaffold(&manifest, &graph, output.path()).unwrap();
-
-    assert_eq!(report.artifacts.len(), 4);
-    assert_eq!(report.runtime_manifest.animation_clips.len(), 5);
-    assert!(
-        report
-            .runtime_manifest
-            .cross_file_paths()
-            .into_iter()
-            .all(|path| path.to_ascii_lowercase().ends_with(".hkx"))
-    );
-    for artifact in &report.artifacts {
-        let bytes = fs::read(&artifact.hkx_path).unwrap();
-        let packed = havok_native::hkx::HkxFile::read(&bytes).unwrap();
-        assert_eq!(packed.class_version(), 11);
-        assert_eq!(packed.contents_version(), "hk_2014.1.0-r1");
-        assert_eq!(packed.packfile().header.pointer_size, 8);
-        assert!(
-            validate_fo4_havok_xml_signatures(&reread_packed_xml(&report, &artifact.runtime_path))
+        for artifact in &report.artifacts {
+            let bytes = fs::read(&artifact.hkx_path).unwrap();
+            let packed = havok_native::hkx::HkxFile::read(&bytes).unwrap();
+            assert_eq!(packed.class_version(), 11);
+            assert_eq!(packed.contents_version(), "hk_2014.1.0-r1");
+            assert_eq!(packed.packfile().header.pointer_size, 8);
+            assert!(
+                validate_fo4_havok_xml_signatures(&reread_packed_xml(
+                    &report,
+                    &artifact.runtime_path
+                ))
                 .is_ok()
+            );
+        }
+
+        assert!(
+            report
+                .runtime_manifest
+                .cross_file_paths()
+                .into_iter()
+                .all(|path| path.starts_with("Actors\\B21_SkyrimWolf\\"))
         );
-    }
+        let project_xml = reread_packed_xml(&report, &manifest.paths.project);
+        assert!(project_xml.contains("Characters\\B21_SkyrimWolfCharacter.hkx"));
+        assert!(project_xml.contains("Behaviors\\B21_SkyrimWolfRootBehavior.hkx"));
+        assert!(project_xml.contains("Animations\\mt_idle_wolf.hkx"));
+        assert!(!project_xml.contains("Actors\\B21_SkyrimWolf\\"));
 
-    assert!(
-        report
-            .runtime_manifest
-            .cross_file_paths()
-            .into_iter()
-            .all(|path| path.starts_with("Actors\\B21_SkyrimWolf\\"))
-    );
-    let project_xml = reread_packed_xml(&report, &manifest.paths.project);
-    assert!(project_xml.contains("Characters\\B21_SkyrimWolfCharacter.hkx"));
-    assert!(project_xml.contains("Behaviors\\B21_SkyrimWolfRootBehavior.hkx"));
-    assert!(project_xml.contains("Animations\\mt_idle_wolf.hkx"));
-    assert!(!project_xml.contains("Actors\\B21_SkyrimWolf\\"));
+        let character_xml = reread_packed_xml(&report, &manifest.paths.character);
+        assert!(character_xml.contains("CharacterAssets\\Skeleton.hkx"));
+        assert!(character_xml.contains("Behaviors\\B21_SkyrimWolfRootBehavior.hkx"));
+        assert!(!character_xml.contains("Actors\\B21_SkyrimWolf\\"));
 
-    let character_xml = reread_packed_xml(&report, &manifest.paths.character);
-    assert!(character_xml.contains("CharacterAssets\\Skeleton.hkx"));
-    assert!(character_xml.contains("Behaviors\\B21_SkyrimWolfRootBehavior.hkx"));
-    assert!(!character_xml.contains("Actors\\B21_SkyrimWolf\\"));
-
-    let core_xml = reread_packed_xml(&report, &manifest.paths.core_behavior);
-    assert!(core_xml.contains("Animations\\mt_idle_wolf.hkx"));
-    assert!(core_xml.contains("Animations\\attack1.hkx"));
-    assert!(!core_xml.contains("startAnimationDriven"));
-    assert!(!core_xml.contains("bAnimationDriven"));
-    assert!(!core_xml.contains("Actors\\B21_SkyrimWolf\\"));
-}
-
-#[test]
-fn same_mvp_api_accepts_source_neutral_gecko_roles() {
-    let (manifest, graph) = gecko_mvp();
-    let motion = gecko_motion();
-    let scaffold = emit_mvp_scaffold_with_motion(&manifest, &graph, &motion).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
-
-    assert!(core.xml.contains("Animations\\mtidle.hkx"));
-    assert!(core.xml.contains("Animations\\attackbite.hkx"));
-    assert!(core.xml.contains("meleeGeckoBite"));
-    assert!(
-        core.xml
-            .contains("<hkcstring>startAnimationDriven</hkcstring>")
-    );
-    assert!(core.xml.contains("<hkcstring>bAnimationDriven</hkcstring>"));
-    assert!(
-        root.xml
-            .contains("<hkcstring>startAnimationDriven</hkcstring>")
-    );
-    assert!(root.xml.contains("<hkcstring>bAnimationDriven</hkcstring>"));
-    assert_eq!(
-        core.xml.matches("class=\"hkbModifierGenerator\"").count(),
-        2
-    );
-    assert_eq!(core.xml.matches("class=\"BSIsActiveModifier\"").count(), 2);
-    let idle_state = object_containing(
-        &core.xml,
-        "<hkparam name=\"name\">Idle</hkparam><hkparam name=\"stateId\">0</hkparam>",
-    );
-    assert!(idle_state.contains("<hkparam name=\"enterNotifyEvents\">null</hkparam>"));
-    assert!(idle_state.contains("<hkparam name=\"generator\">#0100</hkparam>"));
-    let walk_state = object_containing(
-        &core.xml,
-        "<hkparam name=\"name\">WalkForward</hkparam><hkparam name=\"stateId\">1</hkparam>",
-    );
-    assert!(walk_state.contains("<hkparam name=\"enterNotifyEvents\">#0131</hkparam>"));
-    assert!(walk_state.contains("<hkparam name=\"exitNotifyEvents\">null</hkparam>"));
-    assert!(walk_state.contains("<hkparam name=\"generator\">#0161</hkparam>"));
-    let attack_state = object_containing(
-        &core.xml,
-        "<hkparam name=\"name\">Attack1</hkparam><hkparam name=\"stateId\">4</hkparam>",
-    );
-    assert!(attack_state.contains("<hkparam name=\"enterNotifyEvents\">#0134</hkparam>"));
-    assert!(attack_state.contains("<hkparam name=\"exitNotifyEvents\">null</hkparam>"));
-    assert!(attack_state.contains("<hkparam name=\"generator\">#0164</hkparam>"));
-    assert!(!core.xml.contains("stopAnimationDriven"));
-    assert!(!core.xml.contains("endAnimationDriven"));
-    assert!(!core.xml.contains("Skyrim"));
-    assert_eq!(manifest.animation_skeleton.bones.len(), 87);
-
-    let output = tempfile::tempdir().unwrap();
-    let report = pack_mvp_scaffold_with_motion(&manifest, &graph, &motion, output.path()).unwrap();
-    assert_eq!(report.artifacts.len(), 4);
-    assert!(
-        report
-            .runtime_manifest
-            .cross_file_paths()
-            .into_iter()
-            .all(|path| path.starts_with("Actors\\B21_Gecko\\"))
-    );
-
-    let project_xml = reread_packed_xml(&report, &manifest.paths.project);
-    assert!(project_xml.contains("Characters\\B21_GeckoCharacter.hkx"));
-    assert!(project_xml.contains("Animations\\mtidle.hkx"));
-    assert!(!project_xml.contains("Actors\\B21_Gecko\\"));
-
-    let character_xml = reread_packed_xml(&report, &manifest.paths.character);
-    assert!(character_xml.contains("CharacterAssets\\Skeleton.hkx"));
-    assert!(character_xml.contains("Behaviors\\B21_GeckoRootBehavior.hkx"));
-    assert!(!character_xml.contains("Actors\\B21_Gecko\\"));
-
-    let core_xml = reread_packed_xml(&report, &manifest.paths.core_behavior);
-    assert!(core_xml.contains("Animations\\mtidle.hkx"));
-    assert!(core_xml.contains("Animations\\attackbite.hkx"));
-    assert!(core_xml.contains("startAnimationDriven"));
-    assert!(core_xml.contains("bAnimationDriven"));
-    assert_eq!(
-        core_xml.matches("class=\"hkbModifierGenerator\"").count(),
-        2
-    );
-    assert!(validate_fo4_havok_xml_signatures(&core_xml).is_ok());
-    assert!(!core_xml.contains("Actors\\B21_Gecko\\"));
-}
-
-#[test]
-fn gecko_sparse_84_track_bindings_validate_against_87_bones() {
-    let (manifest, graph) = gecko_mvp();
-    assert!(manifest.validate_mvp(&graph).is_ok());
-    for clip in &manifest.clips {
-        assert_eq!(clip.binding.declared_transform_tracks, 84);
-        assert_eq!(clip.binding.transform_track_to_bone_indices.len(), 84);
-        assert!(!clip.binding.transform_track_to_bone_indices.contains(&0));
-        assert_eq!(clip.binding.transform_track_to_bone_indices[0], 3);
-        assert_eq!(clip.binding.transform_track_to_bone_indices[83], 86);
+        let core_xml = reread_packed_xml(&report, &manifest.paths.core_behavior);
+        assert!(core_xml.contains("Animations\\mt_idle_wolf.hkx"));
+        assert!(core_xml.contains("Animations\\attack1.hkx"));
+        assert!(!core_xml.contains("startAnimationDriven"));
+        assert!(!core_xml.contains("bAnimationDriven"));
+        assert!(!core_xml.contains("Actors\\B21_SkyrimWolf\\"));
     }
 }
 
 #[test]
-fn legacy_bone_names_preserve_edge_whitespace_but_reject_blank_names() {
-    let (mut manifest, graph) = wolf_mvp();
-    manifest.animation_skeleton.bones[3].name = " NPC Head [Head]".to_string();
-    assert!(manifest.validate_mvp(&graph).is_ok());
+fn same_mvp_api_accepts_gecko_roles_with_sparse_84_track_bindings() {
+    {
+        let (manifest, graph) = gecko_mvp();
+        let motion = gecko_motion();
+        let scaffold = emit_mvp_scaffold_with_motion(&manifest, &graph, &motion).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
 
-    manifest.animation_skeleton.bones[3].name = "   ".to_string();
-    let codes = error_codes(manifest.validate_mvp(&graph));
-    assert!(codes.contains(&"invalid_name"));
-}
-
-#[test]
-fn gecko_sparse_binding_rejects_duplicate_and_out_of_range_indices() {
-    let (mut manifest, graph) = gecko_mvp();
-    manifest.clips[0].binding.transform_track_to_bone_indices[1] = 3;
-    manifest.clips[0].binding.transform_track_to_bone_indices[83] = 87;
-    let codes = error_codes(manifest.validate_mvp(&graph));
-    assert!(codes.contains(&"duplicate_clip_bone"));
-    assert!(codes.contains(&"clip_bone_index"));
-}
-
-#[test]
-fn mvp_role_validation_fails_closed_on_modes_and_events() {
-    let (mut manifest, graph) = wolf_mvp();
-    manifest.clips[1].looping = false;
-    manifest.core.events[4].usage = EventUsage::Generic;
-    manifest.root = manifest.core.clone();
-    let codes = error_codes(manifest.validate_mvp(&graph));
-    assert!(codes.contains(&"mvp_clip_mode"));
-    assert!(codes.contains(&"mvp_event_usage"));
-}
-
-#[test]
-fn motion_policy_requires_extracted_planar_reference_frames_in_both_directions() {
-    let (manifest, graph) = gecko_mvp();
-    let mut motion = gecko_motion();
-    motion.walk_forward.extracted_planar_reference_frames = 0;
-    motion.turn_left_90.extracted_planar_reference_frames = 1;
-    let codes = error_codes(manifest.validate_mvp_motion(&graph, &motion));
-    assert!(codes.contains(&"animation_driven_without_extracted_motion"));
-    assert!(codes.contains(&"extracted_motion_without_animation_driven"));
-}
-
-#[test]
-fn capability_graph_supports_optional_turns_and_multiple_projectile_attacks() {
-    let (manifest, graph) = ranged_capability();
-    assert!(manifest.validate_capability_graph(&graph).is_ok());
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
-    for state in ["Rest", "Advance", "RotatePort", "SpitBolt", "SpitAcid"] {
+        assert!(core.xml.contains("Animations\\mtidle.hkx"));
+        assert!(core.xml.contains("Animations\\attackbite.hkx"));
+        assert!(core.xml.contains("meleeGeckoBite"));
         assert!(
             core.xml
-                .contains(&format!("<hkparam name=\"name\">{state}</hkparam>"))
+                .contains("<hkcstring>startAnimationDriven</hkcstring>")
         );
-    }
-    for event in ["Idle", "beginStride", "rotatePort", "spitBolt", "spitAcid"] {
-        assert!(
-            core.xml
-                .contains(&format!("<hkcstring>{event}</hkcstring>"))
-        );
+        assert!(core.xml.contains("<hkcstring>bAnimationDriven</hkcstring>"));
         assert!(
             root.xml
-                .contains(&format!("<hkcstring>{event}</hkcstring>"))
+                .contains("<hkcstring>startAnimationDriven</hkcstring>")
         );
-    }
-    assert!(
-        !core
-            .xml
-            .contains("<hkparam name=\"name\">TurnRight90</hkparam>")
-    );
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"states\" numelements=\"5\">")
-    );
-    assert!(
-        scaffold
-            .artifacts
-            .iter()
-            .all(|artifact| validate_fo4_havok_xml_signatures(&artifact.xml).is_ok())
-    );
+        assert!(root.xml.contains("<hkcstring>bAnimationDriven</hkcstring>"));
+        assert_eq!(
+            core.xml.matches("class=\"hkbModifierGenerator\"").count(),
+            2
+        );
+        assert_eq!(core.xml.matches("class=\"BSIsActiveModifier\"").count(), 2);
+        let idle_state = object_containing(
+            &core.xml,
+            "<hkparam name=\"name\">Idle</hkparam><hkparam name=\"stateId\">0</hkparam>",
+        );
+        assert!(idle_state.contains("<hkparam name=\"enterNotifyEvents\">null</hkparam>"));
+        assert!(idle_state.contains("<hkparam name=\"generator\">#0100</hkparam>"));
+        let walk_state = object_containing(
+            &core.xml,
+            "<hkparam name=\"name\">WalkForward</hkparam><hkparam name=\"stateId\">1</hkparam>",
+        );
+        assert!(walk_state.contains("<hkparam name=\"enterNotifyEvents\">#0131</hkparam>"));
+        assert!(walk_state.contains("<hkparam name=\"exitNotifyEvents\">null</hkparam>"));
+        assert!(walk_state.contains("<hkparam name=\"generator\">#0161</hkparam>"));
+        let attack_state = object_containing(
+            &core.xml,
+            "<hkparam name=\"name\">Attack1</hkparam><hkparam name=\"stateId\">4</hkparam>",
+        );
+        assert!(attack_state.contains("<hkparam name=\"enterNotifyEvents\">#0134</hkparam>"));
+        assert!(attack_state.contains("<hkparam name=\"exitNotifyEvents\">null</hkparam>"));
+        assert!(attack_state.contains("<hkparam name=\"generator\">#0164</hkparam>"));
+        assert!(!core.xml.contains("stopAnimationDriven"));
+        assert!(!core.xml.contains("endAnimationDriven"));
+        assert!(!core.xml.contains("Skyrim"));
+        assert_eq!(manifest.animation_skeleton.bones.len(), 87);
 
-    let output = tempfile::tempdir().unwrap();
-    let report = pack_capability_scaffold(&manifest, &graph, output.path()).unwrap();
-    assert_eq!(report.artifacts.len(), 4);
-    for artifact in &report.artifacts {
-        let roundtrip = reread_packed_xml(&report, &artifact.runtime_path);
-        assert!(validate_fo4_havok_xml_signatures(&roundtrip).is_ok());
+        let output = tempfile::tempdir().unwrap();
+        let report =
+            pack_mvp_scaffold_with_motion(&manifest, &graph, &motion, output.path()).unwrap();
+        assert_eq!(report.artifacts.len(), 4);
+        assert!(
+            report
+                .runtime_manifest
+                .cross_file_paths()
+                .into_iter()
+                .all(|path| path.starts_with("Actors\\B21_Gecko\\"))
+        );
+
+        let project_xml = reread_packed_xml(&report, &manifest.paths.project);
+        assert!(project_xml.contains("Characters\\B21_GeckoCharacter.hkx"));
+        assert!(project_xml.contains("Animations\\mtidle.hkx"));
+        assert!(!project_xml.contains("Actors\\B21_Gecko\\"));
+
+        let character_xml = reread_packed_xml(&report, &manifest.paths.character);
+        assert!(character_xml.contains("CharacterAssets\\Skeleton.hkx"));
+        assert!(character_xml.contains("Behaviors\\B21_GeckoRootBehavior.hkx"));
+        assert!(!character_xml.contains("Actors\\B21_Gecko\\"));
+
+        let core_xml = reread_packed_xml(&report, &manifest.paths.core_behavior);
+        assert!(core_xml.contains("Animations\\mtidle.hkx"));
+        assert!(core_xml.contains("Animations\\attackbite.hkx"));
+        assert!(core_xml.contains("startAnimationDriven"));
+        assert!(core_xml.contains("bAnimationDriven"));
+        assert_eq!(
+            core_xml.matches("class=\"hkbModifierGenerator\"").count(),
+            2
+        );
+        assert!(validate_fo4_havok_xml_signatures(&core_xml).is_ok());
+        assert!(!core_xml.contains("Actors\\B21_Gecko\\"));
+    }
+    {
+        let (manifest, graph) = gecko_mvp();
+        assert!(manifest.validate_mvp(&graph).is_ok());
+        for clip in &manifest.clips {
+            assert_eq!(clip.binding.declared_transform_tracks, 84);
+            assert_eq!(clip.binding.transform_track_to_bone_indices.len(), 84);
+            assert!(!clip.binding.transform_track_to_bone_indices.contains(&0));
+            assert_eq!(clip.binding.transform_track_to_bone_indices[0], 3);
+            assert_eq!(clip.binding.transform_track_to_bone_indices[83], 86);
+        }
     }
 }
 
 #[test]
-fn capability_trigger_aliases_emit_same_role_transitions_and_reject_cross_role_aliases() {
-    let (manifest, mut graph) = ranged_capability();
-    graph
-        .explicit_events
-        .extend(["attackEnterA", "attackEnterB"].map(generic_event).to_vec());
-    graph
-        .roles
-        .iter_mut()
-        .find(|role| role.state_name == "SpitBolt")
-        .unwrap()
-        .trigger_aliases = vec!["attackEnterA".to_string(), "attackEnterB".to_string()];
+fn mvp_validation_fails_closed_on_names_bindings_modes_events_and_motion() {
+    {
+        let (mut manifest, graph) = wolf_mvp();
+        manifest.animation_skeleton.bones[3].name = " NPC Head [Head]".to_string();
+        assert!(manifest.validate_mvp(&graph).is_ok());
 
-    manifest.validate_capability_graph(&graph).unwrap();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    let facts = validate_havok_xml(&core.xml).unwrap();
-    let idle_transitions = object_containing(&core.xml, "name=\"#0110\"");
-    for alias in ["attackEnterA", "attackEnterB"] {
-        let event_id = facts
-            .event_names
-            .iter()
-            .position(|event| event == alias)
+        manifest.animation_skeleton.bones[3].name = "   ".to_string();
+        let codes = error_codes(manifest.validate_mvp(&graph));
+        assert!(codes.contains(&"invalid_name"));
+    }
+    {
+        let (mut manifest, graph) = gecko_mvp();
+        manifest.clips[0].binding.transform_track_to_bone_indices[1] = 3;
+        manifest.clips[0].binding.transform_track_to_bone_indices[83] = 87;
+        let codes = error_codes(manifest.validate_mvp(&graph));
+        assert!(codes.contains(&"duplicate_clip_bone"));
+        assert!(codes.contains(&"clip_bone_index"));
+    }
+    {
+        let (mut manifest, graph) = wolf_mvp();
+        manifest.clips[1].looping = false;
+        manifest.core.events[4].usage = EventUsage::Generic;
+        manifest.root = manifest.core.clone();
+        let codes = error_codes(manifest.validate_mvp(&graph));
+        assert!(codes.contains(&"mvp_clip_mode"));
+        assert!(codes.contains(&"mvp_event_usage"));
+    }
+    {
+        let (manifest, graph) = gecko_mvp();
+        let mut motion = gecko_motion();
+        motion.walk_forward.extracted_planar_reference_frames = 0;
+        motion.turn_left_90.extracted_planar_reference_frames = 1;
+        let codes = error_codes(manifest.validate_mvp_motion(&graph, &motion));
+        assert!(codes.contains(&"animation_driven_without_extracted_motion"));
+        assert!(codes.contains(&"extracted_motion_without_animation_driven"));
+    }
+}
+
+#[test]
+fn capability_graph_supports_optional_turns_projectiles_and_trigger_aliases() {
+    {
+        let (manifest, graph) = ranged_capability();
+        assert!(manifest.validate_capability_graph(&graph).is_ok());
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
+        for state in ["Rest", "Advance", "RotatePort", "SpitBolt", "SpitAcid"] {
+            assert!(
+                core.xml
+                    .contains(&format!("<hkparam name=\"name\">{state}</hkparam>"))
+            );
+        }
+        for event in ["Idle", "beginStride", "rotatePort", "spitBolt", "spitAcid"] {
+            assert!(
+                core.xml
+                    .contains(&format!("<hkcstring>{event}</hkcstring>"))
+            );
+            assert!(
+                root.xml
+                    .contains(&format!("<hkcstring>{event}</hkcstring>"))
+            );
+        }
+        assert!(
+            !core
+                .xml
+                .contains("<hkparam name=\"name\">TurnRight90</hkparam>")
+        );
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"states\" numelements=\"5\">")
+        );
+        assert!(
+            scaffold
+                .artifacts
+                .iter()
+                .all(|artifact| validate_fo4_havok_xml_signatures(&artifact.xml).is_ok())
+        );
+
+        let output = tempfile::tempdir().unwrap();
+        let report = pack_capability_scaffold(&manifest, &graph, output.path()).unwrap();
+        assert_eq!(report.artifacts.len(), 4);
+        for artifact in &report.artifacts {
+            let roundtrip = reread_packed_xml(&report, &artifact.runtime_path);
+            assert!(validate_fo4_havok_xml_signatures(&roundtrip).is_ok());
+        }
+    }
+    {
+        let (manifest, mut graph) = ranged_capability();
+        graph
+            .explicit_events
+            .extend(["attackEnterA", "attackEnterB"].map(generic_event).to_vec());
+        graph
+            .roles
+            .iter_mut()
+            .find(|role| role.state_name == "SpitBolt")
+            .unwrap()
+            .trigger_aliases = vec!["attackEnterA".to_string(), "attackEnterB".to_string()];
+
+        manifest.validate_capability_graph(&graph).unwrap();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        let facts = validate_havok_xml(&core.xml).unwrap();
+        let idle_transitions = object_containing(&core.xml, "name=\"#0110\"");
+        for alias in ["attackEnterA", "attackEnterB"] {
+            let event_id = facts
+                .event_names
+                .iter()
+                .position(|event| event == alias)
+                .unwrap();
+            let transition = format!(
+                "<hkparam name=\"eventId\">{event_id}</hkparam><hkparam name=\"toStateId\">3</hkparam>"
+            );
+            assert_eq!(idle_transitions.matches(&transition).count(), 1);
+        }
+        assert_capability_pack_roundtrip(&manifest, &graph);
+
+        let mut cross_role = graph.clone();
+        cross_role
+            .roles
+            .iter_mut()
+            .find(|role| role.state_name == "SpitAcid")
+            .unwrap()
+            .trigger_aliases = vec!["attackEnterA".to_string()];
+        assert!(
+            error_codes(manifest.validate_capability_graph(&cross_role))
+                .contains(&"duplicate_role_event")
+        );
+
+        let mut unsorted = graph;
+        unsorted
+            .roles
+            .iter_mut()
+            .find(|role| role.state_name == "SpitBolt")
+            .unwrap()
+            .trigger_aliases = vec!["attackEnterB".to_string(), "attackEnterA".to_string()];
+        assert!(
+            error_codes(manifest.validate_capability_graph(&unsorted))
+                .contains(&"capability_trigger_alias_order")
+        );
+    }
+}
+
+#[test]
+fn passive_ground_emits_only_evidenced_locomotion_states_and_rejects_attack_roles() {
+    {
+        let (manifest, graph) = passive_ground_capability();
+        assert!(manifest.validate_capability_graph(&graph).is_ok());
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+
+        assert!(core.xml.contains("PassiveGroundLocomotionSM"));
+        assert!(core.xml.contains("<hkparam name=\"name\">Rest</hkparam>"));
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"name\">Advance</hkparam>")
+        );
+        assert!(
+            !core
+                .xml
+                .contains("<hkparam name=\"name\">Attack1</hkparam>")
+        );
+        assert_capability_pack_roundtrip(&manifest, &graph);
+    }
+    {
+        let (manifest, mut graph) = passive_ground_capability();
+        graph.roles.push(capability_role(
+            CreatureClipRole::MeleeAttack,
+            "Attack1",
+            "attack1",
+            Some("meleeWolfAttack1"),
+        ));
+        graph.explicit_events.push(EventDecl {
+            name: "meleeWolfAttack1".to_string(),
+            usage: EventUsage::MeleeAttack,
+            flags: 0,
+        });
+        let codes = error_codes(manifest.validate_capability_graph(&graph));
+        assert!(codes.contains(&"capability_role_not_allowed"));
+    }
+}
+
+#[test]
+fn multimodal_capabilities_union_required_roles_and_never_alias_missing_roles() {
+    {
+        let (manifest, graph) = multimodal_capability(CreatureGraphTemplate::GroundMeleeRanged);
+        assert!(manifest.validate_capability_graph(&graph).is_ok());
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+
+        assert!(core.xml.contains("CapabilityLocomotionCombatSM"));
+        assert!(core.xml.contains("meleeMultiAttack"));
+        assert!(core.xml.contains("fireProjectile"));
+        assert_capability_pack_roundtrip(&manifest, &graph);
+
+        let mut missing_projectile = graph;
+        missing_projectile
+            .roles
+            .retain(|role| role.role != CreatureClipRole::ProjectileAttack);
+        assert!(
+            error_codes(manifest.validate_capability_graph(&missing_projectile))
+                .contains(&"missing_capability_role")
+        );
+    }
+    {
+        let (manifest, graph) = multimodal_capability(CreatureGraphTemplate::GroundSwim);
+        assert!(manifest.validate_capability_graph(&graph).is_ok());
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+
+        assert!(core.xml.contains("GroundSwimLocomotionCombatSM"));
+        for event in [
+            "groundForward",
+            "enterSwim",
+            "swimForward",
+            "meleeMultiAttack",
+            "fireProjectile",
+        ] {
+            assert!(core.xml.contains(event), "missing event {event}");
+        }
+        assert_capability_pack_roundtrip(&manifest, &graph);
+    }
+    {
+        let (manifest, graph) = multimodal_capability(CreatureGraphTemplate::GroundFly);
+        assert!(manifest.validate_capability_graph(&graph).is_ok());
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+
+        assert!(core.xml.contains("GroundFlightLocomotionCombatSM"));
+        for event in [
+            "groundForward",
+            "enterFlight",
+            "flyForward",
+            "meleeMultiAttack",
+            "fireProjectile",
+        ] {
+            assert!(core.xml.contains(event), "missing event {event}");
+        }
+        assert_capability_pack_roundtrip(&manifest, &graph);
+    }
+    {
+        let (manifest, mut graph) = ranged_capability();
+        graph
+            .roles
+            .retain(|role| role.role != CreatureClipRole::GroundForward);
+        let codes = error_codes(manifest.validate_capability_graph(&graph));
+        assert!(codes.contains(&"missing_capability_role"));
+
+        let (manifest, mut graph) = ranged_capability();
+        let forward = graph
+            .roles
+            .iter_mut()
+            .find(|role| role.role == CreatureClipRole::GroundForward)
             .unwrap();
-        let transition = format!(
-            "<hkparam name=\"eventId\">{event_id}</hkparam><hkparam name=\"toStateId\">3</hkparam>"
-        );
-        assert_eq!(idle_transitions.matches(&transition).count(), 1);
+        forward.clip_name = manifest.idle_clip.clone();
+        let codes = error_codes(manifest.validate_capability_graph(&graph));
+        assert!(codes.contains(&"duplicate_capability_clip"));
     }
-    assert_capability_pack_roundtrip(&manifest, &graph);
-
-    let mut cross_role = graph.clone();
-    cross_role
-        .roles
-        .iter_mut()
-        .find(|role| role.state_name == "SpitAcid")
-        .unwrap()
-        .trigger_aliases = vec!["attackEnterA".to_string()];
-    assert!(
-        error_codes(manifest.validate_capability_graph(&cross_role))
-            .contains(&"duplicate_role_event")
-    );
-
-    let mut unsorted = graph;
-    unsorted
-        .roles
-        .iter_mut()
-        .find(|role| role.state_name == "SpitBolt")
-        .unwrap()
-        .trigger_aliases = vec!["attackEnterB".to_string(), "attackEnterA".to_string()];
-    assert!(
-        error_codes(manifest.validate_capability_graph(&unsorted))
-            .contains(&"capability_trigger_alias_order")
-    );
-}
-
-#[test]
-fn passive_ground_emits_only_evidenced_locomotion_states() {
-    let (manifest, graph) = passive_ground_capability();
-    assert!(manifest.validate_capability_graph(&graph).is_ok());
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-
-    assert!(core.xml.contains("PassiveGroundLocomotionSM"));
-    assert!(core.xml.contains("<hkparam name=\"name\">Rest</hkparam>"));
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"name\">Advance</hkparam>")
-    );
-    assert!(
-        !core
-            .xml
-            .contains("<hkparam name=\"name\">Attack1</hkparam>")
-    );
-    assert_capability_pack_roundtrip(&manifest, &graph);
-}
-
-#[test]
-fn passive_ground_rejects_any_attack_role() {
-    let (manifest, mut graph) = passive_ground_capability();
-    graph.roles.push(capability_role(
-        CreatureClipRole::MeleeAttack,
-        "Attack1",
-        "attack1",
-        Some("meleeWolfAttack1"),
-    ));
-    graph.explicit_events.push(EventDecl {
-        name: "meleeWolfAttack1".to_string(),
-        usage: EventUsage::MeleeAttack,
-        flags: 0,
-    });
-    let codes = error_codes(manifest.validate_capability_graph(&graph));
-    assert!(codes.contains(&"capability_role_not_allowed"));
-}
-
-#[test]
-fn ground_melee_ranged_requires_and_emits_both_attack_capabilities() {
-    let (manifest, graph) = multimodal_capability(CreatureGraphTemplate::GroundMeleeRanged);
-    assert!(manifest.validate_capability_graph(&graph).is_ok());
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-
-    assert!(core.xml.contains("CapabilityLocomotionCombatSM"));
-    assert!(core.xml.contains("meleeMultiAttack"));
-    assert!(core.xml.contains("fireProjectile"));
-    assert_capability_pack_roundtrip(&manifest, &graph);
-
-    let mut missing_projectile = graph;
-    missing_projectile
-        .roles
-        .retain(|role| role.role != CreatureClipRole::ProjectileAttack);
-    assert!(
-        error_codes(manifest.validate_capability_graph(&missing_projectile))
-            .contains(&"missing_capability_role")
-    );
 }
 
 #[test]
@@ -1595,137 +1719,137 @@ fn candidate_bindings_share_one_attack_state_without_failing_role_cardinality() 
 }
 
 #[test]
-fn manual_selector_retains_ordered_clips_and_exact_dynamic_index_binding() {
-    let (mut manifest, mut graph) = ranged_capability();
-    let mut alternate = manifest
-        .clips
-        .iter()
-        .find(|clip| clip.name == "mt_idle_wolf")
-        .unwrap()
-        .clone();
-    alternate.name = "idle_combat".to_string();
-    alternate.path = "Actors\\B21_SkyrimWolf\\Animations\\idle_combat.hkx".to_string();
-    manifest.clips.push(alternate);
-    let selector_variable = VariableDecl {
-        name: "iIdleSelector".to_string(),
-        variable_type: VariableType::Int32,
-        initial_value: VariableValue::Int32(0),
-    };
-    manifest.root.variables.push(selector_variable.clone());
-    manifest.core.variables.push(selector_variable);
-    graph
-        .roles
-        .iter_mut()
-        .find(|role| role.role == CreatureClipRole::Idle)
-        .unwrap()
-        .generator = CapabilityRoleGenerator::ManualSelector {
-        children: vec!["mt_idle_wolf".to_string(), "idle_combat".to_string()],
-        selected_generator_index: 0,
-        selected_index_can_change_after_activate: true,
-        selected_index_variable: Some("iIdleSelector".to_string()),
-    };
-
-    manifest.validate_capability_graph(&graph).unwrap();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    assert!(
-        core.xml
-            .contains("class=\"hkbManualSelectorGenerator\" signature=\"0xeed8d5cd\"")
-    );
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"memberPath\">selectedGeneratorIndex</hkparam>")
-    );
-    assert!(core.xml.contains("Animations\\mt_idle_wolf.hkx"));
-    assert!(core.xml.contains("Animations\\idle_combat.hkx"));
-    assert_capability_pack_roundtrip(&manifest, &graph);
-
-    let mut unbound = graph;
-    if let CapabilityRoleGenerator::ManualSelector {
-        selected_index_variable,
-        ..
-    } = &mut unbound
-        .roles
-        .iter_mut()
-        .find(|role| role.role == CreatureClipRole::Idle)
-        .unwrap()
-        .generator
+fn manual_selector_and_locomotion_blender_retain_children_and_bindings() {
     {
-        *selected_index_variable = None;
+        let (mut manifest, mut graph) = ranged_capability();
+        let mut alternate = manifest
+            .clips
+            .iter()
+            .find(|clip| clip.name == "mt_idle_wolf")
+            .unwrap()
+            .clone();
+        alternate.name = "idle_combat".to_string();
+        alternate.path = "Actors\\B21_SkyrimWolf\\Animations\\idle_combat.hkx".to_string();
+        manifest.clips.push(alternate);
+        let selector_variable = VariableDecl {
+            name: "iIdleSelector".to_string(),
+            variable_type: VariableType::Int32,
+            initial_value: VariableValue::Int32(0),
+        };
+        manifest.root.variables.push(selector_variable.clone());
+        manifest.core.variables.push(selector_variable);
+        graph
+            .roles
+            .iter_mut()
+            .find(|role| role.role == CreatureClipRole::Idle)
+            .unwrap()
+            .generator = CapabilityRoleGenerator::ManualSelector {
+            children: vec!["mt_idle_wolf".to_string(), "idle_combat".to_string()],
+            selected_generator_index: 0,
+            selected_index_can_change_after_activate: true,
+            selected_index_variable: Some("iIdleSelector".to_string()),
+        };
+
+        manifest.validate_capability_graph(&graph).unwrap();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        assert!(
+            core.xml
+                .contains("class=\"hkbManualSelectorGenerator\" signature=\"0xeed8d5cd\"")
+        );
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"memberPath\">selectedGeneratorIndex</hkparam>")
+        );
+        assert!(core.xml.contains("Animations\\mt_idle_wolf.hkx"));
+        assert!(core.xml.contains("Animations\\idle_combat.hkx"));
+        assert_capability_pack_roundtrip(&manifest, &graph);
+
+        let mut unbound = graph;
+        if let CapabilityRoleGenerator::ManualSelector {
+            selected_index_variable,
+            ..
+        } = &mut unbound
+            .roles
+            .iter_mut()
+            .find(|role| role.role == CreatureClipRole::Idle)
+            .unwrap()
+            .generator
+        {
+            *selected_index_variable = None;
+        }
+        assert!(
+            error_codes(manifest.validate_capability_graph(&unbound))
+                .contains(&"manual_selector_dynamic_control")
+        );
     }
-    assert!(
-        error_codes(manifest.validate_capability_graph(&unbound))
-            .contains(&"manual_selector_dynamic_control")
-    );
-}
+    {
+        let (mut manifest, mut graph) = ranged_capability();
+        let mut run = manifest
+            .clips
+            .iter()
+            .find(|clip| clip.name == "walkforward_wolf")
+            .unwrap()
+            .clone();
+        run.name = "runforward_wolf".to_string();
+        run.path = "Actors\\B21_SkyrimWolf\\Animations\\runforward_wolf.hkx".to_string();
+        manifest.clips.push(run);
+        let blend_variable = VariableDecl {
+            name: "fLocomotionBlend".to_string(),
+            variable_type: VariableType::Real,
+            initial_value: VariableValue::Real(0.25),
+        };
+        manifest.root.variables.push(blend_variable.clone());
+        manifest.core.variables.push(blend_variable);
+        graph
+            .roles
+            .iter_mut()
+            .find(|role| role.role == CreatureClipRole::GroundForward)
+            .unwrap()
+            .generator = CapabilityRoleGenerator::Blender {
+            children: vec![
+                CapabilityBlenderChild {
+                    clip_name: "walkforward_wolf".to_string(),
+                    weight_bits: 0.0f32.to_bits(),
+                    world_from_model_weight_bits: 1.0f32.to_bits(),
+                },
+                CapabilityBlenderChild {
+                    clip_name: "runforward_wolf".to_string(),
+                    weight_bits: 1.0f32.to_bits(),
+                    world_from_model_weight_bits: 1.0f32.to_bits(),
+                },
+            ],
+            reference_pose_weight_threshold_bits: 0.0f32.to_bits(),
+            blend_parameter_bits: 0.25f32.to_bits(),
+            min_cyclic_blend_parameter_bits: 0.0f32.to_bits(),
+            max_cyclic_blend_parameter_bits: 1.0f32.to_bits(),
+            index_of_sync_master_child: 0,
+            flags: 0x11,
+            subtract_last_child: false,
+            blend_parameter_variable: Some("fLocomotionBlend".to_string()),
+        };
 
-#[test]
-fn locomotion_blender_retains_exact_children_weights_and_parameter_binding() {
-    let (mut manifest, mut graph) = ranged_capability();
-    let mut run = manifest
-        .clips
-        .iter()
-        .find(|clip| clip.name == "walkforward_wolf")
-        .unwrap()
-        .clone();
-    run.name = "runforward_wolf".to_string();
-    run.path = "Actors\\B21_SkyrimWolf\\Animations\\runforward_wolf.hkx".to_string();
-    manifest.clips.push(run);
-    let blend_variable = VariableDecl {
-        name: "fLocomotionBlend".to_string(),
-        variable_type: VariableType::Real,
-        initial_value: VariableValue::Real(0.25),
-    };
-    manifest.root.variables.push(blend_variable.clone());
-    manifest.core.variables.push(blend_variable);
-    graph
-        .roles
-        .iter_mut()
-        .find(|role| role.role == CreatureClipRole::GroundForward)
-        .unwrap()
-        .generator = CapabilityRoleGenerator::Blender {
-        children: vec![
-            CapabilityBlenderChild {
-                clip_name: "walkforward_wolf".to_string(),
-                weight_bits: 0.0f32.to_bits(),
-                world_from_model_weight_bits: 1.0f32.to_bits(),
-            },
-            CapabilityBlenderChild {
-                clip_name: "runforward_wolf".to_string(),
-                weight_bits: 1.0f32.to_bits(),
-                world_from_model_weight_bits: 1.0f32.to_bits(),
-            },
-        ],
-        reference_pose_weight_threshold_bits: 0.0f32.to_bits(),
-        blend_parameter_bits: 0.25f32.to_bits(),
-        min_cyclic_blend_parameter_bits: 0.0f32.to_bits(),
-        max_cyclic_blend_parameter_bits: 1.0f32.to_bits(),
-        index_of_sync_master_child: 0,
-        flags: 0x11,
-        subtract_last_child: false,
-        blend_parameter_variable: Some("fLocomotionBlend".to_string()),
-    };
-
-    manifest.validate_capability_graph(&graph).unwrap();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    assert!(
-        core.xml
-            .contains("class=\"hkbBlenderGenerator\" signature=\"0xce45c088\"")
-    );
-    assert_eq!(
-        core.xml
-            .matches("class=\"hkbBlenderGeneratorChild\"")
-            .count(),
-        2
-    );
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"memberPath\">blendParameter</hkparam>")
-    );
-    assert!(core.xml.contains("Animations\\walkforward_wolf.hkx"));
-    assert!(core.xml.contains("Animations\\runforward_wolf.hkx"));
-    assert_capability_pack_roundtrip(&manifest, &graph);
+        manifest.validate_capability_graph(&graph).unwrap();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        assert!(
+            core.xml
+                .contains("class=\"hkbBlenderGenerator\" signature=\"0xce45c088\"")
+        );
+        assert_eq!(
+            core.xml
+                .matches("class=\"hkbBlenderGeneratorChild\"")
+                .count(),
+            2
+        );
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"memberPath\">blendParameter</hkparam>")
+        );
+        assert!(core.xml.contains("Animations\\walkforward_wolf.hkx"));
+        assert!(core.xml.contains("Animations\\runforward_wolf.hkx"));
+        assert_capability_pack_roundtrip(&manifest, &graph);
+    }
 }
 
 fn recursive_source_object(
@@ -2351,303 +2475,197 @@ fn recursive_tree_rejects_unlowered_policy_objects_and_missing_variable_evidence
 }
 
 #[test]
-fn ground_swim_unions_ground_swim_melee_and_projectile_capabilities() {
-    let (manifest, graph) = multimodal_capability(CreatureGraphTemplate::GroundSwim);
-    assert!(manifest.validate_capability_graph(&graph).is_ok());
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+fn swim_and_fly_capabilities_emit_mode_loops_and_pack() {
+    {
+        let (manifest, graph) = swim_capability();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
 
-    assert!(core.xml.contains("GroundSwimLocomotionCombatSM"));
-    for event in [
-        "groundForward",
-        "enterSwim",
-        "swimForward",
-        "meleeMultiAttack",
-        "fireProjectile",
-    ] {
-        assert!(core.xml.contains(event), "missing event {event}");
-    }
-    assert_capability_pack_roundtrip(&manifest, &graph);
-}
-
-#[test]
-fn ground_fly_unions_ground_flight_and_attack_capabilities() {
-    let (manifest, graph) = multimodal_capability(CreatureGraphTemplate::GroundFly);
-    assert!(manifest.validate_capability_graph(&graph).is_ok());
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-
-    assert!(core.xml.contains("GroundFlightLocomotionCombatSM"));
-    for event in [
-        "groundForward",
-        "enterFlight",
-        "flyForward",
-        "meleeMultiAttack",
-        "fireProjectile",
-    ] {
-        assert!(core.xml.contains(event), "missing event {event}");
-    }
-    assert_capability_pack_roundtrip(&manifest, &graph);
-}
-
-#[test]
-fn capability_graph_never_aliases_a_missing_required_role_to_idle() {
-    let (manifest, mut graph) = ranged_capability();
-    graph
-        .roles
-        .retain(|role| role.role != CreatureClipRole::GroundForward);
-    let codes = error_codes(manifest.validate_capability_graph(&graph));
-    assert!(codes.contains(&"missing_capability_role"));
-
-    let (manifest, mut graph) = ranged_capability();
-    let forward = graph
-        .roles
-        .iter_mut()
-        .find(|role| role.role == CreatureClipRole::GroundForward)
-        .unwrap();
-    forward.clip_name = manifest.idle_clip.clone();
-    let codes = error_codes(manifest.validate_capability_graph(&graph));
-    assert!(codes.contains(&"duplicate_capability_clip"));
-}
-
-#[test]
-fn swim_capability_emits_move_start_stop_loop_and_packs() {
-    let (manifest, graph) = swim_capability();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
-
-    assert!(core.xml.contains("SwimLocomotionCombatSM"));
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"name\">SwimIdle</hkparam>")
-    );
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"name\">SwimForward</hkparam>")
-    );
-    let idle_transitions = object_containing(&core.xml, "name=\"#0110\"");
-    assert!(
-        idle_transitions.contains("<hkparam name=\"eventId\">6</hkparam>"),
-        "{idle_transitions}"
-    );
-    assert!(idle_transitions.contains("<hkparam name=\"toStateId\">1</hkparam>"));
-    let forward_transitions = object_containing(&core.xml, "name=\"#0111\"");
-    assert!(forward_transitions.contains("<hkparam name=\"eventId\">5</hkparam>"));
-    assert!(forward_transitions.contains("<hkparam name=\"toStateId\">0</hkparam>"));
-    for event in ["moveStart", "moveStop"] {
+        assert!(core.xml.contains("SwimLocomotionCombatSM"));
         assert!(
             core.xml
-                .contains(&format!("<hkcstring>{event}</hkcstring>"))
+                .contains("<hkparam name=\"name\">SwimIdle</hkparam>")
         );
-        assert!(
-            root.xml
-                .contains(&format!("<hkcstring>{event}</hkcstring>"))
-        );
-    }
-    assert_capability_pack_roundtrip(&manifest, &graph);
-}
-
-#[test]
-fn fly_capability_emits_hover_cruise_loop_and_packs() {
-    let (manifest, graph) = fly_capability();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-
-    assert!(core.xml.contains("FlightLocomotionCombatSM"));
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"name\">FlightHover</hkparam>")
-    );
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"name\">FlightCruise</hkparam>")
-    );
-    let hover_transitions = object_containing(&core.xml, "name=\"#0110\"");
-    assert!(hover_transitions.contains("<hkparam name=\"eventId\">6</hkparam>"));
-    let cruise_transitions = object_containing(&core.xml, "name=\"#0111\"");
-    assert!(cruise_transitions.contains("<hkparam name=\"eventId\">5</hkparam>"));
-    assert_capability_pack_roundtrip(&manifest, &graph);
-}
-
-#[test]
-fn stationary_turret_emits_source_rig_direct_at_and_packs() {
-    let (manifest, graph) = stationary_turret_capability();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
-
-    assert!(core.xml.contains("StationaryTurretCombatSM"));
-    assert!(
-        core.xml
-            .contains("class=\"BSDirectAtModifier\" signature=\"0xcda56038\"")
-    );
-    assert!(core.xml.contains("StationaryTurretDirectAtGenerator"));
-    for binding in [
-        "limitHeadingDegreesCCW",
-        "limitHeadingDegreesCW",
-        "active",
-        "sourceBoneIndex",
-        "startBoneIndex",
-        "endBoneIndex",
-    ] {
         assert!(
             core.xml
-                .contains(&format!("<hkparam name=\"memberPath\">{binding}</hkparam>"))
+                .contains("<hkparam name=\"name\">SwimForward</hkparam>")
         );
+        let idle_transitions = object_containing(&core.xml, "name=\"#0110\"");
+        assert!(
+            idle_transitions.contains("<hkparam name=\"eventId\">6</hkparam>"),
+            "{idle_transitions}"
+        );
+        assert!(idle_transitions.contains("<hkparam name=\"toStateId\">1</hkparam>"));
+        let forward_transitions = object_containing(&core.xml, "name=\"#0111\"");
+        assert!(forward_transitions.contains("<hkparam name=\"eventId\">5</hkparam>"));
+        assert!(forward_transitions.contains("<hkparam name=\"toStateId\">0</hkparam>"));
+        for event in ["moveStart", "moveStop"] {
+            assert!(
+                core.xml
+                    .contains(&format!("<hkcstring>{event}</hkcstring>"))
+            );
+            assert!(
+                root.xml
+                    .contains(&format!("<hkcstring>{event}</hkcstring>"))
+            );
+        }
+        assert_capability_pack_roundtrip(&manifest, &graph);
     }
-    for declaration in [
-        "AimHeadingMaxCCW",
-        "AimHeadingMaxCW",
-        "bAimActive",
-        "DirectAtHeadingSourceBoneIndex",
-        "DirectAtHeadingBoneIndex",
-    ] {
+    {
+        let (manifest, graph) = fly_capability();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+
+        assert!(core.xml.contains("FlightLocomotionCombatSM"));
         assert!(
             core.xml
-                .contains(&format!("<hkcstring>{declaration}</hkcstring>"))
+                .contains("<hkparam name=\"name\">FlightHover</hkparam>")
         );
-        assert!(
-            root.xml
-                .contains(&format!("<hkcstring>{declaration}</hkcstring>"))
-        );
-    }
-    assert_capability_pack_roundtrip(&manifest, &graph);
-}
-
-#[test]
-fn robot_continuous_attack_emits_start_loop_stop_lifecycle_and_packs() {
-    let (manifest, graph) = robot_continuous_attack_capability();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-
-    assert!(core.xml.contains("RobotContinuousAttackSM"));
-    let start_clip = object_containing(
-        &core.xml,
-        "<hkparam name=\"name\">ContinuousStart</hkparam>",
-    );
-    let loop_clip = object_containing(&core.xml, "<hkparam name=\"name\">ContinuousLoop</hkparam>");
-    let stop_clip = object_containing(&core.xml, "<hkparam name=\"name\">ContinuousStop</hkparam>");
-    assert!(start_clip.contains("<hkparam name=\"mode\">MODE_SINGLE_PLAY</hkparam>"));
-    assert!(loop_clip.contains("<hkparam name=\"mode\">MODE_LOOPING</hkparam>"));
-    assert!(stop_clip.contains("<hkparam name=\"mode\">MODE_SINGLE_PLAY</hkparam>"));
-    let idle_transitions = object_containing(&core.xml, "name=\"#0110\"");
-    assert!(idle_transitions.contains("<hkparam name=\"eventId\">6</hkparam>"));
-    let start_transitions = object_containing(&core.xml, "name=\"#0111\"");
-    assert!(start_transitions.contains("<hkparam name=\"eventId\">7</hkparam>"));
-    let loop_transitions = object_containing(&core.xml, "name=\"#0112\"");
-    assert!(loop_transitions.contains("<hkparam name=\"eventId\">8</hkparam>"));
-    let stop_transitions = object_containing(&core.xml, "name=\"#0113\"");
-    assert!(stop_transitions.contains("<hkparam name=\"eventId\">-1</hkparam>"));
-    assert!(stop_transitions.contains("<hkparam name=\"flags\">16384</hkparam>"));
-    assert_capability_pack_roundtrip(&manifest, &graph);
-}
-
-#[test]
-fn overlay_capability_emits_event_driven_hkb_layers_and_packs() {
-    let (manifest, graph) = overlay_capability();
-    let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
-
-    assert!(
-        core.xml
-            .contains("class=\"hkbLayerGenerator\" signature=\"0xb4e0c52f\"")
-    );
-    assert_eq!(core.xml.matches("class=\"hkbLayer\"").count(), 2);
-    assert!(core.xml.contains("<hkparam name=\"onEventId\">9</hkparam>"));
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"offEventId\">10</hkparam>")
-    );
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"useMotion\">false</hkparam>")
-    );
-    assert!(
-        core.xml
-            .contains("<hkparam name=\"animationName\">Animations\\glow_overlay.hkx</hkparam>")
-    );
-    for event in ["overlayOn", "overlayOff"] {
         assert!(
             core.xml
-                .contains(&format!("<hkcstring>{event}</hkcstring>"))
+                .contains("<hkparam name=\"name\">FlightCruise</hkparam>")
         );
-        assert!(
-            root.xml
-                .contains(&format!("<hkcstring>{event}</hkcstring>"))
-        );
+        let hover_transitions = object_containing(&core.xml, "name=\"#0110\"");
+        assert!(hover_transitions.contains("<hkparam name=\"eventId\">6</hkparam>"));
+        let cruise_transitions = object_containing(&core.xml, "name=\"#0111\"");
+        assert!(cruise_transitions.contains("<hkparam name=\"eventId\">5</hkparam>"));
+        assert_capability_pack_roundtrip(&manifest, &graph);
     }
-    assert_capability_pack_roundtrip(&manifest, &graph);
 }
 
 #[test]
-fn turret_and_overlay_validation_fail_closed_on_unproven_inputs() {
-    let (mut manifest, graph) = stationary_turret_capability();
-    manifest
-        .core
-        .variables
-        .retain(|variable| variable.name != "bAimActive");
-    manifest.root = manifest.core.clone();
-    let codes = error_codes(manifest.validate_capability_graph(&graph));
-    assert!(codes.contains(&"missing_turret_aim_declaration"));
+fn turret_robot_and_overlay_capabilities_emit_pack_and_fail_closed() {
+    {
+        let (manifest, graph) = stationary_turret_capability();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
 
-    let (mut manifest, mut graph) = overlay_capability();
-    let overlay = graph.overlays.first_mut().unwrap();
-    overlay.stop_event = overlay.start_event.clone();
-    let overlay_clip = manifest
-        .clips
-        .iter_mut()
-        .find(|clip| clip.name == "GlowOverlay")
-        .unwrap();
-    overlay_clip.looping = false;
-    let codes = error_codes(manifest.validate_capability_graph(&graph));
-    assert!(codes.contains(&"overlay_event_collision"));
-    assert!(codes.contains(&"overlay_clip_mode"));
-}
-
-#[test]
-fn emitted_class_signatures_are_gated_by_the_hk2014_registry() {
-    let (manifest, graph) = wolf_mvp();
-    let scaffold = emit_mvp_scaffold(&manifest, &graph).unwrap();
-    for artifact in &scaffold.artifacts {
+        assert!(core.xml.contains("StationaryTurretCombatSM"));
         assert!(
-            validate_fo4_havok_xml_signatures(&artifact.xml).is_ok(),
-            "{} did not match the hk2014 descriptor registry",
-            artifact.source_xml_path
+            core.xml
+                .contains("class=\"BSDirectAtModifier\" signature=\"0xcda56038\"")
         );
+        assert!(core.xml.contains("StationaryTurretDirectAtGenerator"));
+        for binding in [
+            "limitHeadingDegreesCCW",
+            "limitHeadingDegreesCW",
+            "active",
+            "sourceBoneIndex",
+            "startBoneIndex",
+            "endBoneIndex",
+        ] {
+            assert!(
+                core.xml
+                    .contains(&format!("<hkparam name=\"memberPath\">{binding}</hkparam>"))
+            );
+        }
+        for declaration in [
+            "AimHeadingMaxCCW",
+            "AimHeadingMaxCW",
+            "bAimActive",
+            "DirectAtHeadingSourceBoneIndex",
+            "DirectAtHeadingBoneIndex",
+        ] {
+            assert!(
+                core.xml
+                    .contains(&format!("<hkcstring>{declaration}</hkcstring>"))
+            );
+            assert!(
+                root.xml
+                    .contains(&format!("<hkcstring>{declaration}</hkcstring>"))
+            );
+        }
+        assert_capability_pack_roundtrip(&manifest, &graph);
     }
+    {
+        let (manifest, graph) = robot_continuous_attack_capability();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
 
-    let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
-    assert!(
-        core.xml
-            .contains("class=\"hkbStateMachine\" signature=\"0xa5896bcf\"")
-    );
-    let mismatched = core.xml.replacen(
-        "class=\"hkbStateMachine\" signature=\"0xa5896bcf\"",
-        "class=\"hkbStateMachine\" signature=\"0x1913d1c1\"",
-        1,
-    );
-    let mismatch_codes: Vec<&str> = validate_fo4_havok_xml_signatures(&mismatched)
-        .unwrap_err()
-        .0
-        .iter()
-        .map(|error| error.code)
-        .collect();
-    assert!(mismatch_codes.contains(&"havok_signature_mismatch"));
+        assert!(core.xml.contains("RobotContinuousAttackSM"));
+        let start_clip = object_containing(
+            &core.xml,
+            "<hkparam name=\"name\">ContinuousStart</hkparam>",
+        );
+        let loop_clip =
+            object_containing(&core.xml, "<hkparam name=\"name\">ContinuousLoop</hkparam>");
+        let stop_clip =
+            object_containing(&core.xml, "<hkparam name=\"name\">ContinuousStop</hkparam>");
+        assert!(start_clip.contains("<hkparam name=\"mode\">MODE_SINGLE_PLAY</hkparam>"));
+        assert!(loop_clip.contains("<hkparam name=\"mode\">MODE_LOOPING</hkparam>"));
+        assert!(stop_clip.contains("<hkparam name=\"mode\">MODE_SINGLE_PLAY</hkparam>"));
+        let idle_transitions = object_containing(&core.xml, "name=\"#0110\"");
+        assert!(idle_transitions.contains("<hkparam name=\"eventId\">6</hkparam>"));
+        let start_transitions = object_containing(&core.xml, "name=\"#0111\"");
+        assert!(start_transitions.contains("<hkparam name=\"eventId\">7</hkparam>"));
+        let loop_transitions = object_containing(&core.xml, "name=\"#0112\"");
+        assert!(loop_transitions.contains("<hkparam name=\"eventId\">8</hkparam>"));
+        let stop_transitions = object_containing(&core.xml, "name=\"#0113\"");
+        assert!(stop_transitions.contains("<hkparam name=\"eventId\">-1</hkparam>"));
+        assert!(stop_transitions.contains("<hkparam name=\"flags\">16384</hkparam>"));
+        assert_capability_pack_roundtrip(&manifest, &graph);
+    }
+    {
+        let (manifest, graph) = overlay_capability();
+        let scaffold = emit_capability_scaffold(&manifest, &graph).unwrap();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        let root = scaffold.artifact(&manifest.paths.root_behavior).unwrap();
 
-    let unknown = core.xml.replacen(
-        "class=\"hkbClipGenerator\" signature=\"0xd4cc9f6\"",
-        "class=\"B21UnknownGenerator\" signature=\"0xd4cc9f6\"",
-        1,
-    );
-    let unknown_codes: Vec<&str> = validate_fo4_havok_xml_signatures(&unknown)
-        .unwrap_err()
-        .0
-        .iter()
-        .map(|error| error.code)
-        .collect();
-    assert!(unknown_codes.contains(&"unknown_havok_class"));
+        assert!(
+            core.xml
+                .contains("class=\"hkbLayerGenerator\" signature=\"0xb4e0c52f\"")
+        );
+        assert_eq!(core.xml.matches("class=\"hkbLayer\"").count(), 2);
+        assert!(core.xml.contains("<hkparam name=\"onEventId\">9</hkparam>"));
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"offEventId\">10</hkparam>")
+        );
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"useMotion\">false</hkparam>")
+        );
+        assert!(
+            core.xml
+                .contains("<hkparam name=\"animationName\">Animations\\glow_overlay.hkx</hkparam>")
+        );
+        for event in ["overlayOn", "overlayOff"] {
+            assert!(
+                core.xml
+                    .contains(&format!("<hkcstring>{event}</hkcstring>"))
+            );
+            assert!(
+                root.xml
+                    .contains(&format!("<hkcstring>{event}</hkcstring>"))
+            );
+        }
+        assert_capability_pack_roundtrip(&manifest, &graph);
+    }
+    {
+        let (mut manifest, graph) = stationary_turret_capability();
+        manifest
+            .core
+            .variables
+            .retain(|variable| variable.name != "bAimActive");
+        manifest.root = manifest.core.clone();
+        let codes = error_codes(manifest.validate_capability_graph(&graph));
+        assert!(codes.contains(&"missing_turret_aim_declaration"));
+
+        let (mut manifest, mut graph) = overlay_capability();
+        let overlay = graph.overlays.first_mut().unwrap();
+        overlay.stop_event = overlay.start_event.clone();
+        let overlay_clip = manifest
+            .clips
+            .iter_mut()
+            .find(|clip| clip.name == "GlowOverlay")
+            .unwrap();
+        overlay_clip.looping = false;
+        let codes = error_codes(manifest.validate_capability_graph(&graph));
+        assert!(codes.contains(&"overlay_event_collision"));
+        assert!(codes.contains(&"overlay_clip_mode"));
+    }
 }
 
 fn object_containing<'a>(xml: &'a str, needle: &str) -> &'a str {
@@ -2674,191 +2692,121 @@ fn reread_packed_xml(report: &SourceRigPackReport, runtime_path: &str) -> String
 }
 
 #[test]
-fn real_defaults_use_signed_havok_word_encoding() {
-    assert_eq!(VariableValue::Real(1.0).word_bits(), 1_065_353_216);
-    assert_eq!(
-        VariableValue::Real(-1.0).word_bits(),
-        i64::from((-1.0_f32).to_bits() as i32)
-    );
-}
+fn havok_xml_validators_reject_bad_ids_refs_counts_bindings_and_signatures() {
+    {
+        let scaffold = emit_idle_scaffold(&wolf_manifest()).unwrap();
+        let root = scaffold
+            .artifact("Behaviors\\SourceWolfRootBehavior.hkx")
+            .unwrap();
 
-#[test]
-fn root_must_be_the_union_of_child_declarations() {
-    let mut manifest = wolf_manifest();
-    manifest.root.events.remove(0);
-    manifest.root.variables.remove(0);
-    manifest.root.character_properties.clear();
-    let codes = error_codes(manifest.validate());
-    assert_eq!(
-        codes
+        let duplicate = root.xml.replacen("name=\"#0093\"", "name=\"#0092\"", 1);
+        let duplicate_codes: Vec<&str> = validate_havok_xml(&duplicate)
+            .unwrap_err()
+            .0
             .iter()
-            .filter(|code| **code == "root_union_missing")
-            .count(),
-        3
-    );
-}
+            .map(|error| error.code)
+            .collect();
+        assert!(duplicate_codes.contains(&"duplicate_hkobject_id"));
 
-#[test]
-fn melee_attack_events_require_the_engine_prefix() {
-    let mut manifest = wolf_manifest();
-    manifest.core.events[0].name = "Bite".to_string();
-    manifest.root.events[0].name = "Bite".to_string();
-    let codes = error_codes(manifest.validate());
-    assert_eq!(
-        codes
-            .iter()
-            .filter(|code| **code == "melee_event_name")
-            .count(),
-        2
-    );
-}
-
-#[test]
-fn clip_binding_must_target_the_source_rig_contract() {
-    let mut manifest = wolf_manifest();
-    manifest.clips[0].binding.skeleton_path = "CharacterAssets\\DonorSkeleton.hkx".to_string();
-    manifest.clips[0].binding.declared_transform_tracks = 5;
-    manifest.clips[0].binding.transform_track_to_bone_indices = vec![1, 1, 9];
-    let codes = error_codes(manifest.validate());
-    for expected in [
-        "clip_rig_mismatch",
-        "clip_track_count",
-        "duplicate_clip_bone",
-        "clip_bone_index",
-    ] {
-        assert!(
-            codes.contains(&expected),
-            "missing error {expected}: {codes:?}"
+        let dangling = root.xml.replacen(
+            "<hkparam name=\"variant\">#0094</hkparam>",
+            "<hkparam name=\"variant\">#0999</hkparam>",
+            1,
         );
+        let dangling_codes: Vec<&str> = validate_havok_xml(&dangling)
+            .unwrap_err()
+            .0
+            .iter()
+            .map(|error| error.code)
+            .collect();
+        assert!(dangling_codes.contains(&"dangling_hkobject_reference"));
+
+        let bad_count = root.xml.replacen(
+            "<hkparam name=\"eventNames\" numelements=\"2\">",
+            "<hkparam name=\"eventNames\" numelements=\"3\">",
+            1,
+        );
+        let count_codes: Vec<&str> = validate_havok_xml(&bad_count)
+            .unwrap_err()
+            .0
+            .iter()
+            .map(|error| error.code)
+            .collect();
+        assert!(count_codes.contains(&"numelements_mismatch"));
+
+        let misaligned = root.xml.replacen(
+            "<hkparam name=\"eventInfos\" numelements=\"2\">",
+            "<hkparam name=\"eventInfos\" numelements=\"1\">",
+            1,
+        );
+        let alignment_codes: Vec<&str> = validate_havok_xml(&misaligned)
+            .unwrap_err()
+            .0
+            .iter()
+            .map(|error| error.code)
+            .collect();
+        assert!(alignment_codes.contains(&"declaration_array_alignment"));
     }
-}
-
-#[test]
-fn runtime_file_tree_requires_visual_and_animatable_skeletons() {
-    let manifest = wolf_manifest();
-    let available: Vec<String> = manifest
-        .required_runtime_paths()
-        .into_iter()
-        .filter(|path| !path.ends_with("Skeleton.nif"))
-        .collect();
-    let codes = error_codes(manifest.validate_file_tree(&available));
-    assert_eq!(codes, vec!["missing_file"]);
-}
-
-#[test]
-fn xml_validator_rejects_duplicate_ids_dangling_refs_and_bad_counts() {
-    let scaffold = emit_idle_scaffold(&wolf_manifest()).unwrap();
-    let root = scaffold
-        .artifact("Behaviors\\SourceWolfRootBehavior.hkx")
-        .unwrap();
-
-    let duplicate = root.xml.replacen("name=\"#0093\"", "name=\"#0092\"", 1);
-    let duplicate_codes: Vec<&str> = validate_havok_xml(&duplicate)
-        .unwrap_err()
-        .0
-        .iter()
-        .map(|error| error.code)
-        .collect();
-    assert!(duplicate_codes.contains(&"duplicate_hkobject_id"));
-
-    let dangling = root.xml.replacen(
-        "<hkparam name=\"variant\">#0094</hkparam>",
-        "<hkparam name=\"variant\">#0999</hkparam>",
-        1,
-    );
-    let dangling_codes: Vec<&str> = validate_havok_xml(&dangling)
-        .unwrap_err()
-        .0
-        .iter()
-        .map(|error| error.code)
-        .collect();
-    assert!(dangling_codes.contains(&"dangling_hkobject_reference"));
-
-    let bad_count = root.xml.replacen(
-        "<hkparam name=\"eventNames\" numelements=\"2\">",
-        "<hkparam name=\"eventNames\" numelements=\"3\">",
-        1,
-    );
-    let count_codes: Vec<&str> = validate_havok_xml(&bad_count)
-        .unwrap_err()
-        .0
-        .iter()
-        .map(|error| error.code)
-        .collect();
-    assert!(count_codes.contains(&"numelements_mismatch"));
-
-    let misaligned = root.xml.replacen(
-        "<hkparam name=\"eventInfos\" numelements=\"2\">",
-        "<hkparam name=\"eventInfos\" numelements=\"1\">",
-        1,
-    );
-    let alignment_codes: Vec<&str> = validate_havok_xml(&misaligned)
-        .unwrap_err()
-        .0
-        .iter()
-        .map(|error| error.code)
-        .collect();
-    assert!(alignment_codes.contains(&"declaration_array_alignment"));
-}
-
-#[test]
-fn xml_validator_rejects_out_of_range_variable_bindings() {
-    let scaffold = emit_idle_scaffold(&wolf_manifest()).unwrap();
-    let core = scaffold
-        .artifact("Behaviors\\SourceWolfCoreBehavior.hkx")
-        .unwrap();
-    let binding = "    <hkobject name=\"#0096\" class=\"hkbVariableBindingSet\" signature=\"0xe942f339\"><hkparam name=\"bindings\" numelements=\"1\"><hkobject><hkparam name=\"memberPath\">playbackSpeed</hkparam><hkparam name=\"variableIndex\">99</hkparam><hkparam name=\"bitIndex\">255</hkparam><hkparam name=\"bindingType\">BINDING_TYPE_VARIABLE</hkparam></hkobject></hkparam><hkparam name=\"indexOfBindingToEnable\">-1</hkparam></hkobject>\n";
-    let invalid = core
-        .xml
-        .replacen("</hksection>", &format!("{binding}</hksection>"), 1);
-    assert!(invalid.contains("#0096"));
-    let codes: Vec<&str> = validate_havok_xml(&invalid)
-        .unwrap_err()
-        .0
-        .iter()
-        .map(|error| error.code)
-        .collect();
-    assert!(codes.contains(&"binding_index"));
-}
-
-#[test]
-fn tutorial_seeker_and_sentry_xmls_pass_structural_validation_when_present() {
-    let Some(repo_root) = repository_root() else {
-        return;
-    };
-    let relative_paths = [
-        "refs/newcreature/Samples/Sample Behavior - Seeker Mine/Export/SeekerMineProject.xml",
-        "refs/newcreature/Samples/Sample Behavior - Seeker Mine/Export/Characters/SeekerMineCharacter.xml",
-        "refs/newcreature/Samples/Sample Behavior - Seeker Mine/Export/Behaviors/SeekerMineRootBehavior.xml",
-        "refs/newcreature/Samples/Sample Behavior - Seeker Mine/Export/Behaviors/SeekerMineCoreBehavior.xml",
-        "refs/newcreature/Samples/Sample Behavior - Sentry Machinegun Turret/Export/SentryTurretProject.xml",
-        "refs/newcreature/Samples/Sample Behavior - Sentry Machinegun Turret/Export/Characters/SentryTurretCharacter.xml",
-        "refs/newcreature/Samples/Sample Behavior - Sentry Machinegun Turret/Export/Behaviors/SentryTurretRootBehavior.xml",
-        "refs/newcreature/Samples/Sample Behavior - Sentry Machinegun Turret/Export/Behaviors/SentryTurretCoreBehavior.xml",
-    ];
-
-    for relative_path in relative_paths {
-        let path = repo_root.join(relative_path);
-        if !path.is_file() {
-            continue;
+    {
+        let scaffold = emit_idle_scaffold(&wolf_manifest()).unwrap();
+        let core = scaffold
+            .artifact("Behaviors\\SourceWolfCoreBehavior.hkx")
+            .unwrap();
+        let binding = "    <hkobject name=\"#0096\" class=\"hkbVariableBindingSet\" signature=\"0xe942f339\"><hkparam name=\"bindings\" numelements=\"1\"><hkobject><hkparam name=\"memberPath\">playbackSpeed</hkparam><hkparam name=\"variableIndex\">99</hkparam><hkparam name=\"bitIndex\">255</hkparam><hkparam name=\"bindingType\">BINDING_TYPE_VARIABLE</hkparam></hkobject></hkparam><hkparam name=\"indexOfBindingToEnable\">-1</hkparam></hkobject>\n";
+        let invalid = core
+            .xml
+            .replacen("</hksection>", &format!("{binding}</hksection>"), 1);
+        assert!(invalid.contains("#0096"));
+        let codes: Vec<&str> = validate_havok_xml(&invalid)
+            .unwrap_err()
+            .0
+            .iter()
+            .map(|error| error.code)
+            .collect();
+        assert!(codes.contains(&"binding_index"));
+    }
+    {
+        let (manifest, graph) = wolf_mvp();
+        let scaffold = emit_mvp_scaffold(&manifest, &graph).unwrap();
+        for artifact in &scaffold.artifacts {
+            assert!(
+                validate_fo4_havok_xml_signatures(&artifact.xml).is_ok(),
+                "{} did not match the hk2014 descriptor registry",
+                artifact.source_xml_path
+            );
         }
-        let xml = fs::read_to_string(&path).unwrap();
-        let result = validate_havok_xml(&xml);
-        assert!(
-            result.is_ok(),
-            "tutorial sample {} failed validation: {}",
-            path.display(),
-            result.unwrap_err()
-        );
-    }
-}
 
-fn repository_root() -> Option<PathBuf> {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..6 {
-        path = path.parent()?.to_path_buf();
+        let core = scaffold.artifact(&manifest.paths.core_behavior).unwrap();
+        assert!(
+            core.xml
+                .contains("class=\"hkbStateMachine\" signature=\"0xa5896bcf\"")
+        );
+        let mismatched = core.xml.replacen(
+            "class=\"hkbStateMachine\" signature=\"0xa5896bcf\"",
+            "class=\"hkbStateMachine\" signature=\"0x1913d1c1\"",
+            1,
+        );
+        let mismatch_codes: Vec<&str> = validate_fo4_havok_xml_signatures(&mismatched)
+            .unwrap_err()
+            .0
+            .iter()
+            .map(|error| error.code)
+            .collect();
+        assert!(mismatch_codes.contains(&"havok_signature_mismatch"));
+
+        let unknown = core.xml.replacen(
+            "class=\"hkbClipGenerator\" signature=\"0xd4cc9f6\"",
+            "class=\"B21UnknownGenerator\" signature=\"0xd4cc9f6\"",
+            1,
+        );
+        let unknown_codes: Vec<&str> = validate_fo4_havok_xml_signatures(&unknown)
+            .unwrap_err()
+            .0
+            .iter()
+            .map(|error| error.code)
+            .collect();
+        assert!(unknown_codes.contains(&"unknown_havok_class"));
     }
-    Some(path)
 }
 
 fn record_manifest(
@@ -3112,59 +3060,56 @@ fn same_record_api_emits_fnv_gecko_profile_without_source_formkeys() {
 }
 
 #[test]
-fn record_emitter_fails_closed_on_non_mvp_body_segment() {
-    let (rig, graph) = gecko_mvp();
-    let manifest = record_manifest(&rig.creature_name, "B21_CreatureMVP.esp", 0x900);
-    let mut profile = CreatureRecordProfile::root_segment_32("Bip01");
-    profile.root_body_part.geometry_segment_index = 6;
-    let interner = crate::sym::StringInterner::new();
+fn record_emitter_path_and_segment_guards() {
+    {
+        let (rig, graph) = gecko_mvp();
+        let manifest = record_manifest(&rig.creature_name, "B21_CreatureMVP.esp", 0x900);
+        let mut profile = CreatureRecordProfile::root_segment_32("Bip01");
+        profile.root_body_part.geometry_segment_index = 6;
+        let interner = crate::sym::StringInterner::new();
 
-    let error =
-        emit_creature_record_closure(&rig, &graph, &manifest, &profile, &interner).unwrap_err();
-    assert!(matches!(
-        error,
-        CreatureRecordError::UnsupportedField {
-            record: "BPTD",
-            field: "BPND.geometry_segment_index",
-            ..
-        }
-    ));
-}
+        let error =
+            emit_creature_record_closure(&rig, &graph, &manifest, &profile, &interner).unwrap_err();
+        assert!(matches!(
+            error,
+            CreatureRecordError::UnsupportedField {
+                record: "BPTD",
+                field: "BPND.geometry_segment_index",
+                ..
+            }
+        ));
+    }
+    {
+        let (rig, graph) = gecko_mvp();
+        let manifest = record_manifest(&rig.creature_name, "FalloutNV.esm", 0x900);
+        let profile = CreatureRecordProfile::root_segment_32("Bip01");
+        let interner = crate::sym::StringInterner::new();
 
-#[test]
-fn record_emitter_accepts_same_named_converted_output_plugin() {
-    let (rig, graph) = gecko_mvp();
-    let manifest = record_manifest(&rig.creature_name, "FalloutNV.esm", 0x900);
-    let profile = CreatureRecordProfile::root_segment_32("Bip01");
-    let interner = crate::sym::StringInterner::new();
+        let closure =
+            emit_creature_record_closure(&rig, &graph, &manifest, &profile, &interner).unwrap();
+        assert!(
+            closure.records.iter().all(|record| {
+                interner.resolve(record.form_key.plugin) == Some("FalloutNV.esm")
+            })
+        );
+    }
+    {
+        let (rig, graph) = wolf_mvp();
+        let mut manifest = record_manifest(&rig.creature_name, "B21_CreatureMVP.esp", 0x800);
+        manifest.body_nif = "Actors\\Molerat\\Molerat.xml".to_string();
+        let profile = CreatureRecordProfile::root_segment_32("NPC Root [Root]");
+        let interner = crate::sym::StringInterner::new();
 
-    let closure =
-        emit_creature_record_closure(&rig, &graph, &manifest, &profile, &interner).unwrap();
-    assert!(
-        closure
-            .records
-            .iter()
-            .all(|record| { interner.resolve(record.form_key.plugin) == Some("FalloutNV.esm") })
-    );
-}
-
-#[test]
-fn record_emitter_rejects_authoring_or_out_of_tree_runtime_paths() {
-    let (rig, graph) = wolf_mvp();
-    let mut manifest = record_manifest(&rig.creature_name, "B21_CreatureMVP.esp", 0x800);
-    manifest.body_nif = "Actors\\Molerat\\Molerat.xml".to_string();
-    let profile = CreatureRecordProfile::root_segment_32("NPC Root [Root]");
-    let interner = crate::sym::StringInterner::new();
-
-    let error =
-        emit_creature_record_closure(&rig, &graph, &manifest, &profile, &interner).unwrap_err();
-    assert!(matches!(
-        error,
-        CreatureRecordError::InvalidManifest {
-            code: "custom_runtime_path",
-            ..
-        }
-    ));
+        let error =
+            emit_creature_record_closure(&rig, &graph, &manifest, &profile, &interner).unwrap_err();
+        assert!(matches!(
+            error,
+            CreatureRecordError::InvalidManifest {
+                code: "custom_runtime_path",
+                ..
+            }
+        ));
+    }
 }
 
 fn source_identity(namespace: &str, plugin: &str, local_form_id: u32) -> SourceCreatureIdentity {
@@ -3618,42 +3563,42 @@ fn multipart_body_recipe_preserves_ordered_armatures_and_closure() {
 }
 
 #[test]
-fn recipe_v1_migrates_only_legacy_single_body_projection() {
-    let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    let mut legacy = serde_json::to_value(&recipe).unwrap();
-    legacy["version"] = serde_json::json!(1);
-    legacy["projection"]
-        .as_object_mut()
-        .unwrap()
-        .remove("body_nif_parts");
-    legacy["key_plan"]
-        .as_object_mut()
-        .unwrap()
-        .remove("armor_addons");
-    let migrated = SourceRigExecutableRecipe::from_json(&legacy.to_string()).unwrap();
-    assert_eq!(migrated.version, SOURCE_RIG_RECIPE_VERSION);
-    assert_eq!(migrated.projection.body_nif_parts.len(), 1);
-    assert_eq!(migrated.key_plan.armor_addons.len(), 1);
+fn legacy_recipe_versions_migrate_to_current() {
+    {
+        let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        let mut legacy = serde_json::to_value(&recipe).unwrap();
+        legacy["version"] = serde_json::json!(1);
+        legacy["projection"]
+            .as_object_mut()
+            .unwrap()
+            .remove("body_nif_parts");
+        legacy["key_plan"]
+            .as_object_mut()
+            .unwrap()
+            .remove("armor_addons");
+        let migrated = SourceRigExecutableRecipe::from_json(&legacy.to_string()).unwrap();
+        assert_eq!(migrated.version, SOURCE_RIG_RECIPE_VERSION);
+        assert_eq!(migrated.projection.body_nif_parts.len(), 1);
+        assert_eq!(migrated.key_plan.armor_addons.len(), 1);
 
-    let mut ambiguous = serde_json::to_value(multipart_executable_recipe_fixture()).unwrap();
-    ambiguous["version"] = serde_json::json!(1);
-    assert!(matches!(
-        SourceRigExecutableRecipe::from_json(&ambiguous.to_string()),
-        Err(SourceRigRecipeError::Invalid {
-            code: "legacy_multipart_recipe",
-            ..
-        })
-    ));
-}
-
-#[test]
-fn recipe_v7_with_named_expression_array_migrates_to_v8() {
-    let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    let mut legacy = serde_json::to_value(&recipe).unwrap();
-    legacy["version"] = serde_json::json!(7);
-    let migrated = SourceRigExecutableRecipe::from_json(&legacy.to_string()).unwrap();
-    assert_eq!(migrated.version, SOURCE_RIG_RECIPE_VERSION);
-    assert_eq!(migrated.graph, recipe.graph);
+        let mut ambiguous = serde_json::to_value(multipart_executable_recipe_fixture()).unwrap();
+        ambiguous["version"] = serde_json::json!(1);
+        assert!(matches!(
+            SourceRigExecutableRecipe::from_json(&ambiguous.to_string()),
+            Err(SourceRigRecipeError::Invalid {
+                code: "legacy_multipart_recipe",
+                ..
+            })
+        ));
+    }
+    {
+        let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        let mut legacy = serde_json::to_value(&recipe).unwrap();
+        legacy["version"] = serde_json::json!(7);
+        let migrated = SourceRigExecutableRecipe::from_json(&legacy.to_string()).unwrap();
+        assert_eq!(migrated.version, SOURCE_RIG_RECIPE_VERSION);
+        assert_eq!(migrated.graph, recipe.graph);
+    }
 }
 
 fn execution_xml_escape(value: &str) -> String {
@@ -4553,268 +4498,359 @@ fn runtime_model_closure_is_recipe_bound_and_staged_with_execution() {
 }
 
 #[test]
-fn bridge_rejects_mismatch_tamper_and_missing_evidence_before_recipe_output() {
-    let temp = tempfile::tempdir().unwrap();
-    let (input, _, _) =
-        bridged_recipe_input(&["skyrimse"], "skyrimse_creature_recipe_v1", temp.path());
+fn bridge_rejects_mismatch_tamper_missing_evidence_and_arbitrary_closure_hash() {
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let (input, _, _) =
+            bridged_recipe_input(&["skyrimse"], "skyrimse_creature_recipe_v1", temp.path());
 
-    let mut root_mismatch = input.clone();
-    root_mismatch.selected_family.actual_root_bone =
-        root_mismatch.rig.animation_skeleton.bones[1].name.clone();
-    assert!(matches!(
-        build_source_rig_executable_recipe(root_mismatch),
-        Err(SourceRigBridgeError::Invalid {
-            code: "family_root",
-            ..
-        })
-    ));
+        let mut root_mismatch = input.clone();
+        root_mismatch.selected_family.actual_root_bone =
+            root_mismatch.rig.animation_skeleton.bones[1].name.clone();
+        assert!(matches!(
+            build_source_rig_executable_recipe(root_mismatch),
+            Err(SourceRigBridgeError::Invalid {
+                code: "family_root",
+                ..
+            })
+        ));
 
-    let mut ledger_tamper = input.clone();
-    ledger_tamper.pair_ledger.canonical_json.push(' ');
-    assert!(matches!(
-        build_source_rig_executable_recipe(ledger_tamper),
-        Err(SourceRigBridgeError::Invalid {
-            code: "pair_ledger_hash",
-            ..
-        })
-    ));
+        let mut ledger_tamper = input.clone();
+        ledger_tamper.pair_ledger.canonical_json.push(' ');
+        assert!(matches!(
+            build_source_rig_executable_recipe(ledger_tamper),
+            Err(SourceRigBridgeError::Invalid {
+                code: "pair_ledger_hash",
+                ..
+            })
+        ));
 
-    let mut missing_artifact = input.clone();
-    missing_artifact.artifact_receipts.pop();
-    assert!(matches!(
-        build_source_rig_executable_recipe(missing_artifact),
-        Err(SourceRigBridgeError::Invalid {
-            code: "converted_artifact_closure",
-            ..
-        })
-    ));
+        let mut missing_artifact = input.clone();
+        missing_artifact.artifact_receipts.pop();
+        assert!(matches!(
+            build_source_rig_executable_recipe(missing_artifact),
+            Err(SourceRigBridgeError::Invalid {
+                code: "converted_artifact_closure",
+                ..
+            })
+        ));
 
-    let mut closure_path_tamper = input.clone();
-    closure_path_tamper
-        .selected_family
-        .visual_creature_closure_target_path
-        .push_str(".tampered");
-    closure_path_tamper.field_receipts =
-        closure_path_tamper.required_field_receipts_from_policy("bridge_policy_v1");
-    assert!(matches!(
-        build_source_rig_executable_recipe(closure_path_tamper),
-        Err(SourceRigBridgeError::Invalid {
-            code: "creature_closure_path",
-            ..
-        })
-    ));
+        let mut closure_path_tamper = input.clone();
+        closure_path_tamper
+            .selected_family
+            .visual_creature_closure_target_path
+            .push_str(".tampered");
+        closure_path_tamper.field_receipts =
+            closure_path_tamper.required_field_receipts_from_policy("bridge_policy_v1");
+        assert!(matches!(
+            build_source_rig_executable_recipe(closure_path_tamper),
+            Err(SourceRigBridgeError::Invalid {
+                code: "creature_closure_path",
+                ..
+            })
+        ));
 
-    let mut missing_closure_request = input.clone();
-    missing_closure_request
-        .creature_closure_request_blake3
-        .clear();
-    missing_closure_request.field_receipts =
-        missing_closure_request.required_field_receipts_from_policy("bridge_policy_v1");
-    assert!(matches!(
-        build_source_rig_executable_recipe(missing_closure_request),
-        Err(SourceRigBridgeError::Invalid {
-            code: "creature_closure_identity",
-            ..
-        })
-    ));
+        let mut missing_closure_request = input.clone();
+        missing_closure_request
+            .creature_closure_request_blake3
+            .clear();
+        missing_closure_request.field_receipts =
+            missing_closure_request.required_field_receipts_from_policy("bridge_policy_v1");
+        assert!(matches!(
+            build_source_rig_executable_recipe(missing_closure_request),
+            Err(SourceRigBridgeError::Invalid {
+                code: "creature_closure_identity",
+                ..
+            })
+        ));
 
-    let mut missing_field = input;
-    missing_field
-        .field_receipts
-        .retain(|receipt| receipt.field != "emitted.bptd.geometry_segment_index");
-    assert!(matches!(
-        build_source_rig_executable_recipe(missing_field),
-        Err(SourceRigBridgeError::Recipe(_))
-    ));
-}
-
-#[test]
-fn bridge_rejects_arbitrary_closure_request_hash() {
-    let temp = tempfile::tempdir().unwrap();
-    let (mut input, _, _) =
-        bridged_recipe_input(&["skyrimse"], "skyrimse_creature_recipe_v1", temp.path());
-    input.creature_closure_request_blake3 = blake3::hash(b"arbitrary-but-well-formed-request")
-        .to_hex()
-        .to_string();
-    input.field_receipts = input.required_field_receipts_from_policy("bridge_policy_v1");
-    assert!(matches!(
-        build_source_rig_executable_recipe(input),
-        Err(SourceRigBridgeError::Invalid {
-            code: "creature_closure_identity",
-            ..
-        })
-    ));
-}
-
-#[test]
-fn bridge_nonmelee_evidence_does_not_create_a_phantom_weap() {
-    let temp = tempfile::tempdir().unwrap();
-    let (mut input, _, _) =
-        bridged_recipe_input(&["fnv", "fo3"], "fnvfo3_creature_recipe_v1", temp.path());
-    input.graph.template = CreatureGraphTemplate::GroundRangedProjectile;
-    let attack_role = input
-        .graph
-        .roles
-        .iter_mut()
-        .find(|role| role.role == CreatureClipRole::MeleeAttack)
-        .unwrap();
-    attack_role.role = CreatureClipRole::ProjectileAttack;
-    let attack_event = attack_role.trigger_event.clone().unwrap();
-    input
-        .graph
-        .explicit_events
-        .iter_mut()
-        .find(|event| event.name == attack_event)
-        .unwrap()
-        .usage = EventUsage::Generic;
-    for declarations in [&mut input.rig.root, &mut input.rig.core] {
-        declarations
-            .events
-            .iter_mut()
-            .find(|event| event.name == attack_event)
-            .unwrap()
-            .usage = EventUsage::Generic;
+        let mut missing_field = input;
+        missing_field
+            .field_receipts
+            .retain(|receipt| receipt.field != "emitted.bptd.geometry_segment_index");
+        assert!(matches!(
+            build_source_rig_executable_recipe(missing_field),
+            Err(SourceRigBridgeError::Recipe(_))
+        ));
     }
-    let spell =
-        CreatureTargetRecordReference::new("SPEL", TargetFormKey::new(0x2D0, "Fallout4.esm"));
-    input.projection.attacks[0].projection = CreatureAttackRecordProjection::SpellAbility {
-        spell: spell.clone(),
-    };
-    input.key_plan.melee_attacks.clear();
-    input.key_plan.base.unarmed_weapon = TargetFormKey::new(0, "B21_CreatureRecipe.esp");
-    input.projection.base.form_keys.unarmed_weapon = input.key_plan.base.unarmed_weapon.clone();
-    input.batch_intent.required_target_records = vec![spell];
-    input.selected_family.graph = input.graph.clone();
-    input.field_receipts = input.required_field_receipts_from_policy("bridge_policy_v1");
-
-    let recipe = build_source_rig_executable_recipe(input).unwrap();
-    let closure = recipe
-        .rebuild_projection_closure(&crate::sym::StringInterner::new())
-        .unwrap();
-    assert!(
-        !closure
-            .closure
-            .records
-            .iter()
-            .any(|record| record.sig.as_str() == "WEAP")
-    );
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut input, _, _) =
+            bridged_recipe_input(&["skyrimse"], "skyrimse_creature_recipe_v1", temp.path());
+        input.creature_closure_request_blake3 = blake3::hash(b"arbitrary-but-well-formed-request")
+            .to_hex()
+            .to_string();
+        input.field_receipts = input.required_field_receipts_from_policy("bridge_policy_v1");
+        assert!(matches!(
+            build_source_rig_executable_recipe(input),
+            Err(SourceRigBridgeError::Invalid {
+                code: "creature_closure_identity",
+                ..
+            })
+        ));
+    }
 }
 
 #[test]
-fn prepared_execution_rejects_missing_bridge_without_output() {
-    let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    assert!(recipe.bridge_receipt.is_none());
-    let temp = tempfile::tempdir().unwrap();
-    let recipe_path = temp.path().join("unbridged-recipe.json");
-    fs::write(&recipe_path, recipe.canonical_json().unwrap()).unwrap();
-    let closure = execution_nif_closure(&recipe, &temp.path().join("nif-closure"));
-    let stage = temp.path().join("missing-bridge-stage");
+fn prepared_execution_rejects_missing_wrong_and_tampered_inputs_without_output() {
+    {
+        let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        assert!(recipe.bridge_receipt.is_none());
+        let temp = tempfile::tempdir().unwrap();
+        let recipe_path = temp.path().join("unbridged-recipe.json");
+        fs::write(&recipe_path, recipe.canonical_json().unwrap()).unwrap();
+        let closure = execution_nif_closure(&recipe, &temp.path().join("nif-closure"));
+        let stage = temp.path().join("missing-bridge-stage");
 
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &recipe_path,
-            &[],
-            &closure,
-            &stage,
-            &crate::sym::StringInterner::new(),
-        ),
-        Err(SourceRigExecutionError::MissingBridgeReceipt)
-    ));
-    assert!(!stage.exists());
-}
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &recipe_path,
+                &[],
+                &closure,
+                &stage,
+                &crate::sym::StringInterner::new(),
+            ),
+            Err(SourceRigExecutionError::MissingBridgeReceipt)
+        ));
+        assert!(!stage.exists());
+    }
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let base = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        let closure = execution_nif_closure(&base, &temp.path().join("nif-closure"));
+        let interner = crate::sym::StringInterner::new();
 
-#[test]
-fn prepared_execution_rejects_wrong_valid_skeleton_and_clip_without_output() {
-    let temp = tempfile::tempdir().unwrap();
-    let base = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    let closure = execution_nif_closure(&base, &temp.path().join("nif-closure"));
-    let interner = crate::sym::StringInterner::new();
-
-    let mut skeleton_artifacts = execution_artifacts(&base, &temp.path().join("wrong-skeleton"));
-    let mut wrong_skeleton_recipe = base.clone();
-    wrong_skeleton_recipe.rig.animation_skeleton.runtime_name =
-        "DifferentButValidRuntimeSkeleton".to_string();
-    let wrong_skeleton = execution_fixture_skeleton(&wrong_skeleton_recipe);
-    let skeleton = skeleton_artifacts
-        .iter_mut()
-        .find(|artifact| artifact.receipt.role == SourceRigArtifactRole::AnimationSkeleton)
-        .unwrap();
-    fs::write(&skeleton.path, &wrong_skeleton).unwrap();
-    skeleton.receipt.byte_len = wrong_skeleton.len() as u64;
-    skeleton.receipt.blake3 = blake3::hash(&wrong_skeleton).to_hex().to_string();
-    let skeleton_recipe = bind_execution_recipe(base.clone(), &skeleton_artifacts, &closure);
-    let skeleton_recipe_path = temp.path().join("wrong-skeleton-recipe.json");
-    fs::write(
-        &skeleton_recipe_path,
-        skeleton_recipe.canonical_json().unwrap(),
-    )
-    .unwrap();
-    let skeleton_stage = temp.path().join("wrong-skeleton-stage");
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &skeleton_recipe_path,
-            &skeleton_artifacts,
-            &closure,
-            &skeleton_stage,
-            &interner,
-        ),
-        Err(SourceRigExecutionError::Artifact {
-            code: "skeleton_semantics",
-            ..
-        })
-    ));
-    assert!(!skeleton_stage.exists());
-
-    let mut clip_artifacts = execution_artifacts(&base, &temp.path().join("wrong-clip"));
-    let clip_name = clip_artifacts
-        .iter()
-        .find_map(|artifact| match &artifact.receipt.role {
-            SourceRigArtifactRole::AnimationClip { clip_name } => Some(clip_name.clone()),
-            _ => None,
-        })
-        .unwrap();
-    let mut wrong_clip_recipe = base.clone();
-    let wrong_clip_decl = {
-        let declaration = wrong_clip_recipe
-            .rig
-            .clips
+        let mut skeleton_artifacts =
+            execution_artifacts(&base, &temp.path().join("wrong-skeleton"));
+        let mut wrong_skeleton_recipe = base.clone();
+        wrong_skeleton_recipe.rig.animation_skeleton.runtime_name =
+            "DifferentButValidRuntimeSkeleton".to_string();
+        let wrong_skeleton = execution_fixture_skeleton(&wrong_skeleton_recipe);
+        let skeleton = skeleton_artifacts
             .iter_mut()
-            .find(|clip| clip.name == clip_name)
+            .find(|artifact| artifact.receipt.role == SourceRigArtifactRole::AnimationSkeleton)
             .unwrap();
-        declaration.binding.original_skeleton_name = "DifferentValidSourceSkeleton".to_string();
-        declaration.clone()
-    };
-    let wrong_clip = execution_fixture_clip(&wrong_clip_recipe, &wrong_clip_decl);
-    let clip = clip_artifacts
-        .iter_mut()
-        .find(|artifact| {
-            matches!(
-                &artifact.receipt.role,
-                SourceRigArtifactRole::AnimationClip { clip_name: name } if name == &clip_name
-            )
-        })
+        fs::write(&skeleton.path, &wrong_skeleton).unwrap();
+        skeleton.receipt.byte_len = wrong_skeleton.len() as u64;
+        skeleton.receipt.blake3 = blake3::hash(&wrong_skeleton).to_hex().to_string();
+        let skeleton_recipe = bind_execution_recipe(base.clone(), &skeleton_artifacts, &closure);
+        let skeleton_recipe_path = temp.path().join("wrong-skeleton-recipe.json");
+        fs::write(
+            &skeleton_recipe_path,
+            skeleton_recipe.canonical_json().unwrap(),
+        )
         .unwrap();
-    fs::write(&clip.path, &wrong_clip).unwrap();
-    clip.receipt.byte_len = wrong_clip.len() as u64;
-    clip.receipt.blake3 = blake3::hash(&wrong_clip).to_hex().to_string();
-    let clip_recipe = bind_execution_recipe(base, &clip_artifacts, &closure);
-    let clip_recipe_path = temp.path().join("wrong-clip-recipe.json");
-    fs::write(&clip_recipe_path, clip_recipe.canonical_json().unwrap()).unwrap();
-    let clip_stage = temp.path().join("wrong-clip-stage");
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &clip_recipe_path,
-            &clip_artifacts,
-            &closure,
-            &clip_stage,
-            &interner,
-        ),
-        Err(SourceRigExecutionError::Artifact {
-            code: "clip_semantics",
-            ..
-        })
-    ));
-    assert!(!clip_stage.exists());
+        let skeleton_stage = temp.path().join("wrong-skeleton-stage");
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &skeleton_recipe_path,
+                &skeleton_artifacts,
+                &closure,
+                &skeleton_stage,
+                &interner,
+            ),
+            Err(SourceRigExecutionError::Artifact {
+                code: "skeleton_semantics",
+                ..
+            })
+        ));
+        assert!(!skeleton_stage.exists());
+
+        let mut clip_artifacts = execution_artifacts(&base, &temp.path().join("wrong-clip"));
+        let clip_name = clip_artifacts
+            .iter()
+            .find_map(|artifact| match &artifact.receipt.role {
+                SourceRigArtifactRole::AnimationClip { clip_name } => Some(clip_name.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let mut wrong_clip_recipe = base.clone();
+        let wrong_clip_decl = {
+            let declaration = wrong_clip_recipe
+                .rig
+                .clips
+                .iter_mut()
+                .find(|clip| clip.name == clip_name)
+                .unwrap();
+            declaration.binding.original_skeleton_name = "DifferentValidSourceSkeleton".to_string();
+            declaration.clone()
+        };
+        let wrong_clip = execution_fixture_clip(&wrong_clip_recipe, &wrong_clip_decl);
+        let clip = clip_artifacts
+            .iter_mut()
+            .find(|artifact| {
+                matches!(
+                    &artifact.receipt.role,
+                    SourceRigArtifactRole::AnimationClip { clip_name: name } if name == &clip_name
+                )
+            })
+            .unwrap();
+        fs::write(&clip.path, &wrong_clip).unwrap();
+        clip.receipt.byte_len = wrong_clip.len() as u64;
+        clip.receipt.blake3 = blake3::hash(&wrong_clip).to_hex().to_string();
+        let clip_recipe = bind_execution_recipe(base, &clip_artifacts, &closure);
+        let clip_recipe_path = temp.path().join("wrong-clip-recipe.json");
+        fs::write(&clip_recipe_path, clip_recipe.canonical_json().unwrap()).unwrap();
+        let clip_stage = temp.path().join("wrong-clip-stage");
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &clip_recipe_path,
+                &clip_artifacts,
+                &closure,
+                &clip_stage,
+                &interner,
+            ),
+            Err(SourceRigExecutionError::Artifact {
+                code: "clip_semantics",
+                ..
+            })
+        ));
+        assert!(!clip_stage.exists());
+    }
+    {
+        let base = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        let temp = tempfile::tempdir().unwrap();
+        let mut artifacts = execution_artifacts(&base, &temp.path().join("inputs"));
+        let closure = execution_nif_closure(&base, &temp.path().join("nif-closure"));
+        let recipe = bind_execution_recipe(base, &artifacts, &closure);
+        let recipe_path = temp.path().join("recipe.json");
+        fs::write(&recipe_path, recipe.canonical_json().unwrap()).unwrap();
+        let missing = artifacts.pop().unwrap();
+        let missing_stage = temp.path().join("missing-stage");
+        let interner = crate::sym::StringInterner::new();
+
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &recipe_path,
+                &artifacts,
+                &closure,
+                &missing_stage,
+                &interner
+            ),
+            Err(SourceRigExecutionError::Artifact {
+                code: "missing_artifact",
+                ..
+            })
+        ));
+        assert!(!missing_stage.exists());
+
+        artifacts.push(missing);
+        fs::write(&artifacts[0].path, b"tampered").unwrap();
+        let tampered_stage = temp.path().join("tampered-stage");
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &recipe_path,
+                &artifacts,
+                &closure,
+                &tampered_stage,
+                &interner
+            ),
+            Err(SourceRigExecutionError::Artifact {
+                code: "artifact_content_mismatch",
+                ..
+            })
+        ));
+        assert!(!tampered_stage.exists());
+
+        let closure_receipt =
+            nif_core_native::creature_closure::CreatureClosureReceipt::parse_and_validate(
+                &closure.receipt_json,
+            )
+            .unwrap();
+        let nif = closure_receipt
+            .artifacts
+            .iter()
+            .find(|artifact| {
+                artifact.kind == nif_core_native::creature_closure::CreatureArtifactKind::Nif
+            })
+            .unwrap();
+        let nif_path = nif
+            .target_data_relative_path
+            .split('/')
+            .fold(closure.staged_data_root.clone(), |path, part| {
+                path.join(part)
+            });
+        fs::write(nif_path, b"fake NIF").unwrap();
+        let closure_stage = temp.path().join("closure-stage");
+        let fresh_artifacts = execution_artifacts(&recipe, &temp.path().join("fresh-inputs"));
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &recipe_path,
+                &fresh_artifacts,
+                &closure,
+                &closure_stage,
+                &interner
+            ),
+            Err(SourceRigExecutionError::Artifact {
+                code: "creature_closure_content_mismatch",
+                ..
+            })
+        ));
+        assert!(!closure_stage.exists());
+    }
+    {
+        use nif_core_native::creature_closure::{CreatureArtifactKind, CreatureClosureReceipt};
+
+        let base = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        let temp = tempfile::tempdir().unwrap();
+        let artifacts = execution_artifacts(&base, &temp.path().join("inputs"));
+        let closure = execution_nif_closure_with_material(&base, &temp.path().join("nif-closure"));
+        let recipe = bind_execution_recipe(base, &artifacts, &closure);
+        let recipe_path = temp.path().join("recipe.json");
+        fs::write(&recipe_path, recipe.canonical_json().unwrap()).unwrap();
+        let receipt = CreatureClosureReceipt::parse_and_validate(&closure.receipt_json).unwrap();
+        let material = receipt
+            .artifacts
+            .iter()
+            .find(|artifact| {
+                matches!(
+                    artifact.kind,
+                    CreatureArtifactKind::Bgsm | CreatureArtifactKind::Bgem
+                )
+            })
+            .unwrap();
+        let material_path = material
+            .target_data_relative_path
+            .split('/')
+            .fold(closure.staged_data_root.clone(), |path, part| {
+                path.join(part)
+            });
+        fs::remove_file(material_path).unwrap();
+        let missing_material_stage = temp.path().join("missing-material-stage");
+        let interner = crate::sym::StringInterner::new();
+        assert!(
+            prepare_source_rig_execution(
+                &recipe_path,
+                &artifacts,
+                &closure,
+                &missing_material_stage,
+                &interner,
+            )
+            .is_err()
+        );
+        assert!(!missing_material_stage.exists());
+
+        let mut tampered_closure =
+            execution_nif_closure(&recipe, &temp.path().join("tampered-closure"));
+        tampered_closure.receipt_json = tampered_closure
+            .receipt_json
+            .replace("\"target_game\":\"fo4\"", "\"target_game\":\"fnv\"");
+        let tampered_receipt_stage = temp.path().join("tampered-receipt-stage");
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &recipe_path,
+                &artifacts,
+                &tampered_closure,
+                &tampered_receipt_stage,
+                &interner,
+            ),
+            Err(SourceRigExecutionError::Artifact {
+                code: "invalid_creature_closure_receipt",
+                ..
+            })
+        ));
+        assert!(!tampered_receipt_stage.exists());
+    }
 }
 
 #[test]
@@ -4867,375 +4903,229 @@ fn prepared_execution_is_private_complete_and_deterministic() {
 }
 
 #[test]
-fn prepared_execution_rejects_missing_and_tampered_artifacts_without_output() {
-    let base = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    let temp = tempfile::tempdir().unwrap();
-    let mut artifacts = execution_artifacts(&base, &temp.path().join("inputs"));
-    let closure = execution_nif_closure(&base, &temp.path().join("nif-closure"));
-    let recipe = bind_execution_recipe(base, &artifacts, &closure);
-    let recipe_path = temp.path().join("recipe.json");
-    fs::write(&recipe_path, recipe.canonical_json().unwrap()).unwrap();
-    let missing = artifacts.pop().unwrap();
-    let missing_stage = temp.path().join("missing-stage");
-    let interner = crate::sym::StringInterner::new();
+fn source_owned_ragdoll_recipe_is_required_and_mismatches_fail_without_staging() {
+    {
+        let mut recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        recipe.rig = with_source_owned_ragdoll(recipe.rig);
+        let ragdoll = execution_fixture_ragdoll(&recipe);
+        if let RagdollDisposition::SourceOwned { receipt, .. } = &mut recipe.rig.ragdoll {
+            receipt.byte_len = ragdoll.len() as u64;
+            receipt.blake3 = blake3::hash(&ragdoll).to_hex().to_string();
+        }
+        recipe.field_receipts =
+            SourceRigExecutableRecipe::required_field_receipts_from_source_for_intent(
+                &recipe.rig,
+                &recipe.graph,
+                &recipe.projection,
+                &recipe.key_plan,
+                &recipe.batch_intent,
+                recipe.bridge_receipt.as_ref(),
+                "fallout_new_vegas",
+            );
+        let json = recipe.canonical_json().unwrap();
+        let loaded = SourceRigExecutableRecipe::from_json(&json).unwrap();
+        assert!(matches!(
+            loaded.rig.ragdoll,
+            RagdollDisposition::SourceOwned { .. }
+        ));
 
-    assert!(matches!(
-        prepare_source_rig_execution(
+        let temp = tempfile::tempdir().unwrap();
+        let mut artifacts = execution_artifacts(&loaded, &temp.path().join("inputs"));
+        let closure = execution_nif_closure(&loaded, &temp.path().join("nif-closure"));
+        let loaded = bind_execution_recipe(loaded, &artifacts, &closure);
+        let recipe_path = temp.path().join("recipe.json");
+        fs::write(&recipe_path, loaded.canonical_json().unwrap()).unwrap();
+        artifacts.retain(|artifact| artifact.receipt.role != SourceRigArtifactRole::Ragdoll);
+        let stage = temp.path().join("private-stage");
+        let interner = crate::sym::StringInterner::new();
+        assert!(matches!(
+            prepare_source_rig_execution(&recipe_path, &artifacts, &closure, &stage, &interner),
+            Err(SourceRigExecutionError::Artifact {
+                code: "missing_artifact",
+                ..
+            })
+        ));
+        assert!(!stage.exists());
+
+        let complete = execution_artifacts(&loaded, &temp.path().join("complete-inputs"));
+        let prepared = prepare_source_rig_execution(
             &recipe_path,
-            &artifacts,
+            &complete,
             &closure,
-            &missing_stage,
-            &interner
-        ),
-        Err(SourceRigExecutionError::Artifact {
-            code: "missing_artifact",
-            ..
-        })
-    ));
-    assert!(!missing_stage.exists());
-
-    artifacts.push(missing);
-    fs::write(&artifacts[0].path, b"tampered").unwrap();
-    let tampered_stage = temp.path().join("tampered-stage");
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &recipe_path,
-            &artifacts,
-            &closure,
-            &tampered_stage,
-            &interner
-        ),
-        Err(SourceRigExecutionError::Artifact {
-            code: "artifact_content_mismatch",
-            ..
-        })
-    ));
-    assert!(!tampered_stage.exists());
-
-    let closure_receipt =
-        nif_core_native::creature_closure::CreatureClosureReceipt::parse_and_validate(
-            &closure.receipt_json,
-        )
-        .unwrap();
-    let nif = closure_receipt
-        .artifacts
-        .iter()
-        .find(|artifact| {
-            artifact.kind == nif_core_native::creature_closure::CreatureArtifactKind::Nif
-        })
-        .unwrap();
-    let nif_path = nif
-        .target_data_relative_path
-        .split('/')
-        .fold(closure.staged_data_root.clone(), |path, part| {
-            path.join(part)
-        });
-    fs::write(nif_path, b"fake NIF").unwrap();
-    let closure_stage = temp.path().join("closure-stage");
-    let fresh_artifacts = execution_artifacts(&recipe, &temp.path().join("fresh-inputs"));
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &recipe_path,
-            &fresh_artifacts,
-            &closure,
-            &closure_stage,
-            &interner
-        ),
-        Err(SourceRigExecutionError::Artifact {
-            code: "creature_closure_content_mismatch",
-            ..
-        })
-    ));
-    assert!(!closure_stage.exists());
-}
-
-#[test]
-fn prepared_execution_rejects_missing_material_and_tampered_closure_without_output() {
-    use nif_core_native::creature_closure::{CreatureArtifactKind, CreatureClosureReceipt};
-
-    let base = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    let temp = tempfile::tempdir().unwrap();
-    let artifacts = execution_artifacts(&base, &temp.path().join("inputs"));
-    let closure = execution_nif_closure_with_material(&base, &temp.path().join("nif-closure"));
-    let recipe = bind_execution_recipe(base, &artifacts, &closure);
-    let recipe_path = temp.path().join("recipe.json");
-    fs::write(&recipe_path, recipe.canonical_json().unwrap()).unwrap();
-    let receipt = CreatureClosureReceipt::parse_and_validate(&closure.receipt_json).unwrap();
-    let material = receipt
-        .artifacts
-        .iter()
-        .find(|artifact| {
-            matches!(
-                artifact.kind,
-                CreatureArtifactKind::Bgsm | CreatureArtifactKind::Bgem
-            )
-        })
-        .unwrap();
-    let material_path = material
-        .target_data_relative_path
-        .split('/')
-        .fold(closure.staged_data_root.clone(), |path, part| {
-            path.join(part)
-        });
-    fs::remove_file(material_path).unwrap();
-    let missing_material_stage = temp.path().join("missing-material-stage");
-    let interner = crate::sym::StringInterner::new();
-    assert!(
-        prepare_source_rig_execution(
-            &recipe_path,
-            &artifacts,
-            &closure,
-            &missing_material_stage,
+            temp.path().join("complete-stage"),
             &interner,
         )
-        .is_err()
-    );
-    assert!(!missing_material_stage.exists());
-
-    let mut tampered_closure =
-        execution_nif_closure(&recipe, &temp.path().join("tampered-closure"));
-    tampered_closure.receipt_json = tampered_closure
-        .receipt_json
-        .replace("\"target_game\":\"fo4\"", "\"target_game\":\"fnv\"");
-    let tampered_receipt_stage = temp.path().join("tampered-receipt-stage");
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &recipe_path,
-            &artifacts,
-            &tampered_closure,
-            &tampered_receipt_stage,
-            &interner,
-        ),
-        Err(SourceRigExecutionError::Artifact {
-            code: "invalid_creature_closure_receipt",
-            ..
-        })
-    ));
-    assert!(!tampered_receipt_stage.exists());
-}
-
-#[test]
-fn source_owned_ragdoll_recipe_roundtrips_and_is_required_for_execution() {
-    let mut recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    recipe.rig = with_source_owned_ragdoll(recipe.rig);
-    let ragdoll = execution_fixture_ragdoll(&recipe);
-    if let RagdollDisposition::SourceOwned { receipt, .. } = &mut recipe.rig.ragdoll {
-        receipt.byte_len = ragdoll.len() as u64;
-        receipt.blake3 = blake3::hash(&ragdoll).to_hex().to_string();
-    }
-    recipe.field_receipts =
-        SourceRigExecutableRecipe::required_field_receipts_from_source_for_intent(
-            &recipe.rig,
-            &recipe.graph,
-            &recipe.projection,
-            &recipe.key_plan,
-            &recipe.batch_intent,
-            recipe.bridge_receipt.as_ref(),
-            "fallout_new_vegas",
-        );
-    let json = recipe.canonical_json().unwrap();
-    let loaded = SourceRigExecutableRecipe::from_json(&json).unwrap();
-    assert!(matches!(
-        loaded.rig.ragdoll,
-        RagdollDisposition::SourceOwned { .. }
-    ));
-
-    let temp = tempfile::tempdir().unwrap();
-    let mut artifacts = execution_artifacts(&loaded, &temp.path().join("inputs"));
-    let closure = execution_nif_closure(&loaded, &temp.path().join("nif-closure"));
-    let loaded = bind_execution_recipe(loaded, &artifacts, &closure);
-    let recipe_path = temp.path().join("recipe.json");
-    fs::write(&recipe_path, loaded.canonical_json().unwrap()).unwrap();
-    artifacts.retain(|artifact| artifact.receipt.role != SourceRigArtifactRole::Ragdoll);
-    let stage = temp.path().join("private-stage");
-    let interner = crate::sym::StringInterner::new();
-    assert!(matches!(
-        prepare_source_rig_execution(&recipe_path, &artifacts, &closure, &stage, &interner),
-        Err(SourceRigExecutionError::Artifact {
-            code: "missing_artifact",
-            ..
-        })
-    ));
-    assert!(!stage.exists());
-
-    let complete = execution_artifacts(&loaded, &temp.path().join("complete-inputs"));
-    let prepared = prepare_source_rig_execution(
-        &recipe_path,
-        &complete,
-        &closure,
-        temp.path().join("complete-stage"),
-        &interner,
-    )
-    .unwrap();
-    assert!(
-        prepared
-            .receipt
-            .source_artifacts
-            .iter()
-            .any(|artifact| artifact.role == SourceRigArtifactRole::Ragdoll)
-    );
-}
-
-#[test]
-fn deferred_ragdoll_and_skeleton_mismatch_fail_without_staging() {
-    let mut deferred = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    deferred.rig.ragdoll = RagdollDisposition::deferred();
-    assert!(
-        deferred
-            .rig
-            .validate()
-            .unwrap_err()
-            .iter()
-            .any(|error| error.code == "ragdoll_deferred")
-    );
-    assert!(deferred.validate().is_err());
-    let temp = tempfile::tempdir().unwrap();
-    let deferred_path = temp.path().join("deferred.json");
-    fs::write(&deferred_path, serde_json::to_string(&deferred).unwrap()).unwrap();
-    let deferred_stage = temp.path().join("deferred-stage");
-    let deferred_closure = execution_nif_closure(&deferred, &temp.path().join("deferred-closure"));
-    let interner = crate::sym::StringInterner::new();
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &deferred_path,
-            &[],
-            &deferred_closure,
-            &deferred_stage,
-            &interner
-        ),
-        Err(SourceRigExecutionError::Recipe(_))
-    ));
-    assert!(!deferred_stage.exists());
-
-    let mut recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    recipe.rig = with_source_owned_ragdoll(recipe.rig);
-    let mut mismatched_recipe = recipe.clone();
-    mismatched_recipe.rig.animation_skeleton.bones[3].name = "MismatchedHead".to_string();
-    let ragdoll = execution_fixture_ragdoll(&mismatched_recipe);
-    if let RagdollDisposition::SourceOwned { receipt, .. } = &mut recipe.rig.ragdoll {
-        receipt.byte_len = ragdoll.len() as u64;
-        receipt.blake3 = blake3::hash(&ragdoll).to_hex().to_string();
-    }
-    recipe.field_receipts =
-        SourceRigExecutableRecipe::required_field_receipts_from_source_for_intent(
-            &recipe.rig,
-            &recipe.graph,
-            &recipe.projection,
-            &recipe.key_plan,
-            &recipe.batch_intent,
-            recipe.bridge_receipt.as_ref(),
-            "fallout_new_vegas",
-        );
-    let mut artifacts = execution_artifacts(&recipe, &temp.path().join("mismatch-inputs"));
-    let ragdoll_artifact = artifacts
-        .iter_mut()
-        .find(|artifact| artifact.receipt.role == SourceRigArtifactRole::Ragdoll)
         .unwrap();
-    fs::write(&ragdoll_artifact.path, &ragdoll).unwrap();
-    ragdoll_artifact.receipt.byte_len = ragdoll.len() as u64;
-    ragdoll_artifact.receipt.blake3 = blake3::hash(&ragdoll).to_hex().to_string();
-    let mismatch_closure = execution_nif_closure(&recipe, &temp.path().join("mismatch-closure"));
-    let recipe = bind_execution_recipe(recipe, &artifacts, &mismatch_closure);
-    let mismatch_path = temp.path().join("mismatch.json");
-    fs::write(&mismatch_path, recipe.canonical_json().unwrap()).unwrap();
-    let mismatch_stage = temp.path().join("mismatch-stage");
-    assert!(matches!(
-        prepare_source_rig_execution(
-            &mismatch_path,
-            &artifacts,
-            &mismatch_closure,
-            &mismatch_stage,
-            &interner
-        ),
-        Err(SourceRigExecutionError::Artifact {
-            code: "ragdoll_skeleton_mismatch",
-            ..
-        })
-    ));
-    assert!(!mismatch_stage.exists());
+        assert!(
+            prepared
+                .receipt
+                .source_artifacts
+                .iter()
+                .any(|artifact| artifact.role == SourceRigArtifactRole::Ragdoll)
+        );
+    }
+    {
+        let mut deferred = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        deferred.rig.ragdoll = RagdollDisposition::deferred();
+        assert!(
+            deferred
+                .rig
+                .validate()
+                .unwrap_err()
+                .iter()
+                .any(|error| error.code == "ragdoll_deferred")
+        );
+        assert!(deferred.validate().is_err());
+        let temp = tempfile::tempdir().unwrap();
+        let deferred_path = temp.path().join("deferred.json");
+        fs::write(&deferred_path, serde_json::to_string(&deferred).unwrap()).unwrap();
+        let deferred_stage = temp.path().join("deferred-stage");
+        let deferred_closure =
+            execution_nif_closure(&deferred, &temp.path().join("deferred-closure"));
+        let interner = crate::sym::StringInterner::new();
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &deferred_path,
+                &[],
+                &deferred_closure,
+                &deferred_stage,
+                &interner
+            ),
+            Err(SourceRigExecutionError::Recipe(_))
+        ));
+        assert!(!deferred_stage.exists());
+
+        let mut recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        recipe.rig = with_source_owned_ragdoll(recipe.rig);
+        let mut mismatched_recipe = recipe.clone();
+        mismatched_recipe.rig.animation_skeleton.bones[3].name = "MismatchedHead".to_string();
+        let ragdoll = execution_fixture_ragdoll(&mismatched_recipe);
+        if let RagdollDisposition::SourceOwned { receipt, .. } = &mut recipe.rig.ragdoll {
+            receipt.byte_len = ragdoll.len() as u64;
+            receipt.blake3 = blake3::hash(&ragdoll).to_hex().to_string();
+        }
+        recipe.field_receipts =
+            SourceRigExecutableRecipe::required_field_receipts_from_source_for_intent(
+                &recipe.rig,
+                &recipe.graph,
+                &recipe.projection,
+                &recipe.key_plan,
+                &recipe.batch_intent,
+                recipe.bridge_receipt.as_ref(),
+                "fallout_new_vegas",
+            );
+        let mut artifacts = execution_artifacts(&recipe, &temp.path().join("mismatch-inputs"));
+        let ragdoll_artifact = artifacts
+            .iter_mut()
+            .find(|artifact| artifact.receipt.role == SourceRigArtifactRole::Ragdoll)
+            .unwrap();
+        fs::write(&ragdoll_artifact.path, &ragdoll).unwrap();
+        ragdoll_artifact.receipt.byte_len = ragdoll.len() as u64;
+        ragdoll_artifact.receipt.blake3 = blake3::hash(&ragdoll).to_hex().to_string();
+        let mismatch_closure =
+            execution_nif_closure(&recipe, &temp.path().join("mismatch-closure"));
+        let recipe = bind_execution_recipe(recipe, &artifacts, &mismatch_closure);
+        let mismatch_path = temp.path().join("mismatch.json");
+        fs::write(&mismatch_path, recipe.canonical_json().unwrap()).unwrap();
+        let mismatch_stage = temp.path().join("mismatch-stage");
+        assert!(matches!(
+            prepare_source_rig_execution(
+                &mismatch_path,
+                &artifacts,
+                &mismatch_closure,
+                &mismatch_stage,
+                &interner
+            ),
+            Err(SourceRigExecutionError::Artifact {
+                code: "ragdoll_skeleton_mismatch",
+                ..
+            })
+        ));
+        assert!(!mismatch_stage.exists());
+    }
 }
 
 #[test]
-fn executable_recipe_rejects_missing_profile_or_race_data_receipt() {
-    let mut recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    recipe
-        .field_receipts
-        .retain(|receipt| receipt.field != "projection.race_data.male_height");
-
-    assert!(matches!(
-        recipe.validate(),
-        Err(SourceRigRecipeError::Invalid {
-            code: "missing_field_receipt",
-            ..
-        })
-    ));
-
-    let mut fixed = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    fixed
-        .field_receipts
-        .retain(|receipt| receipt.field != "emitted.bptd.geometry_segment_index");
-    assert!(matches!(
-        fixed.validate(),
-        Err(SourceRigRecipeError::Invalid {
-            code: "missing_field_receipt",
-            ..
-        })
-    ));
-}
-
-#[test]
-fn executable_recipe_requires_actual_root_bone_and_fixed_segment_32() {
-    let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    assert!(
+fn executable_recipe_rejects_missing_receipts_and_requires_root_bone_segment_32() {
+    {
+        let mut recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
         recipe
             .field_receipts
-            .iter()
-            .any(|receipt| receipt.field == "emitted.bptd.geometry_segment_index")
-    );
-    let interner = crate::sym::StringInterner::new();
-    let closure = recipe.rebuild_projection_closure(&interner).unwrap();
-    let bptd = closure.closure.record("BPTD").unwrap();
-    assert_eq!(
-        struct_u8(
-            record_field(bptd, "BPND"),
-            "geometry_segment_index",
-            &interner,
-        ),
-        32
-    );
+            .retain(|receipt| receipt.field != "projection.race_data.male_height");
 
-    let mut invalid = recipe;
-    let CreatureBodyPartProjection::RootOnly32 {
-        node, vats_target, ..
-    } = &mut invalid.projection.body_parts;
-    *node = "Actors\\Creature\\skeleton.nif".to_string();
-    *vats_target = node.clone();
-    invalid.rig.animation_skeleton.bones.push(BoneDecl {
-        name: node.clone(),
-        parent_index: Some(0),
-    });
-    assert!(matches!(
-        invalid.validate(),
-        Err(SourceRigRecipeError::Invalid {
-            code: "root_bone_name",
-            ..
-        })
-    ));
+        assert!(matches!(
+            recipe.validate(),
+            Err(SourceRigRecipeError::Invalid {
+                code: "missing_field_receipt",
+                ..
+            })
+        ));
 
-    let mut child = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
-    let child_name = child.rig.animation_skeleton.bones[1].name.clone();
-    let CreatureBodyPartProjection::RootOnly32 {
-        node, vats_target, ..
-    } = &mut child.projection.body_parts;
-    *node = child_name.clone();
-    *vats_target = child_name;
-    assert!(matches!(
-        child.validate(),
-        Err(SourceRigRecipeError::Invalid {
-            code: "root_bone_name",
-            ..
-        })
-    ));
+        let mut fixed = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        fixed
+            .field_receipts
+            .retain(|receipt| receipt.field != "emitted.bptd.geometry_segment_index");
+        assert!(matches!(
+            fixed.validate(),
+            Err(SourceRigRecipeError::Invalid {
+                code: "missing_field_receipt",
+                ..
+            })
+        ));
+    }
+    {
+        let recipe = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        assert!(
+            recipe
+                .field_receipts
+                .iter()
+                .any(|receipt| receipt.field == "emitted.bptd.geometry_segment_index")
+        );
+        let interner = crate::sym::StringInterner::new();
+        let closure = recipe.rebuild_projection_closure(&interner).unwrap();
+        let bptd = closure.closure.record("BPTD").unwrap();
+        assert_eq!(
+            struct_u8(
+                record_field(bptd, "BPND"),
+                "geometry_segment_index",
+                &interner,
+            ),
+            32
+        );
+
+        let mut invalid = recipe;
+        let CreatureBodyPartProjection::RootOnly32 {
+            node, vats_target, ..
+        } = &mut invalid.projection.body_parts;
+        *node = "Actors\\Creature\\skeleton.nif".to_string();
+        *vats_target = node.clone();
+        invalid.rig.animation_skeleton.bones.push(BoneDecl {
+            name: node.clone(),
+            parent_index: Some(0),
+        });
+        assert!(matches!(
+            invalid.validate(),
+            Err(SourceRigRecipeError::Invalid {
+                code: "root_bone_name",
+                ..
+            })
+        ));
+
+        let mut child = executable_recipe_fixture("fnv", "FalloutNV.esm", "fallout_new_vegas");
+        let child_name = child.rig.animation_skeleton.bones[1].name.clone();
+        let CreatureBodyPartProjection::RootOnly32 {
+            node, vats_target, ..
+        } = &mut child.projection.body_parts;
+        *node = child_name.clone();
+        *vats_target = child_name;
+        assert!(matches!(
+            child.validate(),
+            Err(SourceRigRecipeError::Invalid {
+                code: "root_bone_name",
+                ..
+            })
+        ));
+    }
 }
 
 #[test]
@@ -5385,142 +5275,140 @@ fn corpus_candidate(
 }
 
 #[test]
-fn creature_corpus_plan_is_deterministic_and_accounted() {
-    let wolf = corpus_candidate("skyrimse", "Skyrim.esm", 0x01_1234, "wolf");
-    let gecko = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
-    let families = vec![corpus_rig_family("grounded-quadruped")];
-    let motions = vec![corpus_motion_set("quadruped-basic")];
+fn creature_corpus_plan_is_deterministic_and_rejects_tampered_accounting() {
+    {
+        let wolf = corpus_candidate("skyrimse", "Skyrim.esm", 0x01_1234, "wolf");
+        let gecko = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
+        let families = vec![corpus_rig_family("grounded-quadruped")];
+        let motions = vec![corpus_motion_set("quadruped-basic")];
 
-    let forward = CreatureCorpusPlan::build(
-        families.clone(),
-        motions.clone(),
-        vec![wolf.clone(), gecko.clone()],
-    )
-    .unwrap();
-    let reverse = CreatureCorpusPlan::build(families, motions, vec![gecko, wolf]).unwrap();
+        let forward = CreatureCorpusPlan::build(
+            families.clone(),
+            motions.clone(),
+            vec![wolf.clone(), gecko.clone()],
+        )
+        .unwrap();
+        let reverse = CreatureCorpusPlan::build(families, motions, vec![gecko, wolf]).unwrap();
 
-    assert_eq!(
-        forward.canonical_json().unwrap(),
-        reverse.canonical_json().unwrap()
-    );
-    assert_eq!(forward.candidate_count, 2);
-    assert_eq!(forward.planned.len(), 2);
-    assert!(forward.rejected.is_empty());
-    assert_ne!(
-        forward.planned[0].source_identity,
-        forward.planned[0].primary_record_identity
-    );
-    assert_eq!(
-        forward.candidate_count,
-        forward.planned.len() + forward.rejected.len()
-    );
+        assert_eq!(
+            forward.canonical_json().unwrap(),
+            reverse.canonical_json().unwrap()
+        );
+        assert_eq!(forward.candidate_count, 2);
+        assert_eq!(forward.planned.len(), 2);
+        assert!(forward.rejected.is_empty());
+        assert_ne!(
+            forward.planned[0].source_identity,
+            forward.planned[0].primary_record_identity
+        );
+        assert_eq!(
+            forward.candidate_count,
+            forward.planned.len() + forward.rejected.len()
+        );
+    }
+    {
+        let mut plan = CreatureCorpusPlan::build(
+            vec![corpus_rig_family("grounded-quadruped")],
+            vec![corpus_motion_set("quadruped-basic")],
+            vec![corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko")],
+        )
+        .unwrap();
+        plan.candidate_count += 1;
+
+        assert!(matches!(
+            plan.validate(),
+            Err(CreatureCorpusPlanError::Accounting { .. })
+        ));
+    }
 }
 
 #[test]
-fn creature_corpus_plan_rejects_every_colliding_candidate() {
-    let first = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
-    let mut second = first.clone();
-    second.record_variants[0].display_name = "Gecko Variant".to_string();
+fn creature_corpus_plan_rejects_collisions_and_ledgers_missing_or_rejected_inputs() {
+    {
+        let first = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
+        let mut second = first.clone();
+        second.record_variants[0].display_name = "Gecko Variant".to_string();
 
-    let plan = CreatureCorpusPlan::build(
-        vec![corpus_rig_family("grounded-quadruped")],
-        vec![corpus_motion_set("quadruped-basic")],
-        vec![first, second],
-    )
-    .unwrap();
+        let plan = CreatureCorpusPlan::build(
+            vec![corpus_rig_family("grounded-quadruped")],
+            vec![corpus_motion_set("quadruped-basic")],
+            vec![first, second],
+        )
+        .unwrap();
 
-    assert_eq!(plan.candidate_count, 2);
-    assert!(plan.planned.is_empty());
-    assert_eq!(plan.rejected.len(), 2);
-    assert!(plan.rejected.iter().all(|entry| {
-        entry.reasons.iter().any(|reason| {
-            matches!(
-                reason,
-                CreatureRejectionReason::DuplicateSourceIdentity { .. }
-                    | CreatureRejectionReason::DuplicateOutputSlug { .. }
-            )
-        })
-    }));
-}
-
-#[test]
-fn creature_corpus_plan_validation_rejects_tampered_accounting() {
-    let mut plan = CreatureCorpusPlan::build(
-        vec![corpus_rig_family("grounded-quadruped")],
-        vec![corpus_motion_set("quadruped-basic")],
-        vec![corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko")],
-    )
-    .unwrap();
-    plan.candidate_count += 1;
-
-    assert!(matches!(
-        plan.validate(),
-        Err(CreatureCorpusPlanError::Accounting { .. })
-    ));
-}
-
-#[test]
-fn creature_corpus_plan_ledgers_missing_family_attack_and_race_data() {
-    let mut missing_family = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
-    missing_family.rig_family = "unmapped-family".to_string();
-    missing_family.record_variants[0].attack_ids = vec!["unmapped-attack".to_string()];
-    let missing_race_family = RigFamily {
-        id: "grounded-quadruped".to_string(),
-        root_node: "Root".to_string(),
-        race_data: RaceDataMapping::Missing {
-            fields: vec![Fo4RaceDataField::MovementFlags, Fo4RaceDataField::Heights],
-        },
-    };
-    let race_candidate = corpus_candidate("skyrimse", "Skyrim.esm", 0x01_1234, "wolf");
-
-    let plan = CreatureCorpusPlan::build(
-        vec![missing_race_family],
-        vec![corpus_motion_set("quadruped-basic")],
-        vec![missing_family, race_candidate],
-    )
-    .unwrap();
-
-    assert!(plan.planned.is_empty());
-    assert_eq!(plan.rejected.len(), 2);
-    assert!(plan.rejected.iter().any(|entry| {
-        entry
-            .reasons
-            .iter()
-            .any(|reason| matches!(reason, CreatureRejectionReason::MissingRigFamily { .. }))
-            && entry.reasons.iter().any(|reason| {
-                matches!(reason, CreatureRejectionReason::MissingAttackMapping { .. })
+        assert_eq!(plan.candidate_count, 2);
+        assert!(plan.planned.is_empty());
+        assert_eq!(plan.rejected.len(), 2);
+        assert!(plan.rejected.iter().all(|entry| {
+            entry.reasons.iter().any(|reason| {
+                matches!(
+                    reason,
+                    CreatureRejectionReason::DuplicateSourceIdentity { .. }
+                        | CreatureRejectionReason::DuplicateOutputSlug { .. }
+                )
             })
-    }));
-    assert!(plan.rejected.iter().any(|entry| {
-        entry
-            .reasons
-            .iter()
-            .any(|reason| matches!(reason, CreatureRejectionReason::MissingRaceData { .. }))
-    }));
-}
+        }));
+    }
+    {
+        let mut missing_family = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
+        missing_family.rig_family = "unmapped-family".to_string();
+        missing_family.record_variants[0].attack_ids = vec!["unmapped-attack".to_string()];
+        let missing_race_family = RigFamily {
+            id: "grounded-quadruped".to_string(),
+            root_node: "Root".to_string(),
+            race_data: RaceDataMapping::Missing {
+                fields: vec![Fo4RaceDataField::MovementFlags, Fo4RaceDataField::Heights],
+            },
+        };
+        let race_candidate = corpus_candidate("skyrimse", "Skyrim.esm", 0x01_1234, "wolf");
 
-#[test]
-fn creature_corpus_plan_preserves_typed_upstream_rejection() {
-    let mut candidate = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
-    candidate.preflight_rejections = vec![CreatureRejectionReason::UpstreamCatalogRejected {
-        catalog: "fnv-creature-races".to_string(),
-        reason_code: "missing-body-model".to_string(),
-        detail: "catalog winner has no source body NIF".to_string(),
-    }];
+        let plan = CreatureCorpusPlan::build(
+            vec![missing_race_family],
+            vec![corpus_motion_set("quadruped-basic")],
+            vec![missing_family, race_candidate],
+        )
+        .unwrap();
 
-    let plan = CreatureCorpusPlan::build(
-        vec![corpus_rig_family("grounded-quadruped")],
-        vec![corpus_motion_set("quadruped-basic")],
-        vec![candidate],
-    )
-    .unwrap();
+        assert!(plan.planned.is_empty());
+        assert_eq!(plan.rejected.len(), 2);
+        assert!(plan.rejected.iter().any(|entry| {
+            entry
+                .reasons
+                .iter()
+                .any(|reason| matches!(reason, CreatureRejectionReason::MissingRigFamily { .. }))
+                && entry.reasons.iter().any(|reason| {
+                    matches!(reason, CreatureRejectionReason::MissingAttackMapping { .. })
+                })
+        }));
+        assert!(plan.rejected.iter().any(|entry| {
+            entry
+                .reasons
+                .iter()
+                .any(|reason| matches!(reason, CreatureRejectionReason::MissingRaceData { .. }))
+        }));
+    }
+    {
+        let mut candidate = corpus_candidate("fnv", "FalloutNV.esm", 0x02_2345, "gecko");
+        candidate.preflight_rejections = vec![CreatureRejectionReason::UpstreamCatalogRejected {
+            catalog: "fnv-creature-races".to_string(),
+            reason_code: "missing-body-model".to_string(),
+            detail: "catalog winner has no source body NIF".to_string(),
+        }];
 
-    assert!(plan.planned.is_empty());
-    assert!(matches!(
-        plan.rejected[0].reasons.as_slice(),
-        [CreatureRejectionReason::UpstreamCatalogRejected { reason_code, .. }]
-            if reason_code == "missing-body-model"
-    ));
+        let plan = CreatureCorpusPlan::build(
+            vec![corpus_rig_family("grounded-quadruped")],
+            vec![corpus_motion_set("quadruped-basic")],
+            vec![candidate],
+        )
+        .unwrap();
+
+        assert!(plan.planned.is_empty());
+        assert!(matches!(
+            plan.rejected[0].reasons.as_slice(),
+            [CreatureRejectionReason::UpstreamCatalogRejected { reason_code, .. }]
+                if reason_code == "missing-body-model"
+        ));
+    }
 }
 
 #[test]
@@ -6535,285 +6423,286 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
 }
 
 #[test]
-fn ranged_equipment_projection_emits_no_phantom_spell_or_weapon() {
-    let (mut rig, mvp) = wolf_mvp();
-    let fire_event = "fireEquipment";
-    for declarations in [&mut rig.root, &mut rig.core] {
-        let event = declarations
-            .events
+fn non_melee_equipment_projections_emit_no_phantom_spell_or_weapon() {
+    {
+        let (mut rig, mvp) = wolf_mvp();
+        let fire_event = "fireEquipment";
+        for declarations in [&mut rig.root, &mut rig.core] {
+            let event = declarations
+                .events
+                .iter_mut()
+                .find(|event| event.name == mvp.melee_event)
+                .unwrap();
+            event.name = fire_event.to_string();
+            event.usage = EventUsage::Generic;
+        }
+        let mut graph = CapabilityGraphManifest::from_mvp(&mvp, &MvpMotionManifest::default());
+        graph.template = CreatureGraphTemplate::GroundRangedProjectile;
+        let attack_role = graph
+            .roles
+            .iter_mut()
+            .find(|role| role.role == CreatureClipRole::MeleeAttack)
+            .unwrap();
+        attack_role.role = CreatureClipRole::ProjectileAttack;
+        attack_role.trigger_event = Some(fire_event.to_string());
+        let attack_event = graph
+            .explicit_events
             .iter_mut()
             .find(|event| event.name == mvp.melee_event)
             .unwrap();
-        event.name = fire_event.to_string();
-        event.usage = EventUsage::Generic;
+        attack_event.name = fire_event.to_string();
+        attack_event.usage = EventUsage::Generic;
+
+        let mut base = record_manifest(&rig.creature_name, "B21_CreatureEquipment.esp", 0xC60);
+        base.form_keys.unarmed_weapon = TargetFormKey::new(0, "B21_CreatureEquipment.esp");
+        let primary_source = source_identity("fnv", "FalloutNV.esm", 0x02_3456);
+        let reference = |signature: &str, local| CreatureTargetRecordReference {
+            signature: signature.to_string(),
+            form_key: TargetFormKey::new(local, "B21_CreatureEquipment.esp"),
+        };
+        let equipment = reference("WEAP", 0xC80);
+        let projectile = reference("PROJ", 0xC81);
+        let ammunition = reference("AMMO", 0xC82);
+        let projection = CreatureRecordProjectionManifest {
+            base: base.clone(),
+            source_primary_identity: primary_source.clone(),
+            race_data: grounded_race_data(),
+            body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
+            body_nif_parts: Vec::new(),
+            variants: vec![CreatureNpcRecordVariant {
+                source_identity: primary_source,
+                form_key: base.form_keys.npc.clone(),
+                editor_id: base.editor_ids.npc.clone(),
+                display_name: "Equipment Creature".to_string(),
+                primary: true,
+                level: 5,
+                health: 100,
+                action_points: 75,
+                npc_inventory: None,
+                npc_equipment: None,
+                npc_spells: None,
+                npc_death_item: None,
+            }],
+            npc_inventory: Vec::new(),
+            npc_equipment: Vec::new(),
+            npc_spells: Vec::new(),
+            npc_death_item: None,
+            attacks: vec![CreatureAttackRecordVariant {
+                id: "equipment".to_string(),
+                event: fire_event.to_string(),
+                primary: true,
+                projection: CreatureAttackRecordProjection::RangedEquipment {
+                    equipment: vec![equipment.clone()],
+                    projectile: Some(projectile.clone()),
+                    ammunition: Some(ammunition.clone()),
+                },
+                damage_multiplier: 1.0,
+                chance: 1.0,
+                strike_angle: 35.0,
+                action_point_cost: 20.0,
+                target_data: CreatureAttackTargetData::default(),
+            }],
+        };
+        let interner = crate::sym::StringInterner::new();
+
+        let emitted =
+            emit_creature_capability_record_projection(&rig, &graph, &projection, &interner)
+                .unwrap();
+        let race = emitted.closure.record("RACE").unwrap();
+        let npc = emitted.closure.record("NPC_").unwrap();
+
+        assert_eq!(emitted.closure.records.len(), 5);
+        assert!(
+            !emitted
+                .closure
+                .records
+                .iter()
+                .any(|record| matches!(record.sig.as_str(), "WEAP" | "SPEL" | "PROJ" | "AMMO"))
+        );
+        assert!(!race.fields.iter().any(|field| field.sig.as_str() == "UNWP"));
+        assert!(race.fields.iter().any(|field| {
+            field.sig.as_str() == "ATKD"
+                && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
+                    interner.resolve(*name) == Some("attack_spell")
+                        && is_null_form_reference(value)
+                }))
+        }));
+        assert!(npc.fields.iter().any(|field| {
+            field.sig.as_str() == "CNTO"
+                && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
+                    interner.resolve(*name) == Some("item")
+                        && matches!(value, FieldValue::FormKey(form_key) if form_key.local == equipment.form_key.local)
+                }))
+        }));
+        assert_eq!(
+            emitted.required_target_records,
+            vec![equipment, projectile, ammunition]
+        );
     }
-    let mut graph = CapabilityGraphManifest::from_mvp(&mvp, &MvpMotionManifest::default());
-    graph.template = CreatureGraphTemplate::GroundRangedProjectile;
-    let attack_role = graph
-        .roles
-        .iter_mut()
-        .find(|role| role.role == CreatureClipRole::MeleeAttack)
-        .unwrap();
-    attack_role.role = CreatureClipRole::ProjectileAttack;
-    attack_role.trigger_event = Some(fire_event.to_string());
-    let attack_event = graph
-        .explicit_events
-        .iter_mut()
-        .find(|event| event.name == mvp.melee_event)
-        .unwrap();
-    attack_event.name = fire_event.to_string();
-    attack_event.usage = EventUsage::Generic;
-
-    let mut base = record_manifest(&rig.creature_name, "B21_CreatureEquipment.esp", 0xC60);
-    base.form_keys.unarmed_weapon = TargetFormKey::new(0, "B21_CreatureEquipment.esp");
-    let primary_source = source_identity("fnv", "FalloutNV.esm", 0x02_3456);
-    let reference = |signature: &str, local| CreatureTargetRecordReference {
-        signature: signature.to_string(),
-        form_key: TargetFormKey::new(local, "B21_CreatureEquipment.esp"),
-    };
-    let equipment = reference("WEAP", 0xC80);
-    let projectile = reference("PROJ", 0xC81);
-    let ammunition = reference("AMMO", 0xC82);
-    let projection = CreatureRecordProjectionManifest {
-        base: base.clone(),
-        source_primary_identity: primary_source.clone(),
-        race_data: grounded_race_data(),
-        body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
-        body_nif_parts: Vec::new(),
-        variants: vec![CreatureNpcRecordVariant {
-            source_identity: primary_source,
-            form_key: base.form_keys.npc.clone(),
-            editor_id: base.editor_ids.npc.clone(),
-            display_name: "Equipment Creature".to_string(),
-            primary: true,
-            level: 5,
-            health: 100,
-            action_points: 75,
-            npc_inventory: None,
-            npc_equipment: None,
-            npc_spells: None,
+    {
+        let (rig, graph) = stationary_turret_capability();
+        let mut base = record_manifest(&rig.creature_name, "B21_CreatureTurret.esp", 0xCC0);
+        base.form_keys.unarmed_weapon = TargetFormKey::new(0, "B21_CreatureTurret.esp");
+        let primary_source = source_identity("fnv", "FalloutNV.esm", 0x02_5678);
+        let equipment = CreatureTargetRecordReference {
+            signature: "WEAP".to_string(),
+            form_key: TargetFormKey::new(0xCE0, "B21_CreatureTurret.esp"),
+        };
+        let projectile = CreatureTargetRecordReference {
+            signature: "PROJ".to_string(),
+            form_key: TargetFormKey::new(0xCE1, "B21_CreatureTurret.esp"),
+        };
+        let projection = CreatureRecordProjectionManifest {
+            base: base.clone(),
+            source_primary_identity: primary_source.clone(),
+            race_data: grounded_race_data(),
+            body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
+            body_nif_parts: Vec::new(),
+            variants: vec![CreatureNpcRecordVariant {
+                source_identity: primary_source,
+                form_key: base.form_keys.npc.clone(),
+                editor_id: base.editor_ids.npc.clone(),
+                display_name: "Equipment Turret".to_string(),
+                primary: true,
+                level: 5,
+                health: 100,
+                action_points: 75,
+                npc_inventory: None,
+                npc_equipment: None,
+                npc_spells: None,
+                npc_death_item: None,
+            }],
+            npc_inventory: Vec::new(),
+            npc_equipment: Vec::new(),
+            npc_spells: Vec::new(),
             npc_death_item: None,
-        }],
-        npc_inventory: Vec::new(),
-        npc_equipment: Vec::new(),
-        npc_spells: Vec::new(),
-        npc_death_item: None,
-        attacks: vec![CreatureAttackRecordVariant {
-            id: "equipment".to_string(),
-            event: fire_event.to_string(),
-            primary: true,
-            projection: CreatureAttackRecordProjection::RangedEquipment {
-                equipment: vec![equipment.clone()],
-                projectile: Some(projectile.clone()),
-                ammunition: Some(ammunition.clone()),
-            },
-            damage_multiplier: 1.0,
-            chance: 1.0,
-            strike_angle: 35.0,
-            action_point_cost: 20.0,
-            target_data: CreatureAttackTargetData::default(),
-        }],
-    };
-    let interner = crate::sym::StringInterner::new();
+            attacks: vec![CreatureAttackRecordVariant {
+                id: "turret_equipment".to_string(),
+                event: "attackStart".to_string(),
+                primary: true,
+                projection: CreatureAttackRecordProjection::RangedEquipment {
+                    equipment: vec![equipment.clone()],
+                    projectile: Some(projectile.clone()),
+                    ammunition: None,
+                },
+                damage_multiplier: 1.0,
+                chance: 1.0,
+                strike_angle: 35.0,
+                action_point_cost: 20.0,
+                target_data: CreatureAttackTargetData::default(),
+            }],
+        };
+        let interner = crate::sym::StringInterner::new();
 
-    let emitted =
-        emit_creature_capability_record_projection(&rig, &graph, &projection, &interner).unwrap();
-    let race = emitted.closure.record("RACE").unwrap();
-    let npc = emitted.closure.record("NPC_").unwrap();
+        let emitted =
+            emit_creature_capability_record_projection(&rig, &graph, &projection, &interner)
+                .unwrap();
+        let race = emitted.closure.record("RACE").unwrap();
 
-    assert_eq!(emitted.closure.records.len(), 5);
-    assert!(
-        !emitted
-            .closure
-            .records
-            .iter()
-            .any(|record| matches!(record.sig.as_str(), "WEAP" | "SPEL" | "PROJ" | "AMMO"))
-    );
-    assert!(!race.fields.iter().any(|field| field.sig.as_str() == "UNWP"));
-    assert!(race.fields.iter().any(|field| {
-        field.sig.as_str() == "ATKD"
-            && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
-                interner.resolve(*name) == Some("attack_spell")
-                    && is_null_form_reference(value)
-            }))
-    }));
-    assert!(npc.fields.iter().any(|field| {
-        field.sig.as_str() == "CNTO"
-            && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
-                interner.resolve(*name) == Some("item")
-                    && matches!(value, FieldValue::FormKey(form_key) if form_key.local == equipment.form_key.local)
-            }))
-    }));
-    assert_eq!(
-        emitted.required_target_records,
-        vec![equipment, projectile, ammunition]
-    );
-}
-
-#[test]
-fn stationary_equipment_projection_requires_no_phantom_spell() {
-    let (rig, graph) = stationary_turret_capability();
-    let mut base = record_manifest(&rig.creature_name, "B21_CreatureTurret.esp", 0xCC0);
-    base.form_keys.unarmed_weapon = TargetFormKey::new(0, "B21_CreatureTurret.esp");
-    let primary_source = source_identity("fnv", "FalloutNV.esm", 0x02_5678);
-    let equipment = CreatureTargetRecordReference {
-        signature: "WEAP".to_string(),
-        form_key: TargetFormKey::new(0xCE0, "B21_CreatureTurret.esp"),
-    };
-    let projectile = CreatureTargetRecordReference {
-        signature: "PROJ".to_string(),
-        form_key: TargetFormKey::new(0xCE1, "B21_CreatureTurret.esp"),
-    };
-    let projection = CreatureRecordProjectionManifest {
-        base: base.clone(),
-        source_primary_identity: primary_source.clone(),
-        race_data: grounded_race_data(),
-        body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
-        body_nif_parts: Vec::new(),
-        variants: vec![CreatureNpcRecordVariant {
-            source_identity: primary_source,
-            form_key: base.form_keys.npc.clone(),
-            editor_id: base.editor_ids.npc.clone(),
-            display_name: "Equipment Turret".to_string(),
-            primary: true,
-            level: 5,
-            health: 100,
-            action_points: 75,
-            npc_inventory: None,
-            npc_equipment: None,
-            npc_spells: None,
+        assert_eq!(emitted.closure.records.len(), 5);
+        assert!(
+            !emitted
+                .closure
+                .records
+                .iter()
+                .any(|record| matches!(record.sig.as_str(), "SPEL" | "WEAP" | "PROJ"))
+        );
+        assert!(race.fields.iter().any(|field| {
+            field.sig.as_str() == "ATKD"
+                && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
+                    interner.resolve(*name) == Some("attack_spell") && is_null_form_reference(value)
+                }))
+        }));
+        assert_eq!(emitted.required_target_records, [equipment, projectile]);
+    }
+    {
+        let (rig, graph) = robot_continuous_attack_capability();
+        let mut base = record_manifest(&rig.creature_name, "B21_CreatureRobot.esp", 0xCF0);
+        base.form_keys.unarmed_weapon = TargetFormKey::new(0, "B21_CreatureRobot.esp");
+        let primary_source = source_identity("fnv", "FalloutNV.esm", 0x02_6789);
+        let passive_spell = CreatureTargetRecordReference {
+            signature: "SPEL".to_string(),
+            form_key: TargetFormKey::new(0xD20, "B21_CreatureRobot.esp"),
+        };
+        let equipment = CreatureTargetRecordReference {
+            signature: "WEAP".to_string(),
+            form_key: TargetFormKey::new(0xD21, "B21_CreatureRobot.esp"),
+        };
+        let projection = CreatureRecordProjectionManifest {
+            base: base.clone(),
+            source_primary_identity: primary_source.clone(),
+            race_data: grounded_race_data(),
+            body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
+            body_nif_parts: Vec::new(),
+            variants: vec![CreatureNpcRecordVariant {
+                source_identity: primary_source,
+                form_key: base.form_keys.npc.clone(),
+                editor_id: base.editor_ids.npc.clone(),
+                display_name: "Continuous Robot".to_string(),
+                primary: true,
+                level: 5,
+                health: 100,
+                action_points: 75,
+                npc_inventory: None,
+                npc_equipment: None,
+                npc_spells: None,
+                npc_death_item: None,
+            }],
+            npc_inventory: Vec::new(),
+            npc_equipment: Vec::new(),
+            npc_spells: vec![passive_spell.clone()],
             npc_death_item: None,
-        }],
-        npc_inventory: Vec::new(),
-        npc_equipment: Vec::new(),
-        npc_spells: Vec::new(),
-        npc_death_item: None,
-        attacks: vec![CreatureAttackRecordVariant {
-            id: "turret_equipment".to_string(),
-            event: "attackStart".to_string(),
-            primary: true,
-            projection: CreatureAttackRecordProjection::RangedEquipment {
-                equipment: vec![equipment.clone()],
-                projectile: Some(projectile.clone()),
-                ammunition: None,
-            },
-            damage_multiplier: 1.0,
-            chance: 1.0,
-            strike_angle: 35.0,
-            action_point_cost: 20.0,
-            target_data: CreatureAttackTargetData::default(),
-        }],
-    };
-    let interner = crate::sym::StringInterner::new();
+            attacks: vec![CreatureAttackRecordVariant {
+                id: "continuous_equipment".to_string(),
+                event: "attackStartAuto".to_string(),
+                primary: true,
+                projection: CreatureAttackRecordProjection::RangedEquipment {
+                    equipment: vec![equipment.clone()],
+                    projectile: None,
+                    ammunition: None,
+                },
+                damage_multiplier: 1.0,
+                chance: 1.0,
+                strike_angle: 35.0,
+                action_point_cost: 20.0,
+                target_data: CreatureAttackTargetData::default(),
+            }],
+        };
+        let interner = crate::sym::StringInterner::new();
 
-    let emitted =
-        emit_creature_capability_record_projection(&rig, &graph, &projection, &interner).unwrap();
-    let race = emitted.closure.record("RACE").unwrap();
+        let emitted =
+            emit_creature_capability_record_projection(&rig, &graph, &projection, &interner)
+                .unwrap();
+        let race = emitted.closure.record("RACE").unwrap();
+        let npc = emitted.closure.record("NPC_").unwrap();
 
-    assert_eq!(emitted.closure.records.len(), 5);
-    assert!(
-        !emitted
-            .closure
-            .records
-            .iter()
-            .any(|record| matches!(record.sig.as_str(), "SPEL" | "WEAP" | "PROJ"))
-    );
-    assert!(race.fields.iter().any(|field| {
-        field.sig.as_str() == "ATKD"
-            && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
-                interner.resolve(*name) == Some("attack_spell") && is_null_form_reference(value)
-            }))
-    }));
-    assert_eq!(emitted.required_target_records, [equipment, projectile]);
-}
-
-#[test]
-fn continuous_robot_equipment_does_not_infer_passive_npc_spell_as_attack() {
-    let (rig, graph) = robot_continuous_attack_capability();
-    let mut base = record_manifest(&rig.creature_name, "B21_CreatureRobot.esp", 0xCF0);
-    base.form_keys.unarmed_weapon = TargetFormKey::new(0, "B21_CreatureRobot.esp");
-    let primary_source = source_identity("fnv", "FalloutNV.esm", 0x02_6789);
-    let passive_spell = CreatureTargetRecordReference {
-        signature: "SPEL".to_string(),
-        form_key: TargetFormKey::new(0xD20, "B21_CreatureRobot.esp"),
-    };
-    let equipment = CreatureTargetRecordReference {
-        signature: "WEAP".to_string(),
-        form_key: TargetFormKey::new(0xD21, "B21_CreatureRobot.esp"),
-    };
-    let projection = CreatureRecordProjectionManifest {
-        base: base.clone(),
-        source_primary_identity: primary_source.clone(),
-        race_data: grounded_race_data(),
-        body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
-        body_nif_parts: Vec::new(),
-        variants: vec![CreatureNpcRecordVariant {
-            source_identity: primary_source,
-            form_key: base.form_keys.npc.clone(),
-            editor_id: base.editor_ids.npc.clone(),
-            display_name: "Continuous Robot".to_string(),
-            primary: true,
-            level: 5,
-            health: 100,
-            action_points: 75,
-            npc_inventory: None,
-            npc_equipment: None,
-            npc_spells: None,
-            npc_death_item: None,
-        }],
-        npc_inventory: Vec::new(),
-        npc_equipment: Vec::new(),
-        npc_spells: vec![passive_spell.clone()],
-        npc_death_item: None,
-        attacks: vec![CreatureAttackRecordVariant {
-            id: "continuous_equipment".to_string(),
-            event: "attackStartAuto".to_string(),
-            primary: true,
-            projection: CreatureAttackRecordProjection::RangedEquipment {
-                equipment: vec![equipment.clone()],
-                projectile: None,
-                ammunition: None,
-            },
-            damage_multiplier: 1.0,
-            chance: 1.0,
-            strike_angle: 35.0,
-            action_point_cost: 20.0,
-            target_data: CreatureAttackTargetData::default(),
-        }],
-    };
-    let interner = crate::sym::StringInterner::new();
-
-    let emitted =
-        emit_creature_capability_record_projection(&rig, &graph, &projection, &interner).unwrap();
-    let race = emitted.closure.record("RACE").unwrap();
-    let npc = emitted.closure.record("NPC_").unwrap();
-
-    assert_eq!(emitted.closure.records.len(), 5);
-    assert!(
-        !emitted
-            .closure
-            .records
-            .iter()
-            .any(|record| matches!(record.sig.as_str(), "SPEL" | "WEAP" | "PROJ" | "AMMO"))
-    );
-    assert!(race.fields.iter().any(|field| {
-        field.sig.as_str() == "ATKD"
-            && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
-                interner.resolve(*name) == Some("attack_spell") && is_null_form_reference(value)
-            }))
-    }));
-    assert!(npc.fields.iter().any(|field| {
-        field.sig.as_str() == "SPLO"
-            && matches!(field.value, FieldValue::FormKey(form_key) if form_key.local == passive_spell.form_key.local)
-    }));
-    assert!(npc.fields.iter().any(|field| {
-        field.sig.as_str() == "CNTO"
-            && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
-                interner.resolve(*name) == Some("item")
-                    && matches!(value, FieldValue::FormKey(form_key) if form_key.local == equipment.form_key.local)
-            }))
-    }));
-    assert_eq!(emitted.required_target_records, [passive_spell, equipment]);
+        assert_eq!(emitted.closure.records.len(), 5);
+        assert!(
+            !emitted
+                .closure
+                .records
+                .iter()
+                .any(|record| matches!(record.sig.as_str(), "SPEL" | "WEAP" | "PROJ" | "AMMO"))
+        );
+        assert!(race.fields.iter().any(|field| {
+            field.sig.as_str() == "ATKD"
+                && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
+                    interner.resolve(*name) == Some("attack_spell") && is_null_form_reference(value)
+                }))
+        }));
+        assert!(npc.fields.iter().any(|field| {
+            field.sig.as_str() == "SPLO"
+                && matches!(field.value, FieldValue::FormKey(form_key) if form_key.local == passive_spell.form_key.local)
+        }));
+        assert!(npc.fields.iter().any(|field| {
+            field.sig.as_str() == "CNTO"
+                && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)| {
+                    interner.resolve(*name) == Some("item")
+                        && matches!(value, FieldValue::FormKey(form_key) if form_key.local == equipment.form_key.local)
+                }))
+        }));
+        assert_eq!(emitted.required_target_records, [passive_spell, equipment]);
+    }
 }
 
 #[test]
@@ -7054,184 +6943,181 @@ fn mapped_race_data(derivation: Fo4RaceDataDerivation) -> Fo4RaceDataTarget {
 }
 
 #[test]
-fn race_data_adapter_builds_wolf_and_gecko_without_source_branching() {
-    let wolf_evidence = family_race_evidence(
-        80.0,
-        MovementArchitecture::Grounded,
-        ControllerArchitecture::Quadruped,
-    );
-    let gecko_evidence = family_race_evidence(
-        28.0,
-        MovementArchitecture::Grounded,
-        ControllerArchitecture::Quadruped,
-    );
+fn race_data_adapter_builds_every_family_without_source_branching() {
+    {
+        let wolf_evidence = family_race_evidence(
+            80.0,
+            MovementArchitecture::Grounded,
+            ControllerArchitecture::Quadruped,
+        );
+        let gecko_evidence = family_race_evidence(
+            28.0,
+            MovementArchitecture::Grounded,
+            ControllerArchitecture::Quadruped,
+        );
 
-    let first = derive_fo4_race_data(&wolf_evidence, &race_data_policy()).unwrap();
-    let second = derive_fo4_race_data(&wolf_evidence, &race_data_policy()).unwrap();
-    assert_eq!(first, second);
-    let wolf = mapped_race_data(first);
-    let gecko =
-        mapped_race_data(derive_fo4_race_data(&gecko_evidence, &race_data_policy()).unwrap());
+        let first = derive_fo4_race_data(&wolf_evidence, &race_data_policy()).unwrap();
+        let second = derive_fo4_race_data(&wolf_evidence, &race_data_policy()).unwrap();
+        assert_eq!(first, second);
+        let wolf = mapped_race_data(first);
+        let gecko =
+            mapped_race_data(derive_fo4_race_data(&gecko_evidence, &race_data_policy()).unwrap());
 
-    assert_eq!(wolf.size, Fo4RaceSize::Medium);
-    assert_eq!(gecko.size, Fo4RaceSize::Small);
-    assert_eq!(wolf.acceleration_rate, 240.0);
-    assert_eq!(wolf.deceleration_rate, 480.0);
-    assert!(wolf.flags.contains(&Fo4RaceFlag::Walks));
-    assert!(wolf.flags_2.contains(&Fo4RaceFlag2::UseQuadrupedController));
-    assert!(wolf.flags_2.contains(&Fo4RaceFlag2::Ungendered));
+        assert_eq!(wolf.size, Fo4RaceSize::Medium);
+        assert_eq!(gecko.size, Fo4RaceSize::Small);
+        assert_eq!(wolf.acceleration_rate, 240.0);
+        assert_eq!(wolf.deceleration_rate, 480.0);
+        assert!(wolf.flags.contains(&Fo4RaceFlag::Walks));
+        assert!(wolf.flags_2.contains(&Fo4RaceFlag2::UseQuadrupedController));
+        assert!(wolf.flags_2.contains(&Fo4RaceFlag2::Ungendered));
+    }
+    {
+        let mut dragon_evidence = family_race_evidence(
+            300.0,
+            MovementArchitecture::Flying,
+            ControllerArchitecture::Standard,
+        );
+        dragon_evidence.geometry_scale_to_fo4 = Some(1.5);
+        dragon_evidence
+            .movement
+            .as_mut()
+            .unwrap()
+            .use_large_actor_pathing = true;
+        let flyer_evidence = family_race_evidence(
+            120.0,
+            MovementArchitecture::Flying,
+            ControllerArchitecture::Standard,
+        );
+
+        let dragon_derivation =
+            derive_fo4_race_data(&dragon_evidence, &race_data_policy()).unwrap();
+        let dragon_audit = dragon_derivation.scale_audit.clone().unwrap();
+        let dragon = mapped_race_data(dragon_derivation);
+        let flyer =
+            mapped_race_data(derive_fo4_race_data(&flyer_evidence, &race_data_policy()).unwrap());
+
+        assert_eq!(dragon.size, Fo4RaceSize::ExtraLarge);
+        assert_eq!(flyer.size, Fo4RaceSize::Large);
+        assert_eq!(dragon.male_height, 1.5);
+        assert_eq!(dragon.flight_radius, dragon_audit.scaled_capsule_radius);
+        assert!(dragon.flags.contains(&Fo4RaceFlag::Flies));
+        assert!(dragon.flags_2.contains(&Fo4RaceFlag2::UseLargeActorPathing));
+        assert!(flyer.flight_radius > 0.0);
+    }
+    {
+        let swimmer = mapped_race_data(
+            derive_fo4_race_data(
+                &family_race_evidence(
+                    80.0,
+                    MovementArchitecture::GroundedSwimming,
+                    ControllerArchitecture::Quadruped,
+                ),
+                &race_data_policy(),
+            )
+            .unwrap(),
+        );
+        let flyer = mapped_race_data(
+            derive_fo4_race_data(
+                &family_race_evidence(
+                    180.0,
+                    MovementArchitecture::GroundedFlying,
+                    ControllerArchitecture::Standard,
+                ),
+                &race_data_policy(),
+            )
+            .unwrap(),
+        );
+
+        assert!(swimmer.flags.contains(&Fo4RaceFlag::Walks));
+        assert!(swimmer.flags.contains(&Fo4RaceFlag::Swims));
+        assert!(!swimmer.flags.contains(&Fo4RaceFlag::Flies));
+        assert_eq!(swimmer.flight_radius, 0.0);
+        assert!(flyer.flags.contains(&Fo4RaceFlag::Walks));
+        assert!(flyer.flags.contains(&Fo4RaceFlag::Flies));
+        assert!(!flyer.flags.contains(&Fo4RaceFlag::Swims));
+        assert!(flyer.flight_radius > 0.0);
+    }
+    {
+        let turret_evidence = family_race_evidence(
+            140.0,
+            MovementArchitecture::Stationary,
+            ControllerArchitecture::Fixed,
+        );
+        let critter_evidence = family_race_evidence(
+            12.0,
+            MovementArchitecture::Grounded,
+            ControllerArchitecture::Quadruped,
+        );
+
+        let turret =
+            mapped_race_data(derive_fo4_race_data(&turret_evidence, &race_data_policy()).unwrap());
+        let critter =
+            mapped_race_data(derive_fo4_race_data(&critter_evidence, &race_data_policy()).unwrap());
+
+        assert_eq!(turret.size, Fo4RaceSize::Large);
+        assert_eq!(turret.acceleration_rate, 0.0);
+        assert_eq!(turret.deceleration_rate, 0.0);
+        assert!(turret.flags.contains(&Fo4RaceFlag::Immobile));
+        assert_eq!(turret.flight_radius, 0.0);
+        assert_eq!(critter.size, Fo4RaceSize::Small);
+        assert!(critter.flags.contains(&Fo4RaceFlag::Walks));
+    }
 }
 
 #[test]
-fn race_data_adapter_scales_extreme_dragon_and_flyer_capsules() {
-    let mut dragon_evidence = family_race_evidence(
-        300.0,
-        MovementArchitecture::Flying,
-        ControllerArchitecture::Standard,
-    );
-    dragon_evidence.geometry_scale_to_fo4 = Some(1.5);
-    dragon_evidence
-        .movement
-        .as_mut()
-        .unwrap()
-        .use_large_actor_pathing = true;
-    let flyer_evidence = family_race_evidence(
-        120.0,
-        MovementArchitecture::Flying,
-        ControllerArchitecture::Standard,
-    );
+fn race_data_adapter_rejects_missing_or_invalid_evidence_without_defaults() {
+    {
+        let mut evidence = family_race_evidence(
+            80.0,
+            MovementArchitecture::Grounded,
+            ControllerArchitecture::Quadruped,
+        );
+        evidence.body_bounds = None;
+        evidence.capsule = None;
+        evidence.xp_value = None;
+        evidence.movement.as_mut().unwrap().linear = None;
+        evidence.movement.as_mut().unwrap().angular = None;
 
-    let dragon_derivation = derive_fo4_race_data(&dragon_evidence, &race_data_policy()).unwrap();
-    let dragon_audit = dragon_derivation.scale_audit.clone().unwrap();
-    let dragon = mapped_race_data(dragon_derivation);
-    let flyer =
-        mapped_race_data(derive_fo4_race_data(&flyer_evidence, &race_data_policy()).unwrap());
+        let derivation = derive_fo4_race_data(&evidence, &race_data_policy()).unwrap();
 
-    assert_eq!(dragon.size, Fo4RaceSize::ExtraLarge);
-    assert_eq!(flyer.size, Fo4RaceSize::Large);
-    assert_eq!(dragon.male_height, 1.5);
-    assert_eq!(dragon.flight_radius, dragon_audit.scaled_capsule_radius);
-    assert!(dragon.flags.contains(&Fo4RaceFlag::Flies));
-    assert!(dragon.flags_2.contains(&Fo4RaceFlag2::UseLargeActorPathing));
-    assert!(flyer.flight_radius > 0.0);
-}
+        assert_eq!(
+            derivation.missing_evidence,
+            [
+                RaceDataEvidenceField::BodyBounds,
+                RaceDataEvidenceField::ControllerCapsule,
+                RaceDataEvidenceField::LinearMotion,
+                RaceDataEvidenceField::AngularMotion,
+                RaceDataEvidenceField::XpValue,
+            ]
+        );
+        assert_eq!(derivation.scale_audit, None);
+        assert!(matches!(
+            derivation.mapping,
+            RaceDataMapping::Missing { ref fields }
+                if fields.contains(&Fo4RaceDataField::ControllerCapsule)
+                    && fields.contains(&Fo4RaceDataField::FlightRadius)
+                    && fields.contains(&Fo4RaceDataField::LinearAcceleration)
+                    && fields.contains(&Fo4RaceDataField::AngularAcceleration)
+                    && fields.contains(&Fo4RaceDataField::AimAngleTolerance)
+                    && fields.contains(&Fo4RaceDataField::OrientationLimits)
+                    && fields.contains(&Fo4RaceDataField::Size)
+                    && fields.contains(&Fo4RaceDataField::XpValue)
+        ));
+    }
+    {
+        let mut evidence = family_race_evidence(
+            80.0,
+            MovementArchitecture::Grounded,
+            ControllerArchitecture::Quadruped,
+        );
+        evidence.capsule.as_mut().unwrap().radius = -1.0;
 
-#[test]
-fn race_data_adapter_preserves_grounded_swimming_and_flying_flags() {
-    let swimmer = mapped_race_data(
-        derive_fo4_race_data(
-            &family_race_evidence(
-                80.0,
-                MovementArchitecture::GroundedSwimming,
-                ControllerArchitecture::Quadruped,
-            ),
-            &race_data_policy(),
-        )
-        .unwrap(),
-    );
-    let flyer = mapped_race_data(
-        derive_fo4_race_data(
-            &family_race_evidence(
-                180.0,
-                MovementArchitecture::GroundedFlying,
-                ControllerArchitecture::Standard,
-            ),
-            &race_data_policy(),
-        )
-        .unwrap(),
-    );
-
-    assert!(swimmer.flags.contains(&Fo4RaceFlag::Walks));
-    assert!(swimmer.flags.contains(&Fo4RaceFlag::Swims));
-    assert!(!swimmer.flags.contains(&Fo4RaceFlag::Flies));
-    assert_eq!(swimmer.flight_radius, 0.0);
-    assert!(flyer.flags.contains(&Fo4RaceFlag::Walks));
-    assert!(flyer.flags.contains(&Fo4RaceFlag::Flies));
-    assert!(!flyer.flags.contains(&Fo4RaceFlag::Swims));
-    assert!(flyer.flight_radius > 0.0);
-}
-
-#[test]
-fn race_data_adapter_handles_stationary_turret_and_small_critter() {
-    let turret_evidence = family_race_evidence(
-        140.0,
-        MovementArchitecture::Stationary,
-        ControllerArchitecture::Fixed,
-    );
-    let critter_evidence = family_race_evidence(
-        12.0,
-        MovementArchitecture::Grounded,
-        ControllerArchitecture::Quadruped,
-    );
-
-    let turret =
-        mapped_race_data(derive_fo4_race_data(&turret_evidence, &race_data_policy()).unwrap());
-    let critter =
-        mapped_race_data(derive_fo4_race_data(&critter_evidence, &race_data_policy()).unwrap());
-
-    assert_eq!(turret.size, Fo4RaceSize::Large);
-    assert_eq!(turret.acceleration_rate, 0.0);
-    assert_eq!(turret.deceleration_rate, 0.0);
-    assert!(turret.flags.contains(&Fo4RaceFlag::Immobile));
-    assert_eq!(turret.flight_radius, 0.0);
-    assert_eq!(critter.size, Fo4RaceSize::Small);
-    assert!(critter.flags.contains(&Fo4RaceFlag::Walks));
-}
-
-#[test]
-fn race_data_adapter_returns_exact_missing_evidence_without_defaults() {
-    let mut evidence = family_race_evidence(
-        80.0,
-        MovementArchitecture::Grounded,
-        ControllerArchitecture::Quadruped,
-    );
-    evidence.body_bounds = None;
-    evidence.capsule = None;
-    evidence.xp_value = None;
-    evidence.movement.as_mut().unwrap().linear = None;
-    evidence.movement.as_mut().unwrap().angular = None;
-
-    let derivation = derive_fo4_race_data(&evidence, &race_data_policy()).unwrap();
-
-    assert_eq!(
-        derivation.missing_evidence,
-        [
-            RaceDataEvidenceField::BodyBounds,
-            RaceDataEvidenceField::ControllerCapsule,
-            RaceDataEvidenceField::LinearMotion,
-            RaceDataEvidenceField::AngularMotion,
-            RaceDataEvidenceField::XpValue,
-        ]
-    );
-    assert_eq!(derivation.scale_audit, None);
-    assert!(matches!(
-        derivation.mapping,
-        RaceDataMapping::Missing { ref fields }
-            if fields.contains(&Fo4RaceDataField::ControllerCapsule)
-                && fields.contains(&Fo4RaceDataField::FlightRadius)
-                && fields.contains(&Fo4RaceDataField::LinearAcceleration)
-                && fields.contains(&Fo4RaceDataField::AngularAcceleration)
-                && fields.contains(&Fo4RaceDataField::AimAngleTolerance)
-                && fields.contains(&Fo4RaceDataField::OrientationLimits)
-                && fields.contains(&Fo4RaceDataField::Size)
-                && fields.contains(&Fo4RaceDataField::XpValue)
-    ));
-}
-
-#[test]
-fn race_data_adapter_rejects_invalid_measurements_instead_of_guessing() {
-    let mut evidence = family_race_evidence(
-        80.0,
-        MovementArchitecture::Grounded,
-        ControllerArchitecture::Quadruped,
-    );
-    evidence.capsule.as_mut().unwrap().radius = -1.0;
-
-    assert!(matches!(
-        derive_fo4_race_data(&evidence, &race_data_policy()),
-        Err(RaceDataDerivationError::InvalidEvidence {
-            field: RaceDataEvidenceField::ControllerCapsule,
-            ..
-        })
-    ));
+        assert!(matches!(
+            derive_fo4_race_data(&evidence, &race_data_policy()),
+            Err(RaceDataDerivationError::InvalidEvidence {
+                field: RaceDataEvidenceField::ControllerCapsule,
+                ..
+            })
+        ));
+    }
 }

@@ -24,7 +24,11 @@ pub(crate) fn normalize(record: &mut Record, interner: &StringInterner) {
         b"REVB" => {
             let editor_id = record.eid.and_then(|eid| interner.resolve(eid));
             let data = fo4_reverb_data(editor_id.unwrap_or_default());
-            push(record, b"DATA", FieldValue::Bytes(SmallVec::from_slice(&data)));
+            push(
+                record,
+                b"DATA",
+                FieldValue::Bytes(SmallVec::from_slice(&data)),
+            );
         }
         // Starfield maps keywords to a WWise event, which has no FO4 SNDR.
         b"KSSM" => push(record, b"DNAM", null_reference()),
@@ -126,7 +130,12 @@ fn reverb(
 }
 
 fn floats(values: &[f32]) -> FieldValue {
-    FieldValue::Bytes(values.iter().flat_map(|value| value.to_le_bytes()).collect())
+    FieldValue::Bytes(
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect(),
+    )
 }
 
 fn push(record: &mut Record, sig: &[u8; 4], value: FieldValue) {
@@ -255,15 +264,29 @@ mod tests {
             "REVB",
             0x0E_322E,
             &[
-                ("EDID", "5265766572625f425f496e74526f6f6d53746f6e654e6172726f7700"),
+                (
+                    "EDID",
+                    "5265766572625f425f496e74526f6f6d53746f6e654e6172726f7700",
+                ),
                 ("RABG", "3f4bb704ffa17a513938699fd98f9180"),
                 ("ANAM", "02000000"),
             ],
         );
 
-        assert_eq!(payload(&written, "DATA"), Some("1d014006fcfd000364141a0d3c00"));
-        assert_eq!(payload(&written, "ANAM"), Some("02000000"), "Class B, four bytes");
-        assert_eq!(payload(&written, "RABG"), None, "WWise aux bus has no FO4 field");
+        assert_eq!(
+            payload(&written, "DATA"),
+            Some("1d014006fcfd000364141a0d3c00")
+        );
+        assert_eq!(
+            payload(&written, "ANAM"),
+            Some("02000000"),
+            "Class B, four bytes"
+        );
+        assert_eq!(
+            payload(&written, "RABG"),
+            None,
+            "WWise aux bus has no FO4 field"
+        );
     }
 
     #[test]
@@ -272,14 +295,20 @@ mod tests {
             "REVB",
             0x1E_C6D6,
             &[
-                ("EDID", "5265766572625f445f496e744e656f6e436c75624c6172676500"),
+                (
+                    "EDID",
+                    "5265766572625f445f496e744e656f6e436c75624c6172676500",
+                ),
                 ("RABG", "124b36e4785565fb7480705e56e838be"),
                 ("ANAM", "04000000"),
             ],
         );
 
         // Fallout4.esm REVB 0C5B6E `DefaultReverb`.
-        assert_eq!(payload(&written, "DATA"), Some("640014009c9c9c9c0a0000646400"));
+        assert_eq!(
+            payload(&written, "DATA"),
+            Some("640014009c9c9c9c0a0000646400")
+        );
         assert_eq!(payload(&written, "ANAM"), Some("04000000"));
     }
 
@@ -331,7 +360,10 @@ mod tests {
             Some("000020410ad7a33cc3f5a83ecdcccc3d000020410000003f0000803f0000803fec51383e")
         );
         assert_eq!(payload(&written, "CNAM"), Some("0000803f0000803f0000803f"));
-        assert_eq!(payload(&written, "TNAM"), Some("000000000000803f0000803f0000803f"));
+        assert_eq!(
+            payload(&written, "TNAM"),
+            Some("000000000000803f0000803f0000803f")
+        );
         assert_eq!(
             payload(&written, "DNAM"),
             Some("0000803f0000fa4300c05a45000078420000000000000000")

@@ -14,4 +14,5 @@ dhat-heap = ["esp_authoring_core/dhat-heap"]
 [dependencies]
 conversion_native  = { path = "../conversion" }
 esp_authoring_core = { path = "../../../../py_creation_lib/native/esp" }
+previs_native      = { path = "../previs" }
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

@@ -22,6 +22,14 @@ Function SetLocalStateByName(String stateName)
 EndFunction
 
 State Destroyed
+	Event OnActivate(ObjectReference akActionRef)
+		If DefaultAliasOnObjectRepaired.TryRepairObject(Self, akActionRef as Actor)
+			If GetState() == "Destroyed" && !IsDestroyed()
+				OnDestructionStageChanged(1, 0)
+			EndIf
+		EndIf
+	EndEvent
+
 	Event OnDestructionStageChanged(int aiOldStage, int aiCurrentStage)
 		If aiCurrentStage == 0 && aiOldStage > 0
 			If ShouldRepairToFixedStateName != ""

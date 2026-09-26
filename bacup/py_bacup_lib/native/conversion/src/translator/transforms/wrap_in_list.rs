@@ -103,12 +103,9 @@ mod tests {
             FieldValue::Int(3),
         )])]);
         assert_eq!(value, expected);
-    }
 
-    /// Verifies the default `wrapper_key` is "Count" when the config omits it.
-    /// Also covers target==field_name (same field, just wrapped).
-    #[test]
-    fn wrap_uses_default_wrapper_key_when_absent() {
+        // Verifies the default `wrapper_key` is "Count" when the config omits it.
+        // Also covers target==field_name (same field, just wrapped).
         let mut interner = StringInterner::new();
         let t = WrapInListTransform;
         // Config without wrapper_key — defaults to "Count"
@@ -132,11 +129,8 @@ mod tests {
         let t = WrapInListTransform;
         let config = serde_json::json!({ "target": "NAM1", "wrapper_key": "Count" });
         assert_eq!(t.target_field(&config), Some("NAM1"));
-    }
 
-    /// Verifies target_field() returns None when absent.
-    #[test]
-    fn target_field_returns_none_when_absent() {
+        // Verifies target_field() returns None when absent.
         let t = WrapInListTransform;
         let config = serde_json::json!({ "wrapper_key": "Count" });
         assert_eq!(t.target_field(&config), None);

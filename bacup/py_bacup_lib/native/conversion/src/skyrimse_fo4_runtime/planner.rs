@@ -1586,31 +1586,72 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_quest_component_does_not_poison_supported_magic_dependency() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Fixture.esm");
-        let quest_key = FormKey { local: 1, plugin };
-        let spell_key = FormKey { local: 2, plugin };
-        let mut quest = Record::new(SigCode::from_str("QUST").unwrap(), quest_key);
-        quest.fields.push(FieldEntry {
-            sig: crate::ids::SubrecordSig(*b"QTGL"),
-            value: FieldValue::FormKey(spell_key),
-        });
-        let spell = Record::new(SigCode::from_str("SPEL").unwrap(), spell_key);
-        let plan = plan_components(vec![spell, quest], &[], &interner).unwrap();
-        assert!(plan.components.iter().any(|component| {
-            component.roots[0].form_key.starts_with("000001@")
-                && component.members.len() == 1
-                && matches!(component.decision, RuntimeComponentDecision::Unsupported)
-        }));
-        assert!(plan.components.iter().any(|component| {
-            component.roots[0].form_key.starts_with("000002@")
-                && component.members.len() == 1
-                && matches!(component.decision, RuntimeComponentDecision::Supported)
-        }));
-        assert!(!plan.by_record[&quest_key].supported);
-        assert!(plan.by_record[&spell_key].supported);
-        assert_eq!(plan.by_record[&spell_key].component_ids.len(), 1);
+    fn unsupported_components_do_not_poison_supported_dependencies() {
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Fixture.esm");
+            let quest_key = FormKey { local: 1, plugin };
+            let spell_key = FormKey { local: 2, plugin };
+            let mut quest = Record::new(SigCode::from_str("QUST").unwrap(), quest_key);
+            quest.fields.push(FieldEntry {
+                sig: crate::ids::SubrecordSig(*b"QTGL"),
+                value: FieldValue::FormKey(spell_key),
+            });
+            let spell = Record::new(SigCode::from_str("SPEL").unwrap(), spell_key);
+            let plan = plan_components(vec![spell, quest], &[], &interner).unwrap();
+            assert!(plan.components.iter().any(|component| {
+                component.roots[0].form_key.starts_with("000001@")
+                    && component.members.len() == 1
+                    && matches!(component.decision, RuntimeComponentDecision::Unsupported)
+            }));
+            assert!(plan.components.iter().any(|component| {
+                component.roots[0].form_key.starts_with("000002@")
+                    && component.members.len() == 1
+                    && matches!(component.decision, RuntimeComponentDecision::Supported)
+            }));
+            assert!(!plan.by_record[&quest_key].supported);
+            assert!(plan.by_record[&spell_key].supported);
+            assert_eq!(plan.by_record[&spell_key].component_ids.len(), 1);
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let quest_key = FormKey { local: 1, plugin };
+            let race_key = FormKey {
+                local: 0x013746,
+                plugin,
+            };
+            let npc_key = FormKey {
+                local: 0x013290,
+                plugin,
+            };
+            let actor_key = FormKey {
+                local: 0x0198D9,
+                plugin,
+            };
+
+            let mut quest = Record::new(SigCode::from_str("QUST").unwrap(), quest_key);
+            quest
+                .fields
+                .push(field("QTGL", FieldValue::FormKey(npc_key)));
+            let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
+            race.eid = Some(interner.intern("NordRace"));
+            let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
+            npc.fields
+                .push(field("RNAM", FieldValue::FormKey(race_key)));
+            let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
+            actor
+                .fields
+                .push(field("NAME", FieldValue::FormKey(npc_key)));
+
+            let plan = plan_components(vec![quest, race, npc, actor], &[], &interner).unwrap();
+
+            assert!(!plan.by_record[&quest_key].supported);
+            assert!(plan.by_record[&race_key].supported);
+            assert!(plan.by_record[&npc_key].supported);
+            assert!(plan.by_record[&actor_key].supported);
+            assert_eq!(plan.by_record[&npc_key].component_ids.len(), 2);
+        }
     }
 
     #[test]
@@ -1663,313 +1704,271 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_component_does_not_poison_supported_actor_dependencies() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let quest_key = FormKey { local: 1, plugin };
-        let race_key = FormKey {
-            local: 0x013746,
-            plugin,
-        };
-        let npc_key = FormKey {
-            local: 0x013290,
-            plugin,
-        };
-        let actor_key = FormKey {
-            local: 0x0198D9,
-            plugin,
-        };
-
-        let mut quest = Record::new(SigCode::from_str("QUST").unwrap(), quest_key);
-        quest
-            .fields
-            .push(field("QTGL", FieldValue::FormKey(npc_key)));
-        let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
-        race.eid = Some(interner.intern("NordRace"));
-        let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
-        npc.fields
-            .push(field("RNAM", FieldValue::FormKey(race_key)));
-        let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
-        actor
-            .fields
-            .push(field("NAME", FieldValue::FormKey(npc_key)));
-
-        let plan = plan_components(vec![quest, race, npc, actor], &[], &interner).unwrap();
-
-        assert!(!plan.by_record[&quest_key].supported);
-        assert!(plan.by_record[&race_key].supported);
-        assert!(plan.by_record[&npc_key].supported);
-        assert!(plan.by_record[&actor_key].supported);
-        assert_eq!(plan.by_record[&npc_key].component_ids.len(), 2);
-    }
-
-    #[test]
-    fn translated_non_weapon_world_object_components_are_supported() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Fixture.esm");
-        let armor_key = FormKey { local: 1, plugin };
-        let armor_addon_key = FormKey { local: 2, plugin };
-        let furniture_key = FormKey { local: 3, plugin };
-        let mut armor = Record::new(SigCode::from_str("ARMO").unwrap(), armor_key);
-        armor.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"MODL"),
-            value: FieldValue::FormKey(armor_addon_key),
-        });
-        let armor_addon = Record::new(SigCode::from_str("ARMA").unwrap(), armor_addon_key);
-        let furniture = Record::new(SigCode::from_str("FURN").unwrap(), furniture_key);
-
-        let plan = plan_components(vec![armor, armor_addon, furniture], &[], &interner).unwrap();
-
-        for form_key in [armor_key, armor_addon_key, furniture_key] {
-            assert!(plan.by_record[&form_key].supported);
-        }
-    }
-
-    #[test]
-    fn armor_race_links_do_not_pull_actor_races_into_the_equipment_component() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Fixture.esm");
-        let armor_key = FormKey { local: 1, plugin };
-        let armor_addon_key = FormKey { local: 2, plugin };
-        let race_key = FormKey { local: 3, plugin };
-
-        let mut armor = Record::new(SigCode::from_str("ARMO").unwrap(), armor_key);
-        armor.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"MODL"),
-            value: FieldValue::FormKey(armor_addon_key),
-        });
-        armor.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"RNAM"),
-            value: FieldValue::FormKey(race_key),
-        });
-
-        let mut armor_addon = Record::new(SigCode::from_str("ARMA").unwrap(), armor_addon_key);
-        for sig in [*b"RNAM", *b"MODL"] {
-            armor_addon.fields.push(FieldEntry {
-                sig: SubrecordSig(sig),
-                value: FieldValue::FormKey(race_key),
+    fn world_object_and_armor_components_stay_separate_from_actor_races() {
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Fixture.esm");
+            let armor_key = FormKey { local: 1, plugin };
+            let armor_addon_key = FormKey { local: 2, plugin };
+            let furniture_key = FormKey { local: 3, plugin };
+            let mut armor = Record::new(SigCode::from_str("ARMO").unwrap(), armor_key);
+            armor.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"MODL"),
+                value: FieldValue::FormKey(armor_addon_key),
             });
+            let armor_addon = Record::new(SigCode::from_str("ARMA").unwrap(), armor_addon_key);
+            let furniture = Record::new(SigCode::from_str("FURN").unwrap(), furniture_key);
+
+            let plan =
+                plan_components(vec![armor, armor_addon, furniture], &[], &interner).unwrap();
+
+            for form_key in [armor_key, armor_addon_key, furniture_key] {
+                assert!(plan.by_record[&form_key].supported);
+            }
         }
-        let race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Fixture.esm");
+            let armor_key = FormKey { local: 1, plugin };
+            let armor_addon_key = FormKey { local: 2, plugin };
+            let race_key = FormKey { local: 3, plugin };
 
-        let plan = plan_components(vec![armor, armor_addon, race], &[], &interner).unwrap();
-
-        assert!(plan.by_record[&armor_key].supported);
-        assert!(plan.by_record[&armor_addon_key].supported);
-        assert!(plan.by_record[&race_key].supported);
-        let armor_component = plan
-            .components
-            .iter()
-            .find(|component| component.roots[0].form_key.starts_with("000001@"))
-            .unwrap();
-        assert_eq!(armor_component.members.len(), 2);
-    }
-
-    #[test]
-    fn audited_humanoid_npc_and_placements_form_supported_actor_components() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let race_key = FormKey {
-            local: 0x013746,
-            plugin,
-        };
-        let npc_key = FormKey {
-            local: 0x0A2C8E,
-            plugin,
-        };
-        let actor_key = FormKey {
-            local: 0x0A2C94,
-            plugin,
-        };
-        let voice_key = FormKey {
-            local: 0x013ADD,
-            plugin,
-        };
-        let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
-        race.eid = Some(interner.intern("NordRace"));
-        let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
-        npc.fields.extend([
-            FieldEntry {
+            let mut armor = Record::new(SigCode::from_str("ARMO").unwrap(), armor_key);
+            armor.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"MODL"),
+                value: FieldValue::FormKey(armor_addon_key),
+            });
+            armor.fields.push(FieldEntry {
                 sig: SubrecordSig(*b"RNAM"),
                 value: FieldValue::FormKey(race_key),
-            },
-            FieldEntry {
-                sig: SubrecordSig(*b"VTCK"),
-                value: FieldValue::FormKey(voice_key),
-            },
-        ]);
-        let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
-        actor.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"NAME"),
-            value: FieldValue::FormKey(npc_key),
-        });
-        let voice = Record::new(SigCode::from_str("VTYP").unwrap(), voice_key);
+            });
 
-        let plan = plan_components(vec![race, npc, actor, voice], &[], &interner).unwrap();
+            let mut armor_addon = Record::new(SigCode::from_str("ARMA").unwrap(), armor_addon_key);
+            for sig in [*b"RNAM", *b"MODL"] {
+                armor_addon.fields.push(FieldEntry {
+                    sig: SubrecordSig(sig),
+                    value: FieldValue::FormKey(race_key),
+                });
+            }
+            let race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
 
-        assert!(plan.by_record[&race_key].supported);
-        assert!(plan.by_record[&npc_key].supported);
-        assert!(plan.by_record[&actor_key].supported);
-        assert!(!plan.by_record[&voice_key].supported);
-        assert!(plan.components.iter().any(|component| {
-            component.roots[0].form_key.starts_with("0A2C94@")
-                && component.members.len() == 3
-                && matches!(component.decision, RuntimeComponentDecision::Supported)
-        }));
-    }
+            let plan = plan_components(vec![armor, armor_addon, race], &[], &interner).unwrap();
 
-    #[test]
-    fn audited_beast_race_npcs_are_supported() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let race_key = FormKey {
-            local: 0x013740,
-            plugin,
-        };
-        let npc_key = FormKey {
-            local: 0x800,
-            plugin,
-        };
-        let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
-        race.eid = Some(interner.intern("ArgonianRace"));
-        let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
-        npc.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"RNAM"),
-            value: FieldValue::FormKey(race_key),
-        });
-
-        let plan = plan_components(vec![race, npc], &[], &interner).unwrap();
-
-        assert!(plan.by_record[&race_key].supported);
-        assert!(plan.by_record[&npc_key].supported);
-    }
-
-    #[test]
-    fn every_resolved_race_npc_and_actor_is_supported_without_an_allowlist() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let race_key = FormKey {
-            local: 0x0131F9,
-            plugin,
-        };
-        let npc_key = FormKey {
-            local: 0x02B10E,
-            plugin,
-        };
-        let actor_key = FormKey {
-            local: 0x07E94D,
-            plugin,
-        };
-        let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
-        race.eid = Some(interner.intern("FalmerRace"));
-        let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
-        npc.fields
-            .push(field("RNAM", FieldValue::FormKey(race_key)));
-        let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
-        actor
-            .fields
-            .push(field("NAME", FieldValue::FormKey(npc_key)));
-
-        let plan = plan_components(vec![race, npc, actor], &[], &interner).unwrap();
-
-        for form_key in [race_key, npc_key, actor_key] {
-            assert!(plan.by_record[&form_key].supported);
+            assert!(plan.by_record[&armor_key].supported);
+            assert!(plan.by_record[&armor_addon_key].supported);
+            assert!(plan.by_record[&race_key].supported);
+            let armor_component = plan
+                .components
+                .iter()
+                .find(|component| component.roots[0].form_key.starts_with("000001@"))
+                .unwrap();
+            assert_eq!(armor_component.members.len(), 2);
         }
     }
 
     #[test]
-    fn unresolved_npc_race_fails_total_actor_preflight() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let npc_key = FormKey { local: 1, plugin };
-        let missing_race = FormKey { local: 2, plugin };
-        let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
-        npc.fields
-            .push(field("RNAM", FieldValue::FormKey(missing_race)));
+    fn resolved_humanoid_beast_and_all_race_npcs_form_supported_actor_components() {
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let race_key = FormKey {
+                local: 0x013746,
+                plugin,
+            };
+            let npc_key = FormKey {
+                local: 0x0A2C8E,
+                plugin,
+            };
+            let actor_key = FormKey {
+                local: 0x0A2C94,
+                plugin,
+            };
+            let voice_key = FormKey {
+                local: 0x013ADD,
+                plugin,
+            };
+            let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
+            race.eid = Some(interner.intern("NordRace"));
+            let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
+            npc.fields.extend([
+                FieldEntry {
+                    sig: SubrecordSig(*b"RNAM"),
+                    value: FieldValue::FormKey(race_key),
+                },
+                FieldEntry {
+                    sig: SubrecordSig(*b"VTCK"),
+                    value: FieldValue::FormKey(voice_key),
+                },
+            ]);
+            let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
+            actor.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"NAME"),
+                value: FieldValue::FormKey(npc_key),
+            });
+            let voice = Record::new(SigCode::from_str("VTYP").unwrap(), voice_key);
 
-        let error = plan_components(vec![npc], &[], &interner).unwrap_err();
+            let plan = plan_components(vec![race, npc, actor, voice], &[], &interner).unwrap();
 
-        assert!(error.contains("no resolvable RACE RNAM dependency"));
+            assert!(plan.by_record[&race_key].supported);
+            assert!(plan.by_record[&npc_key].supported);
+            assert!(plan.by_record[&actor_key].supported);
+            assert!(!plan.by_record[&voice_key].supported);
+            assert!(plan.components.iter().any(|component| {
+                component.roots[0].form_key.starts_with("0A2C94@")
+                    && component.members.len() == 3
+                    && matches!(component.decision, RuntimeComponentDecision::Supported)
+            }));
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let race_key = FormKey {
+                local: 0x013740,
+                plugin,
+            };
+            let npc_key = FormKey {
+                local: 0x800,
+                plugin,
+            };
+            let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
+            race.eid = Some(interner.intern("ArgonianRace"));
+            let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
+            npc.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"RNAM"),
+                value: FieldValue::FormKey(race_key),
+            });
+
+            let plan = plan_components(vec![race, npc], &[], &interner).unwrap();
+
+            assert!(plan.by_record[&race_key].supported);
+            assert!(plan.by_record[&npc_key].supported);
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let race_key = FormKey {
+                local: 0x0131F9,
+                plugin,
+            };
+            let npc_key = FormKey {
+                local: 0x02B10E,
+                plugin,
+            };
+            let actor_key = FormKey {
+                local: 0x07E94D,
+                plugin,
+            };
+            let mut race = Record::new(SigCode::from_str("RACE").unwrap(), race_key);
+            race.eid = Some(interner.intern("FalmerRace"));
+            let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
+            npc.fields
+                .push(field("RNAM", FieldValue::FormKey(race_key)));
+            let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
+            actor
+                .fields
+                .push(field("NAME", FieldValue::FormKey(npc_key)));
+
+            let plan = plan_components(vec![race, npc, actor], &[], &interner).unwrap();
+
+            for form_key in [race_key, npc_key, actor_key] {
+                assert!(plan.by_record[&form_key].supported);
+            }
+        }
     }
 
     #[test]
-    fn unresolved_actor_base_fails_total_actor_preflight() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Skyrim.esm");
-        let actor_key = FormKey { local: 1, plugin };
-        let missing_npc = FormKey { local: 2, plugin };
-        let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
-        actor
-            .fields
-            .push(field("NAME", FieldValue::FormKey(missing_npc)));
+    fn unresolved_npc_race_or_actor_base_fails_total_actor_preflight() {
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let npc_key = FormKey { local: 1, plugin };
+            let missing_race = FormKey { local: 2, plugin };
+            let mut npc = Record::new(SigCode::from_str("NPC_").unwrap(), npc_key);
+            npc.fields
+                .push(field("RNAM", FieldValue::FormKey(missing_race)));
 
-        let error = plan_components(vec![actor], &[], &interner).unwrap_err();
+            let error = plan_components(vec![npc], &[], &interner).unwrap_err();
 
-        assert!(error.contains("no resolvable NPC_ NAME dependency"));
+            assert!(error.contains("no resolvable RACE RNAM dependency"));
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Skyrim.esm");
+            let actor_key = FormKey { local: 1, plugin };
+            let missing_npc = FormKey { local: 2, plugin };
+            let mut actor = Record::new(SigCode::from_str("ACHR").unwrap(), actor_key);
+            actor
+                .fields
+                .push(field("NAME", FieldValue::FormKey(missing_npc)));
+
+            let error = plan_components(vec![actor], &[], &interner).unwrap_err();
+
+            assert!(error.contains("no resolvable NPC_ NAME dependency"));
+        }
     }
 
     #[test]
-    fn non_melee_weapons_are_routed_without_poisoning_audited_melee() {
-        let interner = StringInterner::new();
-        let steel = audited_steel_battleaxe(&interner);
-        let steel_key = steel.form_key;
-        let plugin = steel_key.plugin;
+    fn weapon_routing_keeps_non_melee_separate_and_includes_first_person_static() {
+        {
+            let interner = StringInterner::new();
+            let steel = audited_steel_battleaxe(&interner);
+            let steel_key = steel.form_key;
+            let plugin = steel_key.plugin;
 
-        let enchanted_key = FormKey {
-            local: 0x0A56D0,
-            plugin,
-        };
-        let mut enchanted = Record::new(SigCode::from_str("WEAP").unwrap(), enchanted_key);
-        enchanted.eid = Some(interner.intern("EnchSteelBattleaxeFire3"));
-        enchanted.fields.extend([
-            field("CNAM", FieldValue::FormKey(steel_key)),
-            field(
-                "EITM",
-                FieldValue::FormKey(FormKey {
-                    local: 0x000800,
-                    plugin,
-                }),
-            ),
-        ]);
+            let enchanted_key = FormKey {
+                local: 0x0A56D0,
+                plugin,
+            };
+            let mut enchanted = Record::new(SigCode::from_str("WEAP").unwrap(), enchanted_key);
+            enchanted.eid = Some(interner.intern("EnchSteelBattleaxeFire3"));
+            enchanted.fields.extend([
+                field("CNAM", FieldValue::FormKey(steel_key)),
+                field(
+                    "EITM",
+                    FieldValue::FormKey(FormKey {
+                        local: 0x000800,
+                        plugin,
+                    }),
+                ),
+            ]);
 
-        let ranged_key = FormKey {
-            local: 0x000801,
-            plugin,
-        };
-        let mut ranged = audited_steel_battleaxe(&interner);
-        ranged.form_key = ranged_key;
-        ranged.eid = Some(interner.intern("FixtureBow"));
+            let ranged_key = FormKey {
+                local: 0x000801,
+                plugin,
+            };
+            let mut ranged = audited_steel_battleaxe(&interner);
+            ranged.form_key = ranged_key;
+            ranged.eid = Some(interner.intern("FixtureBow"));
 
-        let plan = plan_components(vec![steel, enchanted, ranged], &[], &interner).unwrap();
+            let plan = plan_components(vec![steel, enchanted, ranged], &[], &interner).unwrap();
 
-        assert!(plan.by_record[&steel_key].supported);
-        assert!(plan.by_record[&enchanted_key].supported);
-        assert!(plan.by_record[&ranged_key].supported);
-        assert!(plan.components.iter().any(|component| {
-            component.roots[0].form_key.starts_with("013984@")
-                && component.members.len() == 1
-                && matches!(component.decision, RuntimeComponentDecision::Supported)
-        }));
-    }
+            assert!(plan.by_record[&steel_key].supported);
+            assert!(plan.by_record[&enchanted_key].supported);
+            assert!(plan.by_record[&ranged_key].supported);
+            assert!(plan.components.iter().any(|component| {
+                component.roots[0].form_key.starts_with("013984@")
+                    && component.members.len() == 1
+                    && matches!(component.decision, RuntimeComponentDecision::Supported)
+            }));
+        }
+        {
+            let interner = StringInterner::new();
+            let steel = audited_steel_battleaxe(&interner);
+            let steel_key = steel.form_key;
+            let stat_key = FormKey {
+                local: 0x020E27,
+                plugin: steel_key.plugin,
+            };
+            let mut first_person = Record::new(SigCode::from_str("STAT").unwrap(), stat_key);
+            first_person.eid = Some(interner.intern("1stPersonSteelBattleaxe"));
 
-    #[test]
-    fn audited_melee_weapon_component_can_include_its_exact_first_person_static() {
-        let interner = StringInterner::new();
-        let steel = audited_steel_battleaxe(&interner);
-        let steel_key = steel.form_key;
-        let stat_key = FormKey {
-            local: 0x020E27,
-            plugin: steel_key.plugin,
-        };
-        let mut first_person = Record::new(SigCode::from_str("STAT").unwrap(), stat_key);
-        first_person.eid = Some(interner.intern("1stPersonSteelBattleaxe"));
+            let plan = plan_components(vec![steel, first_person], &[], &interner).unwrap();
 
-        let plan = plan_components(vec![steel, first_person], &[], &interner).unwrap();
-
-        assert!(plan.by_record[&steel_key].supported);
-        assert!(plan.by_record[&stat_key].supported);
-        assert_eq!(plan.components.len(), 1);
-        assert_eq!(plan.components[0].members.len(), 2);
+            assert!(plan.by_record[&steel_key].supported);
+            assert!(plan.by_record[&stat_key].supported);
+            assert_eq!(plan.components.len(), 1);
+            assert_eq!(plan.components[0].members.len(), 2);
+        }
     }
 
     #[test]

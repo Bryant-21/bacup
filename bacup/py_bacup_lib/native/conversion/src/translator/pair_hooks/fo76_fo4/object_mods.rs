@@ -621,6 +621,12 @@ pub(super) fn strip_struct_property_rows(
     removed
 }
 
+pub(crate) fn strip_raw_weapon_object_template_property_rows(
+    bytes: &mut smallvec::SmallVec<[u8; 32]>,
+) -> u32 {
+    strip_raw_object_template_property_rows(bytes, ObjectModPropertyTarget::Weapon)
+}
+
 pub(super) fn strip_raw_object_template_property_rows(
     bytes: &mut smallvec::SmallVec<[u8; 32]>,
     target: ObjectModPropertyTarget,
@@ -986,11 +992,21 @@ impl Fo76Fo4Hook {
     /// for and no power armor can be repainted. `expose_power_armor_paint_slot`
     /// does the matching `ARMO` side; the paint keeps its own
     /// `AttachParentSlots`, so lining/misc/headlamp stay reachable through it.
+    ///
+    /// Model-bearing OMODs are exempt. A power armor piece's visible mesh is
+    /// carried by whatever OMOD occupies the part root — the ARMA is a shared
+    /// stub — and a non-playable frame dresses itself by including the six
+    /// piece OMODs in its own `FURN` object template, against a `FURN.APPR`
+    /// that advertises the part roots and nothing else. Moving those to
+    /// `ap_PowerArmor_Paint` left nothing on the frame but the fusion core
+    /// (measured 2026-09-20: 333 of 432 model mods across 56 of 99 converted
+    /// frames unreachable, against 4 of 166 in vanilla), and on the `ARMO`
+    /// side it stacked every skin on one slot so two meshes drew at once.
     pub(super) fn retarget_power_armor_paint_attach_point(
         interner: &crate::sym::StringInterner,
         record: &mut Record,
     ) {
-        if record.sig.0 != *b"OMOD" {
+        if record.sig.0 != *b"OMOD" || omod_has_power_armor_model(interner, record) {
             return;
         }
 
@@ -1035,7 +1051,11 @@ impl Fo76Fo4Hook {
     ///
     /// The `ARMO` half of `retarget_power_armor_paint_attach_point`: the piece
     /// advertises exactly one per-part slot, which that hook has moved the
-    /// paints off, so it must advertise FO4's paint slot instead.
+    /// model-less paints off, so it must advertise FO4's paint slot as well.
+    ///
+    /// Added, never substituted: the part root still has to be advertised or
+    /// the model-bearing OMOD that hook now exempts has nowhere to attach and
+    /// the piece renders as the bare ARMA stub.
     pub(super) fn expose_power_armor_paint_slot(
         interner: &crate::sym::StringInterner,
         record: &mut Record,
@@ -1054,27 +1074,27 @@ impl Fo76Fo4Hook {
             }
             match &mut entry.value {
                 FieldValue::List(items) => {
-                    for item in items.iter_mut() {
-                        if is_power_armor_part_attach_point_value(item) {
-                            *item = FieldValue::FormKey(paint_slot);
-                        }
+                    if items.iter().any(is_power_armor_part_attach_point_value) {
+                        items.push(FieldValue::FormKey(paint_slot));
                     }
                 }
                 FieldValue::Bytes(bytes) => {
-                    for chunk in bytes.chunks_exact_mut(4) {
-                        let raw = u32::from_le_bytes(chunk.try_into().unwrap());
-                        if is_fo76_power_armor_part_attach_point(raw) {
-                            chunk.copy_from_slice(
-                                &((raw & 0xFF00_0000) | FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID)
-                                    .to_le_bytes(),
-                            );
-                        }
+                    let master = bytes
+                        .chunks_exact(4)
+                        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                        .find(|raw| is_fo76_power_armor_part_attach_point(*raw))
+                        .map(|raw| raw & 0xFF00_0000);
+                    if let Some(master) = master {
+                        bytes.extend_from_slice(
+                            &(master | FO4_AP_POWER_ARMOR_PAINT_OBJECT_ID).to_le_bytes(),
+                        );
                     }
                 }
                 _ => {}
             }
-            // `APPR` carries no paired count subrecord, so collapsing a piece
-            // that advertised more than one part slot needs no count fixup.
+            // `APPR` carries no paired count subrecord, so dropping the second
+            // copy on a piece that already advertised the paint slot needs no
+            // count fixup.
             dedupe_formkey_array_value(&mut entry.value);
         }
     }

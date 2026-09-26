@@ -4,7 +4,7 @@
 //! (`\x00papyrus\x00`) and emits raw pre-rendered fragments directly without
 //! additional quoting.
 
-use super::ast::{BeginBlock, BinOpKind, ExprAst, ScriptAst, StmtAst, VarDecl};
+use super::ast::{BeginBlock, ExprAst, ScriptAst, StmtAst, VarDecl};
 use super::semantic::{RENDERED_PREFIX, expr_to_string};
 
 // ---------------------------------------------------------------------------
@@ -156,36 +156,28 @@ mod tests {
     }
 
     #[test]
-    fn emit_header() {
-        let out = compile("begin GameMode\nend\n");
-        assert!(out.starts_with("ScriptName TestScript extends ObjectReference"));
-    }
-
-    #[test]
-    fn emit_set_statement() {
-        let out = compile("begin GameMode\nset x to 42\nend\n");
-        assert!(out.contains("x = 42"), "output:\n{out}");
-    }
-
-    #[test]
-    fn emit_get_player_call() {
-        let out = compile("begin GameMode\nGetPlayer()\nend\n");
-        assert!(out.contains("Game.GetPlayer()"), "output:\n{out}");
-    }
-
-    #[test]
-    fn emit_event_block_gamemode_becomes_oninit() {
-        let out = compile("begin GameMode\nend\n");
-        assert!(out.contains("Event OnInit()"), "output:\n{out}");
-    }
-
-    #[test]
-    fn emit_onactivate_event() {
-        let out = compile("begin OnActivate\nend\n");
-        assert!(
-            out.contains("Event OnActivate(ObjectReference akActionRef)"),
-            "output:\n{out}"
-        );
+    fn emits_header_events_and_statements() {
+        for (src, expected) in [
+            (
+                "begin GameMode\nend\n",
+                "ScriptName TestScript extends ObjectReference",
+            ),
+            ("begin GameMode\nset x to 42\nend\n", "x = 42"),
+            ("begin GameMode\nGetPlayer()\nend\n", "Game.GetPlayer()"),
+            ("begin GameMode\nend\n", "Event OnInit()"),
+            (
+                "begin OnActivate\nend\n",
+                "Event OnActivate(ObjectReference akActionRef)",
+            ),
+            ("begin GameMode\nreturn\nend\n", "Return"),
+        ] {
+            let out = compile(src);
+            assert!(
+                out.contains(expected),
+                "{expected:?} missing for {src:?}:\n{out}"
+            );
+        }
+        assert!(compile("begin GameMode\nend\n").starts_with("ScriptName TestScript"));
     }
 
     #[test]

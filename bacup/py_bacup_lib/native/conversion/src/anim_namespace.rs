@@ -113,45 +113,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn namespaces_character_weapon_dir() {
-        assert_eq!(
-            namespaced_anim_path("Actors\\Character\\Animations\\Weapon\\Pistol").as_deref(),
-            Some("Actors\\Character\\Animations\\FO76\\Weapon\\Pistol")
-        );
-    }
-
-    #[test]
-    fn namespaces_character_first_person_dir() {
-        assert_eq!(
-            namespaced_anim_path("Actors\\Character\\_1stPerson\\Animations\\SingleActionRevolver")
-                .as_deref(),
-            Some("Actors\\Character\\_1stPerson\\Animations\\FO76\\SingleActionRevolver")
-        );
-    }
-
-    #[test]
-    fn namespaces_power_armor_dirs() {
-        assert_eq!(
-            namespaced_anim_path("Actors\\PowerArmor\\Animations\\Weapons\\M2").as_deref(),
-            Some("Actors\\PowerArmor\\Animations\\FO76\\Weapons\\M2")
-        );
-        assert_eq!(
-            namespaced_anim_path("Actors\\PowerArmor\\_1stPerson\\Animations\\Pistol").as_deref(),
-            Some("Actors\\PowerArmor\\_1stPerson\\Animations\\FO76\\Pistol")
-        );
-    }
-
-    #[test]
-    fn namespaces_files_and_keeps_separator_and_case() {
-        assert_eq!(
-            namespaced_anim_path(
-                "actors/character/animations/weapon/SingleActionRevolver/wpnfiresingleready.hkx"
-            )
-            .as_deref(),
-            Some(
-                "actors/character/animations/FO76/weapon/SingleActionRevolver/wpnfiresingleready.hkx"
-            )
-        );
+    fn namespaces_character_and_power_armor_weapon_sets_keeping_separator_and_case() {
+        for (input, expected) in [
+            (
+                "Actors\\Character\\Animations\\Weapon\\Pistol",
+                "Actors\\Character\\Animations\\FO76\\Weapon\\Pistol",
+            ),
+            (
+                "Actors\\Character\\_1stPerson\\Animations\\SingleActionRevolver",
+                "Actors\\Character\\_1stPerson\\Animations\\FO76\\SingleActionRevolver",
+            ),
+            (
+                "Actors\\PowerArmor\\Animations\\Weapons\\M2",
+                "Actors\\PowerArmor\\Animations\\FO76\\Weapons\\M2",
+            ),
+            (
+                "Actors\\PowerArmor\\_1stPerson\\Animations\\Pistol",
+                "Actors\\PowerArmor\\_1stPerson\\Animations\\FO76\\Pistol",
+            ),
+            (
+                "actors/character/animations/weapon/SingleActionRevolver/wpnfiresingleready.hkx",
+                "actors/character/animations/FO76/weapon/SingleActionRevolver/wpnfiresingleready.hkx",
+            ),
+        ] {
+            assert_eq!(
+                namespaced_anim_path(input).as_deref(),
+                Some(expected),
+                "{input}"
+            );
+        }
     }
 
     #[test]

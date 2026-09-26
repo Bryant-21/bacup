@@ -285,19 +285,19 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn looks_like_fk_accepts_canonical_shape() {
-        assert!(looks_like_fk("001234:FNV.esm"));
-        assert!(looks_like_fk("AB:Plugin.esp"));
-        assert!(looks_like_fk("0001:My.esl"));
-    }
-
-    #[test]
-    fn looks_like_fk_rejects_non_fk_strings() {
-        assert!(!looks_like_fk(""));
-        assert!(!looks_like_fk("not-an-fk"));
-        assert!(!looks_like_fk("123:NoExtension"));
-        assert!(!looks_like_fk("XYZ:Plugin.esm")); // non-hex hex part
-        assert!(!looks_like_fk("123456789:Plugin.esm")); // too long
+    fn looks_like_fk_accepts_only_canonical_shape() {
+        {
+            assert!(looks_like_fk("001234:FNV.esm"));
+            assert!(looks_like_fk("AB:Plugin.esp"));
+            assert!(looks_like_fk("0001:My.esl"));
+        }
+        {
+            assert!(!looks_like_fk(""));
+            assert!(!looks_like_fk("not-an-fk"));
+            assert!(!looks_like_fk("123:NoExtension"));
+            assert!(!looks_like_fk("XYZ:Plugin.esm")); // non-hex hex part
+            assert!(!looks_like_fk("123456789:Plugin.esm")); // too long
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -305,52 +305,51 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn rewrite_string_fk_replaces_when_mapped() {
-        let mut interner = StringInterner::new();
-        let mapper = mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
+    fn rewrite_string_fk_replaces_only_mapped_fk_strings() {
+        {
+            let mut interner = StringInterner::new();
+            let mapper =
+                mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
 
-        let mut payload = json!({
-            "form_id": "000100",
-            "fields": [
-                { "QNAM": "000100:FNV.esm" },
-            ]
-        });
-        let n = rewrite_payload_formkeys(&mut payload, &mapper);
-        assert_eq!(n, 1);
-        assert_eq!(
-            payload["fields"][0]["QNAM"].as_str().unwrap(),
-            "000800:Output.esp"
-        );
-    }
+            let mut payload = json!({
+                "form_id": "000100",
+                "fields": [
+                    { "QNAM": "000100:FNV.esm" },
+                ]
+            });
+            let n = rewrite_payload_formkeys(&mut payload, &mapper);
+            assert_eq!(n, 1);
+            assert_eq!(
+                payload["fields"][0]["QNAM"].as_str().unwrap(),
+                "000800:Output.esp"
+            );
+        }
+        {
+            let mut interner = StringInterner::new();
+            let _src_plugin_intern = interner.intern("FNV.esm");
+            let mapper = FormKeyMapper::new(
+                std::iter::empty::<(Sym, FormKey, SigCode)>(),
+                MapperOptions::default(),
+                &mut interner,
+            );
 
-    #[test]
-    fn rewrite_string_fk_leaves_unmapped_alone() {
-        let mut interner = StringInterner::new();
-        let _src_plugin_intern = interner.intern("FNV.esm");
-        let mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut interner,
-        );
-
-        let mut payload = json!({ "QNAM": "000100:FNV.esm" });
-        let n = rewrite_payload_formkeys(&mut payload, &mapper);
-        assert_eq!(n, 0);
-        assert_eq!(payload["QNAM"].as_str().unwrap(), "000100:FNV.esm");
-    }
-
-    #[test]
-    fn rewrite_string_fk_ignores_non_fk_strings() {
-        let mut interner = StringInterner::new();
-        let mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut interner,
-        );
-        let mut payload = json!({ "eid": "MyEditorID", "note": "no FK here" });
-        let n = rewrite_payload_formkeys(&mut payload, &mapper);
-        assert_eq!(n, 0);
-        assert_eq!(payload["eid"].as_str().unwrap(), "MyEditorID");
+            let mut payload = json!({ "QNAM": "000100:FNV.esm" });
+            let n = rewrite_payload_formkeys(&mut payload, &mapper);
+            assert_eq!(n, 0);
+            assert_eq!(payload["QNAM"].as_str().unwrap(), "000100:FNV.esm");
+        }
+        {
+            let mut interner = StringInterner::new();
+            let mapper = FormKeyMapper::new(
+                std::iter::empty::<(Sym, FormKey, SigCode)>(),
+                MapperOptions::default(),
+                &mut interner,
+            );
+            let mut payload = json!({ "eid": "MyEditorID", "note": "no FK here" });
+            let n = rewrite_payload_formkeys(&mut payload, &mapper);
+            assert_eq!(n, 0);
+            assert_eq!(payload["eid"].as_str().unwrap(), "MyEditorID");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -358,58 +357,59 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn rewrite_canonical_ref_replaces_inner_keys() {
-        let mut interner = StringInterner::new();
-        let mapper = mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
+    fn rewrite_canonical_ref_replaces_inner_keys_and_preserves_siblings() {
+        {
+            let mut interner = StringInterner::new();
+            let mapper =
+                mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
 
-        let mut payload = json!({
-            "fields": [
-                {
-                    "QNAM": {
-                        "reference": {
-                            "plugin": "FNV.esm",
-                            "object_id": "000100"
+            let mut payload = json!({
+                "fields": [
+                    {
+                        "QNAM": {
+                            "reference": {
+                                "plugin": "FNV.esm",
+                                "object_id": "000100"
+                            }
                         }
                     }
+                ]
+            });
+            let n = rewrite_payload_formkeys(&mut payload, &mapper);
+            assert_eq!(n, 1);
+            let ref_inner = &payload["fields"][0]["QNAM"]["reference"];
+            assert_eq!(ref_inner["plugin"].as_str().unwrap(), "Output.esp");
+            assert_eq!(ref_inner["object_id"].as_str().unwrap(), "000800");
+        }
+        {
+            let mut interner = StringInterner::new();
+            let mapper =
+                mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
+
+            let mut payload = json!({
+                "QNAM": {
+                    "reference": {"plugin": "FNV.esm", "object_id": "000100"},
+                    "_comment": "preserved"
                 }
-            ]
-        });
-        let n = rewrite_payload_formkeys(&mut payload, &mapper);
-        assert_eq!(n, 1);
-        let ref_inner = &payload["fields"][0]["QNAM"]["reference"];
-        assert_eq!(ref_inner["plugin"].as_str().unwrap(), "Output.esp");
-        assert_eq!(ref_inner["object_id"].as_str().unwrap(), "000800");
-    }
+            });
+            rewrite_payload_formkeys(&mut payload, &mapper);
+            assert_eq!(payload["QNAM"]["_comment"].as_str().unwrap(), "preserved");
+            assert_eq!(
+                payload["QNAM"]["reference"]["plugin"].as_str().unwrap(),
+                "Output.esp"
+            );
+        }
+        {
+            let mut interner = StringInterner::new();
+            let mapper =
+                mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
 
-    #[test]
-    fn rewrite_canonical_ref_preserves_sibling_keys() {
-        let mut interner = StringInterner::new();
-        let mapper = mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
-
-        let mut payload = json!({
-            "QNAM": {
-                "reference": {"plugin": "FNV.esm", "object_id": "000100"},
-                "_comment": "preserved"
-            }
-        });
-        rewrite_payload_formkeys(&mut payload, &mapper);
-        assert_eq!(payload["QNAM"]["_comment"].as_str().unwrap(), "preserved");
-        assert_eq!(
-            payload["QNAM"]["reference"]["plugin"].as_str().unwrap(),
-            "Output.esp"
-        );
-    }
-
-    #[test]
-    fn rewrite_canonical_ref_with_null_object_id_skipped() {
-        let mut interner = StringInterner::new();
-        let mapper = mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
-
-        let mut payload = json!({
-            "QNAM": {"reference": {"plugin": "FNV.esm", "object_id": "000000"}}
-        });
-        let n = rewrite_payload_formkeys(&mut payload, &mapper);
-        assert_eq!(n, 0); // null FK never matches
+            let mut payload = json!({
+                "QNAM": {"reference": {"plugin": "FNV.esm", "object_id": "000000"}}
+            });
+            let n = rewrite_payload_formkeys(&mut payload, &mapper);
+            assert_eq!(n, 0); // null FK never matches
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -450,57 +450,57 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn drop_pnam_keeps_target_plugin_refs() {
-        let mut interner = StringInterner::new();
-        let mapper = mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
+    fn drop_pnam_removes_only_source_plugin_refs() {
+        {
+            let mut interner = StringInterner::new();
+            let mapper =
+                mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
 
-        let mut payload = json!({
-            "fields": [
-                { "EDID": "SceneA" },
-                { "PNAM": "000800:Output.esp" },  // already on the target plugin
-            ]
-        });
-        let dropped = drop_unmapped_scene_parent(&mut payload, &mapper);
-        assert_eq!(dropped, 0);
-        let pnam = payload["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|f| f.as_object().unwrap().contains_key("PNAM"));
-        assert!(pnam.is_some(), "PNAM should be preserved");
-    }
+            let mut payload = json!({
+                "fields": [
+                    { "EDID": "SceneA" },
+                    { "PNAM": "000800:Output.esp" },  // already on the target plugin
+                ]
+            });
+            let dropped = drop_unmapped_scene_parent(&mut payload, &mapper);
+            assert_eq!(dropped, 0);
+            let pnam = payload["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f.as_object().unwrap().contains_key("PNAM"));
+            assert!(pnam.is_some(), "PNAM should be preserved");
+        }
+        {
+            let mut interner = StringInterner::new();
+            let mapper =
+                mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
 
-    #[test]
-    fn drop_pnam_removes_source_plugin_refs() {
-        let mut interner = StringInterner::new();
-        let mapper = mapper_with_mapping(&mut interner, (0x100, "FNV.esm"), (0x800, "Output.esp"));
-
-        let mut payload = json!({
-            "fields": [
-                { "EDID": "SceneA" },
-                { "PNAM": "000100:FNV.esm" },  // source plugin — should drop
-            ]
-        });
-        let dropped = drop_unmapped_scene_parent(&mut payload, &mapper);
-        assert_eq!(dropped, 1);
-        let pnam_left = payload["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|f| f.as_object().unwrap().contains_key("PNAM"));
-        assert!(!pnam_left, "PNAM should have been dropped");
-    }
-
-    #[test]
-    fn drop_pnam_noop_when_no_fields_array() {
-        let mut interner = StringInterner::new();
-        let mapper = FormKeyMapper::new(
-            std::iter::empty::<(Sym, FormKey, SigCode)>(),
-            MapperOptions::default(),
-            &mut interner,
-        );
-        let mut payload = json!({ "form_id": "000100" });
-        let dropped = drop_unmapped_scene_parent(&mut payload, &mapper);
-        assert_eq!(dropped, 0);
+            let mut payload = json!({
+                "fields": [
+                    { "EDID": "SceneA" },
+                    { "PNAM": "000100:FNV.esm" },  // source plugin — should drop
+                ]
+            });
+            let dropped = drop_unmapped_scene_parent(&mut payload, &mapper);
+            assert_eq!(dropped, 1);
+            let pnam_left = payload["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_object().unwrap().contains_key("PNAM"));
+            assert!(!pnam_left, "PNAM should have been dropped");
+        }
+        {
+            let mut interner = StringInterner::new();
+            let mapper = FormKeyMapper::new(
+                std::iter::empty::<(Sym, FormKey, SigCode)>(),
+                MapperOptions::default(),
+                &mut interner,
+            );
+            let mut payload = json!({ "form_id": "000100" });
+            let dropped = drop_unmapped_scene_parent(&mut payload, &mapper);
+            assert_eq!(dropped, 0);
+        }
     }
 }

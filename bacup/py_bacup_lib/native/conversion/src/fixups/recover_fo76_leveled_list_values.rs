@@ -579,11 +579,7 @@ mod tests {
             "LVCV=0.0 present → chance none 0 (no-op against default)"
         );
         assert_eq!(max, Some(15), "LVMG global FLTV 15 → Max Count 15");
-    }
 
-    #[test]
-    fn zero_max_value_removes_target_max_count() {
-        let interner = StringInterner::new();
         let source = lvli(vec![sub("LVMV", FieldValue::Float(0.0))], &interner);
         let mut none = never_resolves();
         assert_eq!(resolve_max_count(&source, &mut none), None);
@@ -650,11 +646,7 @@ mod tests {
             ),
             Some(20)
         );
-    }
 
-    #[test]
-    fn chance_none_clamped_to_percentage() {
-        let interner = StringInterner::new();
         let source = lvli(vec![sub("LVCV", FieldValue::Float(250.0))], &interner);
         let mut none = never_resolves();
         assert_eq!(
@@ -662,11 +654,7 @@ mod tests {
             Some(100),
             "chance none is a percentage"
         );
-    }
 
-    #[test]
-    fn empty_literal_yields_no_value() {
-        let interner = StringInterner::new();
         let source = lvli(
             vec![sub("LVLD", FieldValue::Bytes(SmallVec::new()))],
             &interner,
@@ -775,12 +763,7 @@ mod tests {
             !apply_entry_levels(&mut target, &mut recovered, &mapper),
             "second application is idempotent"
         );
-    }
 
-    #[test]
-    fn entry_level_recovery_matches_reference_after_an_earlier_entry_was_dropped() {
-        let interner = StringInterner::new();
-        let source_plugin = interner.intern("SeventySix.esm");
         let source_a = FormKey {
             local: 0x100001,
             plugin: source_plugin,

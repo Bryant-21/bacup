@@ -1094,6 +1094,7 @@ pub(super) fn filtered_payload(record: &Value, drop_fields: &HashSet<&str>) -> V
     Value::Object(payload)
 }
 
+#[cfg(test)]
 /// Insert or replace a named field in the record payload's `fields` array.
 pub(super) fn upsert_field(payload: &mut Value, key: &str, value: Value) {
     let fields = payload
@@ -1317,122 +1318,112 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_aliases_deduplicates() {
-        let names = vec!["rNpc".to_string(), "rNpc".to_string(), "rItem".to_string()];
-        let aliases = synthesize_aliases_for_refs(&names);
-        assert_eq!(aliases.len(), 2);
-        assert_eq!(aliases[0].name, "rNpc");
-        assert_eq!(aliases[0].fill_type, "specific_reference");
+    fn quest_payload_helpers_dedupe_format_filter_and_upsert() {
+        {
+            let names = vec!["rNpc".to_string(), "rNpc".to_string(), "rItem".to_string()];
+            let aliases = synthesize_aliases_for_refs(&names);
+            assert_eq!(aliases.len(), 2);
+            assert_eq!(aliases[0].name, "rNpc");
+            assert_eq!(aliases[0].fill_type, "specific_reference");
+        }
+        {
+            let frags = vec![StageFragment {
+                stage_index: 10,
+                stage_item_index: 0,
+                psc_function_name: "Fragment_10".into(),
+                body: "x = 1".into(),
+            }];
+            let psc = build_quest_psc("QF_B21_001234", &frags, &[]);
+            assert!(psc.contains("ScriptName QF_B21_001234 extends Quest"));
+            assert!(psc.contains("Function Fragment_10()"));
+            assert!(psc.contains("EndFunction"));
+            assert!(psc.contains("    x = 1"), "psc:\n{psc}");
+        }
+        {
+            let sources = vec!["set rNpc to GetRef rItem".to_string()];
+            let names = collect_reference_names(&sources);
+            assert!(names.contains(&"rNpc".to_string()));
+            assert!(names.contains(&"rItem".to_string()));
+        }
+        {
+            let record = json!({
+                "eid": "Q1",
+                "fields": [
+                    { "INDX": 10 },
+                    { "SCTX": "set x to 1" },
+                    { "FULL": "My Quest" },
+                ]
+            });
+            let drop: HashSet<&str> = ["INDX", "SCTX", "VMAD", "VirtualMachineAdapter"]
+                .into_iter()
+                .collect();
+            let payload = filtered_payload(&record, &drop);
+            let fields = payload["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 1);
+            assert!(fields[0].get("FULL").is_some());
+        }
+        {
+            let mut payload = json!({ "fields": [] });
+            upsert_field(&mut payload, "VMAD", json!({ "Version": 5 }));
+            let fields = payload["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 1);
+            assert!(fields[0]["VMAD"]["Version"] == 5);
+        }
+        {
+            let mut payload = json!({ "fields": [{ "VMAD": { "Version": 1 } }] });
+            upsert_field(&mut payload, "VMAD", json!({ "Version": 5 }));
+            let fields = payload["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0]["VMAD"]["Version"], 5);
+        }
     }
 
     #[test]
-    fn build_quest_psc_format() {
-        let frags = vec![StageFragment {
-            stage_index: 10,
-            stage_item_index: 0,
-            psc_function_name: "Fragment_10".into(),
-            body: "x = 1".into(),
-        }];
-        let psc = build_quest_psc("QF_B21_001234", &frags, &[]);
-        assert!(psc.contains("ScriptName QF_B21_001234 extends Quest"));
-        assert!(psc.contains("Function Fragment_10()"));
-        assert!(psc.contains("EndFunction"));
-        assert!(psc.contains("    x = 1"), "psc:\n{psc}");
-    }
-
-    #[test]
-    fn collect_reference_names_regex() {
-        let sources = vec!["set rNpc to GetRef rItem".to_string()];
-        let names = collect_reference_names(&sources);
-        assert!(names.contains(&"rNpc".to_string()));
-        assert!(names.contains(&"rItem".to_string()));
-    }
-
-    #[test]
-    fn filtered_payload_drops_sctx_and_indx() {
-        let record = json!({
-            "eid": "Q1",
-            "fields": [
-                { "INDX": 10 },
-                { "SCTX": "set x to 1" },
-                { "FULL": "My Quest" },
-            ]
-        });
-        let drop: HashSet<&str> = ["INDX", "SCTX", "VMAD", "VirtualMachineAdapter"]
-            .into_iter()
-            .collect();
-        let payload = filtered_payload(&record, &drop);
-        let fields = payload["fields"].as_array().unwrap();
-        assert_eq!(fields.len(), 1);
-        assert!(fields[0].get("FULL").is_some());
-    }
-
-    #[test]
-    fn upsert_field_inserts_new() {
-        let mut payload = json!({ "fields": [] });
-        upsert_field(&mut payload, "VMAD", json!({ "Version": 5 }));
-        let fields = payload["fields"].as_array().unwrap();
-        assert_eq!(fields.len(), 1);
-        assert!(fields[0]["VMAD"]["Version"] == 5);
-    }
-
-    #[test]
-    fn upsert_field_replaces_existing() {
-        let mut payload = json!({ "fields": [{ "VMAD": { "Version": 1 } }] });
-        upsert_field(&mut payload, "VMAD", json!({ "Version": 5 }));
-        let fields = payload["fields"].as_array().unwrap();
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0]["VMAD"]["Version"], 5);
-    }
-
-    #[test]
-    fn translate_qust_record_smoke() {
-        // Empty QUST record with no SCTX fields should produce a valid TranslatedQuest
-        // with no fragments and the correct class name.
-        let record = json!({
-            "eid": "TestQuest",
-            "fields": []
-        });
-        let result = translate_qust_record(&record, "B21", false, "001234:FNV.esm");
-        let tq = result.expect("translate ok");
-        assert_eq!(tq.source_editor_id, "TestQuest");
-        assert_eq!(tq.fragment_class_name, "QF_B21_001234");
-        assert!(
-            tq.fragment_psc_text
-                .starts_with("ScriptName QF_B21_001234 extends Quest")
-        );
-        assert!(tq.fragment_class_name.len() <= 38);
-        assert!(tq.stage_fragments.is_empty());
-    }
-
-    #[test]
-    fn quest_fragment_class_rejects_compiler_unsafe_length() {
-        let record = json!({ "eid": "TestQuest", "fields": [] });
-        let error = translate_qust_record(
-            &record,
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
-            false,
-            "001234:FNV.esm",
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("38-character Papyrus limit"));
-    }
-
-    #[test]
-    fn translate_qust_record_with_stage_fragment() {
-        let record = json!({
-            "eid": "TestQuest",
-            "fields": [
-                { "INDX": 10 },
-                { "SCTX": "set x to 1" },
-            ]
-        });
-        let result = translate_qust_record(&record, "B21", false, "001234:FNV.esm");
-        let tq = result.expect("translate ok");
-        assert_eq!(tq.stage_fragments.len(), 1);
-        assert_eq!(tq.stage_fragments[0].stage_index, 10);
-        assert_eq!(tq.stage_fragments[0].stage_item_index, 0);
-        assert!(tq.fragment_psc_text.contains("Fragment_Stage_0010_Item_00"));
+    fn translate_qust_record_emits_stage_fragments_with_safe_class_names() {
+        {
+            // Empty QUST record with no SCTX fields should produce a valid TranslatedQuest
+            // with no fragments and the correct class name.
+            let record = json!({
+                "eid": "TestQuest",
+                "fields": []
+            });
+            let result = translate_qust_record(&record, "B21", false, "001234:FNV.esm");
+            let tq = result.expect("translate ok");
+            assert_eq!(tq.source_editor_id, "TestQuest");
+            assert_eq!(tq.fragment_class_name, "QF_B21_001234");
+            assert!(
+                tq.fragment_psc_text
+                    .starts_with("ScriptName QF_B21_001234 extends Quest")
+            );
+            assert!(tq.fragment_class_name.len() <= 38);
+            assert!(tq.stage_fragments.is_empty());
+        }
+        {
+            let record = json!({
+                "eid": "TestQuest",
+                "fields": [
+                    { "INDX": 10 },
+                    { "SCTX": "set x to 1" },
+                ]
+            });
+            let result = translate_qust_record(&record, "B21", false, "001234:FNV.esm");
+            let tq = result.expect("translate ok");
+            assert_eq!(tq.stage_fragments.len(), 1);
+            assert_eq!(tq.stage_fragments[0].stage_index, 10);
+            assert_eq!(tq.stage_fragments[0].stage_item_index, 0);
+            assert!(tq.fragment_psc_text.contains("Fragment_Stage_0010_Item_00"));
+        }
+        {
+            let record = json!({ "eid": "TestQuest", "fields": [] });
+            let error = translate_qust_record(
+                &record,
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+                false,
+                "001234:FNV.esm",
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("38-character Papyrus limit"));
+        }
     }
 
     #[test]
@@ -1854,7 +1845,7 @@ mod tests {
             exact_quest_record_dependency_mappings(
                 &record,
                 "FreeformPowerArmor",
-                "06136D:FalloutNV.esm"
+                "06136D:FNV_FO3_Merged.esm"
             )
             .unwrap()
             .is_empty()
@@ -1929,7 +1920,7 @@ mod tests {
         );
 
         let mut wrong_plugin = record.clone();
-        wrong_plugin["fields"][4]["SCRO"] = json!("070A14:FalloutNV.esm");
+        wrong_plugin["fields"][4]["SCRO"] = json!("070A14:FNV_FO3_Merged.esm");
         let error = translate_qust_record(&wrong_plugin, "FNV_FO3", true, "06136D:FalloutNV.esm")
             .unwrap_err();
         assert!(error.to_string().contains("Message SCRO 070A14"));
@@ -1968,57 +1959,57 @@ mod tests {
     }
 
     #[test]
-    fn vtech_reputation_fragment_uses_compat_state_without_repu_property() {
-        let record = json!({
-            "eid": "VTechatticup",
-            "fields": [
-                { "INDX": 100 },
-                { "QSDT": 1 },
-                { "SCTX": raw_hex_value(b"AddReputation RepNVNCR 1 4") },
-                { "SCRO": "0F43DE:FalloutNV.esm" }
-            ]
-        });
-        let translated =
-            translate_qust_record(&record, "FNV_FO3", true, "11F935:FalloutNV.esm").unwrap();
-        assert!(
-            translated
-                .fragment_psc_text
-                .contains("FNVSliceCompat.ModRepNVNCR(1, 4)")
-        );
-        assert!(
-            translated
-                .fragment_psc_text
-                .contains("FNV_FO3_FnvSliceCompat Property FNVSliceCompat Auto Const")
-        );
-        assert!(!translated.fragment_psc_text.contains("Self as"));
-        assert!(!translated.fragment_psc_text.contains("RepNVNCR Property"));
-        assert_eq!(
-            translated.fragment_properties,
-            [QuestFragmentProperty {
-                name: "FNVSliceCompat".into(),
-                papyrus_type: "FNV_FO3_FnvSliceCompat".into(),
-                source_form_key: "11F935:FalloutNV.esm".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn compat_fragment_property_is_exact_quest_gated() {
-        let record = json!({ "fields": [] });
-        for (editor_id, source_form_key) in [
-            ("VTechatticup", "11F935:FalloutNV.esm"),
-            ("WrongQuest", "11F935:FalloutNV.esm"),
-            ("VTechatticup", "11F936:FalloutNV.esm"),
-            ("FreeformPowerArmor", "06136D:FalloutNV.esm"),
-            ("WrongQuest", "06136D:FalloutNV.esm"),
-            ("FreeformPowerArmor", "06136E:FalloutNV.esm"),
-        ] {
+    fn vtech_reputation_fragment_uses_exact_quest_gated_compat_state() {
+        {
+            let record = json!({
+                "eid": "VTechatticup",
+                "fields": [
+                    { "INDX": 100 },
+                    { "QSDT": 1 },
+                    { "SCTX": raw_hex_value(b"AddReputation RepNVNCR 1 4") },
+                    { "SCRO": "0F43DE:FalloutNV.esm" }
+                ]
+            });
+            let translated =
+                translate_qust_record(&record, "FNV_FO3", true, "11F935:FalloutNV.esm").unwrap();
             assert!(
-                exact_quest_fragment_properties(&record, editor_id, source_form_key, "FNV_FO3",)
-                    .unwrap()
-                    .is_empty(),
-                "unexpected compatibility property for {editor_id} at {source_form_key}"
+                translated
+                    .fragment_psc_text
+                    .contains("FNVSliceCompat.ModRepNVNCR(1, 4)")
             );
+            assert!(
+                translated
+                    .fragment_psc_text
+                    .contains("FNV_FO3_FnvSliceCompat Property FNVSliceCompat Auto Const")
+            );
+            assert!(!translated.fragment_psc_text.contains("Self as"));
+            assert!(!translated.fragment_psc_text.contains("RepNVNCR Property"));
+            assert_eq!(
+                translated.fragment_properties,
+                [QuestFragmentProperty {
+                    name: "FNVSliceCompat".into(),
+                    papyrus_type: "FNV_FO3_FnvSliceCompat".into(),
+                    source_form_key: "11F935:FalloutNV.esm".into(),
+                }]
+            );
+        }
+        {
+            let record = json!({ "fields": [] });
+            for (editor_id, source_form_key) in [
+                ("VTechatticup", "11F935:FNV_FO3_Merged.esm"),
+                ("WrongQuest", "11F935:FalloutNV.esm"),
+                ("VTechatticup", "11F936:FalloutNV.esm"),
+                ("FreeformPowerArmor", "06136D:FNV_FO3_Merged.esm"),
+                ("WrongQuest", "06136D:FalloutNV.esm"),
+                ("FreeformPowerArmor", "06136E:FalloutNV.esm"),
+            ] {
+                assert!(
+                    exact_quest_fragment_properties(&record, editor_id, source_form_key, "FNV_FO3",)
+                        .unwrap()
+                        .is_empty(),
+                    "unexpected compatibility property for {editor_id} at {source_form_key}"
+                );
+            }
         }
     }
 
@@ -2065,7 +2056,7 @@ mod tests {
         for (label, near_miss) in [
             ("wrong dependency plugin", {
                 let mut value = record.clone();
-                value["fields"][6]["SCRO"] = json!("10E908:FalloutNV.esm");
+                value["fields"][6]["SCRO"] = json!("10E908:FNV_FO3_Merged.esm");
                 value
             }),
             ("wrong dependency local", {
@@ -2104,7 +2095,7 @@ mod tests {
             exact_target_native_quest_fragment_adaptations(
                 &record,
                 "VTechatticup",
-                "11F935:FalloutNV.esm"
+                "11F935:FNV_FO3_Merged.esm"
             )
             .unwrap()
             .is_empty()
@@ -2329,82 +2320,80 @@ mod tests {
     }
 
     #[test]
-    fn objective_index_outside_fo4_range_fails_closed() {
-        let record = json!({
-            "eid": "BadObjective",
-            "fields": [
-                { "INDX": 10 }, { "QSDT": 0 },
-                { "QOBJ": 65536 }
-            ]
-        });
-        assert!(matches!(
-            LegacyQuestIr::parse(&record),
-            Err(QuestLoweringError::ObjectiveOutOfRange { value: 65536 })
-        ));
-    }
-
-    #[test]
-    fn unmapped_required_objective_target_fails_closed() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("FalloutNV.esm");
-        let mut mapper = mapper(&interner);
-        let raw_formids = |raw: u32| {
-            Some(FormKey {
-                local: raw & 0x00FF_FFFF,
-                plugin,
-            })
-        };
-        let record = json!({
-            "eid": "MissingTarget",
-            "fields": [
-                { "INDX": 10 }, { "QSDT": 0 },
-                { "QOBJ": 10 }, { "QSTA": legacy_qsta(0x12319B) }
-            ]
-        });
-        let error = lower_qust_record(
-            &record,
-            "B21",
-            "000100:FalloutNV.esm",
-            "100100:FalloutNV.esm",
-            LegacyConditionFamily::Fnv,
-            &mut mapper,
-            &raw_formids,
-            &PlacedActorAliasResolver::default(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            QuestLoweringError::MissingRequiredTarget { objective: 10, .. }
-        ));
-    }
-
-    #[test]
-    fn unmapped_required_condition_reference_fails_closed() {
-        let interner = StringInterner::new();
-        let mut mapper = mapper(&interner);
-        let record = json!({
-            "eid": "MissingConditionReference",
-            "fields": [
-                { "DATA": raw_hex_value(&[0; 8]) },
-                { "CTDA": raw_hex_value(&hex::decode("0000000000000000C1010000DF8F0500000000000000000000000000").unwrap()) },
-                { "INDX": 10 }, { "QSDT": 0 }
-            ]
-        });
-        let raw_formids = |_raw: u32| None;
-        let error = lower_qust_record(
-            &record,
-            "B21",
-            "000100:FalloutNV.esm",
-            "100100:FalloutNV.esm",
-            LegacyConditionFamily::Fnv,
-            &mut mapper,
-            &raw_formids,
-            &PlacedActorAliasResolver::default(),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            QuestLoweringError::ConditionLowering { scope, .. } if scope == "start"
-        ));
+    fn unmapped_or_out_of_range_objective_and_condition_targets_fail_closed() {
+        {
+            let record = json!({
+                "eid": "BadObjective",
+                "fields": [
+                    { "INDX": 10 }, { "QSDT": 0 },
+                    { "QOBJ": 65536 }
+                ]
+            });
+            assert!(matches!(
+                LegacyQuestIr::parse(&record),
+                Err(QuestLoweringError::ObjectiveOutOfRange { value: 65536 })
+            ));
+        }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("FalloutNV.esm");
+            let mut mapper = mapper(&interner);
+            let raw_formids = |raw: u32| {
+                Some(FormKey {
+                    local: raw & 0x00FF_FFFF,
+                    plugin,
+                })
+            };
+            let record = json!({
+                "eid": "MissingTarget",
+                "fields": [
+                    { "INDX": 10 }, { "QSDT": 0 },
+                    { "QOBJ": 10 }, { "QSTA": legacy_qsta(0x12319B) }
+                ]
+            });
+            let error = lower_qust_record(
+                &record,
+                "B21",
+                "000100:FalloutNV.esm",
+                "100100:FalloutNV.esm",
+                LegacyConditionFamily::Fnv,
+                &mut mapper,
+                &raw_formids,
+                &PlacedActorAliasResolver::default(),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                QuestLoweringError::MissingRequiredTarget { objective: 10, .. }
+            ));
+        }
+        {
+            let interner = StringInterner::new();
+            let mut mapper = mapper(&interner);
+            let record = json!({
+                "eid": "MissingConditionReference",
+                "fields": [
+                    { "DATA": raw_hex_value(&[0; 8]) },
+                    { "CTDA": raw_hex_value(&hex::decode("0000000000000000C1010000DF8F0500000000000000000000000000").unwrap()) },
+                    { "INDX": 10 }, { "QSDT": 0 }
+                ]
+            });
+            let raw_formids = |_raw: u32| None;
+            let error = lower_qust_record(
+                &record,
+                "B21",
+                "000100:FalloutNV.esm",
+                "100100:FalloutNV.esm",
+                LegacyConditionFamily::Fnv,
+                &mut mapper,
+                &raw_formids,
+                &PlacedActorAliasResolver::default(),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                QuestLoweringError::ConditionLowering { scope, .. } if scope == "start"
+            ));
+        }
     }
 }

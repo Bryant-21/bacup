@@ -40,6 +40,10 @@ Function HandleLocalLaunchCard(ObjectReference akConsoleRef)
         CodeDatum launchData = CodeData[i]
         ObjectReference consoleRef = launchData.CardConsole.GetReference()
         If consoleRef == akConsoleRef
+            EN07_ExternalKeypadAliasScript keypadAlias = launchData.KeypadActive as EN07_ExternalKeypadAliasScript
+            If keypadAlias != None
+                keypadAlias.ResetLocalEntry()
+            EndIf
             ObjectReference keypadRef = launchData.Keypad.GetReference()
             If keypadRef != None
                 launchData.KeypadActive.ForceRefTo(keypadRef)
@@ -87,23 +91,63 @@ ObjectReference Function ResolveLocalBlastTarget(Int aiSiloID, ObjectReference a
     Return None
 EndFunction
 
+Int Function GetAvailableLocalLaunchID()
+    If CodeData.Length < 6
+        Debug.Trace("[B21 Nuke] Launch data is incomplete: entries=" + CodeData.Length)
+        Return -2
+    EndIf
+    Int launchID = 3
+    While launchID < 6
+        CodeDatum launchData = CodeData[launchID]
+        Int siloState = iSiloStateOpen
+        If launchData.SiloState != None
+            siloState = launchData.SiloState.GetValueInt()
+        EndIf
+        Debug.Trace("[B21 Nuke] silo=" + (launchID - 3) + " cooldown=" + launchData.bIsInCooldown + " state=" + siloState)
+        If !launchData.bIsInCooldown && siloState == iSiloStateOpen
+            Return launchID
+        EndIf
+        launchID += 1
+    EndWhile
+    Return -1
+EndFunction
+
 Bool Function BeginLocalLaunch(Int aiSiloID, Int aiLaunchID, Actor akLaunchingPlayer, ObjectReference akRequestedTarget = None)
     If aiSiloID < 0 || aiSiloID > 2 || aiLaunchID < 3 || aiLaunchID >= CodeData.Length
+        Debug.Trace("[B21 Nuke] Launch rejected: invalid silo/launch IDs " + aiSiloID + "/" + aiLaunchID)
         Return False
     EndIf
 
     CodeDatum launchData = CodeData[aiLaunchID]
     If launchData.bIsInCooldown
+        Debug.Trace("[B21 Nuke] Launch rejected: silo " + aiSiloID + " is in cooldown.")
         Return False
     EndIf
     If launchData.SiloState != None && launchData.SiloState.GetValueInt() != iSiloStateOpen
+        Debug.Trace("[B21 Nuke] Launch rejected: silo " + aiSiloID + " state=" + launchData.SiloState.GetValueInt())
         Return False
+    EndIf
+
+    Quest fleeBlastQuest = Game.GetFormFromFile(0x002D0F69, "SeventySix.esm") as Quest
+    EN07_FleeBlastQuestScript fleeBlast = fleeBlastQuest as EN07_FleeBlastQuestScript
+    If fleeBlast == None || EN07_FleeBlastQuestStartKeyword == None
+        Debug.Trace("[B21 Nuke] Launch rejected: Death from Above script or start keyword is missing.")
+        Return False
+    EndIf
+    If fleeBlastQuest.IsRunning() && !fleeBlastQuest.IsStageDone(100)
+        Debug.Trace("[B21 Nuke] Launch rejected: another nuclear strike is active.")
+        Return False
+    EndIf
+    If fleeBlastQuest.IsCompleted() || fleeBlastQuest.IsStageDone(100)
+        fleeBlastQuest.Stop()
+        fleeBlastQuest.Reset()
     EndIf
 
     CodeDatum blastData = CodeData[aiSiloID]
     ObjectReference blastMarker = blastData.NukeBlastMarker.GetReference()
     ObjectReference blastTarget = ResolveLocalBlastTarget(aiSiloID, akRequestedTarget)
     If blastMarker == None || blastTarget == None
+        Debug.Trace("[B21 Nuke] Launch rejected: blast marker=" + blastMarker + " target=" + blastTarget)
         Return False
     EndIf
     If blastMarker != blastTarget
@@ -111,6 +155,38 @@ Bool Function BeginLocalLaunch(Int aiSiloID, Int aiLaunchID, Actor akLaunchingPl
     EndIf
     blastMarker.Enable()
 
+    Bool blastStarted = False
+    If fleeBlast != None
+        Location blastLocation = blastMarker.GetCurrentLocation()
+        If !fleeBlast.PrepareLocalBlast(blastMarker, akLaunchingPlayer, aiSiloID, aiLaunchID, blastData.SmokeEffectSpell, blastData.BlastEffectSpell)
+            Debug.Trace("[B21 Nuke] Launch rejected: Death from Above preparation failed.")
+            Return False
+        EndIf
+        Bool eventStarted = EN07_FleeBlastQuestStartKeyword.SendStoryEventAndWait(blastLocation, blastMarker, akLaunchingPlayer, aiSiloID, aiLaunchID)
+        Debug.Trace("[B21 Nuke] Story event=" + eventStarted + " starting=" + fleeBlastQuest.IsStarting() + " running=" + fleeBlastQuest.IsRunning() + " stage=" + fleeBlastQuest.GetCurrentStageID())
+        ; Startup can drop back from running to starting while the engine finishes
+        ; promoting alias references, so retry the handoff until it holds.
+        Int startPolls = 0
+        While !blastStarted && (eventStarted || fleeBlastQuest.IsStarting() || fleeBlastQuest.IsRunning()) && startPolls < 40
+            If fleeBlastQuest.IsRunning()
+                blastStarted = fleeBlast.BeginLocalBlast(blastMarker, akLaunchingPlayer, aiSiloID, aiLaunchID, blastData.SmokeEffectSpell, blastData.BlastEffectSpell)
+            EndIf
+            If !blastStarted
+                Utility.Wait(0.25)
+                startPolls += 1
+            EndIf
+        EndWhile
+        Debug.Trace("[B21 Nuke] Quest startup settled: polls=" + startPolls + " started=" + blastStarted + " starting=" + fleeBlastQuest.IsStarting() + " running=" + fleeBlastQuest.IsRunning())
+    EndIf
+    If !blastStarted
+        blastMarker.Disable()
+        Debug.Trace("[B21 Nuke] Death from Above failed to start; launch aborted.")
+        Return False
+    EndIf
+    Nuke_MasterScript codeMaster = Game.GetFormFromFile(0x003CD064, "SeventySix.esm") as Nuke_MasterScript
+    If codeMaster != None
+        codeMaster.MarkLocalCodeUsed(aiSiloID)
+    EndIf
     launchData.bIsInCooldown = True
     launchData.MostRecentLaunch = Utility.GetCurrentGameTime()
     If launchData.SiloState != None
@@ -121,30 +197,6 @@ Bool Function BeginLocalLaunch(Int aiSiloID, Int aiLaunchID, Actor akLaunchingPl
     EN07_FleeSiloScript fleeSilo = fleeSiloQuest as EN07_FleeSiloScript
     If fleeSilo != None
         fleeSilo.BeginLocalLaunch(aiSiloID, aiLaunchID, launchData.SiloLocation)
-    EndIf
-
-    Quest fleeBlastQuest = Game.GetFormFromFile(0x002D0F69, "SeventySix.esm") as Quest
-    EN07_FleeBlastQuestScript fleeBlast = fleeBlastQuest as EN07_FleeBlastQuestScript
-    Bool blastStarted = False
-    If fleeBlast != None
-        ReferenceAlias blastAlias = fleeBlastQuest.GetAlias(0) as ReferenceAlias
-        ReferenceAlias launchingPlayerAlias = fleeBlastQuest.GetAlias(14) as ReferenceAlias
-        LocationAlias triggerLocationAlias = fleeBlastQuest.GetAlias(8) as LocationAlias
-        If blastAlias != None
-            blastAlias.ForceRefTo(blastMarker)
-        EndIf
-        If launchingPlayerAlias != None
-            launchingPlayerAlias.ForceRefTo(akLaunchingPlayer)
-        EndIf
-        Location blastLocation = blastMarker.GetCurrentLocation()
-        If triggerLocationAlias != None && blastLocation != None
-            triggerLocationAlias.ForceLocationTo(blastLocation)
-        EndIf
-        EN07_FleeBlastQuestStartKeyword.SendStoryEventAndWait(blastLocation, blastMarker, akLaunchingPlayer, aiSiloID, aiLaunchID)
-        blastStarted = fleeBlast.BeginLocalBlast(blastMarker, akLaunchingPlayer, aiSiloID, aiLaunchID, blastData.SmokeEffectSpell, blastData.BlastEffectSpell)
-    EndIf
-    If !blastStarted
-        StartTimer(180.0, 7001 + aiSiloID)
     EndIf
     Return True
 EndFunction
@@ -198,10 +250,14 @@ Function CompleteLocalLaunch(Int aiSiloID, Int aiLaunchID)
 EndFunction
 
 Function ResetLocalSilo(Int aiSiloID, Int aiLaunchID)
-    If aiLaunchID < 3 || aiLaunchID >= CodeData.Length
+    If aiSiloID < 0 || aiSiloID > 2 || aiLaunchID != aiSiloID + 3 || aiLaunchID >= CodeData.Length
         Return
     EndIf
     CodeDatum launchData = CodeData[aiLaunchID]
+    Nuke_MasterScript codeMaster = Game.GetFormFromFile(0x003CD064, "SeventySix.esm") as Nuke_MasterScript
+    If codeMaster != None
+        codeMaster.RenewLocalCodeAfterLaunch(aiSiloID)
+    EndIf
     launchData.bIsInCooldown = False
     If launchData.SiloState != None
         launchData.SiloState.SetValue(iSiloStateOpen as Float)

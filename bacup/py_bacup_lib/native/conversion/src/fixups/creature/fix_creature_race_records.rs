@@ -3585,169 +3585,119 @@ mod tests {
             .collect()
     }
 
+    /// FO76 tags mole miners and super mutants `ActorTypeCreature`, but
+    /// `ActorTypeAnimal` drives Animal Friend targeting and vanilla FO4 never
+    /// grants it to a humanoid.
     #[test]
-    fn adds_actor_type_animal_to_creature_race_keywords() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(1)));
-        push_field(
-            &mut record,
-            "KWDA",
-            FieldValue::Bytes(formid_bytes(&[0x00_013795])),
-        );
+    fn actor_type_animal_is_added_only_to_plain_creature_races() {
+        for (name, local, keywords, expected) in [
+            (
+                "creature",
+                0x000100,
+                vec![0x00_013795],
+                vec![0x00_013795, 0x00_013798],
+            ),
+            (
+                "non_creature",
+                0x000100,
+                vec![0x00_0F23C5],
+                vec![0x00_0F23C5],
+            ),
+            (
+                "armed_humanoid",
+                0x012E6B,
+                vec![ACTOR_TYPE_CREATURE_LOW24, ACTOR_TYPE_HUMANLIKE_LOW24],
+                vec![ACTOR_TYPE_CREATURE_LOW24, ACTOR_TYPE_HUMANLIKE_LOW24],
+            ),
+            (
+                "super_mutant",
+                0x5C4F6E,
+                vec![ACTOR_TYPE_CREATURE_LOW24, ACTOR_TYPE_SUPER_MUTANT_LOW24],
+                vec![ACTOR_TYPE_CREATURE_LOW24, ACTOR_TYPE_SUPER_MUTANT_LOW24],
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_race(local, "Output.esp", &interner);
+            push_field(
+                &mut record,
+                "KSIZ",
+                FieldValue::Bytes(u32_bytes(keywords.len() as u32)),
+            );
+            push_field(
+                &mut record,
+                "KWDA",
+                FieldValue::Bytes(formid_bytes(&keywords)),
+            );
 
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(outcome.actor_type_animal_added);
-
-        let kwda = first_bytes(&record, "KWDA");
-        let observed: Vec<u32> = kwda
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        assert_eq!(observed, vec![0x00_013795, 0x00_013798]);
-
-        let ksiz = first_bytes(&record, "KSIZ");
-        assert_eq!(u32::from_le_bytes(ksiz.try_into().unwrap()), 2);
+            let outcome = apply_to_record(&mut record, &interner);
+            assert_eq!(
+                outcome.actor_type_animal_added,
+                expected.len() > keywords.len(),
+                "{name}"
+            );
+            let observed: Vec<u32> = first_bytes(&record, "KWDA")
+                .chunks_exact(4)
+                .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
+            assert_eq!(observed, expected, "{name}");
+            let ksiz = first_bytes(&record, "KSIZ");
+            assert_eq!(
+                u32::from_le_bytes(ksiz.try_into().unwrap()),
+                expected.len() as u32,
+                "{name}"
+            );
+        }
     }
 
     /// Vanilla `DLC04_RadAntRace` carries `RagdollOnDeath`; the converted race
-    /// lost it, so ants played a borrowed roach death clip before dropping.
+    /// lost it, so ants played a borrowed roach death clip before dropping. The
+    /// keyword is on 1 of 84 vanilla FO4 races, so no other creature gains it,
+    /// and re-running over fixed output must not duplicate it.
     #[test]
-    fn adds_ragdoll_on_death_to_rad_ant_race() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x112BEC, "Output.esp", &mut interner);
-        record.eid = Some(interner.intern("RadAntRace"));
-        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(1)));
-        push_field(
-            &mut record,
-            "KWDA",
-            FieldValue::Bytes(formid_bytes(&[0x00_013795])),
-        );
+    fn ragdoll_on_death_is_added_once_and_only_to_rad_ants() {
+        for (name, eid, keywords, expect_added) in [
+            ("rad_ant", "RadAntRace", vec![0x00_013795], true),
+            ("other_creature", "MothmanRace", vec![0x00_013795], false),
+            (
+                "already_fixed",
+                "RadAntRace",
+                vec![0x00_013795, RAGDOLL_ON_DEATH_LOW24],
+                false,
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_race(0x112BEC, "Output.esp", &interner);
+            record.eid = Some(interner.intern(eid));
+            push_field(
+                &mut record,
+                "KSIZ",
+                FieldValue::Bytes(u32_bytes(keywords.len() as u32)),
+            );
+            push_field(
+                &mut record,
+                "KWDA",
+                FieldValue::Bytes(formid_bytes(&keywords)),
+            );
 
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(outcome.ragdoll_on_death_added);
+            let outcome = apply_to_record(&mut record, &interner);
+            assert_eq!(outcome.ragdoll_on_death_added, expect_added, "{name}");
 
-        let kwda = first_bytes(&record, "KWDA");
-        let observed: Vec<u32> = kwda
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        assert!(observed.contains(&RAGDOLL_ON_DEATH_LOW24));
-
-        let ksiz = first_bytes(&record, "KSIZ");
-        assert_eq!(
-            u32::from_le_bytes(ksiz.try_into().unwrap()),
-            observed.len() as u32
-        );
-    }
-
-    /// The keyword is on 1 of 84 vanilla FO4 races. Every other creature owns
-    /// its death clips, so seeding it broadly would change deaths that work.
-    #[test]
-    fn does_not_add_ragdoll_on_death_to_other_creature_races() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        record.eid = Some(interner.intern("MothmanRace"));
-        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(1)));
-        push_field(
-            &mut record,
-            "KWDA",
-            FieldValue::Bytes(formid_bytes(&[0x00_013795])),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.ragdoll_on_death_added);
-
-        let kwda = first_bytes(&record, "KWDA");
-        let observed: Vec<u32> = kwda
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-        assert!(!observed.contains(&RAGDOLL_ON_DEATH_LOW24));
-    }
-
-    /// Re-running the fixup over already-fixed output must not duplicate.
-    #[test]
-    fn does_not_duplicate_existing_ragdoll_on_death_keyword() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x112BEC, "Output.esp", &mut interner);
-        record.eid = Some(interner.intern("RadAntRace"));
-        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(2)));
-        push_field(
-            &mut record,
-            "KWDA",
-            FieldValue::Bytes(formid_bytes(&[0x00_013795, RAGDOLL_ON_DEATH_LOW24])),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.ragdoll_on_death_added);
-
-        let kwda = first_bytes(&record, "KWDA");
-        let occurrences = kwda
-            .chunks_exact(4)
-            .filter(|chunk| {
-                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                    == RAGDOLL_ON_DEATH_LOW24
-            })
-            .count();
-        assert_eq!(occurrences, 1);
-    }
-
-    #[test]
-    fn does_not_add_actor_type_animal_to_non_creature_race() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(1)));
-        push_field(
-            &mut record,
-            "KWDA",
-            FieldValue::Bytes(formid_bytes(&[0x00_0F23C5])),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.actor_type_animal_added);
-        assert_eq!(first_bytes(&record, "KWDA").len(), 4);
-    }
-
-    /// FO76 tags mole miners `ActorTypeCreature`, but `ActorTypeAnimal` drives
-    /// Animal Friend targeting and vanilla FO4 never grants it to a humanoid.
-    #[test]
-    fn does_not_add_actor_type_animal_to_armed_humanoid_race() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x012E6B, "Output.esp", &mut interner);
-        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(2)));
-        push_field(
-            &mut record,
-            "KWDA",
-            FieldValue::Bytes(formid_bytes(&[
-                ACTOR_TYPE_CREATURE_LOW24,
-                ACTOR_TYPE_HUMANLIKE_LOW24,
-            ])),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.actor_type_animal_added);
-        assert_eq!(first_bytes(&record, "KWDA").len(), 8, "no keyword appended");
-    }
-
-    /// A super mutant reaches the same exemption via `ActorTypeSuperMutant`.
-    #[test]
-    fn does_not_add_actor_type_animal_to_super_mutant_race() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x5C4F6E, "Output.esp", &mut interner);
-        push_field(&mut record, "KSIZ", FieldValue::Bytes(u32_bytes(2)));
-        push_field(
-            &mut record,
-            "KWDA",
-            FieldValue::Bytes(formid_bytes(&[
-                ACTOR_TYPE_CREATURE_LOW24,
-                ACTOR_TYPE_SUPER_MUTANT_LOW24,
-            ])),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.actor_type_animal_added);
-        assert_eq!(first_bytes(&record, "KWDA").len(), 8);
+            let observed: Vec<u32> = first_bytes(&record, "KWDA")
+                .chunks_exact(4)
+                .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
+            let ragdolls = observed
+                .iter()
+                .filter(|id| **id == RAGDOLL_ON_DEATH_LOW24)
+                .count();
+            assert_eq!(ragdolls, usize::from(eid == "RadAntRace"), "{name}");
+            let ksiz = first_bytes(&record, "KSIZ");
+            assert_eq!(
+                u32::from_le_bytes(ksiz.try_into().unwrap()),
+                observed.len() as u32,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -3860,132 +3810,42 @@ mod tests {
     }
 
     #[test]
-    fn applies_to_npc_root() {
-        let (_, schema, config) = make_creature_config();
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(FixCreatureRaceRecordsFixup.applies_to(&ctx));
-        let _ = mapper;
-    }
-
-    #[test]
-    fn applies_to_lvln_root() {
+    fn applies_only_to_creature_roots() {
         let (_, schema, _) = make_creature_config();
-        let mut mapper_interner = StringInterner::new();
-        let mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("LVLN").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(FixCreatureRaceRecordsFixup.applies_to(&ctx));
-        let _ = mapper;
-    }
-
-    #[test]
-    fn does_not_apply_to_weap_root() {
-        let (_, schema, _) = make_creature_config();
-        let mut mapper_interner = StringInterner::new();
-        let mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!FixCreatureRaceRecordsFixup.applies_to(&ctx));
-        let _ = mapper;
-    }
-
-    #[test]
-    fn does_not_apply_when_no_root_sig() {
-        let (_, schema, _) = make_creature_config();
-        let mut mapper_interner = StringInterner::new();
-        let mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let config = FixupConfig {
-            root_sig: None,
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!FixCreatureRaceRecordsFixup.applies_to(&ctx));
-        let _ = mapper;
-    }
-
-    #[test]
-    fn empty_record_is_no_op() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.changed(), "empty record must produce no changes");
-    }
-
-    #[test]
-    fn strips_unknown_6_bit_from_attack_flags() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        // 0x40 | 0x04 = 0x44 (unknown_6 + power_attack)
-        push_field(
-            &mut record,
-            "ATKD",
-            FieldValue::Bytes(atkd_bytes(0x44, 0.0)),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.atkd_flags_stripped, 1);
-        assert!(outcome.changed());
-
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            assert_eq!(read_atkd_flags(data), 0x04, "0x40 bit must be cleared");
-        } else {
-            panic!("expected Bytes");
+        for (root, expected) in [
+            (Some("NPC_"), true),
+            (Some("LVLN"), true),
+            (Some("WEAP"), false),
+            (None, false),
+        ] {
+            let config = FixupConfig {
+                root_sig: root.map(|sig| SigCode::from_str(sig).unwrap()),
+                ..Default::default()
+            };
+            let ctx = FixupContext {
+                source_handle_id: 1,
+                target_handle_id: 2,
+                schema_target: &schema,
+                schema_source: &schema,
+                skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
+                mod_path: None,
+                source_extracted_dir: None,
+                target_master_handle_ids: &[],
+                config: &config,
+            };
+            assert_eq!(
+                FixCreatureRaceRecordsFixup.applies_to(&ctx),
+                expected,
+                "{root:?}"
+            );
         }
     }
 
     #[test]
-    fn strips_sheepsquatch_fo76_only_attack_flags() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        for flags in [0x200, 0x254, 0x504] {
+    fn strips_fo76_only_attack_flags() {
+        let interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &interner);
+        for flags in [0x44, 0x04, 0x200, 0x254, 0x504] {
             push_field(
                 &mut record,
                 "ATKD",
@@ -3994,7 +3854,7 @@ mod tests {
         }
 
         let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.atkd_flags_stripped, 3);
+        assert_eq!(outcome.atkd_flags_stripped, 4);
 
         let actual: Vec<u32> = record
             .fields
@@ -4004,20 +3864,7 @@ mod tests {
                 _ => panic!("expected Bytes"),
             })
             .collect();
-        assert_eq!(actual, vec![0, 0x14, 0x04]);
-    }
-
-    #[test]
-    fn atkd_without_unknown_bit_not_touched() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(
-            &mut record,
-            "ATKD",
-            FieldValue::Bytes(atkd_bytes(0x04, 0.0)),
-        );
-        let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.atkd_flags_stripped, 0);
+        assert_eq!(actual, vec![0x04, 0x04, 0, 0x14, 0x04]);
     }
 
     #[test]
@@ -4041,135 +3888,77 @@ mod tests {
     }
 
     #[test]
-    fn injects_attack_angle_for_directional_event() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        // ATKD with flags=0 and attack_angle=0.
-        push_field(&mut record, "ATKD", FieldValue::Bytes(atkd_bytes(0, 0.0)));
-        let event = interner.intern("AttackLeftPowerSwing");
-        push_field(&mut record, "ATKE", FieldValue::String(event));
+    fn injects_attack_angle_only_for_unset_directional_events() {
+        let interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &interner);
+        let cases = [
+            ("AttackLeftPowerSwing", 0.0, -90.0),
+            ("AttackBackwardSwing", 0.0, 180.0),
+            ("AttackRightSwing", 0.0, 90.0),
+            ("AttackPowerSwing", 0.0, 0.0),
+            ("AttackLeftSwing", 45.0, 45.0),
+        ];
+        for (event, angle, _) in cases {
+            push_field(&mut record, "ATKD", FieldValue::Bytes(atkd_bytes(0, angle)));
+            push_field(
+                &mut record,
+                "ATKE",
+                FieldValue::String(interner.intern(event)),
+            );
+        }
 
         let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.atkd_angles_injected, 1);
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            assert_eq!(read_atkd_angle(data), -90.0);
+        assert_eq!(outcome.atkd_angles_injected, 3);
+        for (index, (event, _, expected)) in cases.into_iter().enumerate() {
+            let FieldValue::Bytes(ref data) = record.fields[index * 2].value else {
+                panic!("expected ATKD bytes for {event}");
+            };
+            assert_eq!(read_atkd_angle(data), expected, "{event}");
         }
     }
 
     #[test]
-    fn injects_attack_angle_for_backward_and_right() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(&mut record, "ATKD", FieldValue::Bytes(atkd_bytes(0, 0.0)));
-        push_field(
-            &mut record,
-            "ATKE",
-            FieldValue::String(interner.intern("AttackBackwardSwing")),
-        );
-        push_field(&mut record, "ATKD", FieldValue::Bytes(atkd_bytes(0, 0.0)));
-        push_field(
-            &mut record,
-            "ATKE",
-            FieldValue::String(interner.intern("AttackRightSwing")),
-        );
+    fn copies_male_skeleton_to_female_when_they_differ() {
+        for (name, male, female, expect_fixed) in [
+            (
+                "mirelurk",
+                "Actors\\Mirelurk\\CharacterAssets\\Skeleton.nif",
+                "Actors\\Molerat\\CharacterAssets\\Skeleton.nif",
+                true,
+            ),
+            (
+                "same",
+                "Actors\\Mirelurk\\CharacterAssets\\Skeleton.nif",
+                "Actors\\Mirelurk\\CharacterAssets\\Skeleton.nif",
+                false,
+            ),
+            (
+                "sheepsquatch_native",
+                "actors\\sheepsquatch\\characterassets\\skeleton.nif",
+                "Actors\\Deathclaw\\CharacterAssets\\skeleton.nif",
+                true,
+            ),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_race(0x000100, "Output.esp", &interner);
+            let male = interner.intern(male);
+            push_field(&mut record, "MNAM", FieldValue::None);
+            push_field(&mut record, "ANAM", FieldValue::String(male));
+            push_field(&mut record, "FNAM", FieldValue::None);
+            push_field(
+                &mut record,
+                "ANAM",
+                FieldValue::String(interner.intern(female)),
+            );
 
-        let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.atkd_angles_injected, 2);
-
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            assert_eq!(read_atkd_angle(data), 180.0);
+            let outcome = apply_to_record(&mut record, &interner);
+            assert_eq!(outcome.female_anam_fixed, expect_fixed, "{name}");
+            if name == "sheepsquatch_native" {
+                assert!(!outcome.fallback_skeleton_promoted, "{name}");
+            }
+            assert_eq!(record.fields[1].value, FieldValue::String(male), "{name}");
+            assert_eq!(record.fields[3].value, FieldValue::String(male), "{name}");
         }
-        if let FieldValue::Bytes(ref data) = record.fields[2].value {
-            assert_eq!(read_atkd_angle(data), 90.0);
-        }
-    }
-
-    #[test]
-    fn non_directional_event_no_angle_injected() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(&mut record, "ATKD", FieldValue::Bytes(atkd_bytes(0, 0.0)));
-        push_field(
-            &mut record,
-            "ATKE",
-            FieldValue::String(interner.intern("AttackPowerSwing")),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.atkd_angles_injected, 0);
-    }
-
-    #[test]
-    fn existing_attack_angle_preserved() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        // attack_angle = 45.0 (already set)
-        push_field(&mut record, "ATKD", FieldValue::Bytes(atkd_bytes(0, 45.0)));
-        push_field(
-            &mut record,
-            "ATKE",
-            FieldValue::String(interner.intern("AttackLeftSwing")),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.atkd_angles_injected, 0);
-        if let FieldValue::Bytes(ref data) = record.fields[0].value {
-            assert_eq!(read_atkd_angle(data), 45.0);
-        }
-    }
-
-    #[test]
-    fn copies_male_skeleton_to_female_when_differ() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        let male = interner.intern("Actors\\Mirelurk\\CharacterAssets\\Skeleton.nif");
-        let female = interner.intern("Actors\\Molerat\\CharacterAssets\\Skeleton.nif");
-        push_field(&mut record, "MNAM", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::String(male));
-        push_field(&mut record, "FNAM", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::String(female));
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(outcome.female_anam_fixed);
-
-        // Female ANAM should now equal Male.
-        if let FieldValue::String(s) = record.fields[3].value {
-            assert_eq!(s, male);
-        } else {
-            panic!("expected female ANAM to be String");
-        }
-    }
-
-    #[test]
-    fn same_skeleton_not_touched() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        let same = interner.intern("Actors\\Mirelurk\\CharacterAssets\\Skeleton.nif");
-        push_field(&mut record, "MNAM", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::String(same));
-        push_field(&mut record, "FNAM", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::String(same));
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.female_anam_fixed);
-    }
-
-    #[test]
-    fn copies_sheepsquatch_native_skeleton_to_female() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        let male = interner.intern("actors\\sheepsquatch\\characterassets\\skeleton.nif");
-        let female = interner.intern("Actors\\Deathclaw\\CharacterAssets\\skeleton.nif");
-        push_field(&mut record, "MNAM", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::String(male));
-        push_field(&mut record, "FNAM", FieldValue::None);
-        push_field(&mut record, "ANAM", FieldValue::String(female));
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert!(!outcome.fallback_skeleton_promoted);
-        assert!(outcome.female_anam_fixed);
-        assert_eq!(record.fields[1].value, FieldValue::String(male));
-        assert_eq!(record.fields[3].value, FieldValue::String(male));
     }
 
     #[test]
@@ -4445,19 +4234,22 @@ mod tests {
         );
     }
 
+    /// FO4's own `DLC04_CaveCricketRace` ships `0.1`, so in-range values stand,
+    /// and an explicit zero reads as deliberate authoring.
     #[test]
-    fn raises_scorchbeast_movement_rates_to_fo4_floor() {
+    fn raises_only_out_of_range_movement_rates_to_fo4_floor() {
         let schema = fo4_schema();
         let (mut record, _interner) = race_with_data(&schema, 0.01, 0.01, RACE_FLAG_FLIES);
         assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 2);
         assert_eq!(rates_of(&record, &schema), vec![0.2, 0.2]);
-    }
+        assert_eq!(
+            raise_movement_rates_to_fo4_floor(&mut record, &schema),
+            0,
+            "idempotent"
+        );
+        assert_eq!(rates_of(&record, &schema), vec![0.2, 0.2]);
 
-    /// FO4's own `DLC04_CaveCricketRace` ships `0.1`, so in-range values stand.
-    #[test]
-    fn leaves_in_range_movement_rates_untouched() {
-        let schema = fo4_schema();
-        for (accel, decel) in [(0.2_f32, 0.2_f32), (0.25, 1.0), (3.0, 1.0)] {
+        for (accel, decel) in [(0.2_f32, 0.2_f32), (0.25, 1.0), (3.0, 1.0), (0.0, 0.0)] {
             let (mut record, _interner) = race_with_data(&schema, accel, decel, 0);
             assert_eq!(
                 raise_movement_rates_to_fo4_floor(&mut record, &schema),
@@ -4466,24 +4258,6 @@ mod tests {
             );
             assert_eq!(rates_of(&record, &schema), vec![accel, decel]);
         }
-    }
-
-    /// An explicit zero reads as deliberate authoring, not an out-of-range value.
-    #[test]
-    fn leaves_explicit_zero_movement_rates_alone() {
-        let schema = fo4_schema();
-        let (mut record, _interner) = race_with_data(&schema, 0.0, 0.0, 0);
-        assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 0);
-        assert_eq!(rates_of(&record, &schema), vec![0.0, 0.0]);
-    }
-
-    #[test]
-    fn raising_movement_rates_is_idempotent() {
-        let schema = fo4_schema();
-        let (mut record, _interner) = race_with_data(&schema, 0.01, 0.01, 0);
-        assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 2);
-        assert_eq!(raise_movement_rates_to_fo4_floor(&mut record, &schema), 0);
-        assert_eq!(rates_of(&record, &schema), vec![0.2, 0.2]);
     }
 
     /// Raising rates must not disturb neighbouring fields — `flags` sits next to
@@ -4537,9 +4311,9 @@ mod tests {
     }
 
     #[test]
-    fn keeps_nonfloating_ground_race_out_of_fly_slot() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
+    fn keeps_ground_races_and_ambiguous_movement_types_unlinked() {
+        let interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &interner);
         record.eid = Some(interner.intern("GroundCreatureRace"));
         let movement_fk = FormKey {
             local: 0x000200,
@@ -4554,22 +4328,6 @@ mod tests {
                 has_float_height: false,
             }),
         );
-
-        assert!(!link_missing_default_movement_types(
-            &mut record,
-            &movement_types,
-            &interner,
-            &fo4_schema()
-        ));
-        assert_eq!(sigs(&record), vec!["WKMV"]);
-    }
-
-    #[test]
-    fn does_not_guess_ambiguous_default_movement_type() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        record.eid = Some(interner.intern("FloaterRace"));
-        let mut movement_types = DefaultMovementTypeIndex::default();
         movement_types.insert("floater".to_string(), None);
 
         assert!(!link_missing_default_movement_types(
@@ -4578,7 +4336,17 @@ mod tests {
             &interner,
             &fo4_schema()
         ));
-        assert!(record.fields.is_empty());
+        assert_eq!(sigs(&record), vec!["WKMV"], "ground race stays out of FLMV");
+
+        let mut ambiguous = make_race(0x000101, "Output.esp", &interner);
+        ambiguous.eid = Some(interner.intern("FloaterRace"));
+        assert!(!link_missing_default_movement_types(
+            &mut ambiguous,
+            &movement_types,
+            &interner,
+            &fo4_schema()
+        ));
+        assert!(ambiguous.fields.is_empty(), "ambiguous type is not guessed");
     }
 
     #[test]
@@ -4759,71 +4527,65 @@ mod tests {
         assert_eq!(record.fields[2].value, FieldValue::String(animations));
     }
 
+    /// The human project lives under `Actors\Character`, which
+    /// `actor_dir_from_behavior_project_path` refuses to report an actor dir
+    /// for, so the scorched row only passes because the override short-circuits
+    /// that rule. A RACE also carries skeletal and body models under MODL, and
+    /// those must never be treated as a behavior project.
     #[test]
-    fn patches_raw_cat_pet_project_with_same_actor_directory() {
-        let mut bytes = b"Actors\\Cat_Pet\\CatPet.hkx\0".to_vec();
-
-        assert!(patch_behavior_project_modl_bytes(
-            &mut bytes,
-            CAT_PET_BEHAVIOR_PROJECT
-        ));
-        assert_eq!(bytes, b"Actors\\Cat_Pet\\Cat_PetProject.hkx\0".to_vec());
-    }
-
-    #[test]
-    fn retargets_scorched_project_to_fo4_human_project() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        record.eid = Some(interner.intern("ScorchedRace"));
-
-        assert_eq!(
-            creature_project_path_override(&record, &interner),
-            Some(HUMAN_BEHAVIOR_PROJECT)
-        );
-    }
-
-    #[test]
-    fn mole_miners_are_not_retargeted_at_the_fo4_human_project() {
-        // Their rig shares 5 of FO4 Character's 128 bone names, so the human clips would
-        // bind to nothing — see `creature_project_path_override`.
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        record.eid = Some(interner.intern("MoleMinerRace"));
-
-        assert_eq!(creature_project_path_override(&record, &interner), None);
-    }
-
-    #[test]
-    fn patches_raw_scorched_project_across_actor_directories() {
-        // The human project lives under `Actors\Character`, which
-        // `actor_dir_from_behavior_project_path` refuses to report an actor dir for — so
-        // this only passes because the override short-circuits that rule.
-        let mut bytes = b"Actors\\Scorched\\ScorchedProject.hkx\0".to_vec();
-
-        assert!(patch_behavior_project_modl_bytes(
-            &mut bytes,
-            HUMAN_BEHAVIOR_PROJECT
-        ));
-        assert_eq!(bytes, b"actors\\Character\\RaiderProject.hkx\0".to_vec());
-    }
-
-    #[test]
-    fn human_project_retarget_leaves_skeleton_and_body_models_alone() {
-        // The retarget patches every MODL in the record, and a RACE carries skeletal
-        // models and body models under the same signature.
-        for path in [
-            "Actors\\Scorched\\CharacterAssets\\skeleton.nif",
-            "Actors\\Character\\UpperBodyHumanMale.egt",
+    fn patches_raw_behavior_project_modl_bytes() {
+        for (source, project, expected) in [
+            (
+                "Actors\\Cat_Pet\\CatPet.hkx",
+                CAT_PET_BEHAVIOR_PROJECT,
+                Some("Actors\\Cat_Pet\\Cat_PetProject.hkx"),
+            ),
+            (
+                "Actors\\Scorched\\ScorchedProject.hkx",
+                HUMAN_BEHAVIOR_PROJECT,
+                Some("actors\\Character\\RaiderProject.hkx"),
+            ),
+            (
+                "Actors\\Scorched\\CharacterAssets\\skeleton.nif",
+                HUMAN_BEHAVIOR_PROJECT,
+                None,
+            ),
+            (
+                "Actors\\Character\\UpperBodyHumanMale.egt",
+                HUMAN_BEHAVIOR_PROJECT,
+                None,
+            ),
         ] {
-            let mut bytes = path.as_bytes().to_vec();
+            let mut bytes = source.as_bytes().to_vec();
             bytes.push(0);
-            let before = bytes.clone();
+            let mut want = expected.unwrap_or(source).as_bytes().to_vec();
+            want.push(0);
 
-            assert!(
-                !patch_behavior_project_modl_bytes(&mut bytes, HUMAN_BEHAVIOR_PROJECT),
-                "{path} must not be treated as a behavior project"
+            assert_eq!(
+                patch_behavior_project_modl_bytes(&mut bytes, project),
+                expected.is_some(),
+                "{source}"
             );
-            assert_eq!(bytes, before);
+            assert_eq!(bytes, want, "{source}");
+        }
+    }
+
+    /// Mole miners' rig shares 5 of FO4 Character's 128 bone names, so the
+    /// human clips would bind to nothing — see `creature_project_path_override`.
+    #[test]
+    fn only_scorched_retarget_to_the_fo4_human_project() {
+        for (eid, expected) in [
+            ("ScorchedRace", Some(HUMAN_BEHAVIOR_PROJECT)),
+            ("MoleMinerRace", None),
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_race(0x000100, "Output.esp", &interner);
+            record.eid = Some(interner.intern(eid));
+            assert_eq!(
+                creature_project_path_override(&record, &interner),
+                expected,
+                "{eid}"
+            );
         }
     }
 
@@ -4905,71 +4667,54 @@ mod tests {
         assert!(own_stkd < sigs.iter().rposition(|s| *s == "SGNM").unwrap());
     }
 
+    /// Inheriting blocks through SubgraphTemplateRace is FO4's other supported
+    /// arrangement — the converted humanoid races all use it.
     #[test]
-    fn leaves_a_race_that_can_already_locomote_alone() {
+    fn power_armor_locomotion_seed_leaves_races_that_do_not_need_it_alone() {
         let interner = StringInterner::new();
-        let mut record = power_armor_race_without_locomotion(&interner);
+        let mut already_locomotes = power_armor_race_without_locomotion(&interner);
         push_field(
-            &mut record,
+            &mut already_locomotes,
             "SGNM",
             FieldValue::String(interner.intern("Actors\\Character\\Behaviors\\MTBehavior.hkx")),
         );
-        let before = record.fields.len();
-
-        assert!(!seed_power_armor_locomotion_subgraphs(
-            &mut record,
-            &locomotion_donor(&interner),
-            &interner
-        ));
-        assert_eq!(record.fields.len(), before);
-    }
-
-    #[test]
-    fn leaves_a_race_with_a_subgraph_template_alone() {
-        // Inheriting blocks through SubgraphTemplateRace is FO4's other supported
-        // arrangement — the converted humanoid races all use it.
-        let interner = StringInterner::new();
-        let mut record = power_armor_race_without_locomotion(&interner);
+        let mut subgraph_template = power_armor_race_without_locomotion(&interner);
         push_field(
-            &mut record,
+            &mut subgraph_template,
             "SRAC",
             FieldValue::FormKey(FormKey {
                 local: 0x01_D31E,
                 plugin: interner.intern("Fallout4.esm"),
             }),
         );
-        let before = record.fields.len();
-
-        assert!(!seed_power_armor_locomotion_subgraphs(
-            &mut record,
-            &locomotion_donor(&interner),
-            &interner
-        ));
-        assert_eq!(record.fields.len(), before);
-    }
-
-    #[test]
-    fn leaves_races_on_their_own_behavior_project_alone() {
-        let interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &interner);
+        let mut own_project = make_race(0x000100, "Output.esp", &interner);
         push_field(
-            &mut record,
+            &mut own_project,
             "MODL",
             FieldValue::String(interner.intern("Actors\\Snallygaster\\SnallygasterProject.hkx")),
         );
         push_field(
-            &mut record,
+            &mut own_project,
             "SGNM",
             FieldValue::String(interner.intern("Actors\\Snallygaster\\Behaviors\\Root.hkx")),
         );
-        let before = record.fields.len();
 
-        assert!(!seed_power_armor_locomotion_subgraphs(
-            &mut record,
-            &locomotion_donor(&interner),
-            &interner
-        ));
-        assert_eq!(record.fields.len(), before);
+        for (name, mut record) in [
+            ("already_locomotes", already_locomotes),
+            ("subgraph_template", subgraph_template),
+            ("own_project", own_project),
+        ] {
+            let before = record.fields.len();
+            assert!(
+                !seed_power_armor_locomotion_subgraphs(
+                    &mut record,
+                    &locomotion_donor(&interner),
+                    &interner
+                ),
+                "{name}"
+            );
+            assert_eq!(record.fields.len(), before, "{name}");
+        }
     }
 
     #[test]
@@ -6300,100 +6045,57 @@ mod tests {
     }
 
     #[test]
-    fn collapses_adjacent_duplicate_subgraphs() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(
-            &mut record,
-            "SGNM",
-            FieldValue::String(interner.intern("Actors\\Graph.hkx")),
-        );
-        push_field(
-            &mut record,
-            "SAPT",
-            FieldValue::String(interner.intern("path1.hkx")),
-        );
-        // Adjacent duplicate (case + slash variants match normalize).
-        push_field(
-            &mut record,
-            "SGNM",
-            FieldValue::String(interner.intern("actors/Graph.hkx")),
-        );
-        push_field(
-            &mut record,
-            "SAPT",
-            FieldValue::String(interner.intern("PATH1.hkx")),
-        );
-
+    fn collapses_only_adjacent_identical_subgraphs() {
+        let interner = StringInterner::new();
+        let mut record = make_race(0x000100, "Output.esp", &interner);
+        for (sig, path) in [
+            ("SGNM", "Actors\\Graph.hkx"),
+            ("SAPT", "path1.hkx"),
+            ("SGNM", "actors/Graph.hkx"),
+            ("SAPT", "PATH1.hkx"),
+        ] {
+            push_field(&mut record, sig, FieldValue::String(interner.intern(path)));
+        }
         let outcome = apply_to_record(&mut record, &interner);
         assert_eq!(outcome.duplicate_graphs_collapsed, 1);
+        assert_eq!(sigs(&record), vec!["SGNM", "SAPT"]);
 
-        assert_eq!(record.fields.len(), 2);
-        assert_eq!(record.fields[0].sig.as_str(), "SGNM");
-        assert_eq!(record.fields[1].sig.as_str(), "SAPT");
-    }
-
-    #[test]
-    fn preserves_same_graph_with_different_sapt_chain() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(
-            &mut record,
-            "SGNM",
-            FieldValue::String(
-                interner.intern("Actors\\Snallygaster\\Behaviors\\SnallygasterCoreBehavior.hkx"),
+        for (name, fields) in [
+            (
+                "different_sapt_chain",
+                vec![
+                    (
+                        "SGNM",
+                        "Actors\\Snallygaster\\Behaviors\\SnallygasterCoreBehavior.hkx",
+                    ),
+                    (
+                        "SAPT",
+                        "Actors\\Snallygaster\\Animations\\Injured\\RightLeg",
+                    ),
+                    (
+                        "SGNM",
+                        "actors/snallygaster/behaviors/snallygastercorebehavior.hkx",
+                    ),
+                    ("SAPT", "Actors\\Snallygaster\\Animations\\Injured\\LeftLeg"),
+                ],
             ),
-        );
-        push_field(
-            &mut record,
-            "SAPT",
-            FieldValue::String(
-                interner.intern("Actors\\Snallygaster\\Animations\\Injured\\RightLeg"),
+            (
+                "non_adjacent",
+                vec![
+                    ("SGNM", "Actors\\GraphA.hkx"),
+                    ("SGNM", "Actors\\GraphB.hkx"),
+                    ("SGNM", "Actors\\GraphA.hkx"),
+                ],
             ),
-        );
-        push_field(
-            &mut record,
-            "SGNM",
-            FieldValue::String(
-                interner.intern("actors/snallygaster/behaviors/snallygastercorebehavior.hkx"),
-            ),
-        );
-        push_field(
-            &mut record,
-            "SAPT",
-            FieldValue::String(
-                interner.intern("Actors\\Snallygaster\\Animations\\Injured\\LeftLeg"),
-            ),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.duplicate_graphs_collapsed, 0);
-        assert_eq!(record.fields.len(), 4);
-    }
-
-    #[test]
-    fn non_adjacent_duplicates_preserved() {
-        let mut interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esp", &mut interner);
-        push_field(
-            &mut record,
-            "SGNM",
-            FieldValue::String(interner.intern("Actors\\GraphA.hkx")),
-        );
-        push_field(
-            &mut record,
-            "SGNM",
-            FieldValue::String(interner.intern("Actors\\GraphB.hkx")),
-        );
-        push_field(
-            &mut record,
-            "SGNM",
-            FieldValue::String(interner.intern("Actors\\GraphA.hkx")),
-        );
-
-        let outcome = apply_to_record(&mut record, &interner);
-        assert_eq!(outcome.duplicate_graphs_collapsed, 0);
-        assert_eq!(record.fields.len(), 3);
+        ] {
+            let mut record = make_race(0x000100, "Output.esp", &interner);
+            for (sig, path) in &fields {
+                push_field(&mut record, sig, FieldValue::String(interner.intern(path)));
+            }
+            let outcome = apply_to_record(&mut record, &interner);
+            assert_eq!(outcome.duplicate_graphs_collapsed, 0, "{name}");
+            assert_eq!(record.fields.len(), fields.len(), "{name}");
+        }
     }
 
     #[test]
@@ -6450,23 +6152,6 @@ mod tests {
         let stkd_sig = SubrecordSig::from_str("STKD").unwrap();
         assert!(record.fields.iter().all(|e| e.sig != sgnm_sig));
         assert!(record.fields.iter().all(|e| e.sig != stkd_sig));
-    }
-
-    #[test]
-    fn registry_runs_npc_root_no_op_when_no_race_records() {
-        let (_, schema, config) = make_creature_config();
-        let target_handle = plugin_handle_new_native("FixCreatureRaceRecordsTest.esp", Some("fo4"))
-            .expect("test plugin handle");
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-        let mut registry = FixupRegistry::new();
-        registry.register(Box::new(FixCreatureRaceRecordsFixup));
-        let reports = registry
-            .run_all_in_session(&mut session, &mut mapper, &config)
-            .expect("run_all_in_session");
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0].1.is_no_op());
     }
 
     #[test]
@@ -6819,8 +6504,9 @@ mod tests {
         assert!(outcome.changed());
         // FO4 orders the role-0 list MT…, H2H, Shared. The weapon-role melee
         // block must be untouched.
+        let after_first = subgraph_paths(&record, &interner);
         assert_eq!(
-            subgraph_paths(&record, &interner),
+            after_first,
             vec![
                 "Actors\\MoleMiner\\Animations\\MT".to_string(),
                 "Actors\\MoleMiner\\Animations\\H2H".to_string(),
@@ -6829,6 +6515,11 @@ mod tests {
                 "Actors\\MoleMiner\\Animations\\Shared".to_string(),
             ]
         );
+
+        let mut second = RaceFixOutcome::default();
+        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut second);
+        assert_eq!(second.locomotion_h2h_paths_added, 0, "idempotent");
+        assert_eq!(subgraph_paths(&record, &interner), after_first);
     }
 
     #[test]
@@ -6874,15 +6565,17 @@ mod tests {
         );
     }
 
+    /// Converted Scorched: H2H already leads the role-0 block, and its
+    /// injured-on-ground role-0 variant deliberately carries none; adding a row
+    /// there would regress a creature that already chases. The path is only
+    /// ever reused from one the race declares, so a creature without an H2H
+    /// folder cannot be given a dangling row.
     #[test]
-    fn races_that_already_wire_h2h_into_locomotion_are_left_alone() {
-        // Converted Scorched: H2H already leads the role-0 block, and its
-        // injured-on-ground role-0 variant deliberately carries none. Adding a
-        // row to that variant would regress a creature that already chases.
+    fn locomotion_h2h_repair_leaves_wired_and_h2h_less_races_alone() {
         let interner = StringInterner::new();
-        let mut record = make_race(0x10CA5F, "Output.esm", &interner);
+        let mut scorched = make_race(0x10CA5F, "Output.esm", &interner);
         push_subgraph_block(
-            &mut record,
+            &mut scorched,
             &interner,
             "Actors\\Character\\Behaviors\\MTBehavior.hkx",
             &[
@@ -6892,7 +6585,7 @@ mod tests {
             0,
         );
         push_subgraph_block(
-            &mut record,
+            &mut scorched,
             &interner,
             "Actors\\Character\\Behaviors\\MTBehavior.hkx",
             &[
@@ -6901,23 +6594,9 @@ mod tests {
             ],
             0,
         );
-        let before = subgraph_paths(&record, &interner);
-
-        let mut outcome = RaceFixOutcome::default();
-        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut outcome);
-
-        assert_eq!(outcome.locomotion_h2h_paths_added, 0);
-        assert_eq!(subgraph_paths(&record, &interner), before);
-    }
-
-    #[test]
-    fn a_race_that_ships_no_h2h_folder_gains_nothing() {
-        // The path is only ever reused from one the race already declares, so a
-        // creature without an H2H folder cannot be given a dangling row.
-        let interner = StringInterner::new();
-        let mut record = make_race(0x000100, "Output.esm", &interner);
+        let mut mirelurk = make_race(0x000100, "Output.esm", &interner);
         push_subgraph_block(
-            &mut record,
+            &mut mirelurk,
             &interner,
             "Actors\\Character\\Behaviors\\MTBehavior.hkx",
             &[
@@ -6926,28 +6605,13 @@ mod tests {
             ],
             0,
         );
-        let before = subgraph_paths(&record, &interner);
 
-        let mut outcome = RaceFixOutcome::default();
-        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut outcome);
-
-        assert_eq!(outcome.locomotion_h2h_paths_added, 0);
-        assert_eq!(subgraph_paths(&record, &interner), before);
-    }
-
-    #[test]
-    fn repair_is_idempotent_across_repeated_runs() {
-        let interner = StringInterner::new();
-        let mut record = mole_miner_shaped_race(&interner);
-
-        let mut first = RaceFixOutcome::default();
-        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut first);
-        let after_first = subgraph_paths(&record, &interner);
-
-        let mut second = RaceFixOutcome::default();
-        add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut second);
-
-        assert_eq!(second.locomotion_h2h_paths_added, 0);
-        assert_eq!(subgraph_paths(&record, &interner), after_first);
+        for (name, mut record) in [("scorched", scorched), ("no_h2h_folder", mirelurk)] {
+            let before = subgraph_paths(&record, &interner);
+            let mut outcome = RaceFixOutcome::default();
+            add_h2h_path_to_locomotion_blocks(&mut record, &interner, &mut outcome);
+            assert_eq!(outcome.locomotion_h2h_paths_added, 0, "{name}");
+            assert_eq!(subgraph_paths(&record, &interner), before, "{name}");
+        }
     }
 }

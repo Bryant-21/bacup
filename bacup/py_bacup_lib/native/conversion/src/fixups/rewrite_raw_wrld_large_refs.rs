@@ -268,6 +268,14 @@ mod tests {
         );
         assert_eq!(i16::from_le_bytes(bytes[12..14].try_into().unwrap()), 16);
         assert_eq!(i16::from_le_bytes(bytes[14..16].try_into().unwrap()), 42);
+
+        let mut encoded = bytes.to_vec();
+        assert!(
+            !rewrite_rnam_bytes(encoded.as_mut_slice(), &mut mapper, &mut warnings),
+            "already target-encoded RNAM refs stay unchanged"
+        );
+        assert!(warnings.is_empty());
+        assert_eq!(encoded.as_slice(), &bytes[..]);
     }
 
     #[test]
@@ -291,31 +299,6 @@ mod tests {
         ));
         assert_eq!(warnings.len(), 1);
         assert_eq!(raw, before);
-    }
-
-    #[test]
-    fn leaves_already_target_encoded_wrld_rnam_refs_unchanged() {
-        let mut interner = StringInterner::new();
-        let mut mapper = fo76_to_fo4_mapper(&mut interner);
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&16_i16.to_le_bytes());
-        raw.extend_from_slice(&42_i16.to_le_bytes());
-        raw.extend_from_slice(&1_u32.to_le_bytes());
-        raw.extend_from_slice(&0x0702_6616_u32.to_le_bytes());
-        raw.extend_from_slice(&16_i16.to_le_bytes());
-        raw.extend_from_slice(&42_i16.to_le_bytes());
-
-        let mut warnings = Vec::new();
-        assert!(!rewrite_rnam_bytes(
-            raw.as_mut_slice(),
-            &mut mapper,
-            &mut warnings
-        ));
-        assert!(warnings.is_empty());
-        assert_eq!(
-            u32::from_le_bytes(raw[8..12].try_into().unwrap()),
-            0x0702_6616
-        );
     }
 
     #[test]

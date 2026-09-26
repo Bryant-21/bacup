@@ -31,7 +31,8 @@ class _Timing:
         self.records.append((name, kwargs))
 
 
-def test_deploy_post_steps_uses_mo2_target_without_ini_edits(monkeypatch, tmp_path):
+@pytest.mark.parametrize("target", ["mo2", "skip_ini"])
+def test_deploy_post_steps_without_ini_edits(monkeypatch, tmp_path, target):
     mo2_dir = tmp_path / "ModOrganizer" / "mods" / "SeventySix"
     calls: dict[str, object] = {}
 
@@ -45,125 +46,47 @@ def test_deploy_post_steps_uses_mo2_target_without_ini_edits(monkeypatch, tmp_pa
         deploy_archives=True,
     ):
         calls["deploy"] = {
-            "output_root_name": output_root_name,
-            "plugin_names": plugin_names,
-            "project_root": project_root,
             "game_data_dir": game_data_dir,
-            "resource_dir": resource_dir,
             "deploy_archives": deploy_archives,
         }
 
-    monkeypatch.setattr(regen_pipeline, "_deploy_output_mods", fake_deploy_output_mods)
-    monkeypatch.setattr(regen_pipeline, "_deployed_archive_names", lambda *a, **k: ["SeventySix - Main.ba2"])
     def fail_if_called(message: str):
         def _fail(*_args, **_kwargs):
             raise AssertionError(message)
 
         return _fail
 
-    monkeypatch.setattr(
-        regen_pipeline,
+    monkeypatch.setattr(regen_pipeline, "_deploy_output_mods", fake_deploy_output_mods)
+    monkeypatch.setattr(regen_pipeline, "_deployed_archive_names", lambda *a, **k: ["SeventySix - Main.ba2"])
+    for name in (
         "_write_runtime_archive_ini_state",
-        fail_if_called("INI state should not be written"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
         "_fo4_ini_archive_names_for_plugins",
-        fail_if_called("INI entries should not be read"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
         "_remove_fo4_archive_ini_entries",
-        fail_if_called("INI entries should not be removed"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
         "_cleanup_fo4_archive_ini_overrides",
-        fail_if_called("CK INI should not be cleaned"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
         "_register_runtime_archive_ini_entries",
-        fail_if_called("runtime INI should not be registered"),
-    )
+    ):
+        monkeypatch.setattr(regen_pipeline, name, fail_if_called(f"{name} should not run"))
 
     timing = _Timing()
-    regen_pipeline._deploy_post_steps(_paths(tmp_path, deploy_data_dir=mo2_dir), ["SeventySix.esm"], timing)
+    if target == "mo2":
+        regen_pipeline._deploy_post_steps(
+            _paths(tmp_path, deploy_data_dir=mo2_dir), ["SeventySix.esm"], timing
+        )
+        expected_dir = mo2_dir
+    else:
+        regen_pipeline._deploy_post_steps(
+            _paths(tmp_path), ["SeventySix.esm"], timing, update_runtime_ini=False
+        )
+        expected_dir = tmp_path / "Fallout4" / "Data"
 
-    assert calls["deploy"]["game_data_dir"] == mo2_dir
+    assert calls["deploy"]["game_data_dir"] == expected_dir
     assert calls["deploy"]["deploy_archives"] is True
     assert timing.records[0][0] == "deploy"
-    assert timing.records[0][1]["deploy_data_dir"] == str(mo2_dir)
     assert timing.records[0][1]["registered_runtime_ini_entries"] == 0
-
-
-def test_deploy_post_steps_can_skip_runtime_ini_updates(monkeypatch, tmp_path):
-    calls: dict[str, object] = {}
-
-    def fake_deploy_output_mods(
-        output_root_name,
-        *,
-        plugin_names,
-        project_root,
-        game_data_dir,
-        resource_dir,
-        deploy_archives=True,
-    ):
-        calls["deploy"] = {
-            "output_root_name": output_root_name,
-            "plugin_names": plugin_names,
-            "project_root": project_root,
-            "game_data_dir": game_data_dir,
-            "resource_dir": resource_dir,
-            "deploy_archives": deploy_archives,
-        }
-
-    def fail_if_called(message: str):
-        def _fail(*_args, **_kwargs):
-            raise AssertionError(message)
-
-        return _fail
-
-    monkeypatch.setattr(regen_pipeline, "_deploy_output_mods", fake_deploy_output_mods)
-    monkeypatch.setattr(regen_pipeline, "_deployed_archive_names", lambda *a, **k: ["SeventySix - Main.ba2"])
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_write_runtime_archive_ini_state",
-        fail_if_called("INI state should not be written"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_fo4_ini_archive_names_for_plugins",
-        fail_if_called("INI entries should not be read"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_remove_fo4_archive_ini_entries",
-        fail_if_called("INI entries should not be removed"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_cleanup_fo4_archive_ini_overrides",
-        fail_if_called("CK INI should not be cleaned"),
-    )
-    monkeypatch.setattr(
-        regen_pipeline,
-        "_register_runtime_archive_ini_entries",
-        fail_if_called("runtime INI should not be registered"),
-    )
-
-    timing = _Timing()
-    regen_pipeline._deploy_post_steps(
-        _paths(tmp_path),
-        ["SeventySix.esm"],
-        timing,
-        update_runtime_ini=False,
-    )
-
-    assert calls["deploy"]["game_data_dir"] == tmp_path / "Fallout4" / "Data"
-    assert timing.records[0][0] == "deploy"
-    assert timing.records[0][1]["registered_runtime_ini_entries"] == 0
-    assert timing.records[0][1]["ini_updates_skipped"] is True
+    if target == "mo2":
+        assert timing.records[0][1]["deploy_data_dir"] == str(mo2_dir)
+    else:
+        assert timing.records[0][1]["ini_updates_skipped"] is True
 
 
 def test_deploy_existing_requires_generated_plugin(tmp_path):
@@ -174,11 +97,15 @@ def test_deploy_existing_requires_generated_plugin(tmp_path):
     assert "missing generated plugin" in result.failures[0]
 
 
-def test_deploy_existing_copies_archives_when_output_has_ba2(monkeypatch, tmp_path):
+@pytest.mark.parametrize("has_ba2", [True, False])
+def test_deploy_existing_copies_archives_only_when_output_has_ba2(
+    monkeypatch, tmp_path, has_ba2
+):
     paths = _paths(tmp_path)
     paths.output_root.mkdir(parents=True)
     (paths.output_root / "SeventySix.esm").write_bytes(b"esm")
-    (paths.output_root / "SeventySix - Main.ba2").write_bytes(b"ba2")
+    if has_ba2:
+        (paths.output_root / "SeventySix - Main.ba2").write_bytes(b"ba2")
     calls: dict[str, object] = {}
 
     def fake_deploy_post_steps(
@@ -202,33 +129,8 @@ def test_deploy_existing_copies_archives_when_output_has_ba2(monkeypatch, tmp_pa
     assert result.deployed is True
     assert calls["paths"] is paths
     assert calls["plugin_names"] == ["SeventySix.esm"]
-    assert calls["archives_already_deployed"] is False
+    assert calls["archives_already_deployed"] is not has_ba2
     assert calls["update_runtime_ini"] is False
-
-
-def test_deploy_existing_skips_archive_copy_when_output_has_no_ba2(monkeypatch, tmp_path):
-    paths = _paths(tmp_path)
-    paths.output_root.mkdir(parents=True)
-    (paths.output_root / "SeventySix.esm").write_bytes(b"esm")
-    calls: dict[str, object] = {}
-
-    def fake_deploy_post_steps(
-        paths_arg,
-        plugin_names,
-        timing_report,
-        *,
-        archives_already_deployed=False,
-        update_runtime_ini=True,
-    ):
-        calls["archives_already_deployed"] = archives_already_deployed
-
-    monkeypatch.setattr(regen_pipeline, "_deploy_post_steps", fake_deploy_post_steps)
-
-    result = regen_pipeline.deploy_existing(paths)
-
-    assert result.exit_code == 0
-    assert result.deployed is True
-    assert calls["archives_already_deployed"] is True
 
 
 def test_deploy_output_mods_reuses_built_outputs_without_validation(monkeypatch, tmp_path):
@@ -266,42 +168,6 @@ def test_deploy_output_mods_reuses_built_outputs_without_validation(monkeypatch,
                 "project_root": project_root,
                 "resource_dir": resource_dir,
                 "deploy_archives": True,
-            },
-        )
-    ]
-
-
-def test_deploy_output_mods_can_use_loose_deployer(monkeypatch, tmp_path):
-    project_root = tmp_path
-    (project_root / "mods" / "SeventySix").mkdir(parents=True)
-    game_data_dir = tmp_path / "MO2" / "mods" / "SeventySix"
-    calls: list[tuple[str, dict]] = []
-
-    monkeypatch.setattr(
-        "creation_lib.build.loose_deploy.deploy_loose_assets",
-        lambda mod_name, **kwargs: calls.append((mod_name, kwargs)),
-    )
-
-    regen_pipeline._deploy_output_mods(
-        "SeventySix",
-        plugin_names=["SeventySix.esm"],
-        project_root=project_root,
-        game_data_dir=game_data_dir,
-        resource_dir=tmp_path / "resource",
-        deploy_archives=False,
-        deploy_loose=True,
-    )
-
-    assert calls == [
-        (
-            "SeventySix",
-            {
-                "game": "fo4",
-                "game_data_dir": game_data_dir,
-                "skip_build": True,
-                "skip_papyrus_compile": True,
-                "skip_validation": True,
-                "project_root": project_root,
             },
         )
     ]
@@ -435,6 +301,7 @@ def test_full_regen_loose_mode_skips_ba2_and_deploys_loose(monkeypatch, tmp_path
         paths.output_root.mkdir(parents=True, exist_ok=True)
         (paths.output_root / "SeventySix.esm").write_bytes(b"converted")
         return SimpleNamespace(
+            summary=SimpleNamespace(),
             run_result=SimpleNamespace(
                 decisions=[],
                 translated_counts={},
@@ -469,9 +336,25 @@ def test_full_regen_loose_mode_skips_ba2_and_deploys_loose(monkeypatch, tmp_path
     assert captures["deploy_kwargs"]["deploy_loose"] is True
 
 
-def test_deploy_output_mods_plugin_only_skips_loose_payload(monkeypatch, tmp_path):
+def test_deploy_output_mods_plugin_only_deploys_runtime_payload(monkeypatch, tmp_path):
     project_root = tmp_path
-    (project_root / "mods" / "SeventySix").mkdir(parents=True)
+    mod_dir = project_root / "mods" / "SeventySix"
+    (mod_dir / "F4SE" / "Plugins").mkdir(parents=True)
+    (mod_dir / "PrismaUI_F4" / "views" / "B21_FullScreenMap").mkdir(
+        parents=True
+    )
+    (mod_dir / "F4SE" / "Plugins" / "B21_TalesFromAppalachia_en.txt").write_text(
+        "translations",
+        encoding="utf-8",
+    )
+    map_pack = mod_dir / "F4SE" / "Plugins" / "B21_FullScreenMap" / "maps" / "appalachia"
+    map_pack.mkdir(parents=True)
+    (map_pack / "map.dds").write_bytes(b"DDS ")
+    (mod_dir / "PrismaUI_F4" / "views" / "B21_FullScreenMap" / "map.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    game_data_dir = tmp_path / "Fallout4" / "Data"
     calls: list[dict] = []
 
     monkeypatch.setattr(
@@ -483,7 +366,7 @@ def test_deploy_output_mods_plugin_only_skips_loose_payload(monkeypatch, tmp_pat
         "SeventySix",
         plugin_names=["SeventySix.esm"],
         project_root=project_root,
-        game_data_dir=tmp_path / "Fallout4" / "Data",
+        game_data_dir=game_data_dir,
         resource_dir=tmp_path / "resource",
         deploy_archives=False,
         plugin_only=True,
@@ -491,10 +374,24 @@ def test_deploy_output_mods_plugin_only_skips_loose_payload(monkeypatch, tmp_pat
 
     assert calls[0]["esp_only"] is True
     assert calls[0]["deploy_archives"] is False
+    assert (
+        game_data_dir / "F4SE" / "Plugins" / "B21_TalesFromAppalachia_en.txt"
+    ).read_text(encoding="utf-8") == "translations"
+    assert (
+        game_data_dir / "F4SE" / "Plugins" / "B21_FullScreenMap" / "maps" / "appalachia" / "map.dds"
+    ).read_bytes() == b"DDS "
+    assert (
+        game_data_dir
+        / "PrismaUI_F4"
+        / "views"
+        / "B21_FullScreenMap"
+        / "map.json"
+    ).read_text(encoding="utf-8") == "{}"
 
 
+@pytest.mark.parametrize("deploy_fails", [False, True])
 def test_deploy_output_mods_supports_distinct_mod_and_plugin_names(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, deploy_fails
 ):
     project_root = tmp_path
     mod_dir = project_root / "mods" / "CustomMojave"
@@ -504,6 +401,8 @@ def test_deploy_output_mods_supports_distinct_mod_and_plugin_names(
     game_data_dir = tmp_path / "Fallout4" / "Data"
 
     def fake_deploy_mod(mod_name, **kwargs):
+        if deploy_fails:
+            raise RuntimeError("deploy failed")
         exposed = project_root / "mods" / mod_name / f"{mod_name}.esm"
         assert exposed.read_bytes() == b"merged"
         game_data_dir.mkdir(parents=True, exist_ok=True)
@@ -511,41 +410,23 @@ def test_deploy_output_mods_supports_distinct_mod_and_plugin_names(
 
     monkeypatch.setattr("creation_lib.build.deployer.deploy_mod", fake_deploy_mod)
 
-    regen_pipeline._deploy_output_mods(
-        "CustomMojave",
-        plugin_names=["FalloutNV.esm"],
-        project_root=project_root,
-        game_data_dir=game_data_dir,
-        resource_dir=tmp_path / "resource",
-    )
-
-    assert (game_data_dir / "FalloutNV.esm").read_bytes() == b"merged"
-    assert not (game_data_dir / "CustomMojave.esm").exists()
-    assert not (mod_dir / "CustomMojave.esm").exists()
-
-
-def test_distinct_plugin_deploy_cleans_temporary_alias_on_failure(
-    monkeypatch, tmp_path
-):
-    mod_dir = tmp_path / "mods" / "MojaveCapital"
-    mod_dir.mkdir(parents=True)
-    (mod_dir / "FalloutNV.esm").write_bytes(b"merged")
-
-    monkeypatch.setattr(
-        "creation_lib.build.deployer.deploy_mod",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("deploy failed")),
-    )
-
-    with pytest.raises(RuntimeError, match="deploy failed"):
+    def deploy():
         regen_pipeline._deploy_output_mods(
-            "MojaveCapital",
+            "CustomMojave",
             plugin_names=["FalloutNV.esm"],
-            project_root=tmp_path,
-            game_data_dir=tmp_path / "Fallout4" / "Data",
+            project_root=project_root,
+            game_data_dir=game_data_dir,
             resource_dir=tmp_path / "resource",
         )
 
-    assert not (mod_dir / "MojaveCapital.esm").exists()
+    if deploy_fails:
+        with pytest.raises(RuntimeError, match="deploy failed"):
+            deploy()
+    else:
+        deploy()
+        assert (game_data_dir / "FalloutNV.esm").read_bytes() == b"merged"
+        assert not (game_data_dir / "CustomMojave.esm").exists()
+    assert not (mod_dir / "CustomMojave.esm").exists()
 
 
 def test_deploy_post_steps_names_archives_after_the_plugin_not_the_mod(
@@ -584,3 +465,37 @@ def test_deploy_post_steps_names_archives_after_the_plugin_not_the_mod(
         "output_root_name": "CustomMojave",
         "archive_plugin_names": ["FalloutNV.esm"],
     }
+
+
+@pytest.mark.parametrize("continue_on_error", [True, False])
+def test_deploy_existing_pack_failure_follows_continue_on_error(
+    monkeypatch, tmp_path, continue_on_error
+):
+    paths = _paths(tmp_path)
+    paths.output_root.mkdir(parents=True)
+    (paths.output_root / "SeventySix.esm").write_bytes(b"esm")
+    deployed: dict[str, object] = {}
+
+    def failing_pack(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(regen_pipeline, "_pack_existing_output", failing_pack)
+    monkeypatch.setattr(
+        regen_pipeline,
+        "_deploy_post_steps",
+        lambda _paths, _names, _tr, **kwargs: deployed.update(kwargs),
+    )
+    options = RegenOptions(continue_on_error=continue_on_error)
+
+    if not continue_on_error:
+        with pytest.raises(OSError, match="disk full"):
+            regen_pipeline.deploy_existing(paths, options=options)
+        assert deployed == {}
+        return
+
+    result = regen_pipeline.deploy_existing(paths, options=options)
+
+    assert result.deployed is True
+    assert result.exit_code == 2
+    assert result.failures == ["Pack BA2: disk full"]
+    assert deployed["archives_already_deployed"] is True

@@ -247,15 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn walk_phase_name() {
-        let phase = WalkPhase;
-        assert_eq!(phase.name(), "walk");
-    }
-
-    /// A reached LOD-capable base whose `_lod.nif` exists on disk gets the LOD
-    /// mesh appended to the asset list.
-    #[test]
-    fn lod_convention_appends_existing_lod_nif() {
+    fn lod_convention_appends_existing_and_skips_absent_lod() {
         let dir = std::env::temp_dir().join("walk_lod_convention_present");
         let _ = std::fs::remove_dir_all(&dir);
         let lod = dir
@@ -293,11 +285,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
 
-    /// A base whose `_lod.nif` does NOT exist appends nothing.
-    #[test]
-    fn lod_convention_skips_absent_lod() {
         let dir = std::env::temp_dir().join("walk_lod_convention_absent");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

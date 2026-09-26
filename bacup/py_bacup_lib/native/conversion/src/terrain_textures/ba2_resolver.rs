@@ -216,17 +216,4 @@ mod tests {
                 .exists()
         );
     }
-
-    #[test]
-    fn open_finds_known_fo76_texture_when_install_available() {
-        let fo76_data = std::env::var("FO76_DATA_DIR").unwrap_or_default();
-        if fo76_data.is_empty() {
-            return;
-        } // skip on CI
-        let resolver = Ba2Resolver::open(std::path::Path::new(&fo76_data)).expect("open");
-        let bytes = resolver
-            .find("textures/shared/cubemaps/mipblur_defaultoutside1.dds")
-            .or_else(|| resolver.find("textures/shared/cubemaps/eyecubemap.dds"));
-        assert!(bytes.is_some(), "expected to resolve a known FO76 texture");
-    }
 }

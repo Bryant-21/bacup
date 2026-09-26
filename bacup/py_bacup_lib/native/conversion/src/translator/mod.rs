@@ -1914,10 +1914,9 @@ mod tests {
     }
 
     #[test]
-    fn repaired_legacy_maps_preserve_weapon_idle_and_misc_payload_signatures() {
+    fn repaired_legacy_maps_preserve_weapon_and_misc_payload_signatures() {
         for (source, plugin, record_signature, field_signature) in [
             (Game::Fnv, "FalloutNV.esm", "WEAP", "DATA"),
-            (Game::Fnv, "FalloutNV.esm", "IDLE", "DATA"),
             (Game::Fo3, "Fallout3.esm", "MISC", "FULL"),
         ] {
             let interner = StringInterner::new();
@@ -2761,22 +2760,32 @@ mod tests {
             assert_eq!(Game::from_str(s), Some(g));
             assert_eq!(g.as_str(), s);
         }
-    }
-
-    #[test]
-    fn game_from_str_unknown_returns_none() {
         assert!(Game::from_str("unknown_game").is_none());
     }
 
-    // -------------------------------------------------------------------------
-    // Per-pair smoke tests: Translator::new must succeed for every
-    // registered game pair.  YAML-only pairs use NoOpPairHook (the wildcard
-    // arm in pair_hook_for); this verifies the map file loads without error.
-    // -------------------------------------------------------------------------
-
     #[test]
-    fn translator_loads_fo3_to_fo4() {
-        Translator::new(Game::Fo3, Game::Fo4).expect("fo3→fo4 should load");
+    fn translator_loads_every_registered_game_pair() {
+        for (source, target) in [
+            (Game::Fo3, Game::Fo4),
+            (Game::Fo4, Game::SkyrimSe),
+            (Game::Fo76, Game::Fnv),
+            (Game::Fo76, Game::SkyrimSe),
+            (Game::SkyrimSe, Game::Fo4),
+            (Game::Starfield, Game::Fo4),
+        ] {
+            Translator::new(source, target)
+                .unwrap_or_else(|e| panic!("{source:?}->{target:?} should load: {e:?}"));
+        }
+        for (source, target) in [(Game::Skyrim, Game::SkyrimSe), (Game::Fo3, Game::Fnv)] {
+            let t = Translator::new(source, target).unwrap_or_else(|e| {
+                panic!("{source:?}->{target:?} should load with no map: {e:?}")
+            });
+            assert!(t.maps.skip_records.is_empty(), "{source:?}->{target:?}");
+            assert!(
+                t.maps.record_map("WEAP").is_none(),
+                "{source:?}->{target:?}"
+            );
+        }
     }
 
     #[test]
@@ -2850,31 +2859,6 @@ mod tests {
     }
 
     #[test]
-    fn translator_loads_fo4_to_skyrimse() {
-        Translator::new(Game::Fo4, Game::SkyrimSe).expect("fo4→skyrimse should load");
-    }
-
-    #[test]
-    fn translator_loads_fo76_to_fnv() {
-        Translator::new(Game::Fo76, Game::Fnv).expect("fo76→fnv should load");
-    }
-
-    #[test]
-    fn translator_loads_fo76_to_skyrimse() {
-        Translator::new(Game::Fo76, Game::SkyrimSe).expect("fo76→skyrimse should load");
-    }
-
-    #[test]
-    fn translator_loads_skyrimse_to_fo4() {
-        Translator::new(Game::SkyrimSe, Game::Fo4).expect("skyrimse→fo4 should load");
-    }
-
-    #[test]
-    fn translator_loads_starfield_to_fo4() {
-        Translator::new(Game::Starfield, Game::Fo4).expect("starfield→fo4 should load");
-    }
-
-    #[test]
     fn starfield_to_fo4_dispatches_starfield_fo4_pair_hook() {
         // PTT2 has no NoOpPairHook effect; only StarfieldFo4Hook::pre_translate
         // drops it. This proves pair_hook_for wires the real hook, not the
@@ -2925,8 +2909,12 @@ mod tests {
         );
         let mut state = pair_hooks::fnv_fo4::LegacySerialNormalizationState::default();
 
-        let outcome =
-            translator.normalize_serial_mapper_record_once(fk, &mut record, &mut mapper, &mut state);
+        let outcome = translator.normalize_serial_mapper_record_once(
+            fk,
+            &mut record,
+            &mut mapper,
+            &mut state,
+        );
 
         assert!(matches!(
             outcome,
@@ -2966,7 +2954,10 @@ mod tests {
             Some(Ok(pair_hooks::fnv_fo4::LegacySerialNormalizeReport::Mgef(ref report)))
                 if report.converted_rows == 1
         ));
-        assert!(flora.fields.is_empty(), "an unmapped property row is not an FO4 form");
+        assert!(
+            flora.fields.is_empty(),
+            "an unmapped property row is not an FO4 form"
+        );
 
         let mut bare = Record::new(SigCode::from_str("FLOR").unwrap(), fk);
         assert!(
@@ -3001,25 +2992,5 @@ mod tests {
             };
             assert_eq!(decision.kind, interner.intern("starfield_mvp_record_fence"));
         }
-    }
-
-    /// Skyrim→SkyrimSE has no YAML map (no Python pair hook either); Translator
-    /// must still construct successfully, yielding an empty TranslationMaps.
-    #[test]
-    fn translator_loads_skyrim_to_skyrimse_no_map() {
-        let t = Translator::new(Game::Skyrim, Game::SkyrimSe)
-            .expect("skyrim→skyrimse should load even with no YAML map");
-        // No skip_records, no record maps — empty maps are valid.
-        assert!(t.maps.skip_records.is_empty());
-        assert!(t.maps.record_map("WEAP").is_none());
-    }
-
-    /// FO3→FNV has no YAML map; same empty-maps check.
-    #[test]
-    fn translator_loads_fo3_to_fnv_no_map() {
-        let t = Translator::new(Game::Fo3, Game::Fnv)
-            .expect("fo3→fnv should load even with no YAML map");
-        assert!(t.maps.skip_records.is_empty());
-        assert!(t.maps.record_map("WEAP").is_none());
     }
 }

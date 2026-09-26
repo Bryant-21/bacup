@@ -1,8 +1,12 @@
 Event OnQuestInit()
+	B21CaravanRunActive = False
+	B21CaravanCooldownRemaining = 0.0
+	B21CostaLastCompletedDay = 0
 	RefreshCostaBusinessEligibility()
 EndEvent
 
 Function RefreshCostaBusinessEligibility()
+	RefreshCaravanAvailability()
 	RegisterForProtocolAdonais()
 
 	ReferenceAlias vinnyAlias = GetAlias(2) as ReferenceAlias
@@ -14,12 +18,78 @@ Function RefreshCostaBusinessEligibility()
 		Return
 	EndIf
 
-	If GetRunningCostaBusinessQuest() != None || GetNextCostaBusinessStartKeyword() == None
+	If GetRunningCostaBusinessQuest() != None || GetNextCostaBusinessStartKeyword() == None || !IsCostaBusinessDayAvailable()
 		UnregisterForRemoteEvent(vinny, "OnActivate")
 		Return
 	EndIf
 
 	RegisterForRemoteEvent(vinny, "OnActivate")
+EndFunction
+
+; --- Costa Business order and daily gate ---------------------------------------
+; The seven Costa Business quests run in a fixed order, once per character, and at
+; most one may be completed per game day. FO76 enforced that with each quest's own
+; Story Manager condition block (GetEventData == its start keyword, GetGlobalValue
+; MOON_LCP_Toggle_Dailies == 1, GetQuestCompleted(self) == 0, GetQuestCompleted(the
+; previous quest) >= 1). The converted QUSTs carry no such block and every node under
+; Moon_SQ06_Vera_Branch (6A9F35) is condition-free, so the gate lives here and each
+; quest calls IsCostaBusinessQuestEligible from its own start stage.
+
+Int Function GetCostaBusinessOrder(Quest akQuest)
+	If akQuest == None
+		Return 0
+	EndIf
+	Int questIndex = 1
+	While questIndex <= 8
+		If GetCostaBusinessQuest(questIndex) == akQuest
+			Return questIndex
+		EndIf
+		questIndex += 1
+	EndWhile
+	Return 0
+EndFunction
+
+Bool Function IsCostaBusinessQuestEligible(Quest akQuest)
+	Int order = GetCostaBusinessOrder(akQuest)
+	If order <= 0 || order > 7 || akQuest.IsCompleted() || !AreCostaBusinessDailiesEnabled()
+		Return False
+	EndIf
+	If !IsCostaBusinessDayAvailable()
+		Return False
+	EndIf
+
+	Int questIndex = 1
+	While questIndex < order
+		Quest earlierQuest = GetCostaBusinessQuest(questIndex)
+		If earlierQuest == None || !earlierQuest.IsCompleted()
+			Return False
+		EndIf
+		questIndex += 1
+	EndWhile
+	Return True
+EndFunction
+
+Function NotifyCostaBusinessCompleted(Quest akQuest)
+	If GetCostaBusinessOrder(akQuest) <= 0
+		Return
+	EndIf
+	B21CostaLastCompletedDay = GetCurrentGameDay()
+	RefreshCostaBusinessEligibility()
+EndFunction
+
+Bool Function IsCostaBusinessDayAvailable()
+	Return B21CostaLastCompletedDay <= 0 || GetCurrentGameDay() > B21CostaLastCompletedDay
+EndFunction
+
+Int Function GetCurrentGameDay()
+	Return (Utility.GetCurrentGameTime() as Int) + 1
+EndFunction
+
+; A missing toggle means the Skyline Valley content was not converted with its globals;
+; treat that as "allowed" so the family is not bricked by an absent record.
+Bool Function AreCostaBusinessDailiesEnabled()
+	GlobalVariable dailiesToggle = Game.GetFormFromFile(0x006DAEE4, "SeventySix.esm") as GlobalVariable
+	Return dailiesToggle == None || dailiesToggle.GetValue() >= 1.0
 EndFunction
 
 Function RegisterForProtocolAdonais()
@@ -34,6 +104,10 @@ Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akAct
 	If player == None || akActivator != player
 		Return
 	EndIf
+
+	; Talking to Vinny is also the moment his caravan line is evaluated, so re-check availability
+	; and re-arm the poll here: it recovers the cycle even if the timer chain was lost.
+	RefreshCaravanAvailability()
 
 	ReferenceAlias vinnyAlias = GetAlias(2) as ReferenceAlias
 	ReferenceAlias ariesAlias = GetAlias(6) as ReferenceAlias
@@ -53,23 +127,101 @@ Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akAct
 	EndIf
 EndEvent
 
+; --- Activity: Riding Shotgun (560B13) availability --------------------------------------------
+; FO76's server decided when the caravan was ready to roll and reopened it on a cooldown. In FO4
+; GV_IsRunning is the only gate the Vinny start line and both Story Manager nodes read, so this
+; quest (StartsEnabled, never stops) owns it: 1 while the activity may be started, 0 while it runs
+; and for Timer_CoolDown seconds afterwards.
+Function RefreshCaravanAvailability()
+	If GV_IsRunning == None
+		Return
+	EndIf
+
+	Quest caravanQuest = Game.GetFormFromFile(0x00560B13, "SeventySix.esm") as Quest
+	If caravanQuest == None
+		Return
+	EndIf
+
+	If caravanQuest.IsRunning()
+		B21CaravanRunActive = True
+		B21CaravanCooldownRemaining = 0.0
+		GV_IsRunning.SetValue(0.0)
+	ElseIf B21CaravanRunActive
+		B21CaravanRunActive = False
+		B21CaravanCooldownRemaining = GetCaravanCooldownSeconds()
+		GV_IsRunning.SetValue(0.0)
+	ElseIf B21CaravanCooldownRemaining > 0.0
+		GV_IsRunning.SetValue(0.0)
+	Else
+		GV_IsRunning.SetValue(1.0)
+	EndIf
+
+	StartTimer(GetCaravanPollSeconds(), 7805)
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+	If aiTimerID != 7805
+		Return
+	EndIf
+
+	If B21CaravanCooldownRemaining > 0.0
+		B21CaravanCooldownRemaining -= GetCaravanPollSeconds()
+		If B21CaravanCooldownRemaining <= 0.0
+			B21CaravanCooldownRemaining = 0.0
+			ResetCaravanForNextRun()
+		EndIf
+	EndIf
+
+	RefreshCaravanAvailability()
+EndEvent
+
+; The activity keeps its stages, objectives and alias fills after it stops, so clear them once the
+; cooldown is over: the next Story Manager start then behaves like a first run.
+Function ResetCaravanForNextRun()
+	Quest caravanQuest = Game.GetFormFromFile(0x00560B13, "SeventySix.esm") as Quest
+	If caravanQuest != None && !caravanQuest.IsRunning()
+		caravanQuest.Reset()
+	EndIf
+EndFunction
+
+Float Function GetCaravanCooldownSeconds()
+	If Timer_CoolDown == None
+		Return 1200.0
+	EndIf
+
+	Float cooldown = Timer_CoolDown.GetValue()
+	If cooldown <= 0.0
+		Return 1200.0
+	EndIf
+	Return cooldown
+EndFunction
+
+Float Function GetCaravanPollSeconds()
+	Return 5.0
+EndFunction
+
 Function TryStartEligibleCostaBusiness(ObjectReference akVinny, Actor akPlayer)
 	If akVinny == None || akPlayer == None
 		Return
 	EndIf
 
-	If GetRunningCostaBusinessQuest() != None
+	If GetRunningCostaBusinessQuest() != None || !IsCostaBusinessDayAvailable()
 		UnregisterForRemoteEvent(akVinny, "OnActivate")
 		Return
 	EndIf
 
 	Keyword startKeyword = GetNextCostaBusinessStartKeyword()
-	If startKeyword == None
+	Quest nextQuest = GetNextCostaBusinessQuest()
+	If startKeyword == None || nextQuest == None
 		UnregisterForRemoteEvent(akVinny, "OnActivate")
 		Return
 	EndIf
 
-	Bool started = startKeyword.SendStoryEventAndWait(akPlayer.GetCurrentLocation(), akPlayer)
+	; Every node under Moon_SQ06_Vera_Branch is condition-free, so SendStoryEventAndWait
+	; reports True as soon as any sibling starts -- including one that then refuses itself
+	; because it is out of order. Only the intended quest running counts as a start.
+	startKeyword.SendStoryEventAndWait(akPlayer.GetCurrentLocation(), akPlayer)
+	Bool started = nextQuest.IsRunning()
 	Keyword eugenieStartKeyword = Game.GetFormFromFile(0x006CC9A5, "SeventySix.esm") as Keyword
 	If !started && startKeyword == eugenieStartKeyword
 		Quest eugenieQuest = GetCostaBusinessQuest(2)
@@ -136,6 +288,22 @@ Quest Function GetRunningCostaBusinessQuest()
 		Quest costaQuest = GetCostaBusinessQuest(questIndex)
 		If costaQuest != None && costaQuest.IsRunning()
 			Return costaQuest
+		EndIf
+		questIndex += 1
+	EndWhile
+
+	Return None
+EndFunction
+
+Quest Function GetNextCostaBusinessQuest()
+	Int questIndex = 1
+	While questIndex <= 7
+		Quest costaQuest = GetCostaBusinessQuest(questIndex)
+		If costaQuest == None || !costaQuest.IsCompleted()
+			If costaQuest != None && !costaQuest.IsRunning()
+				Return costaQuest
+			EndIf
+			Return None
 		EndIf
 		questIndex += 1
 	EndWhile

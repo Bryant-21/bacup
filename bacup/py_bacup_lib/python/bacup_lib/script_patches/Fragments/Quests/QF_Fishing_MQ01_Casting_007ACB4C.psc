@@ -64,19 +64,22 @@ EndFunction
 Function Fragment_Stage_0700_Item_00()
     Actor playerRef = Alias_Player.GetActorReference()
     Form fishBits = Game.GetFormFromFile(0x007CE310, "SeventySix.esm")
-    Int requiredFishBits = 3
-    If Fishing_ChumTrough_RewardThreshold != None && Fishing_ChumTrough_RewardThreshold.GetValue() > requiredFishBits
-        requiredFishBits = Fishing_ChumTrough_RewardThreshold.GetValue() as Int
-    EndIf
     SetObjectiveCompleted(60)
     SetObjectiveDisplayed(70)
-
-    If playerRef != None && fishBits != None && playerRef.GetItemCount(fishBits) < requiredFishBits
-        playerRef.AddItem(fishBits, requiredFishBits - playerRef.GetItemCount(fishBits))
-    EndIf
-
-    If !IsStageDone(800)
+    If playerRef != None && fishBits != None && playerRef.GetItemCount(fishBits) >= 3 && !IsStageDone(800)
         SetStage(800)
+    ElseIf !IsStageDone(800)
+        StartTimer(2.0, 700)
+    EndIf
+EndFunction
+
+Function Fishing_RecordCatch(Int aiItemCount, Int aiRegionMask)
+    If !IsRunning()
+        Return
+    EndIf
+    Fishing:MQ01PlayerAliasScript counter = Alias_Player as Fishing:MQ01PlayerAliasScript
+    If counter != None
+        counter.OnFishingCatch(aiItemCount)
     EndIf
 EndFunction
 
@@ -101,6 +104,10 @@ EndFunction
 
 Function Fragment_Stage_9000_Item_00()
     SetObjectiveCompleted(90)
+    Form completionItems = Game.GetFormFromFile(0x007C7339, "SeventySix.esm")
+    If completionItems != None
+        Game.GetPlayer().AddItem(completionItems, 1)
+    EndIf
     CompleteQuest()
 
     If Fishing_TryStartBigFish()
@@ -111,6 +118,12 @@ Function Fragment_Stage_9000_Item_00()
 EndFunction
 
 Event OnTimer(Int aiTimerID)
+    If aiTimerID == 700
+        If IsRunning() && IsStageDone(700) && !IsStageDone(800)
+            Fragment_Stage_0700_Item_00()
+        EndIf
+        Return
+    EndIf
     If aiTimerID != 9000 || !IsStageDone(9000)
         Return
     EndIf

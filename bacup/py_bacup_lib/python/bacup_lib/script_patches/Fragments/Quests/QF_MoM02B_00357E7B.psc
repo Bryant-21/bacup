@@ -78,6 +78,19 @@ Function Fragment_Stage_0090_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
+    Actor playerRef = Game.GetPlayer()
+    Form bladeOfBastet = Game.GetFormFromFile(0x0039C6C8, "SeventySix.esm")
+    If playerRef != None && bladeOfBastet != None
+        If playerRef.GetItemCount(bladeOfBastet) == 0
+            playerRef.AddItem(bladeOfBastet, 1)
+        EndIf
+        Quest bladeQuest = Self
+        MoM02BQuestScript bladeScript = bladeQuest as MoM02BQuestScript
+        If bladeScript != None && bladeScript.MoM02BHistoricSword != None
+            playerRef.RemoveItem(bladeScript.MoM02BHistoricSword, 1, True)
+        EndIf
+    EndIf
+    CompleteQuest()
     SetObjectiveCompleted(90)
 
     MoMMasterQuestScript masterScript = MoMMaster as MoMMasterQuestScript

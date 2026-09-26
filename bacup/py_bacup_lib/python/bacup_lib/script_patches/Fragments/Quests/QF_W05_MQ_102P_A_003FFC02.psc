@@ -2,6 +2,10 @@ Function Fragment_Stage_0010_Item_00()
     SetObjectiveDisplayed(10)
 EndFunction
 
+Function Fragment_Stage_9999_Item_00()
+    Stop()
+EndFunction
+
 Function Fragment_Stage_0100_Item_00()
     SetObjectiveDisplayed(10)
 EndFunction
@@ -27,6 +31,10 @@ Function Fragment_Stage_9000_Item_00()
             currentPlayer.ModValue(Reputation_AV_Crater, Rep_Mod_MQ_Add_Small.GetValue())
             currentPlayer.SetValue(W05_MQ_102P_RepRewardGranted, 1.0)
         EndIf
+    EndIf
+    ; Nothing else sets 9500 ("Start next, stop quest"), which is what starts Cheating Death.
+    If !IsStageDone(9500)
+        SetStage(9500)
     EndIf
 EndFunction
 

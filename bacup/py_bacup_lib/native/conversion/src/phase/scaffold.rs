@@ -16,10 +16,6 @@
 //   assets_written = number of directories created
 //   warnings       = 0 (errors are hard failures)
 
-use std::path::Path;
-
-use serde_json::Value as JsonValue;
-
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 
 pub struct ScaffoldPhase;
@@ -127,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn scaffold_creates_data_subdirs() {
+    fn scaffold_creates_data_subdirs_and_yaml_dir_only_when_enabled() {
         let tmp = tempfile::tempdir().unwrap();
         let mod_path = tmp.path().to_path_buf();
         let id = make_run();
@@ -167,6 +163,37 @@ mod tests {
         assert!(mod_path.join("yaml").is_dir());
 
         drop_run(id).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mod_path = tmp.path().to_path_buf();
+        let id = make_run();
+
+        let report = with_run(id, |run| -> Result<PhaseReport, RunError> {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let params = serde_json::json!({
+                "mod_prefix": "B21",
+                "output_plugin_name": "Test.esp",
+                "emit_authoring_yaml": false
+            });
+            let source_dir = mod_path.clone();
+            let mut ctx = crate::phase::PhaseCtx {
+                run,
+                mod_path: &mod_path,
+                source_extracted_dir: &source_dir,
+                target_extracted_dir: None,
+                target_data_dir: None,
+                params: &params,
+                cancel: &cancel,
+            };
+            ScaffoldPhase
+                .run(&mut ctx)
+                .map_err(|e| RunError::InvalidConfig(e.to_string()))
+        })
+        .unwrap();
+
+        assert_eq!(report.assets_written, 5, "5 dirs when yaml disabled");
+        assert!(!mod_path.join("yaml").exists(), "yaml/ must not exist");
+        drop_run(id).unwrap();
     }
 
     #[test]
@@ -203,40 +230,6 @@ mod tests {
         let content = std::fs::read_to_string(&sentinel).unwrap();
         assert_eq!(content, "MyMod");
 
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn scaffold_no_yaml_dir_when_disabled() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mod_path = tmp.path().to_path_buf();
-        let id = make_run();
-
-        let report = with_run(id, |run| -> Result<PhaseReport, RunError> {
-            let cancel = Arc::new(AtomicBool::new(false));
-            let params = serde_json::json!({
-                "mod_prefix": "B21",
-                "output_plugin_name": "Test.esp",
-                "emit_authoring_yaml": false
-            });
-            let source_dir = mod_path.clone();
-            let mut ctx = crate::phase::PhaseCtx {
-                run,
-                mod_path: &mod_path,
-                source_extracted_dir: &source_dir,
-                target_extracted_dir: None,
-                target_data_dir: None,
-                params: &params,
-                cancel: &cancel,
-            };
-            ScaffoldPhase
-                .run(&mut ctx)
-                .map_err(|e| RunError::InvalidConfig(e.to_string()))
-        })
-        .unwrap();
-
-        assert_eq!(report.assets_written, 5, "5 dirs when yaml disabled");
-        assert!(!mod_path.join("yaml").exists(), "yaml/ must not exist");
         drop_run(id).unwrap();
     }
 }

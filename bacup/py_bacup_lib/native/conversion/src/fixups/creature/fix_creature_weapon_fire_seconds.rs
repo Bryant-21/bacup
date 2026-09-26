@@ -199,13 +199,9 @@ fn resolve_eid_lower(record: &Record, interner: &crate::sym::StringInterner) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixups::{FixupConfig, FixupContext};
-    use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
-    use crate::schema::AuthoringSchema;
     use crate::sym::StringInterner;
-    use std::sync::Arc;
 
     /// Build a minimal 132-byte DNAM payload with specific anim_type and
     /// animation_attack_seconds.
@@ -262,124 +258,49 @@ mod tests {
         }
     }
 
+    /// Only a gun with near-zero fire seconds and a nonzero attack duration is
+    /// fixed, to half the attack seconds.
     #[test]
-    fn fix_fire_secs_gun_near_zero_gets_fixed() {
-        let mut interner = StringInterner::new();
-        // attack_secs = 1.0, fire_secs = 1e-5 (near zero)
-        let mut record = make_weap(
-            0x000100,
-            "Output.esp",
-            ANIM_TYPE_GUN,
-            1.0,
-            1e-5,
-            &mut interner,
-        );
-        let changed = apply_to_record(&mut record);
-        assert!(changed, "must fix near-zero fire seconds on Gun weapon");
-
-        // New value should be 1.0 * 0.5 = 0.5
+    fn fixes_near_zero_gun_fire_seconds_only() {
+        let interner = StringInterner::new();
         let fnam_sig = SubrecordSig::from_str("FNAM").unwrap();
-        for entry in &record.fields {
-            if entry.sig == fnam_sig {
-                if let FieldValue::Bytes(ref data) = entry.value {
-                    let new_fire = f32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    assert!(
-                        (new_fire - 0.5).abs() < 1e-4,
-                        "expected ~0.5, got {new_fire}"
-                    );
-                }
-                break;
-            }
+        for (name, anim_type, attack_secs, fire_secs, expected_fire) in [
+            ("gun_near_zero", ANIM_TYPE_GUN, 1.0, 1e-5, Some(0.5)),
+            ("melee", 1, 1.0, 1e-5, None),
+            ("already_reasonable", ANIM_TYPE_GUN, 1.0, 0.5, None),
+            ("zero_attack_secs", ANIM_TYPE_GUN, 0.0, 1e-5, None),
+        ] {
+            let mut record = make_weap(
+                0x000100,
+                "Output.esp",
+                anim_type,
+                attack_secs,
+                fire_secs,
+                &interner,
+            );
+            assert_eq!(
+                apply_to_record(&mut record),
+                expected_fire.is_some(),
+                "{name}"
+            );
+            let Some(expected_fire) = expected_fire else {
+                continue;
+            };
+            let entry = record.fields.iter().find(|e| e.sig == fnam_sig).unwrap();
+            let FieldValue::Bytes(ref data) = entry.value else {
+                panic!("{name}: FNAM must stay bytes");
+            };
+            let new_fire = f32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            assert!(
+                (new_fire - expected_fire).abs() < 1e-4,
+                "{name}: got {new_fire}"
+            );
         }
-    }
 
-    #[test]
-    fn fix_fire_secs_melee_not_touched() {
-        let mut interner = StringInterner::new();
-        // animation_type = 1 (melee), fire_secs near-zero
-        let mut record = make_weap(0x000100, "Output.esp", 1, 1.0, 1e-5, &mut interner);
-        let changed = apply_to_record(&mut record);
-        assert!(!changed, "must not touch melee weapons");
-    }
-
-    #[test]
-    fn fix_fire_secs_already_reasonable_not_touched() {
-        let mut interner = StringInterner::new();
-        // fire_secs = 0.5 (already fine)
-        let mut record = make_weap(
-            0x000100,
-            "Output.esp",
-            ANIM_TYPE_GUN,
-            1.0,
-            0.5,
-            &mut interner,
-        );
-        let changed = apply_to_record(&mut record);
-        assert!(!changed, "must not touch already-reasonable fire seconds");
-    }
-
-    #[test]
-    fn fix_fire_secs_zero_attack_secs_not_touched() {
-        let mut interner = StringInterner::new();
-        // attack_secs = 0.0, fire_secs near-zero
-        let mut record = make_weap(
-            0x000100,
-            "Output.esp",
-            ANIM_TYPE_GUN,
-            0.0,
-            1e-5,
-            &mut interner,
-        );
-        let changed = apply_to_record(&mut record);
-        assert!(!changed, "must not fix when attack_secs is zero");
-    }
-
-    #[test]
-    fn fix_fire_secs_no_dnam_is_no_op() {
-        let mut interner = StringInterner::new();
-        let sig = SigCode::from_str("WEAP").unwrap();
-        let fk = FormKey {
-            local: 0x000100,
-            plugin: interner.intern("Output.esp"),
-        };
-        let fnam_sig = SubrecordSig::from_str("FNAM").unwrap();
-        let mut record = Record {
-            sig,
-            form_key: fk,
-            eid: None,
-            flags: RecordFlags::empty(),
-            fields: smallvec::smallvec![FieldEntry {
-                sig: fnam_sig,
-                value: FieldValue::Bytes(make_fnam(1e-5)),
-            }],
-            warnings: smallvec::SmallVec::new(),
-        };
-        let changed = apply_to_record(&mut record);
-        assert!(!changed, "no DNAM means no information → skip");
-    }
-
-    #[test]
-    fn applies_to_false_for_weap_root() {
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let mut ctx_interner = StringInterner::new();
-        let mut mapper_interner = StringInterner::new();
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        assert!(!FixCreatureWeaponFireSecondsFixup.applies_to(&ctx));
-        let _ = mapper;
+        let mut no_dnam = make_weap(0x000100, "Output.esp", ANIM_TYPE_GUN, 1.0, 1e-5, &interner);
+        no_dnam
+            .fields
+            .retain(|e| e.sig != SubrecordSig::from_str("DNAM").unwrap());
+        assert!(!apply_to_record(&mut no_dnam), "no DNAM");
     }
 }

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use bytes::Bytes;
 use memmap2::Mmap;
@@ -56,6 +57,11 @@ pub struct SourceEsm {
     /// sig -> positions in `index`, file order.
     by_sig: HashMap<[u8; 4], Vec<usize>>,
     pub plugin_name: String,
+    /// `GLOB` local form id -> `FLTV`, built on first use. Per-record hooks
+    /// cannot reach other records, but FO76 gates leveled-list entries and
+    /// conditions on globals whose value decides whether the gated content is
+    /// live in the shipped data.
+    global_values: OnceLock<HashMap<u32, f32>>,
 }
 
 pub struct RecordView<'a> {
@@ -77,6 +83,7 @@ impl SourceEsm {
             by_form_id: HashMap::new(),
             by_sig: HashMap::new(),
             plugin_name,
+            global_values: OnceLock::new(),
         };
         esm.walk()?;
         Ok(esm)
@@ -172,6 +179,31 @@ impl SourceEsm {
             .into_iter()
             .flatten()
             .map(|&pos| self.index[pos].form_id)
+    }
+
+    /// `GLOB` local form id -> its `FLTV` value, computed once per plugin.
+    pub fn global_values(&self) -> &HashMap<u32, f32> {
+        self.global_values.get_or_init(|| {
+            let mut values = HashMap::new();
+            for position in self.positions_of_sig(*b"GLOB") {
+                let Some(view) = self.view_at(position) else {
+                    continue;
+                };
+                let Ok(record) = view.to_parsed_record() else {
+                    continue;
+                };
+                let value = record
+                    .subrecords
+                    .iter()
+                    .find(|subrecord| subrecord.signature == "FLTV")
+                    .and_then(|subrecord| subrecord.data.get(0..4))
+                    .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+                if let Some(value) = value {
+                    values.insert(record.form_id & 0x00FF_FFFF, value);
+                }
+            }
+            values
+        })
     }
 
     pub fn positions_of_sig(&self, sig: [u8; 4]) -> impl Iterator<Item = usize> + '_ {
@@ -516,13 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn open_rejects_non_plugin() {
+    fn open_rejects_non_plugins_and_twenty_byte_record_headers_without_panicking() {
         let f = write_temp_plugin(b"not a plugin at all............");
         assert!(SourceEsm::open(f.path()).is_err());
-    }
 
-    #[test]
-    fn open_rejects_twenty_byte_record_headers_without_panicking() {
         let mut tes4_payload = Vec::new();
         tes4_payload.extend_from_slice(&subrecord(b"HEDR", &[0; 12]));
 

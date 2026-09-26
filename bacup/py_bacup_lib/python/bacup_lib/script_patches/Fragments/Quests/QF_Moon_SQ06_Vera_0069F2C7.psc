@@ -1,9 +1,56 @@
 Function Fragment_Stage_0100_Item_00()
+	If !IsCostaBusinessStartAllowed()
+		Stop()
+		Return
+	EndIf
 	If Alias_Player != None
 		Alias_Player.ForceRefIfEmpty(Game.GetPlayer())
 	EndIf
 	RegisterForQuestReferences()
+	PublishPhotoCount()
 	SetObjectiveDisplayed(100)
+EndFunction
+
+; Moon_SQ06_Vera_Branch (6A9F35) and all six of its quest nodes carry no conditions, and
+; the converted QUST lost the FO76 event-condition block, so any script story event that
+; reaches the branch starts this quest out of order -- Vera is the first node, so she is
+; the one a stray event hits. The Blue Ridge master quest owns the real order/one-per-day
+; rule; refuse the start when it says this is not our turn.
+; The namespaced script type must not be stored in a local -- the emitted local is
+; unresolvable at runtime -- so the cast is inlined.
+Bool Function IsCostaBusinessStartAllowed()
+	Quest costaMaster = Game.GetFormFromFile(0x0056B640, "SeventySix.esm") as Quest
+	If costaMaster as Quests:E05_Caravan:Master_QuestScript
+		Return (costaMaster as Quests:E05_Caravan:Master_QuestScript).IsCostaBusinessQuestEligible(Self as Quest)
+	EndIf
+	Return True
+EndFunction
+
+Function NotifyCostaBusinessCompleted()
+	Quest costaMaster = Game.GetFormFromFile(0x0056B640, "SeventySix.esm") as Quest
+	If costaMaster as Quests:E05_Caravan:Master_QuestScript
+		(costaMaster as Quests:E05_Caravan:Master_QuestScript).NotifyCostaBusinessCompleted(Self as Quest)
+	EndIf
+EndFunction
+
+; Objective 300 reads "(<Global=B21_QuestVar_69F2C7_Photos>/3)"; W05_Daily_PhotoQuestScript
+; only sets the per-photo stages, so the counter reads 0/3 until this publishes it.
+Function PublishPhotoCount()
+	Int count = 0
+	If IsStageDone(410)
+		count += 1
+	EndIf
+	If IsStageDone(420)
+		count += 1
+	EndIf
+	If IsStageDone(430)
+		count += 1
+	EndIf
+
+	Quest owner = Self as Quest
+	If owner as B21:QuestVariables
+		(owner as B21:QuestVariables).SetVariable("Photos", count as Float)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0110_Item_00()
@@ -151,6 +198,7 @@ Function Fragment_Stage_0700_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+	NotifyCostaBusinessCompleted()
 	SetObjectiveCompleted(500)
 	If !IsStageDone(9999)
 		SetStage(9999)
@@ -162,6 +210,7 @@ Function Fragment_Stage_9999_Item_00()
 EndFunction
 
 Function CheckPhotoProgress()
+	PublishPhotoCount()
 	If IsStageDone(410) && IsStageDone(420) && IsStageDone(430) && !IsStageDone(500)
 		SetStage(500)
 	EndIf

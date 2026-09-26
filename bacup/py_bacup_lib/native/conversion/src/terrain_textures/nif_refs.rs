@@ -133,17 +133,17 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn empty_on_missing_file() {
-        assert!(material_refs(Path::new("/definitely/not/a/file.nif")).is_empty());
-        assert!(inline_texture_refs(Path::new("/definitely/not/a/file.nif")).is_empty());
-    }
-
-    #[test]
-    fn empty_on_non_nif_file() {
-        // pass a path that exists but isn't a NIF (e.g., Cargo.toml of this crate)
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        assert!(material_refs(&p).is_empty());
-        assert!(inline_texture_refs(&p).is_empty());
+    fn missing_or_non_nif_files_have_no_refs() {
+        {
+            assert!(material_refs(Path::new("/definitely/not/a/file.nif")).is_empty());
+            assert!(inline_texture_refs(Path::new("/definitely/not/a/file.nif")).is_empty());
+        }
+        {
+            // pass a path that exists but isn't a NIF (e.g., Cargo.toml of this crate)
+            let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+            assert!(material_refs(&p).is_empty());
+            assert!(inline_texture_refs(&p).is_empty());
+        }
     }
 
     #[test]

@@ -805,10 +805,7 @@ mod tests {
         expected.extend_from_slice(&14.0f32.to_le_bytes());
         expected.extend_from_slice(&4.0f32.to_le_bytes());
         assert_eq!(out, expected.as_slice());
-    }
 
-    #[test]
-    fn ligh_radius_and_near_clip_land_in_vanilla_starfield_range() {
         // 256 units -> 3.66 m and 7.2174 -> 0.103 m, against vanilla Starfield
         // radii of 3-10 m and a dominant near clip of 0.15 m.
         let out = fo4_ligh_data_to_starfield_dat2(&vanilla_fo4_light_data()).unwrap();
@@ -842,16 +839,13 @@ mod tests {
     }
 
     #[test]
-    fn ligh_short_vanilla_variant_is_zero_padded_not_dropped() {
+    fn ligh_short_data_is_padded_and_unusable_data_removed() {
         // 60-byte DATA is 18% of vanilla Fallout4.esm lights.
         let mut data = vanilla_fo4_light_data();
         data.truncate(60);
         let out = fo4_ligh_data_to_starfield_dat2(&data).unwrap();
         assert_eq!(out.len(), SF_LIGH_DAT2_LEN);
-    }
 
-    #[test]
-    fn ligh_unusable_data_is_removed_never_carried() {
         let interner = StringInterner::new();
         let mut rec = new_record("LIGH", &interner);
         push_bytes(&mut rec, "DATA", vec![1, 2, 3, 4]);
@@ -862,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn scol_onam_gains_four_zero_bytes_and_keeps_a_live_formkey() {
+    fn scol_onam_gains_four_zero_bytes_paired_and_idempotent() {
         let interner = StringInterner::new();
         let mut rec = new_record("SCOL", &interner);
         let part = FormKey::parse("0247C1@Fallout4.esm", &interner).unwrap();
@@ -881,10 +875,7 @@ mod tests {
         for member in &members[1..] {
             assert_eq!(member.1, FieldValue::Bytes(SmallVec::from_slice(&[0u8])));
         }
-    }
 
-    #[test]
-    fn scol_onam_rows_stay_paired_with_their_data_rows() {
         let interner = StringInterner::new();
         let mut rec = new_record("SCOL", &interner);
         for local in ["0247C1", "0247C4"] {
@@ -901,10 +892,7 @@ mod tests {
 
         let order: Vec<&str> = rec.fields.iter().map(|e| e.sig.as_str()).collect();
         assert_eq!(order, vec!["ONAM", "DATA", "ONAM", "DATA"]);
-    }
 
-    #[test]
-    fn scol_onam_already_starfield_shaped_is_left_alone() {
         let interner = StringInterner::new();
         let mut rec = new_record("SCOL", &interner);
         push_bytes(&mut rec, "ONAM", vec![1, 2, 3, 4, 0, 0, 0, 0]);
@@ -926,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn scol_placement_scales_position_only_byte_for_byte() {
+    fn scol_placement_scales_position_only() {
         // Magnitudes taken from the vanilla Fallout4.esm SCOL corpus (median
         // |position| 142 units, p90 844).
         let src = fo4_placement_row([256.0, -512.0, 128.0], [0.5, -1.25, 3.0], 2.0);
@@ -941,10 +929,7 @@ mod tests {
         expected.extend_from_slice(&src[12..28]);
         assert_eq!(out, expected);
         assert_eq!(out.len(), SCOL_PLACEMENT_ROW_LEN);
-    }
 
-    #[test]
-    fn scol_placement_scales_every_row_of_a_multi_part_collection() {
         let mut src = fo4_placement_row([100.0, 200.0, 300.0], [0.0, 0.0, 0.0], 1.0);
         src.extend(fo4_placement_row([-400.0, 0.0, 50.0], [1.0, 2.0, 3.0], 0.5));
 
@@ -966,10 +951,7 @@ mod tests {
             &[-400.0 * FO4_TO_SF_SPATIAL, 0.0, 50.0 * FO4_TO_SF_SPATIAL]
         );
         assert_eq!(&v[10..14], &[1.0, 2.0, 3.0, 0.5]);
-    }
 
-    #[test]
-    fn scol_placement_lands_in_the_vanilla_starfield_magnitude_range() {
         // Vanilla Starfield SCOL placements measure |pos| p50 0.19 m, p90 2.58 m,
         // max 11.58 m across 200 rows. The FO4 p90 of 844 units must land in
         // metres, not stay at 844.
@@ -985,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn scol_placement_runs_from_the_record_entry_point() {
+    fn scol_placement_record_entry_point_scales_only_well_formed_scol_rows() {
         let interner = StringInterner::new();
         let mut rec = new_record("SCOL", &interner);
         push_bytes(
@@ -998,10 +980,7 @@ mod tests {
 
         let v = f32s(raw_of(&rec, "DATA"));
         assert_eq!(v[0], 700.0 * FO4_TO_SF_SPATIAL);
-    }
 
-    #[test]
-    fn scol_placement_with_a_ragged_payload_is_kept_unscaled_not_dropped() {
         let interner = StringInterner::new();
         let mut rec = new_record("SCOL", &interner);
         let ragged = vec![9u8; SCOL_PLACEMENT_ROW_LEN + 3];
@@ -1012,10 +991,7 @@ mod tests {
         // DATA is required:true on both schemas — a malformed row count must not
         // cost the record its placements.
         assert_eq!(raw_of(&rec, "DATA"), ragged.as_slice());
-    }
 
-    #[test]
-    fn scol_placement_is_untouched_on_other_record_signatures() {
         let interner = StringInterner::new();
         let mut rec = new_record("STAT", &interner);
         let row = fo4_placement_row([256.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0);
@@ -1053,16 +1029,13 @@ mod tests {
 
         assert_eq!(out.len(), OBND_LEN);
         assert_eq!(i16s(&out), vec![-10, -10, 0, 10, 10, 20]);
-    }
 
-    #[test]
-    fn obnd_rejects_a_payload_that_is_not_twelve_bytes() {
         assert!(scale_object_bounds(&[0u8; 10]).is_none());
         assert!(scale_object_bounds(&[0u8; 14]).is_none());
     }
 
     #[test]
-    fn obnd_scale_runs_from_the_record_entry_point_for_every_declared_sig() {
+    fn obnd_scale_runs_only_for_declared_sigs() {
         // Every sig `fo4_to_starfield.yaml` declared (now dead) `scale_nested`
         // OBND transforms for -- STAT, SCOL, MSTT, ACTI, LIGH, TXST, ASPC.
         let interner = StringInterner::new();
@@ -1075,10 +1048,7 @@ mod tests {
             let v = i16s(raw_of(&rec, "OBND"));
             assert_eq!(v, vec![-1, -1, 0, 1, 1, 2], "sig {sig}");
         }
-    }
 
-    #[test]
-    fn obnd_scale_is_untouched_on_a_signature_the_map_never_declared_it_for() {
         let interner = StringInterner::new();
         let mut rec = new_record("WATR", &interner);
         let row = obnd_row([-70, -70, 0, 70, 70, 140]);
@@ -1147,10 +1117,7 @@ mod tests {
         );
         assert_eq!(v[36], SF_WATR_FLOWMAP_SCALE);
         assert_eq!(v[37], SF_WATR_ROUGHNESS);
-    }
 
-    #[test]
-    fn watr_dnam_short_vanilla_variant_still_converts() {
         let mut src = indexed_fo4_water_dnam();
         src.truncate(188);
         let out = fo4_watr_dnam_to_starfield(&src).unwrap();
@@ -1158,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn watr_dnam_replaces_the_field_in_place() {
+    fn watr_dnam_is_replaced_in_place_or_removed_when_too_short() {
         let interner = StringInterner::new();
         let mut rec = new_record("WATR", &interner);
         push_bytes(&mut rec, "DNAM", indexed_fo4_water_dnam());
@@ -1166,10 +1133,7 @@ mod tests {
         relayout_watr_dnam(&mut rec);
 
         assert_eq!(raw_of(&rec, "DNAM").len(), SF_WATR_DNAM_LEN);
-    }
 
-    #[test]
-    fn watr_dnam_too_short_is_removed() {
         let interner = StringInterner::new();
         let mut rec = new_record("WATR", &interner);
         push_bytes(&mut rec, "DNAM", vec![0u8; 100]);
@@ -1213,10 +1177,7 @@ mod tests {
         }
         // Fog Colour High Near / High Far are the last two members and survive.
         assert_eq!(&out[100..108], &indexed_fo4_lgtm_data()[100..108]);
-    }
 
-    #[test]
-    fn lgtm_data_short_vanilla_variant_still_converts() {
         let mut src = indexed_fo4_lgtm_data();
         src.truncate(92);
         let out = fo4_lgtm_data_to_starfield(&src).unwrap();
@@ -1225,7 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn lgtm_dalc_keeps_only_the_six_directional_colours() {
+    fn lgtm_dalc_relayout_and_idempotence() {
         let mut src = vec![0u8; FO4_LGTM_DALC_LEN];
         for (i, byte) in src.iter_mut().enumerate() {
             *byte = i as u8;
@@ -1233,10 +1194,7 @@ mod tests {
         let out = fo4_lgtm_dalc_to_starfield(&src).unwrap();
         assert_eq!(out.len(), SF_LGTM_DALC_LEN);
         assert_eq!(out.as_slice(), &src[..SF_LGTM_DALC_LEN]);
-    }
 
-    #[test]
-    fn lgtm_relayouts_run_together_on_one_record() {
         let interner = StringInterner::new();
         let mut rec = new_record("LGTM", &interner);
         push_bytes(&mut rec, "DATA", indexed_fo4_lgtm_data());
@@ -1247,10 +1205,7 @@ mod tests {
 
         assert_eq!(raw_of(&rec, "DATA").len(), SF_LGTM_DATA_LEN);
         assert_eq!(raw_of(&rec, "DALC").len(), SF_LGTM_DALC_LEN);
-    }
 
-    #[test]
-    fn relayouts_are_idempotent_on_already_converted_payloads() {
         let interner = StringInterner::new();
         let mut rec = new_record("LGTM", &interner);
         push_bytes(&mut rec, "DATA", indexed_fo4_lgtm_data());

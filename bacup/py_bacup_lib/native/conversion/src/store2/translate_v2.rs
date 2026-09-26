@@ -1021,7 +1021,8 @@ fn run_pass_p(
                     &source_ctx.plugin_name,
                     &source_ctx.masters,
                     &run.config.target_master_names,
-                );
+                )
+                .with_source_global_values(esm.global_values());
                 if let Err(e) = translator.pre_translate(&mut ctx, &mut src_record) {
                     pass_p_warnings.push(format!("pre_translate:{e}"));
                 }
@@ -1097,6 +1098,7 @@ fn run_pass_p(
                         &mut translated,
                         &state.target_eid_index,
                         &state.options.vanilla_remap_blocked_source_form_keys,
+                        &state.options.shared_dna_remap_signatures,
                         interner,
                         crate::run::is_editor_id_collision_rename_forced(
                             source,
@@ -1107,10 +1109,16 @@ fn run_pass_p(
                     if let Some((old, new)) = renamed {
                         collision_donor = target_collision_donor_form_key(
                             &state.target_eid_index,
+                            &state.options.shared_dna_remap_signatures,
                             interner,
                             &old,
                             translated.sig,
-                        );
+                        )
+                        .filter(|_| {
+                            !crate::run::fo76_fo4_collision_keeps_source_vmad(
+                                source, target, source_fk, interner,
+                            )
+                        });
                         pass_p_warnings
                             .push(format!("fo76_target_edid_collision_renamed:{old}->{new}"));
                     }
@@ -2386,76 +2394,6 @@ mod equivalence_tests {
     }
 
     #[test]
-    fn fnv_quest_slice_translates_only_exact_own_plugin_mgef_through_world_fence() {
-        const SELECTED_MGEF: u32 = 0x0CB05D;
-        const UNRELATED_MGEF: u32 = 0x0CB05E;
-
-        let effect = |raw_form_id: u32, editor_id: &str| {
-            let mut payload = subrecord(b"EDID", format!("{editor_id}\0").as_bytes());
-            payload.extend_from_slice(&subrecord(b"DATA", &legacy_mgef_data(0, 0, 0, 0, -1)));
-            record(b"MGEF", raw_form_id, 0, &payload)
-        };
-        let fixture = plugin(
-            &["FalloutNV.esm"],
-            &[group(
-                b"MGEF",
-                0,
-                &[
-                    effect(0x0100_0000 | SELECTED_MGEF, "SelectedRestoreAllLimbs"),
-                    effect(0x0100_0000 | UNRELATED_MGEF, "UnrelatedOwnEffect"),
-                    effect(SELECTED_MGEF, "SameLocalMasterOverride"),
-                ],
-            )],
-        );
-        let temp = tempfile::tempdir().unwrap();
-        let source_path = temp.path().join("FalloutNV.esm");
-        std::fs::write(&source_path, fixture).unwrap();
-        let source_handle = load_source_handle(&source_path, "fnv");
-        let target_handle = fresh_target_handle();
-        let id = create_run(RunParams {
-            source: Game::Fnv,
-            target: Game::Fo4,
-            source_handle_id: source_handle,
-            target_handle_id: target_handle,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Out.esm".into(),
-                is_whole_plugin: true,
-                preserve_source_ids: true,
-                strict_mapper: true,
-                skip_record_signatures: vec!["CREA".to_string(), "MGEF".to_string()],
-                fnv_quest_slice: true,
-                fnv_quest_slice_records: std::collections::HashMap::from([(
-                    "MGEF".to_string(),
-                    vec![SELECTED_MGEF],
-                )]),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        let stats = with_run(id, |run| run.translate_all_v2(&source_path)).unwrap();
-        let target_records = handle_records(target_handle);
-        let target_effects = target_records
-            .iter()
-            .filter(|record| record.signature.as_str() == "MGEF")
-            .collect::<Vec<_>>();
-
-        assert_eq!(stats.records_translated, 1);
-        assert_eq!(stats.records_dropped, 2);
-        assert_eq!(target_effects.len(), 1);
-        assert_eq!(target_effects[0].form_id & 0x00FF_FFFF, SELECTED_MGEF);
-        assert_eq!(
-            subrecord_data(target_effects[0], "EDID"),
-            b"SelectedRestoreAllLimbs\0"
-        );
-
-        drop_run(id).unwrap();
-        plugin_handle_close_native(source_handle);
-        plugin_handle_close_native(target_handle);
-    }
-
-    #[test]
     fn creature_dependency_admission_bypasses_only_the_exact_source_record() {
         const SELECTED_MGEF: u32 = 0x0011_0100;
         const UNRELATED_MGEF: u32 = 0x0011_0101;
@@ -3340,6 +3278,188 @@ mod equivalence_tests {
         )
     }
 
+    fn ally_condition_catalog_fixture() -> Vec<u8> {
+        let mut condition = vec![0_u8; 32];
+        condition[4..8].copy_from_slice(&1_f32.to_le_bytes());
+        condition[8..10].copy_from_slice(&562_u16.to_le_bytes());
+        condition[12..16].copy_from_slice(&0x900_u32.to_le_bytes());
+        condition[28..32].copy_from_slice(&(-1_i32).to_le_bytes());
+        let mut catalog = subrecord(b"EDID", b"B21_TestAllyCondition\0");
+        catalog.extend(subrecord(b"CTDA", &condition));
+        condition[4..8].copy_from_slice(&0_f32.to_le_bytes());
+        catalog.extend(subrecord(b"CTDA", &condition));
+        condition[4..8].copy_from_slice(&1_f32.to_le_bytes());
+        condition[8..10].copy_from_slice(&875_u16.to_le_bytes());
+        condition[12..16].copy_from_slice(&0x910_u32.to_le_bytes());
+
+        let mut quest = subrecord(b"EDID", b"B21_TestAllyQuest\0");
+        quest.extend(subrecord(b"DATA", &[0_u8; 16]));
+        quest.extend(subrecord(b"NEXT", &[]));
+        quest.extend(subrecord(b"ANAM", &1_u32.to_le_bytes()));
+        quest.extend(subrecord(b"ALLS", &0_u32.to_le_bytes()));
+        quest.extend(subrecord(b"ALID", b"UnreservedLocation\0"));
+        quest.extend(subrecord(b"FNAM", &2_u32.to_le_bytes()));
+        quest.extend(subrecord(b"CTDA", &condition));
+        quest.extend(subrecord(b"ALED", &[]));
+
+        let mut topic = subrecord(b"PNAM", &50_f32.to_le_bytes());
+        topic.extend(subrecord(b"QNAM", &0x920_u32.to_le_bytes()));
+        topic.extend(subrecord(b"DATA", &[0_u8; 4]));
+        topic.extend(subrecord(b"SNAM", b"SCEN"));
+        topic.extend(subrecord(b"TIFC", &1_u32.to_le_bytes()));
+        let mut info = subrecord(b"ENAM", &[0_u8; 4]);
+        info.extend(subrecord(b"CTDA", &condition));
+        let children = group(
+            &0x920_u32.to_le_bytes(),
+            10,
+            &[
+                record(b"DIAL", 0x930, 0, &topic),
+                group(
+                    &0x930_u32.to_le_bytes(),
+                    7,
+                    &[record(b"INFO", 0x940, 0x40, &info)],
+                ),
+            ],
+        );
+        plugin(
+            &[],
+            &[
+                group(
+                    b"KYWD",
+                    0,
+                    &[record(
+                        b"KYWD",
+                        0x900,
+                        0,
+                        &subrecord(b"EDID", b"B21_TestAllyKeyword\0"),
+                    )],
+                ),
+                group(b"CNDF", 0, &[record(b"CNDF", 0x910, 0, &catalog)]),
+                group(b"QUST", 0, &[record(b"QUST", 0x920, 0, &quest), children]),
+            ],
+        )
+    }
+
+    #[test]
+    fn qust_extra_condition_groups_are_excluded_by_both_translation_paths() {
+        for use_v2 in [false, true] {
+            let mut condition = [0_u8; 32];
+            condition[4..8].copy_from_slice(&100_f32.to_le_bytes());
+            condition[8..10].copy_from_slice(&77_u16.to_le_bytes());
+            condition[28..32].copy_from_slice(&(-1_i32).to_le_bytes());
+            let mut payload = subrecord(b"EDID", b"B21_QuestConditionGroups\0");
+            payload.extend(subrecord(b"DATA", &[0_u8; 16]));
+            payload.extend(subrecord(b"NEXT", &[]));
+            payload.extend(subrecord(b"CTDA", &condition));
+            payload.extend(subrecord(b"NEXT", &[]));
+            let mut distance = condition;
+            distance[0] = 0x82;
+            distance[4..8].copy_from_slice(&10000_f32.to_le_bytes());
+            distance[8..10].copy_from_slice(&1_u16.to_le_bytes());
+            distance[12..16].copy_from_slice(&4_u32.to_le_bytes());
+            payload.extend(subrecord(b"CTDA", &distance));
+            payload.extend(subrecord(b"NEXT", &[]));
+            payload.extend(subrecord(b"CTDA", &condition));
+            payload.extend(subrecord(b"INDX", &[10, 0, 0, 0]));
+            payload.extend(subrecord(b"QSDT", &[0]));
+            payload.extend(subrecord(b"CTDA", &condition));
+            payload.extend(subrecord(b"ANAM", &5_u32.to_le_bytes()));
+            payload.extend(subrecord(b"ALST", &4_u32.to_le_bytes()));
+            payload.extend(subrecord(b"ALID", b"CenterMarker\0"));
+            payload.extend(subrecord(b"FNAM", &2_u32.to_le_bytes()));
+            payload.extend(subrecord(b"CTDA", &condition));
+            payload.extend(subrecord(b"ALED", &[]));
+            let fixture = plugin(
+                &[],
+                &[group(b"QUST", 0, &[record(b"QUST", 0x11CCC, 0, &payload)])],
+            );
+            let file = write_temp_plugin(&fixture);
+            let (target, stats) = run_one(use_v2, file.path(), None);
+            assert_eq!(stats.records_failed, 0, "{stats:?}");
+            let records = handle_records(target);
+            let quest = record_with_edid(&records, "B21_QuestConditionGroups");
+            let sequence: Vec<_> = quest
+                .subrecords
+                .iter()
+                .map(|row| row.signature.as_str())
+                .collect();
+            assert_eq!(
+                sequence,
+                [
+                    "EDID", "DNAM", "NEXT", "CTDA", "INDX", "QSDT", "CTDA", "ANAM", "ALST", "ALID",
+                    "FNAM", "CTDA", "ALED",
+                ],
+                "use_v2={use_v2}"
+            );
+            for row in quest
+                .subrecords
+                .iter()
+                .filter(|row| row.signature == "CTDA")
+            {
+                assert_eq!(&row.data[..], condition.as_slice(), "use_v2={use_v2}");
+            }
+            plugin_handle_close_native(target);
+        }
+    }
+
+    #[test]
+    fn ally_condition_catalog_is_initialized_by_translate_v2() {
+        for use_v2 in [false, true] {
+            let source_file = write_temp_plugin(&ally_condition_catalog_fixture());
+            let source_handle = load_source_handle(source_file.path(), "fo76");
+            let output_name = plugin_name_for_handle(source_handle).unwrap();
+            let target_handle = plugin_handle_new_native(&output_name, Some("fo4")).unwrap();
+            plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+            let id = create_run(RunParams {
+                source: Game::Fo76,
+                target: Game::Fo4,
+                source_handle_id: source_handle,
+                target_handle_id: target_handle,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: output_name,
+                    target_master_names: vec!["Fallout4.esm".into()],
+                    is_whole_plugin: true,
+                    preserve_source_ids: true,
+                    generated_object_id_floor: 0x800,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+            let stats = with_run(id, |run| {
+                if use_v2 {
+                    run.translate_all_v2(source_file.path())
+                } else {
+                    run.translate_all()
+                }
+            })
+            .unwrap();
+            assert_eq!(stats.records_failed, 0, "{stats:?}");
+            with_run(id, |run| run.apply_fixups_v2().map_err(RunError::from)).unwrap();
+            let records = handle_records(target_handle);
+            let keyword = record_with_edid(&records, "B21_TestAllyKeyword");
+            for signature in ["QUST", "INFO"] {
+                let host = records
+                    .iter()
+                    .find(|record| record.signature == signature)
+                    .unwrap();
+                let conditions = host
+                    .subrecords
+                    .iter()
+                    .filter(|row| row.signature == "CTDA")
+                    .collect::<Vec<_>>();
+                assert_eq!(conditions.len(), 2, "{signature}, use_v2={use_v2}");
+                for row in conditions {
+                    assert_eq!(u16::from_le_bytes(row.data[8..10].try_into().unwrap()), 562);
+                    assert_eq!(raw_u32(&row.data, 12), keyword.form_id, "{signature}");
+                }
+            }
+            drop_run(id).unwrap();
+            plugin_handle_close_native(source_handle);
+            plugin_handle_close_native(target_handle);
+        }
+    }
+
     fn quest_scene_fixture() -> Vec<u8> {
         let quest_id = 0x0000_0300u32;
         let scene_id = 0x0000_0301u32;
@@ -3946,28 +4066,42 @@ mod equivalence_tests {
     }
 
     #[test]
-    fn v2_target_handle_state_is_byte_identical_to_legacy() {
+    fn v2_target_handle_state_is_byte_identical_to_legacy_for_full_and_limited_runs() {
         let f = write_temp_plugin(&gate_fixture());
-        let (h_old, stats_old) = run_one(false, f.path(), None);
-        let (h_new, stats_new) = run_one(true, f.path(), None);
+        for limit in [None, Some(3)] {
+            let (h_old, stats_old) = run_one(false, f.path(), limit);
+            let (h_new, stats_new) = run_one(true, f.path(), limit);
 
-        assert_eq!(stats_old.records_translated, stats_new.records_translated);
-        assert_eq!(stats_old.records_dropped, stats_new.records_dropped);
-        assert_eq!(stats_old.records_deferred, stats_new.records_deferred);
-        assert_eq!(stats_old.records_failed, stats_new.records_failed);
-        assert_eq!(
-            stats_old.records_vanilla_remapped,
-            stats_new.records_vanilla_remapped
-        );
+            assert_eq!(
+                stats_old.records_translated, stats_new.records_translated,
+                "{limit:?}"
+            );
+            assert_eq!(
+                stats_old.records_dropped, stats_new.records_dropped,
+                "{limit:?}"
+            );
+            assert_eq!(
+                stats_old.records_deferred, stats_new.records_deferred,
+                "{limit:?}"
+            );
+            assert_eq!(
+                stats_old.records_failed, stats_new.records_failed,
+                "{limit:?}"
+            );
+            assert_eq!(
+                stats_old.records_vanilla_remapped, stats_new.records_vanilla_remapped,
+                "{limit:?}"
+            );
 
-        assert_handles_equal(h_old, h_new);
+            assert_handles_equal(h_old, h_new);
 
-        plugin_handle_close_native(h_old);
-        plugin_handle_close_native(h_new);
+            plugin_handle_close_native(h_old);
+            plugin_handle_close_native(h_new);
+        }
     }
 
     #[test]
-    fn merged_legacy_pack_preflight_blocks_before_mutation_with_legacy_v2_parity() {
+    fn merged_legacy_pack_preflight_blocks_before_mutation_and_reports_count_drift() {
         let (fixture, origins) = merged_legacy_pack_fixture();
         let fixture = write_temp_plugin(&fixture);
         let expected = LegacyPackExpectedCounts { fnv: 6, fo3: 5 };
@@ -4025,12 +4159,7 @@ mod equivalence_tests {
                 .iter()
                 .any(|blocker| blocker == "malformed_subrecord")
         );
-    }
 
-    #[test]
-    fn merged_legacy_pack_preflight_reports_explicit_family_count_drift() {
-        let (fixture, origins) = merged_legacy_pack_fixture();
-        let fixture = write_temp_plugin(&fixture);
         let (_, report, _, target_records) = run_legacy_pack_preflight_case(
             true,
             fixture.path(),
@@ -4272,7 +4401,196 @@ mod equivalence_tests {
     }
 
     #[test]
-    fn unsupported_legacy_creatures_are_fail_closed() {
+    fn repair_kits_are_emitted_as_misc_by_both_translation_paths() {
+        let mut kits = Vec::new();
+        for (id, eid) in [
+            (0x41adeb, "ATX_Utility_RepairKit_Basic"),
+            (0x41adec, "Utility_RepairKit_Improved"),
+        ] {
+            let mut payload = subrecord(b"EDID", format!("{eid}\0").as_bytes());
+            payload.extend(subrecord(b"FULL", b"B21 Test Repair Kit\0"));
+            payload.extend(subrecord(
+                b"MODL",
+                b"props/repairkit/repairkitpristine.nif\0",
+            ));
+            payload.extend(subrecord(b"DATA", &[0, 0, 0, 0, 0xcd, 0xcc, 0xcc, 0x3d]));
+            payload.extend(subrecord(b"UITE", &0u32.to_le_bytes()));
+            payload.extend(subrecord(b"UITO", &0u32.to_le_bytes()));
+            payload.extend(subrecord(b"UITV", &1.5f32.to_le_bytes()));
+            kits.push(record(b"UTIL", id, 0, &payload));
+        }
+        let fixture = write_temp_plugin(&plugin(&[], &[group(b"UTIL", 0, &kits)]));
+        for use_v2 in [false, true] {
+            let source = load_source_handle(fixture.path(), "fo76");
+            let target = fresh_target_handle();
+            let id = create_run(RunParams {
+                source: Game::Fo76,
+                target: Game::Fo4,
+                source_handle_id: source,
+                target_handle_id: target,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Out.esm".into(),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+            with_run(id, |run| {
+                if use_v2 {
+                    run.translate_all_v2(fixture.path())
+                } else {
+                    run.translate_all()
+                }
+            })
+            .unwrap();
+            let records = handle_records(target);
+            let kits: Vec<_> = records.iter().filter(|r| r.signature == "MISC").collect();
+            assert_eq!(kits.len(), 2, "path v2={use_v2}");
+            let mapped_ids = with_run(id, |run| {
+                Ok::<_, RunError>(
+                    run.mapper_state
+                        .as_ref()
+                        .unwrap()
+                        .source_to_target
+                        .iter()
+                        .filter(|(source, _)| matches!(source.local, 0x41adeb | 0x41adec))
+                        .map(|(_, target)| target.local)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap();
+            assert_eq!(mapped_ids.len(), 2);
+            for kit in kits {
+                assert!(mapped_ids.contains(&(kit.form_id & 0xffffff)));
+                let fields =
+                    esp_authoring_core::plugin_runtime::effective_subrecords_for_record(kit);
+                assert!(fields.iter().any(|f| f.signature == "MODL"));
+                assert!(
+                    fields
+                        .iter()
+                        .any(|f| f.signature == "DATA" && f.data.len() == 8)
+                );
+                assert!(
+                    !fields
+                        .iter()
+                        .any(|f| matches!(f.signature.as_str(), "UITE" | "UITO" | "UITV"))
+                );
+            }
+            assert!(!records.iter().any(|r| r.signature == "UTIL"));
+            drop_run(id).unwrap();
+            plugin_handle_close_native(source);
+            plugin_handle_close_native(target);
+        }
+    }
+
+    #[test]
+    fn scrap_to_stash_is_emitted_as_an_aid_item_by_both_translation_paths() {
+        let mut payload = subrecord(b"EDID", b"ATX_Utility_ScrapToStash\0");
+        payload.extend(subrecord(b"OBND", &[0; 12]));
+        payload.extend(subrecord(b"XALG", &[0; 8]));
+        payload.extend(subrecord(b"FULL", b"Scrap Kit\0"));
+        payload.extend(subrecord(
+            b"MODL",
+            b"atx/utility/atx_scraptostash/atx_scraptostash.nif\0",
+        ));
+        payload.extend(subrecord(b"YNAM", &0x41b985u32.to_le_bytes()));
+        payload.extend(subrecord(b"ZNAM", &0x41b986u32.to_le_bytes()));
+        payload.extend(subrecord(b"DATA", &[0, 0, 0, 0, 0xcd, 0xcc, 0xcc, 0x3d]));
+        payload.extend(subrecord(b"AQIC", &[0; 8]));
+        payload.extend(subrecord(b"UITE", &0u32.to_le_bytes()));
+        payload.extend(subrecord(b"UIFL", &0u32.to_le_bytes()));
+        payload.extend(subrecord(b"UIUS", &0x54ffefu32.to_le_bytes()));
+        let sounds: Vec<_> = [
+            (0x41b985, "ITMGenericUp"),
+            (0x41b986, "ITMGenericDown"),
+            (0x54ffef, "ITMScrapToStashConsume"),
+        ]
+        .into_iter()
+        .map(|(id, eid)| {
+            record(
+                b"SNDR",
+                id,
+                0,
+                &subrecord(b"EDID", format!("{eid}\0").as_bytes()),
+            )
+        })
+        .collect();
+        let fixture = write_temp_plugin(&plugin(
+            &[],
+            &[
+                group(b"SNDR", 0, &sounds),
+                group(b"UTIL", 0, &[record(b"UTIL", 0x54b4ec, 0, &payload)]),
+            ],
+        ));
+        for use_v2 in [false, true] {
+            let source = load_source_handle(fixture.path(), "fo76");
+            let target = fresh_target_handle();
+            let id = create_run(RunParams {
+                source: Game::Fo76,
+                target: Game::Fo4,
+                source_handle_id: source,
+                target_handle_id: target,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Out.esm".into(),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+            with_run(id, |run| {
+                if use_v2 {
+                    run.translate_all_v2(fixture.path())
+                } else {
+                    run.translate_all()
+                }
+            })
+            .unwrap();
+            let records = handle_records(target);
+            assert!(
+                !records.iter().any(|r| r.signature == "UTIL"),
+                "path v2={use_v2}"
+            );
+            let item = record_with_edid(&records, "ATX_Utility_ScrapToStash");
+            assert_eq!(item.signature.as_str(), "ALCH", "path v2={use_v2}");
+            let consume_sound = record_with_edid(&records, "ITMScrapToStashConsume");
+            let mapped = with_run(id, |run| {
+                Ok::<_, RunError>(
+                    run.mapper_state
+                        .as_ref()
+                        .unwrap()
+                        .source_to_target
+                        .iter()
+                        .find(|(source, _)| source.local == 0x54b4ec)
+                        .map(|(_, target)| target.local),
+                )
+            })
+            .unwrap();
+            assert_eq!(mapped, Some(item.form_id & 0xffffff));
+            let fields = esp_authoring_core::plugin_runtime::effective_subrecords_for_record(item);
+            let order: Vec<_> = fields.iter().map(|f| f.signature.as_str()).collect();
+            assert_eq!(
+                order,
+                [
+                    "EDID", "OBND", "FULL", "MODL", "YNAM", "ZNAM", "DATA", "ENIT"
+                ],
+                "path v2={use_v2}"
+            );
+            assert_eq!(subrecord_data(item, "DATA"), &0.1f32.to_le_bytes());
+            let enit = subrecord_data(item, "ENIT");
+            assert_eq!(enit.len(), 20);
+            assert_eq!(raw_u32(enit, 0), 0);
+            assert_eq!(raw_u32(enit, 4), 1);
+            assert_eq!(raw_u32(enit, 8), 0);
+            assert_eq!(raw_u32(enit, 16), consume_sound.form_id);
+            drop_run(id).unwrap();
+            plugin_handle_close_native(source);
+            plugin_handle_close_native(target);
+        }
+    }
+
+    #[test]
+    fn unsupported_and_humanoid_legacy_creatures_are_fail_closed_on_both_paths() {
+        let humanoid = legacy_humanoid_creature_fixture();
         for use_v2 in [false, true] {
             let (blocked, blocked_decisions, blocked_records) =
                 run_legacy_unsupported_creature(use_v2);
@@ -4283,33 +4601,9 @@ mod equivalence_tests {
             );
             assert!(blocked_decisions.is_empty());
             assert_eq!(blocked_records, 0);
-        }
-    }
 
-    #[test]
-    fn explicitly_skipped_legacy_creatures_bypass_the_strict_race_gate() {
-        let fixture = legacy_unsupported_creature_fixture();
-        for use_v2 in [false, true] {
-            let (result, decision_kinds, output_records) =
-                run_legacy_single_record_fixture_with_skips(
-                    use_v2,
-                    &fixture,
-                    vec!["CREA".to_string()],
-                );
-            let stats = result.expect("excluded CREA records must not enter the race gate");
-            assert_eq!(stats.records_translated, 0);
-            assert_eq!(stats.records_dropped, 1);
-            assert_eq!(decision_kinds, vec!["skip_records".to_string()]);
-            assert_eq!(output_records, 0);
-        }
-    }
-
-    #[test]
-    fn humanoid_creature_failure_is_identical_in_legacy_and_v2_paths() {
-        let fixture = legacy_humanoid_creature_fixture();
-        for use_v2 in [false, true] {
             let (blocked, blocked_decisions, blocked_records) =
-                run_legacy_unsupported_creature_fixture(use_v2, &fixture);
+                run_legacy_unsupported_creature_fixture(use_v2, &humanoid);
             let error = blocked.expect_err("creature policy must fail closed");
             let diagnostic = error.to_string();
             assert!(diagnostic.contains("LegionCreature"), "{diagnostic}");
@@ -4323,11 +4617,12 @@ mod equivalence_tests {
     }
 
     #[test]
-    fn unused_ingredient_sentinel_drop_is_identical_in_legacy_and_v2_paths() {
-        let fixture = legacy_unused_ingredient_sentinel_fixture();
+    fn skipped_creatures_and_unused_ingredient_sentinels_drop_safely_on_both_paths() {
+        let fixture = legacy_unsupported_creature_fixture();
+        let sentinel = legacy_unused_ingredient_sentinel_fixture();
         for use_v2 in [false, true] {
             let (result, decision_kinds, output_records) =
-                run_legacy_single_record_fixture(use_v2, &fixture);
+                run_legacy_single_record_fixture(use_v2, &sentinel);
             let stats = result.expect("unused ingredient sentinel must drop safely");
             assert_eq!(stats.records_translated, 0);
             assert_eq!(stats.records_dropped, 1);
@@ -4336,6 +4631,18 @@ mod equivalence_tests {
                 decision_kinds,
                 vec!["unused_legacy_ingredient_sentinel".to_string()]
             );
+
+            let (result, decision_kinds, output_records) =
+                run_legacy_single_record_fixture_with_skips(
+                    use_v2,
+                    &fixture,
+                    vec!["CREA".to_string()],
+                );
+            let stats = result.expect("excluded CREA records must not enter the race gate");
+            assert_eq!(stats.records_translated, 0);
+            assert_eq!(stats.records_dropped, 1);
+            assert_eq!(decision_kinds, vec!["skip_records".to_string()]);
+            assert_eq!(output_records, 0);
         }
     }
 
@@ -4670,7 +4977,7 @@ mod equivalence_tests {
                 .expect("ActivateChoice entry DATA")
                 .data
                 .as_ref(),
-            &[0x00, 0x09, 0x02]
+            &[0x0E, 0x09, 0x02]
         );
 
         drop_run(id).unwrap();
@@ -4690,17 +4997,6 @@ mod equivalence_tests {
         assert_scene_is_nested_under_quest(h_old);
         assert_scene_is_nested_under_quest(h_new);
 
-        plugin_handle_close_native(h_old);
-        plugin_handle_close_native(h_new);
-    }
-
-    #[test]
-    fn records_limit_subset_matches_legacy() {
-        let f = write_temp_plugin(&gate_fixture());
-        let (h_old, stats_old) = run_one(false, f.path(), Some(3));
-        let (h_new, stats_new) = run_one(true, f.path(), Some(3));
-        assert_eq!(stats_old.records_translated, stats_new.records_translated);
-        assert_handles_equal(h_old, h_new);
         plugin_handle_close_native(h_old);
         plugin_handle_close_native(h_new);
     }

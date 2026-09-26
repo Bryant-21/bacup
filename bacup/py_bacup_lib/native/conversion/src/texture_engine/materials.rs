@@ -613,174 +613,226 @@ mod tests {
     }
 
     #[test]
-    fn fold_in_forces_cast_shadows_true_and_preserves_invariants() {
-        let tmp = std::env::temp_dir().join("mat_engine_fold_in");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_fo76_bgsm(
-            &source.join("Materials/Test/rock.bgsm".replace('/', std::path::MAIN_SEPARATOR_STR)),
-            false,
-            true,
-        );
+    fn fold_in_and_manual_override_match_legacy_converter() {
+        {
+            let tmp = std::env::temp_dir().join("mat_engine_fold_in");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_fo76_bgsm(
+                &source
+                    .join("Materials/Test/rock.bgsm".replace('/', std::path::MAIN_SEPARATOR_STR)),
+                false,
+                true,
+            );
 
-        let report = run_materials_engine(engine_params(&source, &tmp.join("mod")));
-        assert!(report.assets_written >= 1, "one material must convert");
+            let report = run_materials_engine(engine_params(&source, &tmp.join("mod")));
+            assert!(report.assets_written >= 1, "one material must convert");
 
-        let out =
-            find_bgsm_under(&tmp.join("mod").join("data").join("Materials")).expect("output bgsm");
-        let parsed = bgsm::parse(&std::fs::read(&out).unwrap()).expect("output BGSM must parse");
-        assert!(
-            parsed.CastShadows,
-            "bCastShadows must be forced true at conversion time"
-        );
-        // (2) v22→v2 production invariants:
-        assert_eq!(parsed.WetnessControlEnvMapScale, Some(-1.0));
-        assert_eq!(parsed.header.env_mapping_mask_scale, Some(1.0));
-        // (3) Empty-slot "\0" invariant: a len-0 slot would misalign the stream
-        //     and corrupt every later field — the fact that CastShadows (a late
-        //     field) parsed correctly above IS the regression check for the
-        //     empty SmoothSpecTexture slot written earlier in the stream.
-        let _ = std::fs::remove_dir_all(&tmp);
+            let out = find_bgsm_under(&tmp.join("mod").join("data").join("Materials"))
+                .expect("output bgsm");
+            let parsed =
+                bgsm::parse(&std::fs::read(&out).unwrap()).expect("output BGSM must parse");
+            assert!(
+                parsed.CastShadows,
+                "bCastShadows must be forced true at conversion time"
+            );
+            // (2) v22→v2 production invariants:
+            assert_eq!(parsed.WetnessControlEnvMapScale, Some(-1.0));
+            assert_eq!(parsed.header.env_mapping_mask_scale, Some(1.0));
+            // (3) Empty-slot "\0" invariant: a len-0 slot would misalign the stream
+            //     and corrupt every later field — the fact that CastShadows (a late
+            //     field) parsed correctly above IS the regression check for the
+            //     empty SmoothSpecTexture slot written earlier in the stream.
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            // The engine is the legacy converter + the override — prove byte equality.
+            let tmp = std::env::temp_dir().join("mat_engine_equiv");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_fo76_bgsm(
+                &source
+                    .join("Materials/Test/rock.bgsm".replace('/', std::path::MAIN_SEPARATOR_STR)),
+                false,
+                false,
+            );
+
+            run_materials_engine(engine_params(&source, &tmp.join("mod_engine")));
+
+            let legacy_request = materials_native::convert::ConvertMaterialsRequest {
+                materials: Vec::new(),
+                source_game: Some(materials_native::convert::Game::Fo76),
+                target_game: Some(materials_native::convert::Game::Fo4),
+                asset_prefix: "fo76".to_string(),
+                source_materialsdb: None,
+                overwrite_existing: true,
+                bgsm_default_overrides: vec![("bCastShadows".to_string(), serde_json::json!(true))],
+                convert_all: true,
+                pbr_carry: false,
+                source_path_overrides: std::collections::HashMap::new(),
+                target_asset_paths: HashSet::new(),
+                base_overwrite_prefixes: Vec::new(),
+            };
+            materials_native::convert::run_convert_materials(
+                &tmp.join("mod_legacy"),
+                &legacy_request,
+                materials_native::convert::Game::Fo76,
+                materials_native::convert::Game::Fo4,
+                &source,
+                None,
+                None,
+            );
+
+            let engine_out =
+                find_bgsm_under(&tmp.join("mod_engine").join("data")).expect("engine bgsm");
+            let legacy_out =
+                find_bgsm_under(&tmp.join("mod_legacy").join("data")).expect("legacy bgsm");
+            assert_eq!(
+                std::fs::read(&engine_out).unwrap(),
+                std::fs::read(&legacy_out).unwrap(),
+                "engine wrapper must not change converter bytes"
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
-    fn engine_equals_legacy_converter_with_manual_override() {
-        // The engine is the legacy converter + the override — prove byte equality.
-        let tmp = std::env::temp_dir().join("mat_engine_equiv");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_fo76_bgsm(
-            &source.join("Materials/Test/rock.bgsm".replace('/', std::path::MAIN_SEPARATOR_STR)),
-            false,
-            false,
-        );
+    fn relocation_members_convert_suppress_duplicates_and_apply_overrides() {
+        {
+            // Port of material_phase_converts_relocation_member_absent_from_params
+            // at engine level.
+            let tmp = std::env::temp_dir().join("mat_engine_relocation");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_fo76_bgsm(
+                &source.join(
+                    "Materials/Landscape/rock01.bgsm".replace('/', std::path::MAIN_SEPARATOR_STR),
+                ),
+                true,
+                false,
+            );
 
-        run_materials_engine(engine_params(&source, &tmp.join("mod_engine")));
+            let mut params = engine_params(&source, &tmp.join("mod"));
+            params.convert_all = false; // materials intentionally EMPTY — the member must still convert
+            params.namespace = "FO76".to_string();
+            params
+                .relocation_members
+                .insert("materials/landscape/rock01.bgsm".to_string());
 
-        let legacy_request = materials_native::convert::ConvertMaterialsRequest {
-            materials: Vec::new(),
-            source_game: Some(materials_native::convert::Game::Fo76),
-            target_game: Some(materials_native::convert::Game::Fo4),
-            asset_prefix: "fo76".to_string(),
-            source_materialsdb: None,
-            overwrite_existing: true,
-            bgsm_default_overrides: vec![("bCastShadows".to_string(), serde_json::json!(true))],
-            convert_all: true,
-            pbr_carry: false,
-            source_path_overrides: std::collections::HashMap::new(),
-            target_asset_paths: HashSet::new(),
-            base_overwrite_prefixes: Vec::new(),
-        };
-        materials_native::convert::run_convert_materials(
-            &tmp.join("mod_legacy"),
-            &legacy_request,
-            materials_native::convert::Game::Fo76,
-            materials_native::convert::Game::Fo4,
-            &source,
-            None,
-            None,
-        );
+            run_materials_engine(params);
 
-        let engine_out =
-            find_bgsm_under(&tmp.join("mod_engine").join("data")).expect("engine bgsm");
-        let legacy_out =
-            find_bgsm_under(&tmp.join("mod_legacy").join("data")).expect("legacy bgsm");
-        assert_eq!(
-            std::fs::read(&engine_out).unwrap(),
-            std::fs::read(&legacy_out).unwrap(),
-            "engine wrapper must not change converter bytes"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
+            let fo76_dir = tmp.join("mod").join("data").join("Materials").join("FO76");
+            let output = find_bgsm_under(&fo76_dir).unwrap_or_else(|| {
+                panic!("expected a relocated material under {}", fo76_dir.display())
+            });
+            let parsed = bgsm::parse(&std::fs::read(output).unwrap()).unwrap();
+            assert!(
+                !parsed
+                    .DiffuseTexture
+                    .replace('\\', "/")
+                    .to_ascii_lowercase()
+                    .contains("fo76/"),
+                "a relocated material must still reuse texture slots that were exactly deduplicated"
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("mat_engine_relocation_convert_all");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_fo76_bgsm(
+                &source.join(
+                    "Materials/Landscape/Grass/forest76waterhemlock01.bgsm"
+                        .replace('/', std::path::MAIN_SEPARATOR_STR),
+                ),
+                true,
+                false,
+            );
 
-    #[test]
-    fn relocation_member_absent_from_list_converts_into_namespace() {
-        // Port of material_phase_converts_relocation_member_absent_from_params
-        // at engine level.
-        let tmp = std::env::temp_dir().join("mat_engine_relocation");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_fo76_bgsm(
-            &source.join(
-                "Materials/Landscape/rock01.bgsm".replace('/', std::path::MAIN_SEPARATOR_STR),
-            ),
-            true,
-            false,
-        );
+            let mut params = engine_params(&source, &tmp.join("mod"));
+            params.convert_all = true;
+            params.namespace = "FO76".to_string();
+            params
+                .relocation_members
+                .insert("materials/landscape/grass/forest76waterhemlock01.bgsm".to_string());
 
-        let mut params = engine_params(&source, &tmp.join("mod"));
-        params.convert_all = false; // materials intentionally EMPTY — the member must still convert
-        params.namespace = "FO76".to_string();
-        params
-            .relocation_members
-            .insert("materials/landscape/rock01.bgsm".to_string());
+            run_materials_engine(params);
 
-        run_materials_engine(params);
+            let root_output = tmp
+                .join("mod")
+                .join("data")
+                .join("Materials")
+                .join("Landscape")
+                .join("Grass")
+                .join("forest76waterhemlock01.bgsm");
+            let namespaced_output = tmp
+                .join("mod")
+                .join("data")
+                .join("materials")
+                .join("FO76")
+                .join("landscape")
+                .join("grass")
+                .join("forest76waterhemlock01.bgsm");
+            assert!(
+                !root_output.exists(),
+                "relocated material should not also be emitted at the default path"
+            );
+            assert!(
+                namespaced_output.is_file(),
+                "expected relocated material at {}",
+                namespaced_output.display()
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("mat_engine_source_override");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            write_fo76_bgsm_with_diffuse(
+                &source.join(
+                    "materials/landscape/ground/temp_groundtexture01.bgsm"
+                        .replace('/', std::path::MAIN_SEPARATOR_STR),
+                ),
+                "Textures\\Landscape\\Ground\\TEMP_GroundTexture01_d.dds",
+            );
+            write_fo76_bgsm_with_diffuse(
+                &source.join(
+                    "materials/landscape/ground/forestrocks01.bgsm"
+                        .replace('/', std::path::MAIN_SEPARATOR_STR),
+                ),
+                "Textures\\Landscape\\Ground\\ForestRocks01_d.dds",
+            );
 
-        let fo76_dir = tmp.join("mod").join("data").join("Materials").join("FO76");
-        let output = find_bgsm_under(&fo76_dir).unwrap_or_else(|| {
-            panic!("expected a relocated material under {}", fo76_dir.display())
-        });
-        let parsed = bgsm::parse(&std::fs::read(output).unwrap()).unwrap();
-        assert!(
-            !parsed
+            let mut params = engine_params(&source, &tmp.join("mod"));
+            params.convert_all = false;
+            params.namespace = "FO76".to_string();
+            params
+                .relocation_members
+                .insert("materials/landscape/ground/temp_groundtexture01.bgsm".to_string());
+            params
+                .relocation_members
+                .insert("textures/landscape/ground/forestrocks01_d.dds".to_string());
+
+            run_materials_engine(params);
+
+            let out = tmp
+                .join("mod")
+                .join("data")
+                .join("materials")
+                .join("FO76")
+                .join("landscape")
+                .join("ground")
+                .join("temp_groundtexture01.bgsm");
+            let parsed =
+                bgsm::parse(&std::fs::read(&out).unwrap()).expect("output BGSM must parse");
+            let diffuse = parsed
                 .DiffuseTexture
-                .replace('\\', "/")
-                .to_ascii_lowercase()
-                .contains("fo76/"),
-            "a relocated material must still reuse texture slots that were exactly deduplicated"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn relocation_member_convert_all_suppresses_default_duplicate() {
-        let tmp = std::env::temp_dir().join("mat_engine_relocation_convert_all");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_fo76_bgsm(
-            &source.join(
-                "Materials/Landscape/Grass/forest76waterhemlock01.bgsm"
-                    .replace('/', std::path::MAIN_SEPARATOR_STR),
-            ),
-            true,
-            false,
-        );
-
-        let mut params = engine_params(&source, &tmp.join("mod"));
-        params.convert_all = true;
-        params.namespace = "FO76".to_string();
-        params
-            .relocation_members
-            .insert("materials/landscape/grass/forest76waterhemlock01.bgsm".to_string());
-
-        run_materials_engine(params);
-
-        let root_output = tmp
-            .join("mod")
-            .join("data")
-            .join("Materials")
-            .join("Landscape")
-            .join("Grass")
-            .join("forest76waterhemlock01.bgsm");
-        let namespaced_output = tmp
-            .join("mod")
-            .join("data")
-            .join("materials")
-            .join("FO76")
-            .join("landscape")
-            .join("grass")
-            .join("forest76waterhemlock01.bgsm");
-        assert!(
-            !root_output.exists(),
-            "relocated material should not also be emitted at the default path"
-        );
-        assert!(
-            namespaced_output.is_file(),
-            "expected relocated material at {}",
-            namespaced_output.display()
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
+                .trim_end_matches('\0')
+                .replace('\\', "/");
+            assert_eq!(diffuse, "FO76/Landscape/Ground/ForestRocks01_d.dds");
+            assert!(!diffuse.to_ascii_lowercase().contains("temp_groundtexture"));
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]
@@ -836,219 +888,168 @@ mod tests {
     }
 
     #[test]
-    fn convert_all_namespaces_root_material_when_texture_member_is_relocated() {
-        let tmp = std::env::temp_dir().join("mat_engine_texture_member_namespaces_root_material");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        let material = source
-            .join("Materials")
-            .join("SetDressing")
-            .join("acducts01.bgsm");
-        write_fo76_bgsm_with_textures(
-            &material,
-            "SetDressing/ACducts01_d.dds",
-            "SetDressing/ACducts01_n.dds",
-            "SetDressing/ACducts01_r.dds",
-        );
+    fn convert_all_namespaces_root_materials_for_relocated_members() {
+        {
+            let tmp =
+                std::env::temp_dir().join("mat_engine_texture_member_namespaces_root_material");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            let material = source
+                .join("Materials")
+                .join("SetDressing")
+                .join("acducts01.bgsm");
+            write_fo76_bgsm_with_textures(
+                &material,
+                "SetDressing/ACducts01_d.dds",
+                "SetDressing/ACducts01_n.dds",
+                "SetDressing/ACducts01_r.dds",
+            );
 
-        let mut params = engine_params(&source, &tmp.join("mod"));
-        params.namespace = "FO76".to_string();
-        params
-            .relocation_members
-            .insert("textures/setdressing/acducts01_d.dds".to_string());
-        params
-            .relocation_members
-            .insert("textures/setdressing/acducts01_n.dds".to_string());
-        params
-            .relocation_members
-            .insert("textures/setdressing/acducts01_r.dds".to_string());
+            let mut params = engine_params(&source, &tmp.join("mod"));
+            params.namespace = "FO76".to_string();
+            params
+                .relocation_members
+                .insert("textures/setdressing/acducts01_d.dds".to_string());
+            params
+                .relocation_members
+                .insert("textures/setdressing/acducts01_n.dds".to_string());
+            params
+                .relocation_members
+                .insert("textures/setdressing/acducts01_r.dds".to_string());
 
-        run_materials_engine(params);
+            run_materials_engine(params);
 
-        let root_output = tmp
-            .join("mod")
-            .join("data")
-            .join("Materials")
-            .join("SetDressing")
-            .join("acducts01.bgsm");
-        let namespaced_output = tmp
-            .join("mod")
-            .join("data")
-            .join("Materials")
-            .join("FO76")
-            .join("SetDressing")
-            .join("acducts01.bgsm");
-        assert!(root_output.is_file(), "expected original material path");
-        assert!(
-            !namespaced_output.exists(),
-            "texture-only relocation should not move the material itself"
-        );
-        let parsed = bgsm::parse(&std::fs::read(&root_output).unwrap()).unwrap();
-        assert_eq!(
-            parsed.DiffuseTexture.trim_end_matches('\0'),
-            "FO76/SetDressing/ACducts01_d.dds"
-        );
-        assert_eq!(
-            parsed.NormalTexture.trim_end_matches('\0'),
-            "FO76/SetDressing/ACducts01_n.dds"
-        );
-        assert_eq!(
-            parsed.SmoothSpecTexture.trim_end_matches('\0'),
-            "FO76/SetDressing/ACducts01_s.dds"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
+            let root_output = tmp
+                .join("mod")
+                .join("data")
+                .join("Materials")
+                .join("SetDressing")
+                .join("acducts01.bgsm");
+            let namespaced_output = tmp
+                .join("mod")
+                .join("data")
+                .join("Materials")
+                .join("FO76")
+                .join("SetDressing")
+                .join("acducts01.bgsm");
+            assert!(root_output.is_file(), "expected original material path");
+            assert!(
+                !namespaced_output.exists(),
+                "texture-only relocation should not move the material itself"
+            );
+            let parsed = bgsm::parse(&std::fs::read(&root_output).unwrap()).unwrap();
+            assert_eq!(
+                parsed.DiffuseTexture.trim_end_matches('\0'),
+                "FO76/SetDressing/ACducts01_d.dds"
+            );
+            assert_eq!(
+                parsed.NormalTexture.trim_end_matches('\0'),
+                "FO76/SetDressing/ACducts01_n.dds"
+            );
+            assert_eq!(
+                parsed.SmoothSpecTexture.trim_end_matches('\0'),
+                "FO76/SetDressing/ACducts01_s.dds"
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir()
+                .join("mat_engine_texture_member_namespaces_mixed_root_material");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            let material = source
+                .join("Materials")
+                .join("SetDressing")
+                .join("WhiteSpring")
+                .join("WhiteSpring_Lamp01.bgsm");
+            write_fo76_bgsm_with_textures(
+                &material,
+                "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_d.dds",
+                "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_n.dds",
+                "Shared/Default_r.dds",
+            );
 
-    #[test]
-    fn convert_all_namespaces_only_relocated_slots_for_mixed_root_material() {
-        let tmp =
-            std::env::temp_dir().join("mat_engine_texture_member_namespaces_mixed_root_material");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        let material = source
-            .join("Materials")
-            .join("SetDressing")
-            .join("WhiteSpring")
-            .join("WhiteSpring_Lamp01.bgsm");
-        write_fo76_bgsm_with_textures(
-            &material,
-            "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_d.dds",
-            "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_n.dds",
-            "Shared/Default_r.dds",
-        );
+            let mut params = engine_params(&source, &tmp.join("mod"));
+            params.namespace = "FO76".to_string();
+            params
+                .relocation_members
+                .insert("textures/shared/default_r.dds".to_string());
 
-        let mut params = engine_params(&source, &tmp.join("mod"));
-        params.namespace = "FO76".to_string();
-        params
-            .relocation_members
-            .insert("textures/shared/default_r.dds".to_string());
+            run_materials_engine(params);
 
-        run_materials_engine(params);
+            let output = tmp
+                .join("mod")
+                .join("data")
+                .join("Materials")
+                .join("SetDressing")
+                .join("WhiteSpring")
+                .join("WhiteSpring_Lamp01.bgsm");
+            let parsed = bgsm::parse(&std::fs::read(&output).unwrap()).unwrap();
+            assert_eq!(
+                parsed.DiffuseTexture.trim_end_matches('\0'),
+                "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_d.dds"
+            );
+            assert_eq!(
+                parsed.NormalTexture.trim_end_matches('\0'),
+                "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_n.dds"
+            );
+            assert_eq!(
+                parsed.SmoothSpecTexture.trim_end_matches('\0'),
+                "FO76/Shared/Default_s.dds"
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+        {
+            let tmp = std::env::temp_dir().join("mat_engine_texture_member_namespaces_root_bgem");
+            let _ = std::fs::remove_dir_all(&tmp);
+            let source = tmp.join("source");
+            let material = source
+                .join("Materials")
+                .join("SetDressing")
+                .join("ScorchedSpecimenJar")
+                .join("SpecimenjarAcid01.bgem");
+            write_fo76_bgem_with_textures(
+                &material,
+                "Shared/Default_d.dds",
+                "Shared/Cubemaps/mipblur_DefaultOutside1_Copper.dds",
+                "Shared/Default_n.dds",
+                "Shared/Default_Noise_20_l.dds",
+            );
 
-        let output = tmp
-            .join("mod")
-            .join("data")
-            .join("Materials")
-            .join("SetDressing")
-            .join("WhiteSpring")
-            .join("WhiteSpring_Lamp01.bgsm");
-        let parsed = bgsm::parse(&std::fs::read(&output).unwrap()).unwrap();
-        assert_eq!(
-            parsed.DiffuseTexture.trim_end_matches('\0'),
-            "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_d.dds"
-        );
-        assert_eq!(
-            parsed.NormalTexture.trim_end_matches('\0'),
-            "SetDressing/WhiteSpring/WhiteSpring_Fancy_Furniture_Sets_15_n.dds"
-        );
-        assert_eq!(
-            parsed.SmoothSpecTexture.trim_end_matches('\0'),
-            "FO76/Shared/Default_s.dds"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
+            let mut params = engine_params(&source, &tmp.join("mod"));
+            params.namespace = "FO76".to_string();
+            params
+                .relocation_members
+                .insert("textures/shared/default_d.dds".to_string());
+            params
+                .relocation_members
+                .insert("textures/shared/default_n.dds".to_string());
 
-    #[test]
-    fn convert_all_namespaces_root_effect_material_when_texture_member_is_relocated() {
-        let tmp = std::env::temp_dir().join("mat_engine_texture_member_namespaces_root_bgem");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        let material = source
-            .join("Materials")
-            .join("SetDressing")
-            .join("ScorchedSpecimenJar")
-            .join("SpecimenjarAcid01.bgem");
-        write_fo76_bgem_with_textures(
-            &material,
-            "Shared/Default_d.dds",
-            "Shared/Cubemaps/mipblur_DefaultOutside1_Copper.dds",
-            "Shared/Default_n.dds",
-            "Shared/Default_Noise_20_l.dds",
-        );
+            run_materials_engine(params);
 
-        let mut params = engine_params(&source, &tmp.join("mod"));
-        params.namespace = "FO76".to_string();
-        params
-            .relocation_members
-            .insert("textures/shared/default_d.dds".to_string());
-        params
-            .relocation_members
-            .insert("textures/shared/default_n.dds".to_string());
-
-        run_materials_engine(params);
-
-        let output = tmp
-            .join("mod")
-            .join("data")
-            .join("Materials")
-            .join("SetDressing")
-            .join("ScorchedSpecimenJar")
-            .join("SpecimenjarAcid01.bgem");
-        let parsed = bgem::parse(&std::fs::read(&output).unwrap()).unwrap();
-        assert_eq!(
-            parsed.BaseTexture.trim_end_matches('\0'),
-            "FO76/Shared/Default_d.dds"
-        );
-        assert_eq!(
-            parsed.NormalTexture.trim_end_matches('\0'),
-            "FO76/Shared/Default_n.dds"
-        );
-        assert_eq!(
-            parsed.EnvmapTexture.trim_end_matches('\0'),
-            "Shared/Cubemaps/mipblur_DefaultOutside1_Copper.dds",
-            "shared cubemaps remain un-namespaced"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn relocation_member_applies_material_source_override() {
-        let tmp = std::env::temp_dir().join("mat_engine_source_override");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let source = tmp.join("source");
-        write_fo76_bgsm_with_diffuse(
-            &source.join(
-                "materials/landscape/ground/temp_groundtexture01.bgsm"
-                    .replace('/', std::path::MAIN_SEPARATOR_STR),
-            ),
-            "Textures\\Landscape\\Ground\\TEMP_GroundTexture01_d.dds",
-        );
-        write_fo76_bgsm_with_diffuse(
-            &source.join(
-                "materials/landscape/ground/forestrocks01.bgsm"
-                    .replace('/', std::path::MAIN_SEPARATOR_STR),
-            ),
-            "Textures\\Landscape\\Ground\\ForestRocks01_d.dds",
-        );
-
-        let mut params = engine_params(&source, &tmp.join("mod"));
-        params.convert_all = false;
-        params.namespace = "FO76".to_string();
-        params
-            .relocation_members
-            .insert("materials/landscape/ground/temp_groundtexture01.bgsm".to_string());
-        params
-            .relocation_members
-            .insert("textures/landscape/ground/forestrocks01_d.dds".to_string());
-
-        run_materials_engine(params);
-
-        let out = tmp
-            .join("mod")
-            .join("data")
-            .join("materials")
-            .join("FO76")
-            .join("landscape")
-            .join("ground")
-            .join("temp_groundtexture01.bgsm");
-        let parsed = bgsm::parse(&std::fs::read(&out).unwrap()).expect("output BGSM must parse");
-        let diffuse = parsed
-            .DiffuseTexture
-            .trim_end_matches('\0')
-            .replace('\\', "/");
-        assert_eq!(diffuse, "FO76/Landscape/Ground/ForestRocks01_d.dds");
-        assert!(!diffuse.to_ascii_lowercase().contains("temp_groundtexture"));
-        let _ = std::fs::remove_dir_all(&tmp);
+            let output = tmp
+                .join("mod")
+                .join("data")
+                .join("Materials")
+                .join("SetDressing")
+                .join("ScorchedSpecimenJar")
+                .join("SpecimenjarAcid01.bgem");
+            let parsed = bgem::parse(&std::fs::read(&output).unwrap()).unwrap();
+            assert_eq!(
+                parsed.BaseTexture.trim_end_matches('\0'),
+                "FO76/Shared/Default_d.dds"
+            );
+            assert_eq!(
+                parsed.NormalTexture.trim_end_matches('\0'),
+                "FO76/Shared/Default_n.dds"
+            );
+            assert_eq!(
+                parsed.EnvmapTexture.trim_end_matches('\0'),
+                "Shared/Cubemaps/mipblur_DefaultOutside1_Copper.dds",
+                "shared cubemaps remain un-namespaced"
+            );
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     #[test]

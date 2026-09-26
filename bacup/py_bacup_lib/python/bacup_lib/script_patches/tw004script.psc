@@ -26,6 +26,9 @@ Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akAct
 EndEvent
 
 Event Actor.OnKill(Actor akSender, Actor akVictim)
+	; Backs up the three kill managers: FindKillManager returns None for any instance the
+	; base-type cast cannot reach, and the three hunt groups use disjoint race keywords, so
+	; a kill still advances exactly one slot whichever path sees it first.
 	If akSender != Game.GetPlayer() || akVictim == None
 		Return
 	EndIf
@@ -74,6 +77,36 @@ Function SelectHunt(Int aiHuntIndex, HuntTypeOptions[] akOptions)
 	If creatureName != None && selectedHunt.LocObjectiveString != None
 		creatureName.ForceLocationTo(selectedHunt.LocObjectiveString)
 	EndIf
+
+	DefaultQuestOnKillManager killManager = FindKillManager(HuntSelected[aiHuntIndex].StageToSet)
+	If killManager != None && selectedHunt.raceKeyword != None
+		killManager.SetVictimKeyword(selectedHunt.raceKeyword)
+		killManager.SetVictimsRequired(1)
+		killManager.StartTrackingKills()
+	EndIf
+EndFunction
+
+DefaultQuestOnKillManager Function FindKillManager(Int aiStageToSet)
+	; Three DefaultQuestOnKillManager instances share this quest, so a plain cast to the
+	; base type can land on any of them. Match on the instance's own bound StageToSet.
+	Quest owner = Self as Quest
+	DefaultQuestOnKillManagerB managerB = owner as DefaultQuestOnKillManagerB
+	If managerB != None && managerB.StageToSet == aiStageToSet
+		Return managerB
+	EndIf
+	DefaultQuestOnKillManagerC managerC = owner as DefaultQuestOnKillManagerC
+	If managerC != None && managerC.StageToSet == aiStageToSet
+		Return managerC
+	EndIf
+	; The base-type cast can resolve to B or C, which would hide a matching base instance,
+	; so reject the two already identified before trusting its StageToSet.
+	DefaultQuestOnKillManager managerBase = owner as DefaultQuestOnKillManager
+	If managerBase != None && managerBase != (managerB as DefaultQuestOnKillManager) \
+			&& managerBase != (managerC as DefaultQuestOnKillManager) \
+			&& managerBase.StageToSet == aiStageToSet
+		Return managerBase
+	EndIf
+	Return None
 EndFunction
 
 Function CompleteHuntTarget(Int aiHuntIndex)

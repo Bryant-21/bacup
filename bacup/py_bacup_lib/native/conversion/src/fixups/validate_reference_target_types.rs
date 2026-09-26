@@ -259,6 +259,7 @@ pub(crate) const FO4_HARDCODED_AVIF_LOCAL_IDS: &[u32] = &[
     0x0002DE, // MeleeDamage
     0x000312, // weaponSpeedMult
     0x00032E, // PowerGenerated
+    0x000330, // PowerRequired
     0x000331, // Food
     0x000332, // Water
     0x00034F, // Fatigue
@@ -274,6 +275,8 @@ pub(crate) const FO4_HARDCODED_AVIF_LOCAL_IDS: &[u32] = &[
     // Names are deliberately omitted: nothing in the data files names them.
     0x0002BC, 0x0002BD, 0x0002D9, 0x0002EE, 0x0002F4, 0x0002F7, 0x000310, 0x000311, 0x00032D,
     0x000355, 0x000360, 0x000361, 0x000362, 0x000363, 0x000365, 0x000366, 0x000367, 0x000389,
+    // Attested by vanilla Fallout4.esm workshop PRPS rows (ACTI/FURN/STAT).
+    0x00033E,
 ];
 const MAGIC_TARGET_SELF: u32 = 0;
 const MAGIC_TARGET_AIMED: u32 = 2;
@@ -3163,178 +3166,350 @@ mod tests {
         move |sig: &str| allowed.contains(&sig)
     }
 
+    fn field_summary(record: &Record) -> Vec<(&str, Option<u32>)> {
+        record
+            .fields
+            .iter()
+            .map(|entry| {
+                let local = match &entry.value {
+                    FieldValue::FormKey(fk) => Some(fk.local),
+                    _ => None,
+                };
+                (entry.sig.as_str(), local)
+            })
+            .collect()
+    }
+
     #[test]
-    fn strips_fact_venc_when_target_is_not_refr() {
+    fn apply_to_record_acts_only_on_wrong_type_or_null_slots() {
         let interner = StringInterner::new();
-        let venc_fk = make_fk(0x001000, "Out.esp", &interner);
-        let record_fk = make_fk(0x000800, "Out.esp", &interner);
+        let fk = |sub: &str, local: u32| fk_field(sub, make_fk(local, "Out.esp", &interner));
+        let none = |sub: &str| FieldEntry {
+            sig: SubrecordSig::from_str(sub).unwrap(),
+            value: FieldValue::None,
+        };
         let edid = FieldEntry {
             sig: SubrecordSig::from_str("EDID").unwrap(),
             value: FieldValue::String(interner.intern("TestFACT")),
         };
-        let mut record = make_record("FACT", vec![edid, fk_field("VENC", venc_fk)], &interner);
-        let _ = record_fk;
-        let map = sig_map(&[(0x001000, "Out.esp", "KYWD")], &interner);
+        const REFR: &[&str] = &["REFR"];
+        const DLBR: &[&str] = &["DLBR"];
+        const CREATED: &[&str] = &["MISC", "WEAP", "ARMO"];
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &str,
+            &str,
+            &str,
+            Vec<FieldEntry>,
+            Action,
+            bool,
+            Option<&'static [&'static str]>,
+            Vec<(u32, &str)>,
+            bool,
+            Vec<(&str, Option<u32>)>,
+        )> = vec![
+            (
+                "FACT VENC to a KYWD stripped, EDID kept",
+                "FACT",
+                "VENC",
+                vec![edid, fk("VENC", 0x001000)],
+                Action::Strip,
+                false,
+                Some(REFR),
+                vec![(0x001000, "KYWD")],
+                true,
+                vec![("EDID", None)],
+            ),
+            (
+                "FACT VENC to a REFR kept",
+                "FACT",
+                "VENC",
+                vec![fk("VENC", 0x001000)],
+                Action::Strip,
+                false,
+                Some(REFR),
+                vec![(0x001000, "REFR")],
+                false,
+                vec![("VENC", Some(0x001000))],
+            ),
+            (
+                "unconstrained allows predicate never acts",
+                "FACT",
+                "VENC",
+                vec![fk("VENC", 0x001000)],
+                Action::Strip,
+                false,
+                None,
+                vec![(0x001000, "KYWD")],
+                false,
+                vec![("VENC", Some(0x001000))],
+            ),
+            (
+                "DIAL BNAM to a QUST nulled in place",
+                "DIAL",
+                "BNAM",
+                vec![fk("BNAM", 0x001000)],
+                Action::Null,
+                false,
+                Some(DLBR),
+                vec![(0x001000, "QUST")],
+                true,
+                vec![("BNAM", Some(0))],
+            ),
+            (
+                "dangling ref is not ours to act on",
+                "DIAL",
+                "BNAM",
+                vec![fk("BNAM", 0x00ABCD)],
+                Action::Null,
+                false,
+                Some(DLBR),
+                vec![],
+                false,
+                vec![("BNAM", Some(0x00ABCD))],
+            ),
+            (
+                "already-null FK in an optional NULL-disallowed slot stripped",
+                "DIAL",
+                "BNAM",
+                vec![fk("BNAM", 0)],
+                Action::Strip,
+                false,
+                Some(DLBR),
+                vec![],
+                true,
+                vec![],
+            ),
+            (
+                "present-but-None decoded subrecord in a Strip slot stripped",
+                "DIAL",
+                "BNAM",
+                vec![none("BNAM")],
+                Action::Strip,
+                false,
+                Some(DLBR),
+                vec![],
+                true,
+                vec![],
+            ),
+            (
+                "present-but-None subrecord under Null action kept",
+                "DIAL",
+                "BNAM",
+                vec![none("BNAM")],
+                Action::Null,
+                false,
+                Some(DLBR),
+                vec![],
+                false,
+                vec![("BNAM", None)],
+            ),
+            (
+                "already-null FK under Null action kept",
+                "DIAL",
+                "BNAM",
+                vec![fk("BNAM", 0)],
+                Action::Null,
+                false,
+                Some(DLBR),
+                vec![],
+                false,
+                vec![("BNAM", Some(0))],
+            ),
+            (
+                "COBJ CNAM to an FO76 PKIN nulled in place",
+                "COBJ",
+                "CNAM",
+                vec![fk("CNAM", 0x005DD312)],
+                Action::Null,
+                false,
+                Some(CREATED),
+                vec![(0x005DD312, "PKIN")],
+                true,
+                vec![("CNAM", Some(0))],
+            ),
+            (
+                "COBJ CNAM to a MISC kept",
+                "COBJ",
+                "CNAM",
+                vec![fk("CNAM", 0x001000)],
+                Action::Null,
+                false,
+                Some(CREATED),
+                vec![(0x001000, "MISC")],
+                false,
+                vec![("CNAM", Some(0x001000))],
+            ),
+            (
+                "dangling XRFG stripped with strip_dangling: FO76 RFGP has no FO4 home",
+                "REFR",
+                "XRFG",
+                vec![fk("XRFG", 0x01004A6C)],
+                Action::Strip,
+                true,
+                Some(&["RFGP"]),
+                vec![],
+                true,
+                vec![],
+            ),
+            (
+                "XRFG remap collision onto an output REFR stripped",
+                "REFR",
+                "XRFG",
+                vec![fk("XRFG", 0x07662FB2)],
+                Action::Strip,
+                true,
+                Some(&["RFGP"]),
+                vec![(0x07662FB2, "REFR")],
+                true,
+                vec![],
+            ),
+            (
+                "XLYR remap collision onto an LVLI stripped: LAYR is never carried",
+                "REFR",
+                "XLYR",
+                vec![fk("XLYR", 0x07A12345)],
+                Action::Strip,
+                true,
+                Some(&["LAYR"]),
+                vec![(0x07A12345, "LVLI")],
+                true,
+                vec![],
+            ),
+            (
+                "XASP remap collision onto a LAND stripped",
+                "REFR",
+                "XASP",
+                vec![fk("XASP", 0x07B22222)],
+                Action::Strip,
+                false,
+                Some(REFR),
+                vec![(0x07B22222, "LAND")],
+                true,
+                vec![],
+            ),
+            (
+                "dangling XASP kept: it can still become a REFR post-copy",
+                "REFR",
+                "XASP",
+                vec![fk("XASP", 0x07C33333)],
+                Action::Strip,
+                false,
+                Some(REFR),
+                vec![],
+                false,
+                vec![("XASP", Some(0x07C33333))],
+            ),
+        ];
+        for (
+            name,
+            record_sig,
+            sub,
+            fields,
+            action,
+            strip_dangling,
+            allowed,
+            targets,
+            changed,
+            remaining,
+        ) in cases
+        {
+            let mut record = make_record(record_sig, fields, &interner);
+            let targets: Vec<(u32, &str, &str)> = targets
+                .into_iter()
+                .map(|(local, sig)| (local, "Out.esp", sig))
+                .collect();
+            let map = sig_map(&targets, &interner);
+            let allow_all = |_: &str| true;
+            let restricted;
+            let allows: &dyn Fn(&str) -> bool = match allowed {
+                Some(allowed) => {
+                    restricted = allows_only(allowed);
+                    &restricted
+                }
+                None => &allow_all,
+            };
 
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("VENC").unwrap(),
-            Action::Strip,
-            false,
-            &allows_only(&["REFR"]),
-            &map,
-            &FxHashMap::default(),
-        );
+            let outcome = apply_to_record(
+                &mut record,
+                SubrecordSig::from_str(sub).unwrap(),
+                action,
+                strip_dangling,
+                allows,
+                &map,
+                &FxHashMap::default(),
+            );
 
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert_eq!(record.fields.len(), 1, "VENC stripped, EDID kept");
-        assert_eq!(record.fields[0].sig.as_str(), "EDID");
+            assert_eq!(outcome.changed, changed, "{name}");
+            assert_eq!(outcome.acted, u32::from(changed), "{name}");
+            assert_eq!(field_summary(&record), remaining, "{name}");
+        }
     }
 
     #[test]
-    fn keeps_fact_venc_when_target_is_refr() {
+    fn retargets_or_strips_info_speaker_voice_types() {
         let interner = StringInterner::new();
-        let venc_fk = make_fk(0x001000, "Out.esp", &interner);
-        let mut record = make_record("FACT", vec![fk_field("VENC", venc_fk)], &interner);
-        let map = sig_map(&[(0x001000, "Out.esp", "REFR")], &interner);
+        let out = |local: u32| make_fk(local, "Out.esp", &interner);
+        let vtyp = Some(SigCode::from_str("VTYP").unwrap());
+        for (name, speaker, speaker_sig, npcs, changed, expected) in [
+            (
+                "unique NPC using the voice type",
+                out(0x2AAD63),
+                vtyp,
+                vec![out(0x3B91C1)],
+                true,
+                vec![("ANAM", Some(0x3B91C1))],
+            ),
+            (
+                "lowest NPC when several use the voice type",
+                out(0x4E4A12),
+                vtyp,
+                vec![out(0x42AF7E), out(0x1827F9)],
+                true,
+                vec![("ANAM", Some(0x1827F9))],
+            ),
+            (
+                "no NPC uses the voice type → stripped",
+                out(0x2AAD63),
+                vtyp,
+                vec![],
+                true,
+                vec![],
+            ),
+            (
+                "Class E: master VTYP recovered from the master handle → stripped",
+                make_fk(0x00002D, "Fallout4.esm", &interner),
+                vtyp,
+                vec![],
+                true,
+                vec![],
+            ),
+            (
+                "speaker already resolving to an NPC kept",
+                out(0x3B91C1),
+                Some(SigCode::from_str("NPC_").unwrap()),
+                vec![],
+                false,
+                vec![("ANAM", Some(0x3B91C1))],
+            ),
+        ] {
+            let mut record = make_record("INFO", vec![fk_field("ANAM", speaker)], &interner);
+            let mut voice_type_npcs = FxHashMap::default();
+            if !npcs.is_empty() {
+                voice_type_npcs.insert((speaker.local, speaker.plugin), npcs);
+            }
 
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("VENC").unwrap(),
-            Action::Strip,
-            false,
-            &allows_only(&["REFR"]),
-            &map,
-            &FxHashMap::default(),
-        );
+            let outcome = retarget_or_strip_info_speaker(
+                &mut record,
+                SubrecordSig::from_str("ANAM").unwrap(),
+                speaker_sig,
+                &voice_type_npcs,
+            );
 
-        assert!(!outcome.changed, "REFR target is legal — keep VENC");
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn nulls_dial_bnam_when_target_is_not_dlbr() {
-        let interner = StringInterner::new();
-        let bnam_fk = make_fk(0x001000, "Out.esp", &interner);
-        let mut record = make_record("DIAL", vec![fk_field("BNAM", bnam_fk)], &interner);
-        let map = sig_map(&[(0x001000, "Out.esp", "QUST")], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("BNAM").unwrap(),
-            Action::Null,
-            false,
-            &allows_only(&["DLBR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert_eq!(record.fields.len(), 1, "BNAM kept, FK nulled");
-        let FieldValue::FormKey(fk) = &record.fields[0].value else {
-            panic!("expected FormKey");
-        };
-        assert_eq!(fk.local, 0);
-    }
-
-    #[test]
-    fn leaves_dangling_ref_untouched() {
-        let interner = StringInterner::new();
-        let bnam_fk = make_fk(0x00ABCD, "Out.esp", &interner);
-        let mut record = make_record("DIAL", vec![fk_field("BNAM", bnam_fk)], &interner);
-        // FK not in the map → unresolved/dangling.
-        let map = sig_map(&[], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("BNAM").unwrap(),
-            Action::Null,
-            false,
-            &allows_only(&["DLBR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(!outcome.changed, "dangling refs are not ours to act on");
-        let FieldValue::FormKey(fk) = &record.fields[0].value else {
-            panic!("expected FormKey");
-        };
-        assert_eq!(fk.local, 0x00ABCD, "FK left intact");
-    }
-
-    #[test]
-    fn strips_dangling_xrfg_when_strip_dangling_set() {
-        // K/O root: an XRFG (→RFGP) whose remapped target resolves NOWHERE — the
-        // FO76 RFGP has no FO4 home. With strip_dangling, the slot is dropped
-        // rather than left (it can never point at a valid record).
-        let interner = StringInterner::new();
-        let xrfg_fk = make_fk(0x01004A6C, "Out.esp", &interner); // 01xxxxxx, unresolved
-        let mut record = make_record("REFR", vec![fk_field("XRFG", xrfg_fk)], &interner);
-        let map = sig_map(&[], &interner); // resolves nowhere
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("XRFG").unwrap(),
-            Action::Strip,
-            true, // strip_dangling
-            &allows_only(&["RFGP"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(record.fields.is_empty(), "dangling XRFG stripped");
-    }
-
-    #[test]
-    fn strips_wrong_type_xrfg_pointing_at_output_collision() {
-        // K root (collision): XRFG remapped to a 07 object-id that landed on an
-        // unrelated output REFR (xEdit "Found a REFR, expected: RFGP"). Stripped.
-        let interner = StringInterner::new();
-        let xrfg_fk = make_fk(0x07662FB2, "Out.esp", &interner);
-        let mut record = make_record("REFR", vec![fk_field("XRFG", xrfg_fk)], &interner);
-        let map = sig_map(&[(0x07662FB2, "Out.esp", "REFR")], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("XRFG").unwrap(),
-            Action::Strip,
-            true,
-            &allows_only(&["RFGP"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(record.fields.is_empty(), "wrong-type XRFG stripped");
-    }
-
-    #[test]
-    fn retargets_info_speaker_vtyp_to_unique_npc_using_that_voice_type() {
-        let interner = StringInterner::new();
-        let vtyp_fk = make_fk(0x2AAD63, "Out.esp", &interner);
-        let npc_fk = make_fk(0x3B91C1, "Out.esp", &interner);
-        let mut record = make_record("INFO", vec![fk_field("ANAM", vtyp_fk)], &interner);
-        let mut voice_type_npcs = FxHashMap::default();
-        voice_type_npcs.insert((vtyp_fk.local, vtyp_fk.plugin), vec![npc_fk]);
-
-        let outcome = retarget_or_strip_info_speaker(
-            &mut record,
-            SubrecordSig::from_str("ANAM").unwrap(),
-            Some(SigCode::from_str("VTYP").unwrap()),
-            &voice_type_npcs,
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        let FieldValue::FormKey(actual) = &record.fields[0].value else {
-            panic!("expected retargeted speaker FormKey");
-        };
-        assert_eq!(*actual, npc_fk);
+            assert_eq!(outcome.changed, changed, "{name}");
+            assert_eq!(outcome.acted, u32::from(changed), "{name}");
+            assert_eq!(field_summary(&record), expected, "{name}");
+        }
     }
 
     #[test]
@@ -3426,226 +3601,6 @@ mod tests {
     }
 
     #[test]
-    fn retargets_info_speaker_vtyp_to_lowest_npc_when_multiple_use_that_voice_type() {
-        let interner = StringInterner::new();
-        let vtyp_fk = make_fk(0x4E4A12, "Out.esp", &interner);
-        let first_npc_fk = make_fk(0x1827F9, "Out.esp", &interner);
-        let second_npc_fk = make_fk(0x42AF7E, "Out.esp", &interner);
-        let mut record = make_record("INFO", vec![fk_field("ANAM", vtyp_fk)], &interner);
-        let mut voice_type_npcs = FxHashMap::default();
-        voice_type_npcs.insert(
-            (vtyp_fk.local, vtyp_fk.plugin),
-            vec![second_npc_fk, first_npc_fk],
-        );
-
-        let outcome = retarget_or_strip_info_speaker(
-            &mut record,
-            SubrecordSig::from_str("ANAM").unwrap(),
-            Some(SigCode::from_str("VTYP").unwrap()),
-            &voice_type_npcs,
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        let FieldValue::FormKey(actual) = &record.fields[0].value else {
-            panic!("expected retargeted speaker FormKey");
-        };
-        assert_eq!(*actual, first_npc_fk);
-    }
-
-    #[test]
-    fn strips_info_speaker_vtyp_when_no_npc_uses_that_voice_type() {
-        let interner = StringInterner::new();
-        let vtyp_fk = make_fk(0x2AAD63, "Out.esp", &interner);
-        let mut record = make_record("INFO", vec![fk_field("ANAM", vtyp_fk)], &interner);
-        let voice_type_npcs = FxHashMap::default();
-
-        let outcome = retarget_or_strip_info_speaker(
-            &mut record,
-            SubrecordSig::from_str("ANAM").unwrap(),
-            Some(SigCode::from_str("VTYP").unwrap()),
-            &voice_type_npcs,
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(
-            record.fields.is_empty(),
-            "unretargetable VTYP speaker is stripped"
-        );
-    }
-
-    #[test]
-    fn keeps_info_speaker_that_already_resolves_to_npc() {
-        let interner = StringInterner::new();
-        let npc_fk = make_fk(0x3B91C1, "Out.esp", &interner);
-        let mut record = make_record("INFO", vec![fk_field("ANAM", npc_fk)], &interner);
-        let voice_type_npcs = FxHashMap::default();
-
-        let outcome = retarget_or_strip_info_speaker(
-            &mut record,
-            SubrecordSig::from_str("ANAM").unwrap(),
-            Some(SigCode::from_str("NPC_").unwrap()),
-            &voice_type_npcs,
-        );
-
-        assert!(!outcome.changed);
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn strips_info_speaker_master_vtyp_when_unresolvable_in_output() {
-        // Class E core: the ANAM speaker points at a MASTER VTYP (e.g.
-        // Fallout4.esm VTYP:0000002D). The output-only fk_to_sig misses it, but
-        // resolve_speaker_sig recovers "VTYP" from the master handle, so the
-        // wrong-type strip fires (no NPC uses the voice type → strip).
-        let interner = StringInterner::new();
-        let vtyp_fk = make_fk(0x00002D, "Fallout4.esm", &interner);
-        let mut record = make_record("INFO", vec![fk_field("ANAM", vtyp_fk)], &interner);
-        let voice_type_npcs = FxHashMap::default();
-
-        let outcome = retarget_or_strip_info_speaker(
-            &mut record,
-            SubrecordSig::from_str("ANAM").unwrap(),
-            Some(SigCode::from_str("VTYP").unwrap()),
-            &voice_type_npcs,
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(record.fields.is_empty(), "master VTYP speaker stripped");
-    }
-
-    #[test]
-    fn unconstrained_allows_predicate_is_no_op() {
-        // An `allows` that accepts every sig (the schema returned no constraint /
-        // an empty target set) must never act.
-        let interner = StringInterner::new();
-        let venc_fk = make_fk(0x001000, "Out.esp", &interner);
-        let mut record = make_record("FACT", vec![fk_field("VENC", venc_fk)], &interner);
-        let map = sig_map(&[(0x001000, "Out.esp", "KYWD")], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("VENC").unwrap(),
-            Action::Strip,
-            false,
-            &|_sig: &str| true,
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(!outcome.changed, "unconstrained field must be a no-op");
-    }
-
-    #[test]
-    fn strips_already_null_fk_in_strip_action_subrecord() {
-        // The (d) fix: an upstream-nulled FK in an optional NULL-disallowed
-        // subrecord is "Found NULL, expected X" — strip the whole subrecord so
-        // it's absent (valid) rather than present-but-NULL.
-        let interner = StringInterner::new();
-        let null_fk = make_fk(0, "Out.esp", &interner);
-        let mut record = make_record("DIAL", vec![fk_field("BNAM", null_fk)], &interner);
-        let map = sig_map(&[], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("BNAM").unwrap(),
-            Action::Strip,
-            false,
-            &allows_only(&["DLBR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(
-            record.fields.is_empty(),
-            "null BNAM must be stripped, not kept"
-        );
-    }
-
-    #[test]
-    fn strips_present_but_none_decoded_subrecord_in_strip_action() {
-        // A present-but-null `formid` subrecord decodes to FieldValue::None
-        // (source_read: raw==0 => None), so first_formkey finds no FK, yet xEdit
-        // still reports "Found NULL, expected X". A Strip action must drop it.
-        let interner = StringInterner::new();
-        let bnam_none = FieldEntry {
-            sig: SubrecordSig::from_str("BNAM").unwrap(),
-            value: FieldValue::None,
-        };
-        let mut record = make_record("DIAL", vec![bnam_none], &interner);
-        let map = sig_map(&[], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("BNAM").unwrap(),
-            Action::Strip,
-            false,
-            &allows_only(&["DLBR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(
-            record.fields.is_empty(),
-            "present-but-None BNAM must be stripped, not kept"
-        );
-    }
-
-    #[test]
-    fn leaves_present_but_none_subrecord_for_null_action() {
-        // A None-decoded subrecord under a Null action (NULL is allowed) is fine
-        // as-is — don't strip it.
-        let interner = StringInterner::new();
-        let bnam_none = FieldEntry {
-            sig: SubrecordSig::from_str("BNAM").unwrap(),
-            value: FieldValue::None,
-        };
-        let mut record = make_record("DIAL", vec![bnam_none], &interner);
-        let map = sig_map(&[], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("BNAM").unwrap(),
-            Action::Null,
-            false,
-            &allows_only(&["DLBR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(!outcome.changed);
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn null_action_keeps_already_null_fk() {
-        // A Null-action field that's already null is as-good-as-it-gets — no-op.
-        let interner = StringInterner::new();
-        let null_fk = make_fk(0, "Out.esp", &interner);
-        let mut record = make_record("DIAL", vec![fk_field("BNAM", null_fk)], &interner);
-        let map = sig_map(&[], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("BNAM").unwrap(),
-            Action::Null,
-            false,
-            &allows_only(&["DLBR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(!outcome.changed);
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
     fn action_for_derives_metadata_driven_action() {
         // NULL allowed → Null; NULL disallowed + optional → Strip; NULL
         // disallowed + required → Leave.
@@ -3722,338 +3677,177 @@ mod tests {
     }
 
     #[test]
-    fn nulls_unresolved_mgef_primary_actor_value() {
+    fn mgef_actor_values_null_unresolved_and_demote_value_modifiers() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let actor_value_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "actor_value").unwrap();
-        let actor_value_1_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "actor_value_1").unwrap();
-        let mut data = vec![0; 96];
-        set_u32(&mut data, actor_value_off, 0x00000397);
-        set_u32(&mut data, actor_value_1_off, 0x07123101);
-        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
-        let mut encoded_sigs = FxHashMap::default();
-        encoded_sigs.insert(0x07123101, SigCode::from_str("AVIF").unwrap());
+        let off =
+            |field: &str| struct_field_offset(&schema, "MGEF", "DATA", Some(131), field).unwrap();
+        let (actor_value, actor_value_1, archetype) =
+            (off("actor_value"), off("actor_value_1"), off("archetype"));
+        let avif_07123101 =
+            FxHashMap::from_iter([(0x07123101, SigCode::from_str("AVIF").unwrap())]);
+        let none = FxHashMap::default();
+        // A Value Modifier with no actor value hard-crashes FO4, so nulling the
+        // primary also demotes the archetype to Script.
+        for (name, input, encoded_sigs, nulled, expected) in [
+            (
+                "unresolved primary nulled and archetype demoted",
+                vec![(actor_value, 0x00000397), (actor_value_1, 0x07123101)],
+                &avif_07123101,
+                2,
+                vec![
+                    (actor_value, 0),
+                    (actor_value_1, 0x07123101),
+                    (archetype, FO4_MGEF_ARCHETYPE_SCRIPT),
+                ],
+            ),
+            (
+                "Peak Value Modifier with null actor value demoted",
+                vec![(archetype, 34)],
+                &none,
+                1,
+                vec![(archetype, FO4_MGEF_ARCHETYPE_SCRIPT)],
+            ),
+            (
+                "vanilla-attested hardcoded 0x310 kept",
+                vec![(actor_value, 0x00000310)],
+                &none,
+                0,
+                vec![(actor_value, 0x00000310)],
+            ),
+            (
+                "FO4 hardcoded 0x2D2 kept",
+                vec![(actor_value, 0x000002D2)],
+                &none,
+                0,
+                vec![(actor_value, 0x000002D2)],
+            ),
+            (
+                "non-Value-Modifier archetype with null actor value kept",
+                vec![(archetype, 45)],
+                &none,
+                0,
+                vec![(archetype, 45)],
+            ),
+        ] {
+            let mut data = vec![0; 96];
+            for (offset, value) in input {
+                set_u32(&mut data, offset, value);
+            }
+            let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
 
-        let nulled = null_invalid_mgef_actor_values(
-            &mut record,
-            &schema,
-            Some(131),
-            &encoded_sigs,
-            &FxHashMap::default(),
-            &["Fallout4.esm".to_string()],
-        );
+            let actual = null_invalid_mgef_actor_values(
+                &mut record,
+                &schema,
+                Some(131),
+                encoded_sigs,
+                &FxHashMap::default(),
+                &["Fallout4.esm".to_string()],
+            );
 
-        let data = field_bytes(&record, "DATA");
-        // One null for the unresolved primary, one for the archetype demotion it
-        // forces (a Value Modifier with no actor value hard-crashes FO4).
-        assert_eq!(nulled, 2);
-        assert_eq!(read_u32_le(&data, actor_value_off), Some(0));
-        assert_eq!(read_u32_le(&data, actor_value_1_off), Some(0x07123101));
-        let archetype_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "archetype").unwrap();
-        assert_eq!(
-            read_u32_le(&data, archetype_off),
-            Some(FO4_MGEF_ARCHETYPE_SCRIPT)
-        );
+            assert_eq!(actual, nulled, "{name}");
+            let data = field_bytes(&record, "DATA");
+            for (offset, value) in expected {
+                assert_eq!(read_u32_le(&data, offset), Some(value), "{name} @{offset}");
+            }
+        }
     }
 
     #[test]
-    fn demotes_peak_value_modifier_with_null_actor_value() {
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let archetype_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "archetype").unwrap();
-        let mut data = vec![0; 96];
-        set_u32(&mut data, archetype_off, 34);
-        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
-
-        let nulled = null_invalid_mgef_actor_values(
-            &mut record,
-            &schema,
-            Some(131),
-            &FxHashMap::default(),
-            &FxHashMap::default(),
-            &["Fallout4.esm".to_string()],
-        );
-
-        let data = field_bytes(&record, "DATA");
-        assert_eq!(nulled, 1);
-        assert_eq!(
-            read_u32_le(&data, archetype_off),
-            Some(FO4_MGEF_ARCHETYPE_SCRIPT)
-        );
-    }
-
-    #[test]
-    fn keeps_vanilla_attested_hardcoded_mgef_actor_value() {
-        // 0x000310 has no AVIF record anywhere, but vanilla Fallout4.esm points
-        // MGEF.DATA.actor_value at it, so it must not be treated as dangling.
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let actor_value_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "actor_value").unwrap();
-        let mut data = vec![0; 96];
-        set_u32(&mut data, actor_value_off, 0x00000310);
-        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
-
-        let nulled = null_invalid_mgef_actor_values(
-            &mut record,
-            &schema,
-            Some(131),
-            &FxHashMap::default(),
-            &FxHashMap::default(),
-            &["Fallout4.esm".to_string()],
-        );
-
-        let data = field_bytes(&record, "DATA");
-        assert_eq!(nulled, 0);
-        assert_eq!(read_u32_le(&data, actor_value_off), Some(0x00000310));
-    }
-
-    #[test]
-    fn keeps_non_value_modifier_archetype_with_null_actor_value() {
-        // Only the Value Modifier archetype dereferences the actor value, so a
-        // Damage effect with an empty slot must be left exactly as-is.
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let archetype_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "archetype").unwrap();
-        let mut data = vec![0; 96];
-        set_u32(&mut data, archetype_off, 45);
-        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
-
-        let nulled = null_invalid_mgef_actor_values(
-            &mut record,
-            &schema,
-            Some(131),
-            &FxHashMap::default(),
-            &FxHashMap::default(),
-            &["Fallout4.esm".to_string()],
-        );
-
-        let data = field_bytes(&record, "DATA");
-        assert_eq!(nulled, 0);
-        assert_eq!(read_u32_le(&data, archetype_off), Some(45));
-    }
-
-    #[test]
-    fn keeps_fo4_hardcoded_mgef_actor_value() {
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let actor_value_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "actor_value").unwrap();
-        let mut data = vec![0; 96];
-        set_u32(&mut data, actor_value_off, 0x000002D2);
-        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
-
-        let nulled = null_invalid_mgef_actor_values(
-            &mut record,
-            &schema,
-            Some(131),
-            &FxHashMap::default(),
-            &FxHashMap::default(),
-            &["Fallout4.esm".to_string()],
-        );
-
-        let data = field_bytes(&record, "DATA");
-        assert_eq!(nulled, 0);
-        assert_eq!(read_u32_le(&data, actor_value_off), Some(0x000002D2));
-    }
-
-    #[test]
-    fn normalizes_aimed_mgef_when_projectile_is_missing() {
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let delivery_off =
-            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "delivery").unwrap();
-        let mut data = vec![0; 96];
-        set_u32(&mut data, delivery_off, MAGIC_TARGET_AIMED);
-        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
-
-        let acted = normalize_aimed_mgef_without_projectile(
-            &mut record,
-            &schema,
-            Some(131),
-            &FxHashMap::default(),
-            &FxHashMap::default(),
-        );
-
-        let data = field_bytes(&record, "DATA");
-        assert_eq!(acted, 1);
-        assert_eq!(read_u32_le(&data, delivery_off), Some(MAGIC_TARGET_SELF));
-    }
-
-    #[test]
-    fn keeps_aimed_mgef_when_projectile_resolves_to_proj() {
+    fn aimed_mgef_and_spell_without_projectile_become_self() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").unwrap();
         let delivery_off =
             struct_field_offset(&schema, "MGEF", "DATA", Some(131), "delivery").unwrap();
         let projectile_off =
             struct_field_offset(&schema, "MGEF", "DATA", Some(131), "projectile").unwrap();
-        let mut data = vec![0; 96];
-        set_u32(&mut data, delivery_off, MAGIC_TARGET_AIMED);
-        set_u32(&mut data, projectile_off, 0x07101010);
-        let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
-        let mut encoded_sigs = FxHashMap::default();
-        encoded_sigs.insert(0x07101010, SigCode::from_str("PROJ").unwrap());
+        let proj = FxHashMap::from_iter([(0x07101010, SigCode::from_str("PROJ").unwrap())]);
+        for (name, projectile, acted, delivery) in [
+            ("missing projectile", 0, 1, MAGIC_TARGET_SELF),
+            (
+                "projectile resolves to PROJ",
+                0x07101010,
+                0,
+                MAGIC_TARGET_AIMED,
+            ),
+        ] {
+            let mut data = vec![0; 96];
+            set_u32(&mut data, delivery_off, MAGIC_TARGET_AIMED);
+            set_u32(&mut data, projectile_off, projectile);
+            let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
+            assert_eq!(
+                normalize_aimed_mgef_without_projectile(
+                    &mut record,
+                    &schema,
+                    Some(131),
+                    &proj,
+                    &FxHashMap::default(),
+                ),
+                acted,
+                "MGEF {name}"
+            );
+            let data = field_bytes(&record, "DATA");
+            assert_eq!(
+                read_u32_le(&data, delivery_off),
+                Some(delivery),
+                "MGEF {name}"
+            );
+        }
 
-        let acted = normalize_aimed_mgef_without_projectile(
-            &mut record,
-            &schema,
-            Some(131),
-            &encoded_sigs,
-            &FxHashMap::default(),
-        );
-
-        let data = field_bytes(&record, "DATA");
-        assert_eq!(acted, 0);
-        assert_eq!(read_u32_le(&data, delivery_off), Some(MAGIC_TARGET_AIMED));
-    }
-
-    #[test]
-    fn normalizes_aimed_spell_when_effects_have_no_projectile() {
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let effect = make_fk(0x001234, "Out.esp", &interner);
         let target_type_off =
             struct_field_offset(&schema, "SPEL", "SPIT", Some(131), "target_type").unwrap();
-        let mut spit = vec![0; 36];
-        set_u32(&mut spit, target_type_off, MAGIC_TARGET_AIMED);
-        let mut record = make_record(
-            "SPEL",
-            vec![bytes_field("SPIT", spit), fk_field("EFID", effect)],
-            &interner,
-        );
-        let mut mgef_projectiles = FxHashMap::default();
-        mgef_projectiles.insert((effect.local, effect.plugin), false);
-
-        let acted = normalize_aimed_spell_without_projectile_effects(
-            &mut record,
-            &schema,
-            Some(131),
-            &mgef_projectiles,
-        );
-
-        let spit = field_bytes(&record, "SPIT");
-        assert_eq!(acted, 1);
-        assert_eq!(read_u32_le(&spit, target_type_off), Some(MAGIC_TARGET_SELF));
-    }
-
-    #[test]
-    fn keeps_aimed_spell_when_any_effect_has_projectile() {
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let effect = make_fk(0x001234, "Out.esp", &interner);
-        let target_type_off =
-            struct_field_offset(&schema, "SPEL", "SPIT", Some(131), "target_type").unwrap();
-        let mut spit = vec![0; 36];
-        set_u32(&mut spit, target_type_off, MAGIC_TARGET_AIMED);
-        let mut record = make_record(
-            "SPEL",
-            vec![bytes_field("SPIT", spit), fk_field("EFID", effect)],
-            &interner,
-        );
-        let mut mgef_projectiles = FxHashMap::default();
-        mgef_projectiles.insert((effect.local, effect.plugin), true);
-
-        let acted = normalize_aimed_spell_without_projectile_effects(
-            &mut record,
-            &schema,
-            Some(131),
-            &mgef_projectiles,
-        );
-
-        let spit = field_bytes(&record, "SPIT");
-        assert_eq!(acted, 0);
-        assert_eq!(
-            read_u32_le(&spit, target_type_off),
-            Some(MAGIC_TARGET_AIMED)
-        );
-    }
-
-    #[test]
-    fn leaves_aimed_spell_when_effect_projectile_state_is_unknown() {
-        let interner = StringInterner::new();
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let effect = make_fk(0x001234, "Fallout4.esm", &interner);
-        let target_type_off =
-            struct_field_offset(&schema, "SPEL", "SPIT", Some(131), "target_type").unwrap();
-        let mut spit = vec![0; 36];
-        set_u32(&mut spit, target_type_off, MAGIC_TARGET_AIMED);
-        let mut record = make_record(
-            "SPEL",
-            vec![bytes_field("SPIT", spit), fk_field("EFID", effect)],
-            &interner,
-        );
-
-        let acted = normalize_aimed_spell_without_projectile_effects(
-            &mut record,
-            &schema,
-            Some(131),
-            &FxHashMap::default(),
-        );
-
-        let spit = field_bytes(&record, "SPIT");
-        assert_eq!(acted, 0);
-        assert_eq!(
-            read_u32_le(&spit, target_type_off),
-            Some(MAGIC_TARGET_AIMED)
-        );
-    }
-
-    #[test]
-    fn nulls_cobj_cnam_when_target_is_pkin() {
-        // FO76 COBJ created-object points at a PKIN (no FO4 equivalent). CNAM is
-        // a nullable single-FK subrecord → Null action nulls the FK in place.
-        let interner = StringInterner::new();
-        let cnam_fk = make_fk(0x005DD312, "Out.esp", &interner);
-        let mut record = make_record("COBJ", vec![fk_field("CNAM", cnam_fk)], &interner);
-        let map = sig_map(&[(0x005DD312, "Out.esp", "PKIN")], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("CNAM").unwrap(),
-            Action::Null,
-            false,
-            &allows_only(&["MISC", "WEAP", "ARMO"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert_eq!(record.fields.len(), 1, "CNAM kept, FK nulled");
-        let FieldValue::FormKey(fk) = &record.fields[0].value else {
-            panic!("expected FormKey");
-        };
-        assert_eq!(fk.local, 0, "PKIN created-object FK nulled");
-    }
-
-    #[test]
-    fn keeps_cobj_cnam_when_target_is_valid_misc() {
-        let interner = StringInterner::new();
-        let cnam_fk = make_fk(0x001000, "Out.esp", &interner);
-        let mut record = make_record("COBJ", vec![fk_field("CNAM", cnam_fk)], &interner);
-        let map = sig_map(&[(0x001000, "Out.esp", "MISC")], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("CNAM").unwrap(),
-            Action::Null,
-            false,
-            &allows_only(&["MISC", "WEAP", "ARMO"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(!outcome.changed, "MISC is a legal created-object — keep");
-        let FieldValue::FormKey(fk) = &record.fields[0].value else {
-            panic!("expected FormKey");
-        };
-        assert_eq!(fk.local, 0x001000);
+        for (name, effect_plugin, has_projectile, acted, target_type) in [
+            (
+                "no effect has a projectile",
+                "Out.esp",
+                Some(false),
+                1,
+                MAGIC_TARGET_SELF,
+            ),
+            (
+                "an effect has a projectile",
+                "Out.esp",
+                Some(true),
+                0,
+                MAGIC_TARGET_AIMED,
+            ),
+            (
+                "effect projectile state unknown",
+                "Fallout4.esm",
+                None,
+                0,
+                MAGIC_TARGET_AIMED,
+            ),
+        ] {
+            let effect = make_fk(0x001234, effect_plugin, &interner);
+            let mut spit = vec![0; 36];
+            set_u32(&mut spit, target_type_off, MAGIC_TARGET_AIMED);
+            let mut record = make_record(
+                "SPEL",
+                vec![bytes_field("SPIT", spit), fk_field("EFID", effect)],
+                &interner,
+            );
+            let mut mgef_projectiles = FxHashMap::default();
+            if let Some(has_projectile) = has_projectile {
+                mgef_projectiles.insert((effect.local, effect.plugin), has_projectile);
+            }
+            assert_eq!(
+                normalize_aimed_spell_without_projectile_effects(
+                    &mut record,
+                    &schema,
+                    Some(131),
+                    &mgef_projectiles,
+                ),
+                acted,
+                "SPEL {name}"
+            );
+            let spit = field_bytes(&record, "SPIT");
+            assert_eq!(
+                read_u32_le(&spit, target_type_off),
+                Some(target_type),
+                "SPEL {name}"
+            );
+        }
     }
 
     fn kw_list_field(sub: &str, fks: &[FormKey]) -> FieldEntry {
@@ -4064,86 +3858,80 @@ mod tests {
     }
 
     #[test]
-    fn filters_only_wrong_type_keyword_list_entries() {
+    fn keyword_lists_drop_only_wrong_type_entries() {
         let interner = StringInterner::new();
-        let good = make_fk(0x0037D0B2, "Out.esp", &interner); // KYWD
-        let bad = make_fk(0x00033B61, "Out.esp", &interner); // SCOL (wrong)
-        let mut record = make_record("OMOD", vec![kw_list_field("MNAM", &[good, bad])], &interner);
-        let map = sig_map(
+        let kywd = make_fk(0x0037D0B2, "Out.esp", &interner);
+        let scol = make_fk(0x00033B61, "Out.esp", &interner);
+        let dangling = make_fk(0x00ABCDEF, "Out.esp", &interner);
+        let null_fk = make_fk(0, "Out.esp", &interner);
+        let master_stat = make_fk(0x0010ABCD, "Fallout4.esm", &interner);
+        let output_map = sig_map(
             &[
                 (0x0037D0B2, "Out.esp", "KYWD"),
                 (0x00033B61, "Out.esp", "SCOL"),
             ],
             &interner,
         );
+        let master_map = sig_map(&[(0x0010ABCD, "Fallout4.esm", "STAT")], &interner);
+        for (name, record_sig, sub, entries, removed, remaining) in [
+            (
+                "wrong-type SCOL dropped, KYWD kept",
+                "OMOD",
+                "MNAM",
+                vec![kywd, scol],
+                1,
+                Some(vec![kywd]),
+            ),
+            (
+                "list emptied of wrong-type entries dropped",
+                "OMOD",
+                "MNAM",
+                vec![scol],
+                1,
+                None,
+            ),
+            (
+                "dangling and null entries left for the sweep fixups",
+                "OMOD",
+                "MNAM",
+                vec![dangling, null_fk],
+                0,
+                Some(vec![dangling, null_fk]),
+            ),
+            (
+                "master STAT keyword filtered via the per-record master fallback",
+                "FURN",
+                "KWDA",
+                vec![kywd, master_stat],
+                1,
+                Some(vec![kywd]),
+            ),
+        ] {
+            let mut record = make_record(record_sig, vec![kw_list_field(sub, &entries)], &interner);
 
-        let removed = filter_keyword_list_entries(
-            &mut record,
-            SubrecordSig::from_str("MNAM").unwrap(),
-            &allows_only(&["KYWD"]),
-            &map,
-            &FxHashMap::default(),
-        );
+            let actual = filter_keyword_list_entries(
+                &mut record,
+                SubrecordSig::from_str(sub).unwrap(),
+                &allows_only(&["KYWD"]),
+                &output_map,
+                &master_map,
+            );
 
-        assert_eq!(removed, 1, "only the SCOL entry is dropped");
-        assert_eq!(record.fields.len(), 1, "MNAM kept (still has the KYWD)");
-        let FieldValue::List(items) = &record.fields[0].value else {
-            panic!("expected List");
-        };
-        assert_eq!(items.len(), 1, "the valid KYWD entry survives");
-        let FieldValue::FormKey(fk) = &items[0] else {
-            panic!("expected FormKey");
-        };
-        assert_eq!(fk.local, 0x0037D0B2);
-    }
-
-    #[test]
-    fn drops_keyword_list_subrecord_when_all_entries_wrong_type() {
-        let interner = StringInterner::new();
-        let bad = make_fk(0x00033B61, "Out.esp", &interner); // SCOL
-        let mut record = make_record("OMOD", vec![kw_list_field("MNAM", &[bad])], &interner);
-        let map = sig_map(&[(0x00033B61, "Out.esp", "SCOL")], &interner);
-
-        let removed = filter_keyword_list_entries(
-            &mut record,
-            SubrecordSig::from_str("MNAM").unwrap(),
-            &allows_only(&["KYWD"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert_eq!(removed, 1);
-        assert!(record.fields.is_empty(), "emptied MNAM is dropped entirely");
-    }
-
-    #[test]
-    fn keeps_dangling_and_null_keyword_list_entries() {
-        let interner = StringInterner::new();
-        let dangling = make_fk(0x00ABCDEF, "Out.esp", &interner); // not in map
-        let null_fk = make_fk(0, "Out.esp", &interner);
-        let mut record = make_record(
-            "OMOD",
-            vec![kw_list_field("MNAM", &[dangling, null_fk])],
-            &interner,
-        );
-        let map = sig_map(&[], &interner); // nothing resolves
-
-        let removed = filter_keyword_list_entries(
-            &mut record,
-            SubrecordSig::from_str("MNAM").unwrap(),
-            &allows_only(&["KYWD"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert_eq!(
-            removed, 0,
-            "dangling + null entries are left for sweep fixups"
-        );
-        let FieldValue::List(items) = &record.fields[0].value else {
-            panic!("expected List");
-        };
-        assert_eq!(items.len(), 2);
+            assert_eq!(actual, removed, "{name}");
+            let items = record.fields.first().map(|entry| {
+                let FieldValue::List(items) = &entry.value else {
+                    panic!("{name}: expected List");
+                };
+                items
+                    .iter()
+                    .map(|item| match item {
+                        FieldValue::FormKey(fk) => *fk,
+                        other => panic!("{name}: expected FormKey, got {other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(items, remaining, "{name}");
+        }
     }
 
     #[test]
@@ -4181,45 +3969,6 @@ mod tests {
     }
 
     #[test]
-    fn drops_null_required_param1_ctda_with_script_strings() {
-        let interner = StringInterner::new();
-        let mut record = make_record(
-            "SNDR",
-            vec![
-                bytes_field("CTDA", ctda(248, 0)),
-                bytes_field("CIS1", b"scene\0".to_vec()),
-                bytes_field("BNAM", vec![1, 2, 3, 4, 5, 6]),
-            ],
-            &interner,
-        );
-
-        let dropped = drop_null_required_param1_conditions(&mut record);
-
-        assert_eq!(dropped, 1);
-        let sigs: Vec<&str> = record
-            .fields
-            .iter()
-            .map(|entry| entry.sig.as_str())
-            .collect();
-        assert_eq!(sigs, vec!["BNAM"], "CTDA and trailing CIS1 dropped");
-    }
-
-    #[test]
-    fn keeps_required_param1_ctda_when_parameter_is_present() {
-        let interner = StringInterner::new();
-        let mut record = make_record(
-            "ACTI",
-            vec![bytes_field("CTDA", ctda(14, 0x000002C3))],
-            &interner,
-        );
-
-        let dropped = drop_null_required_param1_conditions(&mut record);
-
-        assert_eq!(dropped, 0);
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
     fn drops_orphan_alch_efit_without_base_effect() {
         let interner = StringInterner::new();
         let effect = make_fk(0x0011D53C, "Fallout4.esm", &interner);
@@ -4248,40 +3997,6 @@ mod tests {
         assert_eq!(bytes[0], 2, "paired EFIT kept");
     }
 
-    #[test]
-    fn master_resolved_fallback_filters_wrong_type_keyword() {
-        // A FURN/NPC_ KWDA keyword that resolves to a MASTER STAT/SNDR (absent
-        // from the output `fk_to_sig` map) must still be filtered out via the
-        // per-record master fallback.
-        let interner = StringInterner::new();
-        let master_stat = make_fk(0x0010ABCD, "Fallout4.esm", &interner);
-        let good = make_fk(0x0037D0B2, "Out.esp", &interner); // output KYWD
-        let mut record = make_record(
-            "FURN",
-            vec![kw_list_field("KWDA", &[good, master_stat])],
-            &interner,
-        );
-        let output_map = sig_map(&[(0x0037D0B2, "Out.esp", "KYWD")], &interner);
-        let master_map = sig_map(&[(0x0010ABCD, "Fallout4.esm", "STAT")], &interner);
-
-        let removed = filter_keyword_list_entries(
-            &mut record,
-            SubrecordSig::from_str("KWDA").unwrap(),
-            &allows_only(&["KYWD"]),
-            &output_map,
-            &master_map,
-        );
-
-        assert_eq!(
-            removed, 1,
-            "the master STAT keyword is filtered via the fallback"
-        );
-        let FieldValue::List(items) = &record.fields[0].value else {
-            panic!("expected List");
-        };
-        assert_eq!(items.len(), 1, "the valid KYWD survives");
-    }
-
     fn union_bytes(sub: &str, raw: &[u8]) -> FieldEntry {
         FieldEntry {
             sig: SubrecordSig::from_str(sub).unwrap(),
@@ -4290,256 +4005,178 @@ mod tests {
     }
 
     #[test]
-    fn union_fk_offset_discriminates_sndr_bnam_variants() {
-        // 4-byte base_descriptor variant → FK at offset 0; 6-byte values scalar
-        // variant → no FK (the benign floor).
+    fn drops_only_null_required_param1_ctda_with_its_script_strings() {
+        let interner = StringInterner::new();
+        let mut record = make_record(
+            "SNDR",
+            vec![
+                bytes_field("CTDA", ctda(248, 0)),
+                bytes_field("CIS1", b"scene\0".to_vec()),
+                bytes_field("BNAM", vec![1, 2, 3, 4, 5, 6]),
+            ],
+            &interner,
+        );
+        assert_eq!(drop_null_required_param1_conditions(&mut record), 1);
+        let sigs: Vec<&str> = record
+            .fields
+            .iter()
+            .map(|entry| entry.sig.as_str())
+            .collect();
+        assert_eq!(sigs, vec!["BNAM"], "CTDA and trailing CIS1 dropped");
+
+        let mut record = make_record(
+            "ACTI",
+            vec![bytes_field("CTDA", ctda(14, 0x000002C3))],
+            &interner,
+        );
+        assert_eq!(drop_null_required_param1_conditions(&mut record), 0);
+        assert_eq!(
+            record.fields.len(),
+            1,
+            "CTDA with its parameter present kept"
+        );
+    }
+
+    #[test]
+    fn sndr_bnam_base_descriptor_must_be_a_sndr() {
+        // The 4-byte base_descriptor variant carries a FK at offset 0; the 6-byte
+        // values scalar variant never does (the benign floor).
         assert_eq!(union_fk_offset("BNAM", &[0x11, 0x22, 0x33, 0x07]), Some(0));
-        assert_eq!(
-            union_fk_offset("BNAM", &[0, 1, 2, 3, 4, 5]),
-            None,
-            "6-byte values scalar is not a FK"
-        );
+        assert_eq!(union_fk_offset("BNAM", &[0, 1, 2, 3, 4, 5]), None);
+
+        let interner = StringInterner::new();
+        let descriptor = 0x07ABCDEF_u32.to_le_bytes();
+        let unresolved = 0x004FD271_u32.to_le_bytes();
+        let scalar: [u8; 6] = [0xEF, 0xCD, 0xAB, 0x07, 0xB0, 0x04];
+        for (name, raw, resolved_sig, acted) in [
+            (
+                "wrong-type CELL descriptor stripped",
+                &descriptor[..],
+                Some("CELL"),
+                1,
+            ),
+            ("SNDR descriptor kept", &descriptor[..], Some("SNDR"), 0),
+            ("unresolved descriptor stripped", &unresolved[..], None, 1),
+            (
+                "6-byte values scalar never read as a FK",
+                &scalar[..],
+                Some("CELL"),
+                0,
+            ),
+        ] {
+            let mut record = make_record("SNDR", vec![union_bytes("BNAM", raw)], &interner);
+            let mut resolved = FxHashMap::default();
+            if let Some(sig) = resolved_sig {
+                resolved.insert(0x07ABCDEF, SigCode::from_str(sig).unwrap());
+            }
+
+            let actual = validate_union_formid_target(
+                &mut record,
+                "BNAM",
+                SubrecordSig::from_str("BNAM").unwrap(),
+                UnionTypeRule::AllowOnly(&["SNDR"]),
+                UnionAction::StripSubrecord,
+                &resolved,
+            );
+
+            assert_eq!(actual, acted, "{name}");
+            assert_eq!(record.fields.len(), 1 - acted as usize, "{name}");
+        }
     }
 
-    #[test]
-    fn strips_sndr_bnam_base_descriptor_when_wrong_type() {
-        // Bucket 8: SNDR.BNAM base_descriptor (4-byte formid) resolves to a CELL
-        // (wrong type, expected SNDR) → strip the whole BNAM (absent = non-
-        // AutoWeapon, valid).
-        let interner = StringInterner::new();
-        let raw = 0x07ABCDEF_u32.to_le_bytes();
-        let mut record = make_record("SNDR", vec![union_bytes("BNAM", &raw)], &interner);
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x07ABCDEF, SigCode::from_str("CELL").unwrap());
-
-        let acted = validate_union_formid_target(
-            &mut record,
-            "BNAM",
-            SubrecordSig::from_str("BNAM").unwrap(),
-            UnionTypeRule::AllowOnly(&["SNDR"]),
-            UnionAction::StripSubrecord,
-            &resolved,
-        );
-
-        assert_eq!(acted, 1);
-        assert!(
-            record.fields.is_empty(),
-            "wrong-type BNAM base_descriptor stripped"
-        );
+    fn ptda(kind: i32, raw: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&kind.to_le_bytes());
+        bytes.extend_from_slice(&raw.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
     }
 
-    #[test]
-    fn keeps_sndr_bnam_base_descriptor_when_target_is_sndr() {
-        let interner = StringInterner::new();
-        let raw = 0x07ABCDEF_u32.to_le_bytes();
-        let mut record = make_record("SNDR", vec![union_bytes("BNAM", &raw)], &interner);
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x07ABCDEF, SigCode::from_str("SNDR").unwrap());
-
-        let acted = validate_union_formid_target(
-            &mut record,
-            "BNAM",
-            SubrecordSig::from_str("BNAM").unwrap(),
-            UnionTypeRule::AllowOnly(&["SNDR"]),
-            UnionAction::StripSubrecord,
-            &resolved,
-        );
-
-        assert_eq!(acted, 0, "a valid SNDR base_descriptor is kept");
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn strips_sndr_bnam_base_descriptor_when_unresolved() {
-        let interner = StringInterner::new();
-        let raw = 0x004FD271_u32.to_le_bytes();
-        let mut record = make_record("SNDR", vec![union_bytes("BNAM", &raw)], &interner);
-
-        let acted = validate_union_formid_target(
-            &mut record,
-            "BNAM",
-            SubrecordSig::from_str("BNAM").unwrap(),
-            UnionTypeRule::AllowOnly(&["SNDR"]),
-            UnionAction::StripSubrecord,
-            &FxHashMap::default(),
-        );
-
-        assert_eq!(acted, 1);
-        assert!(
-            record.fields.is_empty(),
-            "dangling BNAM descriptor stripped"
-        );
-    }
-
-    #[test]
-    fn leaves_sndr_bnam_values_scalar_variant_untouched() {
-        // The 6-byte `values` scalar variant must never be read as a FK even if
-        // its leading 4 bytes happen to collide with a resolved wrong-type id.
-        let interner = StringInterner::new();
-        let raw: [u8; 6] = [0xEF, 0xCD, 0xAB, 0x07, 0xB0, 0x04];
-        let mut record = make_record("SNDR", vec![union_bytes("BNAM", &raw)], &interner);
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x07ABCDEF, SigCode::from_str("CELL").unwrap());
-
-        let acted = validate_union_formid_target(
-            &mut record,
-            "BNAM",
-            SubrecordSig::from_str("BNAM").unwrap(),
-            UnionTypeRule::AllowOnly(&["SNDR"]),
-            UnionAction::StripSubrecord,
-            &resolved,
-        );
-
-        assert_eq!(acted, 0, "6-byte values scalar is never treated as a FK");
-        assert_eq!(record.fields.len(), 1);
-    }
-
-    #[test]
-    fn nulls_pack_ptda_fk_when_target_is_structural_type() {
-        // Bucket 4-wrongtype: a PACK PTDA kind-0 reference whose FK resolves to a
-        // LAND (a remap collision) is rewritten to Self; the data-input block
-        // stays intact.
-        let interner = StringInterner::new();
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&0i32.to_le_bytes()); // kind 0 = reference
-        raw.extend_from_slice(&0x07112233u32.to_le_bytes()); // FK @4
-        raw.extend_from_slice(&0u32.to_le_bytes());
-        let mut record = make_record("PACK", vec![union_bytes("PTDA", &raw)], &interner);
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x07112233, SigCode::from_str("LAND").unwrap());
-
-        let acted = validate_union_formid_target(
-            &mut record,
-            "PTDA",
-            SubrecordSig::from_str("PTDA").unwrap(),
-            UnionTypeRule::Deny(PACK_TARGET_DENY),
-            UnionAction::NullFk,
-            &resolved,
-        );
-
-        assert_eq!(acted, 1);
-        // Subrecord kept, target selector made self-relative.
+    fn ptda_kind_and_fk(record: &Record) -> (i32, u32, usize) {
         let FieldValue::Bytes(bytes) = &record.fields[0].value else {
             panic!("expected bytes");
         };
-        let kind = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let fk = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        assert_eq!(kind, PACK_TARGET_SELF_TYPE);
-        assert_eq!(fk, 0, "wrong-type PTDA target nulled");
-        assert_eq!(bytes.len(), 12, "data-input block kept intact");
+        (
+            i32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            bytes.len(),
+        )
     }
 
     #[test]
-    fn pack_ptda_lvli_target_becomes_self() {
+    fn pack_ptda_denied_targets_become_self() {
         let interner = StringInterner::new();
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&1i32.to_le_bytes()); // kind 1 = object_id
-        raw.extend_from_slice(&0x07556677u32.to_le_bytes());
-        raw.extend_from_slice(&0u32.to_le_bytes());
-        let mut record = make_record("PACK", vec![union_bytes("PTDA", &raw)], &interner);
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x07556677, SigCode::from_str("LVLI").unwrap());
+        for (name, kind, raw, sig, acted, expected) in [
+            (
+                "reference remapped onto a LAND",
+                0,
+                0x07112233,
+                "LAND",
+                1,
+                (PACK_TARGET_SELF_TYPE, 0),
+            ),
+            (
+                "object_id resolving to an LVLI",
+                1,
+                0x07556677,
+                "LVLI",
+                1,
+                (PACK_TARGET_SELF_TYPE, 0),
+            ),
+            (
+                "valid placed REFR kept",
+                0,
+                0x07445566,
+                "REFR",
+                0,
+                (0, 0x07445566),
+            ),
+            (
+                "kind-2 object_type scalar is not a FK",
+                2,
+                0x0000000F,
+                "LAND",
+                0,
+                (2, 0x0000000F),
+            ),
+        ] {
+            let mut record = make_record(
+                "PACK",
+                vec![union_bytes("PTDA", &ptda(kind, raw))],
+                &interner,
+            );
+            let resolved = FxHashMap::from_iter([(raw, SigCode::from_str(sig).unwrap())]);
 
-        let acted = validate_union_formid_target(
-            &mut record,
-            "PTDA",
-            SubrecordSig::from_str("PTDA").unwrap(),
-            UnionTypeRule::Deny(PACK_TARGET_DENY),
-            UnionAction::NullFk,
-            &resolved,
-        );
+            let actual = validate_union_formid_target(
+                &mut record,
+                "PTDA",
+                SubrecordSig::from_str("PTDA").unwrap(),
+                UnionTypeRule::Deny(PACK_TARGET_DENY),
+                UnionAction::NullFk,
+                &resolved,
+            );
 
-        assert_eq!(acted, 1);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected bytes");
-        };
-        assert_eq!(
-            i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            PACK_TARGET_SELF_TYPE
-        );
-        assert_eq!(
-            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-            0
-        );
+            assert_eq!(actual, acted, "{name}");
+            assert_eq!(
+                ptda_kind_and_fk(&record),
+                (expected.0, expected.1, 12),
+                "{name}: data-input block kept intact"
+            );
+        }
     }
 
     #[test]
     fn pack_ptda_nonpersistent_ref_becomes_self() {
         let interner = StringInterner::new();
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&0i32.to_le_bytes()); // kind 0 = reference
-        raw.extend_from_slice(&0x00063D4Au32.to_le_bytes());
-        raw.extend_from_slice(&0u32.to_le_bytes());
-        let mut record = make_record("PACK", vec![union_bytes("PTDA", &raw)], &interner);
+        let mut record = make_record(
+            "PACK",
+            vec![union_bytes("PTDA", &ptda(0, 0x00063D4A))],
+            &interner,
+        );
         let invalid = FxHashSet::from_iter([0x00063D4A]);
 
-        let acted = benignify_pack_ptda_refs(&mut record, &invalid);
-
-        assert_eq!(acted, 1);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected bytes");
-        };
-        assert_eq!(
-            i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            PACK_TARGET_SELF_TYPE
-        );
-        assert_eq!(
-            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-            0
-        );
-    }
-
-    #[test]
-    fn keeps_pack_ptda_fk_when_target_is_valid_placed_ref() {
-        let interner = StringInterner::new();
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&0i32.to_le_bytes()); // kind 0 = reference
-        raw.extend_from_slice(&0x07445566u32.to_le_bytes());
-        raw.extend_from_slice(&0u32.to_le_bytes());
-        let mut record = make_record("PACK", vec![union_bytes("PTDA", &raw)], &interner);
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x07445566, SigCode::from_str("REFR").unwrap());
-
-        let acted = validate_union_formid_target(
-            &mut record,
-            "PTDA",
-            SubrecordSig::from_str("PTDA").unwrap(),
-            UnionTypeRule::Deny(PACK_TARGET_DENY),
-            UnionAction::NullFk,
-            &resolved,
-        );
-
-        assert_eq!(acted, 0, "a REFR placed target is valid — kept");
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected bytes");
-        };
-        let fk = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        assert_eq!(fk, 0x07445566);
-    }
-
-    #[test]
-    fn leaves_pack_ptda_scalar_kind_untouched() {
-        // kind 2 (object_type, a u32 form-type code) is a scalar — never read as
-        // a FK, even when its offset-4 word resolves to a denied type.
-        let interner = StringInterner::new();
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&2i32.to_le_bytes()); // kind 2 = object_type scalar
-        raw.extend_from_slice(&0x0000000Fu32.to_le_bytes());
-        raw.extend_from_slice(&0u32.to_le_bytes());
-        let mut record = make_record("PACK", vec![union_bytes("PTDA", &raw)], &interner);
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x0000000F, SigCode::from_str("LAND").unwrap());
-
-        let acted = validate_union_formid_target(
-            &mut record,
-            "PTDA",
-            SubrecordSig::from_str("PTDA").unwrap(),
-            UnionTypeRule::Deny(PACK_TARGET_DENY),
-            UnionAction::NullFk,
-            &resolved,
-        );
-
-        assert_eq!(acted, 0, "kind-2 object_type scalar is not a FK");
+        assert_eq!(benignify_pack_ptda_refs(&mut record, &invalid), 1);
+        assert_eq!(ptda_kind_and_fk(&record), (PACK_TARGET_SELF_TYPE, 0, 12));
     }
 
     #[test]
@@ -4601,56 +4238,43 @@ mod tests {
     }
 
     #[test]
-    fn drops_mgef_sndd_row_when_sound_is_wrong_type() {
-        // Bucket 12: MGEF.SNDD sound row 0 resolves to a master REFR (wrong type,
-        // expected SNDR) → drop that row; a valid SNDR row is kept.
+    fn drops_mgef_sndd_rows_with_null_or_wrong_type_sounds() {
         let interner = StringInterner::new();
-        let mut record = make_record(
-            "MGEF",
-            vec![sndd_rows(&[(0, 0x0010FBAB), (1, 0x07445566)])],
-            &interner,
-        );
-        let mut resolved = FxHashMap::default();
-        resolved.insert(0x0010FBAB, SigCode::from_str("REFR").unwrap()); // master REFR
-        resolved.insert(0x07445566, SigCode::from_str("SNDR").unwrap()); // valid
+        let resolved = FxHashMap::from_iter([
+            (0x0010FBAB, SigCode::from_str("REFR").unwrap()),
+            (0x07445566, SigCode::from_str("SNDR").unwrap()),
+        ]);
+        for (name, rows, remaining) in [
+            (
+                "master REFR sound row dropped, SNDR row kept",
+                &[(0, 0x0010FBAB), (1, 0x07445566)][..],
+                Some(vec![1, 0x07445566]),
+            ),
+            ("all-null SNDD removed entirely", &[(0, 0)][..], None),
+        ] {
+            let mut record = make_record("MGEF", vec![sndd_rows(rows)], &interner);
 
-        let dropped = drop_array_rows_with_null_or_wrong_type_fks(
-            &mut record,
-            SubrecordSig::from_str("SNDD").unwrap(),
-            8,
-            4,
-            &["SNDR"],
-            &resolved,
-        );
+            let dropped = drop_array_rows_with_null_or_wrong_type_fks(
+                &mut record,
+                SubrecordSig::from_str("SNDD").unwrap(),
+                8,
+                4,
+                &["SNDR"],
+                &resolved,
+            );
 
-        assert_eq!(dropped, 1);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("expected bytes");
-        };
-        assert_eq!(bytes.len(), 8, "wrong-type row removed");
-        let row0_fk = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        assert_eq!(row0_fk, 0x07445566, "valid SNDR sound kept");
-    }
-
-    #[test]
-    fn drops_mgef_sndd_null_row_and_removes_empty_subrecord() {
-        let interner = StringInterner::new();
-        let mut record = make_record("MGEF", vec![sndd_rows(&[(0, 0)])], &interner);
-
-        let dropped = drop_array_rows_with_null_or_wrong_type_fks(
-            &mut record,
-            SubrecordSig::from_str("SNDD").unwrap(),
-            8,
-            4,
-            &["SNDR"],
-            &FxHashMap::default(),
-        );
-
-        assert_eq!(dropped, 1);
-        assert!(
-            record.fields.is_empty(),
-            "SNDD subrecord removed when every row is invalid"
-        );
+            assert_eq!(dropped, 1, "{name}");
+            let words = record.fields.first().map(|entry| {
+                let FieldValue::Bytes(bytes) = &entry.value else {
+                    panic!("{name}: expected bytes");
+                };
+                bytes
+                    .chunks(4)
+                    .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(words, remaining, "{name}");
+        }
     }
 
     #[test]
@@ -4705,7 +4329,7 @@ mod tests {
     }
 
     #[test]
-    fn drops_fo76_only_dobj_object_use_raw_rows() {
+    fn drops_fo76_only_dobj_object_use_rows() {
         let interner = StringInterner::new();
         let mut record = make_record(
             "DOBJ",
@@ -4715,10 +4339,10 @@ mod tests {
             ])],
             &interner,
         );
-
-        let dropped = drop_fo76_only_dobj_object_use_rows(&mut record, &interner);
-
-        assert_eq!(dropped, 1);
+        assert_eq!(
+            drop_fo76_only_dobj_object_use_rows(&mut record, &interner),
+            1
+        );
         let FieldValue::Bytes(bytes) = &record.fields[0].value else {
             panic!("expected bytes");
         };
@@ -4727,11 +4351,7 @@ mod tests {
             u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             0x444C_4F47
         );
-    }
 
-    #[test]
-    fn drops_fo76_only_dobj_object_use_struct_rows() {
-        let interner = StringInterner::new();
         let tag = interner.intern("Tag");
         let object = interner.intern("Object");
         let mut record = make_record(
@@ -4751,92 +4371,15 @@ mod tests {
             }],
             &interner,
         );
-
-        let dropped = drop_fo76_only_dobj_object_use_rows(&mut record, &interner);
-
-        assert_eq!(dropped, 1);
+        assert_eq!(
+            drop_fo76_only_dobj_object_use_rows(&mut record, &interner),
+            1
+        );
         let FieldValue::List(items) = &record.fields[0].value else {
             panic!("expected rows");
         };
         assert_eq!(items.len(), 1);
         assert_eq!(dobj_object_use_tag(&items[0], &interner), Some(0x544C_4153));
-    }
-
-    // ── REFR placed-child Class C (post-copy strip) ─────────────────────────
-
-    #[test]
-    fn strips_wrong_type_xlyr_pointing_at_output_collision() {
-        // XLYR (→LAYR) remapped onto an unrelated output REFR/LVLI (xEdit "Found a
-        // REFR/LVLI reference, expected: LAYR"). LAYR is never carried into the
-        // exterior-only port → strip the wrong-type, like XRFG.
-        let interner = StringInterner::new();
-        let xlyr_fk = make_fk(0x07A12345, "Out.esp", &interner);
-        let mut record = make_record("REFR", vec![fk_field("XLYR", xlyr_fk)], &interner);
-        let map = sig_map(&[(0x07A12345, "Out.esp", "LVLI")], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("XLYR").unwrap(),
-            Action::Strip,
-            true, // XLYR is in STRIP_DANGLING_SUBRECORDS
-            &allows_only(&["LAYR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(record.fields.is_empty(), "wrong-type XLYR stripped");
-    }
-
-    #[test]
-    fn strips_wrong_type_xasp_pointing_at_land() {
-        // XASP (→REFR) remapped onto a LAND (xEdit "Found a LAND reference,
-        // expected: REFR"). REFR IS a valid FO4 XASP target, but the FO76 acoustic-
-        // parent REFR lived in a dropped interior, so the remap collided — strip
-        // the positively-wrong-type slot.
-        let interner = StringInterner::new();
-        let xasp_fk = make_fk(0x07B22222, "Out.esp", &interner);
-        let mut record = make_record("REFR", vec![fk_field("XASP", xasp_fk)], &interner);
-        let map = sig_map(&[(0x07B22222, "Out.esp", "LAND")], &interner);
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("XASP").unwrap(),
-            Action::Strip,
-            false, // XASP is NOT in STRIP_DANGLING_SUBRECORDS (REFR is a real target)
-            &allows_only(&["REFR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(outcome.changed);
-        assert_eq!(outcome.acted, 1);
-        assert!(record.fields.is_empty(), "wrong-type XASP stripped");
-    }
-
-    #[test]
-    fn keeps_dangling_xasp_since_refr_is_a_real_fo4_target() {
-        // A dangling (non-null, unresolved) XASP can still legitimately become a
-        // REFR post-copy, so unlike XRFG/XLYR it is NOT strip-dangling — leave it
-        // for the sweep fixups. Guards against over-stripping valid acoustic refs.
-        let interner = StringInterner::new();
-        let xasp_fk = make_fk(0x07C33333, "Out.esp", &interner);
-        let mut record = make_record("REFR", vec![fk_field("XASP", xasp_fk)], &interner);
-        let map = sig_map(&[], &interner); // resolves nowhere
-
-        let outcome = apply_to_record(
-            &mut record,
-            SubrecordSig::from_str("XASP").unwrap(),
-            Action::Strip,
-            false,
-            &allows_only(&["REFR"]),
-            &map,
-            &FxHashMap::default(),
-        );
-
-        assert!(!outcome.changed, "dangling XASP left for the sweep fixups");
-        assert_eq!(record.fields.len(), 1);
     }
 
     #[test]
@@ -4878,73 +4421,57 @@ mod tests {
     }
 
     #[test]
-    fn scol_onam_data_pair_dropped_when_onam_resolves_to_scol() {
-        // The one xEdit "Found a SCOL reference" case: v96_MainframeConsole03
-        // ONAM 2 → v96_ArchiveConsole01 [SCOL]. The ONAM+DATA pair must be dropped
-        // together (lockstep); remaining pairs are untouched.
+    fn scol_onam_data_pairs_dropped_in_lockstep_only_for_scol_or_null_parts() {
         let interner = StringInterner::new();
-        let stat_fk = make_fk(0x001111, "Out.esp", &interner); // → STAT: legal
-        let scol_fk = make_fk(0x46BC66, "Out.esp", &interner); // → SCOL: wrong type
-        // 3 parts: STAT-pair, SCOL-pair, STAT-pair. Middle pair must be stripped.
-        let mut record = make_scol(
-            &[(stat_fk, true), (scol_fk, true), (stat_fk, true)],
-            &interner,
-        );
+        let stat = make_fk(0x001111, "Out.esp", &interner);
+        let scol = make_fk(0x46BC66, "Out.esp", &interner);
+        let null_fk = make_fk(0, "Out.esp", &interner);
+        let dangling = make_fk(0x00DEAD, "Out.esp", &interner);
         let map = sig_map(
             &[(0x001111, "Out.esp", "STAT"), (0x46BC66, "Out.esp", "SCOL")],
             &interner,
         );
+        for (name, parts, acted, remaining_onams) in [
+            (
+                "v96_MainframeConsole03 ONAM 2 → v96_ArchiveConsole01 [SCOL] pair dropped",
+                vec![stat, scol, stat],
+                1,
+                vec![stat.local, stat.local],
+            ),
+            ("STAT part kept", vec![stat], 0, vec![stat.local]),
+            (
+                "null ONAM pair dropped",
+                vec![null_fk, stat],
+                1,
+                vec![stat.local],
+            ),
+            (
+                "zero-ONAM SCOL (NIF-only) passes through",
+                vec![],
+                0,
+                vec![],
+            ),
+            (
+                "dangling ONAM left for the sweep fixups",
+                vec![dangling],
+                0,
+                vec![dangling.local],
+            ),
+        ] {
+            let parts: Vec<(FormKey, bool)> = parts.into_iter().map(|fk| (fk, true)).collect();
+            let mut record = make_scol(&parts, &interner);
 
-        let acted = strip_scol_wrong_type_onam_data_pairs(&mut record, &map, &FxHashMap::default());
+            let actual =
+                strip_scol_wrong_type_onam_data_pairs(&mut record, &map, &FxHashMap::default());
 
-        assert_eq!(acted, 1, "one ONAM+DATA pair dropped");
-        // 2 remaining parts → 4 subrecords (ONAM, DATA, ONAM, DATA).
-        assert_eq!(record.fields.len(), 4, "two valid pairs remain");
-        // Verify no ONAM left pointing at the SCOL fk.
-        for entry in &record.fields {
-            if entry.sig.as_str() == "ONAM" {
-                let FieldValue::FormKey(fk) = &entry.value else {
-                    panic!("ONAM must decode to FormKey");
-                };
-                assert_ne!(
-                    fk.local, scol_fk.local,
-                    "the SCOL-targeting ONAM must have been removed"
-                );
-            }
+            assert_eq!(actual, acted, "{name}");
+            let summary = field_summary(&record);
+            let expected: Vec<(&str, Option<u32>)> = remaining_onams
+                .iter()
+                .flat_map(|local| [("ONAM", Some(*local)), ("DATA", None)])
+                .collect();
+            assert_eq!(summary, expected, "{name}");
         }
-    }
-
-    #[test]
-    fn scol_onam_data_pair_kept_when_onam_resolves_to_stat() {
-        // A SCOL part whose ONAM resolves to a STAT (the overwhelmingly common
-        // case) must be left intact — strip only SCOL-typed targets.
-        let interner = StringInterner::new();
-        let stat_fk = make_fk(0x001111, "Out.esp", &interner);
-        let mut record = make_scol(&[(stat_fk, true)], &interner);
-        let map = sig_map(&[(0x001111, "Out.esp", "STAT")], &interner);
-
-        let acted = strip_scol_wrong_type_onam_data_pairs(&mut record, &map, &FxHashMap::default());
-
-        assert_eq!(acted, 0, "no pairs dropped — STAT target is legal");
-        assert_eq!(record.fields.len(), 2, "ONAM+DATA unchanged");
-    }
-
-    #[test]
-    fn scol_onam_data_pair_dropped_when_onam_is_null() {
-        let interner = StringInterner::new();
-        let null_fk = make_fk(0, "Out.esp", &interner);
-        let stat_fk = make_fk(0x001111, "Out.esp", &interner);
-        let mut record = make_scol(&[(null_fk, true), (stat_fk, true)], &interner);
-        let map = sig_map(&[(0x001111, "Out.esp", "STAT")], &interner);
-
-        let acted = strip_scol_wrong_type_onam_data_pairs(&mut record, &map, &FxHashMap::default());
-
-        assert_eq!(acted, 1, "null ONAM+DATA pair dropped");
-        assert_eq!(record.fields.len(), 2, "valid pair remains");
-        let FieldValue::FormKey(fk) = &record.fields[0].value else {
-            panic!("expected ONAM FormKey");
-        };
-        assert_eq!(fk.local, stat_fk.local);
     }
 
     #[test]
@@ -4968,34 +4495,5 @@ mod tests {
             "SCOL MNAM stripped"
         );
         assert_eq!(record.fields.len(), 2, "ONAM+DATA pair kept");
-    }
-
-    #[test]
-    fn scol_no_onam_subrecords_is_no_op() {
-        // A zero-ONAM SCOL (Root Cause A: NIF-only, no parts) must pass through
-        // unchanged — the function must not panic or miscount.
-        let interner = StringInterner::new();
-        let mut record = make_scol(&[], &interner);
-        let map: FxHashMap<(u32, Sym), SigCode> = FxHashMap::default();
-
-        let acted = strip_scol_wrong_type_onam_data_pairs(&mut record, &map, &FxHashMap::default());
-
-        assert_eq!(acted, 0);
-        assert!(record.fields.is_empty());
-    }
-
-    #[test]
-    fn scol_dangling_onam_left_for_sweep_fixups() {
-        // A non-null ONAM that doesn't resolve (neither output nor master) is
-        // dangling — conservative policy keeps it for the sweep fixups.
-        let interner = StringInterner::new();
-        let dangling_fk = make_fk(0x00DEAD, "Out.esp", &interner);
-        let mut record = make_scol(&[(dangling_fk, true)], &interner);
-        let map: FxHashMap<(u32, Sym), SigCode> = FxHashMap::default(); // resolves nowhere
-
-        let acted = strip_scol_wrong_type_onam_data_pairs(&mut record, &map, &FxHashMap::default());
-
-        assert_eq!(acted, 0, "dangling ONAM left intact");
-        assert_eq!(record.fields.len(), 2);
     }
 }

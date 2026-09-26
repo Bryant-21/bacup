@@ -293,66 +293,11 @@ mod tests {
             unreachable!();
         };
         assert!(record.raw_payload.is_none());
-    }
 
-    #[test]
-    fn clears_flags_when_the_template_is_an_emptied_leveled_list() {
-        // 383 of the 440 LVLNs in the shipped FNV output have zero entries.
-        let mut items = vec![
-            npc(0x0707_D42A, ALL_TEMPLATE_FLAGS, Some(0x0707_D429)),
-            lvln(0x0707_D429, 0),
-        ];
-        let (changed, _) = run(&mut items);
-
-        assert_eq!(changed, 1);
-        assert_eq!(template_flags_of(&items[0]), 0);
-    }
-
-    #[test]
-    fn keeps_flags_when_the_leveled_template_still_has_entries() {
-        let mut items = vec![
-            npc(0x0707_D42A, ALL_TEMPLATE_FLAGS, Some(0x0707_D429)),
-            lvln(0x0707_D429, 3),
-        ];
-        let (changed, changed_ids) = run(&mut items);
-
-        assert_eq!(changed, 0);
-        assert_eq!(template_flags_of(&items[0]), ALL_TEMPLATE_FLAGS);
-        assert!(changed_ids.is_empty());
-    }
-
-    #[test]
-    fn keeps_flags_when_the_template_is_a_concrete_npc() {
-        // FFEnclaveCamp29TraineeCM -> FFEnclaveCamp24TraineeAM.
-        let mut items = vec![
-            npc(0x070C_191A, 0x03BE, Some(0x070B_FE4A)),
-            npc(0x070B_FE4A, 0, None),
-        ];
-        let (changed, _) = run(&mut items);
-
-        assert_eq!(changed, 0);
-        assert_eq!(template_flags_of(&items[0]), 0x03BE);
-    }
-
-    #[test]
-    fn keeps_flags_when_the_template_lives_in_a_master() {
-        // A vanilla FO4 template actor is not in root_items and must be trusted.
-        let mut items = vec![npc(0x0700_0001, TRAITS, Some(0x0001_3746))];
-        let (changed, _) = run(&mut items);
-
-        assert_eq!(changed, 0);
-        assert_eq!(template_flags_of(&items[0]), TRAITS);
-    }
-
-    #[test]
-    fn leaves_the_rest_of_acbs_alone() {
         let mut items = vec![npc(0x0707_D42A, TRAITS, None)];
         run(&mut items);
         assert_eq!(disposition(&items[0]), 35);
-    }
 
-    #[test]
-    fn ignores_untemplated_npcs_without_a_tplt() {
         let mut items = vec![npc(0x0800_0001, 0, None)];
         let (changed, _) = run(&mut items);
 
@@ -364,8 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn ignores_records_without_acbs() {
-        let mut items = vec![ParsedItem::Record(ParsedRecord {
+    fn template_flags_cleared_only_on_dead_end_templates() {
+        let no_acbs = ParsedItem::Record(ParsedRecord {
             signature: SmolStr::new("NPC_"),
             form_id: 0x0800_0002,
             flags: 0,
@@ -375,14 +320,64 @@ mod tests {
             subrecords: vec![sub("RNAM", 0x0001_3746u32.to_le_bytes().to_vec())],
             raw_payload: Some(Bytes::from_static(b"stale")),
             parse_error: None,
-        })];
-        let (changed, _) = run(&mut items);
-
-        assert_eq!(changed, 0);
+        });
+        for (name, mut items, expected_changed, expected_flags) in [
+            (
+                "template emptied leveled list",
+                vec![
+                    npc(0x0707_D42A, ALL_TEMPLATE_FLAGS, Some(0x0707_D429)),
+                    lvln(0x0707_D429, 0),
+                ],
+                1,
+                vec![Some(0)],
+            ),
+            (
+                "leveled template still has entries",
+                vec![
+                    npc(0x0707_D42A, ALL_TEMPLATE_FLAGS, Some(0x0707_D429)),
+                    lvln(0x0707_D429, 3),
+                ],
+                0,
+                vec![Some(ALL_TEMPLATE_FLAGS)],
+            ),
+            (
+                "concrete npc template",
+                vec![
+                    npc(0x070C_191A, 0x03BE, Some(0x070B_FE4A)),
+                    npc(0x070B_FE4A, 0, None),
+                ],
+                0,
+                vec![Some(0x03BE)],
+            ),
+            (
+                "master template trusted",
+                vec![npc(0x0700_0001, TRAITS, Some(0x0001_3746))],
+                0,
+                vec![Some(TRAITS)],
+            ),
+            ("no ACBS", vec![no_acbs], 0, vec![None]),
+            (
+                "chain fixed only at its dead end",
+                vec![
+                    npc(0x070C_191A, 0x03BE, Some(0x0707_D42A)),
+                    npc(0x0707_D42A, ALL_TEMPLATE_FLAGS, None),
+                ],
+                1,
+                vec![Some(0x03BE), Some(0)],
+            ),
+        ] {
+            let (changed, _) = run(&mut items);
+            assert_eq!(changed, expected_changed, "{name}");
+            for (item, expected) in items.iter().zip(expected_flags) {
+                if let Some(flags) = expected {
+                    assert_eq!(template_flags_of(item), flags, "{name}");
+                }
+            }
+        }
     }
 
     #[test]
-    fn descends_into_top_level_groups() {
+    fn descends_into_groups_for_npcs_and_template_targets() {
         let mut items = vec![ParsedItem::Group(ParsedGroup {
             label: *b"NPC_",
             group_type: 0,
@@ -396,12 +391,7 @@ mod tests {
             unreachable!();
         };
         assert_eq!(template_flags_of(&group.children[0]), 0);
-    }
 
-    /// The index must see records nested in their type groups, not just at the
-    /// root, or every grouped LVLN reads as a master reference.
-    #[test]
-    fn indexes_targets_across_groups() {
         let mut items = vec![
             ParsedItem::Group(ParsedGroup {
                 label: *b"NPC_",
@@ -423,20 +413,5 @@ mod tests {
             unreachable!();
         };
         assert_eq!(template_flags_of(&group.children[0]), 0);
-    }
-
-    /// A chain `A -> B` where B is the orphan: clearing B's flags makes B
-    /// self-contained, so A's template resolves again without touching A.
-    #[test]
-    fn repairs_a_chain_by_fixing_only_its_dead_end() {
-        let mut items = vec![
-            npc(0x070C_191A, 0x03BE, Some(0x0707_D42A)),
-            npc(0x0707_D42A, ALL_TEMPLATE_FLAGS, None),
-        ];
-        let (changed, _) = run(&mut items);
-
-        assert_eq!(changed, 1);
-        assert_eq!(template_flags_of(&items[0]), 0x03BE);
-        assert_eq!(template_flags_of(&items[1]), 0);
     }
 }

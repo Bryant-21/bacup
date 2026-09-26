@@ -5,6 +5,11 @@ pub(super) const FO76_DIAL_CATEGORY_MISCELLANEOUS: u8 = 5;
 pub(super) const FO4_DIAL_CATEGORY_DETECTION: u8 = 5;
 pub(super) const FO4_DIAL_CATEGORY_MISCELLANEOUS: u8 = 7;
 pub(super) const FO76_INFO_UNKNOWN_17: u32 = 1 << 17;
+// FO76 ENAM is two flag words, not FO4's flags + reset hours. Bit 18 marks a
+// one-time SPECIAL check: 115 of the 124 SeventySix.esm INFOs carrying it are
+// "[Charisma 3+]"-style prompts. Read as FO4 reset hours, the check repeats.
+pub(super) const FO76_INFO_ONE_TIME_STAT_CHECK: u32 = 1 << 18;
+const FO76_INFO_SAY_ONCE_FLAGS: u32 = FO76_INFO_UNKNOWN_17 | FO76_INFO_ONE_TIME_STAT_CHECK;
 pub(super) const FO4_INFO_SAY_ONCE: u32 = 1 << 2;
 // FO76 and FO4 share an identical SCEN *action* FNAM bit layout (verified over
 // Fallout4.esm and SeventySix.esm: ANAM 0/1/4/6 action rows use the same bit
@@ -34,35 +39,48 @@ pub(super) fn fo76_dial_category_to_fo4(value: u8) -> u8 {
     }
 }
 
-fn translate_info_unknown_17_to_say_once(value: &mut FieldValue) {
+fn translate_fo76_info_say_once_flags(value: &mut FieldValue) {
+    let say_once_flags = u64::from(FO76_INFO_SAY_ONCE_FLAGS);
     match value {
-        FieldValue::Uint(flags) if *flags & u64::from(FO76_INFO_UNKNOWN_17) != 0 => {
-            *flags = (*flags & !u64::from(FO76_INFO_UNKNOWN_17)) | u64::from(FO4_INFO_SAY_ONCE);
+        FieldValue::Uint(flags) if *flags & say_once_flags != 0 => {
+            *flags = (*flags & !say_once_flags) | u64::from(FO4_INFO_SAY_ONCE);
         }
-        FieldValue::Int(flags)
-            if *flags >= 0 && (*flags as u64) & u64::from(FO76_INFO_UNKNOWN_17) != 0 =>
-        {
-            *flags = ((*flags as u64 & !u64::from(FO76_INFO_UNKNOWN_17))
-                | u64::from(FO4_INFO_SAY_ONCE)) as i64;
+        FieldValue::Int(flags) if *flags >= 0 && (*flags as u64) & say_once_flags != 0 => {
+            *flags = ((*flags as u64 & !say_once_flags) | u64::from(FO4_INFO_SAY_ONCE)) as i64;
         }
         FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
             let mut flags = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-            if flags & FO76_INFO_UNKNOWN_17 != 0 {
-                flags = (flags & !FO76_INFO_UNKNOWN_17) | FO4_INFO_SAY_ONCE;
+            if flags & FO76_INFO_SAY_ONCE_FLAGS != 0 {
+                flags = (flags & !FO76_INFO_SAY_ONCE_FLAGS) | FO4_INFO_SAY_ONCE;
                 bytes[0..4].copy_from_slice(&flags.to_le_bytes());
             }
         }
         FieldValue::List(values) => {
             for value in values {
-                translate_info_unknown_17_to_say_once(value);
+                translate_fo76_info_say_once_flags(value);
             }
         }
         FieldValue::Struct(fields) => {
             for (_, value) in fields {
-                translate_info_unknown_17_to_say_once(value);
+                translate_fo76_info_say_once_flags(value);
             }
         }
         _ => {}
+    }
+}
+
+fn info_flags_say_once(value: &FieldValue) -> bool {
+    match value {
+        FieldValue::Uint(flags) => *flags & u64::from(FO4_INFO_SAY_ONCE) != 0,
+        FieldValue::Int(flags) => {
+            *flags >= 0 && (*flags as u64) & u64::from(FO4_INFO_SAY_ONCE) != 0
+        }
+        FieldValue::Bytes(bytes) => bytes
+            .first()
+            .is_some_and(|flags| u32::from(*flags) & FO4_INFO_SAY_ONCE != 0),
+        FieldValue::List(values) => values.iter().any(info_flags_say_once),
+        FieldValue::Struct(fields) => fields.iter().any(|(_, value)| info_flags_say_once(value)),
+        _ => false,
     }
 }
 
@@ -75,6 +93,10 @@ pub(crate) struct XdiDialoguePlan {
     /// DIAL's `FULL`. Keyed by source INFO local id.
     pub combined_info_prompt_fallbacks: HashMap<u32, FieldValue>,
     pub start_scene_actor_aliases: HashMap<(u32, crate::sym::Sym), u32>,
+    /// Split INFOs whose player topic holds sibling variants of the same prompt;
+    /// their NPC replies keep the source conditions so the engine can still pick
+    /// the matching variant.
+    pub conditional_npc_response_infos: HashSet<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,18 +115,18 @@ pub(crate) struct ScenDialogueAction {
 
 /// FO76 authors a scene player choice in one of two shapes: the prompt either
 /// sits on the INFO as `RNAM`, or on the parent DIAL's `FULL` with the INFO
-/// carrying only the NPC's replies. Both are combined roots — FO4 keeps the
+/// carrying only the NPC's replies. Both are combined choices — FO4 keeps the
 /// reply in the NPC-response topic, so either shape still has to be split.
-pub(crate) fn is_combined_player_dialogue_root(record: &Record, has_dial_prompt: bool) -> bool {
+///
+/// A `PNAM`-chained sibling is a choice too: FO76 chains INFOs that repeat the
+/// prompt under mutually exclusive conditions (545 SeventySix.esm topics, e.g.
+/// XPD_Pitt01 6337CA gates its reply on GetQuestCompleted == 1 / == 0). Only the
+/// chain root was split before, so the synthesized prompt inherited one
+/// variant's conditions and the choice vanished in every other game state —
+/// Union Dues could never leave Hex's question hub on a first visit.
+pub(crate) fn is_combined_player_dialogue_choice(record: &Record, has_dial_prompt: bool) -> bool {
     record.sig.0 == *b"INFO"
         && (has_dial_prompt || record.fields.iter().any(|field| field.sig.0 == *b"RNAM"))
-        && !record.fields.iter().any(|field| {
-            field.sig.0 == *b"PNAM"
-                && match &field.value {
-                    FieldValue::FormKey(previous) => previous.local != 0,
-                    value => field_value_to_u32(value).is_some_and(|previous| previous != 0),
-                }
-        })
 }
 
 pub(crate) fn scen_dialogue_actions(record: &Record) -> Vec<ScenDialogueAction> {
@@ -371,6 +393,18 @@ pub(crate) fn build_xdi_dialogue_plan(
             }
         }
     }
+    let mut splits_by_player_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&info, split) in &plan.combined_info_splits {
+        splits_by_player_parent
+            .entry(split.player_parent)
+            .or_default()
+            .push(info);
+    }
+    plan.conditional_npc_response_infos = splits_by_player_parent
+        .into_values()
+        .filter(|infos| infos.len() > 1)
+        .flatten()
+        .collect();
     Ok(plan)
 }
 
@@ -518,10 +552,14 @@ pub(crate) fn retarget_player_info_tree_links(
     Ok(())
 }
 
+/// `keep_npc_conditions` leaves the source conditions on the NPC reply as well.
+/// A lone reply must stay unconditional so it always plays once its prompt was
+/// offered, but sibling variants of one prompt are selected by those conditions.
 pub(crate) fn split_fo76_combined_player_dialogue_info(
     npc_response: &mut Record,
     player_form_key: FormKey,
     dial_prompt: Option<&FieldValue>,
+    keep_npc_conditions: bool,
     interner: &crate::sym::StringInterner,
 ) -> Result<Record, String> {
     let prompt = npc_response
@@ -560,19 +598,29 @@ pub(crate) fn split_fo76_combined_player_dialogue_info(
         .iter()
         .find(|field| field.sig.0 == *b"INAM")
         .cloned();
+    // FO4 offers the wheel choice from the player INFO, so a one-time source
+    // choice must be Say Once there or it stays selectable after being picked.
+    let player_flags = if npc_response
+        .fields
+        .iter()
+        .any(|field| field.sig.0 == *b"ENAM" && info_flags_say_once(&field.value))
+    {
+        FO4_INFO_SAY_ONCE
+    } else {
+        0
+    };
 
     npc_response.fields.retain(|field| {
-        !matches!(
-            &field.sig.0,
-            b"RNAM" | b"GNAM" | b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2"
-        )
+        !matches!(&field.sig.0, b"RNAM" | b"GNAM")
+            && (keep_npc_conditions
+                || !matches!(&field.sig.0, b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2"))
     });
 
     let mut player = Record::new(npc_response.sig, player_form_key);
     player.flags = npc_response.flags;
     player.fields.push(FieldEntry {
         sig: SubrecordSig(*b"ENAM"),
-        value: FieldValue::Bytes(SmallVec::from_slice(&[0; 4])),
+        value: FieldValue::Bytes(SmallVec::from_slice(&player_flags.to_le_bytes())),
     });
     let mut response_data = Vec::with_capacity(20);
     response_data.extend_from_slice(&0_u32.to_le_bytes());
@@ -815,7 +863,7 @@ impl Fo76Fo4Hook {
         }
         for entry in &mut record.fields {
             if entry.sig.0 == *b"ENAM" {
-                translate_info_unknown_17_to_say_once(&mut entry.value);
+                translate_fo76_info_say_once_flags(&mut entry.value);
             }
         }
     }

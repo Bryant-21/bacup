@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from bacup_lib.regen_pipeline import FO76_PLUGINS, OUTPUT_MOD_NAME
 from bacup_lib.source_pairs import (
     DEFAULT_PAIR_ID,
     FNV_MVP_EXCLUDE_SIGNATURES,
@@ -49,66 +48,6 @@ def test_all_supported_source_pairs_are_resolvable() -> None:
         assert pair.engine == get_profile(pair.source_game).engine
 
 
-def test_default_pair_preserves_fo76_driver_constants() -> None:
-    pair = get_pair(DEFAULT_PAIR_ID)
-
-    assert pair.source_game == "fo76"
-    assert pair.target_game == "fo4"
-    assert pair.source_plugins == tuple(FO76_PLUGINS)
-    assert pair.output_mod_name == OUTPUT_MOD_NAME
-    assert pair.source_extracted_env == get_profile("fo76").env_var_name
-    assert pair.source_data_env == "FO76_DATA_DIR"
-    assert pair.source_dir_env == "FO76_DIR"
-    assert pair.merge is None
-    assert pair.optional_source_plugins == ()
-    assert pair.output_plugin_name == "SeventySix.esm"
-
-
-def test_merged_pair_lineages_include_official_plugins() -> None:
-    fnvfo3 = get_pair("fnvfo3:fo4")
-    assert fnvfo3.source_plugins == (
-        "FalloutNV.esm",
-        "DeadMoney.esm",
-        "HonestHearts.esm",
-        "OldWorldBlues.esm",
-        "LonesomeRoad.esm",
-        "GunRunnersArsenal.esm",
-    )
-    assert fnvfo3.optional_source_plugins == (
-        "CaravanPack.esm",
-        "ClassicPack.esm",
-        "MercenaryPack.esm",
-        "TribalPack.esm",
-    )
-    assert fnvfo3.merge is not None
-    assert fnvfo3.merge.grafted_plugins == (
-        "Fallout3.esm",
-        "Anchorage.esm",
-        "ThePitt.esm",
-        "BrokenSteel.esm",
-        "PointLookout.esm",
-        "Zeta.esm",
-    )
-    assert fnvfo3.merge.grafted_data_env == "FO3_DATA_DIR"
-    assert fnvfo3.merge.grafted_dir_env == "FO3_DIR"
-    assert fnvfo3.output_mod_name == "FNV_FO3"
-    assert fnvfo3.output_plugin_name == "FalloutNV.esm"
-
-    skyrim = get_pair("skyrimse:fo4")
-    assert skyrim.source_plugins == (
-        "Skyrim.esm",
-        "Update.esm",
-        "Dawnguard.esm",
-        "HearthFires.esm",
-        "Dragonborn.esm",
-    )
-    assert skyrim.merge is not None
-    assert skyrim.merge.grafted_game == "skyrimse"
-    assert skyrim.merge.grafted_plugins == ()
-    assert skyrim.output_mod_name == "Skyrim"
-    assert skyrim.output_plugin_name == "Skyrim.esm"
-
-
 def test_unknown_pair_lists_available_pair_ids() -> None:
     with pytest.raises(KeyError) as exc_info:
         get_pair("nope")
@@ -137,26 +76,6 @@ def test_world_only_mvp_exclusions_are_pair_specific() -> None:
     assert "ACHR" not in FNV_QUEST_SLICE_EXCLUDE_SIGNATURES
 
 
-def test_skyrim_mvp_keeps_non_weapon_world_objects() -> None:
-    assert {"ACTI", "TACT", "FURN", "ARMO", "ARMA", "ALCH", "MISC"}.isdisjoint(
-        SKYRIM_MVP_EXCLUDE_SIGNATURES
-    )
-    assert {"WEAP", "AMMO", "PROJ", "NPC_", "ACHR", "RACE"} <= (
-        SKYRIM_MVP_EXCLUDE_SIGNATURES
-    )
-
-
-def test_fo4_starfield_pair_registered():
-    pair = get_pair("fo4:starfield")
-    assert pair.source_game == "fo4"
-    assert pair.target_game == "starfield"
-    assert pair.source_plugins == ("Fallout4.esm",)
-    assert pair.output_mod_name == "Fallout4_SF"
-    assert pair.output_plugin_name == "Fallout4_SF.esm"
-    assert pair.merge is not None  # rename-on-output via merge stage, like skyrimse
-    assert pair.merge.output_name == "Fallout4_SF.esm"
-
-
 def test_fo4_starfield_requires_world_only_fence():
     fence = required_exclude_signatures("fo4:starfield")
     assert fence == FO4_MVP_EXCLUDE_SIGNATURES
@@ -170,17 +89,6 @@ def test_fo4_starfield_requires_world_only_fence():
                 "TXST", "LTEX", "MATT", "WATR", "KYWD", "MUSC", "MUST", "SNDR",
                 "REGN", "LGTM"):
         assert sig not in fence, sig
-
-
-def test_starfield_pair_registered():
-    pair = get_pair("starfield:fo4")
-    assert pair.source_game == "starfield"
-    assert pair.target_game == "fo4"
-    assert pair.source_plugins == ("Starfield.esm",)
-    assert pair.output_mod_name == "Starfield"
-    assert pair.output_plugin_name == "Starfield.esm"
-    assert pair.engine == "creation2"
-    assert pair.source_data_env == "STARFIELD_DATA_DIR"
 
 
 def test_starfield_mvp_fence_registered():

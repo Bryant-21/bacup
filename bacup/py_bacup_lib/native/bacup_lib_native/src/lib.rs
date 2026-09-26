@@ -32,5 +32,6 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "esp_authoring_core",
         esp_authoring_core::register_module,
     )?;
+    register_submodule(py, m, "previs_native", previs_native::register_module)?;
     Ok(())
 }

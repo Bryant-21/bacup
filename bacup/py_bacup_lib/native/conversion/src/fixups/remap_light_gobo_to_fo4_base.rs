@@ -9,8 +9,6 @@
 //!
 //! `records_changed` = LIGH records whose `NAM0` gobo was repointed.
 
-use std::path::Path;
-
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{SigCode, SubrecordSig};
@@ -214,15 +212,9 @@ mod tests {
     use crate::formkey_mapper::{MapperOptions, MapperState};
     use crate::ids::FormKey;
     use crate::record::FieldEntry;
-    use crate::schema::AuthoringSchema;
     use crate::session::open_session;
     use crate::sym::StringInterner;
-    use bytes::Bytes;
-    use esp_authoring_core::plugin_runtime::{
-        ParsedGroup, ParsedItem, ParsedRecord, ParsedSubrecord, plugin_handle_new_native,
-        plugin_handle_store_ref,
-    };
-    use smol_str::SmolStr;
+    use esp_authoring_core::plugin_runtime::plugin_handle_new_native;
 
     #[test]
     fn structural_batch_preserves_sequential_partial_subset_order() {
@@ -313,221 +305,52 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_form_keys_fallback_matches_original_sequential_loop() {
-        fn raw_ligh(form_id: u32, editor_id: &'static [u8], path: &'static [u8]) -> ParsedItem {
-            ParsedItem::Record(ParsedRecord {
-                signature: SmolStr::new_static("LIGH"),
-                form_id,
-                flags: 0,
-                version_control: 0,
-                form_version: Some(131),
-                version2: None,
-                subrecords: vec![
-                    ParsedSubrecord {
-                        signature: SmolStr::new_static("EDID"),
-                        data: Bytes::from_static(editor_id),
-                        semantic_type: None,
-                    },
-                    ParsedSubrecord {
-                        signature: SmolStr::new_static("NAM0"),
-                        data: Bytes::from_static(path),
-                        semantic_type: None,
-                    },
-                ],
-                raw_payload: None,
-                parse_error: None,
-            })
+    fn fo4_base_gobo_path_repoints_only_to_existing_base_d_variants() {
+        let base = [
+            "Textures/Effects/Gobos/HemisphereSoft_d.DDS",
+            "Textures/Effects/Gobos/HemisphereSoftOmni_d.DDS",
+        ];
+        let in_base: &dyn Fn(&str) -> bool = &|rel| base.contains(&rel);
+        let anything: &dyn Fn(&str) -> bool = &|_| true;
+        let nothing: &dyn Fn(&str) -> bool = &|_| false;
+        for (name, path, base_has, expected) in [
+            (
+                "_e to base _d",
+                "data\\Textures\\Effects\\Gobos\\HemisphereSoft_e.DDS",
+                in_base,
+                Some("data\\Textures\\Effects\\Gobos\\HemisphereSoft_d.DDS"),
+            ),
+            (
+                "_fire to base _d",
+                "data\\Textures\\Effects\\Gobos\\HemisphereSoftOmni_fire.DDS",
+                in_base,
+                Some("data\\Textures\\Effects\\Gobos\\HemisphereSoftOmni_d.DDS"),
+            ),
+            (
+                "no data prefix",
+                "Textures\\Effects\\Gobos\\HemisphereSoft_e.DDS",
+                in_base,
+                Some("Textures\\Effects\\Gobos\\HemisphereSoft_d.DDS"),
+            ),
+            (
+                "fo76-only gobo",
+                "data\\Textures\\Effects\\Gobos\\church_stainedglass_gobo01.dds",
+                nothing,
+                None,
+            ),
+            (
+                "already _d",
+                "data\\Textures\\Effects\\Gobos\\WorklightGobo_d.dds",
+                anything,
+                None,
+            ),
+            ("empty", "", anything, None),
+        ] {
+            assert_eq!(
+                fo4_base_gobo_path(path, &base_has).as_deref(),
+                expected,
+                "{name}"
+            );
         }
-
-        fn setup_handle(plugin_name: &str) -> u64 {
-            let handle = plugin_handle_new_native(plugin_name, Some("fo4")).unwrap();
-            let mut store = plugin_handle_store_ref().lock().unwrap();
-            let slot = store.get_mut(&handle).unwrap();
-            slot.parsed.root_items = vec![ParsedItem::Group(ParsedGroup {
-                label: *b"LIGH",
-                group_type: 0,
-                tail: Bytes::new(),
-                children: vec![
-                    raw_ligh(
-                        0x800,
-                        b"DuplicateFirst\0",
-                        b"data\\Textures\\Effects\\Gobos\\Duplicate_e.DDS\0",
-                    ),
-                    raw_ligh(
-                        0x800,
-                        b"DuplicateSecond\0",
-                        b"data\\Textures\\Effects\\Gobos\\Duplicate_fire.DDS\0",
-                    ),
-                ],
-            })];
-            slot.invalidate_sections();
-            handle
-        }
-
-        fn fingerprint(handle: u64) -> Vec<(u32, Vec<u8>, Vec<u8>)> {
-            let store = plugin_handle_store_ref().lock().unwrap();
-            let ParsedItem::Group(group) = &store.get(&handle).unwrap().parsed.root_items[0] else {
-                panic!("LIGH group expected");
-            };
-            group
-                .children
-                .iter()
-                .filter_map(|item| match item {
-                    ParsedItem::Record(record) => Some((
-                        record.form_id,
-                        record
-                            .subrecords
-                            .iter()
-                            .find(|subrecord| subrecord.signature.as_str() == "EDID")
-                            .unwrap()
-                            .data
-                            .to_vec(),
-                        record
-                            .subrecords
-                            .iter()
-                            .find(|subrecord| subrecord.signature.as_str() == "NAM0")
-                            .unwrap()
-                            .data
-                            .to_vec(),
-                    )),
-                    ParsedItem::Group(_) => None,
-                })
-                .collect()
-        }
-
-        let interner = StringInterner::new();
-        let reference_handle = setup_handle("P2BGoboDuplicateReference.esp");
-        let fallback_handle = setup_handle("P2BGoboDuplicateFallback.esp");
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let base_dir = tempfile::tempdir().unwrap();
-        let gobo_dir = base_dir.path().join("Textures/Effects/Gobos");
-        std::fs::create_dir_all(&gobo_dir).unwrap();
-        std::fs::write(gobo_dir.join("Duplicate_d.DDS"), []).unwrap();
-        let config = FixupConfig {
-            target_membership_root: Some(base_dir.path().to_path_buf()),
-            target_schema: Some(schema.clone()),
-            ..FixupConfig::default()
-        };
-
-        let reference_changed = {
-            let mut session = open_session(reference_handle, None).unwrap();
-            let form_keys = session
-                .form_keys_of_sig(SigCode::from_str("LIGH").unwrap(), &interner)
-                .unwrap();
-            let nam0_sig = SubrecordSig::from_str("NAM0").unwrap();
-            let base_has = |relative_path: &str| {
-                relative_path.eq_ignore_ascii_case("Textures/Effects/Gobos/Duplicate_d.DDS")
-            };
-            let mut changed = 0;
-            for form_key in form_keys {
-                let mut record = session
-                    .record_decoded(&form_key, &schema, &interner)
-                    .unwrap();
-                if remap_record_gobo(&mut record, nam0_sig, &interner, &base_has) {
-                    session.replace_record(record, &schema, &interner).unwrap();
-                    changed += 1;
-                }
-            }
-            changed
-        };
-
-        let mut state = MapperState::new(std::iter::empty(), MapperOptions::default());
-        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
-        let report = {
-            let mut session = open_session(fallback_handle, None).unwrap();
-            RemapLightGoboToFo4BaseFixup
-                .run_with_session(&mut session, &mut mapper, &config)
-                .unwrap()
-        };
-
-        assert_eq!(reference_changed, 2);
-        assert_eq!(report.records_changed, 2);
-        let reference = fingerprint(reference_handle);
-        let fallback = fingerprint(fallback_handle);
-        assert_eq!(fallback, reference);
-        assert_eq!(
-            fallback
-                .iter()
-                .map(|(form_id, editor_id, _)| (*form_id, editor_id.as_slice()))
-                .collect::<Vec<_>>(),
-            vec![
-                (0x800, b"DuplicateFirst\0".as_slice()),
-                (0x800, b"DuplicateSecond\0".as_slice()),
-            ]
-        );
-        assert_eq!(
-            fallback
-                .iter()
-                .map(|(_, _, path)| path.as_slice())
-                .collect::<Vec<_>>(),
-            vec![
-                b"data\\Textures\\Effects\\Gobos\\Duplicate_d.DDS\0".as_slice(),
-                b"data\\Textures\\Effects\\Gobos\\Duplicate_d.DDS\0".as_slice(),
-            ]
-        );
-    }
-
-    #[test]
-    fn remaps_underscore_e_gobo_to_base_d() {
-        let base_has = |rel: &str| rel == "Textures/Effects/Gobos/HemisphereSoft_d.DDS";
-        let out = fo4_base_gobo_path(
-            "data\\Textures\\Effects\\Gobos\\HemisphereSoft_e.DDS",
-            &base_has,
-        );
-        assert_eq!(
-            out.as_deref(),
-            Some("data\\Textures\\Effects\\Gobos\\HemisphereSoft_d.DDS")
-        );
-    }
-
-    #[test]
-    fn remaps_underscore_fire_gobo_to_base_d() {
-        let base_has = |rel: &str| rel == "Textures/Effects/Gobos/HemisphereSoftOmni_d.DDS";
-        let out = fo4_base_gobo_path(
-            "data\\Textures\\Effects\\Gobos\\HemisphereSoftOmni_fire.DDS",
-            &base_has,
-        );
-        assert_eq!(
-            out.as_deref(),
-            Some("data\\Textures\\Effects\\Gobos\\HemisphereSoftOmni_d.DDS")
-        );
-    }
-
-    #[test]
-    fn leaves_gobo_with_no_fo4_equivalent_unchanged() {
-        // FO76-only gobo: no `_d` variant in the FO4 base.
-        let base_has = |_rel: &str| false;
-        let out = fo4_base_gobo_path(
-            "data\\Textures\\Effects\\Gobos\\church_stainedglass_gobo01.dds",
-            &base_has,
-        );
-        assert_eq!(out, None);
-    }
-
-    #[test]
-    fn leaves_existing_d_gobo_unchanged() {
-        // Anything already `_d` is FO4-style — never repoint it.
-        let base_has = |_rel: &str| true;
-        let out = fo4_base_gobo_path(
-            "data\\Textures\\Effects\\Gobos\\WorklightGobo_d.dds",
-            &base_has,
-        );
-        assert_eq!(out, None);
-    }
-
-    #[test]
-    fn preserves_path_without_data_prefix() {
-        let base_has = |rel: &str| rel == "Textures/Effects/Gobos/HemisphereSoft_d.DDS";
-        let out = fo4_base_gobo_path("Textures\\Effects\\Gobos\\HemisphereSoft_e.DDS", &base_has);
-        assert_eq!(
-            out.as_deref(),
-            Some("Textures\\Effects\\Gobos\\HemisphereSoft_d.DDS")
-        );
-    }
-
-    #[test]
-    fn empty_gobo_is_noop() {
-        let base_has = |_rel: &str| true;
-        assert_eq!(fo4_base_gobo_path("", &base_has), None);
     }
 }

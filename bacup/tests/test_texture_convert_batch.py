@@ -21,7 +21,7 @@ class TestGroupTextures:
     def test_group_by_base_name(self):
         """Group textures by their base name (before suffix)."""
         from bacup_lib.texture.batch import group_textures_by_base
-        from creation_lib.core.game_profiles import FO76_PROFILE
+        from creation_lib.core.game_profiles import FO4_PROFILE, FO76_PROFILE
 
         files = [
             Path("armor_d.dds"),
@@ -31,110 +31,35 @@ class TestGroupTextures:
             Path("weapon_d.dds"),
         ]
         groups = group_textures_by_base(files, FO76_PROFILE)
-        assert "armor" in groups
-        assert "weapon" in groups
         assert len(groups["armor"]) == 4
         assert len(groups["weapon"]) == 1
-
-    def test_group_unrecognized_suffix(self):
-        """Unrecognized suffixes use full stem as base name."""
-        from bacup_lib.texture.batch import group_textures_by_base
-        from creation_lib.core.game_profiles import FO4_PROFILE
-
-        files = [Path("custom_texture.dds")]
-        groups = group_textures_by_base(files, FO4_PROFILE)
-        assert "custom_texture" in groups
-
-    def test_group_empty_input(self):
-        """Empty input returns empty groups."""
-        from bacup_lib.texture.batch import group_textures_by_base
-        from creation_lib.core.game_profiles import FO4_PROFILE
-
-        groups = group_textures_by_base([], FO4_PROFILE)
-        assert groups == {}
+        assert "custom_texture" in group_textures_by_base([Path("custom_texture.dds")], FO4_PROFILE)
+        assert group_textures_by_base([], FO4_PROFILE) == {}
 
 
 class TestBatchConvert:
-    def test_converts_all_textures(self, tmp_path: Path):
-        """Batch convert should process all recognized textures."""
-        from bacup_lib.texture.batch import batch_convert
-        from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
-
-        src_dir = tmp_path / "source"
-        dst_dir = tmp_path / "output"
-
-        _write_test_texture(src_dir / "armor_d.dds")
-        _write_test_texture(src_dir / "armor_n.dds", r=128, g=64, b=200)
-        _write_test_texture(src_dir / "armor_r.dds", r=200, g=200, b=200)
-        _write_test_texture(src_dir / "armor_l.dds", r=180, g=180, b=180)
-
-        report = batch_convert(src_dir, dst_dir, FO76_PROFILE, FO4_PROFILE)
-
-        assert dst_dir.exists()
-        assert report.converted_files > 0
-        assert report.errors == 0
-        # Should have merged _r + _l into _s
-        output_names = {f.stem for f in dst_dir.rglob("*") if f.is_file()}
-        assert "armor_s" in output_names
-
-    def test_creates_output_directory(self, tmp_path: Path):
-        """Output dir should be created if it doesn't exist."""
+    def test_converts_texture_set_and_merges_metallic_lighting(self, tmp_path: Path):
+        """FO76->FO4 batch: all textures converted, _r + _l merged into _s, non-textures skipped."""
         from bacup_lib.texture.batch import batch_convert
         from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
 
         src_dir = tmp_path / "source"
         dst_dir = tmp_path / "output" / "nested"
-        _write_test_texture(src_dir / "tex_d.dds")
 
-        batch_convert(src_dir, dst_dir, FO76_PROFILE, FO4_PROFILE)
-        assert dst_dir.exists()
-
-    def test_skips_non_texture_files(self, tmp_path: Path):
-        """Non-texture files should be skipped."""
-        from bacup_lib.texture.batch import batch_convert
-        from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
-
-        src_dir = tmp_path / "source"
-        dst_dir = tmp_path / "output"
-        (src_dir).mkdir(parents=True)
+        _write_test_texture(src_dir / "armor_d.dds")
+        _write_test_texture(src_dir / "armor_n.dds", r=128, g=64, b=200)
+        _write_test_texture(src_dir / "armor_r.dds", r=200, g=200, b=200)
+        _write_test_texture(src_dir / "armor_l.dds", r=180, g=180, b=180)
         (src_dir / "readme.txt").write_text("not a texture")
 
         report = batch_convert(src_dir, dst_dir, FO76_PROFILE, FO4_PROFILE)
-        assert report.skipped_files == 1
 
-    def test_report_contains_file_details(self, tmp_path: Path):
-        """Report should list individual file conversions."""
-        from bacup_lib.texture.batch import batch_convert
-        from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
-
-        src_dir = tmp_path / "source"
-        dst_dir = tmp_path / "output"
-        _write_test_texture(src_dir / "armor_d.dds")
-
-        report = batch_convert(src_dir, dst_dir, FO76_PROFILE, FO4_PROFILE)
-        assert len(report.details) > 0
-        assert report.details[0].source_file is not None
-
-    def test_fo76_metallic_lighting_merged(self, tmp_path: Path):
-        """FO76->FO4 batch: _r + _l files should be merged into one _s file."""
-        from bacup_lib.texture.batch import batch_convert
-        from creation_lib.core.game_profiles import FO76_PROFILE, FO4_PROFILE
-
-        src_dir = tmp_path / "source"
-        dst_dir = tmp_path / "output"
-        _write_test_texture(src_dir / "armor_r.dds", r=200, g=200, b=200)
-        _write_test_texture(src_dir / "armor_l.dds", r=180, g=180, b=180)
-        _write_test_texture(src_dir / "armor_d.dds")
-        _write_test_texture(src_dir / "armor_n.dds", r=128, g=64, b=200)
-
-        report = batch_convert(src_dir, dst_dir, FO76_PROFILE, FO4_PROFILE)
-
-        output_files = {f.name for f in dst_dir.rglob("*") if f.is_file()}
-        # Should have armor_d, armor_n, armor_s (merged from _r + _l)
-        assert any("armor_s" in f for f in output_files)
-        assert any("armor_d" in f for f in output_files)
-        assert any("armor_n" in f for f in output_files)
+        assert report.converted_files > 0
         assert report.errors == 0
+        assert report.skipped_files == 1
+        assert report.details[0].source_file is not None
+        output_names = {f.stem for f in dst_dir.rglob("*") if f.is_file()}
+        assert {"armor_d", "armor_n", "armor_s"} <= output_names
 
     def test_fo76_reflectivity_lighting_merge_without_diffuse(self, tmp_path: Path):
         """FO76->FO4 batch: _r + _l files should merge even when _d is absent."""

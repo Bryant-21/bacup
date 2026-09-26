@@ -1,6 +1,5 @@
 Event OnLoad()
-    ; TODO
-    Actor selfActor = Self as Actor
+    Actor selfActor = (Self as ObjectReference) as Actor
     If selfActor != None && TalkingActivatorVendorFaction != None
         selfActor.AddToFaction(TalkingActivatorVendorFaction)
     EndIf

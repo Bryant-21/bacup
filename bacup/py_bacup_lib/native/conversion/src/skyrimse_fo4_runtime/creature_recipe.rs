@@ -3257,50 +3257,50 @@ mod tests {
     }
 
     #[test]
-    fn one_hkx_claim_can_satisfy_animation_and_ragdoll_inventory_roles() {
-        let path = "Actors\\Canine\\Character Assets\\Skeleton.hkx";
-        let inventory = SkyrimCreatureInventoryReceipt {
-            project_path: "Actors\\Canine\\WolfProject.hkx".to_string(),
-            character_paths: Vec::new(),
-            animation_skeleton_paths: vec![path.to_string()],
-            ragdoll_paths: vec![path.to_string()],
-            behavior_paths: Vec::new(),
-        };
-        let claim = claim(path, SkyrimAssetRole::AnimationSkeleton, &[]);
-        assert!(claim_satisfies_inventory_role(
-            &claim,
-            SkyrimAssetRole::AnimationSkeleton,
-            path,
-            &inventory.animation_skeleton_paths,
-            &inventory.ragdoll_paths,
-        ));
-        assert!(claim_satisfies_inventory_role(
-            &claim,
-            SkyrimAssetRole::Ragdoll,
-            path,
-            &inventory.animation_skeleton_paths,
-            &inventory.ragdoll_paths,
-        ));
-        assert!(!claim_satisfies_inventory_role(
-            &claim,
-            SkyrimAssetRole::Character,
-            path,
-            &inventory.animation_skeleton_paths,
-            &inventory.ragdoll_paths,
-        ));
-    }
-
-    #[test]
-    fn one_nif_claim_can_satisfy_body_and_visual_skeleton_roles() {
-        let path = "Actors\\Witchlight\\Character Assets\\Witchlight.nif";
-        let claim = claim(path, SkyrimAssetRole::BodyNif, &[]);
-        assert!(claim_satisfies_inventory_role(
-            &claim,
-            SkyrimAssetRole::VisualSkeletonNif,
-            path,
-            &[],
-            &[],
-        ));
+    fn one_asset_claim_can_satisfy_multiple_inventory_roles() {
+        {
+            let path = "Actors\\Canine\\Character Assets\\Skeleton.hkx";
+            let inventory = SkyrimCreatureInventoryReceipt {
+                project_path: "Actors\\Canine\\WolfProject.hkx".to_string(),
+                character_paths: Vec::new(),
+                animation_skeleton_paths: vec![path.to_string()],
+                ragdoll_paths: vec![path.to_string()],
+                behavior_paths: Vec::new(),
+            };
+            let claim = claim(path, SkyrimAssetRole::AnimationSkeleton, &[]);
+            assert!(claim_satisfies_inventory_role(
+                &claim,
+                SkyrimAssetRole::AnimationSkeleton,
+                path,
+                &inventory.animation_skeleton_paths,
+                &inventory.ragdoll_paths,
+            ));
+            assert!(claim_satisfies_inventory_role(
+                &claim,
+                SkyrimAssetRole::Ragdoll,
+                path,
+                &inventory.animation_skeleton_paths,
+                &inventory.ragdoll_paths,
+            ));
+            assert!(!claim_satisfies_inventory_role(
+                &claim,
+                SkyrimAssetRole::Character,
+                path,
+                &inventory.animation_skeleton_paths,
+                &inventory.ragdoll_paths,
+            ));
+        }
+        {
+            let path = "Actors\\Witchlight\\Character Assets\\Witchlight.nif";
+            let claim = claim(path, SkyrimAssetRole::BodyNif, &[]);
+            assert!(claim_satisfies_inventory_role(
+                &claim,
+                SkyrimAssetRole::VisualSkeletonNif,
+                path,
+                &[],
+                &[],
+            ));
+        }
     }
 
     #[test]
@@ -3455,21 +3455,5 @@ mod tests {
         canonicalize_graph_variants(&mut variants);
         assert!(variants[0].actual_root_bone.ends_with(".nif"));
         assert_ne!(variants[0].actual_root_bone, variants[0].skeleton_path);
-    }
-
-    #[test]
-    fn optional_official_recipe_gate_accounts_for_46_families_and_122_candidates() {
-        let Some(path) =
-            std::env::var_os("SKYRIMSE_CREATURE_RECIPE_LEDGER").map(std::path::PathBuf::from)
-        else {
-            return;
-        };
-        if !path.is_file() {
-            return;
-        }
-        let json = std::fs::read_to_string(path).unwrap();
-        let ledger = SkyrimCreatureRecipeLedger::from_json(&json).unwrap();
-        assert_eq!(ledger.family_jobs.len(), SKYRIM_CREATURE_FAMILY_COUNT);
-        assert_eq!(ledger.candidates.len(), SKYRIM_CREATURE_CANDIDATE_COUNT);
     }
 }

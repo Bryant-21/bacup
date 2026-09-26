@@ -259,6 +259,17 @@ mod tests {
             interner.resolve(*name) == Some("creature")
                 && matches!(value, FieldValue::FormKey(key) if key.local == 0x1234 && interner.resolve(key.plugin) == Some("Owner.esp"))
         }));
+
+        let interner = StringInterner::new();
+        let mut record = source_lvlc(&interner);
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"MODT"),
+            value: FieldValue::Bytes(smallvec![1, 2, 3]),
+        });
+        assert_eq!(
+            classify_legacy_lvlc(&record).reason_codes,
+            vec!["legacy_lvlc_field_not_representable_in_fo4_lvln"]
+        );
     }
 
     #[test]
@@ -279,20 +290,6 @@ mod tests {
             fields
                 .iter()
                 .any(|(name, _)| { interner.resolve(*name) == Some("chance_none") })
-        );
-    }
-
-    #[test]
-    fn unsupported_source_model_payload_is_typed_blocker() {
-        let interner = StringInterner::new();
-        let mut record = source_lvlc(&interner);
-        record.fields.push(FieldEntry {
-            sig: SubrecordSig(*b"MODT"),
-            value: FieldValue::Bytes(smallvec![1, 2, 3]),
-        });
-        assert_eq!(
-            classify_legacy_lvlc(&record).reason_codes,
-            vec!["legacy_lvlc_field_not_representable_in_fo4_lvln"]
         );
     }
 }

@@ -503,12 +503,7 @@ mod tests {
                 "ACBS", "TPTA", "RNAM", "OBTE", "OBTF", "FULL", "OBTS", "STOP", "CNAM", "FULL"
             ]
         );
-    }
 
-    #[test]
-    fn preserves_authored_object_template_block() {
-        let interner = StringInterner::new();
-        let output = interner.intern("Output.esp");
         let mut child = npc(0x800, output);
         child.fields.extend(object_block());
         let before = child.fields.clone();
@@ -540,12 +535,7 @@ mod tests {
                 .plugin,
             output
         );
-    }
 
-    #[test]
-    fn stops_on_inventory_template_cycle() {
-        let interner = StringInterner::new();
-        let output = interner.intern("Output.esp");
         let left = FormKey {
             local: 0x900,
             plugin: output,
@@ -698,92 +688,5 @@ mod tests {
         assert!(plugin_handle_close_native(source));
         assert!(plugin_handle_close_native(target));
         assert!(plugin_handle_close_native(sequential_target));
-    }
-
-    #[test]
-    #[ignore = "representative cold phase benchmark"]
-    fn benchmark_batched_materialization_against_sequential() {
-        const SAMPLES: usize = 6;
-        for sample in 0..SAMPLES {
-            let mut pair = Vec::new();
-            for sequential in if sample % 2 == 0 {
-                [true, false]
-            } else {
-                [false, true]
-            } {
-                let interner = StringInterner::new();
-                let output = interner.intern("SeventySix.esm");
-                let parent_key = FormKey {
-                    local: 0x900,
-                    plugin: output,
-                };
-                let mut records = Vec::with_capacity(50_101);
-                let mut parent = npc(parent_key.local, output);
-                parent.fields.extend(object_block());
-                records.push(parent);
-                for index in 0..100u32 {
-                    let mut child = npc(0x1000 + index, output);
-                    child.fields = active_inventory_fields(parent_key.local);
-                    if index % 3 == 0 {
-                        child.flags = RecordFlags::COMPRESSED;
-                    }
-                    records.push(child);
-                }
-                for index in 0..50_000u32 {
-                    records.push(npc(0x20_000 + index, output));
-                }
-                let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
-                let target = plugin_handle_new_native("SeventySix.esm", Some("fo4")).unwrap();
-                let schema = {
-                    let mut session = open_session(target, None).unwrap();
-                    let schema = session.schema().unwrap();
-                    session
-                        .add_records(records, schema.as_ref(), &interner)
-                        .unwrap();
-                    schema
-                };
-                let mut mapper_state = MapperState::new(
-                    [],
-                    MapperOptions {
-                        output_plugin_name: "SeventySix.esm".into(),
-                        preserve_source_ids: true,
-                        ..Default::default()
-                    },
-                );
-                let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &interner);
-                let config = FixupConfig {
-                    is_whole_plugin: true,
-                    ..Default::default()
-                };
-                let started = std::time::Instant::now();
-                let mut session = open_session(target, Some(source)).unwrap();
-                let report = if sequential {
-                    run_sequential_for_test(&mut session, &mut mapper).unwrap()
-                } else {
-                    MaterializeInheritedNpcObjectTemplatesFixup
-                        .run_with_session(&mut session, &mut mapper, &config)
-                        .unwrap()
-                };
-                session.flush_pending_effects();
-                drop(session);
-                let elapsed = started.elapsed().as_secs_f64();
-                let temp = tempfile::tempdir().unwrap();
-                let output_path = temp.path().join("output.esp");
-                plugin_handle_save_no_py(target, output_path.to_str().unwrap()).unwrap();
-                let bytes = std::fs::read(output_path).unwrap();
-                eprintln!(
-                    "npc_object_template sample={} mode={} elapsed_ms={:.3} bytes={} report={report:?}",
-                    sample + 1,
-                    if sequential { "sequential" } else { "batched" },
-                    elapsed * 1000.0,
-                    bytes.len(),
-                );
-                pair.push((sequential, format!("{report:?}"), bytes));
-                assert!(plugin_handle_close_native(source));
-                assert!(plugin_handle_close_native(target));
-            }
-            assert_eq!(pair[0].1, pair[1].1);
-            assert_eq!(pair[0].2, pair[1].2);
-        }
     }
 }

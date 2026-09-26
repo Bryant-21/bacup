@@ -72,45 +72,43 @@ fn add_mapping(
 }
 
 #[test]
-fn supported_fixture_is_phase_zero_complete() {
-    assert!(
-        plan("complete", "000100:FalloutNV.esm")
-            .validation_issues()
-            .is_empty()
-    );
-}
+fn supported_fixture_is_complete_with_single_owners_and_shared_dependencies() {
+    {
+        assert!(
+            plan("complete", "000100:FalloutNV.esm")
+                .validation_issues()
+                .is_empty()
+        );
+    }
+    {
+        let shared_owned = key("DIAL", "001234:FalloutNV.esm");
+        let mut first = plan("first", "000100:FalloutNV.esm");
+        first.owned_records.push(shared_owned.clone());
+        add_mapping(&mut first, shared_owned.clone(), "001234:Fallout4.esm");
+        let mut second = plan("second", "000200:FalloutNV.esm");
+        second.owned_records.push(shared_owned.clone());
+        add_mapping(&mut second, shared_owned.clone(), "001234:Fallout4.esm");
 
-#[test]
-fn component_owned_records_have_one_owner() {
-    let shared_owned = key("DIAL", "001234:FalloutNV.esm");
-    let mut first = plan("first", "000100:FalloutNV.esm");
-    first.owned_records.push(shared_owned.clone());
-    add_mapping(&mut first, shared_owned.clone(), "001234:Fallout4.esm");
-    let mut second = plan("second", "000200:FalloutNV.esm");
-    second.owned_records.push(shared_owned.clone());
-    add_mapping(&mut second, shared_owned.clone(), "001234:Fallout4.esm");
+        let issues = validate_component_plans(&[first, second]);
 
-    let issues = validate_component_plans(&[first, second]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, PlanValidationCode::DuplicateOwnership);
+        assert_eq!(issues[0].record.as_ref(), Some(&shared_owned));
+        assert_eq!(issues[0].conflicting_component_id.as_deref(), Some("first"));
+    }
+    {
+        let shared = key("PACK", "004321:FalloutNV.esm");
+        let mut first = plan("first", "000100:FalloutNV.esm");
+        first.shared_records.insert(shared.clone());
+        first.dependencies.direct.insert(shared.clone());
+        add_mapping(&mut first, shared.clone(), "004321:Fallout4.esm");
+        let mut second = plan("second", "000200:FalloutNV.esm");
+        second.shared_records.insert(shared.clone());
+        second.dependencies.recursive.insert(shared.clone());
+        add_mapping(&mut second, shared, "004321:Fallout4.esm");
 
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].code, PlanValidationCode::DuplicateOwnership);
-    assert_eq!(issues[0].record.as_ref(), Some(&shared_owned));
-    assert_eq!(issues[0].conflicting_component_id.as_deref(), Some("first"));
-}
-
-#[test]
-fn shared_dependencies_can_be_used_by_multiple_components() {
-    let shared = key("PACK", "004321:FalloutNV.esm");
-    let mut first = plan("first", "000100:FalloutNV.esm");
-    first.shared_records.insert(shared.clone());
-    first.dependencies.direct.insert(shared.clone());
-    add_mapping(&mut first, shared.clone(), "004321:Fallout4.esm");
-    let mut second = plan("second", "000200:FalloutNV.esm");
-    second.shared_records.insert(shared.clone());
-    second.dependencies.recursive.insert(shared.clone());
-    add_mapping(&mut second, shared, "004321:Fallout4.esm");
-
-    assert!(validate_component_plans(&[first, second]).is_empty());
+        assert!(validate_component_plans(&[first, second]).is_empty());
+    }
 }
 
 #[test]
@@ -134,40 +132,40 @@ fn a_component_requires_exactly_one_terminal_start_disposition() {
 }
 
 #[test]
-fn supported_component_rejects_empty_or_invalid_source_plugin() {
-    for invalid in ["", "   ", "FalloutNV", "folder/FalloutNV.esm"] {
-        let mut component = plan("invalid_provenance", "000100:FalloutNV.esm");
-        component.provenance.source_plugin = invalid.to_owned();
-        assert!(
-            issue_codes(&component).contains(&PlanValidationCode::InvalidSourcePlugin),
-            "expected invalid source plugin issue for {invalid:?}"
-        );
+fn supported_component_rejects_invalid_plugin_and_incomplete_closure() {
+    {
+        for invalid in ["", "   ", "FalloutNV", "folder/FalloutNV.esm"] {
+            let mut component = plan("invalid_provenance", "000100:FalloutNV.esm");
+            component.provenance.source_plugin = invalid.to_owned();
+            assert!(
+                issue_codes(&component).contains(&PlanValidationCode::InvalidSourcePlugin),
+                "expected invalid source plugin issue for {invalid:?}"
+            );
+        }
     }
-}
+    {
+        let mut component = plan("incomplete_closure", "000100:FalloutNV.esm");
+        let unmapped_dependency = key("PACK", "000200:FalloutNV.esm");
+        component
+            .dependencies
+            .direct
+            .insert(unmapped_dependency.clone());
+        let undeclared_source = key("INFO", "000300:FalloutNV.esm");
+        component.mappings.push(SourceTargetFormMapping {
+            source: undeclared_source,
+            target: key("INFO", "000300:Fallout4.esm"),
+        });
+        component.target_topology.insert(TopologyPlacement {
+            record: key("DIAL", "000400:Fallout4.esm"),
+            group_path: vec!["DIAL".to_owned()],
+        });
 
-#[test]
-fn supported_component_rejects_incomplete_declared_mapping_and_topology_closure() {
-    let mut component = plan("incomplete_closure", "000100:FalloutNV.esm");
-    let unmapped_dependency = key("PACK", "000200:FalloutNV.esm");
-    component
-        .dependencies
-        .direct
-        .insert(unmapped_dependency.clone());
-    let undeclared_source = key("INFO", "000300:FalloutNV.esm");
-    component.mappings.push(SourceTargetFormMapping {
-        source: undeclared_source,
-        target: key("INFO", "000300:Fallout4.esm"),
-    });
-    component.target_topology.insert(TopologyPlacement {
-        record: key("DIAL", "000400:Fallout4.esm"),
-        group_path: vec!["DIAL".to_owned()],
-    });
+        let codes = issue_codes(&component);
 
-    let codes = issue_codes(&component);
-
-    assert!(codes.contains(&PlanValidationCode::UnmappedDeclaredRecord));
-    assert!(codes.contains(&PlanValidationCode::UndeclaredRecordReference));
-    assert!(codes.contains(&PlanValidationCode::UnmappedTargetTopology));
+        assert!(codes.contains(&PlanValidationCode::UnmappedDeclaredRecord));
+        assert!(codes.contains(&PlanValidationCode::UndeclaredRecordReference));
+        assert!(codes.contains(&PlanValidationCode::UnmappedTargetTopology));
+    }
 }
 
 #[test]
@@ -287,67 +285,65 @@ fn frozen_receipt_comparison_surfaces_required_post_fixup_damage() {
 }
 
 #[test]
-fn strict_receipt_rejects_generic_translation_readdition() {
-    let required = key("QUST", "000100:Fallout4.esm");
-    let readded = key("INFO", "000200:Fallout4.esm");
-    let expected = QuestRuntimeExpectedReceipt {
-        emitted_records: BTreeSet::from([required.clone()]),
-        ..QuestRuntimeExpectedReceipt::default()
-    };
-    let actual = QuestRuntimePostFixupReceipt {
-        emitted_records: vec![required, readded.clone()],
-        ..QuestRuntimePostFixupReceipt::default()
-    };
+fn strict_receipt_rejects_readdition_duplicates_and_unexplained_extras() {
+    {
+        let required = key("QUST", "000100:Fallout4.esm");
+        let readded = key("INFO", "000200:Fallout4.esm");
+        let expected = QuestRuntimeExpectedReceipt {
+            emitted_records: BTreeSet::from([required.clone()]),
+            ..QuestRuntimeExpectedReceipt::default()
+        };
+        let actual = QuestRuntimePostFixupReceipt {
+            emitted_records: vec![required, readded.clone()],
+            ..QuestRuntimePostFixupReceipt::default()
+        };
 
-    let comparison = compare_post_fixup_receipt(&expected, &actual);
+        let comparison = compare_post_fixup_receipt(&expected, &actual);
 
-    assert_eq!(
-        comparison.required_damage,
-        vec![ReceiptDamage::UnexpectedRecord(readded)]
-    );
-}
+        assert_eq!(
+            comparison.required_damage,
+            vec![ReceiptDamage::UnexpectedRecord(readded)]
+        );
+    }
+    {
+        let required = key("QUST", "000100:Fallout4.esm");
+        let expected = QuestRuntimeExpectedReceipt {
+            emitted_records: BTreeSet::from([required.clone()]),
+            ..QuestRuntimeExpectedReceipt::default()
+        };
+        let actual = QuestRuntimePostFixupReceipt {
+            emitted_records: vec![required.clone(), required.clone()],
+            ..QuestRuntimePostFixupReceipt::default()
+        };
 
-#[test]
-fn strict_receipt_rejects_duplicate_required_output() {
-    let required = key("QUST", "000100:Fallout4.esm");
-    let expected = QuestRuntimeExpectedReceipt {
-        emitted_records: BTreeSet::from([required.clone()]),
-        ..QuestRuntimeExpectedReceipt::default()
-    };
-    let actual = QuestRuntimePostFixupReceipt {
-        emitted_records: vec![required.clone(), required.clone()],
-        ..QuestRuntimePostFixupReceipt::default()
-    };
+        let comparison = compare_post_fixup_receipt(&expected, &actual);
 
-    let comparison = compare_post_fixup_receipt(&expected, &actual);
+        assert_eq!(
+            comparison.required_damage,
+            vec![ReceiptDamage::DuplicateRecord {
+                record: required,
+                occurrences: 2,
+            }]
+        );
+    }
+    {
+        let required = key("QUST", "000100:Fallout4.esm");
+        let shared = key("PACK", "000200:Fallout4.esm");
+        let expected = QuestRuntimeExpectedReceipt {
+            emitted_records: BTreeSet::from([required.clone()]),
+            ..QuestRuntimeExpectedReceipt::default()
+        };
+        let actual = QuestRuntimePostFixupReceipt {
+            emitted_records: vec![required, shared.clone()],
+            ..QuestRuntimePostFixupReceipt::default()
+        };
+        let allowances = QuestRuntimeReceiptAllowances {
+            emitted_records: BTreeSet::from([shared]),
+            ..QuestRuntimeReceiptAllowances::default()
+        };
 
-    assert_eq!(
-        comparison.required_damage,
-        vec![ReceiptDamage::DuplicateRecord {
-            record: required,
-            occurrences: 2,
-        }]
-    );
-}
-
-#[test]
-fn receipt_allows_only_explicit_optional_or_shared_extras() {
-    let required = key("QUST", "000100:Fallout4.esm");
-    let shared = key("PACK", "000200:Fallout4.esm");
-    let expected = QuestRuntimeExpectedReceipt {
-        emitted_records: BTreeSet::from([required.clone()]),
-        ..QuestRuntimeExpectedReceipt::default()
-    };
-    let actual = QuestRuntimePostFixupReceipt {
-        emitted_records: vec![required, shared.clone()],
-        ..QuestRuntimePostFixupReceipt::default()
-    };
-    let allowances = QuestRuntimeReceiptAllowances {
-        emitted_records: BTreeSet::from([shared]),
-        ..QuestRuntimeReceiptAllowances::default()
-    };
-
-    assert!(compare_post_fixup_receipt_with_allowances(&expected, &actual, &allowances).intact);
+        assert!(compare_post_fixup_receipt_with_allowances(&expected, &actual, &allowances).intact);
+    }
 }
 
 #[test]

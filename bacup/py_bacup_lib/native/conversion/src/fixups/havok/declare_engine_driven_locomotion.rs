@@ -423,10 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn clears_an_existing_graph_driven_declaration() {
+    fn clears_an_existing_graph_driven_declaration_once() {
         let mut hkx = graph(&["bGraphDriven", "bEquipOk"]);
         assert!(declare_engine_driven(&mut hkx).unwrap());
-
         assert_eq!(
             names_of(&hkx).len(),
             2,
@@ -437,41 +436,37 @@ mod tests {
             vec![Some(0), Some(1)],
             "only bGraphDriven may be cleared"
         );
-    }
-
-    #[test]
-    fn no_op_when_already_engine_driven() {
-        let mut hkx = graph(&["bGraphDriven"]);
-        declare_engine_driven(&mut hkx).unwrap();
         assert!(
             !declare_engine_driven(&mut hkx).unwrap(),
             "a graph already declaring 0 must round-trip untouched"
         );
+
+        let mut cased = graph(&["bgraphdriven"]);
+        declare_engine_driven(&mut cased).unwrap();
+        assert_eq!(
+            names_of(&cased).len(),
+            1,
+            "must not append a cased duplicate"
+        );
+        assert_eq!(words_of(&cased), vec![Some(0)]);
     }
 
     #[test]
-    fn match_is_case_insensitive() {
-        let mut hkx = graph(&["bgraphdriven"]);
-        declare_engine_driven(&mut hkx).unwrap();
-        assert_eq!(names_of(&hkx).len(), 1, "must not append a cased duplicate");
-        assert_eq!(words_of(&hkx), vec![Some(0)]);
-    }
-
-    #[test]
-    fn rejects_graph_with_no_boolean_to_model() {
-        let mut hkx = graph(&[]);
+    fn rejects_graphs_it_cannot_extend_safely() {
+        let mut empty = graph(&[]);
         assert!(
-            declare_engine_driven(&mut hkx).is_err(),
+            declare_engine_driven(&mut empty).is_err(),
             "must refuse rather than synthesize an info of unknown layout"
         );
-    }
-
-    #[test]
-    fn rejects_misaligned_arrays() {
-        let mut hkx = graph(&["bAnimationDriven"]);
-        push_string(&mut hkx.objects_mut()[1], "variableNames", "extra".into()).unwrap();
+        let mut misaligned = graph(&["bAnimationDriven"]);
+        push_string(
+            &mut misaligned.objects_mut()[1],
+            "variableNames",
+            "extra".into(),
+        )
+        .unwrap();
         assert!(
-            declare_engine_driven(&mut hkx).is_err(),
+            declare_engine_driven(&mut misaligned).is_err(),
             "must not append onto arrays that are already out of lockstep"
         );
     }
@@ -507,55 +502,57 @@ mod tests {
         tmp
     }
 
+    /// Idles and deaths animate in place on every creature, and a humanoid whose
+    /// locomotion lives in the shared character graph keeps only additive deltas
+    /// of its own (zero by construction), so neither decides the drive. One
+    /// translating locomotion clip is enough to prove a creature graph-driven.
     #[test]
-    fn in_place_locomotion_is_engine_driven() {
-        let zeros = [[0.0f32; 4]; 3];
-        let actor = actor_with_clips(&[
-            ("WalkFwd.hkx", &zeros),
-            ("TrotFwd.hkx", &zeros),
-            ("RunFwd.hkx", &zeros),
-        ]);
-        assert_eq!(locomotion_drive(actor.path()), Drive::Engine);
-    }
-
-    #[test]
-    fn translating_locomotion_stays_graph_driven() {
+    fn locomotion_drive_is_decided_by_extracted_motion_of_locomotion_clips() {
         let zeros = [[0.0f32; 4]; 3];
         let moving = [[0.0, 0.0, 0.0, 0.0], [0.0, 173.0, 0.0, 0.0]];
-        let actor = actor_with_clips(&[("WalkBwd.hkx", &zeros), ("WalkForward.hkx", &moving)]);
-        assert_eq!(
-            locomotion_drive(actor.path()),
-            Drive::Graph,
-            "one translating clip is enough to prove the creature is graph-driven"
-        );
-    }
+        for (name, clips, expected) in [
+            (
+                "in_place",
+                vec![
+                    ("WalkFwd.hkx", &zeros[..]),
+                    ("TrotFwd.hkx", &zeros[..]),
+                    ("RunFwd.hkx", &zeros[..]),
+                ],
+                Drive::Engine,
+            ),
+            (
+                "translating",
+                vec![
+                    ("WalkBwd.hkx", &zeros[..]),
+                    ("WalkForward.hkx", &moving[..]),
+                ],
+                Drive::Graph,
+            ),
+            (
+                "non_locomotion",
+                vec![("Idle.hkx", &zeros[..]), ("Death01.hkx", &zeros[..])],
+                Drive::Unknown,
+            ),
+            (
+                "additive",
+                vec![
+                    ("run_additive.hkx", &zeros[..2]),
+                    ("sprint_additive.hkx", &zeros[..2]),
+                ],
+                Drive::Unknown,
+            ),
+            ("no_clips", vec![], Drive::Unknown),
+        ] {
+            let actor = actor_with_clips(&clips);
+            assert_eq!(locomotion_drive(actor.path()), expected, "{name}");
+        }
 
-    #[test]
-    fn non_locomotion_clips_do_not_decide_the_drive() {
-        let zeros = [[0.0f32; 4]; 3];
-        let actor = actor_with_clips(&[("Idle.hkx", &zeros), ("Death01.hkx", &zeros)]);
-        assert_eq!(
-            locomotion_drive(actor.path()),
-            Drive::Unknown,
-            "idles and deaths animate in place on every creature"
-        );
-    }
-
-    #[test]
-    fn additive_locomotion_clips_do_not_decide_the_drive() {
-        // A humanoid whose locomotion lives in the shared character graph keeps
-        // only additive deltas of its own; those are zero by construction.
-        let zeros = [[0.0f32; 4]; 2];
-        let actor = actor_with_clips(&[
-            ("run_additive.hkx", &zeros),
-            ("sprint_additive.hkx", &zeros),
-        ]);
-        assert_eq!(locomotion_drive(actor.path()), Drive::Unknown);
-    }
-
-    #[test]
-    fn clips_without_extracted_motion_do_not_decide_the_drive() {
         let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            locomotion_drive(tmp.path()),
+            Drive::Unknown,
+            "no Animations dir"
+        );
         let animations = tmp.path().join("Animations");
         std::fs::create_dir_all(&animations).unwrap();
         let bare = HkxFile::from_tagxml(
@@ -572,50 +569,26 @@ mod tests {
     }
 
     #[test]
-    fn actor_without_animations_is_left_alone() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(locomotion_drive(tmp.path()), Drive::Unknown);
-    }
-
-    #[test]
-    fn empty_mod_path_is_a_no_op() {
+    fn only_engine_driven_creature_behaviors_are_rewritten() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(
             declare_engine_driven_locomotion_in_mod_path(tmp.path())
                 .unwrap()
-                .is_no_op()
+                .is_no_op(),
+            "empty mod path"
         );
-    }
 
-    #[test]
-    fn graph_driven_creatures_are_not_rewritten() {
-        let tmp = tempfile::tempdir().unwrap();
-        let actor = tmp.path().join("data/Meshes/Actors/Snallygaster");
-        let behaviors = actor.join("Behaviors");
-        let animations = actor.join("Animations");
-        std::fs::create_dir_all(&behaviors).unwrap();
-        std::fs::create_dir_all(&animations).unwrap();
+        let graph_driven = tmp.path().join("data/Meshes/Actors/Snallygaster");
+        std::fs::create_dir_all(graph_driven.join("Behaviors")).unwrap();
+        std::fs::create_dir_all(graph_driven.join("Animations")).unwrap();
         write_clip(
-            &animations,
+            &graph_driven.join("Animations"),
             "WalkForward.hkx",
             &[[0.0, 0.0, 0.0, 0.0], [0.0, 173.0, 0.0, 0.0]],
         );
-        std::fs::write(
-            behaviors.join("Core.hkx"),
-            graph(&["bAnimationDriven"]).save(),
-        )
-        .unwrap();
+        let graph_driven_core = graph(&["bAnimationDriven"]).save();
+        std::fs::write(graph_driven.join("Behaviors/Core.hkx"), &graph_driven_core).unwrap();
 
-        let report = declare_engine_driven_locomotion_in_mod_path(tmp.path()).unwrap();
-        assert_eq!(
-            report.records_changed, 0,
-            "a creature whose walk translates must be left byte-identical"
-        );
-    }
-
-    #[test]
-    fn engine_driven_creature_behaviors_are_rewritten() {
-        let tmp = tempfile::tempdir().unwrap();
         let actor = tmp.path().join("data/Meshes/Actors/RadHog");
         let behaviors = actor.join("Behaviors");
         let animations = actor.join("Animations");
@@ -638,6 +611,11 @@ mod tests {
                 .unwrap();
         assert_eq!(names_of(&written), vec!["bAnimationDriven", "bGraphDriven"]);
         assert_eq!(words_of(&written), vec![Some(1), Some(0)]);
+        assert_eq!(
+            std::fs::read(graph_driven.join("Behaviors/Core.hkx")).unwrap(),
+            graph_driven_core,
+            "a creature whose walk translates must be left byte-identical"
+        );
     }
 
     #[test]

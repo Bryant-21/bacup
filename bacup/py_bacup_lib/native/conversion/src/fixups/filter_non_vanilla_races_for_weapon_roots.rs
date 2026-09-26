@@ -249,184 +249,73 @@ mod tests {
         )
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn non_vanilla_race_returns_drop() {
+    fn races_remap_to_vanilla_drop_without_one_and_keep_without_eid() {
         let mut interner = StringInterner::new();
-        let source_fk = make_fk(0x000800, "SeventySix.esm", &mut interner);
-        // No EID entries in the index → find_vanilla_fk returns None.
-        let mut mapper = make_mapper_with_index(&[], &mut interner);
-
-        let outcome = apply_to_record("ScorchedRace", source_fk, race_sig(), &mut mapper);
-        assert_eq!(outcome, RaceOutcome::Drop);
-        // No mapping should have been seeded.
-        assert!(mapper.lookup(source_fk).is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn vanilla_race_returns_remap_and_seeds_mapping() {
-        let mut interner = StringInterner::new();
-        let source_fk = make_fk(0x000900, "SeventySix.esm", &mut interner);
-        let vanilla_fk = make_fk(0x000019, "Fallout4.esm", &mut interner);
-
-        let pairs = vec![("HumanRace".to_string(), vanilla_fk)];
-        let mut mapper = make_mapper_with_index(&pairs, &mut interner);
-
-        let outcome = apply_to_record("HumanRace", source_fk, race_sig(), &mut mapper);
-        assert_eq!(outcome, RaceOutcome::Remap);
-        // Mapping must be seeded.
-        assert_eq!(mapper.lookup(source_fk), Some(vanilla_fk));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn empty_eid_returns_keep() {
-        let mut interner = StringInterner::new();
-        let source_fk = make_fk(0x000A00, "SeventySix.esm", &mut interner);
-        let mut mapper = make_mapper_with_index(&[], &mut interner);
-
-        let outcome = apply_to_record("", source_fk, race_sig(), &mut mapper);
-        assert_eq!(outcome, RaceOutcome::Keep);
-        assert!(mapper.lookup(source_fk).is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn mixed_races_drop_and_remap() {
-        let mut interner = StringInterner::new();
-        // Two races: HumanRace (has vanilla equiv) and ZetanInvaderRace (none).
-        let human_src = make_fk(0x000B00, "SeventySix.esm", &mut interner);
-        let human_vanilla = make_fk(0x000019, "Fallout4.esm", &mut interner);
-        let zetan_src = make_fk(0x000C00, "SeventySix.esm", &mut interner);
+        let human_src = make_fk(0x000B00, "SeventySix.esm", &interner);
+        let human_vanilla = make_fk(0x000019, "Fallout4.esm", &interner);
+        let zetan_src = make_fk(0x000C00, "SeventySix.esm", &interner);
+        let unnamed_src = make_fk(0x000A00, "SeventySix.esm", &interner);
 
         let pairs = vec![("HumanRace".to_string(), human_vanilla)];
         let mut mapper = make_mapper_with_index(&pairs, &mut interner);
 
-        let h_outcome = apply_to_record("HumanRace", human_src, race_sig(), &mut mapper);
-        let z_outcome = apply_to_record("ZetanInvaderRace", zetan_src, race_sig(), &mut mapper);
-
-        assert_eq!(h_outcome, RaceOutcome::Remap);
-        assert_eq!(z_outcome, RaceOutcome::Drop);
-        assert_eq!(mapper.lookup(human_src), Some(human_vanilla));
-        assert!(mapper.lookup(zetan_src).is_none());
+        for (name, eid, source_fk, expected, expected_mapping) in [
+            (
+                "vanilla race",
+                "HumanRace",
+                human_src,
+                RaceOutcome::Remap,
+                Some(human_vanilla),
+            ),
+            (
+                "fo76-only race",
+                "ZetanInvaderRace",
+                zetan_src,
+                RaceOutcome::Drop,
+                None,
+            ),
+            ("no editor id", "", unnamed_src, RaceOutcome::Keep, None),
+        ] {
+            assert_eq!(
+                apply_to_record(eid, source_fk, race_sig(), &mut mapper),
+                expected,
+                "{name}"
+            );
+            assert_eq!(mapper.lookup(source_fk), expected_mapping, "{name}");
+        }
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn applies_to_false_for_npc_root() {
-        let interner = StringInterner::new();
+    fn applies_only_to_weapon_root_slices() {
         let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let config = FixupConfig {
-            is_whole_plugin: false,
-            root_sig: Some(SigCode::from_str("NPC_").unwrap()),
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        let fixup = FilterNonVanillaRacesForWeaponRootsFixup;
-        assert!(!fixup.applies_to(&ctx));
-        drop(interner);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_false_for_whole_plugin() {
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let config = FixupConfig {
-            is_whole_plugin: true,
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        let fixup = FilterNonVanillaRacesForWeaponRootsFixup;
-        assert!(!fixup.applies_to(&ctx));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_true_for_weap_root() {
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let config = FixupConfig {
-            is_whole_plugin: false,
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        let fixup = FilterNonVanillaRacesForWeaponRootsFixup;
-        assert!(fixup.applies_to(&ctx));
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_false_for_lvln_root() {
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").unwrap());
-        let config = FixupConfig {
-            is_whole_plugin: false,
-            root_sig: Some(SigCode::from_str("LVLN").unwrap()),
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-        let fixup = FilterNonVanillaRacesForWeaponRootsFixup;
-        assert!(!fixup.applies_to(&ctx));
+        for (name, is_whole_plugin, root, expected) in [
+            ("npc root", false, "NPC_", false),
+            ("whole plugin", true, "WEAP", false),
+            ("weapon root", false, "WEAP", true),
+            ("leveled npc root", false, "LVLN", false),
+        ] {
+            let config = FixupConfig {
+                is_whole_plugin,
+                root_sig: Some(SigCode::from_str(root).unwrap()),
+                ..Default::default()
+            };
+            let ctx = FixupContext {
+                source_handle_id: 1,
+                target_handle_id: 2,
+                schema_target: &schema,
+                schema_source: &schema,
+                skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
+                mod_path: None,
+                source_extracted_dir: None,
+                target_master_handle_ids: &[],
+                config: &config,
+            };
+            assert_eq!(
+                FilterNonVanillaRacesForWeaponRootsFixup.applies_to(&ctx),
+                expected,
+                "{name}"
+            );
+        }
     }
 }

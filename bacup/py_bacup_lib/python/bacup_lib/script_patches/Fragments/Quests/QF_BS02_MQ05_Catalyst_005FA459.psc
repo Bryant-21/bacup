@@ -451,6 +451,9 @@ Function Fragment_Stage_1402_Item_00()
 EndFunction
 
 Function Fragment_Stage_1405_Item_00()
+    If !IsStageDone(1410)
+        SetStage(1410)
+    EndIf
     If BS02_MQ05_Catalyst_KillingScientists != None && !BS02_MQ05_Catalyst_KillingScientists.IsPlaying()
         BS02_MQ05_Catalyst_KillingScientists.Start()
     EndIf
@@ -473,14 +476,23 @@ EndFunction
 
 Function Fragment_Stage_1411_Item_00()
     Alias_Actor_Farha_WestTek.TryToKill()
+    If IsStageDone(1412) && IsStageDone(1413) && !IsStageDone(1460)
+        SetStage(1460)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1412_Item_00()
     Alias_Actor_Anthony_WestTek.TryToKill()
+    If IsStageDone(1411) && IsStageDone(1413) && !IsStageDone(1460)
+        SetStage(1460)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1413_Item_00()
     Alias_Actor_Nellie_WestTek.TryToKill()
+    If IsStageDone(1411) && IsStageDone(1412) && !IsStageDone(1460)
+        SetStage(1460)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1450_Item_00()

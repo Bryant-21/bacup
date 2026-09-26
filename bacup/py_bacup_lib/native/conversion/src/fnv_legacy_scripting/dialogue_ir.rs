@@ -1199,155 +1199,173 @@ mod tests {
     }
 
     #[test]
-    fn golden_13015b_to_130161_has_one_condition_and_response() {
-        let interner = StringInterner::new();
-        let quest = source_fk(0x11F935, &interner);
-        let speaker = source_fk(0x1300F0, &interner);
-        let target_quest = target_fk(0x11F935, &interner);
-        let target_speaker = target_fk(0x1300F0, &interner);
-        let topic = topic(0x13015B, &[quest], &interner);
-        let lowered_topic = lower_dial_topic(
-            &topic,
-            target_fk(0x13015B, &interner),
-            &HashMap::from([(quest, target_quest)]),
-            &[],
-            1,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(lowered_topic.len(), 1);
-        assert_eq!(lowered_topic[0].record.fields[0].sig.0, *b"EDID");
-        assert_eq!(
-            lowered_topic[0].record.fields[0].value,
-            FieldValue::String(interner.intern("VDialogue13015B"))
-        );
-        assert_eq!(
-            lowered_topic[0]
-                .record
-                .fields
-                .iter()
-                .find(|entry| entry.sig.0 == *b"TIFC")
-                .map(|entry| &entry.value),
-            Some(&FieldValue::Uint(1))
-        );
+    fn golden_infos_preserve_conditions_responses_and_zero_info_topics() {
+        {
+            let interner = StringInterner::new();
+            let quest = source_fk(0x11F935, &interner);
+            let speaker = source_fk(0x1300F0, &interner);
+            let target_quest = target_fk(0x11F935, &interner);
+            let target_speaker = target_fk(0x1300F0, &interner);
+            let topic = topic(0x13015B, &[quest], &interner);
+            let lowered_topic = lower_dial_topic(
+                &topic,
+                target_fk(0x13015B, &interner),
+                &HashMap::from([(quest, target_quest)]),
+                &[],
+                1,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(lowered_topic.len(), 1);
+            assert_eq!(lowered_topic[0].record.fields[0].sig.0, *b"EDID");
+            assert_eq!(
+                lowered_topic[0].record.fields[0].value,
+                FieldValue::String(interner.intern("VDialogue13015B"))
+            );
+            assert_eq!(
+                lowered_topic[0]
+                    .record
+                    .fields
+                    .iter()
+                    .find(|entry| entry.sig.0 == *b"TIFC")
+                    .map(|entry| &entry.value),
+                Some(&FieldValue::Uint(1))
+            );
 
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let handle = plugin_handle_new_no_py("Converted.esm", Some("fo4"));
-        add_record_native(
-            handle,
-            Record::new(SigCode(*b"QUST"), target_quest),
-            &schema,
-            &interner,
-        )
-        .unwrap();
-        assert!(
-            add_quest_child_record_native(
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let handle = plugin_handle_new_no_py("Converted.esm", Some("fo4"));
+            add_record_native(
                 handle,
-                lowered_topic[0].record.clone(),
+                Record::new(SigCode(*b"QUST"), target_quest),
                 &schema,
                 &interner,
             )
-            .unwrap()
-        );
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("Converted.esm");
-        plugin_handle_save_no_py(handle, path.to_str().unwrap()).unwrap();
-        plugin_handle_close_native(handle);
-        let reopened =
-            plugin_handle_load_no_py(path.to_str().unwrap(), Some("fo4"), None, None, true)
-                .unwrap();
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&reopened).unwrap();
-        assert_eq!(
-            find_parsed_record(&slot.parsed.root_items, "DIAL", 0x13015B)
-                .and_then(parsed_editor_id),
-            Some("VDialogue13015B")
-        );
-        drop(store);
-        plugin_handle_close_native(reopened);
-
-        let mut mapper = mapper(&interner);
-        mapper.add_mapping(speaker, target_speaker);
-        let lowered = lower_info_record(
-            &info(0x130161, speaker, 1, 1, &interner),
-            target_fk(0x130161, &interner),
-            voice(speaker, &interner),
-            &mut mapper,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(lowered.responses.len(), 1);
-        assert_eq!(lowered.condition_count, 1);
-        assert_eq!(lowered.target_voice_type.local, 0x02AB62);
-        assert_eq!(lowered.voice_requests.len(), 1);
-        assert_eq!(
-            lowered.voice_requests[0].target_voice_type_edid,
-            "MaleAdult01DefaultB"
-        );
-        assert!(
-            !lowered
-                .record
-                .fields
-                .iter()
-                .any(|entry| { matches!(entry.sig.0, sig if sig == *b"PNAM" || sig == *b"TRDT") })
-        );
-        assert!(
-            lowered
-                .record
-                .fields
-                .iter()
-                .any(|entry| entry.sig.0 == *b"ANAM")
-        );
-        assert!(
-            lowered
-                .record
-                .fields
-                .iter()
-                .any(|entry| entry.sig.0 == *b"TRDA")
-        );
-        let condition = lowered
-            .record
-            .fields
-            .iter()
-            .find(|entry| entry.sig.0 == *b"CTDA")
             .unwrap();
-        assert!(matches!(&condition.value, FieldValue::Bytes(bytes) if bytes.len() == 32));
-    }
+            assert!(
+                add_quest_child_record_native(
+                    handle,
+                    lowered_topic[0].record.clone(),
+                    &schema,
+                    &interner,
+                )
+                .unwrap()
+            );
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("Converted.esm");
+            plugin_handle_save_no_py(handle, path.to_str().unwrap()).unwrap();
+            plugin_handle_close_native(handle);
+            let reopened =
+                plugin_handle_load_no_py(path.to_str().unwrap(), Some("fo4"), None, None, true)
+                    .unwrap();
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get(&reopened).unwrap();
+            assert_eq!(
+                find_parsed_record(&slot.parsed.root_items, "DIAL", 0x13015B)
+                    .and_then(parsed_editor_id),
+                Some("VDialogue13015B")
+            );
+            drop(store);
+            plugin_handle_close_native(reopened);
 
-    #[test]
-    fn golden_134b9a_to_134b9b_preserves_four_conditions_two_responses() {
-        let interner = StringInterner::new();
-        let speaker = source_fk(0x1300F0, &interner);
-        let mut mapper = mapper(&interner);
-        mapper.add_mapping(speaker, target_fk(0x1300F0, &interner));
-        let lowered = lower_info_record(
-            &info(0x134B9B, speaker, 2, 4, &interner),
-            target_fk(0x134B9B, &interner),
-            voice(speaker, &interner),
-            &mut mapper,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(lowered.responses.len(), 2);
-        assert_eq!(lowered.condition_count, 4);
-        assert_eq!(
-            lowered
+            let mut mapper = mapper(&interner);
+            mapper.add_mapping(speaker, target_speaker);
+            let lowered = lower_info_record(
+                &info(0x130161, speaker, 1, 1, &interner),
+                target_fk(0x130161, &interner),
+                voice(speaker, &interner),
+                &mut mapper,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(lowered.responses.len(), 1);
+            assert_eq!(lowered.condition_count, 1);
+            assert_eq!(lowered.target_voice_type.local, 0x02AB62);
+            assert_eq!(lowered.voice_requests.len(), 1);
+            assert_eq!(
+                lowered.voice_requests[0].target_voice_type_edid,
+                "MaleAdult01DefaultB"
+            );
+            assert!(
+                !lowered.record.fields.iter().any(|entry| {
+                    matches!(entry.sig.0, sig if sig == *b"PNAM" || sig == *b"TRDT")
+                })
+            );
+            assert!(
+                lowered
+                    .record
+                    .fields
+                    .iter()
+                    .any(|entry| entry.sig.0 == *b"ANAM")
+            );
+            assert!(
+                lowered
+                    .record
+                    .fields
+                    .iter()
+                    .any(|entry| entry.sig.0 == *b"TRDA")
+            );
+            let condition = lowered
                 .record
                 .fields
                 .iter()
-                .filter(|entry| entry.sig.0 == *b"TRDA")
-                .count(),
-            2
-        );
-        assert_eq!(
-            lowered
-                .record
-                .fields
-                .iter()
-                .filter(|entry| entry.sig.0 == *b"NAM4")
-                .count(),
-            2
-        );
+                .find(|entry| entry.sig.0 == *b"CTDA")
+                .unwrap();
+            assert!(matches!(&condition.value, FieldValue::Bytes(bytes) if bytes.len() == 32));
+        }
+        {
+            let interner = StringInterner::new();
+            let speaker = source_fk(0x1300F0, &interner);
+            let mut mapper = mapper(&interner);
+            mapper.add_mapping(speaker, target_fk(0x1300F0, &interner));
+            let lowered = lower_info_record(
+                &info(0x134B9B, speaker, 2, 4, &interner),
+                target_fk(0x134B9B, &interner),
+                voice(speaker, &interner),
+                &mut mapper,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(lowered.responses.len(), 2);
+            assert_eq!(lowered.condition_count, 4);
+            assert_eq!(
+                lowered
+                    .record
+                    .fields
+                    .iter()
+                    .filter(|entry| entry.sig.0 == *b"TRDA")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                lowered
+                    .record
+                    .fields
+                    .iter()
+                    .filter(|entry| entry.sig.0 == *b"NAM4")
+                    .count(),
+                2
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let quest = source_fk(0x11F935, &interner);
+            let lowered = lower_dial_topic(
+                &topic(0x138A74, &[quest], &interner),
+                target_fk(0x138A74, &interner),
+                &HashMap::from([(quest, target_fk(0x11F935, &interner))]),
+                &[],
+                0,
+                &interner,
+            )
+            .unwrap();
+            assert!(
+                lowered[0]
+                    .record
+                    .fields
+                    .iter()
+                    .any(|entry| { entry.sig.0 == *b"TIFC" && entry.value == FieldValue::Uint(0) })
+            );
+        }
     }
 
     #[test]
@@ -1633,85 +1651,85 @@ mod tests {
     }
 
     #[test]
-    fn native_row_groups_keep_begin_and_end_result_script_phases() {
-        let interner = StringInterner::new();
-        let speaker = source_fk(0x1300F0, &interner);
-        let mut source = info(0x134B9B, speaker, 1, 0, &interner);
-        let sctx = interner.intern("SCTX");
-        source.fields.insert(
-            1,
-            field(
-                b"SCHR",
-                FieldValue::List(vec![FieldValue::Struct(vec![(
-                    sctx,
-                    FieldValue::Bytes(SmallVec::from_slice(b"SetStage VTechatticup 10")),
-                )])]),
-            ),
-        );
-        source.fields.insert(
-            2,
-            field(
-                b"NEXT",
-                FieldValue::List(vec![FieldValue::Struct(vec![(
-                    sctx,
+    fn native_row_groups_and_flat_markers_assign_result_script_phases() {
+        {
+            let interner = StringInterner::new();
+            let speaker = source_fk(0x1300F0, &interner);
+            let mut source = info(0x134B9B, speaker, 1, 0, &interner);
+            let sctx = interner.intern("SCTX");
+            source.fields.insert(
+                1,
+                field(
+                    b"SCHR",
+                    FieldValue::List(vec![FieldValue::Struct(vec![(
+                        sctx,
+                        FieldValue::Bytes(SmallVec::from_slice(b"SetStage VTechatticup 10")),
+                    )])]),
+                ),
+            );
+            source.fields.insert(
+                2,
+                field(
+                    b"NEXT",
+                    FieldValue::List(vec![FieldValue::Struct(vec![(
+                        sctx,
+                        FieldValue::Bytes(SmallVec::from_slice(b"SetStage VTechatticup 100")),
+                    )])]),
+                ),
+            );
+            let mut mapper = mapper(&interner);
+            mapper.add_mapping(speaker, target_fk(0x1300F0, &interner));
+            let lowered = lower_info_record(
+                &source,
+                target_fk(0x134B9B, &interner),
+                voice(speaker, &interner),
+                &mut mapper,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(
+                lowered.fragment_phases,
+                [InfoFragmentPhase::Begin, InfoFragmentPhase::End]
+            );
+            assert_eq!(
+                lowered.embedded_script_sources,
+                [
+                    b"SetStage VTechatticup 10".to_vec(),
+                    b"SetStage VTechatticup 100".to_vec()
+                ]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let speaker = source_fk(0x1300F0, &interner);
+            let mut source = info(0x134B9B, speaker, 1, 0, &interner);
+            source.fields.insert(1, field(b"NEXT", FieldValue::None));
+            source
+                .fields
+                .insert(2, field(b"SCHR", FieldValue::Bytes(SmallVec::new())));
+            source.fields.insert(
+                3,
+                field(
+                    b"SCTX",
                     FieldValue::Bytes(SmallVec::from_slice(b"SetStage VTechatticup 100")),
-                )])]),
-            ),
-        );
-        let mut mapper = mapper(&interner);
-        mapper.add_mapping(speaker, target_fk(0x1300F0, &interner));
-        let lowered = lower_info_record(
-            &source,
-            target_fk(0x134B9B, &interner),
-            voice(speaker, &interner),
-            &mut mapper,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(
-            lowered.fragment_phases,
-            [InfoFragmentPhase::Begin, InfoFragmentPhase::End]
-        );
-        assert_eq!(
-            lowered.embedded_script_sources,
-            [
-                b"SetStage VTechatticup 10".to_vec(),
-                b"SetStage VTechatticup 100".to_vec()
-            ]
-        );
-    }
-
-    #[test]
-    fn flat_next_marker_assigns_trailing_schr_and_sctx_to_end_phase() {
-        let interner = StringInterner::new();
-        let speaker = source_fk(0x1300F0, &interner);
-        let mut source = info(0x134B9B, speaker, 1, 0, &interner);
-        source.fields.insert(1, field(b"NEXT", FieldValue::None));
-        source
-            .fields
-            .insert(2, field(b"SCHR", FieldValue::Bytes(SmallVec::new())));
-        source.fields.insert(
-            3,
-            field(
-                b"SCTX",
-                FieldValue::Bytes(SmallVec::from_slice(b"SetStage VTechatticup 100")),
-            ),
-        );
-        let mut mapper = mapper(&interner);
-        mapper.add_mapping(speaker, target_fk(0x1300F0, &interner));
-        let lowered = lower_info_record(
-            &source,
-            target_fk(0x134B9B, &interner),
-            voice(speaker, &interner),
-            &mut mapper,
-            &interner,
-        )
-        .unwrap();
-        assert_eq!(lowered.fragment_phases, [InfoFragmentPhase::End]);
-        assert_eq!(
-            lowered.embedded_script_sources,
-            [b"SetStage VTechatticup 100".to_vec()]
-        );
+                ),
+            );
+            let mut mapper = mapper(&interner);
+            mapper.add_mapping(speaker, target_fk(0x1300F0, &interner));
+            let lowered = lower_info_record(
+                &source,
+                target_fk(0x134B9B, &interner),
+                voice(speaker, &interner),
+                &mut mapper,
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(lowered.fragment_phases, [InfoFragmentPhase::End]);
+            assert_eq!(
+                lowered.embedded_script_sources,
+                [b"SetStage VTechatticup 100".to_vec()]
+            );
+        }
     }
 
     #[test]
@@ -1880,28 +1898,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("GetIsID 123193"));
-    }
-
-    #[test]
-    fn golden_138a74_emits_valid_zero_info_topic() {
-        let interner = StringInterner::new();
-        let quest = source_fk(0x11F935, &interner);
-        let lowered = lower_dial_topic(
-            &topic(0x138A74, &[quest], &interner),
-            target_fk(0x138A74, &interner),
-            &HashMap::from([(quest, target_fk(0x11F935, &interner))]),
-            &[],
-            0,
-            &interner,
-        )
-        .unwrap();
-        assert!(
-            lowered[0]
-                .record
-                .fields
-                .iter()
-                .any(|entry| { entry.sig.0 == *b"TIFC" && entry.value == FieldValue::Uint(0) })
-        );
     }
 
     #[test]

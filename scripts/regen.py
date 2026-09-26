@@ -431,8 +431,15 @@ def _deploy_data_dir_from_args(args) -> Path | None:
 
 def _archive_max_bytes_from_args(args) -> int:
     from creation_lib.build.archive_plan import gib_to_bytes
+    from bacup_lib.regen_pipeline import UNLIMITED_ARCHIVE_MAX_BYTES
 
-    return gib_to_bytes(float(getattr(args, "archive_max_size_gb", 16.0)))
+    size_gb = getattr(args, "archive_max_size_gb", None)
+    if size_gb is None:
+        # Expanded archives shard at this size; the packed layout has no limit.
+        if getattr(args, "expanded_archives", False):
+            return gib_to_bytes(16.0)
+        return UNLIMITED_ARCHIVE_MAX_BYTES
+    return gib_to_bytes(float(size_gb))
 
 
 def _create_run_logs_dir(mod_name: str) -> Path:
@@ -600,9 +607,15 @@ def _args_to_regen_options(args) -> RegenOptions:
         records_only=bool(getattr(args, "records_only", False)),
         include_interior=bool(getattr(args, "include_interior", True)),
         carry_interior_previs=bool(getattr(args, "carry_interior_previs", False)),
+        fail_on_duplicate_form_ids=bool(
+            getattr(args, "fail_on_duplicate_form_ids", False)
+        ),
+        interior_cdx_only=bool(getattr(args, "interior_cdx_only", False)),
         records_limit=args.records_limit,
         emit_btd4=bool(args.emit_btd4),
         generate_anim_text_data=bool(args.generate_anim_text_data),
+        build_precombines=bool(getattr(args, "build_precombines", True)),
+        generate_previs=bool(getattr(args, "generate_previs", True)),
         anim_text_data_native=bool(args.anim_text_data_native),
         validate_collision=bool(args.validate_collision),
         validate_output=bool(args.validate_output),
@@ -696,6 +709,37 @@ def run_full_mode(
         else:
             for failure in result.failures:
                 LOG.error(failure)
+        return result.exit_code
+
+    if args.previs_only:
+        phases = conv_cli.phase_selection_from_args(args)
+        options = _args_to_regen_options(args)
+        options.workers = conv_cli.resolve_workers(args.workers)
+        options.generate_anim_text_data = False
+        options.lod_mode = "convert"
+        start_phase = "precombine" if options.build_precombines else "previs"
+        with _progress_runner(log_handler.stream) as runner:
+            try:
+                result = regen_pipeline.run_resume_from_phase(
+                    paths,
+                    options,
+                    start_phase=start_phase,
+                    phases=phases,
+                    runner=runner,
+                    plugin_names=output_plugin_names,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                LOG.error("%s", exc)
+                return 2
+        for warning in result.warnings[:25]:
+            LOG.warning("%s", warning)
+        for failure in result.failures:
+            LOG.error("%s", failure)
+        LOG.info(
+            "previs-only elapsed_seconds=%.3f exit_code=%s",
+            result.elapsed_seconds,
+            result.exit_code,
+        )
         return result.exit_code
 
     if args.pack_only:
@@ -882,6 +926,15 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         help="Pack the existing mods/<mod> loose assets into BA2 archives without deploying.",
     )
     parser.add_argument(
+        "--previs-only",
+        action="store_true",
+        help=(
+            "Regenerate only precombines and previs on the existing mods/<mod> "
+            "output, then repack its BA2s (and deploy with --deploy). "
+            "--no-precombines / --no-previs narrow it to one of the two."
+        ),
+    )
+    parser.add_argument(
         "--deploy-to-mo2",
         metavar="DIR",
         help=(
@@ -893,8 +946,11 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
     parser.add_argument(
         "--archive-max-size-gb",
         type=float,
-        default=16.0,
-        help="Maximum BA2 archive size in GiB before splitting (default 16.0).",
+        default=None,
+        help=(
+            "Maximum BA2 archive size in GiB. Default: no limit; with "
+            "--expanded-archives, family archives split at 16."
+        ),
     )
     parser.add_argument(
         "--expanded-archives",
@@ -935,9 +991,52 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--emit-btd4",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=False,
-        help="Emit loose Terrain/<worldspace>.btd4 dense LAND sidecar files.",
+        help=(
+            "Emit loose Terrain/<worldspace>.btd4 dense LAND sidecars (heights, "
+            "texture alpha, GCVR grass masks, colors) for the Tales dense-terrain "
+            "runtime. Experimental opt-in; the ESM is the same either way."
+        ),
+    )
+    parser.add_argument(
+        "--precombines",
+        "--build-precombines",
+        dest="build_precombines",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Build precombined meshes (Meshes/PreCombined/*_OC.NIF, the plugin "
+            "geometry CSG + CDX and CELL PCMB/XCRI) for interior CELLs inside the "
+            "CK-verified subset. Runs before previs. On by default; "
+            "--no-precombines skips it."
+        ),
+    )
+    parser.add_argument(
+        "--interior-cdx-only",
+        dest="interior_cdx_only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Leave exterior CELLs out of the precombine index, so no "
+            "<plugin> - Exterior.cdx is written (smaller output). By default "
+            "exterior rows go to that side file, which Tales loads into an index "
+            "of its own: FO4 loads every plugin's <plugin>.cdx rows into one "
+            "index of about 7.4M rows, and Appalachia's exterior rows would "
+            "overflow it and crash the game at startup."
+        ),
+    )
+    parser.add_argument(
+        "--previs",
+        "--generate-previs",
+        dest="generate_previs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Generate Umbra previs (Vis/*.uvd + CELL VISI/RVIS/XPRI) for clusters "
+            "the planner supports, solved by the clean-room Rust visibility solver. "
+            "On by default; --no-previs skips it."
+        ),
     )
     parser.add_argument(
         "--generate-anim-text-data",
@@ -1093,6 +1192,14 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         "--carry-interior-previs",
         action="store_true",
         help="Carry FO76 previs hashes on interior cells (default: strip).",
+    )
+    parser.add_argument(
+        "--fail-on-duplicate-form-ids",
+        action="store_true",
+        help=(
+            "Fail the final plugin save if two records share a FormID; the "
+            "previous output ESM is left in place (default: off)."
+        ),
     )
     parser.add_argument(
         "--include-interior",
@@ -1260,6 +1367,15 @@ def _validate_output_mode(parser: argparse.ArgumentParser, args) -> None:
         parser.error(str(exc))
     if getattr(args, "pack_only", False) and getattr(args, "deploy_to_mo2", None):
         parser.error("--pack-only cannot be combined with --deploy-to-mo2")
+    if getattr(args, "previs_only", False):
+        if not (args.build_precombines or args.generate_previs):
+            parser.error("--previs-only needs precombines or previs enabled")
+        if any((args.undeploy, args.deploy_only, args.pack_only, args.upgrade, args.mvp,
+                getattr(args, "scripts_only", False), getattr(args, "records_only", False))):
+            parser.error(
+                "--previs-only cannot be combined with --undeploy, --deploy-only, "
+                "--pack-only, --upgrade, --mvp, --scripts-only or --records-only"
+            )
     if getattr(args, "scripts_only", False):
         if getattr(args, "pair", DEFAULT_PAIR_ID) != DEFAULT_PAIR_ID:
             parser.error("--scripts-only currently supports only fo76:fo4")

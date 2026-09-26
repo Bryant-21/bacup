@@ -2,7 +2,7 @@ Function RecordDatabaseQuery(Int aiQuestIndex, Int aiStage)
     MoMMasterQuestScript masterScript = MoMMaster as MoMMasterQuestScript
     If masterScript != None && masterScript.MoMQuestList.Length > aiQuestIndex
         Quest targetQuest = masterScript.MoMQuestList[aiQuestIndex].MoMQuest
-        If targetQuest != None && !targetQuest.IsStageDone(aiStage)
+        If targetQuest != None && targetQuest.IsRunning() && !targetQuest.IsStageDone(aiStage)
             targetQuest.SetStage(aiStage)
         EndIf
     EndIf

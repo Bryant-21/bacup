@@ -124,6 +124,7 @@ fn strip_unbaked_human_face_morphs(
     has_facegeom: bool,
 ) -> bool {
     if has_facegeom
+        || is_chargen_preset(record)
         || !has_fo4_runtime_facegen_humanoid_race(record, interner)
         || !has_face_deformation(record)
     {
@@ -135,6 +136,15 @@ fn strip_unbaked_human_face_morphs(
         .fields
         .retain(|entry| !FACE_DEFORMATION_SIGS.contains(&entry.sig.as_str()));
     record.fields.len() != before
+}
+
+fn is_chargen_preset(record: &Record) -> bool {
+    // Presets supply live player face generation; they are not spawned NPCs needing FaceGeom.
+    record.fields.iter().any(|entry| {
+        entry.sig.as_str() == "ACBS" && matches!(&entry.value,
+            FieldValue::Bytes(bytes) if bytes.len() >= 4 &&
+            u32::from_le_bytes(bytes[..4].try_into().unwrap()) & 4 != 0)
+    })
 }
 
 fn has_face_deformation(record: &Record) -> bool {
@@ -283,7 +293,21 @@ mod tests {
     }
 
     #[test]
-    fn strips_deformation_fields_from_unbaked_human_npc() {
+    fn chargen_presets_keep_validated_morphs_without_baked_npc_faces() {
+        let interner = StringInterner::new();
+        for flags in [0_u32, 1, 4, 5] {
+            let mut npc = record(vec![
+                ("ACBS", FieldValue::Bytes(flags.to_le_bytes().to_vec().into())),
+                ("RNAM", human_race(&interner)),
+                ("MSDK", bytes()), ("MSDV", bytes()), ("FMRI", FieldValue::Uint(7)),
+            ], &interner);
+            assert_eq!(strip_unbaked_human_face_morphs(&mut npc, &interner, false), flags & 4 == 0);
+            assert_eq!(has_face_deformation(&npc), flags & 4 != 0);
+        }
+    }
+
+    #[test]
+    fn strips_deformation_fields_only_from_unbaked_human_and_ghoul_npcs() {
         let interner = StringInterner::new();
         let mut npc = record(
             vec![
@@ -304,63 +328,43 @@ mod tests {
 
         assert!(strip_unbaked_human_face_morphs(&mut npc, &interner, false));
         assert_eq!(sigs(&npc), vec!["EDID", "RNAM", "PNAM", "HCLF", "FTST"]);
+
+        for (name, race, has_facegeom, expected_changed, expected_sigs) in [
+            ("ghoul", ghoul_race(&interner), false, true, vec!["RNAM"]),
+            (
+                "human_with_facegeom",
+                human_race(&interner),
+                true,
+                false,
+                vec!["RNAM", "MSDK", "FMRI"],
+            ),
+            (
+                "non_human",
+                other_race(&interner),
+                false,
+                false,
+                vec!["RNAM", "MSDK", "FMRI"],
+            ),
+        ] {
+            let mut npc = record(
+                vec![
+                    ("RNAM", race),
+                    ("MSDK", bytes()),
+                    ("FMRI", FieldValue::Uint(100005)),
+                ],
+                &interner,
+            );
+            assert_eq!(
+                strip_unbaked_human_face_morphs(&mut npc, &interner, has_facegeom),
+                expected_changed,
+                "{name}"
+            );
+            assert_eq!(sigs(&npc), expected_sigs, "{name}");
+        }
     }
 
     #[test]
-    fn preserves_human_npc_when_matching_facegeom_exists() {
-        let interner = StringInterner::new();
-        let mut npc = record(
-            vec![("RNAM", human_race(&interner)), ("MSDK", bytes())],
-            &interner,
-        );
-
-        assert!(!strip_unbaked_human_face_morphs(&mut npc, &interner, true));
-        assert_eq!(sigs(&npc), vec!["RNAM", "MSDK"]);
-    }
-
-    #[test]
-    fn strips_deformation_fields_from_unbaked_ghoul_npc() {
-        let interner = StringInterner::new();
-        let mut npc = record(
-            vec![
-                ("RNAM", ghoul_race(&interner)),
-                ("MSDK", bytes()),
-                ("MSDV", bytes()),
-                ("FMRI", FieldValue::Uint(100005)),
-                ("FMRS", bytes()),
-                ("FMIN", FieldValue::Float(2.0)),
-            ],
-            &interner,
-        );
-
-        assert!(strip_unbaked_human_face_morphs(&mut npc, &interner, false));
-        assert_eq!(sigs(&npc), vec!["RNAM"]);
-    }
-
-    #[test]
-    fn ignores_non_human_npc() {
-        let interner = StringInterner::new();
-        let mut npc = record(
-            vec![("RNAM", other_race(&interner)), ("MSDK", bytes())],
-            &interner,
-        );
-
-        assert!(!strip_unbaked_human_face_morphs(&mut npc, &interner, false));
-        assert_eq!(sigs(&npc), vec!["RNAM", "MSDK"]);
-    }
-
-    #[test]
-    fn runs_without_mod_path_context() {
-        assert!(applies_for_root(None));
-        assert!(!known_matching_facegeom_exists(
-            None,
-            "SeventySix.esm",
-            0x0058_58E7
-        ));
-    }
-
-    #[test]
-    fn finds_lowercase_loose_facegeom_path() {
+    fn finds_lowercase_loose_facegeom_path_and_runs_without_mod_path() {
         let dir = tempfile::tempdir().unwrap();
         let facegeom_dir = dir
             .path()
@@ -375,5 +379,12 @@ mod tests {
         std::fs::write(facegeom_dir.join("005858e7.nif"), b"nif").unwrap();
 
         assert!(facegeom_exists(dir.path(), "SeventySix.esm", 0x0058_58E7));
+
+        assert!(applies_for_root(None));
+        assert!(!known_matching_facegeom_exists(
+            None,
+            "SeventySix.esm",
+            0x0058_58E7
+        ));
     }
 }

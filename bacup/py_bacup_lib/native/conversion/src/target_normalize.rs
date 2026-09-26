@@ -89,6 +89,7 @@ impl<'a> TargetRecordNormalizer<'a> {
         );
         strip_generated_additive_race_tint_tables(&mut record, self.interner);
         drop_empty_leveled_item_override_name(&mut record, self.interner);
+        strip_unsupported_qust_condition_groups(&mut record, target_record_def);
 
         let supported_sigs = target_record_def
             .subrecords
@@ -250,6 +251,18 @@ impl<'a> TargetRecordNormalizer<'a> {
                 } else if target_record_def.id == "LAND" && scope_id == "layers" {
                     // LAND layers repeat a union of BTXT or ATXT+VTXT, so BTXT
                     // cannot serve as the anchor for every row.
+                    self.emit_segment_body_in_source_order(
+                        segment,
+                        &mut fields_by_sig,
+                        &mut ordered,
+                        0,
+                        usize::MAX,
+                    );
+                } else if target_record_def.id == "NOCM" {
+                    // Each INDX row carries a variable DATA cover-edge run; anchoring
+                    // on INDX keeps one DATA per row and drops the rest, so FO4 finds
+                    // no 0xFFFF side terminator and reads past the cover-edge array
+                    // in BSNavmeshObstacleCutter.
                     self.emit_segment_body_in_source_order(
                         segment,
                         &mut fields_by_sig,
@@ -3024,11 +3037,57 @@ fn condition_scope_row_end(
     row_end
 }
 
+fn strip_unsupported_qust_condition_groups(record: &mut Record, target_record_def: &RecordDef) {
+    if target_record_def.id != "QUST"
+        || target_record_def
+            .subrecords
+            .iter()
+            .filter(|def| def.id == "NEXT")
+            .count()
+            != 1
+    {
+        return;
+    }
+
+    let local = record.form_key.local;
+    let mut group = 0;
+    let mut in_header = true;
+    record.fields.retain(|entry| {
+        if matches!(
+            entry.sig.as_str(),
+            "INDX" | "QSDT" | "QOBJ" | "NNAM" | "QSTA" | "ANAM" | "ALST" | "ALLS" | "ALCS"
+        ) {
+            in_header = false;
+        }
+        if !in_header {
+            return true;
+        }
+        if entry.sig.as_str() == "NEXT" {
+            group += 1;
+        }
+        // FO76's later header lists have no FO4 slot. Keeping their CTDAs while
+        // deduplicating NEXT promotes alias-dependent checks into quest selection.
+        if group > 1
+            && matches!(entry.sig.as_str(), "NEXT" | "CTDA" | "CTDT" | "CIS1" | "CIS2")
+        {
+            crate::drop_trace::trace(
+                "normalize.unsupported_qust_condition_group",
+                "QUST",
+                local,
+                entry.sig.as_str(),
+                "header condition group after second NEXT has no target slot; cannot merge into Story Manager conditions",
+            );
+            return false;
+        }
+        true
+    });
+}
+
 fn first_qust_dialogue_conditions_boundary(
     fields_by_sig: &HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
 ) -> usize {
     [
-        "NEXT", "INDX", "QSDT", "NNAM", "QSTA", "ANAM", "ALST", "ALLS", "ALCS",
+        "NEXT", "INDX", "QSDT", "QOBJ", "NNAM", "QSTA", "ANAM", "ALST", "ALLS", "ALCS",
     ]
     .iter()
     .filter_map(|sig| crate::ids::SubrecordSig::from_str(sig).ok())
@@ -3055,7 +3114,7 @@ fn first_qust_unscoped_condition_boundary(
     fields_by_sig: &HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
 ) -> usize {
     [
-        "INDX", "QSDT", "NNAM", "QSTA", "ANAM", "ALST", "ALLS", "ALCS",
+        "INDX", "QSDT", "QOBJ", "NNAM", "QSTA", "ANAM", "ALST", "ALLS", "ALCS",
     ]
     .iter()
     .filter_map(|sig| crate::ids::SubrecordSig::from_str(sig).ok())
@@ -3089,7 +3148,7 @@ fn first_qust_story_manager_conditions_boundary(
     fields_by_sig: &HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>>,
 ) -> usize {
     [
-        "INDX", "QSDT", "NNAM", "QSTA", "ANAM", "ALST", "ALLS", "ALCS",
+        "INDX", "QSDT", "QOBJ", "NNAM", "QSTA", "ANAM", "ALST", "ALLS", "ALCS",
     ]
     .iter()
     .filter_map(|sig| crate::ids::SubrecordSig::from_str(sig).ok())
@@ -4104,6 +4163,7 @@ fn pad_race_hclf_to_male_female(record: &mut Record) {
 
 const NPC_ACBS_TEMPLATE_FLAGS_OFFSET: usize = 14;
 const NPC_ACBS_FLAG_ESSENTIAL: u32 = 0x0000_0002;
+#[cfg(test)]
 const NPC_ACBS_FLAG_UNKNOWN_25: u32 = 0x0200_0000;
 const NPC_ACBS_FLAG_IS_GHOST: u32 = 0x2000_0000;
 const NPC_ACBS_FLAG_INVULNERABLE: u32 = 0x8000_0000;
@@ -5088,8 +5148,14 @@ fn normalize_fo76_qust_qsta_for_fo4(
     source_def: Option<&SubrecordDef>,
     target_def: &SubrecordDef,
 ) -> Option<Vec<u8>> {
+    let source_def = source_def?;
+    let split_area_flags = subrecord_fields_are(
+        source_def,
+        &["alias", "target_flags", "area_flags", "keyword", "radius"],
+    );
     if target_def.id != "QSTA"
-        || !subrecord_fields_are(source_def?, &["alias", "target_flags", "keyword", "radius"])
+        || !(split_area_flags
+            || subrecord_fields_are(source_def, &["alias", "target_flags", "keyword", "radius"]))
         || !subrecord_fields_are(target_def, &["alias", "flags", "keyword"])
         || raw.len() < 14
     {
@@ -5098,7 +5164,12 @@ fn normalize_fo76_qust_qsta_for_fo4(
 
     let mut normalized = Vec::with_capacity(12);
     normalized.extend_from_slice(&raw[0..4]);
-    let target_flags = u16::from_le_bytes([raw[4], raw[5]]) as u32;
+    // FO76 area flags feed the objective-area phase; they have no FO4 QSTA flag meaning.
+    let target_flags = if split_area_flags {
+        u32::from(raw[4])
+    } else {
+        u16::from_le_bytes([raw[4], raw[5]]) as u32
+    };
     normalized.extend_from_slice(&target_flags.to_le_bytes());
     normalized.extend_from_slice(&raw[6..10]);
     Some(normalized)
@@ -5925,54 +5996,54 @@ mod tests {
     }
 
     #[test]
-    fn pads_short_race_hclf_to_two_elements() {
-        let interner = StringInterner::new();
-        // 1-element HCLF (Male only, 4 bytes) — FishermanRace shape.
-        let mut rec = record(
-            "RACE",
-            vec![bytes_field("HCLF", 0x0A0439u32.to_le_bytes().to_vec())],
-            &interner,
-        );
-        pad_race_hclf_to_male_female(&mut rec);
-        let hclf = rec
-            .fields
-            .iter()
-            .find(|f| f.sig.as_str() == "HCLF")
-            .unwrap();
-        let FieldValue::Bytes(b) = &hclf.value else {
-            panic!()
-        };
-        assert_eq!(b.len(), 8, "padded to 2 formids (Male,Female)");
-        assert_eq!(&b[0..4], &0x0A0439u32.to_le_bytes(), "Male color preserved");
-        assert_eq!(&b[4..8], &0u32.to_le_bytes(), "Female slot is NULL");
-    }
+    fn pads_only_short_race_hclf_to_two_elements() {
+        {
+            let interner = StringInterner::new();
+            // 1-element HCLF (Male only, 4 bytes) — FishermanRace shape.
+            let mut rec = record(
+                "RACE",
+                vec![bytes_field("HCLF", 0x0A0439u32.to_le_bytes().to_vec())],
+                &interner,
+            );
+            pad_race_hclf_to_male_female(&mut rec);
+            let hclf = rec
+                .fields
+                .iter()
+                .find(|f| f.sig.as_str() == "HCLF")
+                .unwrap();
+            let FieldValue::Bytes(b) = &hclf.value else {
+                panic!()
+            };
+            assert_eq!(b.len(), 8, "padded to 2 formids (Male,Female)");
+            assert_eq!(&b[0..4], &0x0A0439u32.to_le_bytes(), "Male color preserved");
+            assert_eq!(&b[4..8], &0u32.to_le_bytes(), "Female slot is NULL");
+        }
+        {
+            let interner = StringInterner::new();
+            // 2-element HCLF — already correct, untouched.
+            let mut full = record(
+                "RACE",
+                vec![bytes_field("HCLF", vec![1, 2, 3, 4, 5, 6, 7, 8])],
+                &interner,
+            );
+            pad_race_hclf_to_male_female(&mut full);
+            let FieldValue::Bytes(b) = &full.fields[0].value else {
+                panic!()
+            };
+            assert_eq!(b.len(), 8, "2-element HCLF unchanged");
 
-    #[test]
-    fn leaves_full_and_empty_race_hclf_untouched() {
-        let interner = StringInterner::new();
-        // 2-element HCLF — already correct, untouched.
-        let mut full = record(
-            "RACE",
-            vec![bytes_field("HCLF", vec![1, 2, 3, 4, 5, 6, 7, 8])],
-            &interner,
-        );
-        pad_race_hclf_to_male_female(&mut full);
-        let FieldValue::Bytes(b) = &full.fields[0].value else {
-            panic!()
-        };
-        assert_eq!(b.len(), 8, "2-element HCLF unchanged");
-
-        // HCLF on a non-RACE record — untouched even if 4 bytes.
-        let mut other = record(
-            "NPC_",
-            vec![bytes_field("HCLF", vec![1, 2, 3, 4])],
-            &interner,
-        );
-        pad_race_hclf_to_male_female(&mut other);
-        let FieldValue::Bytes(b) = &other.fields[0].value else {
-            panic!()
-        };
-        assert_eq!(b.len(), 4, "non-RACE HCLF not padded");
+            // HCLF on a non-RACE record — untouched even if 4 bytes.
+            let mut other = record(
+                "NPC_",
+                vec![bytes_field("HCLF", vec![1, 2, 3, 4])],
+                &interner,
+            );
+            pad_race_hclf_to_male_female(&mut other);
+            let FieldValue::Bytes(b) = &other.fields[0].value else {
+                panic!()
+            };
+            assert_eq!(b.len(), 4, "non-RACE HCLF not padded");
+        }
     }
 
     fn normalize_target_only_with_interner(
@@ -6619,127 +6690,123 @@ mod tests {
     }
 
     #[test]
-    fn converts_fo76_imgs_enam_to_fo4_hdr_for_clear_weather() {
-        let interner = StringInterner::new();
-        let record = record(
-            "IMGS",
-            vec![bytes_field(
-                "ENAM",
-                f32_bytes(&[
-                    2.0, 0.02, 0.5, 0.0, 6.0, 2.0, 300.0, 100.0, 0.18, 1.0, 11.2, 1.0, 1.0,
-                ]),
-            )],
-            &interner,
-        );
+    fn converts_fo76_imgs_enam_fnam_gnam_to_fo4_hdr() {
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "IMGS",
+                vec![bytes_field(
+                    "ENAM",
+                    f32_bytes(&[
+                        2.0, 0.02, 0.5, 0.0, 6.0, 2.0, 300.0, 100.0, 0.18, 1.0, 11.2, 1.0, 1.0,
+                    ]),
+                )],
+                &interner,
+            );
 
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "IMGS", &interner)
-        else {
-            panic!("IMGS should be supported");
-        };
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "IMGS", &interner)
+            else {
+                panic!("IMGS should be supported");
+            };
 
-        assert_eq!(sigs(&record), vec!["HNAM"]);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("HNAM should be raw bytes");
-        };
-        let values = decode_f32_prefix(bytes.as_slice());
-        assert_eq!(values.len(), 9);
-        assert_eq!(values[3], 0.2);
-        assert_eq!(values[4], 6.0);
-        assert_eq!(values[5], 2.0);
-        assert_eq!(values[6], 4.5);
-        assert_eq!(values[7], 2.4);
-        assert!((values[8] - 0.18).abs() < 0.0001);
-    }
+            assert_eq!(sigs(&record), vec!["HNAM"]);
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("HNAM should be raw bytes");
+            };
+            let values = decode_f32_prefix(bytes.as_slice());
+            assert_eq!(values.len(), 9);
+            assert_eq!(values[3], 0.2);
+            assert_eq!(values[4], 6.0);
+            assert_eq!(values[5], 2.0);
+            assert_eq!(values[6], 4.5);
+            assert_eq!(values[7], 2.4);
+            assert!((values[8] - 0.18).abs() < 0.0001);
+        }
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "IMGS",
+                vec![bytes_field(
+                    "ENAM",
+                    f32_bytes(&[
+                        8.0, 0.02, 0.5, 0.0, 4.5, 2.5, 0.0, 100.0, 0.18, 0.3, 11.2, 2.0, 1.0,
+                    ]),
+                )],
+                &interner,
+            );
 
-    #[test]
-    fn converts_fo76_imgs_enam_to_fo4_hdr_without_zeroing_interiors() {
-        let interner = StringInterner::new();
-        let record = record(
-            "IMGS",
-            vec![bytes_field(
-                "ENAM",
-                f32_bytes(&[
-                    8.0, 0.02, 0.5, 0.0, 4.5, 2.5, 0.0, 100.0, 0.18, 0.3, 11.2, 2.0, 1.0,
-                ]),
-            )],
-            &interner,
-        );
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "IMGS", &interner)
+            else {
+                panic!("IMGS should be supported");
+            };
 
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "IMGS", &interner)
-        else {
-            panic!("IMGS should be supported");
-        };
+            assert_eq!(sigs(&record), vec!["HNAM"]);
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("HNAM should be raw bytes");
+            };
+            let values = decode_f32_prefix(bytes.as_slice());
+            assert_eq!(values.len(), 9);
+            assert_eq!(values[3], 0.1);
+            assert_eq!(values[4], 4.5);
+            assert_eq!(values[5], 2.5);
+            assert_eq!(values[6], 1.8);
+            assert_eq!(values[7], 1.5);
+            assert!((values[8] - 0.18).abs() < 0.0001);
+        }
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "IMGS",
+                vec![bytes_field(
+                    "FNAM",
+                    f32_bytes(&[2.0, 0.02, 0.5, 0.2, 16.0, 0.0, 1.0, 1.0, 0.18, 0.15, 11.2]),
+                )],
+                &interner,
+            );
 
-        assert_eq!(sigs(&record), vec!["HNAM"]);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("HNAM should be raw bytes");
-        };
-        let values = decode_f32_prefix(bytes.as_slice());
-        assert_eq!(values.len(), 9);
-        assert_eq!(values[3], 0.1);
-        assert_eq!(values[4], 4.5);
-        assert_eq!(values[5], 2.5);
-        assert_eq!(values[6], 1.8);
-        assert_eq!(values[7], 1.5);
-        assert!((values[8] - 0.18).abs() < 0.0001);
-    }
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "IMGS", &interner)
+            else {
+                panic!("IMGS should be supported");
+            };
 
-    #[test]
-    fn converts_fo76_imgs_fnam_to_fo4_hdr() {
-        let interner = StringInterner::new();
-        let record = record(
-            "IMGS",
-            vec![bytes_field(
-                "FNAM",
-                f32_bytes(&[2.0, 0.02, 0.5, 0.2, 16.0, 0.0, 1.0, 1.0, 0.18, 0.15, 11.2]),
-            )],
-            &interner,
-        );
+            assert_eq!(sigs(&record), vec!["HNAM"]);
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("HNAM should be raw bytes");
+            };
+            let values = decode_f32_prefix(bytes.as_slice());
+            assert_eq!(values.len(), 9);
+            assert_eq!(values[0], 2.0);
+            assert_eq!(values[4], 16.0);
+        }
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "IMGS",
+                vec![bytes_field(
+                    "GNAM",
+                    f32_bytes(&[5.0, 0.025, 0.65, 0.25, 16.0, 0.0, 2.0, 2.0, 0.2]),
+                )],
+                &interner,
+            );
 
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "IMGS", &interner)
-        else {
-            panic!("IMGS should be supported");
-        };
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "IMGS", &interner)
+            else {
+                panic!("IMGS should be supported");
+            };
 
-        assert_eq!(sigs(&record), vec!["HNAM"]);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("HNAM should be raw bytes");
-        };
-        let values = decode_f32_prefix(bytes.as_slice());
-        assert_eq!(values.len(), 9);
-        assert_eq!(values[0], 2.0);
-        assert_eq!(values[4], 16.0);
-    }
-
-    #[test]
-    fn converts_fo76_imgs_gnam_to_fo4_hdr() {
-        let interner = StringInterner::new();
-        let record = record(
-            "IMGS",
-            vec![bytes_field(
-                "GNAM",
-                f32_bytes(&[5.0, 0.025, 0.65, 0.25, 16.0, 0.0, 2.0, 2.0, 0.2]),
-            )],
-            &interner,
-        );
-
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "IMGS", &interner)
-        else {
-            panic!("IMGS should be supported");
-        };
-
-        assert_eq!(sigs(&record), vec!["HNAM"]);
-        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
-            panic!("HNAM should be raw bytes");
-        };
-        let values = decode_f32_prefix(bytes.as_slice());
-        assert_eq!(values.len(), 9);
-        assert_eq!(values[0], 5.0);
-        assert_eq!(values[4], 16.0);
+            assert_eq!(sigs(&record), vec!["HNAM"]);
+            let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+                panic!("HNAM should be raw bytes");
+            };
+            let values = decode_f32_prefix(bytes.as_slice());
+            assert_eq!(values.len(), 9);
+            assert_eq!(values[0], 5.0);
+            assert_eq!(values[4], 16.0);
+        }
     }
 
     /// Byte-exact DNAM of the shipped FO76 record
@@ -6775,28 +6842,26 @@ mod tests {
     }
 
     #[test]
-    fn clamps_fo76_imgs_depth_of_field_into_the_fo4_envelope() {
-        let out = normalized_imgs_dnam(imgs_dnam_bytes(10.0, 999.0, 0.0));
+    fn clamps_only_out_of_envelope_fo76_imgs_depth_of_field() {
+        {
+            let out = normalized_imgs_dnam(imgs_dnam_bytes(10.0, 999.0, 0.0));
 
-        assert_eq!(out.len(), 24);
-        assert_eq!(decode_f32_prefix(&out[..12]), vec![1.5, 999.0, 3500.0]);
-        // Sky/blur radius and the vignette tail must survive untouched.
-        assert_eq!(u16::from_le_bytes([out[14], out[15]]), 17000);
-    }
+            assert_eq!(out.len(), 24);
+            assert_eq!(decode_f32_prefix(&out[..12]), vec![1.5, 999.0, 3500.0]);
+            // Sky/blur radius and the vignette tail must survive untouched.
+            assert_eq!(u16::from_le_bytes([out[14], out[15]]), 17000);
+        }
+        {
+            // DefaultImageSpace76_EV4_Wayward (58F397) — renders correctly as-is.
+            let bytes = imgs_dnam_bytes(0.1, 3000.0, 85000.0);
 
-    #[test]
-    fn keeps_fo76_imgs_depth_of_field_already_inside_the_fo4_envelope() {
-        // DefaultImageSpace76_EV4_Wayward (58F397) — renders correctly as-is.
-        let bytes = imgs_dnam_bytes(0.1, 3000.0, 85000.0);
+            assert_eq!(normalized_imgs_dnam(bytes.clone()), bytes);
+        }
+        {
+            let bytes = imgs_dnam_bytes(0.0, 0.0, 0.0);
 
-        assert_eq!(normalized_imgs_dnam(bytes.clone()), bytes);
-    }
-
-    #[test]
-    fn leaves_fo76_imgs_depth_of_field_alone_when_disabled() {
-        let bytes = imgs_dnam_bytes(0.0, 0.0, 0.0);
-
-        assert_eq!(normalized_imgs_dnam(bytes.clone()), bytes);
+            assert_eq!(normalized_imgs_dnam(bytes.clone()), bytes);
+        }
     }
 
     #[test]
@@ -8955,173 +9020,171 @@ mod tests {
     }
 
     #[test]
-    fn translated_lvli_drops_empty_override_name() {
-        let interner = StringInterner::new();
-        let record = record(
-            "LVLI",
-            vec![
-                bytes_field(
-                    "EDID",
-                    b"LLI_Burn_Outfit_HwtSettler_BountyHunter\0".to_vec(),
-                ),
-                string_field("ONAM", "", &interner),
-            ],
-            &interner,
-        );
+    fn translated_lvli_drops_only_empty_override_name() {
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "LVLI",
+                vec![
+                    bytes_field(
+                        "EDID",
+                        b"LLI_Burn_Outfit_HwtSettler_BountyHunter\0".to_vec(),
+                    ),
+                    string_field("ONAM", "", &interner),
+                ],
+                &interner,
+            );
 
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "LVLI", &interner)
-        else {
-            panic!("LVLI should be supported");
-        };
-        assert!(
-            !record
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "LVLI", &interner)
+            else {
+                panic!("LVLI should be supported");
+            };
+            assert!(
+                !record
+                    .fields
+                    .iter()
+                    .any(|field| field.sig.as_str() == "ONAM"),
+                "an empty override name would blank every item the list produces"
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "LVLI",
+                vec![
+                    bytes_field("EDID", b"LLI_Armor_Raider\0".to_vec()),
+                    string_field("ONAM", "Tessa's Fist", &interner),
+                ],
+                &interner,
+            );
+
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "LVLI", &interner)
+            else {
+                panic!("LVLI should be supported");
+            };
+            let onam = record
                 .fields
                 .iter()
-                .any(|field| field.sig.as_str() == "ONAM"),
-            "an empty override name would blank every item the list produces"
-        );
+                .find(|field| field.sig.as_str() == "ONAM")
+                .expect("a real override name should survive");
+            let FieldValue::String(value) = &onam.value else {
+                panic!("ONAM should stay a string");
+            };
+            assert_eq!(interner.resolve(*value), Some("Tessa's Fist"));
+        }
     }
 
     #[test]
-    fn translated_lvli_keeps_real_override_name() {
-        let interner = StringInterner::new();
-        let record = record(
-            "LVLI",
-            vec![
-                bytes_field("EDID", b"LLI_Armor_Raider\0".to_vec()),
-                string_field("ONAM", "Tessa's Fist", &interner),
-            ],
-            &interner,
-        );
+    fn npc_acbs_essential_strip_is_scoped_to_translated_w05_denizens() {
+        {
+            let interner = StringInterner::new();
+            let mut acbs = vec![0u8; 20];
+            let source_flags = 0x18_u32
+                | NPC_ACBS_FLAG_ESSENTIAL
+                | NPC_ACBS_FLAG_UNKNOWN_25
+                | NPC_ACBS_FLAG_IS_GHOST
+                | NPC_ACBS_FLAG_INVULNERABLE;
+            acbs[..4].copy_from_slice(&source_flags.to_le_bytes());
+            acbs[14..16].copy_from_slice(&0x1F28_u16.to_le_bytes());
+            let record = record(
+                "NPC_",
+                vec![
+                    bytes_field(
+                        "EDID",
+                        b"W05_LvlDenizen_RaiderIntimidatorM_or_LiteAlly\0".to_vec(),
+                    ),
+                    bytes_field("ACBS", acbs),
+                ],
+                &interner,
+            );
 
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "LVLI", &interner)
-        else {
-            panic!("LVLI should be supported");
-        };
-        let onam = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "ONAM")
-            .expect("a real override name should survive");
-        let FieldValue::String(value) = &onam.value else {
-            panic!("ONAM should stay a string");
-        };
-        assert_eq!(interner.resolve(*value), Some("Tessa's Fist"));
-    }
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "NPC_", &interner)
+            else {
+                panic!("NPC_ should be supported");
+            };
+            let acbs = record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "ACBS")
+                .expect("ACBS should remain");
+            let FieldValue::Bytes(bytes) = &acbs.value else {
+                panic!("ACBS should be bytes");
+            };
+            let flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+            assert_eq!(flags & NPC_ACBS_FLAG_ESSENTIAL, 0);
+            assert_eq!(flags & NPC_ACBS_FLAG_UNKNOWN_25, NPC_ACBS_FLAG_UNKNOWN_25);
+            assert_eq!(flags & NPC_ACBS_FLAG_IS_GHOST, 0);
+            assert_eq!(flags & NPC_ACBS_FLAG_INVULNERABLE, 0);
+        }
+        {
+            let interner = StringInterner::new();
+            let mut acbs = vec![0u8; 20];
+            let source_flags = 0x18_u32
+                | NPC_ACBS_FLAG_ESSENTIAL
+                | NPC_ACBS_FLAG_IS_GHOST
+                | NPC_ACBS_FLAG_INVULNERABLE;
+            acbs[..4].copy_from_slice(&source_flags.to_le_bytes());
+            let record = record(
+                "NPC_",
+                vec![
+                    bytes_field("EDID", b"W05_COMP_Actor_Lite_RaiderPunk_Initial\0".to_vec()),
+                    bytes_field("ACBS", acbs),
+                ],
+                &interner,
+            );
 
-    #[test]
-    fn translated_w05_denizen_acbs_strips_essential_ghost_and_invulnerable() {
-        let interner = StringInterner::new();
-        let mut acbs = vec![0u8; 20];
-        let source_flags = 0x18_u32
-            | NPC_ACBS_FLAG_ESSENTIAL
-            | NPC_ACBS_FLAG_UNKNOWN_25
-            | NPC_ACBS_FLAG_IS_GHOST
-            | NPC_ACBS_FLAG_INVULNERABLE;
-        acbs[..4].copy_from_slice(&source_flags.to_le_bytes());
-        acbs[14..16].copy_from_slice(&0x1F28_u16.to_le_bytes());
-        let record = record(
-            "NPC_",
-            vec![
-                bytes_field(
-                    "EDID",
-                    b"W05_LvlDenizen_RaiderIntimidatorM_or_LiteAlly\0".to_vec(),
-                ),
-                bytes_field("ACBS", acbs),
-            ],
-            &interner,
-        );
+            let TargetRecordNormalization::Keep(record) =
+                normalize_from_fo76_source(record, "NPC_", &interner)
+            else {
+                panic!("NPC_ should be supported");
+            };
+            let acbs = record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "ACBS")
+                .expect("ACBS should remain");
+            let FieldValue::Bytes(bytes) = &acbs.value else {
+                panic!("ACBS should be bytes");
+            };
+            let flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+            assert_eq!(flags & NPC_ACBS_FLAG_ESSENTIAL, NPC_ACBS_FLAG_ESSENTIAL);
+            assert_eq!(flags & NPC_ACBS_FLAG_IS_GHOST, 0);
+            assert_eq!(flags & NPC_ACBS_FLAG_INVULNERABLE, 0);
+        }
+        {
+            let interner = StringInterner::new();
+            let mut acbs = vec![0u8; 20];
+            acbs[..4].copy_from_slice(&0x18_u32.to_le_bytes());
+            acbs[14..16].copy_from_slice(&0x1F28_u16.to_le_bytes());
+            let record = record(
+                "NPC_",
+                vec![
+                    bytes_field("EDID", b"TargetOnlyNpc\0".to_vec()),
+                    bytes_field("ACBS", acbs),
+                ],
+                &interner,
+            );
 
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "NPC_", &interner)
-        else {
-            panic!("NPC_ should be supported");
-        };
-        let acbs = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "ACBS")
-            .expect("ACBS should remain");
-        let FieldValue::Bytes(bytes) = &acbs.value else {
-            panic!("ACBS should be bytes");
-        };
-        let flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-        assert_eq!(flags & NPC_ACBS_FLAG_ESSENTIAL, 0);
-        assert_eq!(flags & NPC_ACBS_FLAG_UNKNOWN_25, NPC_ACBS_FLAG_UNKNOWN_25);
-        assert_eq!(flags & NPC_ACBS_FLAG_IS_GHOST, 0);
-        assert_eq!(flags & NPC_ACBS_FLAG_INVULNERABLE, 0);
-    }
-
-    #[test]
-    fn translated_non_denizen_npc_acbs_keeps_essential() {
-        let interner = StringInterner::new();
-        let mut acbs = vec![0u8; 20];
-        let source_flags = 0x18_u32
-            | NPC_ACBS_FLAG_ESSENTIAL
-            | NPC_ACBS_FLAG_IS_GHOST
-            | NPC_ACBS_FLAG_INVULNERABLE;
-        acbs[..4].copy_from_slice(&source_flags.to_le_bytes());
-        let record = record(
-            "NPC_",
-            vec![
-                bytes_field("EDID", b"W05_COMP_Actor_Lite_RaiderPunk_Initial\0".to_vec()),
-                bytes_field("ACBS", acbs),
-            ],
-            &interner,
-        );
-
-        let TargetRecordNormalization::Keep(record) =
-            normalize_from_fo76_source(record, "NPC_", &interner)
-        else {
-            panic!("NPC_ should be supported");
-        };
-        let acbs = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "ACBS")
-            .expect("ACBS should remain");
-        let FieldValue::Bytes(bytes) = &acbs.value else {
-            panic!("ACBS should be bytes");
-        };
-        let flags = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-        assert_eq!(flags & NPC_ACBS_FLAG_ESSENTIAL, NPC_ACBS_FLAG_ESSENTIAL);
-        assert_eq!(flags & NPC_ACBS_FLAG_IS_GHOST, 0);
-        assert_eq!(flags & NPC_ACBS_FLAG_INVULNERABLE, 0);
-    }
-
-    #[test]
-    fn target_only_npc_acbs_flags_are_not_rewritten() {
-        let interner = StringInterner::new();
-        let mut acbs = vec![0u8; 20];
-        acbs[..4].copy_from_slice(&0x18_u32.to_le_bytes());
-        acbs[14..16].copy_from_slice(&0x1F28_u16.to_le_bytes());
-        let record = record(
-            "NPC_",
-            vec![
-                bytes_field("EDID", b"TargetOnlyNpc\0".to_vec()),
-                bytes_field("ACBS", acbs),
-            ],
-            &interner,
-        );
-
-        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
-            panic!("NPC_ should be supported");
-        };
-        let acbs = record
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "ACBS")
-            .expect("ACBS should remain");
-        let FieldValue::Bytes(bytes) = &acbs.value else {
-            panic!("ACBS should be bytes");
-        };
-        assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0x18);
-        assert_eq!(
-            u16::from_le_bytes(bytes[14..16].try_into().unwrap()),
-            0x1F28
-        );
+            let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+                panic!("NPC_ should be supported");
+            };
+            let acbs = record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "ACBS")
+                .expect("ACBS should remain");
+            let FieldValue::Bytes(bytes) = &acbs.value else {
+                panic!("ACBS should be bytes");
+            };
+            assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 0x18);
+            assert_eq!(
+                u16::from_le_bytes(bytes[14..16].try_into().unwrap()),
+                0x1F28
+            );
+        }
     }
 
     #[test]
@@ -9185,6 +9248,58 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(quadrants, vec![0, 0, 1, 1, 1, 2, 2, 3]);
+    }
+
+    #[test]
+    fn preserves_nocm_cover_edge_rows_in_source_order() {
+        let interner = StringInterner::new();
+        let cover_edge = |start: u16, end: u16| {
+            let mut bytes = Vec::with_capacity(8);
+            bytes.extend_from_slice(&start.to_le_bytes());
+            bytes.extend_from_slice(&end.to_le_bytes());
+            bytes.extend_from_slice(&0x8000_0002_u32.to_le_bytes());
+            bytes
+        };
+        let input = vec![
+            bytes_field("INDX", 0_u32.to_le_bytes().to_vec()),
+            bytes_field("DATA", cover_edge(0xFFFF, 0x07FF)),
+            bytes_field("DATA", cover_edge(0x07FF, 0x19FF)),
+            bytes_field("DATA", cover_edge(0x19FF, 0xFFFF)),
+            bytes_field("INTV", 1_u32.to_le_bytes().to_vec()),
+            bytes_field("INDX", 1_u32.to_le_bytes().to_vec()),
+            bytes_field("INTV", 0_u32.to_le_bytes().to_vec()),
+            bytes_field("NAM1", b"SetDressing\\A.nif\0".to_vec()),
+            bytes_field("INDX", 0_u32.to_le_bytes().to_vec()),
+            bytes_field("DATA", cover_edge(0xFFFF, 0x3FFF)),
+            bytes_field("DATA", cover_edge(0x3FFF, 0xFFFF)),
+            bytes_field("INTV", 1_u32.to_le_bytes().to_vec()),
+            bytes_field("NAM1", b"SetDressing\\B.nif\0".to_vec()),
+        ];
+        let expected_sigs = input
+            .iter()
+            .map(|field| field.sig.as_str().to_string())
+            .collect::<Vec<_>>();
+        let expected_values = input
+            .iter()
+            .map(|field| field.value.clone())
+            .collect::<Vec<_>>();
+        let record = record("NOCM", input, &interner);
+
+        let TargetRecordNormalization::Keep(record) =
+            normalize_from_fo76_source(record, "NOCM", &interner)
+        else {
+            panic!("NOCM should be supported");
+        };
+
+        // Each side bit in INTV needs a cover-edge run ending at 0xFFFF; FO4
+        // walks past the array when a row's DATA run is split or truncated.
+        assert_eq!(sigs(&record), expected_sigs);
+        let values = record
+            .fields
+            .iter()
+            .map(|field| field.value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(values, expected_values);
     }
 
     #[test]
@@ -10264,6 +10379,104 @@ mod tests {
     }
 
     #[test]
+    fn qust_extra_condition_groups_do_not_merge_into_supported_scopes() {
+        let interner = StringInterner::new();
+        let mut distance = vec![0_u8; 32];
+        distance[0] = 0x82;
+        distance[4..8].copy_from_slice(&10000_f32.to_le_bytes());
+        distance[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        distance[12..16].copy_from_slice(&4_u32.to_le_bytes());
+        distance[28..32].copy_from_slice(&(-1_i32).to_le_bytes());
+        let source = record(
+            "QUST",
+            vec![
+                bytes_field("EDID", b"GQ_WorkshopAttackScorchbeasts\0".to_vec()),
+                ctda_field(58),
+                bytes_field("CIS1", b"Dialogue\0".to_vec()),
+                bytes_field("NEXT", vec![]),
+                ctda_field(576),
+                ctda_field(77),
+                none_field("NEXT"),
+                bytes_field("CTDA", distance.clone()),
+                bytes_field("CIS1", b"Unsupported1\0".to_vec()),
+                bytes_field("CIS2", b"Unsupported2\0".to_vec()),
+                none_field("NEXT"),
+                ctda_field(14),
+                bytes_field("INDX", vec![10, 0, 0, 0]),
+                bytes_field("QSDT", vec![0]),
+                ctda_field(46),
+                bytes_field("QOBJ", 10_u16.to_le_bytes().to_vec()),
+                bytes_field("NNAM", b"Objective\0".to_vec()),
+                bytes_field("QSTA", vec![0; 8]),
+                ctda_field(47),
+                bytes_field("ANAM", 5_u32.to_le_bytes().to_vec()),
+                bytes_field("ALST", 4_u32.to_le_bytes().to_vec()),
+                bytes_field("ALID", b"CenterMarker\0".to_vec()),
+                bytes_field("FNAM", 0_u32.to_le_bytes().to_vec()),
+                bytes_field("CTDA", distance),
+                bytes_field("ALED", vec![]),
+            ],
+            &interner,
+        );
+        let expected: Vec<_> = source
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !(6..12).contains(i))
+            .map(|(_, field)| field.clone())
+            .collect();
+
+        for with_source_schema in [false, true] {
+            let normalized = if with_source_schema {
+                normalize_from_fo76_source(source.clone(), "QUST", &interner)
+            } else {
+                normalize_target_only(source.clone())
+            };
+            let TargetRecordNormalization::Keep(converted) = normalized else {
+                panic!("QUST should be supported");
+            };
+            assert_cursor_accepts(&converted);
+            assert_eq!(converted.fields.as_slice(), expected.as_slice());
+            let TargetRecordNormalization::Keep(again) = normalize_target_only(converted) else {
+                panic!("QUST should remain supported");
+            };
+            assert_eq!(again.fields.as_slice(), expected.as_slice());
+        }
+    }
+
+    #[test]
+    fn qust_empty_story_conditions_do_not_adopt_later_groups() {
+        let interner = StringInterner::new();
+        for first_extra_group in [2, 3] {
+            let mut fields = vec![bytes_field("EDID", b"Quest\0".to_vec())];
+            for group in 1..=3 {
+                fields.push(none_field("NEXT"));
+                if group == first_extra_group {
+                    fields.push(ctda_field(1));
+                    fields.push(bytes_field("CIS1", b"Extra\0".to_vec()));
+                }
+            }
+            fields.extend([
+                bytes_field("QOBJ", 10_u16.to_le_bytes().to_vec()),
+                bytes_field("NNAM", b"Objective\0".to_vec()),
+                bytes_field("QSTA", vec![0; 8]),
+                ctda_field(47),
+            ]);
+            let TargetRecordNormalization::Keep(converted) =
+                normalize_target_only(record("QUST", fields, &interner))
+            else {
+                panic!("QUST should be supported");
+            };
+            assert_cursor_accepts(&converted);
+            assert_eq!(
+                sigs(&converted),
+                ["EDID", "NEXT", "QOBJ", "NNAM", "QSTA", "CTDA"]
+            );
+            assert_eq!(condition_sequence(&converted), ["CTDA:47"]);
+        }
+    }
+
+    #[test]
     fn drops_duplicate_singleton_subrecords() {
         let interner = StringInterner::new();
         let record = record(
@@ -10367,7 +10580,7 @@ mod tests {
         let interner = StringInterner::new();
         let mut raw = Vec::new();
         raw.extend_from_slice(&3_i32.to_le_bytes());
-        raw.extend_from_slice(&512_u16.to_le_bytes());
+        raw.extend_from_slice(&[0x03, 0x02]);
         raw.extend_from_slice(&0_u32.to_le_bytes());
         raw.extend_from_slice(&3000_f32.to_le_bytes());
         let record = record("QUST", vec![bytes_field("QSTA", raw)], &interner);
@@ -10383,7 +10596,7 @@ mod tests {
         };
         assert_eq!(bytes.len(), 12);
         assert_eq!(i32::from_le_bytes(bytes[0..4].try_into().unwrap()), 3);
-        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 512);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 3);
         assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 0);
     }
 
@@ -10908,43 +11121,40 @@ mod tests {
 
     #[test]
     fn drops_only_dangling_alla_linked_aliases() {
-        let alias_ids: HashSet<u32> = [0, 1, 2, 19].into_iter().collect();
-        // Mirrors RE_TravelKMK03 (QUST:0464D5): keep refs 1 and 19, drop the
-        // phantom 8..13 the FO76 source carries.
-        let mut value = alla_bytes(&[
-            (0x0002_FD66, 1),
-            (0x0002_FD66, 8),
-            (0x0002_FD66, 9),
-            (0x0002_FD66, 19),
-            (0x0002_FD66, 13),
-        ]);
-        let now_empty = drop_dangling_alla_links(&mut value, &alias_ids);
-        assert!(!now_empty);
-        assert_eq!(alla_rows(&value), vec![(0x0002_FD66, 1), (0x0002_FD66, 19)]);
-    }
-
-    #[test]
-    fn drops_whole_alla_when_every_link_is_dangling() {
-        let alias_ids: HashSet<u32> = [0, 1, 2].into_iter().collect();
-        let mut value = alla_bytes(&[(0, 8), (0, 9), (0, 13)]);
-        assert!(
-            drop_dangling_alla_links(&mut value, &alias_ids),
-            "all links dangling → subrecord becomes empty and is dropped"
-        );
-    }
-
-    #[test]
-    fn keeps_alla_when_all_links_valid() {
-        let alias_ids: HashSet<u32> = [0, 1, 2].into_iter().collect();
-        let mut value = alla_bytes(&[(0x1234, 0), (0, 2)]);
-        let before = alla_rows(&value);
-        assert!(!drop_dangling_alla_links(&mut value, &alias_ids));
-        assert_eq!(alla_rows(&value), before, "byte-identical when all valid");
+        {
+            let alias_ids: HashSet<u32> = [0, 1, 2, 19].into_iter().collect();
+            // Mirrors RE_TravelKMK03 (QUST:0464D5): keep refs 1 and 19, drop the
+            // phantom 8..13 the FO76 source carries.
+            let mut value = alla_bytes(&[
+                (0x0002_FD66, 1),
+                (0x0002_FD66, 8),
+                (0x0002_FD66, 9),
+                (0x0002_FD66, 19),
+                (0x0002_FD66, 13),
+            ]);
+            let now_empty = drop_dangling_alla_links(&mut value, &alias_ids);
+            assert!(!now_empty);
+            assert_eq!(alla_rows(&value), vec![(0x0002_FD66, 1), (0x0002_FD66, 19)]);
+        }
+        {
+            let alias_ids: HashSet<u32> = [0, 1, 2].into_iter().collect();
+            let mut value = alla_bytes(&[(0, 8), (0, 9), (0, 13)]);
+            assert!(
+                drop_dangling_alla_links(&mut value, &alias_ids),
+                "all links dangling → subrecord becomes empty and is dropped"
+            );
+        }
+        {
+            let alias_ids: HashSet<u32> = [0, 1, 2].into_iter().collect();
+            let mut value = alla_bytes(&[(0x1234, 0), (0, 2)]);
+            let before = alla_rows(&value);
+            assert!(!drop_dangling_alla_links(&mut value, &alias_ids));
+            assert_eq!(alla_rows(&value), before, "byte-identical when all valid");
+        }
     }
 
     #[test]
     fn collect_alias_ids_reads_uint_and_byte_anchors() {
-        let interner = StringInterner::new();
         let mut fields_by_sig: HashMap<crate::ids::SubrecordSig, VecDeque<IndexedFieldEntry>> =
             HashMap::new();
         let mut push = |sig: &str, value: FieldValue, idx: usize| {
@@ -10982,57 +11192,56 @@ mod tests {
     // block (FO76 creature races like ScorchTongueBody → CK "Could not find base
     // MT/weapon graph").
     #[test]
-    fn subgraph_data_block_without_sakd_anchor_survives() {
-        let interner = StringInterner::new();
-        let record = record(
-            "RACE",
-            vec![
-                bytes_field("EDID", b"CreatureRace\0".to_vec()),
-                bytes_field(
-                    "SGNM",
-                    b"Actors\\X\\Behaviors\\XCoreBehavior.hkx\0".to_vec(),
-                ),
-                bytes_field("SAPT", b"Actors\\X\\Animations\0".to_vec()),
-                bytes_field("SRAF", vec![0u8; 4]),
-            ],
-            &interner,
-        );
+    fn subgraph_data_block_survives_with_or_without_sakd_anchor() {
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "RACE",
+                vec![
+                    bytes_field("EDID", b"CreatureRace\0".to_vec()),
+                    bytes_field(
+                        "SGNM",
+                        b"Actors\\X\\Behaviors\\XCoreBehavior.hkx\0".to_vec(),
+                    ),
+                    bytes_field("SAPT", b"Actors\\X\\Animations\0".to_vec()),
+                    bytes_field("SRAF", vec![0u8; 4]),
+                ],
+                &interner,
+            );
 
-        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
-            panic!("RACE should be supported");
-        };
+            let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+                panic!("RACE should be supported");
+            };
 
-        let s = sigs(&record);
-        assert!(s.contains(&"SGNM"), "SGNM must survive, got {s:?}");
-        assert!(s.contains(&"SAPT"), "SAPT must survive, got {s:?}");
-    }
+            let s = sigs(&record);
+            assert!(s.contains(&"SGNM"), "SGNM must survive, got {s:?}");
+            assert!(s.contains(&"SAPT"), "SAPT must survive, got {s:?}");
+        }
+        {
+            let interner = StringInterner::new();
+            let record = record(
+                "RACE",
+                vec![
+                    bytes_field("EDID", b"CreatureRace\0".to_vec()),
+                    bytes_field("SAKD", vec![0u8; 4]),
+                    bytes_field(
+                        "SGNM",
+                        b"Actors\\X\\Behaviors\\XCoreBehavior.hkx\0".to_vec(),
+                    ),
+                    bytes_field("SAPT", b"Actors\\X\\Animations\0".to_vec()),
+                ],
+                &interner,
+            );
 
-    // A subgraph block WITH the SAKD anchor must also be preserved.
-    #[test]
-    fn subgraph_data_block_with_sakd_anchor_preserved() {
-        let interner = StringInterner::new();
-        let record = record(
-            "RACE",
-            vec![
-                bytes_field("EDID", b"CreatureRace\0".to_vec()),
-                bytes_field("SAKD", vec![0u8; 4]),
-                bytes_field(
-                    "SGNM",
-                    b"Actors\\X\\Behaviors\\XCoreBehavior.hkx\0".to_vec(),
-                ),
-                bytes_field("SAPT", b"Actors\\X\\Animations\0".to_vec()),
-            ],
-            &interner,
-        );
+            let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+                panic!("RACE should be supported");
+            };
 
-        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
-            panic!("RACE should be supported");
-        };
-
-        let s = sigs(&record);
-        assert!(s.contains(&"SAKD"), "SAKD must survive, got {s:?}");
-        assert!(s.contains(&"SGNM"), "SGNM must survive, got {s:?}");
-        assert!(s.contains(&"SAPT"), "SAPT must survive, got {s:?}");
+            let s = sigs(&record);
+            assert!(s.contains(&"SAKD"), "SAKD must survive, got {s:?}");
+            assert!(s.contains(&"SGNM"), "SGNM must survive, got {s:?}");
+            assert!(s.contains(&"SAPT"), "SAPT must survive, got {s:?}");
+        }
     }
 
     #[test]
@@ -11094,88 +11303,86 @@ mod tests {
     }
 
     #[test]
-    fn race_behavior_graph_repairs_fo76_marker_tail_to_fo4_pair() {
-        let interner = StringInterner::new();
-        let mut fields = race_fields_before_behavior_graph(b"FishermanRace\0");
-        fields.extend([
-            bytes_field("NAM3", Vec::new()),
-            bytes_field("MNAM", Vec::new()),
-            bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
-            bytes_field("MODT", vec![5]),
-            bytes_field("MNAM", Vec::new()),
-            bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
-            bytes_field("MODT", vec![6]),
-            bytes_field("FNAM", Vec::new()),
-            bytes_field("FNAM", Vec::new()),
-            bytes_field("NAM4", vec![0; 4]),
-        ]);
-        let record = record("RACE", fields, &interner);
+    fn race_behavior_graph_markers_normalize_to_fo4_pair() {
+        {
+            let interner = StringInterner::new();
+            let mut fields = race_fields_before_behavior_graph(b"FishermanRace\0");
+            fields.extend([
+                bytes_field("NAM3", Vec::new()),
+                bytes_field("MNAM", Vec::new()),
+                bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
+                bytes_field("MODT", vec![5]),
+                bytes_field("MNAM", Vec::new()),
+                bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
+                bytes_field("MODT", vec![6]),
+                bytes_field("FNAM", Vec::new()),
+                bytes_field("FNAM", Vec::new()),
+                bytes_field("NAM4", vec![0; 4]),
+            ]);
+            let record = record("RACE", fields, &interner);
 
-        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
-            panic!("RACE should be supported");
-        };
+            let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+                panic!("RACE should be supported");
+            };
 
-        assert_eq!(
-            sigs_from(&record, "GNAM"),
-            vec![
-                "GNAM", "NAM3", "MNAM", "MODL", "MODT", "FNAM", "MODL", "MODT", "NAM4"
-            ]
-        );
-        assert_cursor_accepts(&record);
-    }
+            assert_eq!(
+                sigs_from(&record, "GNAM"),
+                vec![
+                    "GNAM", "NAM3", "MNAM", "MODL", "MODT", "FNAM", "MODL", "MODT", "NAM4"
+                ]
+            );
+            assert_cursor_accepts(&record);
+        }
+        {
+            let interner = StringInterner::new();
+            let mut fields = race_fields_before_behavior_graph(b"SuperMutantRustKingRace\0");
+            fields.extend([
+                bytes_field("NAM3", Vec::new()),
+                bytes_field("MNAM", Vec::new()),
+                bytes_field("MNAM", Vec::new()),
+                bytes_field("FNAM", Vec::new()),
+                bytes_field("FNAM", Vec::new()),
+                bytes_field("NAM4", vec![0; 4]),
+            ]);
+            let record = record("RACE", fields, &interner);
 
-    #[test]
-    fn race_behavior_graph_collapses_empty_duplicate_markers() {
-        let interner = StringInterner::new();
-        let mut fields = race_fields_before_behavior_graph(b"SuperMutantRustKingRace\0");
-        fields.extend([
-            bytes_field("NAM3", Vec::new()),
-            bytes_field("MNAM", Vec::new()),
-            bytes_field("MNAM", Vec::new()),
-            bytes_field("FNAM", Vec::new()),
-            bytes_field("FNAM", Vec::new()),
-            bytes_field("NAM4", vec![0; 4]),
-        ]);
-        let record = record("RACE", fields, &interner);
+            let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+                panic!("RACE should be supported");
+            };
 
-        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
-            panic!("RACE should be supported");
-        };
+            assert_eq!(
+                sigs_from(&record, "GNAM"),
+                vec!["GNAM", "NAM3", "MNAM", "FNAM", "NAM4"]
+            );
+            assert_cursor_accepts(&record);
+        }
+        {
+            let interner = StringInterner::new();
+            let mut fields = race_fields_before_behavior_graph(b"HumanRace\0");
+            fields.extend([
+                bytes_field("NAM3", Vec::new()),
+                bytes_field("MNAM", Vec::new()),
+                bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
+                bytes_field("MODT", vec![5]),
+                bytes_field("FNAM", Vec::new()),
+                bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
+                bytes_field("MODT", vec![6]),
+                bytes_field("NAM4", vec![0; 4]),
+            ]);
+            let record = record("RACE", fields, &interner);
 
-        assert_eq!(
-            sigs_from(&record, "GNAM"),
-            vec!["GNAM", "NAM3", "MNAM", "FNAM", "NAM4"]
-        );
-        assert_cursor_accepts(&record);
-    }
+            let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
+                panic!("RACE should be supported");
+            };
 
-    #[test]
-    fn race_behavior_graph_preserves_valid_fo4_pair() {
-        let interner = StringInterner::new();
-        let mut fields = race_fields_before_behavior_graph(b"HumanRace\0");
-        fields.extend([
-            bytes_field("NAM3", Vec::new()),
-            bytes_field("MNAM", Vec::new()),
-            bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
-            bytes_field("MODT", vec![5]),
-            bytes_field("FNAM", Vec::new()),
-            bytes_field("MODL", b"actors\\Character\\RaiderProject.hkx\0".to_vec()),
-            bytes_field("MODT", vec![6]),
-            bytes_field("NAM4", vec![0; 4]),
-        ]);
-        let record = record("RACE", fields, &interner);
-
-        let TargetRecordNormalization::Keep(record) = normalize_target_only(record) else {
-            panic!("RACE should be supported");
-        };
-
-        assert_eq!(
-            sigs_from(&record, "GNAM"),
-            vec![
-                "GNAM", "NAM3", "MNAM", "MODL", "MODT", "FNAM", "MODL", "MODT", "NAM4"
-            ]
-        );
-        assert_cursor_accepts(&record);
+            assert_eq!(
+                sigs_from(&record, "GNAM"),
+                vec![
+                    "GNAM", "NAM3", "MNAM", "MODL", "MODT", "FNAM", "MODL", "MODT", "NAM4"
+                ]
+            );
+            assert_cursor_accepts(&record);
+        }
     }
 
     #[test]

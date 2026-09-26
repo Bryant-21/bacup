@@ -1,6 +1,6 @@
 use super::*;
 use crate::fixups::face::build_additive_race_record::{
-    SubgraphBlock, block_to_entries, parse_canonical_subgraphs,
+    block_to_entries, parse_canonical_subgraphs, SubgraphBlock,
 };
 use crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
@@ -295,6 +295,47 @@ fn dependency_template_key(path: &str) -> (String, bool) {
     )
 }
 
+fn add_vanilla_weapon_aliases(
+    blocks: &mut Vec<SubgraphBlock>,
+    mapper: &FormKeyMapper,
+    source_plugin: crate::sym::Sym,
+) {
+    // These selectors are deliberately source-owned to isolate human weapon routes.
+    // Source-rig creatures also need aliases for Fallout 4's weapons.
+    let keyword_aliases: HashMap<_, _> = [0x01F948, 0x0464EF, 0x01F947, 0x0AA937, 0x0B9560]
+        .into_iter()
+        .filter_map(|local| {
+            mapper
+                .lookup(FormKey {
+                    plugin: source_plugin,
+                    local,
+                })
+                .map(|mapped| {
+                    (
+                        mapped,
+                        FormKey {
+                            plugin: mapper.interner.intern("Fallout4.esm"),
+                            local,
+                        },
+                    )
+                })
+        })
+        .collect();
+    let mut aliases = Vec::new();
+    for block in blocks.iter() {
+        let mut alias = block.clone();
+        for keyword in &mut alias.target_keywords {
+            if let Some(alias) = keyword_aliases.get(keyword) {
+                *keyword = *alias;
+            }
+        }
+        if alias != *block && !blocks.contains(&alias) && !aliases.contains(&alias) {
+            aliases.push(alias);
+        }
+    }
+    blocks.extend(aliases);
+}
+
 impl Fixup for PreserveFo76BehaviorsFixup {
     fn name(&self) -> &'static str {
         "preserve_fo76_behaviors"
@@ -316,25 +357,6 @@ impl Fixup for PreserveFo76BehaviorsFixup {
         let source_schema = session.source_schema().map_err(error)?;
         let interner = mapper.interner;
         let source_plugin = interner.intern(&session.source_slot_opt().unwrap().parsed.plugin_name);
-        let grip_aliases: HashMap<_, _> = [0x01F948, 0x0464EF, 0x01F947, 0x0AA937]
-            .into_iter()
-            .filter_map(|local| {
-                mapper
-                    .lookup(FormKey {
-                        plugin: source_plugin,
-                        local,
-                    })
-                    .map(|mapped| {
-                        (
-                            mapped,
-                            FormKey {
-                                plugin: interner.intern("Fallout4.esm"),
-                                local,
-                            },
-                        )
-                    })
-            })
-            .collect();
         let race_sig = SigCode::from_str("RACE").unwrap();
         let mut sources = HashMap::new();
         for fk in session
@@ -510,11 +532,7 @@ impl Fixup for PreserveFo76BehaviorsFixup {
                     .map(|s| {
                         interner.intern(&format!(
                             "Actors\\B21_FO76\\Source\\{}\\{}",
-                            if project.vanilla {
-                                "fo4rig"
-                            } else {
-                                "source_rig"
-                            },
+                            super::bow::animation_namespace(&project, &route),
                             clean(s).replace('/', "\\")
                         ))
                     })
@@ -529,19 +547,7 @@ impl Fixup for PreserveFo76BehaviorsFixup {
                 continue;
             }
             if !additive {
-                let mut aliases = Vec::new();
-                for block in &blocks {
-                    let mut alias = block.clone();
-                    for keyword in &mut alias.target_keywords {
-                        if let Some(alias) = grip_aliases.get(keyword) {
-                            *keyword = *alias;
-                        }
-                    }
-                    if alias != *block && !blocks.contains(&alias) && !aliases.contains(&alias) {
-                        aliases.push(alias);
-                    }
-                }
-                blocks.extend(aliases);
+                add_vanilla_weapon_aliases(&mut blocks, mapper, source_plugin);
             }
             race.fields
                 .retain(|f| !["SGNM", "SAPT", "SAKD", "STKD", "SRAF"].contains(&f.sig.as_str()));
@@ -960,6 +966,22 @@ fn decode_raw_anchors(
     Ok(())
 }
 
+fn repair_charge_release_condition(record: &mut Record, route: &Route, interner: &StringInterner) {
+    if clean(&route.project).contains("_1stperson")
+        || field(record, "ENAM", interner) != "attackReleaseChargingHoldForceFire"
+    {
+        return;
+    }
+    // FO76's OR alternative is dropped by condition conversion. WEAP DNAM or the bow adapter gates charging.
+    record.fields.retain(|field| {
+        !matches!(&field.value, FieldValue::Bytes(bytes)
+        if field.sig.as_str() == "CTDA" && bytes.as_slice() == [
+            0x61, 0, 0, 0, 0, 0, 0x10, 0x41, 0xE2, 2, 0x14, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF,
+        ])
+    });
+}
+
 fn clone_actions<'a>(
     family: impl IntoIterator<Item = &'a Record>,
     route: &Route,
@@ -998,6 +1020,7 @@ fn clone_actions<'a>(
             }
         }
         super::bow::repair_release_condition(&mut record, route, interner);
+        repair_charge_release_condition(&mut record, route, interner);
         mapping.insert(template.form_key, record.form_key);
         records.push(record);
     }
@@ -1050,270 +1073,481 @@ fn clone_actions<'a>(
 mod project_tests;
 
 #[cfg(test)]
-#[path = "additive_tests.rs"]
-mod additive_tests;
-
-#[cfg(test)]
-#[path = "fixer_tests.rs"]
-mod fixer_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::formkey_mapper::MapperOptions;
     use crate::session::open_session;
     use esp_authoring_core::plugin_runtime::{
-        ParsedRecord, ParsedSubrecord, insert_parsed_record_in_slot, plugin_handle_close_native,
-        plugin_handle_new_native, plugin_handle_store_ref,
+        insert_parsed_record_in_slot, plugin_handle_close_native, plugin_handle_new_native,
+        plugin_handle_store_ref, ParsedRecord, ParsedSubrecord,
     };
 
     #[test]
-    fn source_action_order_keeps_bow_before_vanilla_charge_leaf() {
-        let interner = StringInterner::new();
-        let key = |plugin: &str, local| FormKey {
-            plugin: interner.intern(plugin),
-            local,
-        };
-        let source_bow = key("SeventySix.esm", 0x5632F7);
-        let target_bow = key("B21_Test.esp", 0x800);
-        let target_parent = key("Fallout4.esm", 0x11A187);
-        let mut mapper = FormKeyMapper::new(
-            [],
-            MapperOptions {
-                output_plugin_name: "B21_Test.esp".into(),
-                ..Default::default()
-            },
-            &interner,
-        );
-        mapper.add_mapping(source_bow, target_bow);
-        let mut source = Record::new(
-            SigCode::from_str("IDLE").unwrap(),
-            key("SeventySix.esm", 0x11A188),
-        );
-        source.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("ANAM").unwrap(),
-            value: FieldValue::Struct(vec![(
-                interner.intern("Previous"),
-                FieldValue::FormKey(source_bow),
-            )]),
-        });
-        let mut target = Record::new(source.sig, key("Fallout4.esm", 0x11A188));
-        target.fields.push(FieldEntry {
-            sig: SubrecordSig::from_str("ANAM").unwrap(),
-            value: FieldValue::Struct(vec![(
-                interner.intern("Parent"),
-                FieldValue::FormKey(target_parent),
-            )]),
-        });
-        restore_source_action_order(&source, &mut target, &mapper);
-        assert_eq!(
-            target.fields[0].value,
-            FieldValue::Struct(vec![
+    fn scorched_alias_and_charge_release_keep_supported_selectors() {
+        {
+            let interner = StringInterner::new();
+            let source = interner.intern("SeventySix.esm");
+            let vanilla = interner.intern("Fallout4.esm");
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "B21_Test.esp".into(),
+                    ..Default::default()
+                },
+                &interner,
+            );
+            let source_selectors: Vec<_> = [0x0B9560, 0x0464EF]
+                .into_iter()
+                .map(|local| {
+                    mapper.allocate_or_resolve(
+                        FormKey {
+                            plugin: source,
+                            local,
+                        },
+                        None,
+                        SigCode::from_str("KYWD").unwrap(),
+                    )
+                })
+                .collect();
+            let original = SubgraphBlock {
+                behaviour_graph: interner.intern("Actors\\B21_FO76\\Scorched\\Behaviors\\Gun.hkx"),
+                paths: vec![interner.intern("Actors\\B21_FO76\\Source\\source_rig\\Actors\\Scorched\\Animations\\Ranged\\CombatShotgun")],
+                subgraph_keywords: vec![],
+                target_keywords: source_selectors,
+                flags_bytes: Some(smallvec::smallvec![1, 0, 0, 0]),
+            };
+            let mut blocks = vec![original.clone()];
+            add_vanilla_weapon_aliases(&mut blocks, &mapper, source);
+            assert_eq!(
+                blocks[0], original,
+                "converted weapons must keep their source route"
+            );
+            let mut expected = original;
+            expected.target_keywords = [0x0B9560, 0x0464EF]
+                .into_iter()
+                .map(|local| FormKey {
+                    plugin: vanilla,
+                    local,
+                })
+                .collect();
+            assert!(
+                blocks.contains(&expected),
+                "vanilla combat rifle must match the gun route"
+            );
+            let once = blocks.clone();
+            add_vanilla_weapon_aliases(&mut blocks, &mapper, source);
+            assert_eq!(blocks, once);
+        }
+        {
+            let interner = StringInterner::new();
+            let mut template = Record::new(
+                SigCode::from_str("IDLE").unwrap(),
+                FormKey {
+                    local: 0x5A3602,
+                    plugin: interner.intern("SeventySix.esm"),
+                },
+            );
+            put(
+                &mut template,
+                "ENAM",
+                "attackReleaseChargingHoldForceFire",
+                &interner,
+            );
+            let condition =
+                hex::decode("6100000000001041E202140000000000000000000000000000000000FFFFFFFF")
+                    .unwrap();
+            let mut other_condition = condition.clone();
+            other_condition[4..8].copy_from_slice(&2.0f32.to_le_bytes());
+            for bytes in [condition, other_condition.clone()] {
+                template.fields.push(FieldEntry {
+                    sig: SubrecordSig::from_str("CTDA").unwrap(),
+                    value: FieldValue::Bytes(bytes.into()),
+                });
+            }
+            for (project, animation, event, remaining) in [
                 (
-                    interner.intern("Parent"),
-                    FieldValue::FormKey(target_parent)
-                ),
-                (interner.intern("Previous"), FieldValue::FormKey(target_bow)),
-            ])
-        );
-        let restored = target.fields.clone();
-        restore_source_action_order(&source, &mut target, &mapper);
-        assert_eq!(target.fields, restored);
-
-        let bow = Record::new(source.sig, target_bow);
-        let route = Route {
-            source: "actors/character/_1stperson/behaviors/gunbehavior.hkx".into(),
-            destination: "actors/character/_1stperson/behaviors/B21_Bow.hkx".into(),
-            project: "actors/character/_1stperson".into(),
-            dependencies: BTreeMap::new(),
-            animations: BTreeMap::new(),
-            draw_event: None,
-        };
-        let cloned = clone_actions(&[target.clone(), bow], &route, &mut mapper);
-        assert!(cloned[0].fields.iter().any(|field| field.value
-            == FieldValue::Struct(vec![
-                (
-                    interner.intern("Parent"),
-                    FieldValue::FormKey(target_parent)
+                    "actors/character",
+                    "actors/character/animations/weapon/gausspistol/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
                 ),
                 (
-                    interner.intern("Previous"),
-                    FieldValue::FormKey(cloned[1].form_key)
+                    "actors/character",
+                    "actors/character/animations/weapon/gaussshotgun/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
                 ),
-            ])));
-
-        source.fields.clear();
-        restore_source_action_order(&source, &mut target, &mapper);
-        assert_eq!(
-            target.fields[0].value,
-            FieldValue::Struct(vec![
                 (
-                    interner.intern("Parent"),
-                    FieldValue::FormKey(target_parent)
+                    "actors/powerarmor",
+                    "actors/powerarmor/animations/weapons/gausspistol/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
                 ),
-                (interner.intern("Previous"), FieldValue::Uint(0)),
-            ])
-        );
+                (
+                    "actors/powerarmor",
+                    "actors/powerarmor/animations/weapons/gaussshotgun/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/character/_1stperson",
+                    "actors/character/animations/weapon/gausspistol/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    2,
+                ),
+                (
+                    "actors/B21_FO76/scorched",
+                    "actors/character/animations/weapon/gausspistol/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/B21_FO76/scorched",
+                    "actors/character/animations/weapon/gaussshotgun/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/B21_FO76/scorched",
+                    "actors/character/animations/weapon/gaussrifle/player/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/B21_FO76/scorched",
+                    "actors/dlc01/character/animations/lightninggun/player/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/B21_FO76/powerarmor",
+                    "actors/powerarmor/animations/weapons/gammagun/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/B21_FO76/moleminer",
+                    "actors/moleminer/animations/gripassault/wpnchargeholdreadyadd.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/supermutant",
+                    "actors/character/animations/wpnchargeholdreadyadd.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/character",
+                    "actors/character/animations/weapon/compoundbow/player/wpnidleready.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/character/_1stperson",
+                    "actors/character/_1stperson/animations/compoundbow/wpnidleready.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    2,
+                ),
+                (
+                    "actors/character",
+                    "actors/character/animations/weapon/pistol/wpnchargeholdreadyslave.hkx",
+                    "attackReleaseChargingHoldForceFire",
+                    1,
+                ),
+                (
+                    "actors/character",
+                    "actors/character/animations/weapon/gausspistol/wpnchargeholdreadyslave.hkx",
+                    "idleStopInstant",
+                    2,
+                ),
+            ] {
+                let route = Route {
+                    project: project.into(),
+                    source: String::new(),
+                    destination: "actors/character/behaviors/B21_Gauss.hkx".into(),
+                    dependencies: BTreeMap::new(),
+                    draw_event: None,
+                    animations: BTreeMap::from([("charge".into(), animation.into())]),
+                };
+                let mut record = template.clone();
+                put(&mut record, "ENAM", event, &interner);
+                let mut mapper = FormKeyMapper::new(
+                    [],
+                    MapperOptions {
+                        output_plugin_name: "B21_Test.esp".into(),
+                        ..Default::default()
+                    },
+                    &interner,
+                );
+                let cloned = clone_actions(&[record], &route, &mut mapper);
+                let conditions: Vec<_> = cloned[0]
+                    .fields
+                    .iter()
+                    .filter(|f| f.sig.as_str() == "CTDA")
+                    .collect();
+                assert_eq!(
+                    conditions.len(),
+                    remaining,
+                    "{project}: {animation}: {event}"
+                );
+                assert_eq!(
+                    conditions.last().unwrap().value,
+                    FieldValue::Bytes(other_condition.clone().into())
+                );
+                let mut twice = cloned[0].clone();
+                repair_charge_release_condition(&mut twice, &route, &interner);
+                assert_eq!(twice.fields, cloned[0].fields);
+            }
+        }
     }
 
     #[test]
-    fn action_template_index_matches_ordered_legacy_selection() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("Fallout4.esm");
-        let idle = SigCode::from_str("IDLE").unwrap();
-        let template = |local, graph: &str| {
-            let mut record = Record::new(idle, FormKey { plugin, local });
-            put(&mut record, "DNAM", graph, &interner);
-            put(
-                &mut record,
-                "ENAM",
-                &format!("B21_TestAction_{local:06X}"),
+    fn action_order_and_template_index_match_legacy_selection() {
+        {
+            let interner = StringInterner::new();
+            let key = |plugin: &str, local| FormKey {
+                plugin: interner.intern(plugin),
+                local,
+            };
+            let source_bow = key("SeventySix.esm", 0x5632F7);
+            let target_bow = key("B21_Test.esp", 0x800);
+            let target_parent = key("Fallout4.esm", 0x11A187);
+            let mut mapper = FormKeyMapper::new(
+                [],
+                MapperOptions {
+                    output_plugin_name: "B21_Test.esp".into(),
+                    ..Default::default()
+                },
                 &interner,
             );
-            record
-        };
-        let templates = vec![
-            template(0x100, r"Actors\Character\Behaviors\GunBehavior.hkx"),
-            template(0x200, r"Actors\MoleRat\Behaviors\MoleRatBehavior.hkx"),
-            template(
-                0x101,
-                r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx",
-            ),
-            template(0x102, r"Actors\Character\Behaviors\GunBehavior.hkx"),
-            template(0x201, r"Actors\MoleRat\Behaviors\MoleRatBehavior.hkx"),
-            template(0x300, r"Actors\Other\Behaviors\OtherBehavior.hkx"),
-            template(0x400, ""),
-        ];
-        let index = ActionTemplateIndex::new(&templates, &interner);
-        let family_keys = |family: &[&Record]| {
-            family
-                .iter()
-                .map(|record| record.form_key)
-                .collect::<Vec<_>>()
-        };
-        let legacy_family = |dependencies: &BTreeMap<String, String>| {
-            templates
-                .iter()
-                .filter(|record| {
-                    let path = clean(&field(record, "DNAM", &interner));
-                    dependencies.keys().any(|dependency| {
-                        dependency.rsplit('/').next() == path.rsplit('/').next()
-                            && dependency.contains("_1stperson") == path.contains("_1stperson")
-                    })
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let third_person_dependencies = BTreeMap::from([
-            (
-                "actors/source/behaviors/gunbehavior.hkx".to_string(),
-                "unused".to_string(),
-            ),
-            (
-                "actors/duplicate/behaviors/gunbehavior.hkx".to_string(),
-                "unused".to_string(),
-            ),
-        ]);
-        let first_person_dependencies = BTreeMap::from([(
-            "actors/source/_1stperson/behaviors/gunbehavior.hkx".to_string(),
-            "unused".to_string(),
-        )]);
-        let legacy_third = legacy_family(&third_person_dependencies);
-        let indexed_third =
-            index.family_for_dependencies(third_person_dependencies.keys().map(String::as_str));
-        assert_eq!(family_keys(&indexed_third), family_keys(&legacy_third));
-        assert_eq!(
-            family_keys(&indexed_third),
-            [
-                FormKey {
-                    plugin,
-                    local: 0x100
-                },
-                FormKey {
-                    plugin,
-                    local: 0x102
-                },
-            ]
-        );
-        let legacy_first = legacy_family(&first_person_dependencies);
-        let indexed_first =
-            index.family_for_dependencies(first_person_dependencies.keys().map(String::as_str));
-        assert_eq!(family_keys(&indexed_first), family_keys(&legacy_first));
-        assert_eq!(indexed_first.len(), 1);
-        assert_eq!(indexed_first[0].form_key.local, 0x101);
-        for dependencies in [
-            BTreeMap::from([(
-                "actors/source/behaviors/unmatched.hkx".to_string(),
-                "unused".to_string(),
-            )]),
-            BTreeMap::from([("".to_string(), "unused".to_string())]),
-        ] {
-            let legacy = legacy_family(&dependencies);
-            let indexed = index.family_for_dependencies(dependencies.keys().map(String::as_str));
-            assert_eq!(family_keys(&indexed), family_keys(&legacy));
-        }
-
-        let roots = vec![
-            "actors/molerat/behaviors/moleratbehavior.hkx".to_string(),
-            "actors/character/behaviors/gunbehavior.hkx".to_string(),
-        ];
-        let mut legacy_root_graphs = Vec::new();
-        let mut seen_graphs = HashSet::new();
-        for record in templates
-            .iter()
-            .filter(|record| roots.contains(&clean(&field(record, "DNAM", &interner))))
-        {
-            let graph = clean(&field(record, "DNAM", &interner));
-            if seen_graphs.insert(graph.clone()) {
-                legacy_root_graphs.push(graph);
-            }
-        }
-        let indexed_root_graphs = index
-            .root_graphs(&roots)
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        assert_eq!(indexed_root_graphs, legacy_root_graphs);
-        assert!(
-            index
-                .root_graphs(&["actors/unmatched/behaviors/unmatched.hkx".to_string()])
-                .is_empty()
-        );
-        for graph in indexed_root_graphs {
-            let legacy = templates
-                .iter()
-                .filter(|record| clean(&field(record, "DNAM", &interner)) == graph)
-                .collect::<Vec<_>>();
+            mapper.add_mapping(source_bow, target_bow);
+            let mut source = Record::new(
+                SigCode::from_str("IDLE").unwrap(),
+                key("SeventySix.esm", 0x11A188),
+            );
+            source.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("ANAM").unwrap(),
+                value: FieldValue::Struct(vec![(
+                    interner.intern("Previous"),
+                    FieldValue::FormKey(source_bow),
+                )]),
+            });
+            let mut target = Record::new(source.sig, key("Fallout4.esm", 0x11A188));
+            target.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("ANAM").unwrap(),
+                value: FieldValue::Struct(vec![(
+                    interner.intern("Parent"),
+                    FieldValue::FormKey(target_parent),
+                )]),
+            });
+            restore_source_action_order(&source, &mut target, &mapper);
             assert_eq!(
-                family_keys(&index.family_for_graph(&graph)),
-                family_keys(&legacy)
+                target.fields[0].value,
+                FieldValue::Struct(vec![
+                    (
+                        interner.intern("Parent"),
+                        FieldValue::FormKey(target_parent)
+                    ),
+                    (interner.intern("Previous"), FieldValue::FormKey(target_bow)),
+                ])
+            );
+            let restored = target.fields.clone();
+            restore_source_action_order(&source, &mut target, &mapper);
+            assert_eq!(target.fields, restored);
+
+            let bow = Record::new(source.sig, target_bow);
+            let route = Route {
+                source: "actors/character/_1stperson/behaviors/gunbehavior.hkx".into(),
+                destination: "actors/character/_1stperson/behaviors/B21_Bow.hkx".into(),
+                project: "actors/character/_1stperson".into(),
+                dependencies: BTreeMap::new(),
+                animations: BTreeMap::new(),
+                draw_event: None,
+            };
+            let cloned = clone_actions(&[target.clone(), bow], &route, &mut mapper);
+            assert!(cloned[0].fields.iter().any(|field| field.value
+                == FieldValue::Struct(vec![
+                    (
+                        interner.intern("Parent"),
+                        FieldValue::FormKey(target_parent)
+                    ),
+                    (
+                        interner.intern("Previous"),
+                        FieldValue::FormKey(cloned[1].form_key)
+                    ),
+                ])));
+
+            source.fields.clear();
+            restore_source_action_order(&source, &mut target, &mapper);
+            assert_eq!(
+                target.fields[0].value,
+                FieldValue::Struct(vec![
+                    (
+                        interner.intern("Parent"),
+                        FieldValue::FormKey(target_parent)
+                    ),
+                    (interner.intern("Previous"), FieldValue::Uint(0)),
+                ])
             );
         }
+        {
+            let interner = StringInterner::new();
+            let plugin = interner.intern("Fallout4.esm");
+            let idle = SigCode::from_str("IDLE").unwrap();
+            let template = |local, graph: &str| {
+                let mut record = Record::new(idle, FormKey { plugin, local });
+                put(&mut record, "DNAM", graph, &interner);
+                put(
+                    &mut record,
+                    "ENAM",
+                    &format!("B21_TestAction_{local:06X}"),
+                    &interner,
+                );
+                record
+            };
+            let templates = vec![
+                template(0x100, r"Actors\Character\Behaviors\GunBehavior.hkx"),
+                template(0x200, r"Actors\MoleRat\Behaviors\MoleRatBehavior.hkx"),
+                template(
+                    0x101,
+                    r"Actors\Character\_1stPerson\Behaviors\GunBehavior.hkx",
+                ),
+                template(0x102, r"Actors\Character\Behaviors\GunBehavior.hkx"),
+                template(0x201, r"Actors\MoleRat\Behaviors\MoleRatBehavior.hkx"),
+                template(0x300, r"Actors\Other\Behaviors\OtherBehavior.hkx"),
+                template(0x400, ""),
+            ];
+            let index = ActionTemplateIndex::new(&templates, &interner);
+            let family_keys = |family: &[&Record]| {
+                family
+                    .iter()
+                    .map(|record| record.form_key)
+                    .collect::<Vec<_>>()
+            };
+            let legacy_family = |dependencies: &BTreeMap<String, String>| {
+                templates
+                    .iter()
+                    .filter(|record| {
+                        let path = clean(&field(record, "DNAM", &interner));
+                        dependencies.keys().any(|dependency| {
+                            dependency.rsplit('/').next() == path.rsplit('/').next()
+                                && dependency.contains("_1stperson") == path.contains("_1stperson")
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            };
 
-        let route = Route {
-            source: "actors/character/behaviors/gunbehavior.hkx".into(),
-            destination: "actors/b21_test/behaviors/gunbehavior.hkx".into(),
-            project: "actors/b21_test/project.hkx".into(),
-            dependencies: third_person_dependencies,
-            animations: BTreeMap::new(),
-            draw_event: None,
-        };
-        let options = MapperOptions {
-            output_plugin_name: "B21_Test.esp".into(),
-            ..Default::default()
-        };
-        let mut legacy_mapper = FormKeyMapper::new([], options.clone(), &interner);
-        let mut indexed_mapper = FormKeyMapper::new([], options, &interner);
-        let legacy_clones = clone_actions(legacy_third, &route, &mut legacy_mapper);
-        let indexed_clones = clone_actions(indexed_third, &route, &mut indexed_mapper);
-        assert_eq!(indexed_clones.len(), legacy_clones.len());
-        for (indexed, legacy) in indexed_clones.iter().zip(&legacy_clones) {
-            assert_eq!(indexed.sig, legacy.sig);
-            assert_eq!(indexed.form_key, legacy.form_key);
-            assert_eq!(indexed.eid, legacy.eid);
-            assert_eq!(indexed.flags, legacy.flags);
-            assert_eq!(indexed.fields, legacy.fields);
-            assert_eq!(indexed.warnings, legacy.warnings);
+            let third_person_dependencies = BTreeMap::from([
+                (
+                    "actors/source/behaviors/gunbehavior.hkx".to_string(),
+                    "unused".to_string(),
+                ),
+                (
+                    "actors/duplicate/behaviors/gunbehavior.hkx".to_string(),
+                    "unused".to_string(),
+                ),
+            ]);
+            let first_person_dependencies = BTreeMap::from([(
+                "actors/source/_1stperson/behaviors/gunbehavior.hkx".to_string(),
+                "unused".to_string(),
+            )]);
+            let legacy_third = legacy_family(&third_person_dependencies);
+            let indexed_third =
+                index.family_for_dependencies(third_person_dependencies.keys().map(String::as_str));
+            assert_eq!(family_keys(&indexed_third), family_keys(&legacy_third));
+            assert_eq!(
+                family_keys(&indexed_third),
+                [
+                    FormKey {
+                        plugin,
+                        local: 0x100
+                    },
+                    FormKey {
+                        plugin,
+                        local: 0x102
+                    },
+                ]
+            );
+            let legacy_first = legacy_family(&first_person_dependencies);
+            let indexed_first =
+                index.family_for_dependencies(first_person_dependencies.keys().map(String::as_str));
+            assert_eq!(family_keys(&indexed_first), family_keys(&legacy_first));
+            assert_eq!(indexed_first.len(), 1);
+            assert_eq!(indexed_first[0].form_key.local, 0x101);
+            for dependencies in [
+                BTreeMap::from([(
+                    "actors/source/behaviors/unmatched.hkx".to_string(),
+                    "unused".to_string(),
+                )]),
+                BTreeMap::from([("".to_string(), "unused".to_string())]),
+            ] {
+                let legacy = legacy_family(&dependencies);
+                let indexed =
+                    index.family_for_dependencies(dependencies.keys().map(String::as_str));
+                assert_eq!(family_keys(&indexed), family_keys(&legacy));
+            }
+
+            let roots = vec![
+                "actors/molerat/behaviors/moleratbehavior.hkx".to_string(),
+                "actors/character/behaviors/gunbehavior.hkx".to_string(),
+            ];
+            let mut legacy_root_graphs = Vec::new();
+            let mut seen_graphs = HashSet::new();
+            for record in templates
+                .iter()
+                .filter(|record| roots.contains(&clean(&field(record, "DNAM", &interner))))
+            {
+                let graph = clean(&field(record, "DNAM", &interner));
+                if seen_graphs.insert(graph.clone()) {
+                    legacy_root_graphs.push(graph);
+                }
+            }
+            let indexed_root_graphs = index
+                .root_graphs(&roots)
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            assert_eq!(indexed_root_graphs, legacy_root_graphs);
+            assert!(index
+                .root_graphs(&["actors/unmatched/behaviors/unmatched.hkx".to_string()])
+                .is_empty());
+            for graph in indexed_root_graphs {
+                let legacy = templates
+                    .iter()
+                    .filter(|record| clean(&field(record, "DNAM", &interner)) == graph)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    family_keys(&index.family_for_graph(&graph)),
+                    family_keys(&legacy)
+                );
+            }
+
+            let route = Route {
+                source: "actors/character/behaviors/gunbehavior.hkx".into(),
+                destination: "actors/b21_test/behaviors/gunbehavior.hkx".into(),
+                project: "actors/b21_test/project.hkx".into(),
+                dependencies: third_person_dependencies,
+                animations: BTreeMap::new(),
+                draw_event: None,
+            };
+            let options = MapperOptions {
+                output_plugin_name: "B21_Test.esp".into(),
+                ..Default::default()
+            };
+            let mut legacy_mapper = FormKeyMapper::new([], options.clone(), &interner);
+            let mut indexed_mapper = FormKeyMapper::new([], options, &interner);
+            let legacy_clones = clone_actions(legacy_third, &route, &mut legacy_mapper);
+            let indexed_clones = clone_actions(indexed_third, &route, &mut indexed_mapper);
+            assert_eq!(indexed_clones.len(), legacy_clones.len());
+            for (indexed, legacy) in indexed_clones.iter().zip(&legacy_clones) {
+                assert_eq!(indexed.sig, legacy.sig);
+                assert_eq!(indexed.form_key, legacy.form_key);
+                assert_eq!(indexed.eid, legacy.eid);
+                assert_eq!(indexed.flags, legacy.flags);
+                assert_eq!(indexed.fields, legacy.fields);
+                assert_eq!(indexed.warnings, legacy.warnings);
+            }
         }
     }
 
@@ -1558,18 +1792,14 @@ mod tests {
             &std::fs::read(config.mod_path.as_ref().unwrap().join(PLAN_PATH)).unwrap(),
         )
         .unwrap();
-        assert!(
-            !saved_plan
-                .projects
-                .values()
-                .any(|p| p.source.contains("mechtest"))
-        );
-        assert!(
-            !saved_plan
-                .routes
-                .iter()
-                .any(|r| r.source.contains("mechtest"))
-        );
+        assert!(!saved_plan
+            .projects
+            .values()
+            .any(|p| p.source.contains("mechtest")));
+        assert!(!saved_plan
+            .routes
+            .iter()
+            .any(|r| r.source.contains("mechtest")));
         let child = session
             .record_decoded(&key(0x1104), &schema, &interner)
             .unwrap();
@@ -1577,12 +1807,10 @@ mod tests {
             race_projects(&child, &interner),
             ["actors/b21_fo76/moleminer/moleminerproject.hkx"]
         );
-        assert!(
-            child
-                .fields
-                .iter()
-                .any(|f| f.sig.as_str() == "SADD" && f.value == FieldValue::FormKey(key(0x1100)))
-        );
+        assert!(child
+            .fields
+            .iter()
+            .any(|f| f.sig.as_str() == "SADD" && f.value == FieldValue::FormKey(key(0x1100))));
         let inherited = session
             .record_decoded(&key(0x1105), &schema, &interner)
             .unwrap();
@@ -1591,12 +1819,10 @@ mod tests {
             ["actors/b21_fo76/moleminer/moleminerproject.hkx"]
         );
         assert!(parse_canonical_subgraphs(&inherited).is_empty());
-        assert!(
-            inherited
-                .fields
-                .iter()
-                .any(|f| f.sig.as_str() == "SADD" && f.value == FieldValue::FormKey(key(0x1100)))
-        );
+        assert!(inherited
+            .fields
+            .iter()
+            .any(|f| f.sig.as_str() == "SADD" && f.value == FieldValue::FormKey(key(0x1100))));
         let repaired = session
             .record_decoded(&key(0x1100), &schema, &interner)
             .unwrap();
@@ -1704,13 +1930,11 @@ mod tests {
             is_whole_plugin: true,
             ..config
         };
-        assert!(
-            PreserveFo76BehaviorsFixup
-                .run_with_session(&mut session, &mut mapper, &records_only)
-                .unwrap_err()
-                .to_string()
-                .contains("enable Havok conversion")
-        );
+        assert!(PreserveFo76BehaviorsFixup
+            .run_with_session(&mut session, &mut mapper, &records_only)
+            .unwrap_err()
+            .to_string()
+            .contains("enable Havok conversion"));
         drop(session);
         assert!(plugin_handle_close_native(target));
         assert!(plugin_handle_close_native(source));

@@ -126,14 +126,17 @@ mod tests {
             version_control: 0,
             form_version: Some(578),
             version2: None,
-            subrecords: [("EDID", format!("{}00", hex::encode(editor_id))), ("DNAM", dnam.into())]
-                .into_iter()
-                .map(|(sig, payload)| ParsedSubrecord {
-                    signature: SmolStr::new(sig),
-                    data: Bytes::from(hex::decode(payload).unwrap()),
-                    semantic_type: None,
-                })
-                .collect(),
+            subrecords: [
+                ("EDID", format!("{}00", hex::encode(editor_id))),
+                ("DNAM", dnam.into()),
+            ]
+            .into_iter()
+            .map(|(sig, payload)| ParsedSubrecord {
+                signature: SmolStr::new(sig),
+                data: Bytes::from(hex::decode(payload).unwrap()),
+                semantic_type: None,
+            })
+            .collect(),
             raw_payload: None,
             parse_error: None,
         };
@@ -168,12 +171,16 @@ mod tests {
         crate::target_write::add_record_native(handle, record, &schema, &interner).unwrap();
         let data = {
             let store = plugin_handle_store_ref().lock().unwrap();
-            find_parsed(&store.get(&handle).unwrap().parsed.root_items, "GRAS", form_id)
-                .expect("written GRAS")
-                .subrecords
-                .iter()
-                .find(|subrecord| subrecord.signature.as_str() == "DATA")
-                .map(|subrecord| subrecord.data.to_vec())
+            find_parsed(
+                &store.get(&handle).unwrap().parsed.root_items,
+                "GRAS",
+                form_id,
+            )
+            .expect("written GRAS")
+            .subrecords
+            .iter()
+            .find(|subrecord| subrecord.signature.as_str() == "DATA")
+            .map(|subrecord| subrecord.data.to_vec())
         };
         assert!(plugin_handle_close_native(handle));
         data
@@ -194,8 +201,12 @@ mod tests {
 
     fn parse(data: &[u8]) -> Fo4GrassData {
         assert_eq!(data.len(), 32, "FO4 GRAS DATA is 32 bytes");
-        assert_eq!([data[3], data[6], data[7], data[29], data[30], data[31]], [0; 6]);
-        let float = |offset: usize| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        assert_eq!(
+            [data[3], data[6], data[7], data[29], data[30], data[31]],
+            [0; 6]
+        );
+        let float =
+            |offset: usize| f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
         Fo4GrassData {
             density: data[0],
             min_slope: data[1],
@@ -286,7 +297,11 @@ mod tests {
         ] {
             let data = parse(&written_fo4_data(form_id, editor_id, dnam).expect(editor_id));
             assert_eq!(
-                (data.units_from_water, data.units_from_water_type, data.flags),
+                (
+                    data.units_from_water,
+                    data.units_from_water_type,
+                    data.flags
+                ),
                 (expected_units, expected_type, expected_flags),
                 "{editor_id}"
             );

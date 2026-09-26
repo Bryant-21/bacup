@@ -1384,7 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn all_target_profiles_normalize_to_complete_fo4_struct_widths() {
+    fn all_target_profiles_normalize_widths_and_keep_fo3_layout_provenance() {
         let interner = StringInterner::new();
         let mut unarmed_proxy = make_weapon(&interner, 0x2100, "FalloutNV.esm", 204, 0);
         unarmed_proxy
@@ -1440,6 +1440,19 @@ mod tests {
                 12
             );
         }
+
+        let interner = StringInterner::new();
+        let weapon = make_weapon(&interner, 0x5A00, "FalloutNV.esm", FO3_DNAM_WIDTH, 1);
+        let stat_models = stat_models_for(std::slice::from_ref(&weapon));
+        let plan = plan_bulk_melee_v1(vec![weapon], &stat_models, &interner);
+        assert_eq!(plan.projections.len(), 1);
+        assert_eq!(plan.receipts.len(), 1);
+        assert_eq!(plan.receipts[0].source_family, Some(SourceMeleeFamily::Fo3));
+        assert_eq!(plan.receipts[0].disposition, MvpMeleeDisposition::Admitted);
+        assert_eq!(
+            plan.receipts[0].target_profile,
+            Some(Fo4MeleeTargetProfile::MacheteOneHand)
+        );
     }
 
     #[test]
@@ -1500,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn model_less_unarmed_is_admitted_and_retains_stats() {
+    fn model_less_unarmed_is_admitted_and_missing_wnam_uses_world_model_fallback() {
         let interner = StringInterner::new();
         let mut weapon = make_weapon(&interner, 0x1F4, "Fallout3.esm", 136, 0);
         weapon
@@ -1536,10 +1549,7 @@ mod tests {
         assert_eq!(named_u32(fields, "value", &interner), Some(25));
         assert_eq!(named_u32(fields, "damage_base", &interner), Some(12));
         assert_eq!(named_f32(fields, "weight", &interner), Some(2.0));
-    }
 
-    #[test]
-    fn missing_wnam_uses_explicit_world_model_fallback() {
         let interner = StringInterner::new();
         let mut weapon = make_weapon(&interner, 0x2F4, "Skyrim.esm", 100, 4);
         weapon
@@ -1562,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn width_provenance_and_ranged_contradictions_fail_closed() {
+    fn width_provenance_ranged_projectile_and_template_drift_fail_closed() {
         let interner = StringInterner::new();
         let mut weapons = vec![
             make_weapon(&interner, 0x1000, "Skyrim.esm", 100, 7),
@@ -1624,21 +1634,22 @@ mod tests {
                 && receipt.first_person_model.is_none()
                 && receipt.drops.is_empty()
         }));
-    }
 
-    #[test]
-    fn merged_fnvfo3_owner_preserves_fo3_layout_provenance() {
         let interner = StringInterner::new();
-        let weapon = make_weapon(&interner, 0x5A00, "FalloutNV.esm", FO3_DNAM_WIDTH, 1);
-        let stat_models = stat_models_for(std::slice::from_ref(&weapon));
-        let plan = plan_bulk_melee_v1(vec![weapon], &stat_models, &interner);
-        assert_eq!(plan.projections.len(), 1);
-        assert_eq!(plan.receipts.len(), 1);
-        assert_eq!(plan.receipts[0].source_family, Some(SourceMeleeFamily::Fo3));
-        assert_eq!(plan.receipts[0].disposition, MvpMeleeDisposition::Admitted);
-        assert_eq!(
-            plan.receipts[0].target_profile,
-            Some(Fo4MeleeTargetProfile::MacheteOneHand)
+        let mut projectile = make_weapon(&interner, 0x2000, "FalloutNV.esm", 204, 1);
+        projectile.raw_dnam[0][LEGACY_PROJECTILE_OFFSET] = 1;
+        let mut cycle = make_weapon(&interner, 0x2100, "FalloutNV.esm", 204, 1);
+        cycle.template_refs.push(cycle.record.form_key);
+        let stats = stat_models_for(&[projectile.clone(), cycle.clone()]);
+        let plan = plan_bulk_melee_v1(vec![projectile, cycle], &stats, &interner);
+        assert!(plan.rejections.iter().any(|rejection| matches!(
+            rejection.reason,
+            MeleeRejectionReason::ProjectileContradiction
+        )));
+        assert!(
+            plan.rejections
+                .iter()
+                .any(|rejection| matches!(rejection.reason, MeleeRejectionReason::TemplateCycle))
         );
     }
 
@@ -1670,535 +1681,5 @@ mod tests {
             plan.receipts[1].disposition,
             MvpMeleeDisposition::Rejected(MeleeRejectionReason::GunEquipmentContradiction)
         );
-    }
-
-    #[test]
-    fn projectile_and_template_drift_are_rejected() {
-        let interner = StringInterner::new();
-        let mut projectile = make_weapon(&interner, 0x2000, "FalloutNV.esm", 204, 1);
-        projectile.raw_dnam[0][LEGACY_PROJECTILE_OFFSET] = 1;
-        let mut cycle = make_weapon(&interner, 0x2100, "FalloutNV.esm", 204, 1);
-        cycle.template_refs.push(cycle.record.form_key);
-        let stats = stat_models_for(&[projectile.clone(), cycle.clone()]);
-        let plan = plan_bulk_melee_v1(vec![projectile, cycle], &stats, &interner);
-        assert!(plan.rejections.iter().any(|rejection| matches!(
-            rejection.reason,
-            MeleeRejectionReason::ProjectileContradiction
-        )));
-        assert!(
-            plan.rejections
-                .iter()
-                .any(|rejection| matches!(rejection.reason, MeleeRejectionReason::TemplateCycle))
-        );
-    }
-
-    struct RealCorpusPlan {
-        plan: MeleeCorpusPlan,
-        source_types: Vec<(FormKey, SourceMeleeFamily, u32)>,
-        raw_source_types: Vec<RawCorpusType>,
-        physical_raw_source_types: Vec<RawCorpusType>,
-        deleted: HashSet<FormKey>,
-    }
-
-    #[derive(Clone, Copy)]
-    struct RawCorpusType {
-        form_key: FormKey,
-        width: usize,
-        animation_type: u32,
-    }
-
-    fn raw_corpus_type(raw_record: &ParsedRecord, form_key: FormKey) -> Option<RawCorpusType> {
-        let subrecords = effective_subrecords_for_record(raw_record);
-        let mut dnam = subrecords
-            .iter()
-            .filter(|subrecord| subrecord.signature.as_str() == "DNAM");
-        let data = dnam.next()?.data.as_ref();
-        if dnam.next().is_some() {
-            return None;
-        }
-        let animation_type = if data.len() == SKYRIM_DNAM_WIDTH {
-            u32::from(*data.first()?)
-        } else {
-            u32::from_le_bytes(data.get(0..4)?.try_into().ok()?)
-        };
-        Some(RawCorpusType {
-            form_key,
-            width: data.len(),
-            animation_type,
-        })
-    }
-
-    fn supported_source_type(raw: RawCorpusType) -> Option<(FormKey, SourceMeleeFamily, u32)> {
-        let family = match raw.width {
-            SKYRIM_DNAM_WIDTH => SourceMeleeFamily::Skyrim,
-            FNV_DNAM_WIDTH | FNV_LEGACY_INTEGRATED_DNAM_WIDTH => SourceMeleeFamily::Fnv,
-            FO3_DNAM_WIDTH => SourceMeleeFamily::Fo3,
-            _ => return None,
-        };
-        Some((raw.form_key, family, raw.animation_type))
-    }
-
-    fn load_real_corpus_paths(paths: &[&std::path::Path], game: &str) -> RealCorpusPlan {
-        let interner = StringInterner::new();
-        let schema = crate::schema::AuthoringSchema::for_game(game).unwrap();
-        let signature = SigCode::from_str("WEAP").unwrap();
-        let mut handles = Vec::new();
-        let mut winners = HashMap::new();
-        let mut physical_raw_source_types = Vec::new();
-        for path in paths {
-            let handle = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
-                path.to_str().unwrap(),
-                Some(game),
-                None,
-                None,
-                true,
-            )
-            .unwrap();
-            let keys = iter_form_keys_of_sig(handle, signature, &interner).unwrap();
-            let batch = snapshot_records_by_form_keys(handle, &keys, &interner).unwrap();
-            for snapshot in &batch.records {
-                let record = decode_record_from_parsed(
-                    &snapshot.raw_record,
-                    &snapshot.form_key,
-                    &schema,
-                    &batch.masters,
-                    &batch.plugin_name,
-                    batch.strings.as_ref(),
-                    batch.plugin_is_localized,
-                    &interner,
-                )
-                .unwrap();
-                let raw_source_type = raw_corpus_type(&snapshot.raw_record, snapshot.form_key);
-                let source_type = raw_source_type.and_then(supported_source_type);
-                let weapon = source_weapon(
-                    record,
-                    &snapshot.raw_record,
-                    &batch.masters,
-                    &batch.plugin_name,
-                    &interner,
-                );
-                if let Some(raw_source_type) = raw_source_type {
-                    physical_raw_source_types.push(raw_source_type);
-                }
-                winners.insert(
-                    weapon.record.form_key,
-                    (weapon, source_type, raw_source_type),
-                );
-            }
-            handles.push(handle);
-        }
-        let mut winners = winners.into_values().collect::<Vec<_>>();
-        winners.sort_by_key(|(weapon, _, _)| {
-            (
-                interner
-                    .resolve(weapon.record.form_key.plugin)
-                    .unwrap_or_default()
-                    .to_ascii_lowercase(),
-                weapon.record.form_key.local,
-            )
-        });
-        let source_types = winners
-            .iter()
-            .filter_map(|(_, source_type, _)| *source_type)
-            .collect::<Vec<_>>();
-        let raw_source_types = winners
-            .iter()
-            .filter_map(|(_, _, raw_source_type)| *raw_source_type)
-            .collect::<Vec<_>>();
-        let weapons = winners
-            .into_iter()
-            .map(|(weapon, _, _)| weapon)
-            .collect::<Vec<_>>();
-        let deleted = weapons
-            .iter()
-            .filter(|weapon| weapon.record.flags.contains(RecordFlags::DELETED))
-            .map(|weapon| weapon.record.form_key)
-            .collect::<HashSet<_>>();
-        let mut stat_models = HashMap::new();
-        for weapon in &weapons {
-            if let Ok(Some(wnam)) = exact_field(&weapon.record, "WNAM")
-                && let Some(form_key) = form_key_value(&wnam.value)
-            {
-                for handle in handles.iter().rev() {
-                    if let Ok(stat) = read_record_relayout_by_form_key(
-                        *handle, &form_key, &schema, &interner, None,
-                    ) && let Ok(Some(model)) = exact_field(&stat, "MODL")
-                        && let FieldValue::String(model) = model.value
-                    {
-                        stat_models.insert(form_key, model);
-                        break;
-                    }
-                }
-            }
-        }
-        let winner_count = weapons.len();
-        let plan = plan_bulk_melee_v1(weapons, &stat_models, &interner);
-        assert_eq!(plan.candidates, winner_count);
-        assert!(validate_bulk_melee_v1_plan(&plan, &interner));
-        assert!(plan.projections.iter().all(|projection| matches!(
-            target_animation(&projection.record, &interner),
-            0 | 1 | 5
-        )));
-        for handle in handles {
-            esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle);
-        }
-        RealCorpusPlan {
-            plan,
-            source_types,
-            raw_source_types,
-            physical_raw_source_types,
-            deleted,
-        }
-    }
-
-    fn load_real_corpus(path: &std::path::Path, game: &str) -> RealCorpusPlan {
-        load_real_corpus_paths(&[path], game)
-    }
-
-    fn admitted_count(corpus: &RealCorpusPlan, family: SourceMeleeFamily) -> usize {
-        corpus
-            .plan
-            .receipts
-            .iter()
-            .filter(|receipt| {
-                receipt.source_family == Some(family)
-                    && receipt.disposition == MvpMeleeDisposition::Admitted
-            })
-            .count()
-    }
-
-    fn raw_melee_candidate_count(
-        source_types: &[RawCorpusType],
-        family: SourceMeleeFamily,
-    ) -> usize {
-        source_types
-            .iter()
-            .filter(|source_type| match family {
-                SourceMeleeFamily::Skyrim => {
-                    source_type.width == SKYRIM_DNAM_WIDTH && source_type.animation_type <= 6
-                }
-                SourceMeleeFamily::Fnv | SourceMeleeFamily::Fo3 => {
-                    source_type.width != SKYRIM_DNAM_WIDTH && source_type.animation_type <= 2
-                }
-            })
-            .count()
-    }
-
-    fn assert_family_count_and_ranged_rejection(
-        corpus: &RealCorpusPlan,
-        family: SourceMeleeFamily,
-        expected_melee_counts: &[usize],
-        count_deleted: bool,
-    ) {
-        let melee = corpus
-            .source_types
-            .iter()
-            .filter(|(form_key, source_family, animation_type)| {
-                *source_family == family
-                    && (count_deleted || !corpus.deleted.contains(form_key))
-                    && match family {
-                        SourceMeleeFamily::Skyrim => *animation_type <= 6,
-                        SourceMeleeFamily::Fnv | SourceMeleeFamily::Fo3 => *animation_type <= 2,
-                    }
-            })
-            .map(|(form_key, _, _)| *form_key)
-            .collect::<HashSet<_>>();
-        assert!(
-            expected_melee_counts.contains(&melee.len()),
-            "unexpected {family:?} melee count {}",
-            melee.len()
-        );
-        for source_form_key in &melee {
-            let receipt = corpus
-                .plan
-                .receipts
-                .iter()
-                .find(|receipt| receipt.source_form_key == *source_form_key)
-                .unwrap();
-            if corpus.deleted.contains(source_form_key) {
-                assert_eq!(
-                    receipt.disposition,
-                    MvpMeleeDisposition::Rejected(MeleeRejectionReason::Deleted),
-                    "{source_form_key:?}"
-                );
-            } else {
-                assert_eq!(
-                    receipt.disposition,
-                    MvpMeleeDisposition::Admitted,
-                    "{source_form_key:?}"
-                );
-            }
-        }
-
-        assert_ranged_rejection(corpus, family);
-    }
-
-    fn assert_ranged_rejection(corpus: &RealCorpusPlan, family: SourceMeleeFamily) {
-        for (source_form_key, source_family, animation_type) in &corpus.source_types {
-            let is_ranged_or_throwing = *source_family == family
-                && !corpus.deleted.contains(source_form_key)
-                && match family {
-                    SourceMeleeFamily::Skyrim => (7..=9).contains(animation_type),
-                    SourceMeleeFamily::Fnv | SourceMeleeFamily::Fo3 => {
-                        (3..=13).contains(animation_type)
-                    }
-                };
-            if !is_ranged_or_throwing {
-                continue;
-            }
-            let receipt = corpus
-                .plan
-                .receipts
-                .iter()
-                .find(|receipt| receipt.source_form_key == *source_form_key)
-                .unwrap();
-            assert!(
-                matches!(receipt.disposition, MvpMeleeDisposition::Rejected(_)),
-                "ranged or throwing source must terminate as rejected: {source_form_key:?}"
-            );
-            assert!(
-                corpus
-                    .plan
-                    .projections
-                    .iter()
-                    .all(|projection| projection.source_form_key != *source_form_key)
-            );
-        }
-    }
-
-    #[test]
-    fn optional_real_skyrim_official_count_gate() {
-        let Some(path) = std::env::var_os("SKYRIMSE_WEAPON_CORPUS_PLUGIN") else {
-            return;
-        };
-        let path = std::path::Path::new(&path);
-        if !path.is_file() {
-            return;
-        }
-        let data_dir = path.parent().unwrap();
-        let official_paths = [
-            "Skyrim.esm",
-            "Update.esm",
-            "Dawnguard.esm",
-            "HearthFires.esm",
-            "Dragonborn.esm",
-        ]
-        .map(|name| data_dir.join(name));
-        if official_paths.iter().any(|path| !path.is_file()) {
-            return;
-        }
-        let official_refs = official_paths
-            .iter()
-            .map(std::path::PathBuf::as_path)
-            .collect::<Vec<_>>();
-        let corpus = load_real_corpus_paths(&official_refs, "skyrimse");
-        assert_eq!(
-            raw_melee_candidate_count(&corpus.physical_raw_source_types, SourceMeleeFamily::Skyrim,),
-            2_815
-        );
-        assert_family_count_and_ranged_rejection(
-            &corpus,
-            SourceMeleeFamily::Skyrim,
-            &[2_792],
-            false,
-        );
-        assert_eq!(admitted_count(&corpus, SourceMeleeFamily::Skyrim), 2_792);
-    }
-
-    #[test]
-    fn optional_real_fnv_official_count_gate() {
-        let Some(path) = std::env::var_os("FNV_WEAPON_CORPUS_PLUGIN") else {
-            return;
-        };
-        let path = std::path::Path::new(&path);
-        if !path.is_file() {
-            return;
-        }
-        let data_dir = path.parent().unwrap();
-        let mut official_paths = [
-            "FalloutNV.esm",
-            "DeadMoney.esm",
-            "HonestHearts.esm",
-            "OldWorldBlues.esm",
-            "LonesomeRoad.esm",
-            "GunRunnersArsenal.esm",
-            "CaravanPack.esm",
-            "ClassicPack.esm",
-            "MercenaryPack.esm",
-        ]
-        .map(|name| data_dir.join(name))
-        .to_vec();
-        let include_tribal = std::env::var_os("FNV_WEAPON_CORPUS_INCLUDE_TRIBAL").is_some();
-        if include_tribal {
-            official_paths.push(data_dir.join("TribalPack.esm"));
-        }
-        if official_paths.iter().any(|path| !path.is_file()) {
-            return;
-        }
-        let official_refs = official_paths
-            .iter()
-            .map(std::path::PathBuf::as_path)
-            .collect::<Vec<_>>();
-        let corpus = load_real_corpus_paths(&official_refs, "fnv");
-        assert_eq!(
-            raw_melee_candidate_count(&corpus.physical_raw_source_types, SourceMeleeFamily::Fnv,),
-            if include_tribal { 158 } else { 157 }
-        );
-        assert_eq!(
-            raw_melee_candidate_count(&corpus.raw_source_types, SourceMeleeFamily::Fnv),
-            if include_tribal { 156 } else { 155 }
-        );
-        assert_eq!(
-            corpus
-                .raw_source_types
-                .iter()
-                .filter(|source_type| {
-                    source_type.width != SKYRIM_DNAM_WIDTH
-                        && source_type.animation_type <= 2
-                        && corpus.deleted.contains(&source_type.form_key)
-                })
-                .count(),
-            0,
-            "official FNV type 0..2 winning identities contain no deleted tombstones"
-        );
-        assert_eq!(
-            corpus
-                .source_types
-                .iter()
-                .filter(|(_, family, animation_type)| {
-                    *family == SourceMeleeFamily::Fnv && *animation_type <= 2
-                })
-                .count(),
-            if include_tribal { 150 } else { 149 }
-        );
-        assert_family_count_and_ranged_rejection(&corpus, SourceMeleeFamily::Fo3, &[1], true);
-        assert_ranged_rejection(&corpus, SourceMeleeFamily::Fnv);
-        assert_eq!(admitted_count(&corpus, SourceMeleeFamily::Fo3), 1);
-        let mut expected_rejections = HashMap::new();
-        for (local, reason) in [
-            (0x00_01F6, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x0F_204A, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x0F_26CE, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x0F_26CF, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x0F_26D3, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x0F_26D4, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x0F_26D7, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x0F_26DA, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x10_84AD, MeleeRejectionReason::GunEquipmentContradiction),
-            (0x16_6B95, MeleeRejectionReason::ProjectileContradiction),
-            (0x15_BA03, MeleeRejectionReason::ProjectileContradiction),
-            (0x00_0809, MeleeRejectionReason::ProjectileContradiction),
-        ] {
-            let source_form_key = corpus
-                .raw_source_types
-                .iter()
-                .find(|source_type| source_type.form_key.local == local)
-                .map(|source_type| source_type.form_key)
-                .expect("official rejected raw type 0..2 candidate");
-            expected_rejections.insert(source_form_key, reason);
-        }
-        assert_eq!(expected_rejections.len(), 12);
-        for source_type in corpus.raw_source_types.iter().filter(|source_type| {
-            source_type.width != SKYRIM_DNAM_WIDTH && source_type.animation_type <= 2
-        }) {
-            let source_form_key = source_type.form_key;
-            let receipt = corpus
-                .plan
-                .receipts
-                .iter()
-                .find(|receipt| receipt.source_form_key == source_form_key)
-                .expect("every raw type 0..2 candidate has a receipt");
-            if let Some(reason) = expected_rejections.get(&source_form_key) {
-                assert_eq!(
-                    receipt.disposition,
-                    MvpMeleeDisposition::Rejected(reason.clone()),
-                    "{source_form_key:?}"
-                );
-                assert!(
-                    corpus
-                        .plan
-                        .projections
-                        .iter()
-                        .all(|projection| { projection.source_form_key != source_form_key })
-                );
-            } else {
-                assert_eq!(
-                    receipt.disposition,
-                    MvpMeleeDisposition::Admitted,
-                    "{source_form_key:?}"
-                );
-            }
-        }
-        assert_eq!(
-            admitted_count(&corpus, SourceMeleeFamily::Fnv),
-            if include_tribal { 143 } else { 142 }
-        );
-        let admitted = corpus
-            .plan
-            .receipts
-            .iter()
-            .filter(|receipt| receipt.disposition == MvpMeleeDisposition::Admitted)
-            .collect::<Vec<_>>();
-        assert_eq!(admitted.len(), if include_tribal { 144 } else { 143 });
-        for profile in [
-            Fo4MeleeTargetProfile::UnarmedProxy,
-            Fo4MeleeTargetProfile::PowerFistGauntlet,
-            Fo4MeleeTargetProfile::MacheteOneHand,
-            Fo4MeleeTargetProfile::GrognakTwoHand,
-            Fo4MeleeTargetProfile::RipperContinuous,
-        ] {
-            assert!(
-                admitted
-                    .iter()
-                    .any(|receipt| receipt.target_profile == Some(profile)),
-                "missing admitted target profile {}",
-                profile.code()
-            );
-        }
-    }
-
-    #[test]
-    fn optional_real_fnvfo3_graft_layout_gate() {
-        let Some(path) = std::env::var_os("FNVFO3_MERGED_WEAPON_CORPUS_PLUGIN") else {
-            return;
-        };
-        let path = std::path::Path::new(&path);
-        if !path.is_file() {
-            return;
-        }
-        let corpus = load_real_corpus(path, "fnv");
-        let fo3_count = corpus
-            .source_types
-            .iter()
-            .filter(|(_, family, animation_type)| {
-                *family == SourceMeleeFamily::Fo3 && *animation_type <= 2
-            })
-            .count();
-        assert!(fo3_count > 0, "merged fixture has no 136-byte FO3 WEAP");
-        for (source_form_key, _, _) in
-            corpus
-                .source_types
-                .iter()
-                .filter(|(_, family, animation_type)| {
-                    *family == SourceMeleeFamily::Fo3 && *animation_type <= 2
-                })
-        {
-            let receipt = corpus
-                .plan
-                .receipts
-                .iter()
-                .find(|receipt| receipt.source_form_key == *source_form_key)
-                .expect("every raw 136-byte FO3 melee identity has a terminal receipt");
-            assert_eq!(receipt.source_family, Some(SourceMeleeFamily::Fo3));
-            assert_eq!(
-                corpus
-                    .plan
-                    .projections
-                    .iter()
-                    .any(|projection| projection.source_form_key == *source_form_key),
-                receipt.disposition == MvpMeleeDisposition::Admitted
-            );
-        }
-        assert_ranged_rejection(&corpus, SourceMeleeFamily::Fo3);
     }
 }

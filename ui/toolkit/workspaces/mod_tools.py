@@ -1,4 +1,4 @@
-"""Mod tool workspaces — SubGraph Maker, archive tools, Archlist Creator, Folder Renamer, Modlist Merger."""
+"""Mod tool workspaces — SubGraph Maker, archive tools, Archlist Creator, Folder Renamer, Modlist Merger, Verified Creations."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from ui.tools.assets.archlist_creator import ArchlistCreatorTool
 from ui.tools.assets.folder_renamer import FolderRenamerTool
 from ui.tools.assets.mass_bsa import MassBSATool
 from ui.tools.assets.modlist_merger import ModlistMergerTool
+from ui.tools.verified_creations.tool import VerifiedCreationsTool
 
 
 class SubGraphMakerWorkspace(ToolWorkspace):
@@ -72,3 +73,10 @@ class ModlistMergerWorkspace(ToolWorkspace):
     icon = "MLG"
     id = "modlist_merger"
     tool_class = ModlistMergerTool
+
+
+class VerifiedCreationsWorkspace(ToolWorkspace):
+    name = "Verified Creations"
+    icon = "VC"
+    id = "verified_creations"
+    tool_class = VerifiedCreationsTool

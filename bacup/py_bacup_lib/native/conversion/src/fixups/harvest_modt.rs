@@ -561,11 +561,7 @@ mod tests {
             Some(armo_modt.as_slice())
         );
         assert!(!index.contains_key("e/f.nif"));
-    }
 
-    #[test]
-    fn index_is_first_wins_on_duplicate_paths() {
-        let interner = StringInterner::new();
         let first = valid_modt(1);
         let second = valid_modt(9);
         let records = vec![
@@ -595,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_inserts_hash_after_path_when_absent() {
+    fn apply_inserts_overwrites_or_drops_modt_by_known_path() {
         let interner = StringInterner::new();
         let mut index = FxHashMap::default();
         index.insert("a/b.nif".to_string(), SmallVec::from_slice(&[7u8, 7, 7]));
@@ -617,11 +613,7 @@ mod tests {
             .collect();
         assert_eq!(sigs, vec!["OBND", "MODL", "MODT", "MODC"]);
         assert_eq!(field_value(&r, "MODT"), Some(&b(&[7, 7, 7])));
-    }
 
-    #[test]
-    fn apply_overwrites_stale_hash_in_place() {
-        let interner = StringInterner::new();
         let mut index = FxHashMap::default();
         index.insert("a/b.nif".to_string(), SmallVec::from_slice(&[7u8]));
         let mut r = rec(
@@ -639,11 +631,7 @@ mod tests {
             r.fields.iter().filter(|e| e.sig.as_str() == "MODT").count(),
             1
         );
-    }
 
-    #[test]
-    fn apply_drops_stale_hash_when_path_unknown() {
-        let interner = StringInterner::new();
         let index = FxHashMap::default();
         let mut r = rec(
             "STAT",
@@ -655,12 +643,7 @@ mod tests {
         );
         assert_eq!(apply_harvested_modt(&mut r, &index, &interner), 1);
         assert_eq!(field_value(&r, "MODT"), None);
-    }
 
-    #[test]
-    fn apply_noop_when_no_hash_and_path_unknown() {
-        let interner = StringInterner::new();
-        let index = FxHashMap::default();
         let mut r = rec(
             "STAT",
             vec![("MODL", s(&interner, "Novel\\Mesh.nif"))],

@@ -5,35 +5,15 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
         If BS01_Invention_Valdez_FoundDoc_Scene != None && !BS01_Invention_Valdez_FoundDoc_Scene.IsPlaying()
             BS01_Invention_Valdez_FoundDoc_Scene.Start()
         EndIf
-        If IsStageDone(510) && IsStageDone(520) && IsStageDone(530) && !IsStageDone(AllDocumentsCollectedStage)
+        If (auiStageID == 510 || IsStageDone(510)) && (auiStageID == 520 || IsStageDone(520)) && (auiStageID == 530 || IsStageDone(530)) && !IsStageDone(AllDocumentsCollectedStage)
             SetStage(AllDocumentsCollectedStage)
         EndIf
     ElseIf auiStageID == 740
-        RefCollectionAlias wiringEnemies = GetAlias(35) as RefCollectionAlias
-        Utility.Wait(0.5)
-        If wiringEnemies != None
-            Bool foundWiringEnemy = False
-            Bool allWiringEnemiesDead = True
-            Int enemyIndex = 0
-            While enemyIndex < wiringEnemies.GetCount()
-                Actor enemyRef = wiringEnemies.GetAt(enemyIndex) as Actor
-                If enemyRef != None
-                    foundWiringEnemy = True
-                    If !enemyRef.IsDead()
-                        allWiringEnemiesDead = False
-                        RegisterForRemoteEvent(enemyRef, "OnDeath")
-                    EndIf
-                EndIf
-                enemyIndex += 1
-            EndWhile
-            If foundWiringEnemy && allWiringEnemiesDead && !IsStageDone(750)
-                SetStage(750)
-            EndIf
-        EndIf
+        StartTimer(0.1, 740)
     ElseIf auiStageID >= 910 && auiStageID <= 933
-        Bool cpuCollected = IsStageDone(910) || IsStageDone(911) || IsStageDone(912) || IsStageDone(913)
-        Bool ionCollected = IsStageDone(920) || IsStageDone(921) || IsStageDone(922) || IsStageDone(923)
-        Bool gaugeCollected = IsStageDone(930) || IsStageDone(931) || IsStageDone(932) || IsStageDone(933)
+        Bool cpuCollected = (auiStageID >= 910 && auiStageID <= 913) || IsStageDone(910) || IsStageDone(911) || IsStageDone(912) || IsStageDone(913)
+        Bool ionCollected = (auiStageID >= 920 && auiStageID <= 923) || IsStageDone(920) || IsStageDone(921) || IsStageDone(922) || IsStageDone(923)
+        Bool gaugeCollected = (auiStageID >= 930 && auiStageID <= 933) || IsStageDone(930) || IsStageDone(931) || IsStageDone(932) || IsStageDone(933)
         If cpuCollected && ionCollected && gaugeCollected && !IsStageDone(InitialComponentsGatheredStage)
             SetStage(InitialComponentsGatheredStage)
         EndIf
@@ -85,26 +65,7 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
         If playerRef != None && CameraShakeSpell != None
             CameraShakeSpell.Cast(playerRef, playerRef)
         EndIf
-        Utility.Wait(2.0)
-        If Alias_UltraciteFight_Enemies_RefCollection != None
-            Bool foundRobotEnemy = False
-            Bool allRobotEnemiesDead = True
-            Int enemyIndex = 0
-            While enemyIndex < Alias_UltraciteFight_Enemies_RefCollection.GetCount()
-                Actor enemyRef = Alias_UltraciteFight_Enemies_RefCollection.GetAt(enemyIndex) as Actor
-                If enemyRef != None
-                    foundRobotEnemy = True
-                    If !enemyRef.IsDead()
-                        allRobotEnemiesDead = False
-                        RegisterForRemoteEvent(enemyRef, "OnDeath")
-                    EndIf
-                EndIf
-                enemyIndex += 1
-            EndWhile
-            If foundRobotEnemy && allRobotEnemiesDead && !IsStageDone(EWSEndStage)
-                SetStage(EWSEndStage)
-            EndIf
-        EndIf
+        StartTimer(0.1, 1200)
     ElseIf auiStageID == 750
         RefCollectionAlias wiringEnemies = GetAlias(35) as RefCollectionAlias
         If wiringEnemies != None
@@ -138,7 +99,9 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
 EndEvent
 
 Event OnTimer(Int aiTimerID)
-    If aiTimerID == ValdezEntranceTimerID
+    If aiTimerID == 740 || aiTimerID == 1200
+        ReconcileLocalCombat(aiTimerID)
+    ElseIf aiTimerID == ValdezEntranceTimerID
         If IsStageDone(300) && !IsStageDone(DungeonValdezEnableStage)
             SetStage(DungeonValdezEnableStage)
         EndIf
@@ -198,3 +161,47 @@ Event Actor.OnDeath(Actor akSender, Actor akKiller)
         EndIf
     EndIf
 EndEvent
+
+Function ReconcileLocalCombat(Int startStage)
+    If !IsRunning()
+        Return
+    EndIf
+    RefCollectionAlias enemies
+    Int completionStage
+    If startStage == 740
+        enemies = GetAlias(35) as RefCollectionAlias
+        completionStage = 750
+    ElseIf startStage == 1200
+        enemies = Alias_UltraciteFight_Enemies_RefCollection
+        completionStage = EWSEndStage
+    Else
+        Return
+    EndIf
+    If IsStageDone(completionStage)
+        Return
+    EndIf
+    If !IsStageDone(startStage)
+        StartTimer(0.1, startStage)
+        Return
+    EndIf
+    If enemies == None
+        Return
+    EndIf
+    Bool foundEnemy = False
+    Bool allDead = True
+    Int index = 0
+    While index < enemies.GetCount()
+        Actor enemy = enemies.GetAt(index) as Actor
+        If enemy != None
+            foundEnemy = True
+            If !enemy.IsDead()
+                allDead = False
+                RegisterForRemoteEvent(enemy, "OnDeath")
+            EndIf
+        EndIf
+        index += 1
+    EndWhile
+    If foundEnemy && allDead
+        SetStage(completionStage)
+    EndIf
+EndFunction

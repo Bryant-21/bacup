@@ -162,6 +162,11 @@ Function Fragment_Stage_0540_Item_00()
     If playerRef != None
         playerRef.SetValue(W05_MQR_204P_SaboteurKnownValue, 1.0)
     EndIf
+    ; Nothing else sets 600 ("Accuse the Accomplice"); Molly naming the saboteur is
+    ; the gate for Barb's accusation line, so surface the objective here.
+    If !IsStageDone(600) && !IsStageDone(700)
+        SetStage(600)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0541_Item_00()
@@ -214,6 +219,10 @@ Function Fragment_Stage_0700_Item_00()
     Actor playerRef = Game.GetPlayer()
     If playerRef != None
         playerRef.SetValue(W05_MQR_204P_LevHideoutActiveValue, 1.0)
+    EndIf
+    ; Mid-quest XP/caps (B21:QuestRewards 701/5211) were granted server side in FO76.
+    If !IsStageDone(701)
+        SetStage(701)
     EndIf
 EndFunction
 
@@ -344,6 +353,9 @@ Function Fragment_Stage_5210_Item_00()
     SetObjectiveCompleted(5200)
     If IsObjectiveDisplayed(5300)
         SetObjectiveCompleted(5300)
+    EndIf
+    If !IsStageDone(5211)
+        SetStage(5211)
     EndIf
 EndFunction
 

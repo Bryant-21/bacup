@@ -131,6 +131,7 @@ pub(super) fn fo4_lvlo_value(
     level: u16,
     reference: FormKey,
     count: u16,
+    chance_none: u8,
 ) -> FieldValue {
     let reference_field = match record_sig {
         b"LVLN" => "npc",
@@ -149,9 +150,43 @@ pub(super) fn fo4_lvlo_value(
             FieldValue::FormKey(reference),
         ),
         (interner.intern("count"), bytes_value(&count.to_le_bytes())),
-        (interner.intern("chance_none"), bytes_value(&[0])),
+        (interner.intern("chance_none"), bytes_value(&[chance_none])),
         (interner.intern("unknown_u8_6"), bytes_value(&[0])),
     ])
+}
+
+fn source_entry_chance_none(
+    entry: &FieldValue,
+    tail: &[FieldEntry],
+    interner: &crate::sym::StringInterner,
+) -> u8 {
+    fn percent(value: &FieldValue) -> Option<u8> {
+        let value = match value {
+            FieldValue::Float(value) => *value,
+            FieldValue::Uint(value) => *value as f32,
+            FieldValue::Int(value) => *value as f32,
+            FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+                f32::from_le_bytes(bytes.as_slice().try_into().ok()?)
+            }
+            FieldValue::Bytes(bytes) if bytes.len() == 1 => f32::from(bytes[0]),
+            _ => return None,
+        };
+        value
+            .is_finite()
+            .then(|| value.round().clamp(0.0, 100.0) as u8)
+    }
+
+    tail.iter()
+        .find(|field| field.sig.as_str() == "LVOV")
+        .and_then(|field| percent(&field.value))
+        .or_else(|| match entry {
+            FieldValue::Bytes(bytes) if bytes.len() >= 12 => Some(bytes[10].min(100)),
+            FieldValue::Struct(fields) => {
+                named_value(fields, "chance_none", interner).and_then(percent)
+            }
+            _ => None,
+        })
+        .unwrap_or(0)
 }
 
 pub(super) fn sync_llct_count(record: &mut Record, count: usize) {
@@ -171,9 +206,11 @@ pub(super) fn sync_llct_count(record: &mut Record, count: usize) {
 }
 impl Fo76Fo4Hook {
     pub(super) fn convert_fo76_leveled_list_entries(
-        interner: &crate::sym::StringInterner,
+        ctx: &crate::translator::pair_hook::PairCtx<'_>,
         record: &mut Record,
     ) {
+        let interner = ctx.interner;
+        let global_values = ctx.source_global_values;
         if !matches!(&record.sig.0, b"LVLI" | b"LVLN" | b"LVSP") {
             return;
         }
@@ -204,6 +241,7 @@ impl Fo76Fo4Hook {
                         &old_fields[span.start + 1..span.end],
                         lock_level_baseline,
                         level_baseline,
+                        global_values,
                     )
                 })
                 .collect();
@@ -235,7 +273,58 @@ impl Fo76Fo4Hook {
                 keep_entries[index] = !old_fields[span.start + 1..span.end]
                     .iter()
                     .filter(|entry| matches!(&entry.sig.0, b"CTDA" | b"CTDT"))
-                    .any(|entry| Self::condition_gates_dropped_world_state(interner, &entry.value));
+                    .any(|entry| {
+                        Self::condition_gates_dropped_world_state(
+                            interner,
+                            &entry.value,
+                            global_values,
+                        )
+                    });
+            }
+            let first_match = old_fields.iter().any(|field| {
+                field.sig.as_str() == "LVLF"
+                    && match &field.value {
+                        FieldValue::Bytes(bytes) => bytes.first().copied().map(u16::from),
+                        value => field_value_to_u16(value),
+                    }
+                    .is_some_and(|flags| flags & 0x40 != 0)
+            });
+            if first_match {
+                // Ordered conditional alternatives are not independent weights.
+                // Until runtime conditions are supported, retain the rarest
+                // surviving alternative for the same object/level/count.
+                let mut alternatives = HashMap::<(FormKey, u16, u16), (usize, u8)>::new();
+                for (index, span) in entry_spans.iter().enumerate() {
+                    if !keep_entries[index] {
+                        continue;
+                    }
+                    let value = &old_fields[span.start].value;
+                    let Some(reference) =
+                        source_lvlo_reference(value, record.form_key.plugin, interner)
+                    else {
+                        continue;
+                    };
+                    let level = raw_lvlo_u16(value, 0).unwrap_or_else(|| {
+                        following_u16_value(&old_fields, span.start + 1, b"LVLV", 1)
+                    });
+                    let count = raw_lvlo_u16(value, 8).unwrap_or_else(|| {
+                        following_u16_value(&old_fields, span.start + 1, b"LVIV", 1)
+                    });
+                    let chance = source_entry_chance_none(
+                        value,
+                        &old_fields[span.start + 1..span.end],
+                        interner,
+                    );
+                    let key = (reference, level, count);
+                    if let Some(&(previous, previous_chance)) = alternatives.get(&key) {
+                        if previous_chance >= chance {
+                            keep_entries[index] = false;
+                            continue;
+                        }
+                        keep_entries[previous] = false;
+                    }
+                    alternatives.insert(key, (index, chance));
+                }
             }
         }
 
@@ -258,8 +347,19 @@ impl Fo76Fo4Hook {
                         let count = raw_lvlo_u16(&entry.value, 8).unwrap_or_else(|| {
                             following_u16_value(&old_fields, field_index + 1, b"LVIV", 1)
                         });
-                        entry.value =
-                            fo4_lvlo_value(interner, &record.sig.0, level, reference, count);
+                        let chance_none = source_entry_chance_none(
+                            &entry.value,
+                            &old_fields[field_index + 1..span.end],
+                            interner,
+                        );
+                        entry.value = fo4_lvlo_value(
+                            interner,
+                            &record.sig.0,
+                            level,
+                            reference,
+                            count,
+                            chance_none,
+                        );
                         retained.push(entry);
                         retained.extend(old_fields[field_index + 1..span.end].iter().cloned());
                         converted_count += 1;
@@ -328,6 +428,7 @@ impl Fo76Fo4Hook {
         fields: &[FieldEntry],
         lock_level_baseline: Option<f32>,
         level_baseline: Option<f32>,
+        global_values: Option<&std::collections::HashMap<u32, f32>>,
     ) -> LeveledEntryDisposition {
         let conditions: Vec<_> = fields
             .iter()
@@ -344,6 +445,7 @@ impl Fo76Fo4Hook {
                 &condition.value,
                 lock_level_baseline,
                 level_baseline,
+                global_values,
             ) {
                 LeveledEntryDisposition::Reject => return LeveledEntryDisposition::Reject,
                 LeveledEntryDisposition::Unknown => disposition = LeveledEntryDisposition::Unknown,
@@ -358,6 +460,7 @@ impl Fo76Fo4Hook {
         condition: &FieldValue,
         lock_level_baseline: Option<f32>,
         level_baseline: Option<f32>,
+        global_values: Option<&std::collections::HashMap<u32, f32>>,
     ) -> LeveledEntryDisposition {
         let Some(function_id) = Self::condition_function_id(interner, condition) else {
             return LeveledEntryDisposition::Unknown;
@@ -389,9 +492,16 @@ impl Fo76Fo4Hook {
         }
 
         let baseline = match function_id {
-            GET_ITEM_COUNT_CONDITION_FUNCTION_ID
-            | GET_LOCKED_CONDITION_FUNCTION_ID
-            | GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID => Some(0.0),
+            GET_ITEM_COUNT_CONDITION_FUNCTION_ID | GET_LOCKED_CONDITION_FUNCTION_ID => Some(0.0),
+            // Evaluate against what the global actually ships as. Assuming 0
+            // dropped every row gated on an *enabled* global -- it emptied
+            // `RA_LL_Rewards_PublicEvents_TreasuryNotes`, whose gate
+            // `Gold_Treasury_Note_Loot_Enabled` is 1.
+            GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID => Some(Self::condition_global_value(
+                interner,
+                condition,
+                global_values,
+            )),
             GET_LOCK_LEVEL_CONDITION_FUNCTION_ID => lock_level_baseline,
             GET_LEVEL_CONDITION_FUNCTION_ID => level_baseline,
             _ => None,
@@ -481,9 +591,25 @@ impl Fo76Fo4Hook {
 
     /// True when a `CTDA` gates its entry behind FO76-only world state that the
     /// target leveled-list shape cannot represent.
+    /// The shipped value of the global a `GetGlobalValue` condition tests.
+    /// Falls back to 0 -- FO4's default for an unknown global -- so a value the
+    /// caller could not read behaves exactly as it did before.
+    pub(super) fn condition_global_value(
+        interner: &crate::sym::StringInterner,
+        condition: &FieldValue,
+        global_values: Option<&std::collections::HashMap<u32, f32>>,
+    ) -> f32 {
+        Self::condition_parameter_1(interner, condition)
+            .and_then(|global| {
+                global_values.and_then(|values| values.get(&(global & 0x00FF_FFFF)).copied())
+            })
+            .unwrap_or(0.0)
+    }
+
     pub(super) fn condition_gates_dropped_world_state(
         interner: &crate::sym::StringInterner,
         value: &FieldValue,
+        global_values: Option<&std::collections::HashMap<u32, f32>>,
     ) -> bool {
         let function_id = Self::condition_function_id(interner, value);
         if function_id == Some(FO76_NUKE_ZONE_CONDITION_FUNCTION_ID) {
@@ -507,13 +633,17 @@ impl Fo76Fo4Hook {
             return false;
         };
         function_id == Some(GET_GLOBAL_VALUE_CONDITION_FUNCTION_ID)
-            && Self::condition_requires_global_on(bytes)
+            && Self::condition_requires_global_on(
+                bytes,
+                Self::condition_global_value(interner, value, global_values),
+            )
     }
 
-    /// True when a `GetGlobalValue` condition can only be satisfied while the
-    /// global is non-zero (event ON). The off-state (global 0, the FO4 default)
-    /// branch is kept so the normal-world entry survives.
-    pub(super) fn condition_requires_global_on(bytes: &[u8]) -> bool {
+    /// True when a `GetGlobalValue` condition cannot be satisfied at
+    /// `global_value` -- the value the global ships with, defaulting to 0 (the
+    /// FO4 off-state) when it could not be read. The satisfied branch is kept
+    /// so the live entry survives.
+    pub(super) fn condition_requires_global_on(bytes: &[u8], global_value: f32) -> bool {
         let (Some(op), Some(cmp)) = (
             Self::raw_condition_operator(bytes),
             Self::raw_condition_comparison_value(bytes),
@@ -521,11 +651,11 @@ impl Fo76Fo4Hook {
             return false;
         };
         match op {
-            0 => cmp != 0.0, // == a non-zero value
-            1 => cmp == 0.0, // != zero
-            2 => cmp >= 0.0, // > a value the off-state (0) cannot exceed
-            3 => cmp > 0.0,  // >= a positive value
-            _ => false,      // less-than variants: global 0 satisfies -> keep
+            0 => cmp != global_value, // == a value the global does not hold
+            1 => cmp == global_value, // != the value it does hold
+            2 => cmp >= global_value, // > a value the global cannot exceed
+            3 => cmp > global_value,  // >= a value above the global
+            _ => false,               // less-than variants satisfy -> keep
         }
     }
 }

@@ -27,7 +27,7 @@ use crate::formkey_mapper::{FormKeyMapper, MapperSnapshot};
 use crate::ids::{FormKey, SigCode};
 use crate::record::Record;
 use crate::schema::AuthoringSchema;
-use crate::session::{PluginSession, ReadView};
+use crate::session::PluginSession;
 use crate::sym::Sym;
 
 /// Memoizes target-master plugin scans across sweeps. Fixups never mutate
@@ -524,7 +524,6 @@ mod tests {
 
     struct Fixture {
         handle: u64,
-        plugin: String,
         interner: StringInterner,
         mapper_state: MapperState,
         config: FixupConfig,
@@ -546,7 +545,6 @@ mod tests {
         config.target_schema = Some(Arc::clone(&schema));
         Fixture {
             handle,
-            plugin: plugin.to_string(),
             interner,
             mapper_state: MapperState::new(std::iter::empty(), MapperOptions::default()),
             config,
@@ -686,29 +684,40 @@ mod tests {
     }
 
     #[test]
-    fn decoded_sweep_changes_matching_records_and_reports_counts() {
-        let mut fx = seed_fixture(
-            "SweepDecoded.esp",
-            &[("MarkOne", 0x801), ("Other", 0x802), ("MarkTwo", 0x803)],
-        );
-        let sweep = Sweep {
-            label: "test",
-            visitors: vec![Box::new(EidPrefixObndVisitor {
-                name: "marker_obnd",
-                prefix: "Mark",
-                fill: 9,
-                require_fill: None,
-            })],
-        };
-        let reports = run_test_sweep(&mut fx, &sweep);
-        assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].0, "marker_obnd");
-        assert_eq!(reports[0].1.records_changed, 2);
+    fn decoded_sweep_changes_matching_records_and_skips_non_applying_visitors() {
+        {
+            let mut fx = seed_fixture(
+                "SweepDecoded.esp",
+                &[("MarkOne", 0x801), ("Other", 0x802), ("MarkTwo", 0x803)],
+            );
+            let sweep = Sweep {
+                label: "test",
+                visitors: vec![Box::new(EidPrefixObndVisitor {
+                    name: "marker_obnd",
+                    prefix: "Mark",
+                    fill: 9,
+                    require_fill: None,
+                })],
+            };
+            let reports = run_test_sweep(&mut fx, &sweep);
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].0, "marker_obnd");
+            assert_eq!(reports[0].1.records_changed, 2);
 
-        let obnd = parsed_obnd_by_id(fx.handle);
-        assert_eq!(obnd[&0x801], vec![9u8; 12]);
-        assert_eq!(obnd[&0x802], vec![0u8; 12]);
-        assert_eq!(obnd[&0x803], vec![9u8; 12]);
+            let obnd = parsed_obnd_by_id(fx.handle);
+            assert_eq!(obnd[&0x801], vec![9u8; 12]);
+            assert_eq!(obnd[&0x802], vec![0u8; 12]);
+            assert_eq!(obnd[&0x803], vec![9u8; 12]);
+        }
+        {
+            let mut fx = seed_fixture("SweepSkip.esp", &[("MarkOne", 0x801)]);
+            let sweep = Sweep {
+                label: "skip",
+                visitors: vec![Box::new(NeverAppliesVisitor)],
+            };
+            let reports = run_test_sweep(&mut fx, &sweep);
+            assert!(reports.is_empty());
+        }
     }
 
     #[test]
@@ -900,16 +909,5 @@ mod tests {
         ) -> Result<GatherOutput, FixupError> {
             panic!("gather must not run for non-applying visitor");
         }
-    }
-
-    #[test]
-    fn non_applying_visitor_emits_no_report() {
-        let mut fx = seed_fixture("SweepSkip.esp", &[("MarkOne", 0x801)]);
-        let sweep = Sweep {
-            label: "skip",
-            visitors: vec![Box::new(NeverAppliesVisitor)],
-        };
-        let reports = run_test_sweep(&mut fx, &sweep);
-        assert!(reports.is_empty());
     }
 }

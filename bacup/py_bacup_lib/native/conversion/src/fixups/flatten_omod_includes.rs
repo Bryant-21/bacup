@@ -1,12 +1,14 @@
-//! Fixup: flatten OMOD includes when MODL is present (FO76 → FO4 only).
+//! Fixup: flatten FO76 parent includes into the mod that includes them (FO76 → FO4 only).
 //!
-//! Vanilla FO4 OMODs are either leaf attachments (MODL, no includes) or
-//! aggregators (includes, no MODL). FO76 allows `MODL + includes`, where a leaf
-//! pulls base stats from a parent aggregator (`_PARENT_mod_WEAPON_GENERIC_*`).
-//! The FO4 CK logs "Object mod 'X' (FORMID) is tagged with a model. Removing
-//! invalid data." and strips the includes, dropping every inherited property.
+//! In FO4, only a mod collection (record flag 0x80, DATA form type `NONE`) has includes,
+//! and the game attaches one of them at random. FO76 also lets an ordinary mod include
+//! parents (`_PARENT_mod_WEAPON_GENERIC_*`), whose properties it inherits. The FO4 CK
+//! shows such a mod as a collection, and the game never applies the parents'
+//! properties. Example: Cold Shoulder's `mod_custom_Coldshoulder_DmgvsCryptid` (690C7D)
+//! includes `_PARENT_mod_WEAPON_GENERIC_Cryo_Split2`, which holds all of the gun's cryo
+//! damage. The earlier MODL-only rule missed property-only mods like that one.
 //!
-//! For each OMOD with MODL and `include_count > 0`, the included OMODs' DATA
+//! For each non-collection OMOD with `include_count > 0`, the included OMODs' DATA
 //! properties are appended recursively (cycle-safe) and the includes zeroed.
 //! Orphaned `_PARENT_*` OMODs are then removed by `PruneOrphanedRecordsFixup`.
 
@@ -50,6 +52,7 @@ struct DataLayout {
     include_count: usize,
     property_count: usize,
     includes_start: usize,
+    #[cfg(test)]
     includes_end: usize,
     properties_start: usize,
     properties_end: usize,
@@ -90,6 +93,7 @@ fn parse_data_layout(bytes: &[u8]) -> Option<DataLayout> {
         include_count,
         property_count,
         includes_start,
+        #[cfg(test)]
         includes_end,
         properties_start,
         properties_end,
@@ -100,13 +104,16 @@ fn data_sig() -> SubrecordSig {
     SubrecordSig(*b"DATA")
 }
 
-fn modl_sig() -> SubrecordSig {
-    SubrecordSig(*b"MODL")
+const RECORD_FLAG_MOD_COLLECTION: u32 = 0x80;
+const DATA_FORM_TYPE_OFFSET: usize = 10;
+
+fn is_mod_collection(record_flags: u32, data: &[u8]) -> bool {
+    record_flags & RECORD_FLAG_MOD_COLLECTION != 0
+        || data.get(DATA_FORM_TYPE_OFFSET..DATA_FORM_TYPE_OFFSET + 4) == Some(b"NONE".as_slice())
 }
 
-fn record_has_modl(record: &Record) -> bool {
-    let modl = modl_sig();
-    record.fields.iter().any(|e| e.sig == modl)
+fn is_flatten_candidate(record_flags: u32, data: &[u8], layout: &DataLayout) -> bool {
+    layout.include_count > 0 && !is_mod_collection(record_flags, data)
 }
 
 fn record_data_bytes(record: &Record) -> Option<Vec<u8>> {
@@ -146,10 +153,12 @@ fn encoded_form_id(
 fn collect_properties_from_chain(
     head_form_id: u32,
     data_by_form_id: &FxHashMap<u32, Vec<u8>>,
+    collections: &FxHashSet<u32>,
     visited: &mut FxHashSet<u32>,
     out_props: &mut Vec<u8>,
 ) {
-    if !visited.insert(head_form_id) {
+    // A collection picks one member at random; inlining it would apply every member at once.
+    if collections.contains(&head_form_id) || !visited.insert(head_form_id) {
         return;
     }
     let Some(bytes) = data_by_form_id.get(&head_form_id) else {
@@ -162,7 +171,7 @@ fn collect_properties_from_chain(
     for i in 0..layout.include_count {
         let row = layout.includes_start + i * INCLUDE_ROW_LEN;
         let fid = u32::from_le_bytes(bytes[row..row + 4].try_into().unwrap());
-        collect_properties_from_chain(fid, data_by_form_id, visited, out_props);
+        collect_properties_from_chain(fid, data_by_form_id, collections, visited, out_props);
     }
 }
 
@@ -391,8 +400,9 @@ impl Fixup for FlattenOmodIncludesFixup {
         }
 
         // Pass 1 — snapshot every OMOD's DATA bytes keyed by encoded form_id,
-        // and remember which records are flatten candidates (MODL + includes).
+        // and remember which records are flatten candidates (includes, not a collection).
         let mut data_by_form_id: FxHashMap<u32, Vec<u8>> = FxHashMap::default();
+        let mut collections: FxHashSet<u32> = FxHashSet::default();
         let mut candidates: Vec<FormKey> = Vec::new();
         let mut report = FixupReport::empty();
 
@@ -418,7 +428,10 @@ impl Fixup for FlattenOmodIncludesFixup {
             let Some(layout) = parse_data_layout(&data) else {
                 continue;
             };
-            let is_candidate = record_has_modl(&record) && layout.include_count > 0;
+            let is_candidate = is_flatten_candidate(record.flags.bits(), &data, &layout);
+            if is_mod_collection(record.flags.bits(), &data) {
+                collections.insert(encoded_id);
+            }
             data_by_form_id.insert(encoded_id, data);
             if is_candidate {
                 candidates.push(*fk);
@@ -466,6 +479,7 @@ impl Fixup for FlattenOmodIncludesFixup {
                 collect_properties_from_chain(
                     inc_fid,
                     &data_by_form_id,
+                    &collections,
                     &mut visited,
                     &mut inlined,
                 );
@@ -795,6 +809,34 @@ mod tests {
     }
 
     #[test]
+    fn parented_mods_flatten_but_collections_keep_their_includes() {
+        let include = [(0x0700_1234, 0, 0, 1)];
+        let parented = make_data(&include, &[]);
+        let layout = parse_data_layout(&parented).unwrap();
+        assert!(is_flatten_candidate(0, &parented, &layout));
+        assert!(!is_flatten_candidate(RECORD_FLAG_MOD_COLLECTION, &parented, &layout));
+
+        let mut collection = parented.clone();
+        collection[DATA_FORM_TYPE_OFFSET..DATA_FORM_TYPE_OFFSET + 4].copy_from_slice(b"NONE");
+        assert!(!is_flatten_candidate(0, &collection, &layout));
+
+        let leaf = make_data(&[], &[]);
+        assert!(!is_flatten_candidate(0, &leaf, &parse_data_layout(&leaf).unwrap()));
+
+        // A parent that includes a collection inherits nothing from the collection's members.
+        let member = make_data(&[], &[prop_row(1, 1, 28, 1, 0)]);
+        let collection_id = 0x0700_0002;
+        let data_by_id: FxHashMap<u32, Vec<u8>> =
+            [(0x0700_1234, make_data(&[(collection_id, 0, 0, 1)], &[])), (collection_id, make_data(&[(0x0700_0003, 0, 0, 1)], &[])), (0x0700_0003, member)]
+                .into_iter()
+                .collect();
+        let mut out = Vec::new();
+        collect_properties_from_chain(0x0700_1234, &data_by_id, &[collection_id].into_iter().collect(),
+            &mut FxHashSet::default(), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn parse_data_layout_handles_simple_record() {
         let data = make_data(
             &[(0x07851142, 0, 0, 1)],
@@ -842,92 +884,44 @@ mod tests {
     }
 
     #[test]
-    fn collect_properties_walks_parent_chain() {
-        // grandparent: 1 prop
-        let grandparent_id = 0x07AAAAAA;
-        let grandparent = make_data(&[], &[prop_row(1, 1, 7, 0x3f000000, 0)]);
-        // parent: 1 prop + include of grandparent
-        let parent_id = 0x07851142;
-        let parent = make_data(
-            &[(grandparent_id, 0, 0, 1)],
-            &[prop_row(1, 1, 35, 0x3dcccccd, 0)],
-        );
+    fn collect_properties_walks_includes_depth_first_once() {
+        let (a, b, missing) = (0x07AA_A001, 0x07BB_B001, 0x07FF_FFFF);
+        for (name, records, expected_prop_ids) in [
+            (
+                "parent then grandparent",
+                vec![(a, vec![b], 35u16), (b, vec![], 7)],
+                vec![35, 7],
+            ),
+            (
+                "cycle visits each once",
+                vec![(a, vec![b], 11), (b, vec![a], 22)],
+                vec![11, 22],
+            ),
+            ("self include", vec![(a, vec![a], 11)], vec![11]),
+            (
+                "missing include target",
+                vec![(a, vec![missing], 11)],
+                vec![11],
+            ),
+        ] {
+            let data_by_id: FxHashMap<u32, _> = records
+                .into_iter()
+                .map(|(id, includes, prop_id)| {
+                    let includes: Vec<_> = includes.into_iter().map(|inc| (inc, 0, 0, 1)).collect();
+                    (id, make_data(&includes, &[prop_row(1, 1, prop_id, 0, 0)]))
+                })
+                .collect();
 
-        let mut data_by_id = FxHashMap::default();
-        data_by_id.insert(grandparent_id, grandparent);
-        data_by_id.insert(parent_id, parent);
+            let mut visited = FxHashSet::default();
+            let mut out = Vec::new();
+            collect_properties_from_chain(a, &data_by_id, &FxHashSet::default(), &mut visited, &mut out);
 
-        let mut visited = FxHashSet::default();
-        let mut out = Vec::new();
-        collect_properties_from_chain(parent_id, &data_by_id, &mut visited, &mut out);
-
-        // Should have collected 2 property rows: parent's, then grandparent's.
-        assert_eq!(out.len(), 2 * PROPERTY_ROW_LEN);
-        let parent_prop_id = u16::from_le_bytes(out[8..10].try_into().unwrap());
-        assert_eq!(parent_prop_id, 35);
-        let gp_prop_id = u16::from_le_bytes(
-            out[PROPERTY_ROW_LEN + 8..PROPERTY_ROW_LEN + 10]
-                .try_into()
-                .unwrap(),
-        );
-        assert_eq!(gp_prop_id, 7);
-    }
-
-    #[test]
-    fn collect_properties_breaks_cycles() {
-        // A includes B; B includes A — must not recurse forever, and must not
-        // double-count A's properties.
-        let a_id = 0x07AAA001;
-        let b_id = 0x07BBB001;
-        let a = make_data(&[(b_id, 0, 0, 1)], &[prop_row(1, 1, 11, 0, 0)]);
-        let b = make_data(&[(a_id, 0, 0, 1)], &[prop_row(1, 1, 22, 0, 0)]);
-
-        let mut data_by_id = FxHashMap::default();
-        data_by_id.insert(a_id, a);
-        data_by_id.insert(b_id, b);
-
-        let mut visited = FxHashSet::default();
-        let mut out = Vec::new();
-        collect_properties_from_chain(a_id, &data_by_id, &mut visited, &mut out);
-
-        assert_eq!(out.len(), 2 * PROPERTY_ROW_LEN);
-        let first = u16::from_le_bytes(out[8..10].try_into().unwrap());
-        let second = u16::from_le_bytes(
-            out[PROPERTY_ROW_LEN + 8..PROPERTY_ROW_LEN + 10]
-                .try_into()
-                .unwrap(),
-        );
-        // Order is DFS from A: A (id 11) then B (id 22).
-        assert_eq!(first, 11);
-        assert_eq!(second, 22);
-    }
-
-    #[test]
-    fn collect_properties_self_include_is_no_op() {
-        let a_id = 0x07AAA001;
-        // A includes A itself.
-        let a = make_data(&[(a_id, 0, 0, 1)], &[prop_row(1, 1, 11, 0, 0)]);
-        let mut data_by_id = FxHashMap::default();
-        data_by_id.insert(a_id, a);
-        let mut visited = FxHashSet::default();
-        let mut out = Vec::new();
-        collect_properties_from_chain(a_id, &data_by_id, &mut visited, &mut out);
-        // Only A's own properties — exactly once.
-        assert_eq!(out.len(), PROPERTY_ROW_LEN);
-    }
-
-    #[test]
-    fn missing_include_target_is_silently_skipped() {
-        let a_id = 0x07AAA001;
-        let missing_id = 0x07FFFFFF;
-        let a = make_data(&[(missing_id, 0, 0, 1)], &[prop_row(1, 1, 11, 0, 0)]);
-        let mut data_by_id = FxHashMap::default();
-        data_by_id.insert(a_id, a);
-        let mut visited = FxHashSet::default();
-        let mut out = Vec::new();
-        collect_properties_from_chain(a_id, &data_by_id, &mut visited, &mut out);
-        // A's own props collected; the dangling include is ignored.
-        assert_eq!(out.len(), PROPERTY_ROW_LEN);
+            let prop_ids: Vec<u16> = out
+                .chunks_exact(PROPERTY_ROW_LEN)
+                .map(|row| u16::from_le_bytes(row[8..10].try_into().unwrap()))
+                .collect();
+            assert_eq!(prop_ids, expected_prop_ids, "{name}");
+        }
     }
 
     #[test]
@@ -983,10 +977,7 @@ mod tests {
             &rebuilt[8..layout.properties_start],
             &original[8..layout.properties_start]
         );
-    }
 
-    #[test]
-    fn strip_mod_association_no_match_returns_none() {
         let original = make_data(
             &[],
             &[

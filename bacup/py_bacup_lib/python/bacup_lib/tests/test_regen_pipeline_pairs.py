@@ -260,6 +260,7 @@ def test_fatal_pack_preflight_precedes_forced_cleanup_and_all_output_mutation(
             RuntimeError("legacy PACK preflight blocked conversion")
         ),
     )
+    monkeypatch.setattr(regen_pipeline, "_resolve_upgrade_plan", lambda *_a, **_k: None)
     monkeypatch.setattr(
         regen_pipeline,
         "_clean_forced_regen_output",

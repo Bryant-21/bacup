@@ -119,6 +119,94 @@ fn skip_property_value(
     }
 }
 
+/// True when any top-level script in the VMAD satisfies the predicate; `None`
+/// when the VMAD could not be walked.
+pub(crate) fn has_top_level_script(
+    bytes: &[u8],
+    script_matches: &dyn Fn(&[u8]) -> bool,
+) -> Option<bool> {
+    let mut reader = VmadReader::new(bytes);
+    let version = reader.u16()?;
+    let object_format = reader.u16()?;
+    if version != VMAD_VERSION || object_format != VMAD_OBJECT_FORMAT {
+        return None;
+    }
+    let script_count = reader.u16()?;
+    let mut found = false;
+    for _ in 0..script_count {
+        let script_name = reader.string_bytes()?;
+        reader.u8()?;
+        let property_count = reader.u16()?;
+        for _ in 0..property_count {
+            reader.string_bytes()?;
+            let property_type = reader.u8()?;
+            reader.u8()?;
+            skip_property_value(&mut reader, property_type, object_format)?;
+        }
+        found |= script_matches(script_name);
+    }
+    Some(found)
+}
+
+/// Byte ranges of the length-prefixed name of every `property_name` property
+/// carried by a top-level script the predicate accepts.
+fn top_level_property_name_spans(
+    bytes: &[u8],
+    script_matches: &dyn Fn(&[u8]) -> bool,
+    property_name: &[u8],
+) -> Option<Vec<std::ops::Range<usize>>> {
+    let mut reader = VmadReader::new(bytes);
+    let version = reader.u16()?;
+    let object_format = reader.u16()?;
+    if version != VMAD_VERSION || object_format != VMAD_OBJECT_FORMAT {
+        return None;
+    }
+    let script_count = reader.u16()?;
+    let mut spans = Vec::new();
+    for _ in 0..script_count {
+        let script_name = reader.string_bytes()?;
+        reader.u8()?;
+        let property_count = reader.u16()?;
+        let matched = script_matches(script_name);
+        for _ in 0..property_count {
+            let start = reader.offset;
+            let name = reader.string_bytes()?;
+            let end = reader.offset;
+            let property_type = reader.u8()?;
+            reader.u8()?;
+            skip_property_value(&mut reader, property_type, object_format)?;
+            if matched && name.eq_ignore_ascii_case(property_name) {
+                spans.push(start..end);
+            }
+        }
+    }
+    Some(spans)
+}
+
+/// Rename a property on every top-level script the predicate accepts, returning
+/// how many were renamed, or `None` when the VMAD could not be walked.
+///
+/// Property names are length-prefixed, so a rename that changes length splices
+/// rather than overwrites; spans are applied back to front so the earlier
+/// offsets stay valid.
+pub(crate) fn rename_top_level_script_property(
+    existing: &mut Vec<u8>,
+    script_matches: &dyn Fn(&[u8]) -> bool,
+    old_name: &str,
+    new_name: &str,
+) -> Option<usize> {
+    let spans = top_level_property_name_spans(existing, script_matches, old_name.as_bytes())?;
+    let length = u16::try_from(new_name.len()).ok()?;
+    let mut encoded = Vec::with_capacity(2 + new_name.len());
+    encoded.extend_from_slice(&length.to_le_bytes());
+    encoded.extend_from_slice(new_name.as_bytes());
+    let renamed = spans.len();
+    for span in spans.into_iter().rev() {
+        existing.splice(span, encoded.iter().copied());
+    }
+    Some(renamed)
+}
+
 fn top_level_script_layout<'a>(
     bytes: &'a [u8],
     script_name: &str,

@@ -96,19 +96,12 @@ def test_dropping_one_script_keeps_the_rest_byte_exact():
     assert vmad.with_scripts(survivors) == _vmad([keep_a, keep_b], fragments=b"tail")
 
 
-def test_dropping_every_script_keeps_the_header_and_tail():
+def test_empty_script_arrays_keep_the_header_and_tail():
     data = _vmad([_script("Only")], fragments=b"tail")
+    assert vmad_codec.parse(data).with_scripts(()) == struct.pack("<hhH", 6, 2, 0) + b"tail"
 
-    vmad = vmad_codec.parse(data)
-
-    assert vmad.with_scripts(()) == struct.pack("<hhH", 6, 2, 0) + b"tail"
-
-
-def test_empty_script_array_round_trips():
     data = _vmad([], fragments=b"fragments only")
-
     vmad = vmad_codec.parse(data)
-
     assert vmad.scripts == ()
     assert vmad.with_scripts(()) == data
 

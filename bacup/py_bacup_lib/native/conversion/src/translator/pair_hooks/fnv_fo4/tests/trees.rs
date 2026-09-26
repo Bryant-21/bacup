@@ -46,6 +46,24 @@ fn post_translate_replaces_legacy_speedtree_models_with_fo4_nifs() {
         };
         assert_eq!(interner.resolve(model), Some(expected));
     }
+
+    let interner = StringInterner::new();
+    let mut record = make_record("TREE", &interner);
+    let source = "Landscape\\Trees\\CustomTree.nif";
+    push_field(
+        &mut record,
+        "MODL",
+        FieldValue::String(interner.intern(source)),
+    );
+
+    FnvFo4Hook
+        .post_translate(&mut make_ctx(&interner), &mut record)
+        .unwrap();
+
+    let FieldValue::String(model) = record.fields[0].value else {
+        panic!("TREE MODL must remain a string");
+    };
+    assert_eq!(interner.resolve(model), Some(source));
 }
 
 #[test]
@@ -71,23 +89,3 @@ fn fo3_post_translate_replaces_shared_legacy_speedtree_model() {
     );
 }
 
-#[test]
-fn post_translate_leaves_nif_tree_models_unchanged() {
-    let interner = StringInterner::new();
-    let mut record = make_record("TREE", &interner);
-    let source = "Landscape\\Trees\\CustomTree.nif";
-    push_field(
-        &mut record,
-        "MODL",
-        FieldValue::String(interner.intern(source)),
-    );
-
-    FnvFo4Hook
-        .post_translate(&mut make_ctx(&interner), &mut record)
-        .unwrap();
-
-    let FieldValue::String(model) = record.fields[0].value else {
-        panic!("TREE MODL must remain a string");
-    };
-    assert_eq!(interner.resolve(model), Some(source));
-}

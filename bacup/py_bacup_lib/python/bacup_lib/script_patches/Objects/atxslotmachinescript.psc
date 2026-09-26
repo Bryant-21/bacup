@@ -1,5 +1,4 @@
-; TODO
-; Deferred: BumpTumblerUpdateTick() has no caller until the server-side spin driver is restored.
+; B21_TalesFromAppalachia's Casino native runtime now owns the local spin driver.
 
 ; Re-homed from OnSyncVariableNetworkChanged("tumblerUpdateTick"): FO76 bumped
 ; tumblerUpdateTick on the server so every client would spin the reels. Exposed as a

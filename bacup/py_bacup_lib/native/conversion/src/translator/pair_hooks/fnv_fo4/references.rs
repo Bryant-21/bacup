@@ -1,7 +1,5 @@
 use super::common::struct_value;
-use crate::ids::SubrecordSig;
 use crate::record::{FieldEntry, FieldValue, Record};
-use crate::sym::StringInterner;
 fn uint_from_struct(
     value: &FieldValue,
     key: &str,

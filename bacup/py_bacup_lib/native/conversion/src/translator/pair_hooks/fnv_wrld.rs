@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn fnv_wrld_wastelandnv_golden_uses_source_bit_meaning() {
+    fn legacy_wrld_data_flags_use_source_bit_meaning() {
         let interner = StringInterner::new();
         let mut wasteland = record(&interner, 0x0D_A726, "FalloutNV.esm");
         let climate = form_key(&interner, 0x08_809B, "FalloutNV.esm");
@@ -373,10 +373,7 @@ mod tests {
                 .map(|entry| &entry.value),
             Some(&water)
         );
-    }
 
-    #[test]
-    fn fnv_wrld_all_source_bits_cannot_become_unrelated_fo4_flags() {
         let interner = StringInterner::new();
         let mut world = record(&interner, 1, "FalloutNV.esm");
         world.fields.push(field(b"DATA", FieldValue::Uint(0xFF)));
@@ -387,10 +384,20 @@ mod tests {
         assert_eq!(data_value(&world), &FieldValue::Uint(0x0B));
         assert_eq!(report.data_changes[0].dropped_source_flags, 0xEC);
         assert_eq!(map_legacy_wrld_data_flags(0xFF) & 0xF0, 0);
-    }
 
-    #[test]
-    fn fnv_wrld_fo3_and_fnv_are_legacy_but_fo76_and_fo4_are_noops() {
+        let interner = StringInterner::new();
+        let mut world = record(&interner, 1, "FalloutNV.esm");
+        world.fields.push(field(
+            b"DATA",
+            FieldValue::Bytes(SmallVec::from_slice(&[0x13, 0xFF, 0xFF, 0xFF])),
+        ));
+
+        let report = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fnv, &interner)
+            .expect("four-byte DATA normalization");
+
+        assert_eq!(data_value(&world), &FieldValue::Uint(0x0B));
+        assert_eq!(report.data_changes[0].source_flags, 0x13);
+
         let interner = StringInterner::new();
         for source in [WrldSourceFamily::Fnv, WrldSourceFamily::Fo3] {
             let mut world = record(&interner, 1, "legacy.esm");
@@ -410,103 +417,7 @@ mod tests {
             assert!(!report.applied);
             assert_eq!(world.fields, before);
         }
-    }
 
-    #[test]
-    fn fnv_wrld_missing_data_gets_only_the_proto_default_and_no_references() {
-        let interner = StringInterner::new();
-        let mut world = record(&interner, 1, "Fallout3.esm");
-        world.fields.extend([
-            field(b"EDID", FieldValue::None),
-            field(b"ZNAM", FieldValue::Uint(0x1234)),
-        ]);
-
-        let report = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fo3, &interner)
-            .expect("missing DATA normalization");
-
-        assert!(report.synthesized_data_default);
-        assert_eq!(data_value(&world), &FieldValue::Uint(0));
-        assert_eq!(
-            world
-                .fields
-                .iter()
-                .map(|entry| entry.sig.as_str())
-                .collect::<Vec<_>>(),
-            vec!["EDID", "DATA", "ZNAM"]
-        );
-        for sig in REFERENCE_SIGS {
-            let expected = if sig == *b"ZNAM" {
-                WrldReferenceState::PreservedValid
-            } else {
-                WrldReferenceState::Missing
-            };
-            assert_eq!(reference_state(&report, &sig), expected);
-        }
-    }
-
-    #[test]
-    fn fnv_wrld_four_byte_data_uses_only_the_engine_visible_first_byte() {
-        let interner = StringInterner::new();
-        let mut world = record(&interner, 1, "FalloutNV.esm");
-        world.fields.push(field(
-            b"DATA",
-            FieldValue::Bytes(SmallVec::from_slice(&[0x13, 0xFF, 0xFF, 0xFF])),
-        ));
-
-        let report = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fnv, &interner)
-            .expect("four-byte DATA normalization");
-
-        assert_eq!(data_value(&world), &FieldValue::Uint(0x0B));
-        assert_eq!(report.data_changes[0].source_flags, 0x13);
-    }
-
-    #[test]
-    fn fnv_wrld_duplicate_data_is_atomic() {
-        let interner = StringInterner::new();
-        let mut world = record(&interner, 1, "Fallout3.esm");
-        world.fields.extend([
-            field(b"INAM", FieldValue::Uint(1)),
-            field(b"DATA", FieldValue::Uint(0x10)),
-            field(b"DATA", FieldValue::Uint(0x20)),
-        ]);
-        let before = world.fields.clone();
-
-        let error = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fo3, &interner)
-            .expect_err("duplicate DATA must fail");
-
-        assert_eq!(
-            error,
-            WrldNormalizationError::DuplicateDataFields {
-                first_index: 1,
-                duplicate_index: 2,
-            }
-        );
-        assert_eq!(world.fields, before);
-    }
-
-    #[test]
-    fn fnv_wrld_unsupported_present_data_is_atomic_and_not_treated_as_missing() {
-        let interner = StringInterner::new();
-        let mut world = record(&interner, 1, "FalloutNV.esm");
-        world.fields.push(field(b"INAM", FieldValue::Uint(1)));
-        world.fields.push(field(
-            b"DATA",
-            FieldValue::Bytes(SmallVec::from_slice(&[0x80, 0x01])),
-        ));
-        let before = world.fields.clone();
-
-        let error = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fnv, &interner)
-            .expect_err("malformed DATA must fail");
-
-        assert_eq!(
-            error,
-            WrldNormalizationError::UnsupportedDataValue { field_index: 1 }
-        );
-        assert_eq!(world.fields, before);
-    }
-
-    #[test]
-    fn fnv_wrld_affected_merged_corpus_has_the_expected_25_semantic_changes() {
         let cases: [(&str, WrldSourceFamily, u8, u8); 25] = [
             ("031E12", WrldSourceFamily::Fnv, 0x11, 0x09),
             ("0DA726", WrldSourceFamily::Fnv, 0x80, 0x00),
@@ -573,5 +484,76 @@ mod tests {
             assert_eq!(actual, expected, "merged WRLD {id}");
             assert_eq!(actual & 0xF0, 0, "unrelated FO4 flag on {id}");
         }
+    }
+
+    #[test]
+    fn legacy_wrld_missing_or_malformed_data_is_defaulted_or_atomic() {
+        let interner = StringInterner::new();
+        let mut world = record(&interner, 1, "Fallout3.esm");
+        world.fields.extend([
+            field(b"EDID", FieldValue::None),
+            field(b"ZNAM", FieldValue::Uint(0x1234)),
+        ]);
+
+        let report = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fo3, &interner)
+            .expect("missing DATA normalization");
+
+        assert!(report.synthesized_data_default);
+        assert_eq!(data_value(&world), &FieldValue::Uint(0));
+        assert_eq!(
+            world
+                .fields
+                .iter()
+                .map(|entry| entry.sig.as_str())
+                .collect::<Vec<_>>(),
+            vec!["EDID", "DATA", "ZNAM"]
+        );
+        for sig in REFERENCE_SIGS {
+            let expected = if sig == *b"ZNAM" {
+                WrldReferenceState::PreservedValid
+            } else {
+                WrldReferenceState::Missing
+            };
+            assert_eq!(reference_state(&report, &sig), expected);
+        }
+
+        let interner = StringInterner::new();
+        let mut world = record(&interner, 1, "Fallout3.esm");
+        world.fields.extend([
+            field(b"INAM", FieldValue::Uint(1)),
+            field(b"DATA", FieldValue::Uint(0x10)),
+            field(b"DATA", FieldValue::Uint(0x20)),
+        ]);
+        let before = world.fields.clone();
+
+        let error = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fo3, &interner)
+            .expect_err("duplicate DATA must fail");
+
+        assert_eq!(
+            error,
+            WrldNormalizationError::DuplicateDataFields {
+                first_index: 1,
+                duplicate_index: 2,
+            }
+        );
+        assert_eq!(world.fields, before);
+
+        let interner = StringInterner::new();
+        let mut world = record(&interner, 1, "FalloutNV.esm");
+        world.fields.push(field(b"INAM", FieldValue::Uint(1)));
+        world.fields.push(field(
+            b"DATA",
+            FieldValue::Bytes(SmallVec::from_slice(&[0x80, 0x01])),
+        ));
+        let before = world.fields.clone();
+
+        let error = normalize_wrld_for_fo4(&mut world, WrldSourceFamily::Fnv, &interner)
+            .expect_err("malformed DATA must fail");
+
+        assert_eq!(
+            error,
+            WrldNormalizationError::UnsupportedDataValue { field_index: 1 }
+        );
+        assert_eq!(world.fields, before);
     }
 }

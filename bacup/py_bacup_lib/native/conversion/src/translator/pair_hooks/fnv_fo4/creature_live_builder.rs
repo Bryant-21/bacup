@@ -52,13 +52,10 @@ pub struct FnvFo3LiveRecipeBuildInput<'a> {
 
 #[derive(Clone, Debug)]
 pub struct FnvFo3LiveRecipeEvidence {
-    pub catalog: CreatureCorpusPlan,
-    pub indexed_assets: Vec<IndexedSourceAssetEvidence>,
     pub motion_families: Vec<CreatureMotionFamilyEvidence>,
     pub motion_sets: Vec<CreatureFamilyMotionSet>,
     pub movement_issues: Vec<LegacyMovementMvpIssue>,
     pub graph_contracts: Vec<CreatureGraphContractEvidence>,
-    pub ragdoll_evidence: Vec<RagdollCapabilityEvidence>,
     pub recipe_ledger: CreatureFamilyRecipeLedger,
 }
 
@@ -159,13 +156,10 @@ pub fn build_live_fnv_fo3_creature_recipe_evidence(
     )?;
 
     Ok(FnvFo3LiveRecipeEvidence {
-        catalog,
-        indexed_assets,
         motion_families,
         motion_sets: motion_catalog.families,
         movement_issues: movement.issues,
         graph_contracts,
-        ragdoll_evidence,
         recipe_ledger,
     })
 }

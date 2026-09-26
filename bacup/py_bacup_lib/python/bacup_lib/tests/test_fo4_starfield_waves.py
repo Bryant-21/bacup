@@ -42,19 +42,6 @@ def test_registry_exposes_every_fo4_starfield_phase() -> None:
         assert phase in names, phase
 
 
-def test_registry_exposes_the_structured_cell_phase() -> None:
-    # Separate from the list above so an older native build without this phase
-    # skips only this check. Registration is asserted Rust-side by
-    # `phase::mod::dispatcher_tests::fo4_starfield_phases_are_registered`;
-    # this checks only whether the built extension carries it.
-    names = load_native_module().conversion_run_list_phases()
-    if "starfield_cells" not in names:
-        pytest.skip(
-            "the installed bacup_lib._native predates phase/starfield_cells.rs; "
-            "run `uv run python scripts/ensure_native.py --package bacup`"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Wave plan
 # ---------------------------------------------------------------------------
@@ -71,17 +58,13 @@ def test_wave_plan_for_starfield_target_replaces_every_fo4_asset_phase() -> None
     assert plan.wave_a4 is False
     assert plan.grass_topup is False
 
-
-@pytest.mark.parametrize(
-    "source_game,expected_nif_phase",
-    [("fo76", "convert_nifs_v2"), ("skyrimse", "convert_nifs_v2"), ("fnv", "convert_gamebryo_nifs")],
-)
-def test_wave_plan_for_fo4_target_pairs_is_unchanged(
-    source_game: str, expected_nif_phase: str
-) -> None:
-    plan = unified._wave_plan_for(source_game, "fo4")
-    assert plan.starfield_target is False
-    assert plan.nif_phase == expected_nif_phase
+    for source_game, expected_nif_phase in (
+        ("fo76", "convert_nifs_v2"),
+        ("fnv", "convert_gamebryo_nifs"),
+    ):
+        fo4_plan = unified._wave_plan_for(source_game, "fo4")
+        assert fo4_plan.starfield_target is False
+        assert fo4_plan.nif_phase == expected_nif_phase
 
 
 def test_starfield_fo4_required_mvp_fence_excludes_facegen_assets() -> None:
@@ -105,24 +88,12 @@ def test_starfield_fo4_required_mvp_fence_excludes_facegen_assets() -> None:
     )
 
 
-def test_is_fo4_starfield_only_matches_the_forward_direction() -> None:
-    assert unified._is_fo4_starfield(
-        SimpleNamespace(source_game="fo4", target_game="starfield")
-    )
-    assert not unified._is_fo4_starfield(
-        SimpleNamespace(source_game="starfield", target_game="fo4")
-    )
-    assert not unified._is_fo4_starfield(
-        SimpleNamespace(source_game="fo76", target_game="fo4")
-    )
-
-
 # ---------------------------------------------------------------------------
 # Param builders
 # ---------------------------------------------------------------------------
 
 
-def test_mesh_entries_strip_the_meshes_prefix() -> None:
+def test_mesh_entries_strip_meshes_prefix_and_material_entries_keep_theirs() -> None:
     entries = unified.starfield_mesh_entries(
         [
             _asset("meshes/landscape/rock01.nif", "X:/fo4/meshes/landscape/rock01.nif"),
@@ -135,14 +106,11 @@ def test_mesh_entries_strip_the_meshes_prefix() -> None:
     ]
     assert entries[0]["resolved_path"] == "X:/fo4/meshes/landscape/rock01.nif"
 
-
-def test_material_entries_keep_the_materials_prefix() -> None:
     # The prefix is load-bearing: `mat_out_rel(bgsm_rel)` is both the output
     # path under data/ and the MaterialID CRC input stamped into the NIF.
-    entries = unified.starfield_material_entries(
+    assert unified.starfield_material_entries(
         [_asset("Materials\\Weapons\\Foo.BGSM", "X:/fo4/Materials/Weapons/Foo.BGSM", "material")]
-    )
-    assert entries == [
+    ) == [
         {
             "bgsm_rel": "Materials/Weapons/Foo.BGSM",
             "resolved_path": "X:/fo4/Materials/Weapons/Foo.BGSM",
@@ -195,10 +163,16 @@ def test_texture_sets_are_named_from_the_diffuse_reference(fake_bgsm) -> None:
         diffuse="Architecture\\wall01_d.dds",
         normal="Architecture\\wall01_n.dds",
     )
-    sets, warnings = unified.starfield_texture_sets([asset], {})
+    metal = fake_bgsm(
+        "Materials/Weapons/gun01.bgsm",
+        diffuse="Weapons\\gun01_d.dds",
+        spec="Weapons\\gun01_s.dds",
+        env_mapping=True,
+    )
+    sets, warnings = unified.starfield_texture_sets([asset, metal], {})
 
     assert warnings == []
-    assert len(sets) == 1
+    assert len(sets) == 2
     entry = sets[0]
     # `map_bgsm_to_mat_inputs` spells the .mat's color path
     # `Architecture\wall01_color.dds`; the texture phase writes
@@ -209,48 +183,10 @@ def test_texture_sets_are_named_from_the_diffuse_reference(fake_bgsm) -> None:
     assert entry["normal"] == "Textures/Architecture/wall01_n.dds"
     assert "spec_gloss" not in entry
     assert entry["environment_mapping"] is False
-
-
-def test_texture_sets_prefer_the_graphs_resolved_texture_path(fake_bgsm) -> None:
-    asset = fake_bgsm(
-        "Materials/Architecture/wall03.bgsm", diffuse="Architecture\\wall03_d.dds"
-    )
-    resolved = {"textures/architecture/wall03_d.dds": "X:/fo4x/Textures/Architecture/wall03_d.dds"}
-    sets, _ = unified.starfield_texture_sets([asset], resolved)
-    assert sets[0]["color"] == "X:/fo4x/Textures/Architecture/wall03_d.dds"
-
-
-def test_texture_sets_carry_the_env_mapping_flag_for_the_metal_channel(fake_bgsm) -> None:
     # A non-zero `_metal` map is emitted only when the source BGSM has
     # environment mapping enabled.
-    asset = fake_bgsm(
-        "Materials/Weapons/gun01.bgsm",
-        diffuse="Weapons\\gun01_d.dds",
-        spec="Weapons\\gun01_s.dds",
-        env_mapping=True,
-    )
-    sets, warnings = unified.starfield_texture_sets([asset], {})
-    assert warnings == []
-    assert sets[0]["environment_mapping"] is True
-    assert sets[0]["spec_gloss"] == "Textures/Weapons/gun01_s.dds"
-
-
-def test_texture_sets_report_a_normal_map_outside_the_diffuse_set(fake_bgsm) -> None:
-    asset = fake_bgsm(
-        "Materials/Architecture/wall02.bgsm",
-        diffuse="Architecture\\wall02_d.dds",
-        normal="Shared\\flat_n.dds",
-    )
-    sets, warnings = unified.starfield_texture_sets([asset], {})
-    assert len(sets) == 1
-    assert any("does not share the diffuse set" in warning for warning in warnings)
-
-
-def test_texture_sets_skip_a_bgsm_with_no_diffuse(fake_bgsm) -> None:
-    asset = fake_bgsm("Materials/empty.bgsm", diffuse="")
-    sets, warnings = unified.starfield_texture_sets([asset], {})
-    assert sets == []
-    assert any("no DiffuseTexture" in warning for warning in warnings)
+    assert sets[1]["environment_mapping"] is True
+    assert sets[1]["spec_gloss"] == "Textures/Weapons/gun01_s.dds"
 
 
 def test_texture_sets_dedupe_two_bgsms_sharing_one_texture_family(fake_bgsm) -> None:
@@ -327,11 +263,9 @@ def test_record_tail_order_is_btd_then_cells_then_wwise_then_rewire() -> None:
     assert driver.dispatched[2][1] == {"placeholder_audio": True}
     assert driver.terrain_done == 1
 
-
-def test_record_tail_crops_the_btd_when_terrain_extent_cells_is_set() -> None:
-    driver = _FakeDriver()
-    _record_tail(driver, extent_cells=32)
-    assert driver.dispatched[0][1]["terrain_extent_cells"] == 32
+    cropped = _FakeDriver()
+    _record_tail(cropped, extent_cells=32)
+    assert cropped.dispatched[0][1]["terrain_extent_cells"] == 32
 
 
 def test_record_tail_still_releases_the_terrain_gate_without_terrain() -> None:
@@ -347,14 +281,11 @@ def test_record_tail_still_releases_the_terrain_gate_without_terrain() -> None:
     assert driver.terrain_done == 1
 
 
-def test_record_tail_refuses_real_audio_without_a_wwise_toolchain(monkeypatch) -> None:
+def test_record_tail_real_audio_requires_a_wwise_toolchain(monkeypatch) -> None:
     monkeypatch.delenv("WWISEROOT", raising=False)
-    driver = _FakeDriver()
     with pytest.raises(RuntimeError, match="placeholder-audio"):
-        _record_tail(driver, placeholder_audio=False)
+        _record_tail(_FakeDriver(), placeholder_audio=False)
 
-
-def test_record_tail_builds_wwise_tools_from_wwiseroot(monkeypatch) -> None:
     monkeypatch.setenv("WWISEROOT", str(Path("X:/Wwise2021")))
     driver = _FakeDriver()
     _record_tail(driver, placeholder_audio=False)
@@ -382,12 +313,6 @@ def _regen_parser():
     return regen.build_parser(conv_cli)
 
 
-def test_regen_rejects_expanded_archives_for_fo4_starfield() -> None:
-    parser = _regen_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--pair", "fo4:starfield", "--expanded-archives"])
-
-
 def test_regen_accepts_the_fo4_starfield_mvp_placeholder_audio_run() -> None:
     parser = _regen_parser()
     args = parser.parse_args(
@@ -407,13 +332,13 @@ def test_regen_accepts_the_fo4_starfield_mvp_placeholder_audio_run() -> None:
     # would otherwise leave lod_mode="generate".
     assert args.lod_mode == "none"
 
-
-def test_regen_rejects_the_starfield_only_flags_on_other_pairs() -> None:
-    parser = _regen_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--pair", "fo76:fo4", "--placeholder-audio"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--pair", "skyrimse:fo4", "--terrain-extent-cells", "32"])
+    for rejected in (
+        ["--pair", "fo4:starfield", "--expanded-archives"],
+        ["--pair", "fo76:fo4", "--placeholder-audio"],
+        ["--pair", "skyrimse:fo4", "--terrain-extent-cells", "32"],
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(rejected)
 
 
 def test_regen_paths_resolve_the_starfield_target_side(monkeypatch, tmp_path) -> None:

@@ -5,7 +5,12 @@ EndFunction
 Function Fragment_Stage_0200_Item_00()
 	SetObjectiveCompleted(100, True)
 	SetObjectiveDisplayed(200, True)
-	BoothWelcome.Start()
+	Quests:MTR04:Lucky luckyQuest = (Self as Quest) as Quests:MTR04:Lucky
+	If luckyQuest != None
+		luckyQuest.EvaluateBoothWelcome()
+	ElseIf BoothWelcome != None
+		BoothWelcome.Start()
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0201_Item_00()
@@ -36,6 +41,10 @@ EndFunction
 
 Function Fragment_Stage_0500_Item_00()
 	SetObjectiveCompleted(400, True)
+	Quests:MTR04:Lucky luckyQuest = (Self as Quest) as Quests:MTR04:Lucky
+	If luckyQuest != None
+		luckyQuest.ScheduleSuccess()
+	EndIf
 	LuckySuccess.Start()
 EndFunction
 

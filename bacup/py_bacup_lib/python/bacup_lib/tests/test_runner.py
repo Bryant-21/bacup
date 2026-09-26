@@ -125,3 +125,28 @@ def test_runner_captures_error():
     assert runner.done
     assert runner.error is not None
     assert "Test error" in str(runner.error)
+
+
+def test_runner_emits_actionable_error_popup_with_original_traceback(caplog):
+    from bacup_lib.runner import ConversionRunner
+
+    diagnostic = (
+        "Damaged animation file\nFile: C:/extracted/fo76/Meshes/test.hkx\n"
+        "Size: 0 bytes; a Havok header needs at least 64 bytes.\n"
+        "Automatic repair failed: no archive contains this file.\nRe-extract the affected FO76 file."
+    )
+
+    def work(_runner):
+        try:
+            raise RuntimeError("stage postprocess_havok_assets failed: " + diagnostic)
+        except RuntimeError as cause:
+            raise RuntimeError("asset wave A4 failed while convert_nifs 50/50") from cause
+
+    runner = ConversionRunner(work)
+    runner._run()
+    event = next(event for event in runner.drain() if event["type"] == "error")
+    assert event["message"] == diagnostic
+    assert "asset wave A4 failed" in event["details"]
+    assert "stage postprocess_havok_assets failed" in event["details"]
+    assert "Size: 0 bytes" in caplog.text
+    assert runner.done and runner.error is not None

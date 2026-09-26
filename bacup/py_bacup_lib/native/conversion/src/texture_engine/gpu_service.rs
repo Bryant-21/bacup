@@ -339,28 +339,37 @@ mod tests {
     }
 
     #[test]
-    fn cpu_only_service_encodes_without_gpu() {
-        let svc = GpuService::start_cpu_only();
-        let (out, timings) = directxtex_native::profiling::capture(|| {
-            svc.encode_bc7(chain(1), false, 512 * 512).unwrap()
-        });
-        assert!(timings.encode_ns > 0);
-        assert_eq!(timings.gpu_wait_ns, 0);
-        assert_eq!(out.len(), 4);
-        assert_eq!(out[0].len(), 4 * 16); // 8x8 BC7 = 4 blocks
-        assert_eq!(svc.stats().cpu_encodes, 1);
-        assert_eq!(svc.stats().gpu_submissions, 0);
-        svc.shutdown();
-    }
-
-    #[test]
-    fn small_textures_stay_on_cpu_even_with_gpu_service() {
-        let svc = GpuService::start(4);
-        // 8x8 base < 512^2 cutoff -> CPU on the calling thread.
-        let out = svc.encode_bc7(chain(2), false, 512 * 512).unwrap();
-        assert_eq!(out.len(), 4);
-        assert_eq!(svc.stats().gpu_submissions, 0);
-        svc.shutdown();
+    fn cpu_paths_encode_without_gpu_and_bounce_fallback_returns_payloads() {
+        {
+            let svc = GpuService::start_cpu_only();
+            let (out, timings) = directxtex_native::profiling::capture(|| {
+                svc.encode_bc7(chain(1), false, 512 * 512).unwrap()
+            });
+            assert!(timings.encode_ns > 0);
+            assert_eq!(timings.gpu_wait_ns, 0);
+            assert_eq!(out.len(), 4);
+            assert_eq!(out[0].len(), 4 * 16); // 8x8 BC7 = 4 blocks
+            assert_eq!(svc.stats().cpu_encodes, 1);
+            assert_eq!(svc.stats().gpu_submissions, 0);
+            svc.shutdown();
+        }
+        {
+            let svc = GpuService::start(4);
+            // 8x8 base < 512^2 cutoff -> CPU on the calling thread.
+            let out = svc.encode_bc7(chain(2), false, 512 * 512).unwrap();
+            assert_eq!(out.len(), 4);
+            assert_eq!(svc.stats().gpu_submissions, 0);
+            svc.shutdown();
+        }
+        {
+            // On a GPU-less box the service bounces and the caller CPU-encodes;
+            // on a GPU box it encodes on the device. Either way: 4 valid payloads.
+            let svc = GpuService::start(2);
+            let out = svc.encode_bc7(chain(4), true, 0).unwrap();
+            assert_eq!(out.len(), 4);
+            assert_eq!(out[0].len(), 4 * 16);
+            svc.shutdown();
+        }
     }
 
     #[test]
@@ -385,95 +394,6 @@ mod tests {
         assert!(svc.stats().dispatch_ns >= svc.stats().blocking_call_ns);
         assert_eq!(via_service, direct);
         assert_eq!(svc.stats().gpu_submissions, 1);
-        svc.shutdown();
-    }
-
-    fn bench_chain(base: u32, seed: u8) -> Vec<(u32, u32, Vec<u8>)> {
-        let mut chain = Vec::new();
-        let mut size = base;
-        while size >= 4 {
-            let px: Vec<u8> = (0..(size as usize) * (size as usize))
-                .flat_map(|i| {
-                    [
-                        (i as u8).wrapping_mul(31).wrapping_add(seed),
-                        (i >> 3) as u8,
-                        (i >> 7) as u8 ^ seed,
-                        255,
-                    ]
-                })
-                .collect();
-            chain.push((size, size, px));
-            size /= 2;
-        }
-        chain
-    }
-
-    /// Manual A/B: whole-chain-to-GPU (old policy, min_pixels=0 sends every
-    /// level) vs per-level split (new policy). Run explicitly:
-    /// cargo test -p conversion_native bench_split_policy -- --ignored --nocapture
-    #[test]
-    #[ignore = "manual GPU speed comparison"]
-    fn bench_split_policy_vs_whole_chain() {
-        let probe = GpuService::start(1);
-        let gpu_works = probe.encode_bc7(bench_chain(8, 1), false, 0).is_ok()
-            && probe.stats().gpu_submissions == 1;
-        probe.shutdown();
-        if !gpu_works {
-            eprintln!("[bench] no usable GPU; skipping");
-            return;
-        }
-
-        let workers = 16usize;
-        let bases: [u32; 8] = [2048, 1024, 1024, 512, 512, 512, 512, 512];
-        // Pre-generate every chain OUTSIDE the timed section; both arms encode
-        // clones of the same inputs.
-        let inputs: Vec<Vec<Vec<(u32, u32, Vec<u8>)>>> = (0..workers)
-            .map(|w| {
-                bases
-                    .iter()
-                    .enumerate()
-                    .map(|(t, base)| bench_chain(*base, (w * 8 + t) as u8))
-                    .collect()
-            })
-            .collect();
-        for (label, use_gpu) in [("gpu(production)", true), ("cpu-only(16 workers)", false)] {
-            let svc = if use_gpu {
-                GpuService::start(8)
-            } else {
-                GpuService::start_cpu_only()
-            };
-            let min_pixels = 512u32 * 512;
-            let started = std::time::Instant::now();
-            std::thread::scope(|scope| {
-                for worker_chains in &inputs {
-                    let svc = &svc;
-                    scope.spawn(move || {
-                        for chain in worker_chains {
-                            svc.encode_bc7(chain.clone(), false, min_pixels).unwrap();
-                        }
-                    });
-                }
-            });
-            let elapsed = started.elapsed();
-            let total = workers * bases.len();
-            eprintln!(
-                "[bench] {label}: {total} textures in {:.2}s ({:.1} tex/s) stats={:?}",
-                elapsed.as_secs_f64(),
-                total as f64 / elapsed.as_secs_f64(),
-                svc.stats()
-            );
-            svc.shutdown();
-        }
-    }
-
-    #[test]
-    fn gpu_path_always_returns_payloads_via_bounce_fallback() {
-        // On a GPU-less box the service bounces and the caller CPU-encodes;
-        // on a GPU box it encodes on the device. Either way: 4 valid payloads.
-        let svc = GpuService::start(2);
-        let out = svc.encode_bc7(chain(4), true, 0).unwrap();
-        assert_eq!(out.len(), 4);
-        assert_eq!(out[0].len(), 4 * 16);
         svc.shutdown();
     }
 }

@@ -550,10 +550,7 @@ mod tests {
             source.death_pose_animation.as_deref(),
             Some("Creatures\\Dog\\IdleAnims\\DeathPose.psa")
         );
-    }
 
-    #[test]
-    fn reports_only_unbound_runtime_semantics_after_source_evidence_decodes() {
         let interner = StringInterner::new();
         let support = classify_legacy_ragdoll(&dog_ragdoll(&interner), &interner);
         assert!(support.source.is_some());
@@ -566,10 +563,7 @@ mod tests {
                 "legacy_rgdl_unknown_data_controls_unmapped",
             ]
         );
-    }
 
-    #[test]
-    fn mismatched_dynamic_bone_count_is_not_silently_accepted() {
         let interner = StringInterner::new();
         let mut record = dog_ragdoll(&interner);
         let FieldValue::Bytes(data) = &mut record

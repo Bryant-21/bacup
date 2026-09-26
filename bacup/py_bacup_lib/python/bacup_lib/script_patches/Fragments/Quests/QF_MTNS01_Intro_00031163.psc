@@ -146,6 +146,7 @@ Function Fragment_Stage_0400_Item_00()
 EndFunction
 
 Function Fragment_Stage_0401_Item_00()
+    MTNS01_StartAmbush()
     SetObjectiveCompleted(400)
     SetObjectiveDisplayed(410)
 EndFunction
@@ -186,12 +187,76 @@ Function Fragment_Stage_0500_Item_00()
 EndFunction
 
 Function Fragment_Stage_0600_Item_00()
-    Actor playerRef = MTNS01_GetPlayer()
     SetObjectiveCompleted(500)
     CompleteAllObjectives()
-
-    If MTNM01_Mayhem_Quest_Keyword != None && playerRef != None
-        MTNM01_Mayhem_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
+    If MTNS01_TryStartMayhem()
+        Stop()
+    Else
+        StartTimer(5.0, 600)
     EndIf
-    Stop()
 EndFunction
+
+Bool Function MTNS01_TryStartMayhem()
+    Quest nextQuest = Game.GetFormFromFile(0x0009732E, "SeventySix.esm") as Quest
+    If nextQuest != None && (nextQuest.IsRunning() || nextQuest.IsCompleted())
+        Return True
+    EndIf
+    Actor playerRef = MTNS01_GetPlayer()
+    If nextQuest == None || playerRef == None || MTNM01_Mayhem_Quest_Keyword == None
+        Return False
+    EndIf
+    Bool accepted = MTNM01_Mayhem_Quest_Keyword.SendStoryEventAndWait(None, playerRef, playerRef)
+    Return accepted || nextQuest.IsRunning() || nextQuest.IsCompleted()
+EndFunction
+
+Event OnTimer(Int aiTimerID)
+    If aiTimerID == 401
+        MTNS01_StartAmbush()
+        Return
+    EndIf
+    If aiTimerID != 600 || !IsRunning() || !IsStageDone(600)
+        Return
+    EndIf
+    If MTNS01_TryStartMayhem()
+        Stop()
+    Else
+        StartTimer(5.0, 600)
+    EndIf
+EndEvent
+
+Function MTNS01_StartAmbush()
+    If !IsRunning() || !IsStageDone(401) || GetStage() >= 420
+        CancelTimer(401)
+        Return
+    EndIf
+    B21:LocalEncounterMaterializer materializer = (Self as Quest) as B21:LocalEncounterMaterializer
+    If materializer != None
+        materializer.PrepareEligibleWaves()
+        If !materializer.HasPreparedWave(0)
+            StartTimer(5.0, 401)
+            Return
+        EndIf
+    EndIf
+    RefCollectionAlias enemies = GetAlias(101) as RefCollectionAlias
+    DefaultQuestEncounterWaveScript waves = (Self as Quest) as DefaultQuestEncounterWaveScript
+    If enemies == None || enemies.GetCount() == 0 || waves == None
+        StartTimer(5.0, 401)
+        Return
+    EndIf
+    waves.StartLocalEncounterWave(0)
+    CancelTimer(401)
+EndFunction
+
+Event OnQuestInit()
+    RegisterForRemoteEvent(Game.GetPlayer(), "OnPlayerLoadGame")
+    MTNS01_StartAmbush()
+EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    MTNS01_StartAmbush()
+EndEvent
+
+Event OnQuestShutdown()
+    CancelTimer(401)
+    UnregisterForAllRemoteEvents()
+EndEvent

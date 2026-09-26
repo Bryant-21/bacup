@@ -203,13 +203,10 @@ mod tests {
 
         assert_eq!(values_len(&value), 1);
         assert_eq!(surviving_langs(&interner, &value), vec!["English"]);
-    }
 
-    /// Usage 2: trim with target rename config (fo76_to_fo4.yaml line 1153).
-    /// The target rename is advisory; this test confirms the value is trimmed
-    /// correctly and target_field() returns the config value.
-    #[test]
-    fn trim_with_target_config() {
+        // Usage 2: trim with target rename config (fo76_to_fo4.yaml line 1153).
+        // The target rename is advisory; this test confirms the value is trimmed
+        // correctly and target_field() returns the config value.
         let mut interner = StringInterner::new();
         let entries = vec![
             lang_entry(&mut interner, "English", "Weapon"),
@@ -236,11 +233,8 @@ mod tests {
 
         // target_field() must return "Name" for the caller to rename.
         assert_eq!(t.target_field(&config), Some("Name"));
-    }
 
-    /// Non-Struct values pass through unchanged.
-    #[test]
-    fn non_struct_passes_through() {
+        // Non-Struct values pass through unchanged.
         let mut interner = StringInterner::new();
         let mut value = FieldValue::Int(42);
         let config = serde_json::json!({ "keep": ["English"] });
@@ -251,11 +245,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(value, FieldValue::Int(42));
-    }
 
-    /// A Struct without a "Values" field passes through unchanged.
-    #[test]
-    fn struct_without_values_passes_through() {
+        // A Struct without a "Values" field passes through unchanged.
         let mut interner = StringInterner::new();
         let key = interner.intern("Other");
         let mut value = FieldValue::Struct(vec![(key, FieldValue::Int(1))]);

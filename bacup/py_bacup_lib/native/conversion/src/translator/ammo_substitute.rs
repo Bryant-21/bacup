@@ -128,97 +128,43 @@ ammo:
     form_id: "00037897"
 "#;
 
-    // -------------------------------------------------------------------------
-    // Parsing
-    // -------------------------------------------------------------------------
-
     #[test]
-    fn parses_sample_yaml_into_correct_entry_count() {
+    fn parses_sample_yaml_entries() {
         let table = AmmoSubstituteTable::from_yaml(SAMPLE_YAML).unwrap();
         assert_eq!(table.len(), 4);
+        for (eid, master, form_id) in [
+            ("Ammo10mm", "Fallout4.esm", "0001F276"),
+            ("Ammo762mm", "DLCNukaWorld.esm", "00037897"),
+        ] {
+            let entry = table.entry(eid).expect("entry present");
+            assert_eq!(entry.master, master, "{eid}");
+            assert_eq!(entry.form_id, form_id, "{eid}");
+        }
+        for yaml in ["", "version: 1\n"] {
+            assert!(
+                AmmoSubstituteTable::from_yaml(yaml).unwrap().is_empty(),
+                "{yaml:?}"
+            );
+        }
     }
 
     #[test]
-    fn parses_ammo10mm_entry() {
+    fn lookup_formats_six_digit_uppercase_formkeys() {
         let table = AmmoSubstituteTable::from_yaml(SAMPLE_YAML).unwrap();
-        let entry = table.entry("Ammo10mm").expect("Ammo10mm should be present");
-        assert_eq!(entry.master, "Fallout4.esm");
-        assert_eq!(entry.form_id, "0001F276");
-    }
-
-    #[test]
-    fn parses_dlc_entry_with_different_master() {
-        let table = AmmoSubstituteTable::from_yaml(SAMPLE_YAML).unwrap();
-        let entry = table
-            .entry("Ammo762mm")
-            .expect("Ammo762mm should be present");
-        assert_eq!(entry.master, "DLCNukaWorld.esm");
-        assert_eq!(entry.form_id, "00037897");
-    }
-
-    #[test]
-    fn empty_yaml_produces_empty_table() {
-        let table = AmmoSubstituteTable::from_yaml("").unwrap();
-        assert!(table.is_empty());
-    }
-
-    #[test]
-    fn yaml_without_ammo_key_produces_empty_table() {
-        let yaml = "version: 1\n";
-        let table = AmmoSubstituteTable::from_yaml(yaml).unwrap();
-        assert!(table.is_empty());
-    }
-
-    // -------------------------------------------------------------------------
-    // Lookup / FormKey formatting
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn lookup_returns_correct_formkey_for_ammo10mm() {
-        // 0x0001F276 = 127606, formatted {:06X} = "01F276" (mirrors Python's f"{int(...):06X}")
-        let table = AmmoSubstituteTable::from_yaml(SAMPLE_YAML).unwrap();
-        let fk = table.lookup("Ammo10mm").expect("Ammo10mm should look up");
-        assert_eq!(fk, "01F276@Fallout4.esm");
-    }
-
-    #[test]
-    fn lookup_returns_correct_formkey_for_ammo556mm() {
-        // 0x0001F278 = 127608, formatted {:06X} = "01F278"
-        let table = AmmoSubstituteTable::from_yaml(SAMPLE_YAML).unwrap();
-        let fk = table.lookup("Ammo556mm").unwrap();
-        assert_eq!(fk, "01F278@Fallout4.esm");
-    }
-
-    #[test]
-    fn lookup_returns_correct_formkey_for_dlc_ammo() {
-        // 0x00037897 = 227479, formatted {:06X} = "037897"
-        let table = AmmoSubstituteTable::from_yaml(SAMPLE_YAML).unwrap();
-        let fk = table.lookup("Ammo762mm").unwrap();
-        assert_eq!(fk, "037897@DLCNukaWorld.esm");
-    }
-
-    #[test]
-    fn lookup_returns_none_for_unknown_eid() {
-        let table = AmmoSubstituteTable::from_yaml(SAMPLE_YAML).unwrap();
-        assert!(table.lookup("AmmoUnknown").is_none());
-    }
-
-    #[test]
-    fn form_id_hex_is_formatted_with_six_digits_uppercase() {
-        let entry = AmmoEntry {
-            master: "Fallout4.esm".into(),
-            form_id: "1F276".into(), // five digits — should be padded to six
-        };
-        let fk = entry.as_form_key().unwrap();
-        assert_eq!(fk, "01F276@Fallout4.esm");
-    }
-
-    #[test]
-    fn as_form_key_returns_none_on_invalid_hex() {
-        let entry = AmmoEntry {
-            master: "Fallout4.esm".into(),
-            form_id: "ZZZZZZ".into(),
-        };
-        assert!(entry.as_form_key().is_none());
+        for (eid, expected) in [
+            ("Ammo10mm", Some("01F276@Fallout4.esm")),
+            ("Ammo556mm", Some("01F278@Fallout4.esm")),
+            ("Ammo762mm", Some("037897@DLCNukaWorld.esm")),
+            ("AmmoUnknown", None),
+        ] {
+            assert_eq!(table.lookup(eid).as_deref(), expected, "{eid}");
+        }
+        for (form_id, expected) in [("1F276", Some("01F276@Fallout4.esm")), ("ZZZZZZ", None)] {
+            let entry = AmmoEntry {
+                master: "Fallout4.esm".into(),
+                form_id: form_id.into(),
+            };
+            assert_eq!(entry.as_form_key().as_deref(), expected, "{form_id}");
+        }
     }
 }

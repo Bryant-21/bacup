@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn relayouts_dnam_to_fo4_intv() {
+    fn relayouts_dnam_to_fo4_intv_and_leaves_unusable_values() {
         let interner = StringInterner::new();
         let mut value = FieldValue::Bytes(SmallVec::from_vec(dnam_count3()));
         let mut ctx = make_ctx(&interner);
@@ -121,10 +121,7 @@ mod tests {
         assert_eq!(out.len(), FO4_INTV_LEN, "FO4 INTV is 4 bytes");
         // count=3, priority=2.
         assert_eq!(out.as_slice(), &[3, 0, 2, 0]);
-    }
 
-    #[test]
-    fn count_is_preserved_verbatim() {
         // 05A371 boxing-glove recipe: count is the load-bearing value.
         let mut src = Vec::new();
         src.extend_from_slice(&0.0f32.to_le_bytes());
@@ -133,6 +130,31 @@ mod tests {
         src.push(0);
         let out = relayout_dnam_bytes(&src).expect("full DNAM relayouts");
         assert_eq!(u16::from_le_bytes([out[0], out[1]]), 5);
+
+        // A 6-byte DNAM (no trailing pad) must still relayout.
+        let mut v = Vec::new();
+        v.extend_from_slice(&1.4f32.to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes());
+        let out = relayout_dnam_bytes(&v).expect("6-byte DNAM relayouts");
+        assert_eq!(u16::from_le_bytes([out[0], out[1]]), 2);
+        assert_eq!(u16::from_le_bytes([out[2], out[3]]), 1); // 1.4 rounds to 1
+
+        let interner = StringInterner::new();
+        let original = SmallVec::<[u8; 32]>::from_slice(&[0, 1, 2, 3]);
+        let mut value = FieldValue::Bytes(original.clone());
+        let mut ctx = make_ctx(&interner);
+        DnamToIntvTransform
+            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(value, FieldValue::Bytes(original));
+
+        let interner = StringInterner::new();
+        let mut value = FieldValue::Uint(7);
+        let mut ctx = make_ctx(&interner);
+        DnamToIntvTransform
+            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(value, FieldValue::Uint(7));
     }
 
     #[test]
@@ -145,39 +167,5 @@ mod tests {
         })
         .unwrap();
         assert_eq!(u16::from_le_bytes([out[2], out[3]]), u16::MAX);
-    }
-
-    #[test]
-    fn accepts_dnam_without_trailing_pad() {
-        // A 6-byte DNAM (no trailing pad) must still relayout.
-        let mut v = Vec::new();
-        v.extend_from_slice(&1.4f32.to_le_bytes());
-        v.extend_from_slice(&2u16.to_le_bytes());
-        let out = relayout_dnam_bytes(&v).expect("6-byte DNAM relayouts");
-        assert_eq!(u16::from_le_bytes([out[0], out[1]]), 2);
-        assert_eq!(u16::from_le_bytes([out[2], out[3]]), 1); // 1.4 rounds to 1
-    }
-
-    #[test]
-    fn too_short_input_left_untouched() {
-        let interner = StringInterner::new();
-        let original = SmallVec::<[u8; 32]>::from_slice(&[0, 1, 2, 3]);
-        let mut value = FieldValue::Bytes(original.clone());
-        let mut ctx = make_ctx(&interner);
-        DnamToIntvTransform
-            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
-            .unwrap();
-        assert_eq!(value, FieldValue::Bytes(original));
-    }
-
-    #[test]
-    fn non_bytes_value_is_a_no_op() {
-        let interner = StringInterner::new();
-        let mut value = FieldValue::Uint(7);
-        let mut ctx = make_ctx(&interner);
-        DnamToIntvTransform
-            .apply(&mut ctx, &mut value, &serde_json::Value::Null)
-            .unwrap();
-        assert_eq!(value, FieldValue::Uint(7));
     }
 }

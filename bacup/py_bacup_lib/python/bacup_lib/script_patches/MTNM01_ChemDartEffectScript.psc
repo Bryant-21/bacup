@@ -27,3 +27,16 @@ Event OnEffectStart(Actor akTarget, Actor akCaster)
         controller.SetStage(controller.KarmaOtherStage)
     EndIf
 EndEvent
+
+Event OnEffectFinish(Actor akTarget, Actor akCaster)
+    ; Stage 352 ("failed to kill target in time") had no setter, so a Karma target
+    ; that survived the effect left the quest stuck at the stage-350 kill objective.
+    MTNM01QuestScript controller = MTNM01_Mayhem as MTNM01QuestScript
+    If !controller || !controller.IsRunning() || !controller.IsStageDone(350) || controller.IsStageDone(351) || controller.IsStageDone(352)
+        Return
+    EndIf
+    If !akTarget || akTarget.IsDead() || !controller.KarmaCreature || controller.KarmaCreature.GetActorReference() != akTarget
+        Return
+    EndIf
+    controller.SetStage(352)
+EndEvent

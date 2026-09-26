@@ -1,5 +1,5 @@
 #[test]
-fn pre_translate_relayouts_raw_refr_xrmr() {
+fn pre_translate_relayouts_refr_xrmr_and_drops_overflowing_rows() {
     let interner = StringInterner::new();
     let room = FormKey::parse("001234@FalloutNV.esm", &interner).unwrap();
     let mut record = make_record("REFR", &interner);
@@ -19,10 +19,7 @@ fn pre_translate_relayouts_raw_refr_xrmr() {
         FieldValue::Bytes(smallvec::smallvec![2, 0, 1, 0])
     );
     assert_eq!(record.fields[1].sig.as_str(), "XLRM");
-}
 
-#[test]
-fn pre_translate_relayouts_structured_refr_xrmr() {
     let interner = StringInterner::new();
     let mut record = make_record("REFR", &interner);
     push_field(
@@ -54,10 +51,7 @@ fn pre_translate_relayouts_structured_refr_xrmr() {
             ("unknown_u8_3", FieldValue::Uint(0)),
         ]
     );
-}
 
-#[test]
-fn pre_translate_drops_overflowing_refr_xrmr_row() {
     let interner = StringInterner::new();
     let room = FormKey::parse("001234@FalloutNV.esm", &interner).unwrap();
     let mut record = make_record("REFR", &interner);
@@ -85,7 +79,7 @@ fn pre_translate_drops_overflowing_refr_xrmr_row() {
 }
 
 #[test]
-fn pre_translate_relayouts_raw_addn_dnam_with_safe_flags() {
+fn pre_translate_relayouts_addn_dnam_with_safe_flags() {
     let interner = StringInterner::new();
     let mut record = make_record("ADDN", &interner);
     push_field(
@@ -102,10 +96,7 @@ fn pre_translate_relayouts_raw_addn_dnam_with_safe_flags() {
         record.fields[0].value,
         FieldValue::Bytes(smallvec::smallvec![0x34, 0x12, 0, 0])
     );
-}
 
-#[test]
-fn pre_translate_relayouts_structured_addn_dnam_with_safe_flags() {
     let interner = StringInterner::new();
     let mut record = make_record("ADDN", &interner);
     push_field(

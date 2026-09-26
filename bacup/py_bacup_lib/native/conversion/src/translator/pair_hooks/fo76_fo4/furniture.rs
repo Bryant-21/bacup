@@ -399,18 +399,53 @@ pub(super) fn marker_parameters_row_count(value: &FieldValue) -> usize {
         _ => 1,
     }
 }
+/// Add a single-script FO4 VMAD `script` to a FURN, appending it after any
+/// scripts the record already carries.
+fn append_furniture_vmad_script(record: &mut Record, script: Vec<u8>, script_name: &str) {
+    let Some(entry) = record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"VMAD")
+    else {
+        record.fields.insert(
+            0,
+            FieldEntry {
+                sig: SubrecordSig::from_str("VMAD").expect("VMAD is a valid signature"),
+                value: FieldValue::Bytes(SmallVec::from_vec(script)),
+            },
+        );
+        return;
+    };
+
+    // FURN VMAD has no fragment section in FO4, so a new script entry can be
+    // appended after the existing ones. Only splice into a blob that already
+    // uses the version/object-format `script` was encoded against.
+    let FieldValue::Bytes(bytes) = &mut entry.value else {
+        return;
+    };
+    if bytes.len() < 6
+        || u16::from_le_bytes([bytes[0], bytes[1]]) != FO4_VMAD_VERSION
+        || u16::from_le_bytes([bytes[2], bytes[3]]) != FO4_VMAD_OBJECT_FORMAT
+        || vmad_contains_name(bytes, script_name)
+    {
+        return;
+    }
+
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let Some(count) = count.checked_add(1) else {
+        return;
+    };
+    bytes[4..6].copy_from_slice(&count.to_le_bytes());
+    bytes.extend_from_slice(&script[6..]);
+}
+
 impl Fo76Fo4Hook {
     pub(super) fn lower_music_instrument_to_vmad(ctx: &PairCtx<'_>, record: &mut Record) {
         if record.sig.0 != *b"FURN" {
             return;
         }
 
-        record.fields.retain(|entry| entry.sig.0 != *b"VMAD");
-        let Some(entry) = record
-            .fields
-            .iter_mut()
-            .find(|entry| entry.sig.0 == *b"FNMU")
-        else {
+        let Some(entry) = record.fields.iter().find(|entry| entry.sig.0 == *b"FNMU") else {
             return;
         };
         let Some(form_keys) =
@@ -422,6 +457,12 @@ impl Fo76Fo4Hook {
             return;
         };
 
+        record.fields.retain(|entry| entry.sig.0 != *b"VMAD");
+        let entry = record
+            .fields
+            .iter_mut()
+            .find(|entry| entry.sig.0 == *b"FNMU")
+            .expect("FNMU survives the VMAD retain");
         entry.sig = SubrecordSig::from_str("VMAD").expect("VMAD is a valid signature");
         entry.value = FieldValue::Bytes(SmallVec::from_vec(bytes));
     }
@@ -549,7 +590,6 @@ impl Fo76Fo4Hook {
         record: &mut Record,
     ) {
         if record.sig.0 != *b"FURN"
-            || record.fields.iter().any(|entry| entry.sig.0 == *b"VMAD")
             || !record.fields.iter().any(|entry| {
                 entry.sig.0 == *b"KWDA"
                     && fo4_keyword_value(&entry.value, interner, FO4_POWER_ARMOR_FURNITURE_KEYWORD)
@@ -558,12 +598,10 @@ impl Fo76Fo4Hook {
             return;
         }
 
-        record.fields.insert(
-            0,
-            FieldEntry {
-                sig: SubrecordSig::from_str("VMAD").expect("VMAD is a valid signature"),
-                value: FieldValue::Bytes(SmallVec::from_vec(power_armor_furniture_vmad_bytes())),
-            },
+        append_furniture_vmad_script(
+            record,
+            power_armor_furniture_vmad_bytes(),
+            POWER_ARMOR_BATTERY_INSERT_SCRIPT,
         );
     }
 
@@ -584,42 +622,7 @@ impl Fo76Fo4Hook {
             return;
         }
 
-        let script = workbench_script_vmad_bytes();
-        let Some(entry) = record
-            .fields
-            .iter_mut()
-            .find(|entry| entry.sig.0 == *b"VMAD")
-        else {
-            record.fields.insert(
-                0,
-                FieldEntry {
-                    sig: SubrecordSig::from_str("VMAD").expect("VMAD is a valid signature"),
-                    value: FieldValue::Bytes(SmallVec::from_vec(script)),
-                },
-            );
-            return;
-        };
-
-        // FURN VMAD has no fragment section in FO4, so a new script entry can be
-        // appended after the existing ones. Only splice into a blob that already
-        // uses the version/object-format `script` was encoded against.
-        let FieldValue::Bytes(bytes) = &mut entry.value else {
-            return;
-        };
-        if bytes.len() < 6
-            || u16::from_le_bytes([bytes[0], bytes[1]]) != FO4_VMAD_VERSION
-            || u16::from_le_bytes([bytes[2], bytes[3]]) != FO4_VMAD_OBJECT_FORMAT
-            || vmad_contains_name(bytes, WORKBENCH_SCRIPT)
-        {
-            return;
-        }
-
-        let count = u16::from_le_bytes([bytes[4], bytes[5]]);
-        let Some(count) = count.checked_add(1) else {
-            return;
-        };
-        bytes[4..6].copy_from_slice(&count.to_le_bytes());
-        bytes.extend_from_slice(&script[6..]);
+        append_furniture_vmad_script(record, workbench_script_vmad_bytes(), WORKBENCH_SCRIPT);
     }
 
     pub(super) fn ensure_terminal_player_path_keyword(

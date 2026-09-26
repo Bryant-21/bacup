@@ -234,58 +234,56 @@ mod tests {
     }
 
     #[test]
-    fn plan_runs_phases_as_stages_with_after_edges() {
-        let id1 = test_run();
-        let id2 = test_run();
-        let plan = serde_json::json!({
-            "events_run_id": id1,
-            "stages": [
-                {"phase": "test_handshake_left",  "run_id": id1, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": []},
-                {"phase": "test_noop",            "run_id": id1, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": ["test_handshake_left"]},
-                {"phase": "test_handshake_right", "run_id": id2, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": []},
-            ]
-        });
-        let report = run_plan(&plan.to_string()).unwrap();
-        assert_eq!(report.stages.len(), 3);
-        // Completion order respects the after-edge: noop only starts after
-        // left completes.
-        let pos = |n: &str| {
-            report
-                .stages
-                .iter()
-                .position(|(name, _)| *name == n)
-                .unwrap_or_else(|| panic!("stage {n} missing from report"))
-        };
-        assert!(pos("test_handshake_left") < pos("test_noop"));
-        drop_run(id1).unwrap();
-        drop_run(id2).unwrap();
-    }
-
-    #[test]
-    fn plan_with_unknown_phase_is_rejected() {
-        let id = test_run();
-        let plan = serde_json::json!({
-            "events_run_id": id,
-            "stages": [
-                {"phase": "no_such_phase", "run_id": id, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": []},
-            ]
-        });
-        let err = run_plan(&plan.to_string()).unwrap_err();
-        assert!(err.contains("unknown phase"), "got: {err}");
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn plan_with_unknown_after_edge_is_rejected() {
-        let id = test_run();
-        let plan = serde_json::json!({
-            "events_run_id": id,
-            "stages": [
-                {"phase": "test_noop", "run_id": id, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": ["not_a_stage"]},
-            ]
-        });
-        let err = run_plan(&plan.to_string()).unwrap_err();
-        assert!(err.contains("unknown 'after'"), "got: {err}");
-        drop_run(id).unwrap();
+    fn plan_runs_phases_as_stages_and_rejects_unknown_references() {
+        {
+            let id1 = test_run();
+            let id2 = test_run();
+            let plan = serde_json::json!({
+                "events_run_id": id1,
+                "stages": [
+                    {"phase": "test_handshake_left",  "run_id": id1, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": []},
+                    {"phase": "test_noop",            "run_id": id1, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": ["test_handshake_left"]},
+                    {"phase": "test_handshake_right", "run_id": id2, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": []},
+                ]
+            });
+            let report = run_plan(&plan.to_string()).unwrap();
+            assert_eq!(report.stages.len(), 3);
+            // Completion order respects the after-edge: noop only starts after
+            // left completes.
+            let pos = |n: &str| {
+                report
+                    .stages
+                    .iter()
+                    .position(|(name, _)| *name == n)
+                    .unwrap_or_else(|| panic!("stage {n} missing from report"))
+            };
+            assert!(pos("test_handshake_left") < pos("test_noop"));
+            drop_run(id1).unwrap();
+            drop_run(id2).unwrap();
+        }
+        {
+            let id = test_run();
+            let plan = serde_json::json!({
+                "events_run_id": id,
+                "stages": [
+                    {"phase": "no_such_phase", "run_id": id, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": []},
+                ]
+            });
+            let err = run_plan(&plan.to_string()).unwrap_err();
+            assert!(err.contains("unknown phase"), "got: {err}");
+            drop_run(id).unwrap();
+        }
+        {
+            let id = test_run();
+            let plan = serde_json::json!({
+                "events_run_id": id,
+                "stages": [
+                    {"phase": "test_noop", "run_id": id, "mod_path": "", "source_extracted_dir": "", "params": {}, "after": ["not_a_stage"]},
+                ]
+            });
+            let err = run_plan(&plan.to_string()).unwrap_err();
+            assert!(err.contains("unknown 'after'"), "got: {err}");
+            drop_run(id).unwrap();
+        }
     }
 }

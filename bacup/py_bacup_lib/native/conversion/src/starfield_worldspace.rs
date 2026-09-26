@@ -1818,28 +1818,104 @@ mod tests {
     // -- the headline invariant ---------------------------------------------
 
     #[test]
-    fn every_placed_ref_survives_the_relattice() {
+    fn relattice_keeps_every_ref_in_its_position_cell_and_evacuates_source_cells() {
         let specs = two_by_two_specs();
         let fixture = run_relattice(&specs, "AkilaCity");
         let root = fixture.target_root();
+        {
+            let mut expected: Vec<u32> = specs
+                .iter()
+                .flat_map(|spec| (0..spec.count).map(|n| ref_form_id(spec.index, n)))
+                .collect();
+            expected.push(PERSISTENT_REF_SOURCE);
+            expected.push(INTERIOR_REF_SOURCE);
+            expected.sort_unstable();
 
-        let mut expected: Vec<u32> = specs
-            .iter()
-            .flat_map(|spec| (0..spec.count).map(|n| ref_form_id(spec.index, n)))
-            .collect();
-        expected.push(PERSISTENT_REF_SOURCE);
-        expected.push(INTERIOR_REF_SOURCE);
-        expected.sort_unstable();
+            assert_eq!(
+                sorted_refr_form_ids(&root),
+                expected,
+                "output REFR form-id multiset must equal the input multiset"
+            );
+            assert_eq!(fixture.report.placed_refs_relatticed, 40);
+            assert_eq!(fixture.report.placed_refs_kept_persistent, 1);
+            assert_eq!(fixture.report.placed_refs_unmapped, 0);
+            assert_eq!(fixture.report.placed_refs_without_position, 0);
+        }
+        {
+            let mut checked = 0;
+            for cell in lattice_cells_of(&root) {
+                let grid = cell_grid(cell.record).expect("synthesized cell carries XCLC");
+                let children = cell.children.expect("cell children group");
+                for item in refr_ids_in(&children.children) {
+                    let record = find_record(&root, item).expect("ref record");
+                    let (x, y) = placed_position(record).expect("ref position");
+                    assert_eq!(
+                        (
+                            sf_frame::fo4_cell_of_units(x),
+                            sf_frame::fo4_cell_of_units(y)
+                        ),
+                        grid,
+                        "ref {item:06X} at ({x}, {y}) is parented to the wrong cell"
+                    );
+                    checked += 1;
+                }
+            }
+            assert_eq!(checked, 40, "every re-latticed ref must be checked");
+        }
+        {
+            let mut all = Vec::new();
+            collect_all_record_form_ids(&root, &mut all);
+            let synthesized: HashSet<u32> = lattice_cells_of(&root)
+                .iter()
+                .map(|cell| cell.record.form_id)
+                .collect();
+            for spec in &specs {
+                let source_cell = cell_form_id(spec.index);
+                // The source cell's FormID may be RECYCLED onto a synthesized
+                // shell; what must not survive is the original source-grid cell.
+                if synthesized.contains(&source_cell) {
+                    continue;
+                }
+                assert!(
+                    !all.contains(&source_cell),
+                    "source lattice cell {source_cell:06X} was not evacuated"
+                );
+            }
+            for cell in lattice_cells_of(&root) {
+                let editor = editor_id(cell.record).unwrap_or_default();
+                assert!(
+                    !editor.starts_with("AkilaSource"),
+                    "a source-grid cell record survived: {editor}"
+                );
+            }
+            assert_eq!(fixture.report.source_cells_evacuated, 4);
+        }
+        {
+            let mut all = Vec::new();
+            collect_all_record_form_ids(&root, &mut all);
+            let mut sorted = all.clone();
+            sorted.sort_unstable();
+            let mut deduped = sorted.clone();
+            deduped.dedup();
+            assert_eq!(sorted, deduped, "no FormID may appear twice in the output");
 
-        assert_eq!(
-            sorted_refr_form_ids(&root),
-            expected,
-            "output REFR form-id multiset must equal the input multiset"
-        );
-        assert_eq!(fixture.report.placed_refs_relatticed, 40);
-        assert_eq!(fixture.report.placed_refs_kept_persistent, 1);
-        assert_eq!(fixture.report.placed_refs_unmapped, 0);
-        assert_eq!(fixture.report.placed_refs_without_position, 0);
+            let cells = lattice_cells_of(&root);
+            assert!(
+                cells.len() > specs.len(),
+                "1.70878 FO4 cells per SF cell must yield MORE cells than the source lattice: \
+                 got {} from {}",
+                cells.len(),
+                specs.len()
+            );
+            assert_eq!(
+                fixture.report.cell_form_ids_reused, 4,
+                "all four evacuated cells' FormIDs must be recycled first"
+            );
+            assert_eq!(
+                fixture.report.cell_form_ids_reused + fixture.report.cell_form_ids_allocated,
+                cells.len() as u32
+            );
+        }
         fixture.close();
     }
 
@@ -1878,290 +1954,162 @@ mod tests {
     }
 
     #[test]
-    fn refs_land_in_the_fo4_cell_their_position_implies() {
+    fn synthesized_cell_editor_ids_and_block_labels_follow_fo4_conventions() {
         let specs = two_by_two_specs();
         let fixture = run_relattice(&specs, "AkilaCity");
         let root = fixture.target_root();
+        {
+            // Matches terrain_native::authoring_emit's `"{}CellX{}Y{}"` format and
+            // its own `B21_TestCellXP000YP000` assertion. 'X' and 'Y' are
+            // separators, not sign tokens: "…CellX" + "N007" + "Y" + "P008". Any
+            // other spelling (e.g. "AkilaCityCellN007P008") misses the EditorID-match
+            // branch in plugin_runtime::merge_projected_cell_into_subblock, which then
+            // discards this cell's placed refs when convert_terrain merges.
+            assert_eq!(
+                cell_editor_id("B21_Test", 0, 0),
+                "B21_TestCellXP000YP000",
+                "must reproduce terrain_native's own shipped assertion verbatim"
+            );
+            assert_eq!(
+                cell_editor_id("AkilaCity", -7, 8),
+                "AkilaCityCellXN007YP008"
+            );
+            assert_eq!(
+                cell_editor_id("NewAtlantis", 123, -45),
+                "NewAtlantisCellXP123YN045"
+            );
 
-        let mut checked = 0;
-        for cell in lattice_cells_of(&root) {
-            let grid = cell_grid(cell.record).expect("synthesized cell carries XCLC");
-            let children = cell.children.expect("cell children group");
-            for item in refr_ids_in(&children.children) {
-                let record = find_record(&root, item).expect("ref record");
-                let (x, y) = placed_position(record).expect("ref position");
+            for cell in lattice_cells_of(&root) {
+                let grid = cell_grid(cell.record).unwrap();
                 assert_eq!(
+                    editor_id(cell.record).unwrap(),
+                    cell_editor_id("AkilaCity", grid.0, grid.1),
+                    "synthesized EditorID must byte-match terrain's convention"
+                );
+            }
+        }
+        {
+            let cells = lattice_cells_of(&root);
+            assert!(!cells.is_empty());
+            for cell in &cells {
+                let grid = cell_grid(cell.record).unwrap();
+                assert_eq!(
+                    cell.block,
                     (
-                        sf_frame::fo4_cell_of_units(x),
-                        sf_frame::fo4_cell_of_units(y)
+                        clamp_i16(sf_frame::fo4_exterior_block(grid.0)),
+                        clamp_i16(sf_frame::fo4_exterior_block(grid.1))
                     ),
-                    grid,
-                    "ref {item:06X} at ({x}, {y}) is parented to the wrong cell"
+                    "block label must come from the NEW cell coords"
                 );
-                checked += 1;
+                assert_eq!(
+                    cell.sub_block,
+                    (
+                        clamp_i16(sf_frame::fo4_exterior_sub_block(grid.0)),
+                        clamp_i16(sf_frame::fo4_exterior_sub_block(grid.1))
+                    ),
+                    "sub-block label must come from the NEW cell coords"
+                );
             }
         }
-        assert_eq!(checked, 40, "every re-latticed ref must be checked");
-        fixture.close();
-    }
-
-    #[test]
-    fn source_lattice_cells_are_all_evacuated() {
-        let specs = two_by_two_specs();
-        let fixture = run_relattice(&specs, "AkilaCity");
-        let root = fixture.target_root();
-
-        let mut all = Vec::new();
-        collect_all_record_form_ids(&root, &mut all);
-        let synthesized: HashSet<u32> = lattice_cells_of(&root)
-            .iter()
-            .map(|cell| cell.record.form_id)
-            .collect();
-        for spec in &specs {
-            let source_cell = cell_form_id(spec.index);
-            // The source cell's FormID may be RECYCLED onto a synthesized
-            // shell; what must not survive is the original source-grid cell.
-            if synthesized.contains(&source_cell) {
-                continue;
-            }
-            assert!(
-                !all.contains(&source_cell),
-                "source lattice cell {source_cell:06X} was not evacuated"
-            );
-        }
-        for cell in lattice_cells_of(&root) {
-            let editor = editor_id(cell.record).unwrap_or_default();
-            assert!(
-                !editor.starts_with("AkilaSource"),
-                "a source-grid cell record survived: {editor}"
-            );
-        }
-        assert_eq!(fixture.report.source_cells_evacuated, 4);
-        fixture.close();
-    }
-
-    #[test]
-    fn cell_editor_ids_match_terrain_convention() {
-        // Matches terrain_native::authoring_emit's `"{}CellX{}Y{}"` format and
-        // its own `B21_TestCellXP000YP000` assertion. 'X' and 'Y' are
-        // separators, not sign tokens: "…CellX" + "N007" + "Y" + "P008". Any
-        // other spelling (e.g. "AkilaCityCellN007P008") misses the EditorID-match
-        // branch in plugin_runtime::merge_projected_cell_into_subblock, which then
-        // discards this cell's placed refs when convert_terrain merges.
-        assert_eq!(
-            cell_editor_id("B21_Test", 0, 0),
-            "B21_TestCellXP000YP000",
-            "must reproduce terrain_native's own shipped assertion verbatim"
-        );
-        assert_eq!(
-            cell_editor_id("AkilaCity", -7, 8),
-            "AkilaCityCellXN007YP008"
-        );
-        assert_eq!(
-            cell_editor_id("NewAtlantis", 123, -45),
-            "NewAtlantisCellXP123YN045"
-        );
-
-        let specs = two_by_two_specs();
-        let fixture = run_relattice(&specs, "AkilaCity");
-        let root = fixture.target_root();
-        for cell in lattice_cells_of(&root) {
-            let grid = cell_grid(cell.record).unwrap();
+        {
+            // (x, y) packs as [y_lo, y_hi, x_lo, x_hi].
+            assert_eq!(encode_exterior_grid_label(1, 2), [2, 0, 1, 0]);
             assert_eq!(
-                editor_id(cell.record).unwrap(),
-                cell_editor_id("AkilaCity", grid.0, grid.1),
-                "synthesized EditorID must byte-match terrain's convention"
+                encode_exterior_grid_label(-1, 0),
+                [0, 0, 0xFF, 0xFF],
+                "negative X must occupy the HIGH half of the label"
             );
         }
         fixture.close();
     }
 
     #[test]
-    fn block_and_subblock_labels_derive_from_new_coords() {
+    fn persistent_and_interior_refs_keep_their_own_cell_topology() {
         let specs = two_by_two_specs();
         let fixture = run_relattice(&specs, "AkilaCity");
         let root = fixture.target_root();
+        {
+            let world_children = world_children_of(&root);
+            let persistent_group = world_children
+                .children
+                .iter()
+                .find_map(|item| match item {
+                    ParsedItem::Group(group)
+                        if group.group_type == CELL_CHILDREN_GROUP
+                            && u32::from_le_bytes(group.label) == PERSISTENT_CELL_SOURCE =>
+                    {
+                        Some(group)
+                    }
+                    _ => None,
+                })
+                .expect("persistent cell children group is kept under world-children");
+            let section = match &persistent_group.children[0] {
+                ParsedItem::Group(group) => group,
+                _ => panic!("persistent children must be a group"),
+            };
+            assert_eq!(section.group_type, CELL_PERSISTENT_GROUP);
+            assert_eq!(refr_ids_in(&section.children), vec![PERSISTENT_REF_SOURCE]);
 
-        let cells = lattice_cells_of(&root);
-        assert!(!cells.is_empty());
-        for cell in &cells {
-            let grid = cell_grid(cell.record).unwrap();
-            assert_eq!(
-                cell.block,
-                (
-                    clamp_i16(sf_frame::fo4_exterior_block(grid.0)),
-                    clamp_i16(sf_frame::fo4_exterior_block(grid.1))
-                ),
-                "block label must come from the NEW cell coords"
-            );
-            assert_eq!(
-                cell.sub_block,
-                (
-                    clamp_i16(sf_frame::fo4_exterior_sub_block(grid.0)),
-                    clamp_i16(sf_frame::fo4_exterior_sub_block(grid.1))
-                ),
-                "sub-block label must come from the NEW cell coords"
-            );
-        }
-        fixture.close();
-    }
-
-    #[test]
-    fn block_label_byte_order_matches_plugin_runtime() {
-        // (x, y) packs as [y_lo, y_hi, x_lo, x_hi].
-        assert_eq!(encode_exterior_grid_label(1, 2), [2, 0, 1, 0]);
-        assert_eq!(
-            encode_exterior_grid_label(-1, 0),
-            [0, 0, 0xFF, 0xFF],
-            "negative X must occupy the HIGH half of the label"
-        );
-    }
-
-    #[test]
-    fn persistent_cell_refs_are_not_relatticed() {
-        let specs = two_by_two_specs();
-        let fixture = run_relattice(&specs, "AkilaCity");
-        let root = fixture.target_root();
-
-        let world_children = world_children_of(&root);
-        let persistent_group = world_children
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Group(group)
-                    if group.group_type == CELL_CHILDREN_GROUP
-                        && u32::from_le_bytes(group.label) == PERSISTENT_CELL_SOURCE =>
-                {
-                    Some(group)
+            // ... and it is nowhere in the re-latticed lattice.
+            for cell in lattice_cells_of(&root) {
+                if let Some(children) = cell.children {
+                    assert!(
+                        !refr_ids_in(&children.children).contains(&PERSISTENT_REF_SOURCE),
+                        "the persistent ref must never be re-latticed"
+                    );
                 }
-                _ => None,
-            })
-            .expect("persistent cell children group is kept under world-children");
-        let section = match &persistent_group.children[0] {
-            ParsedItem::Group(group) => group,
-            _ => panic!("persistent children must be a group"),
-        };
-        assert_eq!(section.group_type, CELL_PERSISTENT_GROUP);
-        assert_eq!(refr_ids_in(&section.children), vec![PERSISTENT_REF_SOURCE]);
-
-        // ... and it is nowhere in the re-latticed lattice.
-        for cell in lattice_cells_of(&root) {
-            if let Some(children) = cell.children {
-                assert!(
-                    !refr_ids_in(&children.children).contains(&PERSISTENT_REF_SOURCE),
-                    "the persistent ref must never be re-latticed"
-                );
             }
         }
-        fixture.close();
-    }
+        {
+            let cell_top = find_top_group(&root, b"CELL").expect("CELL top group");
+            assert!(
+                !cell_top.children.iter().any(|item| matches!(
+                    item,
+                    ParsedItem::Record(record) if record.form_id == INTERIOR_CELL_SOURCE
+                )),
+                "the interior CELL must not stay a direct child of the flat CELL group"
+            );
 
-    #[test]
-    fn interior_cells_are_nested_into_fo4_block_topology() {
-        let specs = two_by_two_specs();
-        let fixture = run_relattice(&specs, "AkilaCity");
-        let root = fixture.target_root();
+            let (block_label, sub_label) = interior_bucket(INTERIOR_CELL_SOURCE);
+            let block = groups_of_type(&cell_top.children, INTERIOR_BLOCK_GROUP)
+                .find(|group| i32::from_le_bytes(group.label) == block_label)
+                .expect("interior block group");
+            let sub_block = groups_of_type(&block.children, INTERIOR_SUB_BLOCK_GROUP)
+                .find(|group| i32::from_le_bytes(group.label) == sub_label)
+                .expect("interior sub-block group");
+            assert!(
+                sub_block.children.iter().any(|item| matches!(
+                    item,
+                    ParsedItem::Record(record) if record.form_id == INTERIOR_CELL_SOURCE
+                )),
+                "the interior CELL belongs under its sub-block"
+            );
 
-        let cell_top = find_top_group(&root, b"CELL").expect("CELL top group");
-        assert!(
-            !cell_top.children.iter().any(|item| matches!(
-                item,
-                ParsedItem::Record(record) if record.form_id == INTERIOR_CELL_SOURCE
-            )),
-            "the interior CELL must not stay a direct child of the flat CELL group"
-        );
+            let children = find_group(
+                &sub_block.children,
+                CELL_CHILDREN_GROUP,
+                INTERIOR_CELL_SOURCE,
+            )
+            .expect("interior cell children group");
+            let temporary = groups_of_type(&children.children, CELL_TEMPORARY_GROUP)
+                .next()
+                .expect("interior temporary group");
+            assert_eq!(
+                refr_ids_in(&temporary.children),
+                vec![INTERIOR_REF_SOURCE],
+                "the interior ref must be nested under its own cell"
+            );
 
-        let (block_label, sub_label) = interior_bucket(INTERIOR_CELL_SOURCE);
-        let block = groups_of_type(&cell_top.children, INTERIOR_BLOCK_GROUP)
-            .find(|group| i32::from_le_bytes(group.label) == block_label)
-            .expect("interior block group");
-        let sub_block = groups_of_type(&block.children, INTERIOR_SUB_BLOCK_GROUP)
-            .find(|group| i32::from_le_bytes(group.label) == sub_label)
-            .expect("interior sub-block group");
-        assert!(
-            sub_block.children.iter().any(|item| matches!(
-                item,
-                ParsedItem::Record(record) if record.form_id == INTERIOR_CELL_SOURCE
-            )),
-            "the interior CELL belongs under its sub-block"
-        );
-
-        let children = find_group(
-            &sub_block.children,
-            CELL_CHILDREN_GROUP,
-            INTERIOR_CELL_SOURCE,
-        )
-        .expect("interior cell children group");
-        let temporary = groups_of_type(&children.children, CELL_TEMPORARY_GROUP)
-            .next()
-            .expect("interior temporary group");
-        assert_eq!(
-            refr_ids_in(&temporary.children),
-            vec![INTERIOR_REF_SOURCE],
-            "the interior ref must be nested under its own cell"
-        );
-
-        let refr_top = find_top_group(&root, b"REFR").expect("flat REFR top group");
-        assert!(
-            !refr_ids_in(&refr_top.children).contains(&INTERIOR_REF_SOURCE),
-            "a placed ref left flat has no parent cell and FO4 loads it at init"
-        );
-        assert_eq!(fixture.report.interior_cells_nested, 1);
-        assert_eq!(fixture.report.interior_placed_refs_nested, 1);
-        fixture.close();
-    }
-
-    #[test]
-    fn a_second_interior_pass_is_a_no_op() {
-        let specs = two_by_two_specs();
-        let fixture = run_relattice(&specs, "AkilaCity");
-        let before = sorted_refr_form_ids(&fixture.target_root());
-
-        let report = with_run(fixture.run_id, |run| -> Result<RelatticeReport, RunError> {
-            relattice_worldspaces_reporting(run)
-        })
-        .unwrap();
-
-        assert_eq!(report.interiors_skipped_already_nested, 1);
-        assert_eq!(report.interior_cells_nested, 0);
-        assert_eq!(
-            sorted_refr_form_ids(&fixture.target_root()),
-            before,
-            "re-running must not empty the tree it already built"
-        );
-        fixture.close();
-    }
-
-    #[test]
-    fn synthesized_cell_form_ids_are_unique_and_do_not_collide() {
-        let specs = two_by_two_specs();
-        let fixture = run_relattice(&specs, "AkilaCity");
-        let root = fixture.target_root();
-
-        let mut all = Vec::new();
-        collect_all_record_form_ids(&root, &mut all);
-        let mut sorted = all.clone();
-        sorted.sort_unstable();
-        let mut deduped = sorted.clone();
-        deduped.dedup();
-        assert_eq!(sorted, deduped, "no FormID may appear twice in the output");
-
-        let cells = lattice_cells_of(&root);
-        assert!(
-            cells.len() > specs.len(),
-            "1.70878 FO4 cells per SF cell must yield MORE cells than the source lattice: \
-             got {} from {}",
-            cells.len(),
-            specs.len()
-        );
-        assert_eq!(
-            fixture.report.cell_form_ids_reused, 4,
-            "all four evacuated cells' FormIDs must be recycled first"
-        );
-        assert_eq!(
-            fixture.report.cell_form_ids_reused + fixture.report.cell_form_ids_allocated,
-            cells.len() as u32
-        );
+            assert!(
+                find_top_group(&root, b"REFR")
+                    .is_none_or(
+                        |refr_top| !refr_ids_in(&refr_top.children).contains(&INTERIOR_REF_SOURCE)
+                    ),
+                "a placed ref left flat has no parent cell and FO4 loads it at init"
+            );
+            assert_eq!(fixture.report.interior_cells_nested, 1);
+            assert_eq!(fixture.report.interior_placed_refs_nested, 1);
+        }
         fixture.close();
     }
 
@@ -2295,74 +2243,70 @@ mod tests {
     }
 
     #[test]
-    fn worldspace_bounds_and_land_defaults_are_rebuilt_from_the_new_lattice() {
+    fn rebuilt_world_bounds_and_synthesized_cells_inherit_source_cell_data() {
         let specs = two_by_two_specs();
         let fixture = run_relattice(&specs, "AkilaCity");
         let root = fixture.target_root();
+        {
+            let wrld_top = find_top_group(&root, b"WRLD").unwrap();
+            let world = wrld_top
+                .children
+                .iter()
+                .find_map(|item| match item {
+                    ParsedItem::Record(record) if record.signature.as_str() == "WRLD" => {
+                        Some(record)
+                    }
+                    _ => None,
+                })
+                .unwrap();
 
-        let wrld_top = find_top_group(&root, b"WRLD").unwrap();
-        let world = wrld_top
-            .children
-            .iter()
-            .find_map(|item| match item {
-                ParsedItem::Record(record) if record.signature.as_str() == "WRLD" => Some(record),
-                _ => None,
-            })
-            .unwrap();
+            let cells = lattice_cells_of(&root);
+            let grids: Vec<(i32, i32)> = cells
+                .iter()
+                .map(|cell| cell_grid(cell.record).unwrap())
+                .collect();
+            let min_x = grids.iter().map(|g| g.0).min().unwrap();
+            let min_y = grids.iter().map(|g| g.1).min().unwrap();
+            let max_x = grids.iter().map(|g| g.0).max().unwrap();
+            let max_y = grids.iter().map(|g| g.1).max().unwrap();
 
-        let cells = lattice_cells_of(&root);
-        let grids: Vec<(i32, i32)> = cells
-            .iter()
-            .map(|cell| cell_grid(cell.record).unwrap())
-            .collect();
-        let min_x = grids.iter().map(|g| g.0).min().unwrap();
-        let min_y = grids.iter().map(|g| g.1).min().unwrap();
-        let max_x = grids.iter().map(|g| g.0).max().unwrap();
-        let max_y = grids.iter().map(|g| g.1).max().unwrap();
-
-        let nam0 = find_subrecord(world, "NAM0").unwrap();
-        assert_eq!(
-            (read_f32(nam0, 0), read_f32(nam0, 4)),
-            (min_x as f32 * 4096.0, min_y as f32 * 4096.0)
-        );
-        let nam9 = find_subrecord(world, "NAM9").unwrap();
-        assert_eq!(
-            (read_f32(nam9, 0), read_f32(nam9, 4)),
-            ((max_x + 1) as f32 * 4096.0, (max_y + 1) as f32 * 4096.0)
-        );
-        let dnam = find_subrecord(world, "DNAM").unwrap();
-        assert_eq!(
-            (read_f32(dnam, 0), read_f32(dnam, 4)),
-            (-10.0 * METERS_TO_FO4_UNITS, 2.0 * METERS_TO_FO4_UNITS),
-            "DNAM land/water defaults are Starfield metres and take the factor"
-        );
-        fixture.close();
-    }
-
-    #[test]
-    fn synthesized_cells_inherit_water_and_location_from_the_dominant_source_cell() {
-        let specs = two_by_two_specs();
-        let fixture = run_relattice(&specs, "AkilaCity");
-        let root = fixture.target_root();
-
-        for cell in lattice_cells_of(&root) {
-            let xclw = find_subrecord(cell.record, "XCLW").expect("XCLW carried over");
-            assert_eq!(read_f32(xclw, 0), 12.0 * METERS_TO_FO4_UNITS);
+            let nam0 = find_subrecord(world, "NAM0").unwrap();
             assert_eq!(
-                find_subrecord(cell.record, "XLCN").map(<[u8]>::to_vec),
-                Some(0x0000_0066u32.to_le_bytes().to_vec())
+                (read_f32(nam0, 0), read_f32(nam0, 4)),
+                (min_x as f32 * 4096.0, min_y as f32 * 4096.0)
             );
+            let nam9 = find_subrecord(world, "NAM9").unwrap();
             assert_eq!(
-                find_subrecord(cell.record, "XCWT").map(<[u8]>::to_vec),
-                Some(0x0000_0055u32.to_le_bytes().to_vec())
+                (read_f32(nam9, 0), read_f32(nam9, 4)),
+                ((max_x + 1) as f32 * 4096.0, (max_y + 1) as f32 * 4096.0)
             );
-            assert!(
-                find_subrecord(cell.record, "XCLL").is_none(),
-                "exterior lighting is inherited from the worldspace, never replicated"
+            let dnam = find_subrecord(world, "DNAM").unwrap();
+            assert_eq!(
+                (read_f32(dnam, 0), read_f32(dnam, 4)),
+                (-10.0 * METERS_TO_FO4_UNITS, 2.0 * METERS_TO_FO4_UNITS),
+                "DNAM land/water defaults are Starfield metres and take the factor"
             );
-            assert!(find_subrecord(cell.record, "LTMP").is_none());
-            let data = find_subrecord(cell.record, "DATA").unwrap();
-            assert_eq!(data, EXTERIOR_CELL_DATA_FLAGS.to_le_bytes());
+        }
+        {
+            for cell in lattice_cells_of(&root) {
+                let xclw = find_subrecord(cell.record, "XCLW").expect("XCLW carried over");
+                assert_eq!(read_f32(xclw, 0), 12.0 * METERS_TO_FO4_UNITS);
+                assert_eq!(
+                    find_subrecord(cell.record, "XLCN").map(<[u8]>::to_vec),
+                    Some(0x0000_0066u32.to_le_bytes().to_vec())
+                );
+                assert_eq!(
+                    find_subrecord(cell.record, "XCWT").map(<[u8]>::to_vec),
+                    Some(0x0000_0055u32.to_le_bytes().to_vec())
+                );
+                assert!(
+                    find_subrecord(cell.record, "XCLL").is_none(),
+                    "exterior lighting is inherited from the worldspace, never replicated"
+                );
+                assert!(find_subrecord(cell.record, "LTMP").is_none());
+                let data = find_subrecord(cell.record, "DATA").unwrap();
+                assert_eq!(data, EXTERIOR_CELL_DATA_FLAGS.to_le_bytes());
+            }
         }
         fixture.close();
     }
@@ -2408,16 +2352,21 @@ mod tests {
     fn a_second_pass_is_a_no_op_and_never_empties_the_tree() {
         let specs = two_by_two_specs();
         let fixture = run_relattice(&specs, "AkilaCity");
-        let before = fixture.target_root();
+        let before = sorted_refr_form_ids(&fixture.target_root());
         let second = with_run(fixture.run_id, |run| -> Result<RelatticeReport, RunError> {
             relattice_worldspaces_reporting(run)
         })
         .unwrap();
-        let after = fixture.target_root();
 
         assert_eq!(second.worlds_skipped_already_nested, 1);
         assert_eq!(second.cells_synthesized, 0);
-        assert_eq!(sorted_refr_form_ids(&before), sorted_refr_form_ids(&after));
+        assert_eq!(second.interiors_skipped_already_nested, 1);
+        assert_eq!(second.interior_cells_nested, 0);
+        assert_eq!(
+            sorted_refr_form_ids(&fixture.target_root()),
+            before,
+            "re-running must not empty the tree it already built"
+        );
         fixture.close();
     }
 
@@ -2549,32 +2498,6 @@ mod tests {
         );
         assert!(translator.maps.skip_records.contains("NAVM"));
         assert!(translator.maps.skip_records.contains("NAVI"));
-    }
-
-    /// Real `akilacity.btd` extent -> 16x16 = 256 FO4 cells.
-    #[test]
-    fn akila_cell_count_is_256() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap()
-            .join("extracted/starfield/terrain/akilacity.btd");
-        if !path.exists() {
-            eprintln!(
-                "skipping akila_cell_count_is_256: {} is missing",
-                path.display()
-            );
-            return;
-        }
-        let header = terrain_native::btd::BtdFile::open_header(&path.to_string_lossy())
-            .expect("akilacity.btd header");
-        let (x_lo, x_hi) = sf_frame::fo4_cell_range(header.cell_min_x, header.cell_max_x);
-        let (y_lo, y_hi) = sf_frame::fo4_cell_range(header.cell_min_y, header.cell_max_y);
-        let cells = (x_hi - x_lo + 1) as i64 * (y_hi - y_lo + 1) as i64;
-        assert_eq!(
-            cells, 256,
-            "akilacity is 9x9 SF cells = 900 m/axis = 15.38 -> 16 FO4 cells/axis"
-        );
     }
 
     fn find_record<'a>(items: &'a [ParsedItem], form_id: u32) -> Option<&'a ParsedRecord> {

@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn interior_cell_carries_lighting_and_water_not_just_data() {
+    fn interior_cell_carries_lighting_and_water_and_exteriors_are_not_emitted() {
         let source = new_fo76_source();
         let target = new_fo4_target();
         ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
@@ -375,6 +375,31 @@ mod tests {
         assert!(
             interior_block_contains(&plugin.root_items, 0, 9, 0x275EDE),
             "cell lands in interior block 0 / subblock 9"
+        );
+        drop_run(run_id).unwrap();
+
+        let source = new_fo76_source();
+        let target = new_fo4_target();
+        // A CELL with DATA interior bit CLEAR is exterior — must be skipped.
+        plugin_handle_replace_authoring_record_value(
+            source,
+            &serde_json::json!({
+                "signature": "CELL",
+                "form_id": "0030FE:SeventySix.esm",
+                "eid": "ExtCell",
+                "subrecords": [
+                    { "signature": "EDID", "data_hex": "457874436C6C00" },
+                    { "signature": "DATA", "data_hex": "0200" }
+                ]
+            }),
+        )
+        .expect("exterior CELL");
+        let run_id = make_run(source, target);
+        run_emit(run_id, false);
+        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
+        assert!(
+            find_record(&plugin.root_items, "CELL", 0x30FE).is_none(),
+            "exterior cell must not be emitted"
         );
         drop_run(run_id).unwrap();
     }
@@ -445,6 +470,7 @@ mod tests {
     #[test]
     fn wastelanders_public_hub_allowlist_sets_public_area_and_keeps_owner() {
         const PUBLIC_AREA: u16 = 0x0020;
+        const CAN_TRAVEL_FROM: u16 = 0x0004;
         const OWNER: u32 = 0x0001_1000;
         let source = new_fo76_source();
         let target = new_fo4_target();
@@ -465,7 +491,7 @@ mod tests {
             let cell = find_record(&plugin.root_items, "CELL", *cell_id).expect("public hub cell");
             assert_eq!(
                 cell_data_flags(cell),
-                CELL_INTERIOR_FLAG as u16 | PUBLIC_AREA
+                CELL_INTERIOR_FLAG as u16 | CAN_TRAVEL_FROM | PUBLIC_AREA
             );
             assert!(
                 record_has_subrecord(cell, "XOWN"),
@@ -474,7 +500,10 @@ mod tests {
         }
         let unrelated =
             find_record(&plugin.root_items, "CELL", cell_ids[3]).expect("unrelated interior cell");
-        assert_eq!(cell_data_flags(unrelated), CELL_INTERIOR_FLAG as u16);
+        assert_eq!(
+            cell_data_flags(unrelated),
+            CELL_INTERIOR_FLAG as u16 | CAN_TRAVEL_FROM
+        );
         assert!(record_has_subrecord(unrelated, "XOWN"));
 
         drop_run(run_id).unwrap();
@@ -525,99 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn exterior_cells_are_not_emitted() {
-        let source = new_fo76_source();
-        let target = new_fo4_target();
-        // A CELL with DATA interior bit CLEAR is exterior — must be skipped.
-        plugin_handle_replace_authoring_record_value(
-            source,
-            &serde_json::json!({
-                "signature": "CELL",
-                "form_id": "0030FE:SeventySix.esm",
-                "eid": "ExtCell",
-                "subrecords": [
-                    { "signature": "EDID", "data_hex": "457874436C6C00" },
-                    { "signature": "DATA", "data_hex": "0200" }
-                ]
-            }),
-        )
-        .expect("exterior CELL");
-        let run_id = make_run(source, target);
-        run_emit(run_id, false);
-        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
-        assert!(
-            find_record(&plugin.root_items, "CELL", 0x30FE).is_none(),
-            "exterior cell must not be emitted"
-        );
-        drop_run(run_id).unwrap();
-    }
-
-    #[test]
-    fn interior_cell_placed_children_copied_to_correct_groups() {
-        let source = new_fo76_source();
-        let target = new_fo4_target();
-        ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
-            .expect("source interior cell");
-        insert_placed_child_into_cell_group(
-            source,
-            0x00275EDE,
-            PERSISTENT_GROUP,
-            refr_record(0x002F749F, 0x0001_0000),
-        )
-        .expect("source persistent child");
-        insert_placed_child_into_cell_group(
-            source,
-            0x00275EDE,
-            TEMPORARY_GROUP,
-            refr_record(0x002F74A0, 0x0001_0000),
-        )
-        .expect("source temporary child");
-
-        let run_id = make_run(source, target);
-        run_emit(run_id, false);
-        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
-        assert!(
-            cell_section_record(&plugin.root_items, 0x275EDE, PERSISTENT_GROUP, 0x2F749F).is_some(),
-            "persistent REFR copied"
-        );
-        assert!(
-            cell_section_record(&plugin.root_items, 0x275EDE, TEMPORARY_GROUP, 0x2F74A0).is_some(),
-            "temporary REFR copied"
-        );
-        drop_run(run_id).unwrap();
-    }
-
-    #[test]
-    fn copied_children_keep_xezn_for_later_eczn_repoint() {
-        let source = new_fo76_source();
-        let target = new_fo4_target();
-        ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
-            .expect("source interior cell");
-        // FO76 placed refs carry XEZN→LCTN. The encounter-zone synthesis pass
-        // (runs after emit) repoints XEZN→LCTN to the LCTN's synthesized ECZN,
-        // so XEZN must survive this phase intact.
-        insert_placed_child_into_cell_group(
-            source,
-            0x00275EDE,
-            TEMPORARY_GROUP,
-            refr_with_xezn(0x002F74A0, 0x0001_0000, 0x0002_F800),
-        )
-        .expect("source xezn child");
-
-        let run_id = make_run(source, target);
-        run_emit(run_id, false);
-        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
-        let child = cell_section_record(&plugin.root_items, 0x275EDE, TEMPORARY_GROUP, 0x2F74A0)
-            .expect("temporary REFR copied");
-        assert!(
-            record_has_subrecord(child, "XEZN"),
-            "XEZN preserved by normalizer for the encounter-zone synthesis repoint"
-        );
-        drop_run(run_id).unwrap();
-    }
-
-    #[test]
-    fn interior_navm_emitted_with_interior_parent_into_temporary_group() {
+    fn interior_navm_is_emitted_into_temporary_group_and_navi() {
         let source = new_fo76_source();
         let target = new_fo4_target();
         ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
@@ -641,10 +578,7 @@ mod tests {
             "NVNM parent must be Interior {{ cell }}"
         );
         drop_run(run_id).unwrap();
-    }
 
-    #[test]
-    fn navi_includes_interior_navmesh_entry() {
         let source = new_fo76_source();
         let target = new_fo4_target();
         ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
@@ -722,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn far_interior_refs_and_navmesh_move_by_one_offset() {
+    fn far_interiors_move_by_one_offset_unless_previs_or_inside_limit() {
         let target = new_fo4_target();
         let run_id = make_run(far_interior_source(), target);
         run_emit(run_id, false);
@@ -760,10 +694,7 @@ mod tests {
         })
         .unwrap();
         drop_run(run_id).unwrap();
-    }
 
-    #[test]
-    fn far_interior_stays_put_when_previs_is_carried() {
         let target = new_fo4_target();
         let run_id = make_run(far_interior_source(), target);
         run_emit(run_id, true);
@@ -773,10 +704,7 @@ mod tests {
             .expect("persistent REFR copied");
         assert_eq!(data_position(refr), [100.0, -35_000.0, 50.0]);
         drop_run(run_id).unwrap();
-    }
 
-    #[test]
-    fn interior_inside_the_engine_limit_keeps_source_positions() {
         let source = new_fo76_source();
         let target = new_fo4_target();
         ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
@@ -818,7 +746,7 @@ mod tests {
     // ── Phase wrapper ────────────────────────────────────────────────────────
 
     #[test]
-    fn phase_reports_added_cell_and_children() {
+    fn phase_reports_added_cell_and_children_and_is_noop_for_non_fo76() {
         let source = new_fo76_source();
         let target = new_fo4_target();
         ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
@@ -834,12 +762,30 @@ mod tests {
         let report = run_emit_via_phase(run_id);
         assert!(report.records_added >= 2, "cell + child added: {report:?}");
         drop_run(run_id).unwrap();
+
+        let source = plugin_handle_new_native("Source.esm", Some("fo4")).expect("source");
+        let target = plugin_handle_new_native("Output.esm", Some("fo4")).expect("target");
+        let run_id = create_run(RunParams {
+            source: Game::Fo4,
+            target: Game::Fo4,
+            source_handle_id: source,
+            target_handle_id: target,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Output.esm".into(),
+                ..RunConfig::default()
+            },
+        })
+        .expect("run");
+        let report = run_emit_via_phase(run_id);
+        assert_eq!(report.records_added, 0);
+        drop_run(run_id).unwrap();
     }
 
     // ── Source-side one-pass child collection ────────────────────────────────
 
     #[test]
-    fn collect_interior_cell_children_groups_persistent_and_temporary() {
+    fn interior_cell_children_are_grouped_copied_and_keep_xezn() {
         let source = new_fo76_source();
         ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
             .expect("source interior cell");
@@ -875,26 +821,63 @@ mod tests {
             map2.get(&0x275EDE).is_none(),
             "cell outside the set must not be collected"
         );
-    }
 
-    #[test]
-    fn phase_is_noop_for_non_fo76_source() {
-        let source = plugin_handle_new_native("Source.esm", Some("fo4")).expect("source");
-        let target = plugin_handle_new_native("Output.esm", Some("fo4")).expect("target");
-        let run_id = create_run(RunParams {
-            source: Game::Fo4,
-            target: Game::Fo4,
-            source_handle_id: source,
-            target_handle_id: target,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esm".into(),
-                ..RunConfig::default()
-            },
-        })
-        .expect("run");
-        let report = run_emit_via_phase(run_id);
-        assert_eq!(report.records_added, 0);
+        let source = new_fo76_source();
+        let target = new_fo4_target();
+        ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
+            .expect("source interior cell");
+        insert_placed_child_into_cell_group(
+            source,
+            0x00275EDE,
+            PERSISTENT_GROUP,
+            refr_record(0x002F749F, 0x0001_0000),
+        )
+        .expect("source persistent child");
+        insert_placed_child_into_cell_group(
+            source,
+            0x00275EDE,
+            TEMPORARY_GROUP,
+            refr_record(0x002F74A0, 0x0001_0000),
+        )
+        .expect("source temporary child");
+
+        let run_id = make_run(source, target);
+        run_emit(run_id, false);
+        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
+        assert!(
+            cell_section_record(&plugin.root_items, 0x275EDE, PERSISTENT_GROUP, 0x2F749F).is_some(),
+            "persistent REFR copied"
+        );
+        assert!(
+            cell_section_record(&plugin.root_items, 0x275EDE, TEMPORARY_GROUP, 0x2F74A0).is_some(),
+            "temporary REFR copied"
+        );
+        drop_run(run_id).unwrap();
+
+        let source = new_fo76_source();
+        let target = new_fo4_target();
+        ensure_interior_cell_and_child_group(source, interior_cell_record(0x00275EDE, "TestVault"))
+            .expect("source interior cell");
+        // FO76 placed refs carry XEZN→LCTN. The encounter-zone synthesis pass
+        // (runs after emit) repoints XEZN→LCTN to the LCTN's synthesized ECZN,
+        // so XEZN must survive this phase intact.
+        insert_placed_child_into_cell_group(
+            source,
+            0x00275EDE,
+            TEMPORARY_GROUP,
+            refr_with_xezn(0x002F74A0, 0x0001_0000, 0x0002_F800),
+        )
+        .expect("source xezn child");
+
+        let run_id = make_run(source, target);
+        run_emit(run_id, false);
+        let (plugin, _) = clone_plugin_handle_state_no_py(target).expect("snapshot");
+        let child = cell_section_record(&plugin.root_items, 0x275EDE, TEMPORARY_GROUP, 0x2F74A0)
+            .expect("temporary REFR copied");
+        assert!(
+            record_has_subrecord(child, "XEZN"),
+            "XEZN preserved by normalizer for the encounter-zone synthesis repoint"
+        );
         drop_run(run_id).unwrap();
     }
 }

@@ -650,23 +650,10 @@ mod tests {
         plan_replacement(proj, dnam(), sndrs, &load_order(), &offsets(), interner)
     }
 
-    // ---- schema offsets -------------------------------------------------
-
-    /// Pins the resolved offsets to values ground-truthed elsewhere: `36` is
-    /// in the `PROJ.DNAM` FormID table `rewrite_raw_object_template_formids`
-    /// remaps, and `1` is where the shipped `FXProjectileMissileByLAYERBLP`
-    /// carries its `Loop` byte behind a `1`-valued `unknown_u8_0`.
-    #[test]
-    fn schema_offsets_match_shipped_records() {
-        let offsets = offsets();
-        assert_eq!(offsets.proj_sound, 36, "PROJ.DNAM.sound");
-        assert_eq!(offsets.sndr_looping, 1, "SNDR.LNAM.looping");
-    }
-
     // ---- summarize_sndr -------------------------------------------------
 
     #[test]
-    fn standard_looping_descriptor_has_no_layers() {
+    fn summarize_sndr_layers_and_looping_byte_or_struct() {
         let interner = StringInterner::new();
         let record = make_sndr(&[], true, &interner);
         let layers = summarize(&record, &interner);
@@ -675,24 +662,14 @@ mod tests {
             "Standard SNDR has no DNAM layers"
         );
         assert!(layers.looping, "LNAM byte row must read as looping");
-    }
 
-    #[test]
-    fn compound_collects_every_layer() {
-        let interner = StringInterner::new();
         let a = fk(0x0A_6BDC, "Fallout4.esm", &interner);
         let b = fk(0x04_FEB3, "Out.esp", &interner);
         let record = make_sndr(&[a, b], false, &interner);
         let layers = summarize(&record, &interner);
         assert_eq!(layers.children, vec![a, b]);
         assert!(!layers.looping);
-    }
 
-    /// `looping` is the *second* byte of `LNAM`, and the first byte is
-    /// routinely 1 on real records.
-    #[test]
-    fn looping_reads_the_second_lnam_byte_not_the_first() {
-        let interner = StringInterner::new();
         assert!(lnam_is_looping(
             &FieldValue::Bytes(smallvec::smallvec![1, 8, 0, 0]),
             &offsets(),
@@ -719,11 +696,7 @@ mod tests {
             &offsets(),
             &interner
         ));
-    }
 
-    #[test]
-    fn looping_reads_from_decoded_struct_shapes() {
-        let interner = StringInterner::new();
         assert!(summarize(&make_sndr_struct(&[], true, &interner), &interner).looping);
         assert!(!summarize(&make_sndr_struct(&[], false, &interner), &interner).looping);
         assert!(looping_value_is_loop(&FieldValue::Uint(8), &interner));
@@ -737,6 +710,10 @@ mod tests {
             &FieldValue::String(interner.intern("EnvelopeFast")),
             &interner
         ));
+
+        let offsets = offsets();
+        assert_eq!(offsets.proj_sound, 36, "PROJ.DNAM.sound");
+        assert_eq!(offsets.sndr_looping, 1, "SNDR.LNAM.looping");
     }
 
     // ---- LoadOrder ------------------------------------------------------
@@ -788,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn looping_compound_collapses_to_the_fo4_base_layer() {
+    fn looping_compound_collapses_to_fo4_base_or_first_looping_layer() {
         let interner = StringInterner::new();
         let (sndrs, compound) = missile_world(&interner);
         let proj = make_proj(Some(compound), &interner);
@@ -798,23 +775,14 @@ mod tests {
             Some(fk(0x0A_6BDC, "Fallout4.esm", &interner)),
             "must collapse to FO4's own FXProjectileMissileBy"
         );
-    }
 
-    #[test]
-    fn decoded_struct_projectiles_plan_the_same_way() {
-        let interner = StringInterner::new();
-        let (sndrs, compound) = missile_world(&interner);
         let proj = make_proj_struct(Some(compound), &interner);
 
         assert_eq!(
             plan(&proj, &sndrs, &interner),
             Some(fk(0x0A_6BDC, "Fallout4.esm", &interner))
         );
-    }
 
-    #[test]
-    fn falls_back_to_first_converted_looping_layer() {
-        let interner = StringInterner::new();
         let layer_b = fk(0x04_FEB3, "Out.esp", &interner);
         let layer_c = fk(0x04_FEB4, "Out.esp", &interner);
         let compound = fk(0x04_FEB1, "Out.esp", &interner);
@@ -843,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_sound_is_left_alone() {
+    fn standard_one_shot_and_unresolvable_sounds_are_not_planned() {
         let interner = StringInterner::new();
         let standard = fk(0x04_FEB3, "Out.esp", &interner);
         let mut sndrs = FxHashMap::default();
@@ -858,11 +826,7 @@ mod tests {
             None,
             "a Standard descriptor is already FO4's shape"
         );
-    }
 
-    #[test]
-    fn one_shot_compound_keeps_its_layers() {
-        let interner = StringInterner::new();
         let layer_a = fk(0x01_82A7, "Out.esp", &interner);
         let compound = fk(0x01_81D9, "Out.esp", &interner);
 
@@ -882,11 +846,7 @@ mod tests {
             None,
             "a compound of one-shots cannot leak a looping voice"
         );
-    }
 
-    #[test]
-    fn unresolvable_and_missing_sounds_are_skipped() {
-        let interner = StringInterner::new();
         let (sndrs, _) = missile_world(&interner);
 
         // Sound already points into a master we did not summarize.
@@ -905,7 +865,7 @@ mod tests {
     // ---- set_projectile_sound -------------------------------------------
 
     #[test]
-    fn set_sound_touches_only_the_sound_slot() {
+    fn set_sound_touches_only_the_sound_slot_idempotently() {
         let interner = StringInterner::new();
         let compound = fk(0x04_FEB1, "Out.esp", &interner);
         let base = fk(0x0A_6BDC, "Fallout4.esm", &interner);
@@ -939,12 +899,7 @@ mod tests {
             Some(0x000A_6BDC),
             "sound repointed at Fallout4.esm:0A6BDC"
         );
-    }
 
-    #[test]
-    fn set_sound_is_idempotent() {
-        let interner = StringInterner::new();
-        let base = fk(0x0A_6BDC, "Fallout4.esm", &interner);
         let mut proj = make_proj(Some(base), &interner);
         assert!(
             !set_projectile_sound(
@@ -957,12 +912,7 @@ mod tests {
             ),
             "rewriting the same FormKey must not report a change"
         );
-    }
 
-    #[test]
-    fn set_sound_refuses_a_plugin_outside_the_load_order() {
-        let interner = StringInterner::new();
-        let compound = fk(0x04_FEB1, "Out.esp", &interner);
         let stranger = fk(0x01_0000, "Absent.esm", &interner);
         let mut proj = make_proj(Some(compound), &interner);
 

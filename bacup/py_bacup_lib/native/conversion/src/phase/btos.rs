@@ -437,7 +437,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bto_output_path_preserves_bto_extension() {
+    fn bto_output_paths_and_entry_parsing() {
         let result = bto_output_path(
             Path::new("/mod"),
             "Data/Meshes/Terrain/Appalachia/Tile01.bto",
@@ -446,19 +446,13 @@ mod tests {
             result,
             Path::new("/mod/data/Meshes/Terrain/Appalachia/Tile01.bto")
         );
-    }
 
-    #[test]
-    fn bto_output_path_adds_meshes_root_for_mesh_relative_path() {
         let result = bto_output_path(Path::new("/mod"), "Terrain/Appalachia/Tile01.bto");
         assert_eq!(
             result,
             Path::new("/mod/data/Meshes/Terrain/Appalachia/Tile01.bto")
         );
-    }
 
-    #[test]
-    fn parse_bto_entries_missing_field_returns_error() {
         let p = serde_json::json!({
             "bto_paths": [{ "source_path": "Meshes/Terrain/Foo.bto" }]
         });
@@ -466,11 +460,58 @@ mod tests {
     }
 
     #[test]
-    fn invalid_bto_counts_as_warning_not_written() {
+    fn convert_btos_v2_runs_empty_input_and_counts_invalid_bto_as_warning() {
         use crate::phase::{Phase, PhaseCtx, PhaseEvent, PhaseReport};
         use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
+
+        assert!(
+            crate::phase::build_registry()
+                .get("convert_btos_v2")
+                .is_some()
+        );
+
+        let id = create_run(RunParams {
+            source: Game::Fo76,
+            target: Game::Fo4,
+            source_handle_id: 9999,
+            target_handle_id: 9998,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Output.esp".into(),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+
+        let report = with_run(id, |run| -> Result<PhaseReport, RunError> {
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let params = serde_json::json!({
+                "source_game": "fo76",
+                "target_game": "fo4",
+                "bto_paths": []
+            });
+            let source_dir = std::path::PathBuf::from("/nonexistent");
+            let mod_dir = std::path::PathBuf::from("/nonexistent");
+            let mut ctx = PhaseCtx {
+                run,
+                mod_path: &mod_dir,
+                source_extracted_dir: &source_dir,
+                target_extracted_dir: None,
+                target_data_dir: None,
+                params: &params,
+                cancel: &cancel,
+            };
+            let report = ConvertBtosV2Phase
+                .run(&mut ctx)
+                .map_err(|e| RunError::InvalidConfig(e.to_string()))?;
+            Ok(report)
+        })
+        .unwrap();
+
+        assert_eq!(report.assets_written, 0);
+        drop_run(id).unwrap();
 
         let temp = tempfile::tempdir().unwrap();
         let src = temp.path().join("bad.bto");
@@ -534,61 +575,6 @@ mod tests {
                 message
             } if message.contains("source is not a recognized NIF file")
         )));
-        drop_run(id).unwrap();
-    }
-
-    #[test]
-    fn convert_btos_v2_is_registered_and_runs_empty_input() {
-        use crate::phase::{Phase, PhaseCtx, PhaseEvent, PhaseReport};
-        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
-        use crate::translator::Game;
-        use std::sync::atomic::AtomicBool;
-
-        assert!(
-            crate::phase::build_registry()
-                .get("convert_btos_v2")
-                .is_some()
-        );
-
-        let id = create_run(RunParams {
-            source: Game::Fo76,
-            target: Game::Fo4,
-            source_handle_id: 9999,
-            target_handle_id: 9998,
-            master_handle_ids: vec![],
-            config: RunConfig {
-                output_plugin_name: "Output.esp".into(),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-
-        let report = with_run(id, |run| -> Result<PhaseReport, RunError> {
-            let cancel = std::sync::Arc::new(AtomicBool::new(false));
-            let params = serde_json::json!({
-                "source_game": "fo76",
-                "target_game": "fo4",
-                "bto_paths": []
-            });
-            let source_dir = std::path::PathBuf::from("/nonexistent");
-            let mod_dir = std::path::PathBuf::from("/nonexistent");
-            let mut ctx = PhaseCtx {
-                run,
-                mod_path: &mod_dir,
-                source_extracted_dir: &source_dir,
-                target_extracted_dir: None,
-                target_data_dir: None,
-                params: &params,
-                cancel: &cancel,
-            };
-            let report = ConvertBtosV2Phase
-                .run(&mut ctx)
-                .map_err(|e| RunError::InvalidConfig(e.to_string()))?;
-            Ok(report)
-        })
-        .unwrap();
-
-        assert_eq!(report.assets_written, 0);
         drop_run(id).unwrap();
     }
 }

@@ -7,9 +7,10 @@ impl Fo76Fo4Hook {
         }
         let is_query_layer = |key: FormKey| {
             key.local == 0x5B74D0
-                && ctx.interner.resolve(key.plugin).is_some_and(|name| {
-                    name.eq_ignore_ascii_case(FO76_MASTER_NAME)
-                })
+                && ctx
+                    .interner
+                    .resolve(key.plugin)
+                    .is_some_and(|name| name.eq_ignore_ascii_case(FO76_MASTER_NAME))
         };
         for entry in &mut record.fields {
             if entry.sig.0 != *b"DNAM" {
@@ -20,7 +21,9 @@ impl Fo76Fo4Hook {
                     let kind = u16::from_le_bytes([bytes[2], bytes[3]]);
                     let layer = u32::from_le_bytes(bytes[84..88].try_into().unwrap());
                     if kind == 16
-                        && ctx.resolve_source_form_id(layer).is_some_and(is_query_layer)
+                        && ctx
+                            .resolve_source_form_id(layer)
+                            .is_some_and(is_query_layer)
                     {
                         // Actor damage/stagger is supplied by the paired F4SE cone adapter.
                         // Physical impulse on this query shape is a separate, unwanted effect.
@@ -28,12 +31,17 @@ impl Fo76Fo4Hook {
                     }
                 }
                 FieldValue::Struct(fields) => {
-                    let field = |name| fields.iter().find(|(key, _)| {
-                        Self::struct_field_name_is(ctx.interner, *key, name)
-                    }).map(|(_, value)| value);
+                    let field = |name| {
+                        fields
+                            .iter()
+                            .find(|(key, _)| Self::struct_field_name_is(ctx.interner, *key, name))
+                            .map(|(_, value)| value)
+                    };
                     let cone = match field("Type") {
                         Some(FieldValue::Uint(16) | FieldValue::Int(16)) => true,
-                        Some(FieldValue::String(value)) => ctx.interner.resolve(*value)
+                        Some(FieldValue::String(value)) => ctx
+                            .interner
+                            .resolve(*value)
                             .is_some_and(|name| name.eq_ignore_ascii_case("Cone")),
                         _ => false,
                     };

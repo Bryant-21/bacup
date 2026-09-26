@@ -282,10 +282,7 @@ mod tests {
             "lumens handed to normalize_light_radii in the Value slot"
         );
         assert_eq!(f32_at(&data, 60), 0.0, "weight");
-    }
 
-    #[test]
-    fn kelvin_temperature_is_already_baked_into_the_rgb() {
         let data = convert(SHADOW_SPOT_PBR_3000K);
 
         assert_eq!(data[8..12], [255, 177, 109, 0], "3000 K blackbody RGB");
@@ -297,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn disable_specular_omni_becomes_fo4_non_specular() {
+    fn starfield_light_flags_become_fo4_flag_bits() {
         let data = convert(OMNI_NO_SPECULAR_8K);
 
         assert_eq!(
@@ -310,10 +307,7 @@ mod tests {
         assert_close(&data, 24, 17.4978, "0.25 m near clip");
         assert_eq!(data[8..12], [254, 233, 169, 0]);
         assert_eq!(u32_at(&data, 56), 8000);
-    }
 
-    #[test]
-    fn flicker_and_pulse_effects_become_fo4_flag_bits() {
         let fire = convert(MEMORIAL_FIRE);
         assert_eq!(u32_at(&fire, 12), 0x8, "Flicker; source Unknown 0 is clear");
         assert_eq!(f32_at(&fire, 28), 0.5, "flicker period seconds");
@@ -336,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn unattenuated_flashlight_keeps_its_radius_under_the_shadow_ceiling() {
+    fn light_radius_and_near_clip_scale_within_fo4_limits() {
         let data = convert(HELMET_FLASHLIGHT);
 
         assert_eq!(
@@ -357,20 +351,14 @@ mod tests {
         assert_close(&data, 16, 0.33, "falloff exponent");
         assert_eq!(f32_at(&data, 20), 50.0);
         assert_close(&data, 24, 13.9983, "0.2 m near clip");
-    }
 
-    #[test]
-    fn near_clip_is_floored_at_the_vanilla_minimum() {
         let data = convert(HELMET_FACE_LIGHT);
 
         assert_eq!(f32_at(&data, 24), 1.0, "0.001 m would be 0.07 units");
         assert_eq!(u32_at(&data, 4), 13, "0.18 m radius in units");
         assert_eq!(u32_at(&data, 12), 0x8401);
         assert_eq!(f32_at(&data, 20), 88.0);
-    }
 
-    #[test]
-    fn fo4_era_default_light_is_still_read_as_metres() {
         let data = convert(DEFAULT_LIGHT_01);
 
         assert_eq!(

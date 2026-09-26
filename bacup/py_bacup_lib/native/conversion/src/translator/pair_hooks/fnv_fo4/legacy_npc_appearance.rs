@@ -509,9 +509,9 @@ mod tests {
     #[test]
     fn exact_local_traits_are_decoded_without_a_donor() {
         let interner = StringInterner::new();
-        let npc = npc(0x100, true, None, 0x200, 0x300, &interner);
-        let eye = eye(0x200, &interner);
-        let hair = hair(0x300, &interner);
+        let npc = self::npc(0x100, true, None, 0x200, 0x300, &interner);
+        let eye = self::eye(0x200, &interner);
+        let hair = self::hair(0x300, &interner);
         let records = BTreeMap::from([
             ((LegacyCreatureGame::Fnv, key(0x100)), &npc),
             ((LegacyCreatureGame::Fnv, key(0x200)), &eye),
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn use_traits_follows_the_exact_template_chain() {
         let interner = StringInterner::new();
-        let owner = npc(
+        let owner = self::npc(
             0x100,
             true,
             Some((0x101, LEGACY_NPC_TEMPLATE_USE_TRAITS)),
@@ -543,11 +543,11 @@ mod tests {
             0x300,
             &interner,
         );
-        let template = npc(0x101, false, None, 0x201, 0x301, &interner);
-        let owner_eye = eye(0x200, &interner);
-        let template_eye = eye(0x201, &interner);
-        let owner_hair = hair(0x300, &interner);
-        let template_hair = hair(0x301, &interner);
+        let template = self::npc(0x101, false, None, 0x201, 0x301, &interner);
+        let owner_eye = self::eye(0x200, &interner);
+        let template_eye = self::eye(0x201, &interner);
+        let owner_hair = self::hair(0x300, &interner);
+        let template_hair = self::hair(0x301, &interner);
         let records = BTreeMap::from([
             ((LegacyCreatureGame::Fnv, key(0x100)), &owner),
             ((LegacyCreatureGame::Fnv, key(0x101)), &template),
@@ -570,12 +570,9 @@ mod tests {
         assert_eq!(evidence.hair.unwrap().source, key(0x301));
         assert_eq!(evidence.template_hops.len(), 1);
         assert!(evidence.template_hops[0].inherits_traits);
-    }
 
-    #[test]
-    fn template_cycles_are_terminal_evidence_errors() {
         let interner = StringInterner::new();
-        let first = npc(
+        let first = self::npc(
             0x100,
             false,
             Some((0x101, LEGACY_NPC_TEMPLATE_USE_TRAITS)),
@@ -583,7 +580,7 @@ mod tests {
             0x300,
             &interner,
         );
-        let second = npc(
+        let second = self::npc(
             0x101,
             false,
             Some((0x100, LEGACY_NPC_TEMPLATE_USE_TRAITS)),
@@ -611,9 +608,9 @@ mod tests {
     #[test]
     fn ancillary_reservations_bind_exact_source_game_and_target_npc() {
         let interner = StringInterner::new();
-        let npc = npc(0x100, false, None, 0x200, 0x300, &interner);
-        let eye = eye(0x200, &interner);
-        let hair = hair(0x300, &interner);
+        let npc = self::npc(0x100, false, None, 0x200, 0x300, &interner);
+        let eye = self::eye(0x200, &interner);
+        let hair = self::hair(0x300, &interner);
         let records = BTreeMap::from([
             ((LegacyCreatureGame::Fnv, key(0x100)), &npc),
             ((LegacyCreatureGame::Fnv, key(0x200)), &eye),
@@ -632,15 +629,12 @@ mod tests {
         assert_eq!(preparations[0].target_npc.plugin, "B21_Output.esp");
         assert_eq!(preparations[0].target_npc.local, 0x800);
         assert!(preparations[0].evidence.is_ok());
-    }
 
-    #[test]
-    fn ancillary_reservations_must_be_canonical_and_unique() {
         let interner = StringInterner::new();
-        let first = npc(0x100, false, None, 0x200, 0x300, &interner);
-        let second = npc(0x101, false, None, 0x200, 0x300, &interner);
-        let eye = eye(0x200, &interner);
-        let hair = hair(0x300, &interner);
+        let first = self::npc(0x100, false, None, 0x200, 0x300, &interner);
+        let second = self::npc(0x101, false, None, 0x200, 0x300, &interner);
+        let eye = self::eye(0x200, &interner);
+        let hair = self::hair(0x300, &interner);
         let records = BTreeMap::from([
             ((LegacyCreatureGame::Fnv, key(0x100)), &first),
             ((LegacyCreatureGame::Fnv, key(0x101)), &second),

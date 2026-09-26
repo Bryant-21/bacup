@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from PIL import Image
+from creation_lib.dds.io import load_dds
 
 from bacup_lib.fullscreen_map import export_legacy_world_maps, export_terrain_world_maps
 
@@ -45,13 +46,15 @@ def test_legacy_wrld_icon_becomes_map_pack(monkeypatch, tmp_path: Path) -> None:
     assert export_legacy_world_maps(
         mod_root=tmp_path, source_plugins=[source_path], source_game="fnv"
     ) == {"wastelandnv"}
-    pack = tmp_path / "PrismaUI_F4" / "views" / "B21_FullScreenMap" / "maps" / "wastelandnv"
+    pack = tmp_path / "F4SE" / "Plugins" / "B21_FullScreenMap" / "maps" / "wastelandnv"
     manifest = json.loads((pack / "map.json").read_text(encoding="utf-8"))
     assert manifest["worldspace"] == "WastelandNV"
     assert manifest["title"] == "Mojave Wasteland"
     assert manifest["calibration"] == {"mode": "mnam"}
-    with Image.open(pack / "map.png") as image:
-        assert image.size == (8, 4)
+    assert manifest["image"] == "map.dds"
+    assert (pack / "map.dds").read_bytes().startswith(b"DDS ")
+    assert not (pack / "map.png").exists()
+    assert load_dds(str(pack / "map.dds")).size == (8, 4)
 
 
 def test_terrain_lod_tiles_become_north_up_map_pack(monkeypatch, tmp_path: Path) -> None:
@@ -71,17 +74,17 @@ def test_terrain_lod_tiles_become_north_up_map_pack(monkeypatch, tmp_path: Path)
 
     def fake_load_image(path: str, mode: str = "RGBA") -> Image.Image:
         assert mode == "RGBA"
-        return Image.new("RGBA", (2, 2), colors.get(Path(path).name, (1, 1, 1, 255)))
+        return Image.new("RGBA", (4, 4), colors.get(Path(path).name, (1, 1, 1, 255)))
 
     monkeypatch.setattr("creation_lib.dds.io.load_image", fake_load_image)
 
     assert export_terrain_world_maps(mod_root=tmp_path) == {"tamriel"}
-    pack = tmp_path / "PrismaUI_F4" / "views" / "B21_FullScreenMap" / "maps" / "tamriel"
+    pack = tmp_path / "F4SE" / "Plugins" / "B21_FullScreenMap" / "maps" / "tamriel"
     manifest = json.loads((pack / "map.json").read_text(encoding="utf-8"))
     assert manifest == {
         "worldspace": "Tamriel",
         "title": "TAMRIEL",
-        "image": "map.png",
+        "image": "map.dds",
         "discovery": "native",
         "calibration": {
             "mode": "frame",
@@ -91,13 +94,14 @@ def test_terrain_lod_tiles_become_north_up_map_pack(monkeypatch, tmp_path: Path)
             "seCellY": -32,
             "x0": 0,
             "y0": 0,
-            "x1": 4,
-            "y1": 4,
+            "x1": 8,
+            "y1": 8,
         },
     }
-    with Image.open(pack / "map.png") as image:
-        assert image.size == (4, 4)
+    assert (pack / "map.dds").read_bytes().startswith(b"DDS ")
+    with load_dds(str(pack / "map.dds")) as image:
+        assert image.size == (8, 8)
         assert image.getpixel((0, 0)) == (255, 0, 0, 255)
-        assert image.getpixel((3, 0)) == (0, 255, 0, 255)
-        assert image.getpixel((0, 3)) == (0, 0, 255, 255)
-        assert image.getpixel((3, 3)) == (255, 255, 0, 255)
+        assert image.getpixel((7, 0)) == (0, 255, 0, 255)
+        assert image.getpixel((0, 7)) == (0, 0, 255, 255)
+        assert image.getpixel((7, 7)) == (255, 255, 0, 255)

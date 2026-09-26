@@ -19,3 +19,16 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
         stealthContainer.AddItem(note, 1, True)
     EndIf
 EndEvent
+Function ReconcileTerminalState()
+    Actor playerRef = Game.GetPlayer()
+    If playerRef == None || MoM02ATerminalValue == None
+        Return
+    EndIf
+    If IsStageDone(50)
+        playerRef.SetValue(MoM02ATerminalValue, CONST_MoM02AValue_ReadyForFabrication)
+    ElseIf IsStageDone(40)
+        playerRef.SetValue(MoM02ATerminalValue, CONST_MoM02AValue_LocatedTargets)
+    ElseIf IsStageDone(30)
+        playerRef.SetValue(MoM02ATerminalValue, CONST_MoM02AValue_ReadyForTargets)
+    EndIf
+EndFunction

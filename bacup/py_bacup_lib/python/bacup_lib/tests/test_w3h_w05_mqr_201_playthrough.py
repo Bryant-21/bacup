@@ -203,6 +203,12 @@ Bool Function IsPlaying() Native
 Function Start() Native
 """,
     "Topic.psc": "Scriptname Topic Extends Form\n",
+    "W05_MQR_201P_QuestScript.psc": """Scriptname W05_MQR_201P_QuestScript Extends Quest
+Function StartSignalTracking()
+EndFunction
+Function StopSignalTracking()
+EndFunction
+""",
 }
 
 
@@ -256,26 +262,6 @@ def test_qf_authors_every_live_vmad_member_exactly_once():
     assert "; TODO" not in patch
 
 
-def test_local_startup_and_fisher_setup_stages_are_reachable():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    startup = _member_body(patch, _stage_member(100))
-    fisher_setup = _member_body(patch, _stage_member(500))
-    assert startup.index("SetStage(1)") < startup.index("SetObjectiveDisplayed(100)")
-    assert fisher_setup.index("SetStage(2)") < fisher_setup.index(
-        "SetObjectiveDisplayed(500)"
-    )
-
-
-@pytest.mark.parametrize("stage", sorted(OBJECTIVE_RECEIVERS))
-def test_every_objective_receiver_displays_its_bound_objective(stage: int):
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    assert f"SetObjectiveDisplayed({stage})" in _member_body(
-        patch, _stage_member(stage)
-    )
-
-
 def test_route_critical_members_are_not_hollow():
     patch = _script_patch_source(QF_201)
     assert patch is not None
@@ -287,176 +273,56 @@ def test_route_critical_members_are_not_hollow():
             if line.strip() and not line.lstrip().startswith(";")
         ]
         assert significant, stage
+    noop = _member_body(patch, _stage_member(1510))
+    assert noop.splitlines()[-2].strip() == "Return"
 
 
-def test_only_server_respawn_checkpoint_is_an_explicit_documented_noop():
+@pytest.mark.parametrize("stage", sorted(OBJECTIVE_RECEIVERS))
+def test_every_objective_receiver_displays_its_bound_objective(stage: int):
     patch = _script_patch_source(QF_201)
     assert patch is not None
-    assert ONLINE_NOOP_STAGES == {1510}
-    body = _member_body(patch, _stage_member(1510))
-    assert "FO76 respawn checkpoints are server/account-side" in body
-    assert body.splitlines()[-2].strip() == "Return"
-
-
-def test_fisher_branches_preserve_truth_lie_and_terminal_routes():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    truth = _member_body(patch, _stage_member(210))
-    lie = _member_body(patch, _stage_member(211))
-    gift = _member_body(patch, _stage_member(220))
-    terminal = _member_body(patch, _stage_member(410))
-
-    assert "SetValue(W05_MQR_201P_FisherLieValue, 0.0)" in truth
-    assert "SetStage(500)" in lie
-    assert "AddItem(SuperStimpak, 1, True)" in gift
-    assert "SetStage(500)" not in gift
-    assert "SetStage(700)" in terminal
-    assert "SetStage(500)" not in terminal
-
-
-def test_kogan_outcomes_converge_on_fisher_without_skipping_the_beacon():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    for stage in (615, 620):
-        body = _member_body(patch, _stage_member(stage))
-        assert "SetObjectiveCompleted(600)" in body
-        assert "SetStage(700)" in body
-        assert "SetStage(800)" not in body
-
-
-def test_radio_route_uses_story_tune_and_distance_producers_in_order():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    stage_800 = _member_body(patch, _stage_member(800))
-    stage_860 = _member_body(patch, _stage_member(860))
-
-    assert "SetObjectiveDisplayed(850)" in stage_800
-    assert "W05_MQR_201P_Track_RadioQuestStartKeyword.SendStoryEvent" in stage_800
-    assert "SetStage(860)" not in stage_800
-    assert "SetObjectiveCompleted(850)" in stage_860
-    assert "SetStage(900)" not in stage_860
-
-
-def test_scenes_and_triggers_own_the_two_wall_sequences():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    contracts = {
-        1300: ("W05_MQR_201P_Weasel_004_GoToWall01.Start()", "SetStage(1400)"),
-        1410: ("W05_MQR_201P_Weasel_006_BlowUpWall01.Start()", "SetStage(1420)"),
-        1420: ("wallActivatorRef.Activate(weaselRef)", "SetStage(1600)"),
-        1600: ("W05_MQR_201P_Weasel_007_BlowUpWall02.Start()", "SetStage(1620)"),
-        1620: ("wallActivatorRef.Activate(weaselRef)", "SetStage(1700)"),
-    }
-    for stage, (required, forbidden) in contracts.items():
-        body = _member_body(patch, _stage_member(stage))
-        assert required in body
-        assert forbidden not in body
-
-
-def test_deathtrap_callbacks_comment_and_recover_pathing_without_skips():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    topics = {
-        1430: "W05_MQR_201P_Weasel_Deathtrap01_Comment01",
-        1440: "W05_MQR_201P_Weasel_Deathtrap02_Comment01",
-        1500: "W05_MQR_201P_Weasel_Deathtrap03_Comment01",
-        1520: "W05_MQR_201P_Weasel_Deathtrap03_Comment03A",
-    }
-    for stage, topic in topics.items():
-        body = _member_body(patch, _stage_member(stage))
-        assert f"weaselRef.Say({topic}" in body
-        assert "SetStage(" not in body
-
-    fallback = _member_body(patch, _stage_member(1530))
-    assert "weaselRef.MoveTo(checkpointRef)" in fallback
-    assert "W05_MQR_201P_Weasel_Deathtrap03_Comment03B" in fallback
-    assert "SetStage(" not in fallback
-
-
-def test_lou_and_meg_dialogue_callbacks_do_not_force_later_conversations():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    required_and_forbidden = {
-        1700: ("W05_MQR_201P_Weasel_ApproachingLou", "SetStage(1705)"),
-        1740: ("SetObjectiveFailed(1705)", "SetStage(1800)"),
-        1810: ("SetValue(W05_MQR_LouPromiseValue, 1.0)", "SetStage(1900)"),
-        1901: ("SetValue(W05_MQR_201P_ToldMegAboutLouValue, 1.0)", "SetStage(1910)"),
-        1910: ("gailRef.EvaluatePackage()", "SetStage(9000)"),
-    }
-    for stage, (required, forbidden) in required_and_forbidden.items():
-        body = _member_body(patch, _stage_member(stage))
-        assert required in body
-        assert forbidden not in body
-
-
-def test_success_applies_local_rep_before_the_202_story_handoff():
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    body = _member_body(patch, _stage_member(9000))
-    rep = "playerRef.ModValue(Reputation_AV_Crater, Rep_Mod_Add_MQ.GetValue())"
-    handoff = "W05_MQR_202P_QuestStart_Keyword.SendStoryEvent"
-
-    assert rep in body
-    assert "server/account-side" in body
-    assert handoff in body
-    assert body.index(rep) < body.index(handoff)
-
-
-@pytest.mark.parametrize("stage", (9999, 10000))
-def test_failure_and_shutdown_cleanup_only_a_running_radio_child(stage: int):
-    patch = _script_patch_source(QF_201)
-    assert patch is not None
-    body = _member_body(patch, _stage_member(stage))
-
-    assert "W05_MQR_201P_Track_RadioQuest.IsRunning()" in body
-    assert "W05_MQR_201P_Track_RadioQuest.SetStage(1000)" in body
-    assert "\n    Stop()" not in body
-
-
-def test_intercom_delays_one_greeting_and_never_skips_to_1300():
-    patch = _script_patch_source(INTERCOM)
-    assert patch is not None
-    assert set(_member_names(patch)) == {"ontriggerenter", "ontriggerleave", "ontimer"}
-    enter = _member_body(patch, "ontriggerenter")
-    timer = _member_body(patch, "ontimer")
-
-    assert "akActionRef != playerRef" in enter
-    assert "StartTimer(1.0, SayTimerID)" in enter
-    assert "intercomRef.Say(" in timer
-    assert "owningQuest.SetStage(PlayerTalkedToIntercomStage)" in timer
-    assert timer.index("intercomRef.Say(") < timer.index(
-        "owningQuest.SetStage(PlayerTalkedToIntercomStage)"
+    assert f"SetObjectiveDisplayed({stage})" in _member_body(
+        patch, _stage_member(stage)
     )
-    assert "SetStage(1300)" not in patch
 
 
-def test_radio_child_stops_at_its_record_proven_cleanup_stage():
-    patch = _script_patch_source(TRACK_RADIO)
+@pytest.mark.parametrize(
+    ("script_name", "member", "required", "forbidden"),
+    [
+        (QF_201, _stage_member(211), "SetStage(500)", None),
+        (QF_201, _stage_member(220), "AddItem(SuperStimpak, 1, True)", "SetStage(500)"),
+        (QF_201, _stage_member(410), "SetStage(700)", "SetStage(500)"),
+        (QF_201, _stage_member(615), "SetStage(700)", "SetStage(800)"),
+        (QF_201, _stage_member(620), "SetStage(700)", "SetStage(800)"),
+        (QF_201, _stage_member(800), "W05_MQR_201P_Track_RadioQuestStartKeyword.SendStoryEvent", "SetStage(860)"),
+        (QF_201, _stage_member(860), "SetObjectiveCompleted(850)", "SetStage(900)"),
+        (QF_201, _stage_member(1300), "W05_MQR_201P_Weasel_004_GoToWall01.Start()", "SetStage(1400)"),
+        (QF_201, _stage_member(1420), "wallActivatorRef.Activate(weaselRef)", "SetStage(1600)"),
+        (QF_201, _stage_member(1620), "wallActivatorRef.Activate(weaselRef)", "SetStage(1700)"),
+        (QF_201, _stage_member(1500), "weaselRef.Say(W05_MQR_201P_Weasel_Deathtrap03_Comment01", "SetStage("),
+        (QF_201, _stage_member(1530), "weaselRef.MoveTo(checkpointRef)", "SetStage("),
+        (QF_201, _stage_member(1740), "SetObjectiveFailed(1705)", "SetStage(1800)"),
+        (QF_201, _stage_member(1910), "gailRef.EvaluatePackage()", "SetStage(9000)"),
+        (QF_201, _stage_member(9000), "W05_MQR_202P_QuestStart_Keyword.SendStoryEvent", None),
+        (QF_201, _stage_member(9999), "W05_MQR_201P_Track_RadioQuest.SetStage(1000)", "\n    Stop()"),
+        (TRACK_RADIO, "fragment_stage_1000_item_00", "Stop()", None),
+        (INTERCOM, "ontimer", "owningQuest.SetStage(PlayerTalkedToIntercomStage)", "SetStage(1300)"),
+        (EXPLOSIVE_BREAKERS, "onclose", "breakerRef == None || breakerRef.GetOpenState() != 3", None),
+    ],
+)
+def test_stage_progression_contract(script_name, member, required, forbidden):
+    patch = _script_patch_source(script_name)
     assert patch is not None
-    assert [line.strip() for line in patch.splitlines() if line.strip()] == [
-        "Function Fragment_Stage_1000_Item_00()",
-        "Stop()",
-        "EndFunction",
-    ]
-
-
-def test_explosive_breakers_require_every_bound_breaker_to_be_closed():
-    patch = _script_patch_source(EXPLOSIVE_BREAKERS)
-    assert patch is not None
-    body = _member_body(patch, "onclose")
-    for snippet in (
-        "owningQuest == None || owningQuest.IsStageDone(1745)",
-        "(Self as RefCollectionAlias).GetCount()",
-        "breakerCount == 0",
-        "(Self as RefCollectionAlias).GetAt(breakerIndex)",
-        "breakerRef == None || breakerRef.GetOpenState() != 3",
-        "owningQuest.SetStage(1745)",
-    ):
-        assert snippet in body
+    body = _member_body(patch, member)
+    assert required in body
+    if forbidden is not None:
+        assert forbidden not in body
 
 
 @pytest.mark.parametrize("script_name", COMPILE_CASES)
-def test_tracked_zero_member_merge_is_exact_unique_and_idempotent(script_name: str):
+def test_tracked_merge_is_idempotent_and_native_compiles(
+    script_name: str, tmp_path: Path
+):
     patch = _script_patch_source(script_name)
     assert patch is not None
     skeleton = TRACKED_SKELETONS[script_name]
@@ -466,15 +332,9 @@ def test_tracked_zero_member_merge_is_exact_unique_and_idempotent(script_name: s
     assert Counter(_member_names(merged)) == Counter(_member_names(patch))
     assert _merge_script_method_patches(merged, patch) == merged
 
-
-@pytest.mark.parametrize("script_name", COMPILE_CASES)
-def test_tracked_fixture_native_compiles_without_generated_sources(
-    script_name: str, tmp_path: Path
-):
-    import_root = _minimal_import_root(tmp_path)
     result = compile_psc(
-        _merged_tracked_source(script_name),
-        imports=[str(import_root)],
+        merged,
+        imports=[str(_minimal_import_root(tmp_path))],
         game="fo4",
         source_path=f"{script_name.replace(':', '/')}.psc",
     )

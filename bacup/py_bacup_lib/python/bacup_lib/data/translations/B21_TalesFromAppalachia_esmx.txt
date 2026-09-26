@@ -1,0 +1,128 @@
+$B21_TFA_Collections	COLECCIONES
+$B21_TFA_Caps	Caps
+$B21_TFA_ActiveEffects	EFECTOS
+$B21_TFA_Holo	HOLO
+$B21_TFA_Notes	NOTAS
+$B21_TFA_Armor	ARMADURA
+$B21_TFA_FoodDrink	ALIMENTOS/BEBIDAS
+$B21_TFA_New	NUEVO
+$B21_TFA_PerkCoins	Perk Coins
+$B21_TFA_Capacity	CAPACIDAD
+$B21_TFA_Unlimited	ILIMITADOS
+$B21_TFA_Legendary	Legendary
+$B21_TFA_SemiAutomatic	Semi-Automatic
+$B21_TFA_VATSAccuracy	Precisión V.A.T.S.
+$B21_TFA_WeaponType_Melee	Melee
+$B21_TFA_WeaponType_OneHanded	One-Handed
+$B21_TFA_WeaponType_TwoHanded	Dos muertos
+$B21_TFA_WeaponType_Unarmed	Desarmado
+$B21_TFA_WeaponType_Explosive	Explosivo
+$B21_TFA_WeaponType_Energy	Energy
+$B21_TFA_WeaponType_Ballistic	Balística
+$B21_TFA_WeaponType_BigGun	Big Gun
+$B21_TFA_WeaponType_Shotgun	Shotgun
+$B21_TFA_WeaponType_Rifle	Rifle
+$B21_TFA_WeaponType_Pistol	Pistol
+$B21_TFA_WeaponType_Bow	Bow
+$B21_TFA_WeaponType_Thrown	Lanzado
+$B21_TFA_Repair	REPARACIÓN
+$B21_TFA_BasicRepairKit	Kit de reparación básico
+$B21_TFA_ImprovedRepairKit	Kit de reparación mejorado
+$B21_TFA_WorkbenchRepair	Reparación de banco de trabajo
+$B21_TFA_RepairUnavailable	Reparación no disponible
+$B21_TFA_ConfirmRepair	CONFIRMA LA REPARACIÓN
+$B21_TFA_RepairFailed	La reparación no puede completarse
+$B21_TFA_RepairStale	El tema cambió. Seleccione de nuevo.
+$B21_TFA_RepairComplete	Artículo reparado
+$B21_TFA_RepairNoKit	No hay kits de reparación disponibles
+$B21_TFA_SwitchToCraft	CAMBIAR A LA ARTESANÍA
+$B21_TFA_SwitchToModify	CAMBIAR A MODIFICAR
+$B21_TFA_NothingToModify	No tienes nada que modificar en este banco de trabajo.
+$B21_TFA_RepairNoImprovement	La condición ya está en o por encima de este nivel de reparación.
+$B21_TFA_RepairMissingMaterials	Falta de materiales de reparación
+$B21_TFA_RepairControls	Seleccione: UP/DOWN   CONFIRMACIÓN: ENTER/A   ATRÁS: TAB/B
+$B21_TFA_RepairHintKeyboard	[K] REPARACIÓN
+$B21_TFA_RepairHintController	[LS] REPARACIÓN
+$B21_TFA_RepairCancel	CANCELAR
+$B21_TFA_PerkCards_FilterAll	FILTRO (TODO)
+$B21_TFA_PerkCardPacks	PAQUETES DE TARJETAS DE PERK
+$B21_TFA_AssignPermanentSPECIAL	ASSIGN PERMANENT SPECIAL
+$B21_TFA_AssignSPECIAL	AUMENTO DE SPECIAL
+$B21_TFA_MoveSPECIAL	MOVER PUNTO SPECIAL
+$B21_TFA_AddLoadout	AGREGAR LA CARGA
+$B21_PM_Salute	Salud (requiere tiempo en vivo)
+$B21_PM_FO4Poses	Fallo 4
+$B21_PM_Warm	Warm
+$B21_PM_Cool	Genial.
+$B21_PM_Vintage	Vintage
+$B21_PM_Keepsake	Keepsake
+$B21_PM_PhotoFrames	Fotografías
+$B21_PM_FreezeTime	Tiempo libre
+$B21_PM_Menu	MODO DE FOTO
+$B21_PM_Saturated	Saturated
+$B21_PM_BlackAndWhite	Blanco y negro
+$B21_PM_Sepia	Sepia
+$B21_PM_PhotoFlash	Foto Flash
+$B21_PM_Dandy	Dandy
+$B21_PM_Daytripper	Daytripper
+$B21_PM_Enhance	Enhance
+$B21_PM_Gamma	Gamma
+$B21_PM_Nuke	Nuke
+$B21_PM_Tintype	Tintipo
+$B21_PM_Acid	Acid
+$B21_PM_Electric	Electricidad
+$B21_PM_Jet	Jet
+$B21_PM_3dViz	3D Viz
+$B21_PM_OnlyRed	Sólo rojo
+$B21_PM_Feral	Feral
+$B21_PM_SugarBomb	Bomba de azúcar
+$B21_PM_VaultBlue	Vault Blue
+$B21_StatusHUD_Condition	CND
+$B21_StatusHUD_Broken	BROKEN
+$B21_StatusHUD_Feral	FERAL
+$B21_TFA_QuestMain	MAIN
+$B21_TFA_QuestSide	LADO
+$B21_TFA_QuestMisc	MISC
+$B21_TFA_QuestLeads	PRINCIPALES
+$B21_TFA_QuestEvents	EVENTOS
+$B21_RespawnTitle	Respawn
+$B21_RespawnBagNotice	Sus restos de basura caídos en el sitio de la muerte.
+$B21_RespawnNearestSafe	Use la ubicación segura más cercana
+$B21_RespawnUnavailable	Esa ubicación ya no está disponible. Elige otra.
+$B21_RespawnMaximum	Reputación máxima
+$B21_RespawnNextTier	al siguiente nivel
+$B21_TFA_SurvivalTent	TIENDA DE SUPERVIVENCIA
+$B21_TFA_LegendaryPerks	PATRONES LEGENDARIOS
+$B21_TFA_PromptSelect	SELECCIONE
+$B21_TFA_PromptConfirm	CONFIRMACIÓN
+$B21_TFA_CharacterName	NOMBRE DEL PERSONAJE
+$B21_TFA_CharacterNameAccept	CONFIRMACIÓN
+$B21_TFA_CharacterNameCancel	ATRÁS
+$B21_TFA_Perks_OpenPackPrompt	¡Tienes un paquete sin abrir! ¿Te gustaría abrirla?
+$B21_TFA_Perks_NoPrompt	No (No preguntes otra vez)
+$B21_TFA_QB_ArmView	PIP-BOY
+$B21_TFA_QB_QuickView	QUICK-BOY
+$B21_TFA_EmoteExpand	AMPLIACIÓN
+$B21_TFA_EmoteCollapse	COLLAPSE
+$B21_TFA_EmoteSay	DI.
+$B21_TFA_EmoteBack	ATRÁS
+$B21_TFA_EmoteClose	CERCA
+$B21_TFA_EmoteTab	EMOCIONES
+$B21_TFA_EmoteScroll	SCROLL
+$B21_Settings_WorldFOV	Campo de Vista
+$B21_Settings_FirstPersonFOV	Campo de vista de primera persona
+$B21_Settings_DepthOfField	Profundidad del campo
+$B21_Settings_MotionBlur	Motion Blur
+$B21_Settings_LensFlare	Lens Flare
+$B21_Settings_ShadowDistance	Distancia de sombras
+$B21_Settings_ShadowQuality	Shadow Quality (Restart)
+$B21_Settings_TextureQuality	Calidad de la textura (Restart)
+$B21_Settings_WindowMode	Modo de ventana (Restart)
+$B21_Settings_VSync	V-Sync (Restart)
+$B21_Settings_Low	Baja
+$B21_Settings_Medium	Mediana
+$B21_Settings_High	Alto
+$B21_Settings_Ultra	Ultra
+$B21_Settings_Fullscreen	Pantalla completa
+$B21_Settings_Borderless	Sin fronteras
+$B21_Settings_Windowed	Ventana

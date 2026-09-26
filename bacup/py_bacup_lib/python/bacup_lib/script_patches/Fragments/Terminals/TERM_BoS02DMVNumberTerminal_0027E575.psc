@@ -8,6 +8,10 @@ Function Fragment_Terminal_01()
     If pBoS02_DMV_Support != None && !pBoS02_DMV_Support.IsRunning()
         pBoS02_DMV_Support.Start()
     EndIf
+    BoS02_DMV_SupportScript supportScript = pBoS02_DMV_Support as BoS02_DMV_SupportScript
+    If supportScript != None
+        supportScript.BeginDepartment(False)
+    EndIf
 EndFunction
 
 Function Fragment_Terminal_02()
@@ -19,5 +23,9 @@ Function Fragment_Terminal_02()
     EndIf
     If pBoS02_DMV_Support != None && !pBoS02_DMV_Support.IsRunning()
         pBoS02_DMV_Support.Start()
+    EndIf
+    BoS02_DMV_SupportScript supportScript = pBoS02_DMV_Support as BoS02_DMV_SupportScript
+    If supportScript != None
+        supportScript.BeginDepartment(True)
     EndIf
 EndFunction

@@ -69,6 +69,11 @@ Function Fragment_Stage_0400_Item_00()
     If playerRef != None && holotapeRef != None
         playerRef.RemoveItem(holotapeRef, 1, true)
     EndIf
+
+    ; Stage 400 carries a second log entry that the conversion appended to pay
+    ; the currency reward (B21:CurrencyQuestRewards RewardStageItems = 1). Yield
+    ; before stopping so that entry is processed while the quest is still running.
+    Utility.Wait(1.0)
     MTNS05_Voices.Stop()
 EndFunction
 

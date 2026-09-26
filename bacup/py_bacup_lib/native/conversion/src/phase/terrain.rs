@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+use crate::formkey_mapper::{FormKeyMapper, MapperState};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
 
 const MAX_LOCAL_OBJECT_ID: u32 = 0x00FF_FFFF;
@@ -213,11 +214,22 @@ fn run_btd_terrain(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
         }
 
         log_terrain_debug(ctx, "convert_terrain: querying next target object id");
-        let next_object_id =
+        let target_next_object_id =
             esp_authoring_core::plugin_runtime::plugin_handle_next_available_object_id_no_py(
                 ctx.run.target_handle_id,
             )
             .map_err(|e| PhaseError::Internal(format!("terrain ID allocation failed: {e}")))?;
+        // The run's FormKeyMapper can hold ids not yet written to the target
+        // (leases, graft reservations); terrain must allocate above them too.
+        let mapper_high_water = ctx
+            .run
+            .mapper_state
+            .as_ref()
+            .and_then(mapper_claimed_high_water);
+        let next_object_id = match mapper_high_water {
+            Some(high_water) => target_next_object_id.max(high_water + 1),
+            None => target_next_object_id,
+        };
         log_terrain_debug(
             ctx,
             format!("convert_terrain: next target object id={next_object_id:06X}"),
@@ -251,6 +263,12 @@ fn run_btd_terrain(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
             .map_err(|e| {
                 PhaseError::BadParams(format!("terrain generated object-id floor: {e}"))
             })?;
+        // Only the high-water mark, not every mapper id: the terrain planner
+        // allocates fresh ids above its reserved max, and a full reservation
+        // would also block source-preserved CELL/LAND ids the mapper already maps.
+        if let Some(high_water) = mapper_high_water {
+            opts.reserved_object_ids.push(high_water);
+        }
     }
     let worldspace = opts.worldspace_editor_id.clone();
     log_terrain_debug(ctx, "convert_terrain: terrain_textures::run start");
@@ -264,6 +282,10 @@ fn run_btd_terrain(ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
     })
     .map_err(|e| PhaseError::Internal(format!("terrain conversion failed: {e}")))?;
     log_terrain_debug(ctx, "convert_terrain: terrain_textures::run done");
+
+    if target_handle_mode {
+        reserve_target_object_ids_in_mapper(ctx)?;
+    }
 
     // Surface the per-step terrain timing breakdown into the main conversion
     // log. The full report also lands in debug/terrain/terrain_timing_*.json,
@@ -355,6 +377,35 @@ fn reserve_generated_object_id_floor(
     Ok(())
 }
 
+fn mapper_claimed_high_water(state: &MapperState) -> Option<u32> {
+    state
+        .used_object_ids
+        .iter()
+        .chain(&state.reserved_generated_object_ids)
+        .chain(&state.leased_object_ids)
+        .copied()
+        .chain(state.next_object_id.checked_sub(1))
+        .map(|id| id & MAX_LOCAL_OBJECT_ID)
+        .filter(|id| *id != 0 && *id < MAX_LOCAL_OBJECT_ID)
+        .max()
+}
+
+/// Terrain allocates its own CELL/LAND ids outside the mapper, so without this
+/// later mapper allocations (interior cells, navmesh, placed children) reuse
+/// them and the output carries duplicate FormIDs that crash the CK.
+fn reserve_target_object_ids_in_mapper(ctx: &mut PhaseCtx<'_>) -> Result<(), PhaseError> {
+    let run = &mut *ctx.run;
+    let Some(state) = run.mapper_state.as_mut() else {
+        return Ok(());
+    };
+    let target_ids = esp_authoring_core::plugin_runtime::plugin_handle_used_object_ids_no_py(
+        run.target_handle_id,
+    )
+    .map_err(|e| PhaseError::Internal(format!("terrain ID reservation failed: {e}")))?;
+    FormKeyMapper::from_state(state, &run.interner).reserve_object_ids(target_ids);
+    Ok(())
+}
+
 fn terrain_phase_report(
     target_handle_mode: bool,
     imported_count: u32,
@@ -375,20 +426,10 @@ fn terrain_phase_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::phase::{PhaseCtx, PhaseReport};
     use serde_json::json;
-    use std::sync::atomic::AtomicBool;
 
     #[test]
-    fn unsupported_source_game_returns_empty_report() {
-        // This test exercises the non-fo76 branch without needing a real run context.
-        // We verify the phase name is correct and the phase struct is constructable.
-        let phase = ConvertTerrainPhase;
-        assert_eq!(phase.name(), "convert_terrain");
-    }
-
-    #[test]
-    fn fo76_branch_requires_btd_path() {
+    fn fo76_branch_requires_btd_path_and_unsupported_sources_are_empty() {
         // Verify BadParams when btd_path is absent from fo76 params.
         // We call run_btd_terrain indirectly by constructing a minimal params blob.
         let params = json!({
@@ -417,19 +458,21 @@ mod tests {
             p.btd_path.is_empty(),
             "empty btd_path should be deserialisable"
         );
+
+        // This test exercises the non-fo76 branch without needing a real run context.
+        // We verify the phase name is correct and the phase struct is constructable.
+        let phase = ConvertTerrainPhase;
+        assert_eq!(phase.name(), "convert_terrain");
     }
 
     #[test]
-    fn target_handle_phase_report_counts_imported_records() {
+    fn phase_reports_count_imported_records_and_cells() {
         let report = terrain_phase_report(true, 7, 1, 2);
 
         assert_eq!(report.records_added, 7);
         assert_eq!(report.records_changed, 0);
         assert_eq!(report.warnings, 2);
-    }
 
-    #[test]
-    fn authoring_dir_phase_report_keeps_cell_count() {
         let report = terrain_phase_report(false, 0, 3, 1);
 
         assert_eq!(report.records_added, 3);
@@ -479,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn starfield_source_never_collects_source_terrain_ids() {
+    fn starfield_terrain_never_collects_source_ids_or_synthesizes_gated_worldspaces() {
         // A starfield-source run must leave source_worldspace_terrain_ids_json
         // empty so TerrainIdPlan.source_backed stays false and cells get generated
         // {World}CellX...Y... EditorIDs instead of SF-grid-keyed ones in the FO4 frame.
@@ -502,10 +545,7 @@ mod tests {
         assert!(!should_collect_source_terrain_ids(&opts, "starfield"));
         // Same options would have collected ids for fo76 (the pre-existing behavior).
         assert!(should_collect_source_terrain_ids(&opts, "fo76"));
-    }
 
-    #[test]
-    fn starfield_fo4_terrain_never_synthesizes_worldspaces_rejected_by_the_gate() {
         assert!(requires_existing_target_worldspace("starfield", "fo4"));
         assert!(!requires_existing_target_worldspace("fo76", "fo4"));
         assert!(!requires_existing_target_worldspace("fo4", "starfield"));
@@ -557,5 +597,29 @@ mod tests {
         reserve_generated_object_id_floor(&mut opts, 0xA00000).unwrap();
 
         assert!(opts.reserved_object_ids.contains(&0x9FFFFF));
+    }
+
+    #[test]
+    fn terrain_ids_stay_clear_of_mapper_allocations_in_both_directions() {
+        let mut state = MapperState::new(
+            [],
+            crate::formkey_mapper::MapperOptions {
+                output_plugin_name: "SeventySix.esm".to_string(),
+                ..Default::default()
+            },
+        );
+        state.used_object_ids.insert(0xB2_5AAA);
+        state.leased_object_ids.insert(0xB2_5AC0);
+        state.reserved_generated_object_ids.insert(0xB2_5AB0);
+        state.next_object_id = 0xB2_5AAB;
+        // Terrain's fresh ids start above every id the mapper has claimed.
+        assert_eq!(mapper_claimed_high_water(&state), Some(0xB2_5AC0));
+
+        // Once terrain's LAND ids are reserved, the mapper skips them: the
+        // interior-cell pass used to mint 76HoldingCellSQHorde on a LAND id.
+        let interner = crate::sym::StringInterner::new();
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        mapper.reserve_object_ids([0xB2_5AAB, 0xB2_5AAC, 0xB2_5AAD]);
+        assert_eq!(mapper.allocate_generated().local, 0xB2_5AAE);
     }
 }

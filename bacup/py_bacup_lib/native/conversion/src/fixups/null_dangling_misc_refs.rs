@@ -578,131 +578,134 @@ mod tests {
     }
 
     #[test]
-    fn nulls_dangling_assoc_item() {
+    fn resolves_null_and_repair_slots() {
         let r = resolver(&[], &[0x001234], 7);
-        // 0x0002FA14 resolves nowhere -> null
-        assert_eq!(r.resolve_null_slot(0x0002_FA14), SlotResolution::Null);
-        // 0x00001234 is a real Fallout4.esm record -> keep
-        assert_eq!(r.resolve_null_slot(0x0000_1234), SlotResolution::Keep);
-        // null stays null/keep
-        assert_eq!(r.resolve_null_slot(0), SlotResolution::Keep);
-    }
+        assert_eq!(
+            r.resolve_null_slot(0x0002_FA14),
+            SlotResolution::Null,
+            "resolves nowhere"
+        );
+        assert_eq!(
+            r.resolve_null_slot(0x0000_1234),
+            SlotResolution::Keep,
+            "real Fallout4.esm record"
+        );
+        assert_eq!(r.resolve_null_slot(0), SlotResolution::Keep, "null");
+        let r = resolver(&[0x070000], &[], 7);
+        assert_eq!(
+            r.resolve_null_slot((7u32 << 24) | 0x070000),
+            SlotResolution::Keep,
+            "value addressing the output master exists in output"
+        );
 
-    #[test]
-    fn repair_truncated_to_output() {
-        // object-id 0x4FD271 exists in output, not in Fallout4.esm.
         let r = resolver(&[0x4FD271], &[0x001234], 7);
         assert_eq!(
-            r.resolve_repair_slot(0x0004_FD271 & 0x00FF_FFFF),
-            SlotResolution::RepairToOutput
+            r.resolve_repair_slot(0x004F_D271),
+            SlotResolution::RepairToOutput,
+            "object id only in output"
         );
         assert_eq!(r.repair_raw(0x004F_D271), 0x074F_D271);
+        assert_eq!(
+            r.resolve_repair_slot(0x0000_1234),
+            SlotResolution::Keep,
+            "valid FO4 descriptor"
+        );
+        assert_eq!(
+            r.resolve_repair_slot(0x0080_0000),
+            SlotResolution::Keep,
+            "sentinel in neither FO4 nor output is never touched"
+        );
     }
 
     #[test]
-    fn repair_keeps_valid_fo4_descriptor() {
-        let r = resolver(&[0x4FD271], &[0x001234], 7);
-        // 0x00001234 is a real Fallout4.esm record -> keep
-        assert_eq!(r.resolve_repair_slot(0x0000_1234), SlotResolution::Keep);
-    }
-
-    #[test]
-    fn repair_keeps_sentinel_not_in_output() {
-        // 0x00800000 sentinel: not in FO4, not in output -> keep (never touched)
-        let r = resolver(&[0x4FD271], &[0x001234], 7);
-        assert_eq!(r.resolve_repair_slot(0x0080_0000), SlotResolution::Keep);
-    }
-
-    #[test]
-    fn null_keeps_value_present_in_output() {
-        // a dangling-looking value that actually exists in output -> keep
-        let r = resolver(&[0x07_0000 & 0xFFFFFF], &[], 7);
-        // build raw addressing output master index 7
-        let raw = (7u32 << 24) | 0x070000;
-        assert_eq!(r.resolve_null_slot(raw), SlotResolution::Keep);
-    }
-
-    #[test]
-    fn cloak_assoc_exact_10f280_wrong_type_collision_targets_output_spell() {
+    fn cloak_assoc_exact_10f280_wrong_type_collision_repairs_idempotently() {
+        let interner = StringInterner::new();
         let r = resolver_with_spels(&[0x10F280], &[0x10F280], &[0x10F280], &[], 7);
         assert_eq!(
             r.resolve_cloak_assoc_item(0x0010_F280),
             SlotResolution::RepairToOutput
         );
         assert_eq!(r.repair_raw(0x0010_F280), 0x0710_F280);
-    }
-
-    #[test]
-    fn cloak_assoc_keeps_valid_addressed_master_spell() {
-        let interner = StringInterner::new();
-        let r = resolver_with_spels(&[], &[], &[0x73E4], &[0x73E4], 7);
-        let mut record = mgef_record(MGEF_ARCHETYPE_CLOAK, 0x0000_73E4, &interner);
-
-        assert!(!apply_to_record(&mut record, &r, &interner));
-        assert_eq!(mgef_assoc_item(&record), 0x0000_73E4);
-    }
-
-    #[test]
-    fn cloak_assoc_repairs_wrong_type_master_collision_to_output_spell() {
-        let interner = StringInterner::new();
-        let r = resolver_with_spels(&[0x334455], &[0x334455], &[0x334455], &[], 7);
-        let mut record = mgef_record(MGEF_ARCHETYPE_CLOAK, 0x0033_4455, &interner);
-
-        assert!(apply_to_record(&mut record, &r, &interner));
-        assert_eq!(mgef_assoc_item(&record), 0x0733_4455);
-    }
-
-    #[test]
-    fn cloak_assoc_keeps_valid_output_spell() {
-        let interner = StringInterner::new();
-        let r = resolver_with_spels(&[0x334455], &[0x334455], &[], &[], 7);
-        let mut record = mgef_record(MGEF_ARCHETYPE_CLOAK, 0x0733_4455, &interner);
-
-        assert!(!apply_to_record(&mut record, &r, &interner));
-        assert_eq!(mgef_assoc_item(&record), 0x0733_4455);
-    }
-
-    #[test]
-    fn cloak_assoc_nulls_missing_spell_and_keeps_null() {
-        let interner = StringInterner::new();
-        let r = resolver_with_spels(&[], &[], &[], &[], 7);
-        let mut missing = mgef_record(MGEF_ARCHETYPE_CLOAK, 0x0002_FA14, &interner);
-        let mut null = mgef_record(MGEF_ARCHETYPE_CLOAK, 0, &interner);
-
-        assert!(apply_to_record(&mut missing, &r, &interner));
-        assert_eq!(mgef_assoc_item(&missing), 0);
-        assert!(!apply_to_record(&mut null, &r, &interner));
-        assert_eq!(mgef_assoc_item(&null), 0);
-    }
-
-    #[test]
-    fn cloak_assoc_nulls_wrong_type_master_without_output_spell() {
-        let interner = StringInterner::new();
-        let r = resolver_with_spels(&[], &[], &[0x10F280], &[], 7);
-        let mut record = mgef_record(MGEF_ARCHETYPE_CLOAK, 0x0010_F280, &interner);
-
-        assert!(apply_to_record(&mut record, &r, &interner));
-        assert_eq!(mgef_assoc_item(&record), 0);
-    }
-
-    #[test]
-    fn non_cloak_assoc_wrong_type_collision_is_untouched() {
-        let interner = StringInterner::new();
-        let r = resolver_with_spels(&[0x10F280], &[0x10F280], &[0x10F280], &[], 7);
-        let mut record = mgef_record(1, 0x0010_F280, &interner);
-
-        assert!(!apply_to_record(&mut record, &r, &interner));
-        assert_eq!(mgef_assoc_item(&record), 0x0010_F280);
-    }
-
-    #[test]
-    fn cloak_assoc_repair_is_idempotent() {
-        let interner = StringInterner::new();
-        let r = resolver_with_spels(&[0x10F280], &[0x10F280], &[0x10F280], &[], 7);
         let mut record = mgef_record(MGEF_ARCHETYPE_CLOAK, 0x0010_F280, &interner);
 
         assert!(apply_to_record(&mut record, &r, &interner));
         assert!(!apply_to_record(&mut record, &r, &interner));
         assert_eq!(mgef_assoc_item(&record), 0x0710_F280);
+    }
+
+    #[test]
+    fn cloak_assoc_item_repairs_nulls_or_keeps() {
+        let interner = StringInterner::new();
+        #[allow(clippy::type_complexity)]
+        let cases: [(&str, (&[u32], &[u32], &[u32], &[u32]), u32, u32, bool, u32); 7] = [
+            (
+                "valid addressed master spell kept",
+                (&[], &[], &[0x73E4], &[0x73E4]),
+                MGEF_ARCHETYPE_CLOAK,
+                0x0000_73E4,
+                false,
+                0x0000_73E4,
+            ),
+            (
+                "wrong-type master collision repaired to output spell",
+                (&[0x334455], &[0x334455], &[0x334455], &[]),
+                MGEF_ARCHETYPE_CLOAK,
+                0x0033_4455,
+                true,
+                0x0733_4455,
+            ),
+            (
+                "valid output spell kept",
+                (&[0x334455], &[0x334455], &[], &[]),
+                MGEF_ARCHETYPE_CLOAK,
+                0x0733_4455,
+                false,
+                0x0733_4455,
+            ),
+            (
+                "missing spell nulled",
+                (&[], &[], &[], &[]),
+                MGEF_ARCHETYPE_CLOAK,
+                0x0002_FA14,
+                true,
+                0,
+            ),
+            (
+                "null kept",
+                (&[], &[], &[], &[]),
+                MGEF_ARCHETYPE_CLOAK,
+                0,
+                false,
+                0,
+            ),
+            (
+                "wrong-type master without output spell nulled",
+                (&[], &[], &[0x10F280], &[]),
+                MGEF_ARCHETYPE_CLOAK,
+                0x0010_F280,
+                true,
+                0,
+            ),
+            (
+                "non-cloak wrong-type collision untouched",
+                (&[0x10F280], &[0x10F280], &[0x10F280], &[]),
+                1,
+                0x0010_F280,
+                false,
+                0x0010_F280,
+            ),
+        ];
+        for (name, (output, output_spels, fo4, fo4_spels), archetype, assoc, changed, expected) in
+            cases
+        {
+            let r = resolver_with_spels(output, output_spels, fo4, fo4_spels, 7);
+            let mut record = mgef_record(archetype, assoc, &interner);
+            assert_eq!(
+                apply_to_record(&mut record, &r, &interner),
+                changed,
+                "{name}"
+            );
+            assert_eq!(mgef_assoc_item(&record), expected, "{name}");
+        }
     }
 }

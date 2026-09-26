@@ -1276,6 +1276,7 @@ pub fn publish_creature_record_families_batch_for_target(
     publish_creature_record_families_batch(&mut session, mapper_state, families, schema, interner)
 }
 
+#[cfg(test)]
 pub(crate) fn publish_creature_record_families_batch_with_failure(
     session: &mut PluginSession<'_>,
     mapper_state: &mut MapperState,
@@ -2243,21 +2244,115 @@ mod tests {
     }
 
     #[test]
-    fn merge_family_batches_preserves_distinct_candidate_projections() {
-        let interner = StringInterner::new();
-        let merged = merge_creature_record_family_batches(vec![
-            family("motion-family", "Output.esp", 0x800, 0x100, &interner),
-            family("MOTION-FAMILY", "Output.esp", 0x900, 0x101, &interner),
-        ])
-        .expect("merge candidate batches");
+    fn family_batches_preserve_projections_race_mappings_and_attack_evidence() {
+        {
+            let interner = StringInterner::new();
+            let merged = merge_creature_record_family_batches(vec![
+                family("motion-family", "Output.esp", 0x800, 0x100, &interner),
+                family("MOTION-FAMILY", "Output.esp", 0x900, 0x101, &interner),
+            ])
+            .expect("merge candidate batches");
 
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].closures.len(), 2);
-        assert_eq!(merged[0].primary_mappings.len(), 2);
-        assert_ne!(
-            merged[0].primary_mappings[0].source,
-            merged[0].primary_mappings[1].source
-        );
+            assert_eq!(merged.len(), 1);
+            assert_eq!(merged[0].closures.len(), 2);
+            assert_eq!(merged[0].primary_mappings.len(), 2);
+            assert_ne!(
+                merged[0].primary_mappings[0].source,
+                merged[0].primary_mappings[1].source
+            );
+        }
+        {
+            let plugin = "BatchSkyrimRaceIdentity.esp";
+            let handle = create_localized_target(plugin);
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let source_identity = SourceCreatureIdentity {
+                namespace: "skyrimse".to_string(),
+                plugin: "Skyrim.esm".to_string(),
+                local_form_id: 0x131F5,
+            };
+            let source_key = source_form_key(&source_identity, &interner);
+            let npc_local = 0x925;
+            let armor_local = 0x926;
+            let race_local = 0x927;
+            let race_target = form_key(race_local, plugin, &interner);
+            let mut batch = family("atronach_flame", plugin, npc_local, 0x131F5, &interner);
+            batch.closures[0].source_primary_identity = source_identity.clone();
+            batch.closures[0].projected_identities[0].source_identity = source_identity.clone();
+            batch.primary_mappings[0].source = source_identity;
+            batch.closures[0].closure.records.push(record(
+                "RACE",
+                race_local,
+                plugin,
+                "BatchAtronachFlameRace",
+                smallvec![field(
+                    "EDID",
+                    FieldValue::String(interner.intern("BatchAtronachFlameRace"))
+                )],
+                &interner,
+            ));
+
+            let mut mapper_state = mapper_state(plugin);
+            mapper_state
+                .source_to_target
+                .insert(source_key, race_target);
+            mapper_state
+                .reserved_generated_object_ids
+                .extend([npc_local, armor_local, race_local]);
+            mapper_state
+                .leased_object_ids
+                .extend([npc_local, armor_local, race_local]);
+
+            {
+                let mut session = open_session(handle, None).unwrap();
+                publish_creature_record_family_batch(
+                    &mut session,
+                    &mut mapper_state,
+                    batch,
+                    &schema,
+                    &interner,
+                )
+                .expect("leased Skyrim RACE mapping and primary NPC projection must coexist");
+            }
+
+            assert_eq!(
+                mapper_state.source_to_target.get(&source_key),
+                Some(&race_target)
+            );
+            assert!(!mapper_state.leased_object_ids.contains(&npc_local));
+            assert!(!mapper_state.leased_object_ids.contains(&race_local));
+            let store = plugin_handle_store_ref().lock().unwrap();
+            assert_eq!(
+                record_count(&store.get(&handle).unwrap().parsed.root_items),
+                3
+            );
+        }
+        {
+            let plugin = "BatchReceipt.esp";
+            let interner = StringInterner::new();
+            let race = record(
+                "RACE",
+                0x990,
+                plugin,
+                "BatchRace",
+                smallvec![
+                    field(
+                        "ATKE",
+                        FieldValue::String(interner.intern("meleeSecondary"))
+                    ),
+                    field("ATKD", FieldValue::Struct(Vec::new())),
+                    field("ATKE", FieldValue::String(interner.intern("meleePrimary"))),
+                    field("ATKD", FieldValue::Struct(Vec::new())),
+                ],
+                &interner,
+            );
+
+            let receipt = race_receipt(&race, plugin, &interner);
+
+            assert_eq!(receipt.form_key, TargetFormKey::new(0x990, plugin));
+            assert_eq!(receipt.attack_events, ["meleePrimary", "meleeSecondary"]);
+            assert_eq!(receipt.attack_data_entries, 2);
+        }
     }
 
     fn record_count(items: &[ParsedItem]) -> usize {
@@ -2349,702 +2444,600 @@ mod tests {
     }
 
     #[test]
-    fn record_commit_ledger_is_canonical_roundtrips_and_rejects_tampering() {
-        let ledger = ledger_fixture("LedgerCanonical.esp");
-        let json = ledger.canonical_json().unwrap();
-        let reopened = CreatureRecordCommitLedger::from_json(&json).unwrap();
-        assert_eq!(reopened, ledger);
-        assert_eq!(reopened.intent.family_ids, ["alpha", "zeta"]);
-        assert_eq!(reopened.receipt.family_ids, ["alpha", "zeta"]);
+    fn record_commit_ledger_is_canonical_and_rejects_tampering_and_collisions() {
+        {
+            let ledger = ledger_fixture("LedgerCanonical.esp");
+            let json = ledger.canonical_json().unwrap();
+            let reopened = CreatureRecordCommitLedger::from_json(&json).unwrap();
+            assert_eq!(reopened, ledger);
+            assert_eq!(reopened.intent.family_ids, ["alpha", "zeta"]);
+            assert_eq!(reopened.receipt.family_ids, ["alpha", "zeta"]);
 
-        let mut tampered: serde_json::Value = serde_json::from_str(&json).unwrap();
-        tampered["receipt"]["record_count"] = serde_json::json!(99);
-        let tampered = serde_json::to_string(&tampered).unwrap();
-        assert!(matches!(
-            CreatureRecordCommitLedger::from_json(&tampered),
-            Err(CreatureRecordCommitLedgerError::Invalid {
-                code: "receipt_hash",
-                ..
-            })
-        ));
+            let mut tampered: serde_json::Value = serde_json::from_str(&json).unwrap();
+            tampered["receipt"]["record_count"] = serde_json::json!(99);
+            let tampered = serde_json::to_string(&tampered).unwrap();
+            assert!(matches!(
+                CreatureRecordCommitLedger::from_json(&tampered),
+                Err(CreatureRecordCommitLedgerError::Invalid {
+                    code: "receipt_hash",
+                    ..
+                })
+            ));
+        }
+        {
+            let ledger = ledger_fixture("LedgerCollision.esp");
+            let mut duplicate_family = ledger.clone();
+            duplicate_family.intent.family_ids.push("alpha".to_string());
+            assert!(matches!(
+                duplicate_family.canonical_json(),
+                Err(CreatureRecordCommitLedgerError::Invalid {
+                    code: "family_id",
+                    ..
+                })
+            ));
+
+            let mut duplicate_mapping = ledger;
+            let mapping = duplicate_mapping.intent.primary_mappings[0].clone();
+            duplicate_mapping.intent.primary_mappings.push(mapping);
+            duplicate_mapping.intent.mapping_count += 1;
+            assert!(matches!(
+                duplicate_mapping.canonical_json(),
+                Err(CreatureRecordCommitLedgerError::Invalid {
+                    code: "duplicate_mapping_source",
+                    ..
+                })
+            ));
+        }
+        {
+            let mut ledger = ledger_fixture("LedgerContentHash.esp");
+            ledger.intent.recipe_binding.encoded_records[0].encoded_blake3 = "d".repeat(64);
+            assert!(matches!(
+                ledger.canonical_json(),
+                Err(CreatureRecordCommitLedgerError::Invalid {
+                    code: "intent_hash",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
-    fn record_commit_ledger_rejects_duplicate_family_and_mapping_collision() {
-        let ledger = ledger_fixture("LedgerCollision.esp");
-        let mut duplicate_family = ledger.clone();
-        duplicate_family.intent.family_ids.push("alpha".to_string());
-        assert!(matches!(
-            duplicate_family.canonical_json(),
-            Err(CreatureRecordCommitLedgerError::Invalid {
-                code: "family_id",
-                ..
-            })
-        ));
+    fn recipe_binding_hashes_content_and_rejects_other_mappings() {
+        {
+            let plugin = "LedgerBindingMismatch.esp";
+            let receipt = ledger_receipt(plugin);
+            let mut binding = CreatureRecordRecipeBinding {
+                family_ids: receipt.family_ids.clone(),
+                primary_mappings: receipt
+                    .families
+                    .iter()
+                    .flat_map(|family| family.primary_mappings.clone())
+                    .collect(),
+                encoded_records: vec![
+                    CreatureEncodedRecordCommitment {
+                        form_key: TargetFormKey::new(0xA00, plugin),
+                        signature: "RACE".to_string(),
+                        encoded_blake3: "b".repeat(64),
+                    },
+                    CreatureEncodedRecordCommitment {
+                        form_key: TargetFormKey::new(0xA01, plugin),
+                        signature: "ARMO".to_string(),
+                        encoded_blake3: "c".repeat(64),
+                    },
+                ],
+                ..CreatureRecordRecipeBinding::default()
+            };
+            binding.primary_mappings[0].target = TargetFormKey::new(0xA01, plugin);
 
-        let mut duplicate_mapping = ledger;
-        let mapping = duplicate_mapping.intent.primary_mappings[0].clone();
-        duplicate_mapping.intent.primary_mappings.push(mapping);
-        duplicate_mapping.intent.mapping_count += 1;
-        assert!(matches!(
-            duplicate_mapping.canonical_json(),
-            Err(CreatureRecordCommitLedgerError::Invalid {
-                code: "duplicate_mapping_source",
-                ..
-            })
-        ));
+            assert!(matches!(
+                CreatureRecordCommitIntent::from_receipt(
+                    plugin,
+                    "fo4-authoring-v1",
+                    "a".repeat(64),
+                    &receipt,
+                    binding,
+                ),
+                Err(CreatureRecordCommitLedgerError::Invalid {
+                    code: "recipe_primary_mapping",
+                    ..
+                })
+            ));
+        }
+        {
+            let plugin = "LedgerBinding.esp";
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let original = recipe_binding_from_families(
+                vec![family("quadruped", plugin, 0xAB0, 0x1234, &interner)],
+                &schema,
+                &interner,
+            )
+            .unwrap();
+            let mut changed_family = family("quadruped", plugin, 0xAB0, 0x1234, &interner);
+            changed_family.closures[0]
+                .closure
+                .records
+                .iter_mut()
+                .find(|record| record.sig.as_str() == "NPC_")
+                .unwrap()
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.as_str() == "FULL")
+                .unwrap()
+                .value = FieldValue::String(interner.intern("Different Creature"));
+            let changed =
+                recipe_binding_from_families(vec![changed_family], &schema, &interner).unwrap();
+
+            assert_eq!(original.family_ids, changed.family_ids);
+            assert_eq!(
+                original.encoded_records.len(),
+                changed.encoded_records.len()
+            );
+            assert_ne!(original.encoded_records, changed.encoded_records);
+        }
     }
 
     #[test]
-    fn record_commit_ledger_rejects_tampered_content_commitment() {
-        let mut ledger = ledger_fixture("LedgerContentHash.esp");
-        ledger.intent.recipe_binding.encoded_records[0].encoded_blake3 = "d".repeat(64);
-        assert!(matches!(
-            ledger.canonical_json(),
-            Err(CreatureRecordCommitLedgerError::Invalid {
-                code: "intent_hash",
-                ..
-            })
-        ));
-    }
+    fn record_commit_failures_and_abandonment_are_atomic() {
+        {
+            let private_root = tempfile::tempdir().unwrap();
+            let ledger = ledger_fixture("LedgerStage.esp");
+            let committed = CommittedCreatureRecordBatch {
+                receipt: ledger.receipt.clone(),
+                ledger,
+            };
+            let destination = private_root
+                .path()
+                .join(CREATURE_RECORD_COMMIT_LEDGER_RELATIVE_PATH);
+            assert!(!destination.exists());
 
-    #[test]
-    fn record_commit_intent_rejects_recipe_binding_with_same_counts_but_other_mapping() {
-        let plugin = "LedgerBindingMismatch.esp";
-        let receipt = ledger_receipt(plugin);
-        let mut binding = CreatureRecordRecipeBinding {
-            family_ids: receipt.family_ids.clone(),
-            primary_mappings: receipt
-                .families
-                .iter()
-                .flat_map(|family| family.primary_mappings.clone())
-                .collect(),
-            encoded_records: vec![
-                CreatureEncodedRecordCommitment {
-                    form_key: TargetFormKey::new(0xA00, plugin),
-                    signature: "RACE".to_string(),
-                    encoded_blake3: "b".repeat(64),
-                },
-                CreatureEncodedRecordCommitment {
-                    form_key: TargetFormKey::new(0xA01, plugin),
-                    signature: "ARMO".to_string(),
-                    encoded_blake3: "c".repeat(64),
-                },
-            ],
-            ..CreatureRecordRecipeBinding::default()
-        };
-        binding.primary_mappings[0].target = TargetFormKey::new(0xA01, plugin);
+            stage_creature_record_commit_ledger(private_root.path(), &committed, false).unwrap();
+            assert_eq!(
+                CreatureRecordCommitLedger::read(&destination).unwrap(),
+                committed.ledger().clone()
+            );
+            assert!(matches!(
+                stage_creature_record_commit_ledger(private_root.path(), &committed, false),
+                Err(CreatureRecordCommitLedgerError::PostCommitPersistence(error))
+                    if matches!(*error, CreatureRecordCommitLedgerError::DestinationExists(_))
+            ));
+            stage_creature_record_commit_ledger(private_root.path(), &committed, true).unwrap();
+            assert_eq!(
+                CreatureRecordCommitLedger::read(&destination).unwrap(),
+                committed.ledger().clone()
+            );
+        }
+        {
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let cases = [
+                (CreatureRecordBatchStage::EncodeRecord, 0),
+                (CreatureRecordBatchStage::EncodeRecord, 1),
+                (CreatureRecordBatchStage::AddRecord, 0),
+                (CreatureRecordBatchStage::AddRecord, 1),
+                (CreatureRecordBatchStage::AddMapping, 0),
+            ];
 
-        assert!(matches!(
-            CreatureRecordCommitIntent::from_receipt(
-                plugin,
-                "fo4-authoring-v1",
-                "a".repeat(64),
-                &receipt,
-                binding,
-            ),
-            Err(CreatureRecordCommitLedgerError::Invalid {
-                code: "recipe_primary_mapping",
-                ..
-            })
-        ));
-    }
+            for (case, (stage, index)) in cases.into_iter().enumerate() {
+                let plugin = format!("BatchAtomicFailure{case}.esp");
+                let handle = create_localized_target(&plugin);
+                let strings_before = {
+                    let store = plugin_handle_store_ref().lock().unwrap();
+                    store.get(&handle).unwrap().strings_ref().clone()
+                };
+                let mut mapper_state = mapper_state(&plugin);
+                let mappings_before = mapper_state.source_to_target.clone();
+                let used_before = mapper_state.used_object_ids.clone();
+                let next_before = mapper_state.next_object_id;
 
-    #[test]
-    fn recipe_binding_hashes_normalized_record_content_not_just_keys_or_counts() {
-        let plugin = "LedgerBinding.esp";
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let original = recipe_binding_from_families(
-            vec![family("quadruped", plugin, 0xAB0, 0x1234, &interner)],
-            &schema,
-            &interner,
-        )
-        .unwrap();
-        let mut changed_family = family("quadruped", plugin, 0xAB0, 0x1234, &interner);
-        changed_family.closures[0]
-            .closure
-            .records
-            .iter_mut()
-            .find(|record| record.sig.as_str() == "NPC_")
-            .unwrap()
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "FULL")
-            .unwrap()
-            .value = FieldValue::String(interner.intern("Different Creature"));
-        let changed =
-            recipe_binding_from_families(vec![changed_family], &schema, &interner).unwrap();
+                let error = {
+                    let mut session = open_session(handle, None).unwrap();
+                    publish_creature_record_families_batch_with_failure(
+                        &mut session,
+                        &mut mapper_state,
+                        vec![family("quadruped", &plugin, 0x900, 0x1234, &interner)],
+                        &schema,
+                        &interner,
+                        CreatureRecordBatchFailureInjection::At { stage, index },
+                    )
+                    .unwrap_err()
+                };
 
-        assert_eq!(original.family_ids, changed.family_ids);
-        assert_eq!(
-            original.encoded_records.len(),
-            changed.encoded_records.len()
-        );
-        assert_ne!(original.encoded_records, changed.encoded_records);
-    }
-
-    #[test]
-    fn record_commit_ledger_stages_atomically_only_at_the_explicit_postcommit_boundary() {
-        let private_root = tempfile::tempdir().unwrap();
-        let ledger = ledger_fixture("LedgerStage.esp");
-        let committed = CommittedCreatureRecordBatch {
-            receipt: ledger.receipt.clone(),
-            ledger,
-        };
-        let destination = private_root
-            .path()
-            .join(CREATURE_RECORD_COMMIT_LEDGER_RELATIVE_PATH);
-        assert!(!destination.exists());
-
-        stage_creature_record_commit_ledger(private_root.path(), &committed, false).unwrap();
-        assert_eq!(
-            CreatureRecordCommitLedger::read(&destination).unwrap(),
-            committed.ledger().clone()
-        );
-        assert!(matches!(
-            stage_creature_record_commit_ledger(private_root.path(), &committed, false),
-            Err(CreatureRecordCommitLedgerError::PostCommitPersistence(error))
-                if matches!(*error, CreatureRecordCommitLedgerError::DestinationExists(_))
-        ));
-        stage_creature_record_commit_ledger(private_root.path(), &committed, true).unwrap();
-        assert_eq!(
-            CreatureRecordCommitLedger::read(&destination).unwrap(),
-            committed.ledger().clone()
-        );
-    }
-
-    #[test]
-    fn every_injected_record_and_mapping_failure_is_atomic() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let cases = [
-            (CreatureRecordBatchStage::EncodeRecord, 0),
-            (CreatureRecordBatchStage::EncodeRecord, 1),
-            (CreatureRecordBatchStage::AddRecord, 0),
-            (CreatureRecordBatchStage::AddRecord, 1),
-            (CreatureRecordBatchStage::AddMapping, 0),
-        ];
-
-        for (case, (stage, index)) in cases.into_iter().enumerate() {
-            let plugin = format!("BatchAtomicFailure{case}.esp");
-            let handle = create_localized_target(&plugin);
+                assert!(matches!(
+                    error,
+                    CreatureRecordBatchError::InjectedFailure {
+                        stage: actual_stage,
+                        index: actual_index,
+                    } if actual_stage == stage && actual_index == index
+                ));
+                assert_eq!(mapper_state.source_to_target, mappings_before);
+                assert_eq!(mapper_state.used_object_ids, used_before);
+                assert_eq!(mapper_state.next_object_id, next_before);
+                let store = plugin_handle_store_ref().lock().unwrap();
+                let slot = store.get(&handle).unwrap();
+                assert_eq!(record_count(&slot.parsed.root_items), 0);
+                assert_strings_equal(slot.strings_ref(), &strings_before);
+            }
+        }
+        {
+            let plugin = "BatchPreparedAbandon.esp";
+            let handle = create_localized_target(plugin);
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
             let strings_before = {
                 let store = plugin_handle_store_ref().lock().unwrap();
                 store.get(&handle).unwrap().strings_ref().clone()
             };
-            let mut mapper_state = mapper_state(&plugin);
-            let mappings_before = mapper_state.source_to_target.clone();
-            let used_before = mapper_state.used_object_ids.clone();
-            let next_before = mapper_state.next_object_id;
-
-            let error = {
+            let mut mapper_state = mapper_state(plugin);
+            {
                 let mut session = open_session(handle, None).unwrap();
-                publish_creature_record_families_batch_with_failure(
+                let prepared = prepare_creature_record_families_batch(
                     &mut session,
                     &mut mapper_state,
-                    vec![family("quadruped", &plugin, 0x900, 0x1234, &interner)],
+                    vec![family("quadruped", plugin, 0x930, 0x1234, &interner)],
                     &schema,
                     &interner,
-                    CreatureRecordBatchFailureInjection::At { stage, index },
                 )
-                .unwrap_err()
-            };
+                .unwrap();
+                assert_eq!(prepared.receipt().record_count, 2);
+                assert_eq!(prepared.receipt().mapping_count, 1);
+                drop(prepared);
+            }
 
-            assert!(matches!(
-                error,
-                CreatureRecordBatchError::InjectedFailure {
-                    stage: actual_stage,
-                    index: actual_index,
-                } if actual_stage == stage && actual_index == index
-            ));
-            assert_eq!(mapper_state.source_to_target, mappings_before);
-            assert_eq!(mapper_state.used_object_ids, used_before);
-            assert_eq!(mapper_state.next_object_id, next_before);
+            assert!(mapper_state.source_to_target.is_empty());
+            assert!(mapper_state.used_object_ids.is_empty());
             let store = plugin_handle_store_ref().lock().unwrap();
             let slot = store.get(&handle).unwrap();
             assert_eq!(record_count(&slot.parsed.root_items), 0);
             assert_strings_equal(slot.strings_ref(), &strings_before);
         }
-    }
-
-    #[test]
-    fn successful_batch_commits_records_strings_reservations_and_mapping() {
-        let plugin = "BatchAtomicSuccess.esp";
-        let handle = create_localized_target(plugin);
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let mut mapper_state = mapper_state(plugin);
-        mapper_state.next_object_id = 0x920;
-        let receipt = {
-            let mut session = open_session(handle, None).unwrap();
-            publish_creature_record_family_batch(
-                &mut session,
-                &mut mapper_state,
-                family("quadruped", plugin, 0x920, 0x1234, &interner),
-                &schema,
-                &interner,
-            )
-            .unwrap()
-        };
-
-        assert_eq!(receipt.family_ids, ["quadruped"]);
-        assert_eq!(receipt.record_count, 2);
-        assert_eq!(receipt.mapping_count, 1);
-        assert_eq!(
-            receipt
-                .reserved_form_keys
-                .iter()
-                .map(|target| target.local)
-                .collect::<Vec<_>>(),
-            [0x920, 0x921]
-        );
-        let json = receipt.canonical_json().unwrap();
-        assert!(json.contains("\"000920@BatchAtomicSuccess.esp\""));
-        assert_eq!(
-            serde_json::from_str::<CreatureRecordBatchReceipt>(&json).unwrap(),
-            receipt
-        );
-        assert!(mapper_state.used_object_ids.contains(&0x920));
-        assert!(mapper_state.used_object_ids.contains(&0x921));
-        assert_eq!(
-            mapper_state
-                .source_to_target
-                .get(&form_key(0x1234, "SourceCreatures.esm", &interner)),
-            Some(&form_key(0x920, plugin, &interner))
-        );
-        let next_generated =
-            FormKeyMapper::from_state(&mut mapper_state, &interner).allocate_generated();
-        assert_eq!(next_generated.local, 0x922);
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle).unwrap();
-        assert_eq!(record_count(&slot.parsed.root_items), 2);
-        assert!(slot.strings_ref().by_language.values().any(|table| {
-            table
-                .values()
-                .any(|value| value == "Transactional Creature")
-        }));
-    }
-
-    #[test]
-    fn exact_preallocated_creature_leases_commit_and_mismatched_mapping_stays_fatal() {
-        let plugin = "BatchPreallocatedLease.esp";
-        let handle = create_localized_target(plugin);
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let mut leased_mapper = mapper_state(plugin);
-        let source_key = form_key(0x1234, "SourceCreatures.esm", &interner);
-        let target = form_key(0x925, plugin, &interner);
-        leased_mapper.source_to_target.insert(source_key, target);
-        leased_mapper
-            .reserved_generated_object_ids
-            .extend([0x925, 0x926]);
-        leased_mapper.leased_object_ids.extend([0x925, 0x926]);
-
         {
-            let mut session = open_session(handle, None).unwrap();
-            publish_creature_record_family_batch(
-                &mut session,
-                &mut leased_mapper,
-                family("quadruped", plugin, 0x925, 0x1234, &interner),
-                &schema,
-                &interner,
-            )
-            .expect("exact preallocation lease must commit");
-        }
-        assert!(!leased_mapper.reserved_generated_object_ids.contains(&0x925));
-        assert!(!leased_mapper.reserved_generated_object_ids.contains(&0x926));
-        assert!(!leased_mapper.leased_object_ids.contains(&0x925));
-        assert!(!leased_mapper.leased_object_ids.contains(&0x926));
-        assert!(leased_mapper.used_object_ids.contains(&0x925));
-        assert!(leased_mapper.used_object_ids.contains(&0x926));
-        assert_eq!(
-            leased_mapper.source_to_target.get(&source_key),
-            Some(&target)
-        );
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            for (case, mutate) in ["dangling", "encode"].into_iter().enumerate() {
+                let plugin = format!("BatchValidationFailure{case}.esp");
+                let handle = create_localized_target(&plugin);
+                let mut mapper_state = mapper_state(&plugin);
+                let mut batch = family("quadruped", &plugin, 0x960, 0x1234, &interner);
+                let records = &mut batch.closures[0].closure.records;
+                if mutate == "dangling" {
+                    let npc = records
+                        .iter_mut()
+                        .find(|record| record.sig.as_str() == "NPC_")
+                        .unwrap();
+                    npc.fields
+                        .iter_mut()
+                        .find(|field| field.sig.as_str() == "WNAM")
+                        .unwrap()
+                        .value = FieldValue::FormKey(form_key(0x0fff, &plugin, &interner));
+                } else {
+                    let armor = records
+                        .iter_mut()
+                        .find(|record| record.sig.as_str() == "ARMO")
+                        .unwrap();
+                    armor.sig = SigCode::from_str("ZZZZ").unwrap();
+                }
 
-        let other_plugin = "BatchMismatchedLease.esp";
-        let other_handle = create_localized_target(other_plugin);
-        let mut other_mapper = mapper_state(other_plugin);
-        let other_source = form_key(0x1234, "SourceCreatures.esm", &interner);
-        other_mapper
-            .source_to_target
-            .insert(other_source, form_key(0xA00, other_plugin, &interner));
-        other_mapper
-            .reserved_generated_object_ids
-            .extend([0x935, 0x936]);
-        let before = other_mapper.clone();
-        let error = {
-            let mut session = open_session(other_handle, None).unwrap();
-            publish_creature_record_family_batch(
-                &mut session,
-                &mut other_mapper,
-                family("quadruped", other_plugin, 0x935, 0x1234, &interner),
-                &schema,
-                &interner,
-            )
-            .expect_err("mismatched preinstalled mapping must remain fatal")
-        };
-        assert!(matches!(
-            error,
-            CreatureRecordBatchError::ExistingSourceMapping { .. }
-        ));
-        assert_eq!(other_mapper.source_to_target, before.source_to_target);
-        assert_eq!(
-            other_mapper.reserved_generated_object_ids,
-            before.reserved_generated_object_ids
-        );
-        assert_eq!(other_mapper.used_object_ids, before.used_object_ids);
-    }
-
-    #[test]
-    fn skyrim_race_record_mapping_coexists_with_primary_npc_projection() {
-        let plugin = "BatchSkyrimRaceIdentity.esp";
-        let handle = create_localized_target(plugin);
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let source_identity = SourceCreatureIdentity {
-            namespace: "skyrimse".to_string(),
-            plugin: "Skyrim.esm".to_string(),
-            local_form_id: 0x131F5,
-        };
-        let source_key = source_form_key(&source_identity, &interner);
-        let npc_local = 0x925;
-        let armor_local = 0x926;
-        let race_local = 0x927;
-        let race_target = form_key(race_local, plugin, &interner);
-        let mut batch = family("atronach_flame", plugin, npc_local, 0x131F5, &interner);
-        batch.closures[0].source_primary_identity = source_identity.clone();
-        batch.closures[0].projected_identities[0].source_identity = source_identity.clone();
-        batch.primary_mappings[0].source = source_identity;
-        batch.closures[0].closure.records.push(record(
-            "RACE",
-            race_local,
-            plugin,
-            "BatchAtronachFlameRace",
-            smallvec![field(
-                "EDID",
-                FieldValue::String(interner.intern("BatchAtronachFlameRace"))
-            )],
-            &interner,
-        ));
-
-        let mut mapper_state = mapper_state(plugin);
-        mapper_state
-            .source_to_target
-            .insert(source_key, race_target);
-        mapper_state
-            .reserved_generated_object_ids
-            .extend([npc_local, armor_local, race_local]);
-        mapper_state
-            .leased_object_ids
-            .extend([npc_local, armor_local, race_local]);
-
-        {
-            let mut session = open_session(handle, None).unwrap();
-            publish_creature_record_family_batch(
-                &mut session,
-                &mut mapper_state,
-                batch,
-                &schema,
-                &interner,
-            )
-            .expect("leased Skyrim RACE mapping and primary NPC projection must coexist");
-        }
-
-        assert_eq!(
-            mapper_state.source_to_target.get(&source_key),
-            Some(&race_target)
-        );
-        assert!(!mapper_state.leased_object_ids.contains(&npc_local));
-        assert!(!mapper_state.leased_object_ids.contains(&race_local));
-        let store = plugin_handle_store_ref().lock().unwrap();
-        assert_eq!(
-            record_count(&store.get(&handle).unwrap().parsed.root_items),
-            3
-        );
-    }
-
-    #[test]
-    fn prepared_batch_can_be_abandoned_without_target_or_mapper_mutation() {
-        let plugin = "BatchPreparedAbandon.esp";
-        let handle = create_localized_target(plugin);
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let strings_before = {
-            let store = plugin_handle_store_ref().lock().unwrap();
-            store.get(&handle).unwrap().strings_ref().clone()
-        };
-        let mut mapper_state = mapper_state(plugin);
-        {
-            let mut session = open_session(handle, None).unwrap();
-            let prepared = prepare_creature_record_families_batch(
-                &mut session,
-                &mut mapper_state,
-                vec![family("quadruped", plugin, 0x930, 0x1234, &interner)],
-                &schema,
-                &interner,
-            )
-            .unwrap();
-            assert_eq!(prepared.receipt().record_count, 2);
-            assert_eq!(prepared.receipt().mapping_count, 1);
-            drop(prepared);
-        }
-
-        assert!(mapper_state.source_to_target.is_empty());
-        assert!(mapper_state.used_object_ids.is_empty());
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&handle).unwrap();
-        assert_eq!(record_count(&slot.parsed.root_items), 0);
-        assert_strings_equal(slot.strings_ref(), &strings_before);
-    }
-
-    #[test]
-    fn cross_family_and_existing_target_collisions_are_typed_and_atomic() {
-        let plugin = "BatchCollision.esp";
-        let handle = create_localized_target(plugin);
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let mut mapper_state = mapper_state(plugin);
-        let cross_family = {
-            let mut session = open_session(handle, None).unwrap();
-            publish_creature_record_families_batch(
-                &mut session,
-                &mut mapper_state,
-                vec![
-                    family("family-a", plugin, 0x940, 0x1001, &interner),
-                    family("family-b", plugin, 0x940, 0x1002, &interner),
-                ],
-                &schema,
-                &interner,
-            )
-            .unwrap_err()
-        };
-        assert!(matches!(
-            cross_family,
-            CreatureRecordBatchError::CrossFamilyRecordCollision { .. }
-        ));
-        assert!(mapper_state.source_to_target.is_empty());
-
-        {
-            let existing = record(
-                "ARMO",
-                0x941,
-                plugin,
-                "ExistingSkin",
-                smallvec![field(
-                    "EDID",
-                    FieldValue::String(interner.intern("ExistingSkin"))
-                )],
-                &interner,
-            );
-            let mut session = open_session(handle, None).unwrap();
-            session.add_record(existing, &schema, &interner).unwrap();
-        }
-        let existing_collision = {
-            let mut session = open_session(handle, None).unwrap();
-            publish_creature_record_family_batch(
-                &mut session,
-                &mut mapper_state,
-                family("family-a", plugin, 0x940, 0x1001, &interner),
-                &schema,
-                &interner,
-            )
-            .unwrap_err()
-        };
-        assert!(matches!(
-            existing_collision,
-            CreatureRecordBatchError::ExistingTargetCollision { local: 0x941, .. }
-        ));
-        assert!(mapper_state.source_to_target.is_empty());
-        let store = plugin_handle_store_ref().lock().unwrap();
-        assert_eq!(
-            record_count(&store.get(&handle).unwrap().parsed.root_items),
-            1
-        );
-    }
-
-    #[test]
-    fn leased_support_record_is_replaced_without_creating_a_duplicate() {
-        let plugin = "BatchSupportReplacement.esp";
-        let handle = create_localized_target(plugin);
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let armor_local = 0x951;
-        {
-            let existing = record(
-                "ARMO",
-                armor_local,
-                plugin,
-                "GenericTranslatedSkin",
-                smallvec![field(
-                    "EDID",
-                    FieldValue::String(interner.intern("GenericTranslatedSkin"))
-                )],
-                &interner,
-            );
-            let mut session = open_session(handle, None).unwrap();
-            session.add_record(existing, &schema, &interner).unwrap();
-        }
-        let mut mapper_state = mapper_state(plugin);
-        mapper_state
-            .reserved_generated_object_ids
-            .insert(armor_local);
-        mapper_state.leased_object_ids.insert(armor_local);
-
-        let receipt = {
-            let mut session = open_session(handle, None).unwrap();
-            publish_creature_record_family_batch(
-                &mut session,
-                &mut mapper_state,
-                family("quadruped", plugin, 0x950, 0x1234, &interner),
-                &schema,
-                &interner,
-            )
-            .expect("leased support record must be replaceable")
-        };
-
-        assert_eq!(receipt.record_count, 2);
-        assert!(!mapper_state.leased_object_ids.contains(&armor_local));
-        assert!(mapper_state.used_object_ids.contains(&armor_local));
-        let store = plugin_handle_store_ref().lock().unwrap();
-        assert_eq!(
-            record_count(&store.get(&handle).unwrap().parsed.root_items),
-            2
-        );
-    }
-
-    #[test]
-    fn dangling_helper_and_real_encode_failure_leave_everything_unpublished() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        for (case, mutate) in ["dangling", "encode"].into_iter().enumerate() {
-            let plugin = format!("BatchValidationFailure{case}.esp");
-            let handle = create_localized_target(&plugin);
-            let mut mapper_state = mapper_state(&plugin);
-            let mut batch = family("quadruped", &plugin, 0x960, 0x1234, &interner);
-            let records = &mut batch.closures[0].closure.records;
-            if mutate == "dangling" {
-                let npc = records
-                    .iter_mut()
-                    .find(|record| record.sig.as_str() == "NPC_")
-                    .unwrap();
-                npc.fields
-                    .iter_mut()
-                    .find(|field| field.sig.as_str() == "WNAM")
-                    .unwrap()
-                    .value = FieldValue::FormKey(form_key(0x0fff, &plugin, &interner));
-            } else {
-                let armor = records
-                    .iter_mut()
-                    .find(|record| record.sig.as_str() == "ARMO")
-                    .unwrap();
-                armor.sig = SigCode::from_str("ZZZZ").unwrap();
+                let error = {
+                    let mut session = open_session(handle, None).unwrap();
+                    match prepare_creature_record_families_batch(
+                        &mut session,
+                        &mut mapper_state,
+                        vec![batch],
+                        &schema,
+                        &interner,
+                    ) {
+                        Err(error) => error,
+                        Ok(_) => panic!("{mutate} batch unexpectedly prepared"),
+                    }
+                };
+                if mutate == "dangling" {
+                    assert!(matches!(
+                        error,
+                        CreatureRecordBatchError::DanglingHelperReference { .. }
+                    ));
+                } else {
+                    assert!(matches!(error, CreatureRecordBatchError::Encode { .. }));
+                }
+                assert!(mapper_state.source_to_target.is_empty());
+                assert!(mapper_state.used_object_ids.is_empty());
+                let store = plugin_handle_store_ref().lock().unwrap();
+                assert_eq!(
+                    record_count(&store.get(&handle).unwrap().parsed.root_items),
+                    0
+                );
             }
+        }
+    }
 
-            let error = {
+    #[test]
+    fn successful_batches_commit_leases_and_replace_support_records() {
+        {
+            let plugin = "BatchAtomicSuccess.esp";
+            let handle = create_localized_target(plugin);
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let mut mapper_state = mapper_state(plugin);
+            mapper_state.next_object_id = 0x920;
+            let receipt = {
                 let mut session = open_session(handle, None).unwrap();
-                match prepare_creature_record_families_batch(
+                publish_creature_record_family_batch(
                     &mut session,
                     &mut mapper_state,
-                    vec![batch],
+                    family("quadruped", plugin, 0x920, 0x1234, &interner),
                     &schema,
                     &interner,
-                ) {
-                    Err(error) => error,
-                    Ok(_) => panic!("{mutate} batch unexpectedly prepared"),
-                }
+                )
+                .unwrap()
             };
-            if mutate == "dangling" {
-                assert!(matches!(
-                    error,
-                    CreatureRecordBatchError::DanglingHelperReference { .. }
-                ));
-            } else {
-                assert!(matches!(error, CreatureRecordBatchError::Encode { .. }));
+
+            assert_eq!(receipt.family_ids, ["quadruped"]);
+            assert_eq!(receipt.record_count, 2);
+            assert_eq!(receipt.mapping_count, 1);
+            assert_eq!(
+                receipt
+                    .reserved_form_keys
+                    .iter()
+                    .map(|target| target.local)
+                    .collect::<Vec<_>>(),
+                [0x920, 0x921]
+            );
+            let json = receipt.canonical_json().unwrap();
+            assert!(json.contains("\"000920@BatchAtomicSuccess.esp\""));
+            assert_eq!(
+                serde_json::from_str::<CreatureRecordBatchReceipt>(&json).unwrap(),
+                receipt
+            );
+            assert!(mapper_state.used_object_ids.contains(&0x920));
+            assert!(mapper_state.used_object_ids.contains(&0x921));
+            assert_eq!(
+                mapper_state.source_to_target.get(&form_key(
+                    0x1234,
+                    "SourceCreatures.esm",
+                    &interner
+                )),
+                Some(&form_key(0x920, plugin, &interner))
+            );
+            let next_generated =
+                FormKeyMapper::from_state(&mut mapper_state, &interner).allocate_generated();
+            assert_eq!(next_generated.local, 0x922);
+            let store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get(&handle).unwrap();
+            assert_eq!(record_count(&slot.parsed.root_items), 2);
+            assert!(slot.strings_ref().by_language.values().any(|table| {
+                table
+                    .values()
+                    .any(|value| value == "Transactional Creature")
+            }));
+        }
+        {
+            let plugin = "BatchPreallocatedLease.esp";
+            let handle = create_localized_target(plugin);
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let mut leased_mapper = mapper_state(plugin);
+            let source_key = form_key(0x1234, "SourceCreatures.esm", &interner);
+            let target = form_key(0x925, plugin, &interner);
+            leased_mapper.source_to_target.insert(source_key, target);
+            leased_mapper
+                .reserved_generated_object_ids
+                .extend([0x925, 0x926]);
+            leased_mapper.leased_object_ids.extend([0x925, 0x926]);
+
+            {
+                let mut session = open_session(handle, None).unwrap();
+                publish_creature_record_family_batch(
+                    &mut session,
+                    &mut leased_mapper,
+                    family("quadruped", plugin, 0x925, 0x1234, &interner),
+                    &schema,
+                    &interner,
+                )
+                .expect("exact preallocation lease must commit");
             }
-            assert!(mapper_state.source_to_target.is_empty());
-            assert!(mapper_state.used_object_ids.is_empty());
+            assert!(!leased_mapper.reserved_generated_object_ids.contains(&0x925));
+            assert!(!leased_mapper.reserved_generated_object_ids.contains(&0x926));
+            assert!(!leased_mapper.leased_object_ids.contains(&0x925));
+            assert!(!leased_mapper.leased_object_ids.contains(&0x926));
+            assert!(leased_mapper.used_object_ids.contains(&0x925));
+            assert!(leased_mapper.used_object_ids.contains(&0x926));
+            assert_eq!(
+                leased_mapper.source_to_target.get(&source_key),
+                Some(&target)
+            );
+
+            let other_plugin = "BatchMismatchedLease.esp";
+            let other_handle = create_localized_target(other_plugin);
+            let mut other_mapper = mapper_state(other_plugin);
+            let other_source = form_key(0x1234, "SourceCreatures.esm", &interner);
+            other_mapper
+                .source_to_target
+                .insert(other_source, form_key(0xA00, other_plugin, &interner));
+            other_mapper
+                .reserved_generated_object_ids
+                .extend([0x935, 0x936]);
+            let before = other_mapper.clone();
+            let error = {
+                let mut session = open_session(other_handle, None).unwrap();
+                publish_creature_record_family_batch(
+                    &mut session,
+                    &mut other_mapper,
+                    family("quadruped", other_plugin, 0x935, 0x1234, &interner),
+                    &schema,
+                    &interner,
+                )
+                .expect_err("mismatched preinstalled mapping must remain fatal")
+            };
+            assert!(matches!(
+                error,
+                CreatureRecordBatchError::ExistingSourceMapping { .. }
+            ));
+            assert_eq!(other_mapper.source_to_target, before.source_to_target);
+            assert_eq!(
+                other_mapper.reserved_generated_object_ids,
+                before.reserved_generated_object_ids
+            );
+            assert_eq!(other_mapper.used_object_ids, before.used_object_ids);
+        }
+        {
+            let plugin = "BatchSupportReplacement.esp";
+            let handle = create_localized_target(plugin);
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let armor_local = 0x951;
+            {
+                let existing = record(
+                    "ARMO",
+                    armor_local,
+                    plugin,
+                    "GenericTranslatedSkin",
+                    smallvec![field(
+                        "EDID",
+                        FieldValue::String(interner.intern("GenericTranslatedSkin"))
+                    )],
+                    &interner,
+                );
+                let mut session = open_session(handle, None).unwrap();
+                session.add_record(existing, &schema, &interner).unwrap();
+            }
+            let mut mapper_state = mapper_state(plugin);
+            mapper_state
+                .reserved_generated_object_ids
+                .insert(armor_local);
+            mapper_state.leased_object_ids.insert(armor_local);
+
+            let receipt = {
+                let mut session = open_session(handle, None).unwrap();
+                publish_creature_record_family_batch(
+                    &mut session,
+                    &mut mapper_state,
+                    family("quadruped", plugin, 0x950, 0x1234, &interner),
+                    &schema,
+                    &interner,
+                )
+                .expect("leased support record must be replaceable")
+            };
+
+            assert_eq!(receipt.record_count, 2);
+            assert!(!mapper_state.leased_object_ids.contains(&armor_local));
+            assert!(mapper_state.used_object_ids.contains(&armor_local));
             let store = plugin_handle_store_ref().lock().unwrap();
             assert_eq!(
                 record_count(&store.get(&handle).unwrap().parsed.root_items),
-                0
+                2
             );
         }
     }
 
     #[test]
-    fn family_order_does_not_change_explicit_formkey_reservation_or_mapping() {
-        let schema = AuthoringSchema::for_game("fo4").unwrap();
-        let interner = StringInterner::new();
-        let plugin = "BatchDeterministic.esp";
-        let first_handle = create_localized_target(plugin);
-        let second_handle = create_localized_target(plugin);
-        let mut first_mapper = mapper_state(plugin);
-        let mut second_mapper = mapper_state(plugin);
-        let first = {
-            let mut session = open_session(first_handle, None).unwrap();
-            publish_creature_record_families_batch(
-                &mut session,
-                &mut first_mapper,
-                vec![
-                    family("zeta", plugin, 0x980, 0x2002, &interner),
-                    family("alpha", plugin, 0x970, 0x2001, &interner),
-                ],
-                &schema,
-                &interner,
-            )
-            .unwrap()
-        };
-        let second = {
-            let mut session = open_session(second_handle, None).unwrap();
-            publish_creature_record_families_batch(
-                &mut session,
-                &mut second_mapper,
-                vec![
-                    family("alpha", plugin, 0x970, 0x2001, &interner),
-                    family("zeta", plugin, 0x980, 0x2002, &interner),
-                ],
-                &schema,
-                &interner,
-            )
-            .unwrap()
-        };
+    fn collisions_are_typed_and_family_order_does_not_change_reservations() {
+        {
+            let plugin = "BatchCollision.esp";
+            let handle = create_localized_target(plugin);
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let mut mapper_state = mapper_state(plugin);
+            let cross_family = {
+                let mut session = open_session(handle, None).unwrap();
+                publish_creature_record_families_batch(
+                    &mut session,
+                    &mut mapper_state,
+                    vec![
+                        family("family-a", plugin, 0x940, 0x1001, &interner),
+                        family("family-b", plugin, 0x940, 0x1002, &interner),
+                    ],
+                    &schema,
+                    &interner,
+                )
+                .unwrap_err()
+            };
+            assert!(matches!(
+                cross_family,
+                CreatureRecordBatchError::CrossFamilyRecordCollision { .. }
+            ));
+            assert!(mapper_state.source_to_target.is_empty());
 
-        assert_eq!(first, second);
-        assert_eq!(
-            first_mapper.source_to_target,
-            second_mapper.source_to_target
-        );
-        assert_eq!(first_mapper.used_object_ids, second_mapper.used_object_ids);
-        assert_eq!(first_mapper.next_object_id, second_mapper.next_object_id);
-    }
+            {
+                let existing = record(
+                    "ARMO",
+                    0x941,
+                    plugin,
+                    "ExistingSkin",
+                    smallvec![field(
+                        "EDID",
+                        FieldValue::String(interner.intern("ExistingSkin"))
+                    )],
+                    &interner,
+                );
+                let mut session = open_session(handle, None).unwrap();
+                session.add_record(existing, &schema, &interner).unwrap();
+            }
+            let existing_collision = {
+                let mut session = open_session(handle, None).unwrap();
+                publish_creature_record_family_batch(
+                    &mut session,
+                    &mut mapper_state,
+                    family("family-a", plugin, 0x940, 0x1001, &interner),
+                    &schema,
+                    &interner,
+                )
+                .unwrap_err()
+            };
+            assert!(matches!(
+                existing_collision,
+                CreatureRecordBatchError::ExistingTargetCollision { local: 0x941, .. }
+            ));
+            assert!(mapper_state.source_to_target.is_empty());
+            let store = plugin_handle_store_ref().lock().unwrap();
+            assert_eq!(
+                record_count(&store.get(&handle).unwrap().parsed.root_items),
+                1
+            );
+        }
+        {
+            let schema = AuthoringSchema::for_game("fo4").unwrap();
+            let interner = StringInterner::new();
+            let plugin = "BatchDeterministic.esp";
+            let first_handle = create_localized_target(plugin);
+            let second_handle = create_localized_target(plugin);
+            let mut first_mapper = mapper_state(plugin);
+            let mut second_mapper = mapper_state(plugin);
+            let first = {
+                let mut session = open_session(first_handle, None).unwrap();
+                publish_creature_record_families_batch(
+                    &mut session,
+                    &mut first_mapper,
+                    vec![
+                        family("zeta", plugin, 0x980, 0x2002, &interner),
+                        family("alpha", plugin, 0x970, 0x2001, &interner),
+                    ],
+                    &schema,
+                    &interner,
+                )
+                .unwrap()
+            };
+            let second = {
+                let mut session = open_session(second_handle, None).unwrap();
+                publish_creature_record_families_batch(
+                    &mut session,
+                    &mut second_mapper,
+                    vec![
+                        family("alpha", plugin, 0x970, 0x2001, &interner),
+                        family("zeta", plugin, 0x980, 0x2002, &interner),
+                    ],
+                    &schema,
+                    &interner,
+                )
+                .unwrap()
+            };
 
-    #[test]
-    fn race_receipt_preserves_normalized_attack_event_evidence() {
-        let plugin = "BatchReceipt.esp";
-        let interner = StringInterner::new();
-        let race = record(
-            "RACE",
-            0x990,
-            plugin,
-            "BatchRace",
-            smallvec![
-                field(
-                    "ATKE",
-                    FieldValue::String(interner.intern("meleeSecondary"))
-                ),
-                field("ATKD", FieldValue::Struct(Vec::new())),
-                field("ATKE", FieldValue::String(interner.intern("meleePrimary"))),
-                field("ATKD", FieldValue::Struct(Vec::new())),
-            ],
-            &interner,
-        );
-
-        let receipt = race_receipt(&race, plugin, &interner);
-
-        assert_eq!(receipt.form_key, TargetFormKey::new(0x990, plugin));
-        assert_eq!(receipt.attack_events, ["meleePrimary", "meleeSecondary"]);
-        assert_eq!(receipt.attack_data_entries, 2);
+            assert_eq!(first, second);
+            assert_eq!(
+                first_mapper.source_to_target,
+                second_mapper.source_to_target
+            );
+            assert_eq!(first_mapper.used_object_ids, second_mapper.used_object_ids);
+            assert_eq!(first_mapper.next_object_id, second_mapper.next_object_id);
+        }
     }
 }

@@ -6,6 +6,7 @@
 //! object id before mapper relocation, set only the FO4-supported public bit,
 //! and deliberately leave CELL.XOWN intact.
 
+#[cfg(test)]
 use crate::ids::SigCode;
 use crate::record::{FieldValue, Record};
 use crate::sym::StringInterner;
@@ -41,16 +42,22 @@ pub(crate) fn mark_public_social_hub(
         .fields
         .iter_mut()
         .find(|entry| entry.sig.0 == *b"DATA")
-        .is_some_and(|entry| set_public_area_flag(&mut entry.value, interner))
+        .is_some_and(|entry| {
+            set_cell_data_flag(&mut entry.value, FO4_CELL_PUBLIC_AREA_FLAG, interner)
+        })
 }
 
-fn set_public_area_flag(value: &mut FieldValue, interner: &StringInterner) -> bool {
+pub(crate) fn set_cell_data_flag(
+    value: &mut FieldValue,
+    flag: u16,
+    interner: &StringInterner,
+) -> bool {
     match value {
         FieldValue::Uint(flags) => {
             let Ok(flags16) = u16::try_from(*flags) else {
                 return false;
             };
-            let updated = flags16 | FO4_CELL_PUBLIC_AREA_FLAG;
+            let updated = flags16 | flag;
             if updated == flags16 {
                 return false;
             }
@@ -61,7 +68,7 @@ fn set_public_area_flag(value: &mut FieldValue, interner: &StringInterner) -> bo
             let Ok(flags16) = u16::try_from(*flags) else {
                 return false;
             };
-            let updated = flags16 | FO4_CELL_PUBLIC_AREA_FLAG;
+            let updated = flags16 | flag;
             if updated == flags16 {
                 return false;
             }
@@ -70,7 +77,7 @@ fn set_public_area_flag(value: &mut FieldValue, interner: &StringInterner) -> bo
         }
         FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
             let flags = u16::from_le_bytes([bytes[0], bytes[1]]);
-            let updated = flags | FO4_CELL_PUBLIC_AREA_FLAG;
+            let updated = flags | flag;
             if updated == flags {
                 return false;
             }
@@ -84,7 +91,7 @@ fn set_public_area_flag(value: &mut FieldValue, interner: &StringInterner) -> bo
                     .resolve(*name)
                     .is_some_and(|name| name.eq_ignore_ascii_case("flags"))
             })
-            .is_some_and(|(_, flags)| set_public_area_flag(flags, interner)),
+            .is_some_and(|(_, flags)| set_cell_data_flag(flags, flag, interner)),
         _ => false,
     }
 }

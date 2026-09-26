@@ -4341,7 +4341,6 @@ struct InternedRecordKeys {
     race: FormKey,
     npc: FormKey,
     skin: FormKey,
-    armor_addon: FormKey,
     body_part_data: FormKey,
     unarmed_weapon: FormKey,
 }
@@ -4352,7 +4351,6 @@ impl InternedRecordKeys {
             race: keys.race.intern(interner),
             npc: keys.npc.intern(interner),
             skin: keys.skin.intern(interner),
-            armor_addon: keys.armor_addon.intern(interner),
             body_part_data: keys.body_part_data.intern(interner),
             unarmed_weapon: keys.unarmed_weapon.intern(interner),
         }

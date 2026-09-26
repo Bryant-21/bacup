@@ -314,10 +314,7 @@ mod tests {
             classify_legacy_leveled_item(&record).reason_codes,
             ["legacy_leveled_item_coed_union_requires_owner_signature"]
         );
-    }
 
-    #[test]
-    fn null_owner_coed_and_empty_lists_are_target_valid() {
         let interner = StringInterner::new();
         let mut record = Record::new(
             SigCode::from_str("LVLI").unwrap(),

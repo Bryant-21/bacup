@@ -27,7 +27,7 @@ fn run_pre_translate(record: &mut Record, interner: &StringInterner) {
 }
 
 #[test]
-fn converts_modern_hrtf_sopm_attenuation() {
+fn converts_modern_sopm_and_leaves_first_person_output_unchanged() {
     let interner = StringInterner::new();
     let mut record = sopm_record(&interner);
     push_bytes(&mut record, "NAM1", &[1, 0, 0, 30]);
@@ -55,10 +55,7 @@ fn converts_modern_hrtf_sopm_attenuation() {
     assert_eq!(&attenuation[8..12], &150.0_f32.to_le_bytes());
     assert_eq!(&attenuation[12..16], &1800.0_f32.to_le_bytes());
     assert_eq!(&attenuation[16..24], &[0, 50, 80, 95, 50, 20, 5, 0]);
-}
 
-#[test]
-fn orders_modern_defined_speaker_sopm_for_fo4() {
     let interner = StringInterner::new();
     let mut record = sopm_record(&interner);
     push_bytes(&mut record, "NAM1", &[1, 0, 0, 70]);
@@ -86,10 +83,24 @@ fn orders_modern_defined_speaker_sopm_for_fo4() {
         record.fields[3].value,
         FieldValue::Bytes(smallvec::SmallVec::from_slice(&output_values))
     );
+
+    let interner = StringInterner::new();
+    let mut record = sopm_record(&interner);
+    push_bytes(&mut record, "NAM1", &[2, 0, 0, 80]);
+    record.fields.push(FieldEntry {
+        sig: SubrecordSig::from_str("MNAM").unwrap(),
+        value: FieldValue::Uint(1),
+    });
+    push_bytes(&mut record, "ONAM", &[100; 24]);
+    let original = record.fields.clone();
+
+    run_pre_translate(&mut record, &interner);
+
+    assert_eq!(record.fields, original);
 }
 
 #[test]
-fn converts_exact_legacy_defined_speaker_sopm() {
+fn converts_exact_legacy_defined_speaker_sopm_and_leaves_malformed_rows() {
     let interner = StringInterner::new();
     let mut record = sopm_record(&interner);
     push_bytes(&mut record, "FNAM", &[1, 0, 0, 0]);
@@ -126,10 +137,7 @@ fn converts_exact_legacy_defined_speaker_sopm() {
             0, 100,
         ]))
     );
-}
 
-#[test]
-fn converts_exact_legacy_defined_speaker_sopm_without_lfe() {
     let interner = StringInterner::new();
     let mut record = sopm_record(&interner);
     push_bytes(&mut record, "FNAM", &[1, 0, 0, 0]);
@@ -159,6 +167,27 @@ fn converts_exact_legacy_defined_speaker_sopm_without_lfe() {
             100,
         ]))
     );
+
+    let interner = StringInterner::new();
+    let mut modern = sopm_record(&interner);
+    push_bytes(&mut modern, "NAM1", &[1, 0, 0, 30]);
+    record_type(&mut modern, 0);
+    push_bytes(&mut modern, "ANAM", &[1, 0, 0, 0]);
+    let modern_original = modern.fields.clone();
+
+    let mut legacy = sopm_record(&interner);
+    push_bytes(&mut legacy, "FNAM", &[1, 0, 0, 0]);
+    record_type(&mut legacy, 1);
+    push_bytes(&mut legacy, "CNAM", &[2, 0, 0, 0]);
+    push_bytes(&mut legacy, "SNAM", &[0; 16]);
+    push_bytes(&mut legacy, "ANAM", &source_attenuation(800.0, 9000.0));
+    let legacy_original = legacy.fields.clone();
+
+    run_pre_translate(&mut modern, &interner);
+    run_pre_translate(&mut legacy, &interner);
+
+    assert_eq!(modern.fields, modern_original);
+    assert_eq!(legacy.fields, legacy_original);
 }
 
 #[test]
@@ -283,47 +312,6 @@ fn parsed_subrecord(signature: &str, data: &[u8]) -> ParsedSubrecord {
         data: Bytes::copy_from_slice(data),
         semantic_type: None,
     }
-}
-
-#[test]
-fn leaves_player_first_person_sopm_unchanged() {
-    let interner = StringInterner::new();
-    let mut record = sopm_record(&interner);
-    push_bytes(&mut record, "NAM1", &[2, 0, 0, 80]);
-    record.fields.push(FieldEntry {
-        sig: SubrecordSig::from_str("MNAM").unwrap(),
-        value: FieldValue::Uint(1),
-    });
-    push_bytes(&mut record, "ONAM", &[100; 24]);
-    let original = record.fields.clone();
-
-    run_pre_translate(&mut record, &interner);
-
-    assert_eq!(record.fields, original);
-}
-
-#[test]
-fn leaves_malformed_sopm_attenuation_unchanged() {
-    let interner = StringInterner::new();
-    let mut modern = sopm_record(&interner);
-    push_bytes(&mut modern, "NAM1", &[1, 0, 0, 30]);
-    record_type(&mut modern, 0);
-    push_bytes(&mut modern, "ANAM", &[1, 0, 0, 0]);
-    let modern_original = modern.fields.clone();
-
-    let mut legacy = sopm_record(&interner);
-    push_bytes(&mut legacy, "FNAM", &[1, 0, 0, 0]);
-    record_type(&mut legacy, 1);
-    push_bytes(&mut legacy, "CNAM", &[2, 0, 0, 0]);
-    push_bytes(&mut legacy, "SNAM", &[0; 16]);
-    push_bytes(&mut legacy, "ANAM", &source_attenuation(800.0, 9000.0));
-    let legacy_original = legacy.fields.clone();
-
-    run_pre_translate(&mut modern, &interner);
-    run_pre_translate(&mut legacy, &interner);
-
-    assert_eq!(modern.fields, modern_original);
-    assert_eq!(legacy.fields, legacy_original);
 }
 
 fn record_type(record: &mut Record, value: u64) {

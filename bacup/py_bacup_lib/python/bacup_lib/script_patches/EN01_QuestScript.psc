@@ -27,14 +27,14 @@ EndEvent
 
 Actor Function InitializePlayer()
     Actor playerRef = Game.GetPlayer()
-    If playerRef != None && currentPlayer.GetRef() != playerRef
+    If playerRef != None && currentPlayer != None && currentPlayer.GetRef() != playerRef
         currentPlayer.ForceRefTo(playerRef)
     EndIf
     Return playerRef
 EndFunction
 
 Function HandleImportantNoteRead(Book akBook)
-    If akBook == None || !IsRunning()
+    If akBook == None
         Return
     EndIf
 
@@ -42,10 +42,16 @@ Function HandleImportantNoteRead(Book akBook)
     While NoteData != None && index < NoteData.Length
         NoteDatum clue = NoteData[index]
         If clue.TargetBook == akBook
-            If !IsStageDone(clue.iStageToSetOnRead)
-                SetStage(clue.iStageToSetOnRead)
+            Actor playerRef = Game.GetPlayer()
+            If playerRef != None && clue.myActorValue != None
+                playerRef.SetValue(clue.myActorValue, 1.0)
             EndIf
-            RecordCodeClue(clue.iStageToSetOnRead)
+            If IsRunning() && !IsCompleted()
+                If !IsStageDone(clue.iStageToSetOnRead)
+                    SetStage(clue.iStageToSetOnRead)
+                EndIf
+                RecordCodeClue(clue.iStageToSetOnRead)
+            EndIf
             Return
         EndIf
         index += 1
@@ -77,14 +83,28 @@ Function RecordCodeClue(Int aiStage)
 EndFunction
 
 Function DisplayKnownCodes()
+    If !IsRunning() || IsCompleted()
+        Return
+    EndIf
+    Actor playerRef = Game.GetPlayer()
     SetObjectiveDisplayed(iSearchForCluesObjIndex, True)
     If IsStageDone(112)
         SetObjectiveDisplayed(122, True)
     EndIf
     Int index = 0
     While NoteData != None && index < NoteData.Length
-        If IsStageDone(NoteData[index].iStageToSetOnRead) && NoteData[index].iObjectiveIndex > 0
-            SetObjectiveDisplayed(NoteData[index].iObjectiveIndex, True)
+        NoteDatum clue = NoteData[index]
+        Bool wasRead = IsStageDone(clue.iStageToSetOnRead)
+        If playerRef != None && clue.myActorValue != None && playerRef.GetValue(clue.myActorValue) >= 1.0
+            wasRead = True
+        EndIf
+        If wasRead
+            If !IsStageDone(clue.iStageToSetOnRead)
+                SetStage(clue.iStageToSetOnRead)
+            EndIf
+            If clue.iObjectiveIndex > 0
+                SetObjectiveDisplayed(clue.iObjectiveIndex, True)
+            EndIf
         EndIf
         index += 1
     EndWhile

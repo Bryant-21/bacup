@@ -85,6 +85,9 @@ Function Fragment_Stage_0030_Item_00()
         hewsen.Enable()
         hewsen.EvaluatePackage()
     EndIf
+    If !IsStageDone(1850)
+        SetStage(1850)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
@@ -176,6 +179,9 @@ Function Fragment_Stage_0330_Item_00()
         hewsen.SetValue(BS01_AV_IsInitiate, 1.0)
     EndIf
     SetObjectiveCompleted(30)
+    If IsStageDone(340) && !IsStageDone(400)
+        SetStage(400)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0340_Item_00()
@@ -184,6 +190,9 @@ Function Fragment_Stage_0340_Item_00()
         norland.SetValue(BS01_AV_IsInitiate, 1.0)
     EndIf
     SetObjectiveCompleted(40)
+    If IsStageDone(330) && !IsStageDone(400)
+        SetStage(400)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()

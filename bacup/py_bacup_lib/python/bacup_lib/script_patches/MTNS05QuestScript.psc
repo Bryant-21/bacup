@@ -5,6 +5,10 @@ Function ResetTargets()
 
     Int index = 0
     While index < CurrentTargetData.Length
+        ; A run the player abandoned leaves its collection timer pending; without
+        ; this the timer fires during the next day's run and resets a slot that
+        ; the new run has already handed out.
+        CancelTimer(100 + index)
         Actor targetActor = CurrentTargetData[index].CurrentTargetActor
         If targetActor != None
             targetActor.SetValue(MTNS05_StageValue, 0.0)

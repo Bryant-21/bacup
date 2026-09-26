@@ -127,6 +127,10 @@ Function Fragment_Stage_0310_Item_00()
     SetObjectiveDisplayed(310)
     If raRaRef != None && W05_MQR_202P_RaRaVent_0310_ExitVent != None && !W05_MQR_202P_RaRaVent_0310_ExitVent.IsPlaying()
         W05_MQR_202P_RaRaVent_0310_ExitVent.Start()
+        W05_MQR_202P_QuestScript controller = (Self as Quest) as W05_MQR_202P_QuestScript
+        If controller != None
+            controller.MoveRaRaToExitVent(controller.RaRaVent0310Exit, W05_MQR_202P_RaRaVent_0310_ExitVent)
+        EndIf
     EndIf
 EndFunction
 
@@ -174,6 +178,11 @@ Function Fragment_Stage_0610_Item_00()
 EndFunction
 
 Function Fragment_Stage_0620_Item_00()
+    ; The Sector Alpha robots start disabled under this enable parent, and the scene waits for their deaths (630).
+    ObjectReference robotsEnableMarker = Alias_SectorAlphaRobotsEnableMarker.GetReference()
+    If robotsEnableMarker != None
+        robotsEnableMarker.Enable()
+    EndIf
     SetObjectiveDisplayed(620)
     If Alias_RobotsDoor01 == None || Alias_RobotsDoor01.GetCount() == 0
         If !IsStageDone(630)
@@ -359,6 +368,19 @@ EndFunction
 
 Function Fragment_Stage_1500_Item_00()
     Actor raRaRef = Alias_RaRa.GetActorReference()
+    Actor playerRef = Game.GetPlayer()
+
+    ; Ra-Ra's hand-off lines give the Sector Charlie keycard and her note; the Charlie reader is the only way on.
+    If W05_MQR_202P_SectorCharlieKeycard != None && playerRef.GetItemCount(W05_MQR_202P_SectorCharlieKeycard) == 0
+        playerRef.AddItem(W05_MQR_202P_SectorCharlieKeycard, 1)
+    EndIf
+    If W05_MQR_202P_VentNote != None && playerRef.GetItemCount(W05_MQR_202P_VentNote) == 0
+        playerRef.AddItem(W05_MQR_202P_VentNote, 1)
+    EndIf
+    ObjectReference toyRef = Alias_Toy.GetReference()
+    If toyRef != None
+        toyRef.Enable()
+    EndIf
 
     SetObjectiveDisplayed(1500)
     If raRaRef != None && W05_MQR_202P_RaRaVent_1500_PeekSequence != None && !W05_MQR_202P_RaRaVent_1500_PeekSequence.IsPlaying()
@@ -368,14 +390,12 @@ EndFunction
 
 Function Fragment_Stage_1510_Item_00()
     SetObjectiveDisplayed(1510)
-    If !IsStageDone(1520)
-        SetStage(1520)
-    EndIf
 EndFunction
 
 Function Fragment_Stage_1511_Item_00()
-    If !IsStageDone(1520)
-        SetStage(1520)
+    W05_MQR_202P_QuestScript controller = (Self as Quest) as W05_MQR_202P_QuestScript
+    If controller != None
+        controller.DropEarlyPulseGrenade()
     EndIf
 EndFunction
 

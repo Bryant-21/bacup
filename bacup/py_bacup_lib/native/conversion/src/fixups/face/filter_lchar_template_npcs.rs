@@ -397,7 +397,6 @@ fn resolve_raw_form_id(
 mod tests {
     use super::*;
     use crate::fixups::{FixupConfig, FixupContext};
-    use crate::formkey_mapper::{FormKeyMapper, MapperOptions};
     use crate::ids::SigCode;
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
     use crate::schema::AuthoringSchema;
@@ -509,510 +508,227 @@ mod tests {
 
     // ── applies_to dispatch ────────────────────────────────────────────────
 
-    /// applies to NPC_ roots.
+    /// Whole-plugin runs have no root_sig, and still apply.
     #[test]
-    fn applies_to_npc_root() {
+    fn applies_to_npc_lvln_and_whole_plugin_roots() {
         let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("NPC_").unwrap()),
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = make_test_ctx(&schema, &config, &mut ctx_interner);
-        assert!(FilterLcharTemplateNpcsFixup.applies_to(&ctx));
-    }
-
-    /// applies to LVLN roots.
-    #[test]
-    fn applies_to_lvln_root() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("LVLN").unwrap()),
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = make_test_ctx(&schema, &config, &mut ctx_interner);
-        assert!(FilterLcharTemplateNpcsFixup.applies_to(&ctx));
-    }
-
-    /// does not apply to WEAP roots.
-    #[test]
-    fn does_not_apply_to_weap_root() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("WEAP").unwrap()),
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = make_test_ctx(&schema, &config, &mut ctx_interner);
-        assert!(!FilterLcharTemplateNpcsFixup.applies_to(&ctx));
-    }
-
-    /// applies when root_sig is None for whole-plugin runs.
-    #[test]
-    fn applies_when_no_root_sig() {
-        let schema = AuthoringSchema::for_game("fo4").expect("fo4 schema");
-        let config = FixupConfig {
-            root_sig: None,
-            ..Default::default()
-        };
-        let mut ctx_interner = StringInterner::new();
-        let ctx = make_test_ctx(&schema, &config, &mut ctx_interner);
-        assert!(FilterLcharTemplateNpcsFixup.applies_to(&ctx));
+        for (root, expected) in [
+            (Some("NPC_"), true),
+            (Some("LVLN"), true),
+            (Some("WEAP"), false),
+            (None, true),
+        ] {
+            let config = FixupConfig {
+                root_sig: root.map(|sig| SigCode::from_str(sig).unwrap()),
+                ..Default::default()
+            };
+            let mut ctx_interner = StringInterner::new();
+            let ctx = make_test_ctx(&schema, &config, &mut ctx_interner);
+            assert_eq!(
+                FilterLcharTemplateNpcsFixup.applies_to(&ctx),
+                expected,
+                "{root:?}"
+            );
+        }
         let target_handle =
             plugin_handle_new_native("FilterLcharTemplateNpcsFixupTest.esp", Some("fo4"))
                 .expect("test plugin handle");
         let session = open_session(target_handle, None).expect("open session");
-        assert!(FilterLcharTemplateNpcsFixup.applies_to_session(&session, &config));
-    }
-
-    /// smoke: session run is no-op on an empty target plugin.
-    #[test]
-    fn run_with_session_is_noop_on_empty_plugin() {
-        let config = FixupConfig {
-            root_sig: Some(SigCode::from_str("NPC_").unwrap()),
-            ..Default::default()
-        };
-        let target_handle =
-            plugin_handle_new_native("FilterLcharTemplateNpcsFixupTest.esp", Some("fo4"))
-                .expect("test plugin handle");
-        let mut mapper_interner = StringInterner::new();
-        let mut mapper = FormKeyMapper::new([], MapperOptions::default(), &mut mapper_interner);
-        let mut session = open_session(target_handle, None).expect("open session");
-        let report = FilterLcharTemplateNpcsFixup
-            .run_with_session(&mut session, &mut mapper, &config)
-            .expect("empty target plugin should produce a no-op report");
-        assert!(report.is_no_op(), "empty target plugin should be a no-op");
+        assert!(FilterLcharTemplateNpcsFixup.applies_to_session(&session, &FixupConfig::default()));
     }
 
     // ── tpta_has_template_actor — Bytes shape ─────────────────────────────
 
-    /// TPTA Bytes with base_data slot set returns true.
     #[test]
-    fn tpta_bytes_with_base_data_returns_true() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        // Slot 7 = base_data = 0x00ABCDEF, all other slots zero.
-        let mut slots = [0u32; 13];
-        slots[7] = 0x00_ABCDEF;
-        push_field(
-            &mut record,
-            "TPTA",
-            FieldValue::Bytes(make_tpta_bytes(slots)),
-        );
-        assert!(tpta_has_template_actor(&record));
-    }
-
-    #[test]
-    fn tpta_bytes_with_traits_slot_returns_true() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        let mut slots = [0u32; 13];
-        slots[0] = 0x00_ABCDEF;
-        push_field(
-            &mut record,
-            "TPTA",
-            FieldValue::Bytes(make_tpta_bytes(slots)),
-        );
-        assert!(tpta_has_template_actor(&record));
-    }
-
-    /// TPTA Bytes with no populated slots returns false.
-    #[test]
-    fn tpta_bytes_without_template_actor_returns_false() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        // All slots zero — no template inheritance.
-        push_field(
-            &mut record,
-            "TPTA",
-            FieldValue::Bytes(make_tpta_bytes([0u32; 13])),
-        );
-        assert!(!tpta_has_template_actor(&record));
-    }
-
-    /// Record without TPTA returns false.
-    #[test]
-    fn no_tpta_returns_false() {
-        let mut interner = StringInterner::new();
-        let record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        assert!(!tpta_has_template_actor(&record));
-    }
-
-    /// TPTA Bytes shorter than one slot returns false.
-    #[test]
-    fn tpta_bytes_too_short_returns_false() {
-        let mut interner = StringInterner::new();
-        let mut record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        // Only 3 bytes — no complete FormID slot is readable.
-        let mut short: smallvec::SmallVec<[u8; 32]> = smallvec::SmallVec::new();
-        short.extend_from_slice(&[0xFFu8; 3]);
-        push_field(&mut record, "TPTA", FieldValue::Bytes(short));
-        assert!(!tpta_has_template_actor(&record));
+    fn tpta_has_template_actor_reads_bytes_and_struct_shapes() {
+        let interner = StringInterner::new();
+        let fallout4 = interner.intern("Fallout4.esm");
+        let target_fk = FormKey {
+            local: 0x00_ABCDEF,
+            plugin: fallout4,
+        };
+        let null_fk = FormKey {
+            local: 0,
+            plugin: fallout4,
+        };
+        let slots_with = |index: usize| {
+            let mut slots = [0u32; 13];
+            slots[index] = 0x00_ABCDEF;
+            FieldValue::Bytes(make_tpta_bytes(slots))
+        };
+        for (name, tpta, expected) in [
+            ("bytes_base_data", Some(slots_with(7)), true),
+            ("bytes_traits", Some(slots_with(0)), true),
+            (
+                "bytes_all_zero",
+                Some(FieldValue::Bytes(make_tpta_bytes([0u32; 13]))),
+                false,
+            ),
+            ("absent", None, false),
+            (
+                "bytes_too_short",
+                Some(FieldValue::Bytes(smallvec::SmallVec::from_slice(
+                    &[0xFFu8; 3],
+                ))),
+                false,
+            ),
+            (
+                "struct_base_data",
+                Some(FieldValue::Struct(vec![
+                    (interner.intern("traits"), FieldValue::FormKey(null_fk)),
+                    (interner.intern("base_data"), FieldValue::FormKey(target_fk)),
+                ])),
+                true,
+            ),
+            (
+                "struct_authoring_traits",
+                Some(FieldValue::Struct(vec![(
+                    interner.intern("Traits"),
+                    FieldValue::FormKey(target_fk),
+                )])),
+                true,
+            ),
+            (
+                "struct_only_null",
+                Some(FieldValue::Struct(vec![
+                    (interner.intern("Traits"), FieldValue::FormKey(null_fk)),
+                    (interner.intern("base_data"), FieldValue::FormKey(null_fk)),
+                ])),
+                false,
+            ),
+        ] {
+            let mut record = make_record("NPC_", 0x000100, "Output.esp", &interner);
+            if let Some(tpta) = tpta {
+                push_field(&mut record, "TPTA", tpta);
+            }
+            assert_eq!(tpta_has_template_actor(&record), expected, "{name}");
+        }
     }
 
     // ── tpta_has_template_actor — Struct shape ────────────────────────────
 
-    /// TPTA Struct with FormKey base_data returns true.
-    #[test]
-    fn tpta_struct_with_base_data_formkey_returns_true() {
-        let mut interner = StringInterner::new();
-        let base_data_sym = interner.intern("base_data");
-        let other_sym = interner.intern("traits");
-        let mut record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        let target_fk = FormKey {
-            local: 0x00_ABCDEF,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-        push_field(
-            &mut record,
-            "TPTA",
-            FieldValue::Struct(vec![
-                (
-                    other_sym,
-                    FieldValue::FormKey(FormKey {
-                        local: 0,
-                        plugin: target_fk.plugin,
-                    }),
-                ),
-                (base_data_sym, FieldValue::FormKey(target_fk)),
-            ]),
-        );
-        assert!(tpta_has_template_actor(&record));
-    }
-
-    #[test]
-    fn tpta_struct_with_authoring_traits_key_returns_true() {
-        let mut interner = StringInterner::new();
-        let traits_sym = interner.intern("Traits");
-        let mut record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        let target_fk = FormKey {
-            local: 0x00_ABCDEF,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-        push_field(
-            &mut record,
-            "TPTA",
-            FieldValue::Struct(vec![(traits_sym, FieldValue::FormKey(target_fk))]),
-        );
-        assert!(tpta_has_template_actor(&record));
-    }
-
-    /// TPTA Struct with only null FormKeys returns false.
-    #[test]
-    fn tpta_struct_with_only_null_formkeys_returns_false() {
-        let mut interner = StringInterner::new();
-        let base_data_sym = interner.intern("base_data");
-        let traits_sym = interner.intern("Traits");
-        let mut record = make_record("NPC_", 0x000100, "Output.esp", &mut interner);
-        let null_fk = FormKey {
-            local: 0,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-        push_field(
-            &mut record,
-            "TPTA",
-            FieldValue::Struct(vec![
-                (traits_sym, FieldValue::FormKey(null_fk)),
-                (base_data_sym, FieldValue::FormKey(null_fk)),
-            ]),
-        );
-        assert!(!tpta_has_template_actor(&record));
-    }
-
     // ── drop_template_lvlo_entries ────────────────────────────────────────
 
-    /// drop LVLO Bytes entries that resolve into the template set.
+    /// Only template-pointing entries go: a null Reference (raw 0) is the job of
+    /// `clean_creature_esp_check_fields`, and non-LVLO subrecords survive.
     #[test]
-    fn drop_lvlo_bytes_pointing_to_template_npc() {
-        let mut interner = StringInterner::new();
-        let reference_sym = interner.intern("Reference");
-        // Target masters: ["Fallout4.esm"]. own_index = 1.
+    fn drops_byte_lvlo_entries_pointing_to_template_npcs() {
         let masters = vec!["Fallout4.esm".to_string()];
-        let plugin_name = "Output.esp".to_string();
+        let plugin_name = "Output.esp";
+        for (name, use_template_set, raws, removed, remaining) in [
+            (
+                "own_template",
+                true,
+                vec![0x01_000800, 0x00_001234, 0x01_000800],
+                2,
+                1,
+            ),
+            (
+                "master_template",
+                false,
+                vec![0x00_0D228A, 0x00_001234],
+                1,
+                1,
+            ),
+            (
+                "empty_template_set",
+                false,
+                vec![0x01_000800, 0x00_001234],
+                0,
+                2,
+            ),
+            ("null_reference", true, vec![0], 0, 1),
+        ] {
+            let interner = StringInterner::new();
+            let reference_sym = interner.intern("Reference");
+            let fo4_sym = interner.intern("Fallout4.esm");
+            let mut master_templates = |fk: &FormKey| fk.plugin == fo4_sym && fk.local == 0x0D228A;
+            let mut template_set = HashSet::new();
+            if use_template_set {
+                template_set.insert(FormKey {
+                    local: 0x000800,
+                    plugin: interner.intern(plugin_name),
+                });
+            }
 
-        // Template NPC FK: object 0x000800 in own plugin.
-        let template_fk = FormKey {
-            local: 0x000800,
-            plugin: interner.intern(&plugin_name),
-        };
-        let mut template_set = HashSet::new();
-        template_set.insert(template_fk);
+            let mut record = make_record("LVLN", 0x000100, plugin_name, &interner);
+            push_field(
+                &mut record,
+                "EDID",
+                FieldValue::String(interner.intern("TestLVLN")),
+            );
+            push_field(&mut record, "LLCT", FieldValue::Uint(raws.len() as u64));
+            for raw in &raws {
+                push_field(
+                    &mut record,
+                    "LVLO",
+                    FieldValue::Bytes(make_lvlo_bytes(*raw)),
+                );
+            }
 
-        let mut record = make_record("LVLN", 0x000100, &plugin_name, &mut interner);
-        push_field(&mut record, "LLCT", FieldValue::Uint(3));
-        // Entry 1 — points to template NPC (own plugin, master byte 0x01, object 0x000800).
-        // Raw u32 = (1 << 24) | 0x000800 = 0x01000800.
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x01_000800)),
-        );
-        // Entry 2 — points to some other NPC (Fallout4.esm, master byte 0, object 0x001234).
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x00_001234)),
-        );
-        // Entry 3 — another template-NPC ref (duplicate, should also be dropped).
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x01_000800)),
-        );
-
-        let removed = drop_template_lvlo_entries_for_test(
-            &mut record,
-            &template_set,
-            &[reference_sym],
-            &masters,
-            &plugin_name,
-            &mut interner,
-        );
-        assert_eq!(removed, 2);
-        assert_eq!(count_lvlo(&record), 1, "one non-template LVLO survives");
-        assert_eq!(first_uint(&record, "LLCT"), Some(1));
+            let dropped = drop_template_lvlo_entries(
+                &mut record,
+                &template_set,
+                &mut master_templates,
+                &[reference_sym],
+                &masters,
+                plugin_name,
+                &interner,
+            );
+            assert_eq!(dropped, removed, "{name}");
+            assert_eq!(count_lvlo(&record), remaining, "{name}");
+            assert_eq!(
+                first_uint(&record, "LLCT"),
+                Some(remaining as u64),
+                "{name}"
+            );
+            assert_eq!(
+                record.fields.len(),
+                remaining + 2,
+                "{name}: EDID and LLCT survive"
+            );
+        }
     }
 
     #[test]
-    fn drop_lvlo_bytes_pointing_to_master_template_npc() {
-        let mut interner = StringInterner::new();
-        let reference_sym = interner.intern("Reference");
-        let masters = vec!["Fallout4.esm".to_string()];
-        let plugin_name = "Output.esp".to_string();
-        let template_set = HashSet::new();
-        let fo4_sym = interner.intern("Fallout4.esm");
-        let mut master_templates = |fk: &FormKey| fk.plugin == fo4_sym && fk.local == 0x0D228A;
+    fn drops_struct_lvlo_entries_pointing_to_template_npcs() {
+        for key in ["Reference", "NPC"] {
+            let interner = StringInterner::new();
+            let reference_sym = interner.intern(key);
+            let masters = vec!["Fallout4.esm".to_string()];
+            let plugin_name = "Output.esp".to_string();
+            let template_fk = FormKey {
+                local: 0x000800,
+                plugin: interner.intern(&plugin_name),
+            };
+            let template_set = HashSet::from([template_fk]);
+            let other_fk = FormKey {
+                local: 0x001234,
+                plugin: interner.intern("Fallout4.esm"),
+            };
 
-        let mut record = make_record("LVLN", 0x000100, &plugin_name, &mut interner);
-        push_field(&mut record, "LLCT", FieldValue::Uint(2));
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x00_0D228A)),
-        );
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x00_001234)),
-        );
+            let mut record = make_record("LVLN", 0x000100, &plugin_name, &interner);
+            push_field(&mut record, "LLCT", FieldValue::Uint(2));
+            for fk in [template_fk, other_fk] {
+                push_field(
+                    &mut record,
+                    "LVLO",
+                    FieldValue::Struct(vec![(reference_sym, FieldValue::FormKey(fk))]),
+                );
+            }
 
-        let removed = drop_template_lvlo_entries(
-            &mut record,
-            &template_set,
-            &mut master_templates,
-            &[reference_sym],
-            &masters,
-            &plugin_name,
-            &interner,
-        );
-
-        assert_eq!(removed, 1);
-        assert_eq!(count_lvlo(&record), 1);
-        assert_eq!(first_uint(&record, "LLCT"), Some(1));
-    }
-
-    /// Empty template set is a no-op.
-    #[test]
-    fn empty_template_set_is_noop() {
-        let mut interner = StringInterner::new();
-        let reference_sym = interner.intern("Reference");
-        let masters = vec!["Fallout4.esm".to_string()];
-        let plugin_name = "Output.esp".to_string();
-        let template_set: HashSet<FormKey> = HashSet::new();
-
-        let mut record = make_record("LVLN", 0x000100, &plugin_name, &mut interner);
-        push_field(&mut record, "LLCT", FieldValue::Uint(2));
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x01_000800)),
-        );
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x00_001234)),
-        );
-
-        let removed = drop_template_lvlo_entries_for_test(
-            &mut record,
-            &template_set,
-            &[reference_sym],
-            &masters,
-            &plugin_name,
-            &mut interner,
-        );
-        assert_eq!(removed, 0);
-        assert_eq!(count_lvlo(&record), 2);
-    }
-
-    /// Struct-shaped LVLO entries are matched against the template set.
-    #[test]
-    fn drop_lvlo_struct_pointing_to_template_npc() {
-        let mut interner = StringInterner::new();
-        let reference_sym = interner.intern("Reference");
-        let masters = vec!["Fallout4.esm".to_string()];
-        let plugin_name = "Output.esp".to_string();
-
-        let template_fk = FormKey {
-            local: 0x000800,
-            plugin: interner.intern(&plugin_name),
-        };
-        let mut template_set = HashSet::new();
-        template_set.insert(template_fk);
-
-        let other_fk = FormKey {
-            local: 0x001234,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-
-        let mut record = make_record("LVLN", 0x000100, &plugin_name, &mut interner);
-        push_field(&mut record, "LLCT", FieldValue::Uint(2));
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Struct(vec![(reference_sym, FieldValue::FormKey(template_fk))]),
-        );
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Struct(vec![(reference_sym, FieldValue::FormKey(other_fk))]),
-        );
-
-        let removed = drop_template_lvlo_entries_for_test(
-            &mut record,
-            &template_set,
-            &[reference_sym],
-            &masters,
-            &plugin_name,
-            &mut interner,
-        );
-        assert_eq!(removed, 1);
-        assert_eq!(count_lvlo(&record), 1);
-        assert_eq!(first_uint(&record, "LLCT"), Some(1));
-    }
-
-    #[test]
-    fn drop_lvlo_struct_with_authoring_npc_key() {
-        let mut interner = StringInterner::new();
-        let reference_sym = interner.intern("NPC");
-        let masters = vec!["Fallout4.esm".to_string()];
-        let plugin_name = "Output.esp".to_string();
-
-        let template_fk = FormKey {
-            local: 0x000800,
-            plugin: interner.intern(&plugin_name),
-        };
-        let mut template_set = HashSet::new();
-        template_set.insert(template_fk);
-
-        let other_fk = FormKey {
-            local: 0x001234,
-            plugin: interner.intern("Fallout4.esm"),
-        };
-
-        let mut record = make_record("LVLN", 0x000100, &plugin_name, &mut interner);
-        push_field(&mut record, "LLCT", FieldValue::Uint(2));
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Struct(vec![(reference_sym, FieldValue::FormKey(template_fk))]),
-        );
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Struct(vec![(reference_sym, FieldValue::FormKey(other_fk))]),
-        );
-
-        let removed = drop_template_lvlo_entries_for_test(
-            &mut record,
-            &template_set,
-            &[reference_sym],
-            &masters,
-            &plugin_name,
-            &mut interner,
-        );
-        assert_eq!(removed, 1);
-        assert_eq!(count_lvlo(&record), 1);
-        assert_eq!(first_uint(&record, "LLCT"), Some(1));
-    }
-
-    /// Null LVLO Reference (raw 0) is preserved, not dropped here — the
-    /// null-Reference cleanup is the job of `clean_creature_esp_check_fields`;
-    /// this fixup only drops template-pointing entries.
-    #[test]
-    fn null_lvlo_reference_is_not_dropped() {
-        let mut interner = StringInterner::new();
-        let reference_sym = interner.intern("Reference");
-        let masters = vec!["Fallout4.esm".to_string()];
-        let plugin_name = "Output.esp".to_string();
-        let template_fk = FormKey {
-            local: 0x000800,
-            plugin: interner.intern(&plugin_name),
-        };
-        let mut template_set = HashSet::new();
-        template_set.insert(template_fk);
-
-        let mut record = make_record("LVLN", 0x000100, &plugin_name, &mut interner);
-        // Null reference: raw u32 = 0.
-        push_field(&mut record, "LVLO", FieldValue::Bytes(make_lvlo_bytes(0)));
-
-        let removed = drop_template_lvlo_entries_for_test(
-            &mut record,
-            &template_set,
-            &[reference_sym],
-            &masters,
-            &plugin_name,
-            &mut interner,
-        );
-        assert_eq!(removed, 0, "null-Reference entry is not template-pointing");
-        assert_eq!(count_lvlo(&record), 1);
-    }
-
-    /// Non-LVLO subrecords are preserved across the drop pass.
-    #[test]
-    fn non_lvlo_subrecords_preserved() {
-        let mut interner = StringInterner::new();
-        let reference_sym = interner.intern("Reference");
-        let masters = vec!["Fallout4.esm".to_string()];
-        let plugin_name = "Output.esp".to_string();
-        let template_fk = FormKey {
-            local: 0x000800,
-            plugin: interner.intern(&plugin_name),
-        };
-        let mut template_set = HashSet::new();
-        template_set.insert(template_fk);
-
-        let mut record = make_record("LVLN", 0x000100, &plugin_name, &mut interner);
-        // EDID before, OBND in middle, LLCT after — non-LVLO sigs.
-        push_field(
-            &mut record,
-            "EDID",
-            FieldValue::String(interner.intern("TestLVLN")),
-        );
-        push_field(
-            &mut record,
-            "LVLO",
-            FieldValue::Bytes(make_lvlo_bytes(0x01_000800)),
-        );
-        push_field(&mut record, "LLCT", FieldValue::Uint(1));
-
-        let removed = drop_template_lvlo_entries_for_test(
-            &mut record,
-            &template_set,
-            &[reference_sym],
-            &masters,
-            &plugin_name,
-            &mut interner,
-        );
-        assert_eq!(removed, 1);
-        // EDID + LLCT survive; LVLO dropped.
-        assert_eq!(record.fields.len(), 2);
-        let edid_sig = SubrecordSig::from_str("EDID").unwrap();
-        let llct_sig = SubrecordSig::from_str("LLCT").unwrap();
-        assert!(record.fields.iter().any(|e| e.sig == edid_sig));
-        assert!(record.fields.iter().any(|e| e.sig == llct_sig));
-        assert_eq!(first_uint(&record, "LLCT"), Some(0));
+            let removed = drop_template_lvlo_entries_for_test(
+                &mut record,
+                &template_set,
+                &[reference_sym],
+                &masters,
+                &plugin_name,
+                &interner,
+            );
+            assert_eq!(removed, 1, "{key}");
+            assert_eq!(count_lvlo(&record), 1, "{key}");
+            assert_eq!(first_uint(&record, "LLCT"), Some(1), "{key}");
+        }
     }
 
     /// `resolve_raw_form_id` master-byte routing matches

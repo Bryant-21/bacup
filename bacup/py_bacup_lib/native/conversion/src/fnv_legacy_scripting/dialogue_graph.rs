@@ -473,68 +473,68 @@ mod tests {
     }
 
     #[test]
-    fn target_topic_remap_is_total_and_deterministic() {
-        let interner = StringInterner::new();
-        let source_first = fk(0x13015B, &interner);
-        let source_second = fk(0x134B9A, &interner);
-        let target_plugin = interner.intern("Output.esm");
-        let target_first = FormKey {
-            local: 0x23015B,
-            plugin: target_plugin,
-        };
-        let target_second = FormKey {
-            local: 0x234B9A,
-            plugin: target_plugin,
-        };
-        let source_plan = SceneBranchPlan {
-            quest: FormKey {
-                local: 0x21F935,
+    fn target_topic_remap_is_total_deterministic_and_fails_closed() {
+        {
+            let interner = StringInterner::new();
+            let source_first = fk(0x13015B, &interner);
+            let source_second = fk(0x134B9A, &interner);
+            let target_plugin = interner.intern("Output.esm");
+            let target_first = FormKey {
+                local: 0x23015B,
                 plugin: target_plugin,
-            },
-            scene: FormKey {
-                local: 0x2A1000,
+            };
+            let target_second = FormKey {
+                local: 0x234B9A,
                 plugin: target_plugin,
-            },
-            branch: FormKey {
-                local: 0x2A1001,
-                plugin: target_plugin,
-            },
-            starting_topic: source_second,
-            ordered_topics: vec![source_second, source_first],
-            edges: vec![DialogueEdge {
-                from_topic: source_second,
-                to_topic: source_first,
-                kind: DialogueEdgeKind::LinkTo,
-            }],
-        };
+            };
+            let source_plan = SceneBranchPlan {
+                quest: FormKey {
+                    local: 0x21F935,
+                    plugin: target_plugin,
+                },
+                scene: FormKey {
+                    local: 0x2A1000,
+                    plugin: target_plugin,
+                },
+                branch: FormKey {
+                    local: 0x2A1001,
+                    plugin: target_plugin,
+                },
+                starting_topic: source_second,
+                ordered_topics: vec![source_second, source_first],
+                edges: vec![DialogueEdge {
+                    from_topic: source_second,
+                    to_topic: source_first,
+                    kind: DialogueEdgeKind::LinkTo,
+                }],
+            };
 
-        let remapped = remap_scene_branch_plan_topics(
-            &source_plan,
-            &HashMap::from([(source_first, target_first), (source_second, target_second)]),
-        )
-        .unwrap();
+            let remapped = remap_scene_branch_plan_topics(
+                &source_plan,
+                &HashMap::from([(source_first, target_first), (source_second, target_second)]),
+            )
+            .unwrap();
 
-        assert_eq!(remapped.starting_topic, target_second);
-        assert_eq!(remapped.ordered_topics, [target_second, target_first]);
-        assert_eq!(remapped.edges[0].to_topic, target_first);
-    }
+            assert_eq!(remapped.starting_topic, target_second);
+            assert_eq!(remapped.ordered_topics, [target_second, target_first]);
+            assert_eq!(remapped.edges[0].to_topic, target_first);
+        }
+        {
+            let interner = StringInterner::new();
+            let source = fk(0x13015B, &interner);
+            let plan = SceneBranchPlan {
+                quest: fk(1, &interner),
+                scene: fk(2, &interner),
+                branch: fk(3, &interner),
+                starting_topic: source,
+                ordered_topics: vec![source],
+                edges: Vec::new(),
+            };
 
-    #[test]
-    fn target_topic_remap_fails_closed_when_any_topic_is_unmapped() {
-        let interner = StringInterner::new();
-        let source = fk(0x13015B, &interner);
-        let plan = SceneBranchPlan {
-            quest: fk(1, &interner),
-            scene: fk(2, &interner),
-            branch: fk(3, &interner),
-            starting_topic: source,
-            ordered_topics: vec![source],
-            edges: Vec::new(),
-        };
-
-        assert!(matches!(
-            remap_scene_branch_plan_topics(&plan, &HashMap::new()),
-            Err(DialogueGraphError::UnmappedTopic { topic: 0x13015B })
-        ));
+            assert!(matches!(
+                remap_scene_branch_plan_topics(&plan, &HashMap::new()),
+                Err(DialogueGraphError::UnmappedTopic { topic: 0x13015B })
+            ));
+        }
     }
 }

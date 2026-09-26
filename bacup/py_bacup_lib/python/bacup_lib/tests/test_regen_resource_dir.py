@@ -17,15 +17,7 @@ def _paths(resource_dir=None):
     )
 
 
-def test_resource_dir_defaults_to_none():
-    assert _paths().resource_dir is None
-
-
-def test_effective_resource_dir_uses_explicit_when_set():
+def test_effective_resource_dir_prefers_explicit_then_project_root():
     p = _paths(resource_dir=Path("Z/bundle/resource"))
     assert _effective_resource_dir(p) == Path("Z/bundle/resource")
-
-
-def test_effective_resource_dir_falls_back_to_project_root():
-    # output_root R/mods/SeventySix -> project_root R -> R/resource
     assert _effective_resource_dir(_paths()) == Path("R/resource")

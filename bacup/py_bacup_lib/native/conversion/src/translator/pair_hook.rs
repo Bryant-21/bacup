@@ -29,6 +29,10 @@ pub struct PairCtx<'a> {
     pub source_plugin_name: Option<&'a str>,
     pub source_master_names: &'a [String],
     pub target_master_names: &'a [String],
+    /// Source `GLOB` local form id -> value. A hook that must decide whether a
+    /// condition-gated row is live in the shipped data reads it from here;
+    /// `None` means the caller had no source plugin to read.
+    pub source_global_values: Option<&'a std::collections::HashMap<u32, f32>>,
 }
 
 impl<'a> PairCtx<'a> {
@@ -38,6 +42,7 @@ impl<'a> PairCtx<'a> {
             source_plugin_name: None,
             source_master_names: &[],
             target_master_names: &[],
+            source_global_values: None,
         }
     }
 
@@ -51,6 +56,7 @@ impl<'a> PairCtx<'a> {
             source_plugin_name: Some(source_plugin_name),
             source_master_names,
             target_master_names: &[],
+            source_global_values: None,
         }
     }
 
@@ -65,7 +71,17 @@ impl<'a> PairCtx<'a> {
             source_plugin_name: Some(source_plugin_name),
             source_master_names,
             target_master_names,
+            source_global_values: None,
         }
+    }
+
+    /// Attach the source plugin's `GLOB` values (see `source_global_values`).
+    pub fn with_source_global_values(
+        mut self,
+        values: &'a std::collections::HashMap<u32, f32>,
+    ) -> Self {
+        self.source_global_values = Some(values);
+        self
     }
 
     pub fn resolve_source_form_id(&self, raw_form_id: u32) -> Option<FormKey> {

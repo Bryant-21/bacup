@@ -204,10 +204,7 @@ mod tests {
             Some("Owner.esp")
         );
         assert_eq!(references[1].form_key.local, 0x5678);
-    }
 
-    #[test]
-    fn implicit_union_does_not_create_a_phantom_dependency() {
         let interner = StringInterner::new();
         let mut record = fixture(&interner);
         record.fields.drain(..2);
@@ -222,10 +219,7 @@ mod tests {
             .unwrap()
             .is_empty()
         );
-    }
 
-    #[test]
-    fn malformed_or_unknown_union_shape_fails_closed() {
         let interner = StringInterner::new();
         let mut record = fixture(&interner);
         record.fields[0].value = FieldValue::Bytes(vec![0; 8].into());

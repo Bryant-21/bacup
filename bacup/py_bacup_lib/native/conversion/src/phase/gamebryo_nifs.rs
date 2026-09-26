@@ -1201,7 +1201,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_material_write_does_not_poison_dedup_state() {
+    fn failed_material_write_or_synthesis_leaves_no_output_or_poisoned_state() {
         let temp = std::env::temp_dir().join(format!(
             "conversion_gamebryo_material_retry_{}_{}",
             std::process::id(),
@@ -1228,362 +1228,7 @@ mod tests {
         assert_eq!(written.lock().unwrap().len(), 1);
 
         let _ = std::fs::remove_dir_all(temp);
-    }
 
-    fn write_flat_2d_dds(path: &Path) {
-        let mut image = directxtex_native::ScratchImage::default();
-        image
-            .initialize_2d(
-                directxtex_native::DXGI_FORMAT_R8G8B8A8_UNORM,
-                8,
-                8,
-                1,
-                1,
-                directxtex_native::CP_FLAGS_NONE,
-            )
-            .unwrap();
-        let bytes = image
-            .save_dds(directxtex_native::DDS_FLAGS_NONE)
-            .unwrap()
-            .buffer()
-            .to_vec();
-        std::fs::write(path, bytes).unwrap();
-    }
-
-    #[test]
-    fn material_spec_carries_slots_flags_and_scalars() {
-        let spec = GamebryoMaterialSpec {
-            textures: vec![
-                "Textures/Clutter/Crate/CrateLarge01.dds".to_string(),
-                "Textures/Clutter/Crate/CrateLarge01_n.dds".to_string(),
-                String::new(),
-                String::new(),
-                "Textures/Cubemaps/MetalChrome01Cube_e.dds".to_string(),
-                "Textures/Clutter/Crate/CrateLarge01_m.dds".to_string(),
-            ],
-            flags_1: SLSF1_SPECULAR | SLSF1_ENVIRONMENT_MAPPING,
-            flags_2: 0,
-            specular_strength: 0.75,
-            smoothness: 0.42,
-            environment_map_scale: 0.30,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        let material = fo4_bgsm_from_spec(&spec);
-
-        assert_eq!(material.DiffuseTexture, "Clutter/Crate/CrateLarge01.dds");
-        assert_eq!(material.NormalTexture, "Clutter/Crate/CrateLarge01_n.dds");
-        assert_eq!(
-            material.SmoothSpecTexture, "Clutter/Crate/CrateLarge01_s.dds",
-            "the _s map synthesized by the texture engine"
-        );
-        assert_eq!(
-            material.EnvmapTexture.as_deref(),
-            Some("Cubemaps/MetalChrome01Cube_e.dds")
-        );
-        assert!(material.SpecularEnabled);
-        assert!((material.SpecularMult - 0.75).abs() < 1e-6);
-        assert!((material.Smoothness - 0.42).abs() < 1e-6);
-        assert_eq!(material.header.env_mapping, Some(true));
-        assert!((material.header.env_mapping_mask_scale.unwrap() - 0.30).abs() < 1e-6);
-        assert!(
-            material.GlowTexture.is_none(),
-            "slot 5 is the env mask, not glow"
-        );
-    }
-
-    #[test]
-    fn material_spec_without_env_mapping_flag_leaves_cubemap_empty() {
-        let spec = GamebryoMaterialSpec {
-            textures: vec![
-                "Textures/Landscape/Rocks/Rock01.dds".to_string(),
-                "Textures/Landscape/Rocks/Rock01_n.dds".to_string(),
-            ],
-            flags_1: SLSF1_SPECULAR,
-            flags_2: 0,
-            specular_strength: 1.0,
-            smoothness: 0.1,
-            environment_map_scale: 1.0,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        let material = fo4_bgsm_from_spec(&spec);
-
-        assert_eq!(material.header.env_mapping, Some(false));
-        assert!(material.EnvmapTexture.is_none());
-        assert_eq!(
-            material.header.env_mapping_mask_scale,
-            Some(1.0),
-            "vanilla FO4 writes 1.0 even when env mapping is off"
-        );
-    }
-
-    #[test]
-    fn material_spec_maps_slot_two_to_glow_when_glow_mapped() {
-        let spec = GamebryoMaterialSpec {
-            textures: vec![
-                "Textures/Signs/NeonSign.dds".to_string(),
-                "Textures/Signs/NeonSign_n.dds".to_string(),
-                "Textures/Signs/NeonSign_g.dds".to_string(),
-            ],
-            flags_1: 0,
-            flags_2: SLSF2_GLOW_MAP,
-            specular_strength: 1.0,
-            smoothness: 0.1,
-            environment_map_scale: 1.0,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        let material = fo4_bgsm_from_spec(&spec);
-
-        assert_eq!(
-            material.GlowTexture.as_deref(),
-            Some("Signs/NeonSign_g.dds")
-        );
-        assert!(material.Glowmap);
-    }
-
-    #[test]
-    fn tall_grass_material_preserves_fo4_render_state() {
-        let spec = GamebryoMaterialSpec {
-            textures: vec!["Textures/Landscape/Grass/GrassWastelandComp01.dds".to_string()],
-            flags_1: SLSF1_OWN_EMIT,
-            flags_2: SLSF2_DOUBLE_SIDED | SLSF2_TREE_ANIM,
-            smoothness: 0.282,
-            texture_clamp_mode: 3,
-            alpha_test_ref: 100,
-            alpha_test: true,
-            two_sided: true,
-            tree: true,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        let material = fo4_bgsm_from_spec(&spec);
-
-        assert!(material.header.tile_u);
-        assert!(material.header.tile_v);
-        assert!(material.header.alpha_test);
-        assert_eq!(material.header.alpha_test_ref, 100);
-        assert!(material.header.two_sided);
-        assert!(material.Tree);
-        assert!(!material.EmitEnabled);
-        assert!((material.Smoothness - 0.282).abs() < 1e-6);
-    }
-
-    #[test]
-    fn alpha_property_drives_synthesized_material_threshold() {
-        let mut nif = NifFile::new("fo4");
-        let shader_id = nif.add_block("BSLightingShaderProperty", None);
-        let alpha_id = nif.add_block(
-            "NiAlphaProperty",
-            Some(indexmap::IndexMap::from([
-                ("Flags".to_string(), NifValue::UInt(4844)),
-                ("Threshold".to_string(), NifValue::UInt(100)),
-            ])),
-        );
-        nif.add_block(
-            "BSTriShape",
-            Some(indexmap::IndexMap::from([
-                (
-                    "Shader Property".to_string(),
-                    NifValue::Ref(shader_id as i32),
-                ),
-                ("Alpha Property".to_string(), NifValue::Ref(alpha_id as i32)),
-            ])),
-        );
-
-        assert_eq!(
-            alpha_settings_by_shader(&nif).get(&shader_id),
-            Some(&(true, 100))
-        );
-    }
-
-    #[test]
-    fn material_hash_separates_identical_textures_with_different_flags() {
-        let base = GamebryoMaterialSpec {
-            textures: vec!["Textures/A.dds".to_string(), "Textures/A_n.dds".to_string()],
-            flags_1: 0,
-            flags_2: 0,
-            specular_strength: 1.0,
-            smoothness: 0.5,
-            environment_map_scale: 1.0,
-            ..GamebryoMaterialSpec::default()
-        };
-        let mut env_mapped = base.clone();
-        env_mapped.flags_1 = SLSF1_ENVIRONMENT_MAPPING;
-
-        assert_ne!(
-            material_spec_hash(&base),
-            material_spec_hash(&env_mapped),
-            "two materials sharing a texture set but differing in flags must not collide"
-        );
-    }
-
-    #[test]
-    fn non_cube_envmap_slot_is_substituted_with_a_vanilla_cubemap() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source_root = tmp.path();
-        let envmap_dir = source_root.join("textures/architecture/novac");
-        std::fs::create_dir_all(&envmap_dir).unwrap();
-        write_flat_2d_dds(&envmap_dir.join("motel_window_e.dds"));
-
-        let mut spec = GamebryoMaterialSpec {
-            textures: vec![
-                "Textures/Architecture/Novac/motel_window.dds".to_string(),
-                "Textures/Architecture/Novac/motel_window_n.dds".to_string(),
-                String::new(),
-                String::new(),
-                "Textures/Architecture/Novac/motel_window_e.dds".to_string(),
-            ],
-            flags_1: SLSF1_ENVIRONMENT_MAPPING,
-            flags_2: 0,
-            specular_strength: 1.0,
-            smoothness: 0.1,
-            environment_map_scale: 1.0,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        let substituted = substitute_non_cube_envmap(
-            &mut spec,
-            Some(source_root),
-            "Materials/Weapons/Novac/motel.bgsm",
-        );
-
-        assert!(substituted, "a 2D source must be reported as substituted");
-        assert!(
-            spec.textures[4].starts_with("Shared/Cubemaps/"),
-            "slot 4 must now name a vanilla FO4 cubemap, got {:?}",
-            spec.textures[4]
-        );
-    }
-
-    #[test]
-    fn unresolvable_source_root_leaves_the_authored_envmap_alone() {
-        let mut spec = GamebryoMaterialSpec {
-            textures: vec![
-                "Textures/Gone/thing.dds".to_string(),
-                "Textures/Gone/thing_n.dds".to_string(),
-                String::new(),
-                String::new(),
-                "Textures/Gone/thing_e.dds".to_string(),
-            ],
-            flags_1: SLSF1_ENVIRONMENT_MAPPING,
-            flags_2: 0,
-            specular_strength: 1.0,
-            smoothness: 0.1,
-            environment_map_scale: 1.0,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        assert!(!substitute_non_cube_envmap(
-            &mut spec,
-            None,
-            "Materials/Gone/thing.bgsm"
-        ));
-        assert_eq!(spec.textures[4], "Textures/Gone/thing_e.dds");
-    }
-
-    #[test]
-    fn empty_flag_word_means_unknown_not_everything_off() {
-        // Real FNV statics convert with Shader Flags 1 == 0 (verified against
-        // the CrateLarge01 fixture). Deriving booleans straight from the bits
-        // would disable specular on every FNV material.
-        let spec = GamebryoMaterialSpec {
-            textures: vec![
-                "Textures/Clutter/Crate/CrateLarge01.dds".to_string(),
-                "Textures/Clutter/Crate/CrateLarge01_n.dds".to_string(),
-            ],
-            flags_1: 0,
-            flags_2: 0,
-            specular_strength: 1.0,
-            smoothness: 0.5,
-            environment_map_scale: 1.0,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        let material = fo4_bgsm_from_spec(&spec);
-
-        assert!(
-            material.SpecularEnabled,
-            "specular must not silently vanish"
-        );
-        assert_eq!(
-            material.SmoothSpecTexture,
-            "Clutter/Crate/CrateLarge01_s.dds"
-        );
-        assert_eq!(
-            material.header.env_mapping,
-            Some(false),
-            "no slot-4 evidence means no env mapping"
-        );
-    }
-
-    #[test]
-    fn empty_flag_word_still_honours_an_authored_env_map_slot() {
-        let spec = GamebryoMaterialSpec {
-            textures: vec![
-                "Textures/Strip/Metal01.dds".to_string(),
-                "Textures/Strip/Metal01_n.dds".to_string(),
-                String::new(),
-                String::new(),
-                "Shared/Cubemaps/MetalChrome01Cube_e.dds".to_string(),
-            ],
-            flags_1: 0,
-            flags_2: 0,
-            specular_strength: 1.0,
-            smoothness: 0.5,
-            environment_map_scale: 0.5,
-            ..GamebryoMaterialSpec::default()
-        };
-
-        let material = fo4_bgsm_from_spec(&spec);
-
-        assert_eq!(material.header.env_mapping, Some(true));
-        assert_eq!(
-            material.EnvmapTexture.as_deref(),
-            Some("Shared/Cubemaps/MetalChrome01Cube_e.dds")
-        );
-    }
-
-    #[test]
-    fn source_data_root_walks_up_past_meshes() {
-        let root = source_data_root(Path::new("X:/extracted/fnv/meshes/clutter/crate.nif"));
-        assert_eq!(root, Some(PathBuf::from("X:/extracted/fnv")));
-        assert_eq!(source_data_root(Path::new("crate.nif")), None);
-    }
-
-    #[test]
-    fn gamebryo_options_enable_legacy_skin_conversion() {
-        let params = serde_json::json!({
-            "translation_maps_dir": "X:/maps",
-            "auto_skin_reference_body": "X:/body.nif",
-            "emit_first_person": true,
-            "first_person_reference": "X:/arms.nif",
-            "morph_weight_cap": 0.25,
-            "skin_policy": "preserve_source_rig",
-        });
-
-        let options = parse_convert_options(&params).unwrap();
-
-        assert_eq!(options.translation_maps_dir, Some(PathBuf::from("X:/maps")));
-        assert_eq!(
-            options.auto_skin_reference_body,
-            Some(PathBuf::from("X:/body.nif"))
-        );
-        assert!(options.emit_first_person);
-        assert_eq!(
-            options.first_person_reference,
-            Some(PathBuf::from("X:/arms.nif"))
-        );
-        assert_eq!(options.morph_weight_cap, 0.25);
-        assert_eq!(
-            options.skin_policy,
-            nif_core_native::skin::LegacySkinPolicy::PreserveSourceRig
-        );
-    }
-
-    #[test]
-    fn failed_material_synthesis_leaves_no_nif_output_or_sink_entry() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/test_fixtures/gamebryo_nifs/cratelarge01.nif");
         let temp = std::env::temp_dir().join(format!(
@@ -1641,5 +1286,336 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    fn write_flat_2d_dds(path: &Path) {
+        let mut image = directxtex_native::ScratchImage::default();
+        image
+            .initialize_2d(
+                directxtex_native::DXGI_FORMAT_R8G8B8A8_UNORM,
+                8,
+                8,
+                1,
+                1,
+                directxtex_native::CP_FLAGS_NONE,
+            )
+            .unwrap();
+        let bytes = image
+            .save_dds(directxtex_native::DDS_FLAGS_NONE)
+            .unwrap()
+            .buffer()
+            .to_vec();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn material_spec_carries_slots_flags_scalars_and_hashes_flags() {
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Clutter/Crate/CrateLarge01.dds".to_string(),
+                "Textures/Clutter/Crate/CrateLarge01_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Textures/Cubemaps/MetalChrome01Cube_e.dds".to_string(),
+                "Textures/Clutter/Crate/CrateLarge01_m.dds".to_string(),
+            ],
+            flags_1: SLSF1_SPECULAR | SLSF1_ENVIRONMENT_MAPPING,
+            flags_2: 0,
+            specular_strength: 0.75,
+            smoothness: 0.42,
+            environment_map_scale: 0.30,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(material.DiffuseTexture, "Clutter/Crate/CrateLarge01.dds");
+        assert_eq!(material.NormalTexture, "Clutter/Crate/CrateLarge01_n.dds");
+        assert_eq!(
+            material.SmoothSpecTexture, "Clutter/Crate/CrateLarge01_s.dds",
+            "the _s map synthesized by the texture engine"
+        );
+        assert_eq!(
+            material.EnvmapTexture.as_deref(),
+            Some("Cubemaps/MetalChrome01Cube_e.dds")
+        );
+        assert!(material.SpecularEnabled);
+        assert!((material.SpecularMult - 0.75).abs() < 1e-6);
+        assert!((material.Smoothness - 0.42).abs() < 1e-6);
+        assert_eq!(material.header.env_mapping, Some(true));
+        assert!((material.header.env_mapping_mask_scale.unwrap() - 0.30).abs() < 1e-6);
+        assert!(
+            material.GlowTexture.is_none(),
+            "slot 5 is the env mask, not glow"
+        );
+
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Landscape/Rocks/Rock01.dds".to_string(),
+                "Textures/Landscape/Rocks/Rock01_n.dds".to_string(),
+            ],
+            flags_1: SLSF1_SPECULAR,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(material.header.env_mapping, Some(false));
+        assert!(material.EnvmapTexture.is_none());
+        assert_eq!(
+            material.header.env_mapping_mask_scale,
+            Some(1.0),
+            "vanilla FO4 writes 1.0 even when env mapping is off"
+        );
+
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Signs/NeonSign.dds".to_string(),
+                "Textures/Signs/NeonSign_n.dds".to_string(),
+                "Textures/Signs/NeonSign_g.dds".to_string(),
+            ],
+            flags_1: 0,
+            flags_2: SLSF2_GLOW_MAP,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(
+            material.GlowTexture.as_deref(),
+            Some("Signs/NeonSign_g.dds")
+        );
+        assert!(material.Glowmap);
+
+        let base = GamebryoMaterialSpec {
+            textures: vec!["Textures/A.dds".to_string(), "Textures/A_n.dds".to_string()],
+            flags_1: 0,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.5,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+        let mut env_mapped = base.clone();
+        env_mapped.flags_1 = SLSF1_ENVIRONMENT_MAPPING;
+
+        assert_ne!(
+            material_spec_hash(&base),
+            material_spec_hash(&env_mapped),
+            "two materials sharing a texture set but differing in flags must not collide"
+        );
+    }
+
+    #[test]
+    fn tall_grass_and_alpha_property_drive_synthesized_render_state() {
+        let spec = GamebryoMaterialSpec {
+            textures: vec!["Textures/Landscape/Grass/GrassWastelandComp01.dds".to_string()],
+            flags_1: SLSF1_OWN_EMIT,
+            flags_2: SLSF2_DOUBLE_SIDED | SLSF2_TREE_ANIM,
+            smoothness: 0.282,
+            texture_clamp_mode: 3,
+            alpha_test_ref: 100,
+            alpha_test: true,
+            two_sided: true,
+            tree: true,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert!(material.header.tile_u);
+        assert!(material.header.tile_v);
+        assert!(material.header.alpha_test);
+        assert_eq!(material.header.alpha_test_ref, 100);
+        assert!(material.header.two_sided);
+        assert!(material.Tree);
+        assert!(!material.EmitEnabled);
+        assert!((material.Smoothness - 0.282).abs() < 1e-6);
+
+        let mut nif = NifFile::new("fo4");
+        let shader_id = nif.add_block("BSLightingShaderProperty", None);
+        let alpha_id = nif.add_block(
+            "NiAlphaProperty",
+            Some(indexmap::IndexMap::from([
+                ("Flags".to_string(), NifValue::UInt(4844)),
+                ("Threshold".to_string(), NifValue::UInt(100)),
+            ])),
+        );
+        nif.add_block(
+            "BSTriShape",
+            Some(indexmap::IndexMap::from([
+                (
+                    "Shader Property".to_string(),
+                    NifValue::Ref(shader_id as i32),
+                ),
+                ("Alpha Property".to_string(), NifValue::Ref(alpha_id as i32)),
+            ])),
+        );
+
+        assert_eq!(
+            alpha_settings_by_shader(&nif).get(&shader_id),
+            Some(&(true, 100))
+        );
+    }
+
+    #[test]
+    fn non_cube_envmap_is_substituted_only_when_source_root_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source_root = tmp.path();
+        let envmap_dir = source_root.join("textures/architecture/novac");
+        std::fs::create_dir_all(&envmap_dir).unwrap();
+        write_flat_2d_dds(&envmap_dir.join("motel_window_e.dds"));
+
+        let mut spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Architecture/Novac/motel_window.dds".to_string(),
+                "Textures/Architecture/Novac/motel_window_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Textures/Architecture/Novac/motel_window_e.dds".to_string(),
+            ],
+            flags_1: SLSF1_ENVIRONMENT_MAPPING,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let substituted = substitute_non_cube_envmap(
+            &mut spec,
+            Some(source_root),
+            "Materials/Weapons/Novac/motel.bgsm",
+        );
+
+        assert!(substituted, "a 2D source must be reported as substituted");
+        assert!(
+            spec.textures[4].starts_with("Shared/Cubemaps/"),
+            "slot 4 must now name a vanilla FO4 cubemap, got {:?}",
+            spec.textures[4]
+        );
+
+        let mut spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Gone/thing.dds".to_string(),
+                "Textures/Gone/thing_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Textures/Gone/thing_e.dds".to_string(),
+            ],
+            flags_1: SLSF1_ENVIRONMENT_MAPPING,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.1,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        assert!(!substitute_non_cube_envmap(
+            &mut spec,
+            None,
+            "Materials/Gone/thing.bgsm"
+        ));
+        assert_eq!(spec.textures[4], "Textures/Gone/thing_e.dds");
+
+        let root = source_data_root(Path::new("X:/extracted/fnv/meshes/clutter/crate.nif"));
+        assert_eq!(root, Some(PathBuf::from("X:/extracted/fnv")));
+        assert_eq!(source_data_root(Path::new("crate.nif")), None);
+    }
+
+    #[test]
+    fn empty_flag_word_means_unknown_and_honours_authored_env_map() {
+        // Real FNV statics convert with Shader Flags 1 == 0 (verified against
+        // the CrateLarge01 fixture). Deriving booleans straight from the bits
+        // would disable specular on every FNV material.
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Clutter/Crate/CrateLarge01.dds".to_string(),
+                "Textures/Clutter/Crate/CrateLarge01_n.dds".to_string(),
+            ],
+            flags_1: 0,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.5,
+            environment_map_scale: 1.0,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert!(
+            material.SpecularEnabled,
+            "specular must not silently vanish"
+        );
+        assert_eq!(
+            material.SmoothSpecTexture,
+            "Clutter/Crate/CrateLarge01_s.dds"
+        );
+        assert_eq!(
+            material.header.env_mapping,
+            Some(false),
+            "no slot-4 evidence means no env mapping"
+        );
+
+        let spec = GamebryoMaterialSpec {
+            textures: vec![
+                "Textures/Strip/Metal01.dds".to_string(),
+                "Textures/Strip/Metal01_n.dds".to_string(),
+                String::new(),
+                String::new(),
+                "Shared/Cubemaps/MetalChrome01Cube_e.dds".to_string(),
+            ],
+            flags_1: 0,
+            flags_2: 0,
+            specular_strength: 1.0,
+            smoothness: 0.5,
+            environment_map_scale: 0.5,
+            ..GamebryoMaterialSpec::default()
+        };
+
+        let material = fo4_bgsm_from_spec(&spec);
+
+        assert_eq!(material.header.env_mapping, Some(true));
+        assert_eq!(
+            material.EnvmapTexture.as_deref(),
+            Some("Shared/Cubemaps/MetalChrome01Cube_e.dds")
+        );
+    }
+
+    #[test]
+    fn gamebryo_options_enable_legacy_skin_conversion() {
+        let params = serde_json::json!({
+            "translation_maps_dir": "X:/maps",
+            "auto_skin_reference_body": "X:/body.nif",
+            "emit_first_person": true,
+            "first_person_reference": "X:/arms.nif",
+            "morph_weight_cap": 0.25,
+            "skin_policy": "preserve_source_rig",
+        });
+
+        let options = parse_convert_options(&params).unwrap();
+
+        assert_eq!(options.translation_maps_dir, Some(PathBuf::from("X:/maps")));
+        assert_eq!(
+            options.auto_skin_reference_body,
+            Some(PathBuf::from("X:/body.nif"))
+        );
+        assert!(options.emit_first_person);
+        assert_eq!(
+            options.first_person_reference,
+            Some(PathBuf::from("X:/arms.nif"))
+        );
+        assert_eq!(options.morph_weight_cap, 0.25);
+        assert_eq!(
+            options.skin_policy,
+            nif_core_native::skin::LegacySkinPolicy::PreserveSourceRig
+        );
     }
 }

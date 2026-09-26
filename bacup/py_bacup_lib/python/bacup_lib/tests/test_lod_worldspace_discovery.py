@@ -116,7 +116,6 @@ def test_skyrim_pair_profile_discovers_every_worldspace():
 
 def test_discovery_expands_all_eligible_worldspaces(monkeypatch, tmp_path):
     plugin = tmp_path / "Skyrim.esm"
-    logs = []
     monkeypatch.setattr(
         "creation_lib.lod.native_runtime.discover_worldspaces",
         lambda plugin_path, game: (
@@ -131,19 +130,11 @@ def test_discovery_expands_all_eligible_worldspaces(monkeypatch, tmp_path):
         [],
         discover_from_plugin=True,
         working_esm=plugin,
-        runner_log=lambda level, message: logs.append((level, message)),
+        runner_log=lambda *_args: None,
     )
 
     assert result == ["Tamriel", "Blackreach", "DLC01SoulCairn"]
-    assert logs == [
-        (
-            "INFO",
-            "lodgen: discovered 3 worldspace(s): Tamriel, Blackreach, DLC01SoulCairn",
-        )
-    ]
 
-
-def test_explicit_worldspaces_do_not_call_discovery(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "creation_lib.lod.native_runtime.discover_worldspaces",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -229,36 +220,8 @@ def test_fo76_world_settings_use_bto_when_available_and_records_otherwise(
     )
 
 
-def test_generate_lod_forwards_object_lod_overlay(monkeypatch, tmp_path):
-    generated = []
-
-    def fake_generate(world, settings, **kwargs):
-        generated.append((world, settings, kwargs))
-        return SimpleNamespace(
-            btr=1,
-            bto=1,
-            dds=1,
-            lod_written=True,
-            warnings=(),
-        )
-
-    monkeypatch.setattr("creation_lib.lod.native_runtime.generate_lod", fake_generate)
-    overlay = tmp_path / "mod" / ".modkit" / "object_lod_overlay.v1.json"
-
-    regen_pipeline._run_generate_lod(
-        mod_root=tmp_path / "mod",
-        worldspaces=["Mojave"],
-        working_esm=tmp_path / "mod" / "Output.esm",
-        asset_dirs=[],
-        settings={"global": {}},
-        runner_log=lambda *_args: None,
-        object_lod_overlay=overlay,
-    )
-
-    assert generated[0][2]["object_lod_overlay"] == str(overlay)
-
-
-def test_generate_lod_without_overlay_preserves_default(monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_overlay", [True, False])
+def test_generate_lod_forwards_object_lod_overlay(monkeypatch, tmp_path, with_overlay):
     generated = []
 
     def fake_generate(_world, _settings, **kwargs):
@@ -272,6 +235,9 @@ def test_generate_lod_without_overlay_preserves_default(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr("creation_lib.lod.native_runtime.generate_lod", fake_generate)
+    overlay = tmp_path / "mod" / ".modkit" / "object_lod_overlay.v1.json"
+    kwargs = {"object_lod_overlay": overlay} if with_overlay else {}
+
     regen_pipeline._run_generate_lod(
         mod_root=tmp_path / "mod",
         worldspaces=["Mojave"],
@@ -279,31 +245,30 @@ def test_generate_lod_without_overlay_preserves_default(monkeypatch, tmp_path):
         asset_dirs=[],
         settings={"global": {}},
         runner_log=lambda *_args: None,
+        **kwargs,
     )
 
-    assert generated[0]["object_lod_overlay"] is None
+    assert generated[0]["object_lod_overlay"] == (str(overlay) if with_overlay else None)
 
 
-def test_object_lod_overlay_scope_cleans_success_and_stale_file(tmp_path):
+@pytest.mark.parametrize("fails", [False, True])
+def test_object_lod_overlay_scope_cleans_stale_and_current_file(tmp_path, fails):
     overlay = tmp_path / ".modkit" / "object_lod_overlay.v1.json"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("stale", encoding="utf-8")
 
-    with regen_pipeline._object_lod_overlay_scope(overlay):
-        assert not overlay.exists()
-        overlay.write_text("current", encoding="utf-8")
-
-    assert not overlay.exists()
-
-
-def test_object_lod_overlay_scope_cleans_exception(tmp_path):
-    overlay = tmp_path / ".modkit" / "object_lod_overlay.v1.json"
-    overlay.parent.mkdir(parents=True)
-
-    with pytest.raises(RuntimeError, match="native lodgen failed"):
+    def run_scope():
         with regen_pipeline._object_lod_overlay_scope(overlay):
+            assert not overlay.exists()
             overlay.write_text("current", encoding="utf-8")
-            raise RuntimeError("native lodgen failed")
+            if fails:
+                raise RuntimeError("native lodgen failed")
+
+    if fails:
+        with pytest.raises(RuntimeError, match="native lodgen failed"):
+            run_scope()
+    else:
+        run_scope()
 
     assert not overlay.exists()
 

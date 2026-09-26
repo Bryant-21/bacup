@@ -97,7 +97,7 @@ Function RecountLocalTutorials(Actor akPlayer)
 EndFunction
 
 Function CreditLocalTutorialQuest(Quest akTutorialQuest)
-    If akTutorialQuest == None
+    If akTutorialQuest == None || !IsRunning() || IsCompleted() || !GetStageDone(iDoTutorialsIndex)
         Return
     EndIf
     Actor player = GetLocalQuestPlayer()
@@ -124,22 +124,25 @@ Function CreditLocalTutorialQuest(Quest akTutorialQuest)
     EndWhile
 EndFunction
 
-; The four tutorial stations are ACTI refs pulled into aliases 15-18 through the
-; Whitespring Bunker location ref types. Their own quests (004EB0F5, 004EB0C2,
-; 004EB0F4, 004EB0F3) are server-stripped too, so activating a station is what
-; credits its tutorial here.
+Function StartLocalTutorialQuest(Quest akTutorialQuest)
+    If akTutorialQuest != None && !akTutorialQuest.IsRunning()
+        akTutorialQuest.Reset()
+        akTutorialQuest.Start()
+    EndIf
+EndFunction
+
 Function CreditLocalTutorialStation(ObjectReference akStationRef)
     If akStationRef == None
         Return
     EndIf
     If akStationRef == GetLocalAliasRef(18)
-        CreditLocalTutorialQuest(Game.GetFormFromFile(0x004EB0F5, "SeventySix.esm") as Quest)
+        StartLocalTutorialQuest(Game.GetFormFromFile(0x004EB0F5, "SeventySix.esm") as Quest)
     ElseIf akStationRef == GetLocalAliasRef(15)
-        CreditLocalTutorialQuest(Game.GetFormFromFile(0x004EB0C2, "SeventySix.esm") as Quest)
+        StartLocalTutorialQuest(Game.GetFormFromFile(0x004EB0C2, "SeventySix.esm") as Quest)
     ElseIf akStationRef == GetLocalAliasRef(16)
-        CreditLocalTutorialQuest(Game.GetFormFromFile(0x004EB0F4, "SeventySix.esm") as Quest)
+        StartLocalTutorialQuest(Game.GetFormFromFile(0x004EB0F4, "SeventySix.esm") as Quest)
     ElseIf akStationRef == GetLocalAliasRef(17)
-        CreditLocalTutorialQuest(Game.GetFormFromFile(0x004EB0F3, "SeventySix.esm") as Quest)
+        StartLocalTutorialQuest(Game.GetFormFromFile(0x004EB0F3, "SeventySix.esm") as Quest)
     EndIf
 EndFunction
 

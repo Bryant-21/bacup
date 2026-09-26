@@ -38,8 +38,30 @@ const SYNTH_ESS_SPAWN_PLUGIN: &str = "__synth_ess_spawn__";
 const FO76_ESS_LOCATION_CONDITION_FUNCTION_ID: u16 = 579;
 /// Gates each branch `LVLO` on the spawn point's role marker
 /// (`EncMainBossMarkerLocRef`, `EncSubMeleeMarkerLocRef`, …), matched against
-/// the base actor's `FTYP`.
+/// the base actor's `FTYP` or placed actor's `XLRT`.
 const FO76_ESS_ROLE_CONDITION_FUNCTION_ID: u16 = 561;
+const ACBS_TEMPLATE_FLAGS_OFFSET: usize = 14;
+/// Template-flag bit index → FO4 authoring name, so a decoded `ACBS` can be
+/// rewritten in either its raw or its named form.
+const ACBS_TEMPLATE_FLAG_NAMES: [&str; 13] = [
+    "Traits",
+    "Stats",
+    "Factions",
+    "SpellList",
+    "AIData",
+    "AIPackages",
+    "ModelAnimation",
+    "BaseData",
+    "Inventory",
+    "Script",
+    "DefPackList",
+    "AttackData",
+    "Keywords",
+];
+/// Traits, Stats, Factions, SpellList, AIData, AIPackages, BaseData, Inventory,
+/// AttackData, Keywords — the set vanilla `LvlRaider` templates from
+/// `LCharRaider`. Model/animation, script and package list stay on the clone.
+const ESS_LEVELED_SHELL_TEMPLATE_FLAGS: u16 = 0x19BF;
 
 struct ZonePlan {
     source_lctn: FormKey,
@@ -655,15 +677,37 @@ fn scalar_form_key(value: &FieldValue, plugin: crate::sym::Sym) -> Option<FormKe
 fn lvln_entry_form_key(
     value: &FieldValue,
     plugin: crate::sym::Sym,
+    masters: &[String],
     interner: &crate::sym::StringInterner,
 ) -> Option<FormKey> {
+    let resolve_raw = |raw: u32| {
+        let local = raw & 0x00FF_FFFF;
+        let index = (raw >> 24) as usize;
+        let owner = if index == masters.len() {
+            plugin
+        } else {
+            interner.intern(masters.get(index)?)
+        };
+        (local != 0).then_some(FormKey {
+            local,
+            plugin: owner,
+        })
+    };
     match value {
         // Converted LVLOs expose the entry as `npc`, while records decoded
         // directly from a target master expose the same slot as `reference`.
         // Never fall through to `level`, which is also a non-zero uint.
         FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
             matches!(interner.resolve(*name), Some("npc" | "reference"))
-                .then(|| scalar_form_key(value, plugin))
+                .then(|| match value {
+                    FieldValue::FormKey(fk) => Some(*fk),
+                    FieldValue::Uint(raw) => u32::try_from(*raw).ok().and_then(resolve_raw),
+                    FieldValue::Int(raw) => u32::try_from(*raw).ok().and_then(resolve_raw),
+                    FieldValue::Bytes(bytes) if bytes.len() == 4 => {
+                        resolve_raw(u32::from_le_bytes(bytes.as_slice().try_into().ok()?))
+                    }
+                    _ => None,
+                })
                 .flatten()
         }),
         FieldValue::FormKey(fk) => Some(*fk),
@@ -671,13 +715,13 @@ fn lvln_entry_form_key(
         // expanded H,B,B,I,... layout retained by some conversion records.
         FieldValue::Bytes(bytes) if bytes.len() >= 8 => {
             let offset = if bytes.len() >= 12 { 4 } else { 2 };
-            let local = u32::from_le_bytes([
+            let raw = u32::from_le_bytes([
                 bytes[offset],
                 bytes[offset + 1],
                 bytes[offset + 2],
                 bytes[offset + 3],
-            ]) & 0x00FF_FFFF;
-            (local != 0).then_some(FormKey { local, plugin })
+            ]);
+            resolve_raw(raw)
         }
         _ => None,
     }
@@ -731,6 +775,8 @@ fn preferred_lvln_entries(
     record: &Record,
     interner: &crate::sym::StringInterner,
     target_plugin: crate::sym::Sym,
+    target_masters: &[String],
+    target_master_handle_ids: &[u64],
     source: Option<&BranchResolutionSource<'_>>,
 ) -> Vec<FormKey> {
     let preferred_source_entries = source.and_then(|source| {
@@ -758,12 +804,36 @@ fn preferred_lvln_entries(
             .and_then(|source_record| source_unconditioned_lvln_entries(&source_record, interner))
     });
 
+    let record_masters = if record.form_key.plugin == target_plugin {
+        target_masters
+    } else {
+        let Some(handle) = target_masters
+            .iter()
+            .position(|name| {
+                interner
+                    .resolve(record.form_key.plugin)
+                    .is_some_and(|plugin| name.eq_ignore_ascii_case(plugin))
+            })
+            .and_then(|index| target_master_handle_ids.get(index))
+        else {
+            return Vec::new();
+        };
+        let Ok((masters, _)) = session.handle_load_order(*handle) else {
+            return Vec::new();
+        };
+        masters
+    };
     let mut entries: Vec<(u8, u32, FormKey)> = record
         .fields
         .iter()
         .filter(|field| field.sig.as_str() == "LVLO")
         .filter_map(|field| {
-            let entry = lvln_entry_form_key(&field.value, record.form_key.plugin, interner)?;
+            let entry = lvln_entry_form_key(
+                &field.value,
+                record.form_key.plugin,
+                record_masters,
+                interner,
+            )?;
             let source_rank = preferred_source_entries.as_ref().map_or(0, |preferred| {
                 let is_preferred = source
                     .and_then(|source| {
@@ -813,22 +883,30 @@ fn resolve_branch_template_npc(
     )?;
     match record.sig.as_str() {
         "NPC_" => Some(record.form_key),
-        "LVLN" => preferred_lvln_entries(session, &record, interner, target_plugin, source)
-            .into_iter()
-            .find_map(|entry| {
-                resolve_branch_template_npc(
-                    session,
-                    schema,
-                    interner,
-                    target_plugin,
-                    target_masters,
-                    target_master_handle_ids,
-                    source,
-                    entry,
-                    visited,
-                    depth + 1,
-                )
-            }),
+        "LVLN" => preferred_lvln_entries(
+            session,
+            &record,
+            interner,
+            target_plugin,
+            target_masters,
+            target_master_handle_ids,
+            source,
+        )
+        .into_iter()
+        .find_map(|entry| {
+            resolve_branch_template_npc(
+                session,
+                schema,
+                interner,
+                target_plugin,
+                target_masters,
+                target_master_handle_ids,
+                source,
+                entry,
+                visited,
+                depth + 1,
+            )
+        }),
         _ => None,
     }
 }
@@ -837,6 +915,150 @@ fn resolve_branch_template_npc(
 const NPC_TRAIT_SUBRECORDS: [&str; 9] = [
     "WNAM", "ATKR", "VTCK", "ANAM", "HCLF", "FULL", "SHRT", "TPLT", "TPTA",
 ];
+
+fn set_acbs_template_flags(record: &mut Record, flags: u16, interner: &StringInterner) -> bool {
+    let Some(value) = record
+        .fields
+        .iter_mut()
+        .find(|field| field.sig.as_str() == "ACBS")
+        .map(|field| &mut field.value)
+    else {
+        return false;
+    };
+    let named = || {
+        (0..ACBS_TEMPLATE_FLAG_NAMES.len())
+            .filter(|bit| flags & (1 << bit) != 0)
+            .map(|bit| FieldValue::String(interner.intern(ACBS_TEMPLATE_FLAG_NAMES[bit])))
+            .collect::<Vec<_>>()
+    };
+    match value {
+        FieldValue::Bytes(bytes) if bytes.len() >= ACBS_TEMPLATE_FLAGS_OFFSET + 2 => {
+            bytes[ACBS_TEMPLATE_FLAGS_OFFSET..ACBS_TEMPLATE_FLAGS_OFFSET + 2]
+                .copy_from_slice(&flags.to_le_bytes());
+            true
+        }
+        FieldValue::Struct(fields) => fields
+            .iter_mut()
+            .find(|(name, _)| {
+                interner
+                    .resolve(*name)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("templateflags"))
+            })
+            .map(|(_, member)| {
+                match member {
+                    FieldValue::List(items) => *items = named(),
+                    FieldValue::Int(value) => *value = i64::from(flags),
+                    _ => *member = FieldValue::Uint(u64::from(flags)),
+                }
+                true
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Whether FO4 can roll this branch entry itself.
+///
+/// FO76 picks a spawn's variant and level band at runtime; baking one answer
+/// pins every spawn point behind the clone to a single actor. FO4 does the roll
+/// when the list is flat — two or more entries, each a concrete actor that does
+/// not template further. A list whose members still carry `TPLT`/`TPTA` is the
+/// FO76 shape FO4 fails to resolve, so those stay on the materialize path.
+fn branch_list_is_rollable(
+    session: &mut PluginSession,
+    schema: &crate::schema::AuthoringSchema,
+    interner: &StringInterner,
+    output_plugin: crate::sym::Sym,
+    target_masters: &[String],
+    target_master_handle_ids: &[u64],
+    root: FormKey,
+) -> bool {
+    if root.plugin != output_plugin {
+        return false;
+    }
+    let Some(record) = read_target_or_master_record(
+        session,
+        schema,
+        interner,
+        output_plugin,
+        target_masters,
+        target_master_handle_ids,
+        root,
+    ) else {
+        return false;
+    };
+    if record.sig.as_str() != "LVLN" {
+        return false;
+    }
+    let entries: Vec<FormKey> = record
+        .fields
+        .iter()
+        .filter(|field| field.sig.as_str() == "LVLO")
+        .filter_map(|field| {
+            lvln_entry_form_key(
+                &field.value,
+                record.form_key.plugin,
+                target_masters,
+                interner,
+            )
+        })
+        .collect();
+    if entries.len() < 2 {
+        return false;
+    }
+    entries.into_iter().all(|entry| {
+        read_target_or_master_record(
+            session,
+            schema,
+            interner,
+            output_plugin,
+            target_masters,
+            target_master_handle_ids,
+            entry,
+        )
+        .is_some_and(|npc| {
+            npc.sig.as_str() == "NPC_"
+                && !npc
+                    .fields
+                    .iter()
+                    .any(|field| matches!(field.sig.as_str(), "TPLT" | "TPTA"))
+        })
+    })
+}
+
+/// A thin placed-actor base that templates every category from one list.
+///
+/// Vanilla FO4 places `LvlRaider`, whose `TPLT` is the `LCharRaider` leveled
+/// list, and lets the engine roll a concrete raider at spawn. Giving the ESS
+/// clone that shape restores the roll FO76 did at runtime. FO76's 13-slot `TPTA`
+/// goes: one link into a list of terminal actors is what FO4 resolves, a
+/// per-category web of FO76 chains is not.
+fn leveled_shell_clone(base_npc: &Record, root: FormKey, interner: &StringInterner) -> Record {
+    let mut clone = base_npc.clone();
+    clone.fields.retain(|field| field.sig.as_str() != "TPTA");
+    if let Some(existing) = clone
+        .fields
+        .iter_mut()
+        .find(|field| field.sig.as_str() == "TPLT")
+    {
+        existing.value = FieldValue::FormKey(root);
+    } else if let Ok(sig) = SubrecordSig::from_str("TPLT") {
+        let position = clone
+            .fields
+            .iter()
+            .position(|field| field.sig.as_str() == "RNAM")
+            .unwrap_or(clone.fields.len());
+        clone.fields.insert(
+            position,
+            FieldEntry {
+                sig,
+                value: FieldValue::FormKey(root),
+            },
+        );
+    }
+    set_acbs_template_flags(&mut clone, ESS_LEVELED_SHELL_TEMPLATE_FLAGS, interner);
+    clone
+}
 
 /// Whether a branch NPC is the concrete actor for its location rather than a
 /// per-category template stub.
@@ -914,7 +1136,15 @@ fn resolve_branch_display_name(
     match record.sig.as_str() {
         "LVLN" => {
             // Try each entry until one resolves a name (leaves may be external).
-            for leaf in preferred_lvln_entries(session, &record, interner, target_plugin, source) {
+            for leaf in preferred_lvln_entries(
+                session,
+                &record,
+                interner,
+                target_plugin,
+                target_masters,
+                target_master_handle_ids,
+                source,
+            ) {
                 if let Some(found) = resolve_branch_display_name(
                     session,
                     schema,
@@ -1092,6 +1322,42 @@ enum SpecializeOutcome {
     NoChange,
 }
 
+fn placed_actor_role_entry(
+    base: &Record,
+    actor: &Record,
+    roles: &HashMap<u32, FormKey>,
+) -> Option<FormKey> {
+    fn matching_entry(value: &FieldValue, roles: &HashMap<u32, FormKey>) -> Option<FormKey> {
+        match value {
+            FieldValue::FormKey(fk) => roles.get(&(fk.local & 0x00FF_FFFF)).copied(),
+            FieldValue::List(values) => {
+                values.iter().find_map(|value| matching_entry(value, roles))
+            }
+            FieldValue::Struct(fields) => fields
+                .iter()
+                .find_map(|(_, value)| matching_entry(value, roles)),
+            FieldValue::Bytes(bytes) => bytes.chunks_exact(4).find_map(|chunk| {
+                roles
+                    .get(&(u32::from_le_bytes(chunk.try_into().ok()?) & 0x00FF_FFFF))
+                    .copied()
+            }),
+            _ => None,
+        }
+    }
+
+    // Alias-created bases lose FTYP to avoid a quest-start crash; their placed
+    // references retain the complete role set in XLRT.
+    [(base, "FTYP"), (actor, "XLRT")]
+        .into_iter()
+        .find_map(|(record, sig)| {
+            record
+                .fields
+                .iter()
+                .filter(|field| field.sig.as_str() == sig)
+                .find_map(|field| matching_entry(&field.value, roles))
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn specialize_actor_to_branch(
     session: &mut PluginSession,
@@ -1125,25 +1391,40 @@ fn specialize_actor_to_branch(
     } else {
         // The branch lists one entry per spawn role, gated in FO76 by func-561
         // conditions FO4 cannot express. Narrow the branch to the entry this
-        // base's `FTYP` role marker selects, so `LvlMainBoss` and
+        // actor's FTYP/XLRT role marker selects, so `LvlMainBoss` and
         // `LvlSubHelper` resolve to different actors instead of both landing on
         // whichever entry resolves first. Each role is already its own base, so
         // the clone cache key separates them.
-        let role_root = role_entries.and_then(|roles| {
-            field_form_key(base_npc, "FTYP")
-                .and_then(|forced| roles.get(&(forced.local & 0x00FF_FFFF)).copied())
+        let role_root =
+            role_entries.and_then(|roles| placed_actor_role_entry(base_npc, &actor_record, roles));
+        // Resolving the role entry to one NPC pins every spawn point behind this
+        // clone to a single variant and a single level band, because FO4 cannot
+        // re-roll a base it has already been handed. When the role entry is a
+        // flat list of terminal actors, hand FO4 the list instead and let it roll
+        // at spawn the way vanilla `LvlRaider` rolls `LCharRaider`.
+        let rollable_root = role_root.filter(|root| {
+            branch_list_is_rollable(
+                session,
+                target_schema,
+                mapper.interner,
+                output_plugin,
+                target_masters,
+                target_master_handle_ids,
+                *root,
+            )
         });
-        // A role entry can lead only to master records, which resolve to
-        // nothing here. Falling straight back to the base would strand the
-        // actor as an unnamed copy of its own template, so try the role entry
-        // first and the whole branch second — narrower answer preferred,
-        // broader answer still better than none.
-        let roots: smallvec::SmallVec<[FormKey; 2]> = match role_root {
-            Some(role) if role != branch_target => smallvec::smallvec![role, branch_target],
+        // An unreadable role entry must not strand the actor as an unnamed
+        // copy of its own template; the whole branch remains a fallback.
+        let roots: smallvec::SmallVec<[FormKey; 2]> = match (rollable_root, role_root) {
+            (Some(_), _) => smallvec::smallvec![],
+            (None, Some(role)) if role != branch_target => {
+                smallvec::smallvec![role, branch_target]
+            }
             _ => smallvec::smallvec![branch_target],
         };
-        let mut resolution_root = branch_target;
-        let mut materialized: Option<Record> = None;
+        let mut resolution_root = rollable_root.unwrap_or(branch_target);
+        let mut materialized: Option<Record> =
+            rollable_root.map(|root| leveled_shell_clone(base_npc, root, mapper.interner));
         let mut untraited: Option<Record> = None;
         for root in roots {
             let mut template_visited: HashSet<FormKey> = HashSet::new();
@@ -1810,7 +2091,7 @@ fn build_conditional_lvln_branch_index_for_target_templates(
 /// Per converted branch `LVLN`, which target entry each `LCRT` role marker
 /// selects. Keyed by target branch object id so the specializer can look it up
 /// from `branch_target`; the inner map is keyed by target `LCRT` object id so it
-/// can be matched against the base actor's converted `FTYP`.
+/// can be matched against the converted actor's FTYP/XLRT markers.
 #[allow(clippy::too_many_arguments)]
 fn build_branch_role_entry_index(
     session: &mut PluginSession,
@@ -2995,6 +3276,115 @@ mod interior_tests {
         }
     }
 
+    /// Vanilla FO4 places `LvlRaider` (`02898B`), whose `TPLT` is the
+    /// `LCharRaider` leveled list, and lets the engine roll a concrete raider at
+    /// spawn. An ESS clone takes that shape so FO76's spawn-time roll survives —
+    /// and only that shape: the FO76 13-slot `TPTA` is what FO4 fails to chase.
+    #[test]
+    fn leveled_shell_keeps_one_template_link_and_drops_the_fo76_slot_table() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let root = FormKey {
+            local: 0x5196B1,
+            plugin,
+        };
+        let stale = FormKey {
+            local: 0x51C55D,
+            plugin,
+        };
+
+        let mut base = decoded_record("NPC_", 0x1D5135, plugin);
+        base.fields.push(decoded_field(
+            "ACBS",
+            FieldValue::Struct(vec![(
+                interner.intern("TemplateFlags"),
+                FieldValue::List(vec![FieldValue::String(interner.intern("Traits"))]),
+            )]),
+        ));
+        base.fields
+            .push(decoded_field("TPLT", FieldValue::FormKey(stale)));
+        base.fields
+            .push(decoded_field("TPTA", FieldValue::FormKey(stale)));
+        base.fields
+            .push(decoded_field("RNAM", FieldValue::Uint(0x10CA5F)));
+
+        let clone = leveled_shell_clone(&base, root, &interner);
+
+        assert!(
+            !clone
+                .fields
+                .iter()
+                .any(|field| field.sig.as_str() == "TPTA"),
+            "the FO76 per-category slot table must not survive"
+        );
+        let templates: Vec<&FieldValue> = clone
+            .fields
+            .iter()
+            .filter(|field| field.sig.as_str() == "TPLT")
+            .map(|field| &field.value)
+            .collect();
+        assert_eq!(templates.len(), 1);
+        assert!(matches!(templates[0], FieldValue::FormKey(fk) if *fk == root));
+
+        let FieldValue::Struct(acbs) = &clone
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "ACBS")
+            .unwrap()
+            .value
+        else {
+            panic!("decoded ACBS");
+        };
+        let FieldValue::List(flags) = &acbs[0].1 else {
+            panic!("decoded template flags");
+        };
+        let names: Vec<&str> = flags
+            .iter()
+            .filter_map(|item| match item {
+                FieldValue::String(value) => interner.resolve(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Traits",
+                "Stats",
+                "Factions",
+                "SpellList",
+                "AIData",
+                "AIPackages",
+                "BaseData",
+                "Inventory",
+                "AttackData",
+                "Keywords"
+            ]
+        );
+
+        let mut raw = decoded_record("NPC_", 1, plugin);
+        raw.fields.push(decoded_field(
+            "ACBS",
+            FieldValue::Bytes(vec![0u8; 20].into()),
+        ));
+        assert!(set_acbs_template_flags(
+            &mut raw,
+            ESS_LEVELED_SHELL_TEMPLATE_FLAGS,
+            &interner
+        ));
+        let FieldValue::Bytes(bytes) = &raw.fields.last().unwrap().value else {
+            panic!("raw ACBS");
+        };
+        assert_eq!(
+            u16::from_le_bytes(
+                bytes[ACBS_TEMPLATE_FLAGS_OFFSET..ACBS_TEMPLATE_FLAGS_OFFSET + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            ESS_LEVELED_SHELL_TEMPLATE_FLAGS,
+            "template flags write through a raw configuration"
+        );
+    }
+
     /// Real `LChar_TGroupGhouls` (`51C577`) role gating: eight `LVLO` each
     /// followed by an `EncMain<Role>` OR `EncSub<Role>` func-561 pair. Every
     /// marker must resolve to its own entry — the whole-map "one creature
@@ -3042,25 +3432,6 @@ mod interior_tests {
         assert!(
             !roles.contains_key(&0x0581DE),
             "func-579 location keyword is not a role marker"
-        );
-    }
-
-    #[test]
-    fn source_lvlo_live_shape_reconstructs_full_entry_object_id() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let value = FieldValue::Struct(vec![
-            (interner.intern("level"), FieldValue::Uint(0x96A2)),
-            (interner.intern("unknown_u8_1"), FieldValue::Uint(0x51)),
-        ]);
-
-        assert_eq!(
-            lvlo_entry_form_key(&value, plugin, &interner),
-            Some(FormKey {
-                local: 0x5196A2,
-                plugin,
-            }),
-            "real 51C55F first LVLO must not truncate 5196A2 to 0096A2"
         );
     }
 
@@ -3160,22 +3531,15 @@ mod interior_tests {
         });
         assert_eq!(twice.clone().count(), 2);
         assert!(twice.clone().all(|v| v == twice.clone().next().unwrap()));
-    }
 
-    /// A species template must never be put to a roll: "no matching species" is
-    /// not "spawn nothing", so pooling the two axes would leave most actors
-    /// unspecialized.
-    #[test]
-    fn species_template_always_selects_even_when_variant_weights_dominate() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
+        // A species template must never be put to a roll: "no matching species"
+        // is not "spawn nothing". Dyer Chemical's real leaf: Robots 5, SubGhoul 5,
+        // Normal 45, Scorched 5.
         let robots = FormKey {
             local: 0x51C591,
             plugin,
         };
         let branches: HashMap<u32, FormKey> = HashMap::from([(0x0581DF, robots)]);
-        let variants: HashSet<u32> = HashSet::from([0x2D3EBF, 0x2A3AA4]);
-        // Dyer Chemical's real leaf: Robots 5, SubGhoul 5, Normal 45, Scorched 5.
         let keywords = [
             (0x0581DF, 5.0f32, 0),
             (0x0067E1, 5.0f32, 0),
@@ -3198,7 +3562,7 @@ mod interior_tests {
     /// CTDAs (GetRandomPercent-vs-global + FO76-only functions) that must be
     /// ignored without poisoning the keyword-conditioned branches that follow.
     #[test]
-    fn lvln_branch_parser_real_lchar_mainall_sequence() {
+    fn lvln_lvlo_and_prps_parsers_read_real_payload_shapes() {
         let interner = StringInterner::new();
         let plugin = interner.intern("SeventySix.esm");
         let mut record = decoded_record("LVLN", 0x51C55B, plugin);
@@ -3242,17 +3606,41 @@ mod interior_tests {
             Some(0x51C577),
             "ghoul keyword selects LChar_TGroupGhouls"
         );
-    }
 
-    /// `lctn_property_avifs` against the REAL Whitespring golf LCTN (`09A451`)
-    /// PRPS bytes: ESSChanceMainGhouls (`594F`) + ESSChanceSubRadroach
-    /// (`3E9D4F`), both value 5.0.
-    #[test]
-    fn lctn_property_avifs_real_whitespring_golf_prps() {
-        let interner = StringInterner::new();
-        let plugin = interner.intern("SeventySix.esm");
-        let mut record = decoded_record("LCTN", 0x09A451, plugin);
-        record.fields.push(decoded_field(
+        let live_lvlo = FieldValue::Struct(vec![
+            (interner.intern("level"), FieldValue::Uint(0x96A2)),
+            (interner.intern("unknown_u8_1"), FieldValue::Uint(0x51)),
+        ]);
+        assert_eq!(
+            lvlo_entry_form_key(&live_lvlo, plugin, &interner),
+            Some(FormKey {
+                local: 0x5196A2,
+                plugin,
+            }),
+            "real 51C55F first LVLO must not truncate 5196A2 to 0096A2"
+        );
+
+        let master = interner.intern("Fallout4.esm");
+        let master_entry = FieldValue::Struct(vec![(
+            interner.intern("reference"),
+            FieldValue::FormKey(FormKey {
+                local: 0x758AD,
+                plugin: master,
+            }),
+        )]);
+        assert_eq!(
+            lvln_entry_form_key(&master_entry, master, &[], &interner),
+            Some(FormKey {
+                local: 0x758AD,
+                plugin: master,
+            }),
+            "FO4 master LVLN entries expose their actor field as `reference`"
+        );
+
+        // Whitespring golf LCTN (`09A451`) PRPS: ESSChanceMainGhouls (`594F`) +
+        // ESSChanceSubRadroach (`3E9D4F`), both value 5.0.
+        let mut lctn = decoded_record("LCTN", 0x09A451, plugin);
+        lctn.fields.push(decoded_field(
             "PRPS",
             FieldValue::Bytes(
                 hexv("4F5900000000A040000000004F9D3E000000A04000000000")
@@ -3260,7 +3648,7 @@ mod interior_tests {
                     .collect(),
             ),
         ));
-        let avifs = lctn_property_avifs(&record);
+        let avifs = lctn_property_avifs(&lctn);
         assert_eq!(avifs.len(), 2);
         assert_eq!(avifs[0].0.local & 0x00FF_FFFF, 0x594F);
         assert_eq!(avifs[0].1, 5.0);
@@ -3811,9 +4199,9 @@ mod interior_tests {
     }
 
     /// Interior cell whose Location LCTN has a synthesized ECZN ends up with
-    /// XEZN = that ECZN.
+    /// XEZN = that ECZN; one whose LCTN cannot be resolved gets none.
     #[test]
-    fn interior_cell_gets_xezn_when_lctn_has_eczn() {
+    fn interior_cell_gets_xezn_only_when_lctn_has_eczn() {
         let interner = StringInterner::new();
         let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
         let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
@@ -3844,6 +4232,14 @@ mod interior_tests {
         .unwrap();
         // The target must also hold the LCTN id so identity-resolve qualifies it.
         put_target_lctn(target, tgt_lctn_local);
+        // A second interior cell names a LCTN with no source record (e.g. a
+        // master-resident Location): nothing can be decoded, so it gets no XEZN.
+        let unresolved_cell_local = 0x00275EE0u32;
+        ensure_interior_cell_and_child_group(
+            target,
+            interior_cell_record(unresolved_cell_local, "PlainYCell", Some(0x00ABCDEF)),
+        )
+        .unwrap();
 
         let mut state = crate::formkey_mapper::MapperState::new([], mapper_options());
         state.source_to_target.insert(
@@ -3879,44 +4275,13 @@ mod interior_tests {
             Some(eczn_objid),
             "interior cell XEZN points at synthesized ECZN"
         );
-    }
-
-    /// Interior cell whose Location has NO synthesizable ECZN (its XLCN names a
-    /// LCTN with no source record — e.g. a master-resident Location) gets no
-    /// XEZN. Under the relaxed gate ANY LCTN with a source record + an interior
-    /// cell qualifies, so the only "no ECZN" case left is an unresolvable target.
-    #[test]
-    fn interior_cell_without_eczn_gets_no_xezn() {
-        let interner = StringInterner::new();
-        let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
-        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
-
-        // The interior cell points at a target LCTN id for which there is NO
-        // source LCTN record, so synthesis can decode nothing and creates no ECZN.
-        let missing_lctn_local = 0x00ABCDEFu32;
-        let cell_local = 0x00275EE0u32;
-        ensure_interior_cell_and_child_group(
-            target,
-            interior_cell_record(cell_local, "PlainYCell", Some(missing_lctn_local)),
-        )
-        .unwrap();
-
-        let mut state = crate::formkey_mapper::MapperState::new([], mapper_options());
-
-        {
-            let mut mapper =
-                crate::formkey_mapper::FormKeyMapper::from_state(&mut state, &interner);
-            let mut session = open_session(target, Some(source)).unwrap();
-            let report =
-                synthesize_encounter_zones(&mut session, &mut mapper, &config(), false).unwrap();
-            session.flush_pending_effects();
-            assert_eq!(report.records_added, 0, "no ECZN for unresolvable LCTN");
-        }
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&target).unwrap();
-        let cell = find_cell(&slot.parsed.root_items, cell_local).expect("interior cell");
-        assert_eq!(xezn_target(cell), None, "no XEZN stamped");
+        let unresolved = find_cell(&slot.parsed.root_items, unresolved_cell_local)
+            .expect("unresolved interior cell");
+        assert_eq!(
+            xezn_target(unresolved),
+            None,
+            "no XEZN for unresolvable LCTN"
+        );
     }
 
     /// A NON-workshop Location with a band (no keyword, no footprint)
@@ -4071,6 +4436,15 @@ mod interior_tests {
             placed_refr(refr_local, tgt_lctn_local),
         )
         .unwrap();
+        // XEZN → a LCTN id with no source LCTN record → no ECZN → safety-net strip.
+        let stripped_refr_local = 0x00300012u32;
+        insert_placed_child_into_cell_group(
+            target,
+            cell_local,
+            9,
+            placed_refr(stripped_refr_local, 0x00ABCDEF),
+        )
+        .unwrap();
         invalidate_handle(target);
 
         let mut state = crate::formkey_mapper::MapperState::new([], mapper_options());
@@ -4109,57 +4483,17 @@ mod interior_tests {
             Some(eczn_objid),
             "placed ref XEZN repointed to the synthesized ECZN (not stripped)"
         );
-    }
-
-    /// A placed ref whose XEZN points at a LCTN with no synthesizable ECZN
-    /// (master-resident, no source record) is stripped by the synthesis safety
-    /// net.
-    #[test]
-    fn placed_ref_xezn_stripped_when_no_eczn() {
-        let interner = StringInterner::new();
-        let source = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
-        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
-
-        let cell_local = 0x00275EF2u32;
-        ensure_interior_cell_and_child_group(
-            target,
-            interior_cell_record(cell_local, "HostCell2", None),
-        )
-        .unwrap();
-        let refr_local = 0x00300012u32;
-        // XEZN → a LCTN id with no source LCTN record → no ECZN → safety-net strip.
-        let missing_lctn_local = 0x00ABCDEFu32;
-        insert_placed_child_into_cell_group(
-            target,
-            cell_local,
-            9,
-            placed_refr(refr_local, missing_lctn_local),
-        )
-        .unwrap();
-        invalidate_handle(target);
-
-        let mut state = crate::formkey_mapper::MapperState::new([], mapper_options());
-
-        {
-            let mut mapper =
-                crate::formkey_mapper::FormKeyMapper::from_state(&mut state, &interner);
-            let mut session = open_session(target, Some(source)).unwrap();
-            synthesize_encounter_zones(&mut session, &mut mapper, &config(), false).unwrap();
-            session.flush_pending_effects();
-        }
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&target).unwrap();
-        let refr = find_refr(&slot.parsed.root_items, refr_local).expect("placed REFR");
+        let stripped =
+            find_refr(&slot.parsed.root_items, stripped_refr_local).expect("placed REFR");
         assert_eq!(
-            xezn_target(refr),
+            xezn_target(stripped),
             None,
             "placed ref XEZN with no ECZN target is stripped"
         );
     }
 
     #[test]
-    fn finalizer_repoints_placed_xezn_from_existing_eczn_location() {
+    fn finalizer_repoints_placed_xezn_to_existing_eczn_or_strips_it() {
         let interner = StringInterner::new();
         let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
 
@@ -4182,6 +4516,16 @@ mod interior_tests {
             placed_refr(refr_local, lctn_local),
         )
         .unwrap();
+        let eczn_less_lctn = 0x0955B6u32;
+        put_target_lctn(target, eczn_less_lctn);
+        let stripped_refr_local = 0x00300018u32;
+        insert_placed_child_into_cell_group(
+            target,
+            cell_local,
+            9,
+            placed_refr(stripped_refr_local, eczn_less_lctn),
+        )
+        .unwrap();
         invalidate_handle(target);
 
         let report = {
@@ -4190,7 +4534,10 @@ mod interior_tests {
             session.flush_pending_effects();
             report
         };
-        assert_eq!(report.records_changed, 1, "stale placed XEZN repaired");
+        assert_eq!(
+            report.records_changed, 2,
+            "stale placed XEZN repaired and wrong-type XEZN stripped"
+        );
 
         let store = plugin_handle_store_ref().lock().unwrap();
         let slot = store.get(&target).unwrap();
@@ -4204,6 +4551,13 @@ mod interior_tests {
             subrecord_formid(refr, "XEZN"),
             Some(eczn_local),
             "decoded and raw XEZN agree"
+        );
+        let stripped =
+            find_refr(&slot.parsed.root_items, stripped_refr_local).expect("placed REFR");
+        assert_eq!(
+            xezn_target(stripped),
+            None,
+            "placed REFR XEZN without an ECZN target is stripped"
         );
     }
 
@@ -4376,47 +4730,6 @@ mod interior_tests {
             xezn_target(refr),
             Some(eczn_objid),
             "late finalizer restores XEZN to the synthesized ECZN"
-        );
-    }
-
-    #[test]
-    fn finalizer_strips_placed_xezn_when_no_eczn_for_lctn() {
-        let interner = StringInterner::new();
-        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
-
-        let lctn_local = 0x0955B6u32;
-        put_target_lctn(target, lctn_local);
-        let cell_local = 0x00275EF8u32;
-        ensure_interior_cell_and_child_group(
-            target,
-            interior_cell_record(cell_local, "HostCell4", None),
-        )
-        .unwrap();
-        let refr_local = 0x00300018u32;
-        insert_placed_child_into_cell_group(
-            target,
-            cell_local,
-            9,
-            placed_refr(refr_local, lctn_local),
-        )
-        .unwrap();
-        invalidate_handle(target);
-
-        let report = {
-            let mut session = open_session(target, None).unwrap();
-            let report = finalize_placed_xezn_targets(&mut session, &config(), &interner).unwrap();
-            session.flush_pending_effects();
-            report
-        };
-        assert_eq!(report.records_changed, 1, "wrong-type XEZN stripped");
-
-        let store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get(&target).unwrap();
-        let refr = find_refr(&slot.parsed.root_items, refr_local).expect("placed REFR");
-        assert_eq!(
-            xezn_target(refr),
-            None,
-            "placed REFR XEZN without an ECZN target is stripped"
         );
     }
 
@@ -5208,6 +5521,79 @@ mod interior_tests {
         );
     }
 
+    /// The real Scorched melee role entry (`5196B1` → `LCharScorched_Melee`)
+    /// after materialization: a flat list of terminal actors, half of them the
+    /// unarmed variant. FO4 rolls that itself, so it must not be baked down to
+    /// whichever entry comes first. A list whose members still template is the
+    /// FO76 shape FO4 fails to chase, and stays on the materialize path.
+    #[test]
+    fn a_flat_list_of_terminal_actors_is_rollable_and_a_templating_one_is_not() {
+        let interner = StringInterner::new();
+        let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
+        let out = interner.intern(OUTPUT_PLUGIN);
+        let (role, unarmed, melee) = (0x5196B1u32, 0xB05607u32, 0xB05617u32);
+        let (templating_role, templating_leaf) = (0x5196B2u32, 0xB05626u32);
+
+        let mut flat = target_lvln_record(role, "LChar_GroupScorchedMelee");
+        flat.subrecords.push(sub("LVLO", lvlo_entry_bytes(unarmed)));
+        flat.subrecords.push(sub("LVLO", lvlo_entry_bytes(melee)));
+        put_record_in_group(target, *b"LVLN", flat);
+        put_record_in_group(
+            target,
+            *b"NPC_",
+            target_npc_named_record(unarmed, "LvlScorchedUnarmed_MAT", "Scorched"),
+        );
+        put_record_in_group(
+            target,
+            *b"NPC_",
+            target_npc_named_record(melee, "LvlScorchedMelee_MAT", "Scorched"),
+        );
+
+        let mut templating = target_lvln_record(templating_role, "LChar_GroupScorchedRanged");
+        templating
+            .subrecords
+            .push(sub("LVLO", lvlo_entry_bytes(templating_leaf)));
+        templating
+            .subrecords
+            .push(sub("LVLO", lvlo_entry_bytes(melee)));
+        put_record_in_group(target, *b"LVLN", templating);
+        let mut leaf = target_npc_named_record(templating_leaf, "LvlScorchedPistol", "Scorched");
+        leaf.subrecords
+            .push(sub("TPLT", 0x49466Fu32.to_le_bytes().to_vec()));
+        put_record_in_group(target, *b"NPC_", leaf);
+        invalidate_handle(target);
+
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let mut session = open_session(target, None).unwrap();
+        let key = |local| FormKey { local, plugin: out };
+
+        assert!(branch_list_is_rollable(
+            &mut session,
+            &schema,
+            &interner,
+            out,
+            &[],
+            &[],
+            key(role)
+        ));
+        assert!(
+            !branch_list_is_rollable(
+                &mut session,
+                &schema,
+                &interner,
+                out,
+                &[],
+                &[],
+                key(templating_role)
+            ),
+            "a member that still templates keeps the list off the roll path"
+        );
+        assert!(
+            !branch_list_is_rollable(&mut session, &schema, &interner, out, &[], &[], key(melee)),
+            "a concrete actor is not a list to roll"
+        );
+    }
+
     /// The ESS clone inherits its name by templating through the branch (a
     /// leveled list of name-less templated NPCs) — FO4 will not chase that chain
     /// for the display name, so the clone must bake a concrete FULL. This mirrors
@@ -5322,80 +5708,198 @@ mod interior_tests {
     }
 
     #[test]
-    fn branch_resolvers_read_target_master_npcs() {
+    fn landview_ghoul_branch_resolves_through_a_raw_master_list_reference() {
         let interner = StringInterner::new();
         let schema = AuthoringSchema::for_game("fo4").unwrap();
         let master_name = "Fallout4.esm";
         let master = plugin_handle_new_native(master_name, Some("fo4")).unwrap();
         let target = plugin_handle_new_native(OUTPUT_PLUGIN, Some("fo4")).unwrap();
         plugin_handle_add_master_native(target, master_name, None).unwrap();
-        let terminal = 0x12345u32;
+        put_record_in_group(
+            master,
+            *b"LVLN",
+            target_lvln_record_with_entry(0x0758AE, "LCharFeralGhoul", 0x0758AD),
+        );
         put_record_in_group(
             master,
             *b"NPC_",
-            target_npc_named_record(terminal, "EncMasterActor", "Master Actor"),
+            target_npc_named_record(0x0758AD, "EncFeralGhoul01", "Feral Ghoul"),
+        );
+        put_record_in_group(
+            target,
+            *b"LVLN",
+            target_lvln_record_with_entry(0x011D510B, "LChar_GroupFeralGhoul", 0x0758AE),
+        );
+        put_record_in_group(
+            target,
+            *b"LVLN",
+            target_lvln_record_with_entry(0x0151C578, "LChar_GroupFeralGhoulHelper", 0x0758AE),
+        );
+        put_record_in_group(
+            target,
+            *b"LVLN",
+            target_lvln_record_with_entry(0x0151C577, "LChar_TGroupGhouls", 0x01000900),
+        );
+        put_record_in_group(
+            target,
+            *b"NPC_",
+            target_npc_named_record(0x01000900, "TestBossWendigo", "Wendigo"),
         );
         invalidate_handle(master);
         invalidate_handle(target);
-
         let output_plugin = interner.intern(OUTPUT_PLUGIN);
-        let master_plugin = interner.intern(master_name);
-        let mut session = open_session(target, None).unwrap();
-        let current = FormKey {
-            local: terminal,
-            plugin: master_plugin,
+        let expected = FormKey {
+            local: 0x0758AD,
+            plugin: interner.intern(master_name),
         };
-        let concrete = resolve_branch_template_npc(
+        let mut session = open_session(target, None).unwrap();
+        let root = FormKey {
+            local: 0x1D510B,
+            plugin: output_plugin,
+        };
+        let masters = vec![master_name.to_string()];
+        assert_eq!(
+            resolve_branch_template_npc(
+                &mut session,
+                &schema,
+                &interner,
+                output_plugin,
+                &masters,
+                &[master],
+                None,
+                root,
+                &mut HashSet::new(),
+                0,
+            ),
+            Some(expected)
+        );
+        let (_, _, name_plugin) = resolve_branch_display_name(
             &mut session,
             &schema,
             &interner,
             output_plugin,
-            &[master_name.to_string()],
+            &masters,
             &[master],
             None,
-            current,
+            root,
             &mut HashSet::new(),
             0,
+        )
+        .expect("the master ghoul name must resolve without trying the boss branch");
+        assert_eq!(name_plugin, expected.plugin);
+        assert_eq!(
+            resolve_branch_template_npc(
+                &mut session,
+                &schema,
+                &interner,
+                output_plugin,
+                &masters,
+                &[master],
+                None,
+                expected,
+                &mut HashSet::new(),
+                0,
+            ),
+            Some(expected),
+            "a master NPC resolves to itself"
         );
-        assert_eq!(concrete, Some(current));
-
         let (full, _, _) = resolve_branch_display_name(
             &mut session,
             &schema,
             &interner,
             output_plugin,
-            &[master_name.to_string()],
+            &masters,
             &[master],
             None,
-            current,
+            expected,
             &mut HashSet::new(),
             0,
         )
         .expect("master NPC name should resolve");
         assert_eq!(full.sig.as_str(), "FULL");
-    }
 
-    #[test]
-    fn target_master_lvln_reference_entry_is_readable() {
-        let interner = StringInterner::new();
-        let master = interner.intern("Fallout4.esm");
-        let leaf = 0x758ADu32;
-        let value = FieldValue::Struct(vec![(
-            interner.intern("reference"),
-            FieldValue::FormKey(FormKey {
-                local: leaf,
-                plugin: master,
-            }),
-        )]);
-
-        assert_eq!(
-            lvln_entry_form_key(&value, master, &interner),
-            Some(FormKey {
-                local: leaf,
-                plugin: master,
-            }),
-            "FO4 master LVLN entries expose their actor field as `reference`"
-        );
+        let mut mapper = FormKeyMapper::new([], mapper_options(), &interner);
+        let cfg = config();
+        let source = BranchResolutionSource {
+            schema: cfg.source_schema.as_deref().unwrap(),
+            plugin: interner.intern(SEVENTYSIX_ESM),
+            output_to_source: &HashMap::new(),
+            config: &cfg,
+        };
+        let roles = HashMap::from([
+            (0x1D50B6, root),
+            (
+                0x1D50BC,
+                FormKey {
+                    local: 0x51C578,
+                    plugin: output_plugin,
+                },
+            ),
+        ]);
+        let mut clones = Vec::new();
+        let mut replacements = Vec::new();
+        let mut actors = Vec::new();
+        let mut warnings = Vec::new();
+        let mut seen_warnings = HashSet::new();
+        for (actor_local, base_local, marker, eid) in [
+            (0x3B005D, 0x1D57DB, 0x1D50BC_u32, "LvlMainHelper"),
+            (0x3B005E, 0x1D5136, 0x1D50B6_u32, "LvlMainMedium"),
+        ] {
+            let mut base = decoded_record("NPC_", base_local, output_plugin);
+            base.eid = Some(interner.intern(eid));
+            let mut actor = decoded_record("ACHR", actor_local, output_plugin);
+            actor
+                .fields
+                .push(decoded_field("NAME", FieldValue::FormKey(base.form_key)));
+            actor.fields.push(decoded_field(
+                "XLRT",
+                FieldValue::Bytes(
+                    [0x003956_u32, 0x01000000 | marker, 0x0121B2D6, 0x0121B2DE]
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect(),
+                ),
+            ));
+            assert_eq!(
+                placed_actor_role_entry(&base, &actor, &roles),
+                roles.get(&marker).copied()
+            );
+            assert!(matches!(
+                specialize_actor_to_branch(
+                    &mut session,
+                    &mut mapper,
+                    &schema,
+                    SigCode(*b"NPC_"),
+                    interner.intern(SYNTH_ESS_SPAWN_PLUGIN),
+                    &mut clones,
+                    &mut replacements,
+                    &mut actors,
+                    &mut warnings,
+                    &mut seen_warnings,
+                    output_plugin,
+                    &masters,
+                    &[master],
+                    &source,
+                    actor,
+                    base.form_key,
+                    base_local,
+                    &base,
+                    0x51C55B,
+                    FormKey {
+                        local: 0x51C577,
+                        plugin: output_plugin
+                    },
+                    Some(&roles),
+                ),
+                SpecializeOutcome::Specialized
+            ));
+        }
+        assert_eq!(clones.len(), 2);
+        assert_eq!(actors.len(), 2);
+        for clone in clones {
+            assert!(clone.fields.iter().any(|field| field.sig.as_str() == "FULL"
+                && field.value == FieldValue::String(interner.intern("Feral Ghoul"))));
+        }
     }
 
     /// Runs the late pass against a prepared source/target pair and returns
@@ -6127,344 +6631,5 @@ mod interior_tests {
             }
         }
         None
-    }
-}
-
-/// Live-data gate diagnostic for ESS placed-actor specialization. Loads the
-/// REAL generated output ESM and the REAL FO76 source ESM (paths overridable
-/// via `ESS_LIVE_TARGET` / `ESS_LIVE_SOURCE`) and replays every gate of
-/// `specialize_placed_actor_templates_after_ref_repair` with printed counts
-/// plus Whitespring-chain probes (actor 1EE0B8, cell A044E2, LCTN 09A451,
-/// LVLN 51C55B). Run:
-///
-/// ```text
-/// cargo test -p conversion_native --release live_ess_spawn_gate_diagnostic -- --ignored --nocapture
-/// ```
-#[cfg(test)]
-mod live_ess_diagnostics {
-    use super::*;
-    use crate::formkey_mapper::{FormKeyMapper, MapperOptions, MapperState, ResolutionMode};
-    use crate::schema::AuthoringSchema;
-    use crate::session::open_session;
-    use crate::sym::StringInterner;
-    use esp_authoring_core::plugin_runtime::{
-        parse_plugin_file, plugin_handle_new_native, plugin_handle_store_ref,
-    };
-
-    const PROBE_ACTOR: u32 = 0x1EE0B8;
-    const PROBE_CELL: u32 = 0xA044E2;
-    const PROBE_LCTN: u32 = 0x09A451;
-    const PROBE_LVLN: u32 = 0x51C55B;
-    const PROBE_BASE: u32 = 0x1D5136;
-    const PROBE_KYWD: u32 = 0x0581DE;
-
-    fn load_real_handle(path: &str, game: &str) -> u64 {
-        let parsed =
-            parse_plugin_file(path, Some(game.to_string()), true).expect("parse real plugin");
-        let plugin_name = parsed.plugin_name.clone();
-        let handle = plugin_handle_new_native(&plugin_name, Some(game)).expect("new handle");
-        let mut store = plugin_handle_store_ref().lock().unwrap();
-        let slot = store.get_mut(&handle).unwrap();
-        slot.parsed = parsed;
-        slot.invalidate_sections();
-        handle
-    }
-
-    fn describe(value: &FieldValue) -> String {
-        match value {
-            FieldValue::None => "None".into(),
-            FieldValue::Bool(b) => format!("Bool({b})"),
-            FieldValue::Int(v) => format!("Int({v})"),
-            FieldValue::Uint(v) => format!("Uint({v:#X})"),
-            FieldValue::Float(v) => format!("Float({v})"),
-            FieldValue::String(_) => "String".into(),
-            FieldValue::FormKey(fk) => format!("FormKey({:06X})", fk.local & 0x00FF_FFFF),
-            FieldValue::Bytes(b) => format!(
-                "Bytes[{}]({})",
-                b.len(),
-                b.iter()
-                    .take(32)
-                    .map(|x| format!("{x:02X}"))
-                    .collect::<String>()
-            ),
-            FieldValue::Struct(fields) => format!("Struct{{{} fields}}", fields.len()),
-            FieldValue::List(items) => format!("List[{}]", items.len()),
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn live_ess_spawn_gate_diagnostic() {
-        let Ok(target_path) = std::env::var("ESS_LIVE_TARGET") else {
-            eprintln!("live_ess: SKIP (ESS_LIVE_TARGET unset)");
-            return;
-        };
-        let Ok(source_path) = std::env::var("ESS_LIVE_SOURCE") else {
-            eprintln!("live_ess: SKIP (ESS_LIVE_SOURCE unset)");
-            return;
-        };
-        if !std::path::Path::new(&target_path).exists()
-            || !std::path::Path::new(&source_path).exists()
-        {
-            eprintln!("live_ess: SKIP (target or source ESM missing)");
-            return;
-        }
-
-        let interner = StringInterner::new();
-        eprintln!("live_ess: parsing target {target_path}");
-        let target = load_real_handle(&target_path, "fo4");
-        eprintln!("live_ess: parsing source {source_path}");
-        let source = load_real_handle(&source_path, "fo76");
-
-        let config = FixupConfig {
-            preserve_source_ids: true,
-            is_whole_plugin: true,
-            target_schema: Some(AuthoringSchema::for_game("fo4").unwrap()),
-            source_schema: Some(AuthoringSchema::for_game("fo76").unwrap()),
-            ..FixupConfig::default()
-        };
-        let opts = MapperOptions {
-            output_plugin_name: "SeventySix.esm".into(),
-            preserve_source_ids: true,
-            resolution_mode: ResolutionMode::DeferAndFixup,
-            ..MapperOptions::default()
-        };
-        let mut state = MapperState::new([], opts);
-        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
-        let mut session = open_session(target, Some(source)).unwrap();
-
-        let target_schema = config.target_schema.clone().unwrap();
-        let source_schema = config.source_schema.clone().unwrap();
-        let output_plugin = mapper.output_plugin_sym();
-
-        // Gate 1: source slot / plugin sym.
-        let source_plugin = source_plugin_sym(&mut session, mapper.interner);
-        eprintln!(
-            "gate1 source_plugin = {:?}",
-            source_plugin.and_then(|s| mapper.interner.resolve(s))
-        );
-        let Some(source_plugin) = source_plugin else {
-            panic!("gate1 FAILED: no source plugin");
-        };
-
-        // Gate 2: target index / placed actors.
-        let tindex = build_target_index(&session.target_slot().parsed.root_items, true);
-        eprintln!(
-            "gate2 placed_actors={} cell_locations={} grid={} all_ids={}",
-            tindex.placed_actors.len(),
-            tindex.cell_locations.len(),
-            tindex.grid.len(),
-            tindex.all_object_ids.len()
-        );
-        let probe = tindex
-            .placed_actors
-            .iter()
-            .find(|a| a.ref_objid == PROBE_ACTOR);
-        eprintln!(
-            "  probe actor {PROBE_ACTOR:06X}: {:?}",
-            probe.map(|a| format!("cell={:06X}", a.cell_objid))
-        );
-        eprintln!(
-            "  probe cell {PROBE_CELL:06X} XLCN: {:?}",
-            tindex
-                .cell_locations
-                .get(&PROBE_CELL)
-                .map(|v| format!("{v:06X}"))
-        );
-
-        mapper.reserve_object_ids(tindex.all_object_ids.iter().copied());
-        let output_to_source = output_to_source_object_ids(&mapper, output_plugin);
-        eprintln!("  output_to_source entries={}", output_to_source.len());
-
-        // Gate 3: candidate templates from placed-actor bases.
-        let (candidates, prepared_actors) = prepare_placed_actor_templates(
-            &mut session,
-            target_schema.as_ref(),
-            &tindex,
-            output_plugin,
-            mapper.interner,
-        )
-        .unwrap();
-        eprintln!(
-            "gate3 candidate_templates={} contains_{PROBE_LVLN:06X}={}",
-            candidates.len(),
-            candidates.contains(&PROBE_LVLN)
-        );
-        if candidates.is_empty() {
-            // Deep probe: decode the known actor + base directly.
-            let actor_fk = FormKey {
-                local: PROBE_ACTOR,
-                plugin: output_plugin,
-            };
-            match session.record_decoded(&actor_fk, target_schema.as_ref(), mapper.interner) {
-                Ok(rec) => {
-                    eprintln!("  actor decode ok sig={}", rec.sig.as_str());
-                    for f in &rec.fields {
-                        if f.sig.as_str() == "NAME" {
-                            eprintln!("    NAME = {}", describe(&f.value));
-                        }
-                    }
-                }
-                Err(e) => eprintln!("  actor decode FAILED: {e:?}"),
-            }
-            let base_fk = FormKey {
-                local: PROBE_BASE,
-                plugin: output_plugin,
-            };
-            match session.record_decoded(&base_fk, target_schema.as_ref(), mapper.interner) {
-                Ok(rec) => {
-                    eprintln!("  base decode ok sig={}", rec.sig.as_str());
-                    for f in &rec.fields {
-                        if matches!(f.sig.as_str(), "TPLT" | "TPTA") {
-                            eprintln!("    {} = {}", f.sig.as_str(), describe(&f.value));
-                        }
-                    }
-                }
-                Err(e) => eprintln!("  base decode FAILED: {e:?}"),
-            }
-        }
-
-        // Gate 4: conditional LVLN branch index from the SOURCE ESM.
-        let branches = build_conditional_lvln_branch_index_for_target_templates(
-            &mut session,
-            &source_schema,
-            mapper.interner,
-            &tindex,
-            &mapper,
-            output_plugin,
-            source_plugin,
-            &config,
-            &candidates,
-            &output_to_source,
-        );
-        eprintln!("gate4 conditional_lvln_branches={}", branches.len());
-        match branches.get(&PROBE_LVLN) {
-            Some(b) => {
-                let mut kws: Vec<_> = b
-                    .iter()
-                    .map(|(k, v)| format!("{k:06X}->{:06X}", v.local & 0x00FF_FFFF))
-                    .collect();
-                kws.sort();
-                eprintln!("  {PROBE_LVLN:06X} branches: {}", kws.join(" "));
-                eprintln!(
-                    "  ghoul keyword {PROBE_KYWD:06X} present: {}",
-                    b.contains_key(&PROBE_KYWD)
-                );
-            }
-            None => {
-                eprintln!("  {PROBE_LVLN:06X} NOT in branch index — deep probe:");
-                let fk = FormKey {
-                    local: PROBE_LVLN,
-                    plugin: source_plugin,
-                };
-                match session.source_record_decoded(&fk, source_schema.as_ref(), mapper.interner) {
-                    Ok(rec) => {
-                        eprintln!(
-                            "  source {PROBE_LVLN:06X} decoded sig={} fields={} warnings={:?}",
-                            rec.sig.as_str(),
-                            rec.fields.len(),
-                            rec.warnings
-                                .iter()
-                                .filter_map(|w| mapper.interner.resolve(*w))
-                                .collect::<Vec<_>>()
-                        );
-                        for f in rec.fields.iter().take(20) {
-                            eprintln!("    {} = {}", f.sig.as_str(), describe(&f.value));
-                        }
-                        let parsed = lvln_condition_branch_keywords(&rec, mapper.interner);
-                        eprintln!("  direct branch parse -> {} branches", parsed.len());
-                    }
-                    Err(e) => eprintln!("  source {PROBE_LVLN:06X} decode FAILED: {e:?}"),
-                }
-            }
-        }
-
-        // Gate 5: source location assignment for actor cells.
-        let actor_cells: HashSet<u32> = tindex.placed_actors.iter().map(|a| a.cell_objid).collect();
-        eprintln!(
-            "  actor_cells={} contains_{PROBE_CELL:06X}={}",
-            actor_cells.len(),
-            actor_cells.contains(&PROBE_CELL)
-        );
-        let (lctn_locals, assignment) = source_location_assignments_for_target_cells(
-            &mut session,
-            &source_schema,
-            mapper.interner,
-            &tindex,
-            &mapper,
-            &config,
-            &output_to_source,
-            &actor_cells,
-        )
-        .unwrap();
-        eprintln!(
-            "gate5 source_lctn_locals={} assignments={}",
-            lctn_locals.len(),
-            assignment.len()
-        );
-        eprintln!(
-            "  {PROBE_CELL:06X} assignment: {:?}",
-            assignment
-                .get(&PROBE_CELL)
-                .map(|(d, l)| format!("depth={d} lctn={l:06X}"))
-        );
-
-        // Gate 6: encounter keywords per source location.
-        let (kw, variant_keywords) = location_encounter_keywords_for_sources(
-            &mut session,
-            &source_schema,
-            mapper.interner,
-            source_plugin,
-            &lctn_locals,
-        );
-        let nonempty = kw.values().filter(|v| !v.is_empty()).count();
-        eprintln!("gate6 keyword_locations={} nonempty={}", kw.len(), nonempty);
-        if let Some(k) = kw.get(&PROBE_LCTN) {
-            eprintln!(
-                "  {PROBE_LCTN:06X} keywords: {:?}",
-                k.iter()
-                    .map(|(k, v, depth)| format!("{k:06X}@{v}^{depth}"))
-                    .collect::<Vec<_>>()
-            );
-        } else {
-            eprintln!("  {PROBE_LCTN:06X} not in keyword map");
-        }
-
-        // Full per-actor pass.
-        let role_entries = build_branch_role_entry_index(
-            &mut session,
-            &source_schema,
-            mapper.interner,
-            &tindex,
-            &mapper,
-            output_plugin,
-            &config,
-            &branches,
-        );
-        let (added, changed, warnings) = specialize_placed_actor_templates(
-            &mut session,
-            &mut mapper,
-            &config,
-            target_schema.as_ref(),
-            &tindex,
-            prepared_actors,
-            &branches,
-            &role_entries,
-            &kw,
-            &variant_keywords,
-            &assignment,
-            source_schema.as_ref(),
-            source_plugin,
-            &output_to_source,
-            output_plugin,
-        )
-        .unwrap();
-        eprintln!(
-            "pass: added={added} changed={changed} warnings={}",
-            warnings.len()
-        );
-        for w in warnings.iter().take(60) {
-            eprintln!("  WARN {}", mapper.interner.resolve(*w).unwrap_or("?"));
-        }
     }
 }

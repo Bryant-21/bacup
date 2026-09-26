@@ -1,5 +1,5 @@
-; TODO
-; Deferred: SetResultAnimationIdx() has no caller until the server-side result driver is restored.
+; B21_TalesFromAppalachia's Casino native runtime now owns the local result driver.
+; This setter remains available to non-native callers and isolated script tests.
 
 ; Re-homed from OnSyncVariableNetworkChanged("ResultAnimationIdx"): FO76 replicated
 ; the result index and clients played the reveal. Exposed as a local setter.

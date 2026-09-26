@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use havok_native::hkx::model::HkxObject;
 use havok_native::hkx::types::HkxValue;
 use havok_native::hkx::{HkxFile, read_packfile};

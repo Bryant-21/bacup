@@ -267,151 +267,52 @@ mod tests {
     }
 
     #[test]
-    fn apply_no_tnam_is_no_op() {
-        let mut interner = StringInterner::new();
+    fn apply_nulls_only_tnam_sounds_that_resolve_to_leveled_lists() {
+        let interner = StringInterner::new();
         let sound_sym = interner.intern("sound");
-        let fk = make_fk(0x000800, "Out.esp", &mut interner);
-        let mut record = make_stag(fk, vec![]);
-        let map = make_sig_map(&[], &mut interner);
-
-        let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
-        assert_eq!(stripped, 0);
-        assert!(!changed);
-    }
-
-    #[test]
-    fn apply_keeps_sndr_sound() {
-        let mut interner = StringInterner::new();
-        let sound_sym = interner.intern("sound");
-        let sndr_fk = make_fk(0x001000, "Out.esp", &mut interner);
-        let stag_fk = make_fk(0x000800, "Out.esp", &mut interner);
-        let entry = tnam_entry(sndr_fk, "Attack", &mut interner);
-        let mut record = make_stag(stag_fk, vec![entry]);
-
-        let map = make_sig_map(&[(0x001000, "Out.esp", "SNDR")], &mut interner);
-
-        let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
-        assert_eq!(stripped, 0, "SNDR should not be stripped");
-        assert!(!changed);
-    }
-
-    #[test]
-    fn apply_strips_lvli_sound() {
-        let mut interner = StringInterner::new();
-        let sound_sym = interner.intern("sound");
-        let lvli_fk = make_fk(0x002000, "Out.esp", &mut interner);
-        let stag_fk = make_fk(0x000800, "Out.esp", &mut interner);
-        let entry = tnam_entry(lvli_fk, "Equip", &mut interner);
-        let mut record = make_stag(stag_fk, vec![entry]);
-
-        let map = make_sig_map(&[(0x002000, "Out.esp", "LVLI")], &mut interner);
-
-        let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
-        assert_eq!(stripped, 1);
-        assert!(changed);
-
-        // Entry is still present, but sound field is now None.
-        assert_eq!(record.fields.len(), 1);
-        if let FieldValue::Struct(ref fields) = record.fields[0].value {
-            let (sym, val) = &fields[0];
-            assert_eq!(*sym, interner.intern("sound"));
-            assert_eq!(*val, FieldValue::None, "sound must be nulled");
-        } else {
-            panic!("expected Struct");
-        }
-    }
-
-    #[test]
-    fn apply_leaves_null_sound_unchanged() {
-        let mut interner = StringInterner::new();
-        let sound_sym = interner.intern("sound");
-        let stag_fk = make_fk(0x000800, "Out.esp", &mut interner);
-        let entry = null_tnam_entry("Attack", &mut interner);
-        let mut record = make_stag(stag_fk, vec![entry]);
-
-        let map = make_sig_map(&[], &mut interner);
-
-        let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
-        assert_eq!(stripped, 0, "null FK must not be stripped");
-        assert!(!changed);
-    }
-
-    #[test]
-    fn apply_leaves_unknown_fk_unchanged() {
-        let mut interner = StringInterner::new();
-        let sound_sym = interner.intern("sound");
-        let external_fk = make_fk(0x0ABCDE, "Fallout4.esm", &mut interner);
-        let stag_fk = make_fk(0x000800, "Out.esp", &mut interner);
-        let entry = tnam_entry(external_fk, "Draw", &mut interner);
-        let mut record = make_stag(stag_fk, vec![entry]);
-
-        // Map is empty — FK not found.
-        let map = make_sig_map(&[], &mut interner);
-
-        let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
-        assert_eq!(stripped, 0, "unknown FK should not be stripped");
-        assert!(!changed);
-    }
-
-    #[test]
-    fn apply_strips_lvli_keeps_sndr_in_mixed_record() {
-        let mut interner = StringInterner::new();
-        let sound_sym = interner.intern("sound");
-
-        let sndr_fk = make_fk(0x001000, "Out.esp", &mut interner);
-        let lvli_fk = make_fk(0x002000, "Out.esp", &mut interner);
-        let stag_fk = make_fk(0x000800, "Out.esp", &mut interner);
-
-        let entry_sndr = tnam_entry(sndr_fk, "Attack", &mut interner);
-        let entry_lvli = tnam_entry(lvli_fk, "Equip", &mut interner);
-        let mut record = make_stag(stag_fk, vec![entry_sndr, entry_lvli]);
-
+        let stag_fk = make_fk(0x000800, "Out.esp", &interner);
         let map = make_sig_map(
             &[(0x001000, "Out.esp", "SNDR"), (0x002000, "Out.esp", "LVLI")],
-            &mut interner,
+            &interner,
         );
-
-        let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
-        assert_eq!(stripped, 1, "exactly one LVLI entry should be stripped");
-        assert!(changed);
-        assert_eq!(record.fields.len(), 2, "both TNAM entries must remain");
-
-        // First TNAM (SNDR): sound FK intact.
-        if let FieldValue::Struct(ref fields) = record.fields[0].value {
-            assert!(
-                matches!(fields[0].1, FieldValue::FormKey(_)),
-                "SNDR sound must remain as FormKey"
-            );
-        }
-
-        // Second TNAM (LVLI): sound nulled.
-        if let FieldValue::Struct(ref fields) = record.fields[1].value {
-            assert_eq!(fields[0].1, FieldValue::None, "LVLI sound must be None");
-        }
-    }
-
-    #[test]
-    fn apply_preserves_non_tnam_fields() {
-        let mut interner = StringInterner::new();
-        let sound_sym = interner.intern("sound");
-
-        let stag_fk = make_fk(0x000800, "Out.esp", &mut interner);
-        let edid_sym = interner.intern("TestSTAG");
-
-        let edid_entry = FieldEntry {
+        let sndr = || tnam_entry(make_fk(0x001000, "Out.esp", &interner), "Attack", &interner);
+        let lvli = || tnam_entry(make_fk(0x002000, "Out.esp", &interner), "Equip", &interner);
+        let unknown = tnam_entry(
+            make_fk(0x0ABCDE, "Fallout4.esm", &interner),
+            "Draw",
+            &interner,
+        );
+        let edid = FieldEntry {
             sig: SubrecordSig::from_str("EDID").unwrap(),
-            value: FieldValue::String(edid_sym),
+            value: FieldValue::String(interner.intern("TestSTAG")),
         };
-        let lvli_fk = make_fk(0x002000, "Out.esp", &mut interner);
-        let tnam = tnam_entry(lvli_fk, "Equip", &mut interner);
-        let mut record = make_stag(stag_fk, vec![edid_entry, tnam]);
 
-        let map = make_sig_map(&[(0x002000, "Out.esp", "LVLI")], &mut interner);
+        for (name, fields, stripped_at) in [
+            ("no tnam", vec![], vec![]),
+            ("sndr", vec![sndr()], vec![]),
+            ("lvli", vec![lvli()], vec![0]),
+            (
+                "null sound",
+                vec![null_tnam_entry("Attack", &interner)],
+                vec![],
+            ),
+            ("unmapped sound", vec![unknown], vec![]),
+            ("mixed", vec![sndr(), lvli()], vec![1]),
+            ("non-tnam kept", vec![edid, lvli()], vec![1]),
+        ] {
+            let mut expected = make_stag(stag_fk, fields.clone());
+            for &index in &stripped_at {
+                let FieldValue::Struct(ref mut tnam) = expected.fields[index].value else {
+                    panic!("{name}: expected Struct");
+                };
+                tnam[0] = (sound_sym, FieldValue::None);
+            }
+            let mut record = make_stag(stag_fk, fields);
 
-        let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
-        assert_eq!(stripped, 1);
-        assert!(changed);
-        assert_eq!(record.fields.len(), 2, "EDID and TNAM both remain");
-        assert_eq!(record.fields[0].sig.as_str(), "EDID", "EDID must be first");
+            let (stripped, changed) = apply_to_record(&mut record, sound_sym, &map);
+            assert_eq!(stripped as usize, stripped_at.len(), "{name}");
+            assert_eq!(changed, !stripped_at.is_empty(), "{name}");
+            assert_eq!(record.fields, expected.fields, "{name}");
+        }
     }
 }

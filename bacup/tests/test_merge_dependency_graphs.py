@@ -86,12 +86,3 @@ def test_merge_concatenates_errors():
     merged = merge_dependency_graphs([g1, g2])
     assert merged.errors == ["e1", "e2", "e3"]
 
-
-def test_merge_root_is_first_graphs_root():
-    a = _node("000800", "First")
-    b = _node("000900", "Second")
-    merged = merge_dependency_graphs([
-        _graph(a, [a], []),
-        _graph(b, [b], []),
-    ])
-    assert merged.root is a

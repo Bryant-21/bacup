@@ -89,9 +89,26 @@ Function Fragment_Stage_0430_Item_00()
 EndFunction
 
 Function Fragment_Stage_0500_Item_00()
+    ; The three documents are placed Initially Disabled with no enable parent; FO76 enabled them
+    ; per instance here. Stage 450 arms the DefaultAliasOnDistanceLessThan quips (501/505/515/525).
+    ObjectReference documentRef = Alias_Documentation01_Ref.GetReference()
+    If documentRef != None
+        documentRef.Enable()
+    EndIf
+    documentRef = Alias_Documentation02_Ref.GetReference()
+    If documentRef != None
+        documentRef.Enable()
+    EndIf
+    documentRef = Alias_Documentation03_Ref.GetReference()
+    If documentRef != None
+        documentRef.Enable()
+    EndIf
     SetObjectiveCompleted(400)
     SetObjectiveDisplayed(500)
     SetObjectiveDisplayed(600)
+    If !IsStageDone(450)
+        SetStage(450)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0501_Item_00()
@@ -226,6 +243,7 @@ Function Fragment_Stage_0710_Item_00()
     If BS01_Invention_Valdez_Diagnostics_Scene != None && !BS01_Invention_Valdez_Diagnostics_Scene.IsPlaying()
         BS01_Invention_Valdez_Diagnostics_Scene.Start()
     EndIf
+    TryCompleteSystemChecks(710)
 EndFunction
 
 Function Fragment_Stage_0720_Item_00()
@@ -237,6 +255,7 @@ Function Fragment_Stage_0720_Item_00()
     If BS01_Invention_Valdez_ReleaseValve_Scene != None && !BS01_Invention_Valdez_ReleaseValve_Scene.IsPlaying()
         BS01_Invention_Valdez_ReleaseValve_Scene.Start()
     EndIf
+    TryCompleteSystemChecks(720)
 EndFunction
 
 Function Fragment_Stage_0730_Item_00()
@@ -275,7 +294,11 @@ Function Fragment_Stage_0740_Item_00()
 EndFunction
 
 Function Fragment_Stage_0750_Item_00()
-    If IsStageDone(710) && IsStageDone(720) && IsStageDone(730) && !IsStageDone(800)
+    TryCompleteSystemChecks(750)
+EndFunction
+
+Function TryCompleteSystemChecks(Int completedStage)
+    If (completedStage == 710 || IsStageDone(710)) && (completedStage == 720 || IsStageDone(720)) && IsStageDone(730) && (completedStage == 750 || IsStageDone(750)) && !IsStageDone(800)
         SetStage(800)
     EndIf
 EndFunction
@@ -298,7 +321,7 @@ Function Fragment_Stage_0810_Item_00()
     If BS01_MQ02_Invention_ValdezRep_RaiseSmall_Message != None
         BS01_MQ02_Invention_ValdezRep_RaiseSmall_Message.Show()
     EndIf
-    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
+    If (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
         SetStage(900)
     EndIf
 EndFunction
@@ -311,7 +334,7 @@ Function Fragment_Stage_0820_Item_00()
     If BS01_MQ02_Invention_ValdezRep_LowerSmall_Message != None
         BS01_MQ02_Invention_ValdezRep_LowerSmall_Message.Show()
     EndIf
-    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
+    If (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
         SetStage(900)
     EndIf
 EndFunction
@@ -324,7 +347,7 @@ Function Fragment_Stage_0830_Item_00()
     If BS01_MQ02_Invention_ValdezRep_RaiseSmall_Message != None
         BS01_MQ02_Invention_ValdezRep_RaiseSmall_Message.Show()
     EndIf
-    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
+    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
         SetStage(900)
     EndIf
 EndFunction
@@ -337,7 +360,7 @@ Function Fragment_Stage_0840_Item_00()
     If BS01_MQ02_Invention_ValdezRep_LowerSmall_Message != None
         BS01_MQ02_Invention_ValdezRep_LowerSmall_Message.Show()
     EndIf
-    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
+    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
         SetStage(900)
     EndIf
 EndFunction
@@ -350,7 +373,7 @@ Function Fragment_Stage_0850_Item_00()
     If BS01_MQ02_Invention_ValdezRep_RaiseSmall_Message != None
         BS01_MQ02_Invention_ValdezRep_RaiseSmall_Message.Show()
     EndIf
-    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
+    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && !IsStageDone(900)
         SetStage(900)
     EndIf
 EndFunction
@@ -363,7 +386,7 @@ Function Fragment_Stage_0860_Item_00()
     If BS01_MQ02_Invention_ValdezRep_LowerSmall_Message != None
         BS01_MQ02_Invention_ValdezRep_LowerSmall_Message.Show()
     EndIf
-    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && (IsStageDone(850) || IsStageDone(860)) && !IsStageDone(900)
+    If (IsStageDone(810) || IsStageDone(820)) && (IsStageDone(830) || IsStageDone(840)) && !IsStageDone(900)
         SetStage(900)
     EndIf
 EndFunction

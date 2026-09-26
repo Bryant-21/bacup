@@ -26,6 +26,11 @@ Function Fragment_Stage_0150_Item_00()
             playerRef.SetValue(MQ_OverseerHolotape01PickedUp, 1.0)
         EndIf
     EndIf
+    ; Pennington's topic only sets 150 (both stages belong to checkpoint 160) and
+    ; nothing else sets 160, which is what points the player at the Overseer's camp.
+    If !IsStageDone(160) && !IsStageDone(170)
+        SetStage(160)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0160_Item_00()

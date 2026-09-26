@@ -53,6 +53,7 @@ def _orchestrator(tmp_path, extracted):
     return SimpleNamespace(
         source_game="fo76", target_game="fo4", mod_path=mod,
         source_data_dir=tmp_path / "source", target_extracted_dir=extracted,
+        source_archive_dirs=(tmp_path / "Fallout76/Data",),
         target_data_dir=tmp_path / "Fallout4/Data",
         target_asset_store=IndexedAssets(tmp_path / "cache/Data"),
         _rust_conversion_run=SimpleNamespace(id=1, run_phase=run_phase),
@@ -75,6 +76,7 @@ def test_postprocess_materializes_indexed_contracts(tmp_path, partial_extraction
 
     store = orchestrator.target_asset_store
     assert orchestrator.calls[0][1]["target_extracted_dir"] == str(store.cache_data_root)
+    assert orchestrator.calls[0][1]["params"]["source_archive_dirs"] == [str(tmp_path / "Fallout76/Data")]
     assert set(store.requests) == set(CONTRACTS)
     assert not (store.cache_data_root / ANIMATION).exists()
     assert orchestrator.target_extracted_dir == extracted
@@ -82,13 +84,16 @@ def test_postprocess_materializes_indexed_contracts(tmp_path, partial_extraction
 
 def test_havok_wave_supplies_materialized_contract_root(tmp_path, monkeypatch):
     orchestrator = _orchestrator(tmp_path, None)
+    orchestrator.output_plugin_name = "Output.esm"
+    orchestrator.summary = orchestrator._summary
+    orchestrator.formkey_mapper = None
+    orchestrator.fixups = None
     driver = SimpleNamespace(ctx=orchestrator)
     runs = SimpleNamespace(havok=orchestrator._rust_conversion_run, nifs=None, textures=None)
     builder = AssetWaveBuilder(
         driver, AssetWaveToggles(drivers=False, animations=False), runs,
         SimpleNamespace(emit_log=lambda *_args: None),
     )
-    monkeypatch.setattr(builder, "_shim", lambda: orchestrator)
     monkeypatch.setattr(
         "bacup_lib.workflows.asset_phases._params_for_convert_havok", lambda _shim: {}
     )
@@ -97,6 +102,7 @@ def test_havok_wave_supplies_materialized_contract_root(tmp_path, monkeypatch):
 
     postprocess = next(stage for stage in stages if stage.phase == "postprocess_havok_assets")
     assert postprocess.target_extracted_dir == str(orchestrator.target_asset_store.cache_data_root)
+    assert postprocess.params["source_archive_dirs"] == [str(tmp_path / "Fallout76/Data")]
     assert set(orchestrator.target_asset_store.requests) == set(CONTRACTS)
 
 

@@ -23,6 +23,10 @@ EndFunction
 
 Function Fragment_Stage_0200_Item_00()
 	SecurityWelcome.Start()
+	mtr04_gamescomplete activityTracker = (Self as Quest) as mtr04_gamescomplete
+	If activityTracker != None
+		activityTracker.ScheduleSecurityWelcome()
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
@@ -56,26 +60,34 @@ Function Fragment_Stage_0800_Item_00()
 		activityTracker.ResetActivityCompletion()
 	EndIf
 
-	If DrossQuest.IsCompleted()
+	RequestCalibrationGame(DrossQuest, DrossQuestKeyword, 0)
+	RequestCalibrationGame(LuckyQuest, LuckyQuestKeyword, 1)
+	RequestCalibrationGame(ChowQuest, ChowQuestKeyword, 2)
+EndFunction
+
+Function RequestCalibrationGame(Quest akGame, Keyword akStartKeyword, Int aiActivityIndex)
+	mtr04_gamescomplete activityTracker = (Self as Quest) as mtr04_gamescomplete
+	If akGame == None
 		If activityTracker != None
-			activityTracker.ActivityCompleted(0)
+			activityTracker.ActivityCompleted(aiActivityIndex)
 		EndIf
-	ElseIf !DrossQuest.IsRunning()
-		DrossQuest.Start()
+		Return
 	EndIf
-	If LuckyQuest.IsCompleted()
-		If activityTracker != None
-			activityTracker.ActivityCompleted(1)
-		EndIf
-	ElseIf !LuckyQuest.IsRunning()
-		LuckyQuest.Start()
+	If akGame.IsRunning()
+		Return
 	EndIf
-	If ChowQuest.IsCompleted()
+	If akGame.IsCompleted()
 		If activityTracker != None
-			activityTracker.ActivityCompleted(2)
+			activityTracker.ActivityCompleted(aiActivityIndex)
 		EndIf
-	ElseIf !ChowQuest.IsRunning()
-		ChowQuest.Start()
+		Return
+	EndIf
+
+	If akStartKeyword != None
+		akStartKeyword.SendStoryEventAndWait(CamdenPark.GetLocation(), Alias_Player.GetReference())
+	EndIf
+	If !akGame.IsRunning() && activityTracker != None
+		activityTracker.ActivityCompleted(aiActivityIndex)
 	EndIf
 EndFunction
 
@@ -88,6 +100,10 @@ Function Fragment_Stage_1000_Item_00()
 	SetObjectiveCompleted(800, True)
 	SetObjectiveDisplayed(900, True)
 	BossIntro.Start()
+	mtr04_gamescomplete activityTracker = (Self as Quest) as mtr04_gamescomplete
+	If activityTracker != None
+		activityTracker.ScheduleBossMeeting()
+	EndIf
 EndFunction
 
 Function Fragment_Stage_1001_Item_00()

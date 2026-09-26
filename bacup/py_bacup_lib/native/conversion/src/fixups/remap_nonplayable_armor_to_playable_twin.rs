@@ -7,7 +7,10 @@
 //! EditorID minus the suffix, otherwise identical, e.g.
 //! `Clothes_GreaserJacketLeather_BloodEagle`), looked up in the output first, then in
 //! the base-game masters (most pieces duplicate stock FO4 armor such as
-//! `Armor_Combat_ArmLeft`). Duplicates with no twin keep pointing at the
+//! `Armor_Combat_ArmLeft`). When no armor carries the stripped name, the twin is the
+//! one playable armor that looks identical: some duplicates shadow an Atomic Shop
+//! piece under another name (`XPD_Clothes_Fanatic01_Outfit_NONPLAYABLE` is
+//! `ATX_Clothes_Fanatic01_Scrapper`). Duplicates with no twin keep pointing at the
 //! non-playable record; making them lootable would mean clearing the flag instead.
 //!
 //! `records_changed` = `LVLI`/`OTFT` records with at least one entry repointed.
@@ -16,7 +19,7 @@ use crate::fixups::rewrite_raw_object_template_formids::encode_target_form_id;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode};
-use crate::record::{FieldValue, Record};
+use crate::record::{FieldEntry, FieldValue, Record};
 use crate::session::PluginSession;
 use crate::sym::Sym;
 use rustc_hash::FxHashMap;
@@ -25,6 +28,11 @@ use rustc_hash::FxHashMap;
 /// real typo in the source data (`LL_Armor_Leather_ArmLeft_Heavy_NONPLAYALBE`),
 /// not a mistake here.
 const NONPLAYABLE_SUFFIXES: [&str; 3] = ["_nonplayable", "_notplayable", "_nonplayalbe"];
+
+/// EditorID prefixes of cut and debug armor, never offered as a same-look twin.
+const UNUSED_ARMOR_PREFIXES: [&str; 3] = ["zzz", "cut_", "debug"];
+
+const NON_PLAYABLE_RECORD_FLAG: u32 = 0x0000_0004;
 
 /// Signatures whose entries point at the armor an NPC ends up wearing.
 const REFERRING_SIGS: [&str; 2] = ["LVLI", "OTFT"];
@@ -69,7 +77,7 @@ impl Fixup for RemapNonplayableArmorToPlayableTwinFixup {
         // `raw_form_ids_of_sig`: that list skips empty-plugin keys, so the two agree
         // only up to the first skip and later pairings attach EditorIDs to the
         // wrong armor.
-        let mut armor_by_editor_id: FxHashMap<String, FormKey> = FxHashMap::default();
+        let mut armors = Vec::new();
         for form_key in &armo_form_keys {
             let record = match session.record_decoded(form_key, target_schema, mapper.interner) {
                 Ok(record) => record,
@@ -86,9 +94,18 @@ impl Fixup for RemapNonplayableArmorToPlayableTwinFixup {
                 .and_then(|eid| mapper.interner.resolve(eid))
                 .map(|eid| eid.to_ascii_lowercase())
             {
-                armor_by_editor_id.insert(editor_id, *form_key);
+                armors.push(ArmorEntry {
+                    form_key: *form_key,
+                    editor_id,
+                    playable: record.flags.bits() & NON_PLAYABLE_RECORD_FLAG == 0,
+                    look: ArmorLook::of(&record),
+                });
             }
         }
+        let armor_by_editor_id: FxHashMap<String, FormKey> = armors
+            .iter()
+            .map(|armor| (armor.editor_id.clone(), armor.form_key))
+            .collect();
 
         // An empty index against a non-empty signature list means the EditorIDs
         // did not come back, not that the plugin has no armor.
@@ -100,7 +117,8 @@ impl Fixup for RemapNonplayableArmorToPlayableTwinFixup {
             return Ok(report);
         }
 
-        let remap = build_twin_remap(&armor_by_editor_id, |stripped| {
+        let same_look_twins = build_same_look_twins(&armors);
+        let remap = build_twin_remap(&armor_by_editor_id, &same_look_twins, |stripped| {
             mapper.find_vanilla_fk(stripped, armo_sig)
         });
         if remap.is_empty() {
@@ -153,8 +171,9 @@ impl Fixup for RemapNonplayableArmorToPlayableTwinFixup {
             .map_err(|e| FixupError::HandleError(e.to_string()))?;
         report.records_changed = expected.try_into().unwrap_or(u32::MAX);
         report.message = Some(mapper.interner.intern(&format!(
-            "armor={} remap={remapped} encoded={} records_repointed={expected}",
+            "armor={} same_look={} remap={remapped} encoded={} records_repointed={expected}",
             armor_by_editor_id.len(),
+            same_look_twins.len(),
             encoded_remap.len()
         )));
 
@@ -168,13 +187,85 @@ fn strip_nonplayable_suffix(editor_id_lower: &str) -> Option<&str> {
         .find_map(|suffix| editor_id_lower.strip_suffix(suffix))
 }
 
+struct ArmorEntry {
+    form_key: FormKey,
+    editor_id: String,
+    playable: bool,
+    look: ArmorLook,
+}
+
+/// FO76 recolors one mesh through object templates, so matching on the addons
+/// alone would pair a pink dress with a blue one.
+#[derive(PartialEq)]
+struct ArmorLook {
+    addons: Vec<FormKey>,
+    race: Option<FormKey>,
+    object_templates: Vec<FieldEntry>,
+}
+
+impl ArmorLook {
+    fn of(record: &Record) -> Self {
+        let form_key_of = |field: &FieldEntry| match field.value {
+            FieldValue::FormKey(form_key) => Some(form_key),
+            _ => None,
+        };
+        let addons = record
+            .fields
+            .iter()
+            .filter(|field| field.sig.as_str() == "MODL")
+            .filter_map(form_key_of)
+            .collect();
+        let race = record
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "RNAM")
+            .and_then(form_key_of);
+        // Starts at `OBTE`: the armor's own `FULL` precedes it and differs between twins.
+        let object_templates = record
+            .fields
+            .iter()
+            .skip_while(|field| field.sig.as_str() != "OBTE")
+            .cloned()
+            .collect();
+        ArmorLook {
+            addons,
+            race,
+            object_templates,
+        }
+    }
+}
+
+/// `FormKey of a *_NONPLAYABLE armor` → `FormKey of the one playable armor that
+/// looks identical`. Ambiguous looks are skipped rather than guessed.
+fn build_same_look_twins(armors: &[ArmorEntry]) -> FxHashMap<FormKey, FormKey> {
+    let mut twins = FxHashMap::default();
+    for armor in armors {
+        if armor.look.addons.is_empty() || strip_nonplayable_suffix(&armor.editor_id).is_none() {
+            continue;
+        }
+        let mut candidates = armors.iter().filter(|candidate| {
+            candidate.playable
+                && candidate.form_key != armor.form_key
+                && !UNUSED_ARMOR_PREFIXES
+                    .iter()
+                    .any(|prefix| candidate.editor_id.starts_with(prefix))
+                && candidate.look == armor.look
+        });
+        if let (Some(twin), None) = (candidates.next(), candidates.next()) {
+            twins.insert(armor.form_key, twin.form_key);
+        }
+    }
+    twins
+}
+
 /// `FormKey of the NPC-only duplicate` → `FormKey of its playable twin`, for every
-/// `*_NONPLAYABLE` armor whose stripped EditorID names another armor. Converted
-/// armor wins over the base game, since the rest of the conversion is wired to it;
-/// `find_vanilla` covers twins that exist only in `Fallout4.esm`
-/// (`Armor_Combat_ArmLeft`, `Armor_RaiderMod_Torso`).
+/// `*_NONPLAYABLE` armor whose stripped EditorID names another armor, or that has a
+/// same-look twin. Converted armor wins over the base game, since the rest of the
+/// conversion is wired to it; `find_vanilla` covers twins that exist only in
+/// `Fallout4.esm` (`Armor_Combat_ArmLeft`, `Armor_RaiderMod_Torso`).
 fn build_twin_remap(
     armor_by_editor_id: &FxHashMap<String, FormKey>,
+    same_look_twins: &FxHashMap<FormKey, FormKey>,
     mut find_vanilla: impl FnMut(&str) -> Option<FormKey>,
 ) -> FxHashMap<FormKey, FormKey> {
     let mut remap = FxHashMap::default();
@@ -185,7 +276,8 @@ fn build_twin_remap(
         let twin = armor_by_editor_id
             .get(stripped)
             .copied()
-            .or_else(|| find_vanilla(stripped));
+            .or_else(|| find_vanilla(stripped))
+            .or_else(|| same_look_twins.get(form_key).copied());
         if let Some(twin) = twin {
             if twin != *form_key {
                 remap.insert(*form_key, twin);
@@ -335,8 +427,9 @@ pub(crate) fn rewrite_struct_form_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::FormKey;
+    use crate::ids::{FormKey, SubrecordSig};
     use crate::sym::StringInterner;
+    use smallvec::SmallVec;
 
     fn own(interner: &StringInterner, local: u32) -> FormKey {
         FormKey {
@@ -360,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_nonplayable_armor_onto_its_standard_twin() {
+    fn name_twin_remap_prefers_own_then_base_game_then_same_look() {
         let interner = StringInterner::new();
         let index = armor_index(
             &interner,
@@ -372,16 +465,13 @@ mod tests {
                 ),
             ],
         );
-        let remap = build_twin_remap(&index, no_vanilla);
+        let remap = build_twin_remap(&index, &FxHashMap::default(), no_vanilla);
         assert_eq!(
             remap.get(&own(&interner, 0x59AA5E)),
             Some(&own(&interner, 0x59A80D))
         );
         assert_eq!(remap.len(), 1, "the twin itself must not be remapped");
-    }
 
-    #[test]
-    fn leaves_nonplayable_armor_with_no_twin_alone() {
         // Robot/shadowed variants are genuinely NPC-only — making them lootable
         // would hand the player equipment that has no playable form.
         let interner = StringInterner::new();
@@ -389,11 +479,8 @@ mod tests {
             &interner,
             &[("Armor_DLC01_Robot_ArmRight_Shadowed_NONPLAYABLE", 0x644CF2)],
         );
-        assert!(build_twin_remap(&index, no_vanilla).is_empty());
-    }
+        assert!(build_twin_remap(&index, &FxHashMap::default(), no_vanilla).is_empty());
 
-    #[test]
-    fn falls_back_to_the_base_game_twin() {
         // Most _NONPLAYABLE pieces duplicate stock FO4 armor, whose playable
         // twin only ever existed in Fallout4.esm.
         let interner = StringInterner::new();
@@ -402,15 +489,11 @@ mod tests {
             plugin: interner.intern("Fallout4.esm"),
         };
         let index = armor_index(&interner, &[("Armor_Combat_ArmLeft_NONPLAYABLE", 0x59878C)]);
-        let remap = build_twin_remap(&index, |stripped| {
+        let remap = build_twin_remap(&index, &FxHashMap::default(), |stripped| {
             (stripped == "armor_combat_armleft").then_some(vanilla)
         });
         assert_eq!(remap.get(&own(&interner, 0x59878C)), Some(&vanilla));
-    }
 
-    #[test]
-    fn prefers_our_own_converted_twin_over_the_base_game() {
-        let interner = StringInterner::new();
         let vanilla = FormKey {
             local: 0x0536C1,
             plugin: interner.intern("Fallout4.esm"),
@@ -422,13 +505,9 @@ mod tests {
                 ("Clothes_GreaserJacket_NONPLAYABLE", 2),
             ],
         );
-        let remap = build_twin_remap(&index, |_| Some(vanilla));
+        let remap = build_twin_remap(&index, &FxHashMap::default(), |_| Some(vanilla));
         assert_eq!(remap.get(&own(&interner, 2)), Some(&own(&interner, 1)));
-    }
 
-    #[test]
-    fn matches_suffix_spelling_variants_case_insensitively() {
-        let interner = StringInterner::new();
         let index = armor_index(
             &interner,
             &[
@@ -439,9 +518,147 @@ mod tests {
                 ("Armor_Leather_ArmLeft_Heavy_NONPLAYALBE", 4),
             ],
         );
-        let remap = build_twin_remap(&index, no_vanilla);
+        let remap = build_twin_remap(&index, &FxHashMap::default(), no_vanilla);
         assert_eq!(remap.get(&own(&interner, 2)), Some(&own(&interner, 1)));
         assert_eq!(remap.get(&own(&interner, 4)), Some(&own(&interner, 3)));
+
+        let index = armor_index(
+            &interner,
+            &[
+                ("Clothes_SkullLord", 1),
+                ("Clothes_SkullLord_NONPLAYABLE", 2),
+            ],
+        );
+        let same_look: FxHashMap<FormKey, FormKey> = [(own(&interner, 2), own(&interner, 3))]
+            .into_iter()
+            .collect();
+        let remap = build_twin_remap(&index, &same_look, no_vanilla);
+        assert_eq!(remap.get(&own(&interner, 2)), Some(&own(&interner, 1)));
+    }
+
+    fn armor(
+        interner: &StringInterner,
+        editor_id: &str,
+        local: u32,
+        playable: bool,
+        addons: &[u32],
+        object_template: &[u8],
+    ) -> ArmorEntry {
+        ArmorEntry {
+            form_key: own(interner, local),
+            editor_id: editor_id.to_ascii_lowercase(),
+            playable,
+            look: ArmorLook {
+                addons: addons.iter().map(|addon| own(interner, *addon)).collect(),
+                race: None,
+                object_templates: vec![FieldEntry {
+                    sig: SubrecordSig::from_str("OBTS").unwrap(),
+                    value: FieldValue::Bytes(SmallVec::from_slice(object_template)),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn same_look_twin_requires_one_usable_identical_candidate() {
+        let interner = StringInterner::new();
+        let armors = [
+            armor(
+                &interner,
+                "XPD_Clothes_Fanatic01_Outfit_NONPLAYABLE",
+                0x663D41,
+                false,
+                &[0x660888, 0x6611FD],
+                &[0],
+            ),
+            armor(
+                &interner,
+                "ATX_Clothes_Fanatic01_Scrapper",
+                0x660889,
+                true,
+                &[0x660888, 0x6611FD],
+                &[0],
+            ),
+        ];
+        let index = armor_index(
+            &interner,
+            &[
+                ("XPD_Clothes_Fanatic01_Outfit_NONPLAYABLE", 0x663D41),
+                ("ATX_Clothes_Fanatic01_Scrapper", 0x660889),
+            ],
+        );
+        let same_look = build_same_look_twins(&armors);
+        let remap = build_twin_remap(&index, &same_look, no_vanilla);
+        assert_eq!(
+            remap.get(&own(&interner, 0x663D41)),
+            Some(&own(&interner, 0x660889))
+        );
+        assert_eq!(remap.len(), 1);
+
+        // Both dresses share one mesh; the pink one swaps its material in OBTS.
+        let interner = StringInterner::new();
+        let armors = [
+            armor(
+                &interner,
+                "Clothes_PrewarHouseDress_Pink_Clean_NONPLAYABLE",
+                1,
+                false,
+                &[10],
+                &[13],
+            ),
+            armor(
+                &interner,
+                "ATX_Clothes_PrewarHouseDress_Blue_Clean",
+                2,
+                true,
+                &[10],
+                &[0],
+            ),
+        ];
+        assert!(build_same_look_twins(&armors).is_empty());
+
+        let ambiguous = [
+            armor(
+                &interner,
+                "Headwear_CultHat_E_NotPlayable",
+                1,
+                false,
+                &[10],
+                &[0],
+            ),
+            armor(&interner, "ATX_Headwear_CultistHood", 2, true, &[10], &[0]),
+            armor(
+                &interner,
+                "Headwear_CultistHighPriest",
+                3,
+                true,
+                &[10],
+                &[0],
+            ),
+        ];
+        assert!(build_same_look_twins(&ambiguous).is_empty());
+
+        let unusable = [
+            armor(
+                &interner,
+                "Clothes_Postman_NotPlayable",
+                1,
+                false,
+                &[10],
+                &[0],
+            ),
+            armor(&interner, "CUT_ATX_Clothes_Postman", 2, true, &[10], &[0]),
+            armor(&interner, "zzz_debug_Clothes_Postman", 3, true, &[10], &[0]),
+            armor(
+                &interner,
+                "NPE_Clothes_Postman_NONPLAYABLE",
+                4,
+                false,
+                &[10],
+                &[0],
+            ),
+        ];
+        assert!(build_same_look_twins(&unusable).is_empty());
     }
 
     #[test]

@@ -105,7 +105,7 @@ mod tests {
     /// max_value=18, default=0, mapping={19:5, 20:9, 21:0, ...}
     /// Values 0..=18 pass through unchanged.
     #[test]
-    fn value_in_range_passes_through() {
+    fn out_of_range_values_are_remapped_or_defaulted() {
         let mut interner = StringInterner::new();
         let cfg = serde_json::json!({
             "max_value": 18,
@@ -129,11 +129,8 @@ mod tests {
                 "expected pass-through for {in_val}"
             );
         }
-    }
 
-    /// YAML usage: KYWD.Type — values in the explicit mapping get remapped.
-    #[test]
-    fn out_of_range_mapped_value_is_remapped() {
+        // YAML usage: KYWD.Type — values in the explicit mapping get remapped.
         let mut interner = StringInterner::new();
         let cfg = serde_json::json!({
             "max_value": 18,
@@ -154,11 +151,8 @@ mod tests {
             transform.apply(&mut ctx, &mut value, &cfg).unwrap();
             assert_eq!(value, FieldValue::Int(expected), "remap {input}→{expected}");
         }
-    }
 
-    /// YAML usage: KYWD.Type — out-of-range, not in mapping → default=0.
-    #[test]
-    fn out_of_range_unmapped_falls_back_to_default() {
+        // YAML usage: KYWD.Type — out-of-range, not in mapping → default=0.
         let mut interner = StringInterner::new();
         let cfg = serde_json::json!({
             "max_value": 18,
@@ -176,7 +170,7 @@ mod tests {
 
     /// String input that parses as integer is handled.
     #[test]
-    fn string_integer_literal_is_coerced() {
+    fn only_integer_string_literals_are_coerced() {
         let mut interner = StringInterner::new();
         let sym = interner.intern("20");
         let mut value = FieldValue::String(sym);
@@ -192,11 +186,8 @@ mod tests {
         transform.apply(&mut ctx, &mut value, &cfg).unwrap();
 
         assert_eq!(value, FieldValue::Int(9));
-    }
 
-    /// String input that cannot be parsed as int is left unchanged (stub path).
-    #[test]
-    fn non_integer_string_passes_through_unchanged() {
+        // String input that cannot be parsed as int is left unchanged (stub path).
         let mut interner = StringInterner::new();
         let sym = interner.intern("SomeEnumLabel");
         let mut value = FieldValue::String(sym);

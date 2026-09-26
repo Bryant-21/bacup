@@ -1,5 +1,28 @@
-Event OnMenuItemRun(Int auiMenuItemID, ObjectReference akTerminalRef)
-    If auiMenuItemID != 1 || akTerminalRef == None
+; @drop-member OnMenuItemRun
+
+Function RegisterExamTerminal()
+    Terminal terminalBase = GetBaseObject() as Terminal
+    If terminalBase != None && terminalBase == Game.GetFormFromFile(0x00065BDD, "SeventySix.esm")
+        RegisterForRemoteEvent(terminalBase, "OnMenuItemRun")
+    EndIf
+EndFunction
+
+Event OnInit()
+    RegisterExamTerminal()
+EndEvent
+
+Event OnLoad()
+    RegisterExamTerminal()
+EndEvent
+
+Event OnActivate(ObjectReference akActionRef)
+    If akActionRef == Game.GetPlayer()
+        RegisterExamTerminal()
+    EndIf
+EndEvent
+
+Event Terminal.OnMenuItemRun(Terminal akSender, Int auiMenuItemID, ObjectReference akTerminalRef)
+    If auiMenuItemID != 1 || akTerminalRef != Self || akSender != Game.GetFormFromFile(0x00065BDD, "SeventySix.esm")
         Return
     EndIf
 

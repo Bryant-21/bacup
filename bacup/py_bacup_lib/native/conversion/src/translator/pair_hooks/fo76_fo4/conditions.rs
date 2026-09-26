@@ -34,6 +34,8 @@ pub(super) const FO76_GET_QUEST_RUNNING_UNIQUE_CONDITION_FUNCTION_ID: u16 = 856;
 pub(super) const FO4_GET_QUEST_RUNNING_CONDITION_FUNCTION_ID: u16 = 56;
 pub(super) const FO76_GET_NUM_TIMES_COMPLETED_QUEST_CONDITION_FUNCTION_ID: u16 = 857;
 pub(super) const FO4_GET_QUEST_COMPLETED_CONDITION_FUNCTION_ID: u16 = 543;
+pub(super) const FO76_GET_STAGE_DONE_PLAYER_INSTANCE_CONDITION_FUNCTION_ID: u16 = 917;
+pub(super) const FO4_GET_STAGE_DONE_CONDITION_FUNCTION_ID: u16 = 59;
 /// Completion counts probed when deciding whether a `GetNumTimesCompletedQuest`
 /// predicate can be carried onto the boolean `GetQuestCompleted`.
 const FO76_COMPLETION_COUNT_PROBES: [f32; 6] = [1.0, 2.0, 3.0, 5.0, 10.0, 1.0e9];
@@ -59,12 +61,15 @@ pub(super) const FO4_PLAYER_ACTOR_FORM_ID: u32 = 0x0000_0007;
 /// `drop_untranslatable_loadscreen_records` fixup so it does NOT treat a
 /// remapped function as untranslatable. Keep in sync with the remaps below.
 pub(crate) const FO76_REMAPPED_CONDITION_FUNCTION_IDS: &[u16] = &[
+    10016, // GetIsDisguisedWithKeyword -> WornHasKeyword
+    10017, // GetIsPlayerGhoul -> HasKeyword(GHL_ActorTypePlayerGhoul)
     FO76_IS_IN_INTERIOR_ACOUSTIC_SPACE_CONDITION_FUNCTION_ID,
     FO76_EDITOR_LOCATION_HAS_KEYWORD_CONDITION_FUNCTION_ID,
     FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID,
     FO76_GET_IS_CURRENT_LOCATION_EXACT_CONDITION_FUNCTION_ID,
     FO76_GET_QUEST_RUNNING_UNIQUE_CONDITION_FUNCTION_ID,
     FO76_IS_QUEST_ACTIVE_CONDITION_FUNCTION_ID,
+    FO76_GET_STAGE_DONE_PLAYER_INSTANCE_CONDITION_FUNCTION_ID,
 ];
 /// FO76-only condition ids below FO4's max id. The FO4 CK still treats these as
 /// blank condition functions while loading, so the max-id guard is not enough.
@@ -592,7 +597,22 @@ impl Fo76Fo4Hook {
             let Some(function_id) = Self::raw_condition_function_id(bytes) else {
                 continue;
             };
-            if function_id == FO76_IS_IN_INTERIOR_ACOUSTIC_SPACE_CONDITION_FUNCTION_ID {
+            if function_id == 10017 && bytes.len() >= 32 {
+                // xEdit dev-4.1.6 names this predicate. Tales owns the identity keyword;
+                // converting before FormID remapping preserves plugin-local resolution.
+                Self::set_raw_condition_function_id(bytes, 560);
+                Self::set_raw_condition_parameter_1(bytes, 0x0079_CCE5);
+                bytes[10..12].fill(0);
+                bytes[16..20].fill(0);
+            } else if function_id == 10016 && bytes.len() >= 32 {
+                Self::set_raw_condition_function_id(bytes, 682);
+                bytes[10..12].fill(0);
+            } else if function_id == FO76_GET_STAGE_DONE_PLAYER_INSTANCE_CONDITION_FUNCTION_ID {
+                Self::set_raw_condition_function_id(
+                    bytes,
+                    FO4_GET_STAGE_DONE_CONDITION_FUNCTION_ID,
+                );
+            } else if function_id == FO76_IS_IN_INTERIOR_ACOUSTIC_SPACE_CONDITION_FUNCTION_ID {
                 Self::set_raw_condition_function_id(
                     bytes,
                     FO4_IS_IN_INTERIOR_CONDITION_FUNCTION_ID,
@@ -1121,6 +1141,52 @@ pub(crate) fn condition_form_catalog() -> Option<Arc<ConditionFormCatalog>> {
     catalog_slot().read().ok().and_then(|slot| slot.clone())
 }
 
+/// Serializes tests that publish or read the process-wide FO76 catalogs. The
+/// guard is reentrant on its owning thread so a test can hold it across a
+/// translation that takes it again.
+#[cfg(test)]
+pub(crate) fn fo76_catalog_test_guard() -> Fo76CatalogTestGuard {
+    let (lock, ready) = fo76_catalog_test_state();
+    let me = std::thread::current().id();
+    let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    while state.0.is_some_and(|owner| owner != me) {
+        state = ready
+            .wait(state)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+    state.0 = Some(me);
+    state.1 += 1;
+    Fo76CatalogTestGuard
+}
+
+#[cfg(test)]
+fn fo76_catalog_test_state() -> &'static (
+    std::sync::Mutex<(Option<std::thread::ThreadId>, usize)>,
+    std::sync::Condvar,
+) {
+    static STATE: OnceLock<(
+        std::sync::Mutex<(Option<std::thread::ThreadId>, usize)>,
+        std::sync::Condvar,
+    )> = OnceLock::new();
+    STATE.get_or_init(|| (std::sync::Mutex::new((None, 0)), std::sync::Condvar::new()))
+}
+
+#[cfg(test)]
+pub(crate) struct Fo76CatalogTestGuard;
+
+#[cfg(test)]
+impl Drop for Fo76CatalogTestGuard {
+    fn drop(&mut self) {
+        let (lock, ready) = fo76_catalog_test_state();
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.1 -= 1;
+        if state.1 == 0 {
+            state.0 = None;
+            ready.notify_all();
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn clear_condition_form_catalog() {
     if let Ok(mut slot) = catalog_slot().write() {
@@ -1371,6 +1437,55 @@ fn expand_condition_form_rows(
         }));
     }
     Ok(out)
+}
+
+pub(crate) fn expand_source_condition_form_rows(
+    rows: &[Vec<u8>],
+    lower: impl Fn(&[u8]) -> Vec<u8>,
+) -> Result<Vec<Vec<u8>>, String> {
+    let catalog = condition_form_catalog().ok_or("source condition-form catalog unavailable")?;
+    let mut local = ConditionFormCatalog::new(catalog.own_master_index);
+    for (id, form) in &catalog.forms {
+        let mut rows = form.rows.iter().map(|row| lower(row)).collect::<Vec<_>>();
+        clear_singleton_or_runs(&mut rows);
+        local.insert(*id, rows, form.has_parameter_strings);
+    }
+    let mut rows = rows.iter().map(|row| lower(row)).collect::<Vec<_>>();
+    clear_singleton_or_runs(&mut rows);
+    expand_condition_form_rows(&rows, &local, &mut Vec::new(), true)
+        .map(|rows| rows.into_iter().map(|row| row.bytes).collect())
+}
+
+fn clear_singleton_or_runs(rows: &mut [Vec<u8>]) {
+    // A one-row OR run is an AND term in the grouping model above. Clearing it
+    // permits exact negation without mistaking it for a multi-term OR group.
+    let mut index = 0;
+    while index < rows.len() {
+        if !condition_row_is_ored(&rows[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < rows.len() && condition_row_is_ored(&rows[index]) {
+            index += 1;
+        }
+        if index == start + 1 {
+            rows[start][0] &= !CTDA_OR_FLAG;
+        }
+    }
+}
+
+#[test]
+fn currency_condition_expansion_preserves_multi_row_or_groups() {
+    let mut rows = vec![vec![0; 32]; 6];
+    for index in [0, 2, 3, 5] {
+        rows[index][0] = CTDA_OR_FLAG;
+    }
+    clear_singleton_or_runs(&mut rows);
+    assert_eq!(
+        rows.iter().map(|row| row[0]).collect::<Vec<_>>(),
+        vec![0, 0, 1, 1, 0, 0]
+    );
 }
 
 impl Fo76Fo4Hook {

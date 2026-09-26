@@ -8,7 +8,21 @@ Form Function GetLocalTargetItem(Int aiTargetType, Int aiSiloGroupID)
     ElseIf aiSiloGroupID == 2
         firstFormID = 0x004DE23B
     EndIf
-    Return Game.GetFormFromFile(firstFormID + Utility.RandomInt(0, 7), "SeventySix.esm")
+    Nuke_MasterScript codeMaster = Game.GetFormFromFile(0x003CD064, "SeventySix.esm") as Nuke_MasterScript
+    If codeMaster != None
+        codeMaster.UpdateLocalCodeCycle()
+    EndIf
+    Actor player = Game.GetPlayer()
+    Int startIndex = Utility.RandomInt(0, 7)
+    Int i = 0
+    While i < 8
+        Form page = Game.GetFormFromFile(firstFormID + ((startIndex + i) % 8), "SeventySix.esm")
+        If page != None && player.GetItemCount(page) == 0
+            Return page
+        EndIf
+        i += 1
+    EndWhile
+    Return None
 EndFunction
 
 ObjectReference Function CreateLocalTarget(ObjectReference akTerminalRef, Form akItem)
@@ -28,6 +42,11 @@ ObjectReference Function CreateLocalTarget(ObjectReference akTerminalRef, Form a
 EndFunction
 
 ObjectReference Function ResolveLocalCodeTarget(Int aiSiloGroupID, Form akCodePage, ObjectReference akTerminalRef)
+    Nuke_MasterScript master = Game.GetFormFromFile(0x003CD064, "SeventySix.esm") as Nuke_MasterScript
+    If master == None || !master.EnsureLocalOfficers()
+        Debug.Notification("The code officer search is unavailable. Try the tracking terminal again shortly.")
+        Return None
+    EndIf
     Quest nukeCodesQuest = Game.GetFormFromFile(0x003DA647, "SeventySix.esm") as Quest
     Nuke_CodesScript nukeCodes = nukeCodesQuest as Nuke_CodesScript
     ObjectReference targetRef
@@ -35,7 +54,7 @@ ObjectReference Function ResolveLocalCodeTarget(Int aiSiloGroupID, Form akCodePa
         targetRef = nukeCodes.PrepareLocalCodeTarget(aiSiloGroupID, akCodePage)
     EndIf
     If targetRef == None
-        targetRef = CreateLocalTarget(akTerminalRef, akCodePage)
+        Debug.Notification("No living code officer is available. Try the tracking terminal again after the patrols recover.")
     EndIf
     Return targetRef
 EndFunction
@@ -105,7 +124,16 @@ Event OnMenuItemRun(Int auiMenuItemID, ObjectReference akTerminalRef)
         Return
     EndIf
 
+    Quest activeHunt = Game.GetFormFromFile(0x002D0F6A, "SeventySix.esm") as Quest
+    If activeHunt != None && activeHunt.IsRunning()
+        Debug.Notification("Finish the current tracking mission before requesting another target.")
+        Return
+    EndIf
     Form targetItem = GetLocalTargetItem(targetType, siloGroupID)
+    If targetItem == None
+        Debug.MessageBox("You already have all eight code pieces for this silo. Use the command-wing cipher printer to decipher the launch code.")
+        Return
+    EndIf
     ObjectReference targetRef
     If targetType == 0
         targetRef = ResolveLocalCodeTarget(siloGroupID, targetItem, akTerminalRef)

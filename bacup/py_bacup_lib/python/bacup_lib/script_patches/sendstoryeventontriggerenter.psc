@@ -7,6 +7,6 @@ Event OnTriggerEnter(ObjectReference akActionRef)
 		Return
 	EndIf
 	If QuestActiveKeyword == None || !playerRef.HasKeyword(QuestActiveKeyword)
-		QuestStartKeyword.SendStoryEventAndWait(playerRef.GetCurrentLocation(), playerRef, Self)
+		QuestStartKeyword.SendStoryEventAndWait(playerRef.GetCurrentLocation(), playerRef, playerRef)
 	EndIf
 EndEvent

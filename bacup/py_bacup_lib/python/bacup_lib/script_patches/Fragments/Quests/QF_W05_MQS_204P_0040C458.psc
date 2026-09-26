@@ -125,11 +125,18 @@ EndFunction
 Function Fragment_Stage_0500_Item_00()
     SetObjectiveCompleted(40)
     SetObjectiveDisplayed(50)
+    ; Penny's door-terminal scene (stage 525) is the only route to 550, which opens
+    ; the maze doors; nothing else set 525 after her "enter the cave" line.
+    If !IsStageDone(525)
+        SetStage(525)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0525_Item_00()
     If W05_MQS_204P_PennyUseDoorTerminalScene != None
         W05_MQS_204P_PennyUseDoorTerminalScene.Start()
+    ElseIf !IsStageDone(550)
+        SetStage(550)
     EndIf
 EndFunction
 

@@ -21,7 +21,20 @@ Function DestroyTransmitter()
     EndIf
 EndFunction
 
+Function RestoreToDefault()
+    predictivelyBroken = False
+    GoToState("operational")
+EndFunction
+
+Event OnReset()
+    RestoreToDefault()
+EndEvent
+
 State broken
+    Event OnBeginState(String asOldState)
+        DestroyTransmitter()
+    EndEvent
+
     Event OnLoad()
         PlayAnimation("Play01")
         PlayAnimation("Jumpstate02")

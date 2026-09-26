@@ -102,6 +102,17 @@ Function Fragment_Stage_0115_Item_00()
     RecordHolotapePlayed(MQ_OverseerHolotape11Played)
 EndFunction
 
+; The player alias sets 120 only after a launch. The visible-tape quest enables
+; the log's initially disabled enable parent at Site Alpha.
+Function Fragment_Stage_0120_Item_00()
+    If IsStageDone(122) || MQ_OverseerNukeHolotapeVisible_StartKeyword == None
+        Return
+    EndIf
+    If MQ_OverseerNukeTape_EnableMarker != None && MQ_OverseerNukeTape_EnableMarker.IsDisabled()
+        MQ_OverseerNukeHolotapeVisible_StartKeyword.SendStoryEvent()
+    EndIf
+EndFunction
+
 Function Fragment_Stage_0122_Item_00()
     RecordHolotapePickedUp(MQ_OverseerHolotape12PickedUp)
 EndFunction

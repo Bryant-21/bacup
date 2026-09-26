@@ -343,17 +343,29 @@ mod tests {
     }
 
     #[test]
-    fn pbr_carry_param_defaults_off_and_parses_true() {
+    fn texture_v2_params_parse_flags_and_terrain_jobs() {
         assert!(!parse_pbr_carry(&serde_json::json!({})));
         assert!(parse_pbr_carry(&serde_json::json!({ "pbr_carry": true })));
-    }
 
-    #[test]
-    fn landscape_mip_flooding_defaults_off_and_parses_true() {
         assert!(!parse_landscape_mip_flooding(&serde_json::json!({})));
         assert!(parse_landscape_mip_flooding(
             &serde_json::json!({ "landscape_mip_flooding": true })
         ));
+
+        let params = serde_json::json!({
+            "terrain_jobs": [{
+                "diffuse_path": "source/soil_d.dds",
+                "normal_path": "source/soil_n.dds",
+                "reflectivity_path": "source/soil_r.dds",
+                "lighting_path": "source/soil_l.dds",
+                "output_prefix": "textures/terrain/appalachia/Soil"
+            }]
+        });
+
+        let jobs = parse_terrain_jobs(&params).unwrap();
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].output_prefix, "textures/terrain/appalachia/Soil");
     }
 
     #[test]
@@ -615,23 +627,5 @@ mod tests {
 
         drop_run(id).unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn terrain_jobs_parse_from_cross_run_params() {
-        let params = serde_json::json!({
-            "terrain_jobs": [{
-                "diffuse_path": "source/soil_d.dds",
-                "normal_path": "source/soil_n.dds",
-                "reflectivity_path": "source/soil_r.dds",
-                "lighting_path": "source/soil_l.dds",
-                "output_prefix": "textures/terrain/appalachia/Soil"
-            }]
-        });
-
-        let jobs = parse_terrain_jobs(&params).unwrap();
-
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].output_prefix, "textures/terrain/appalachia/Soil");
     }
 }

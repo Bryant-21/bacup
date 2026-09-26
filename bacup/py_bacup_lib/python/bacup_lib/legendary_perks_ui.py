@@ -2,18 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import shutil
 import struct
-import subprocess
-import tempfile
 import zlib
 from pathlib import Path
 
+from bacup_lib.translations import TRANSLATIONS, merge_ui_translations, translation_path, parse_lines
 
 MENU = "legendaryperksmenu.swf"
 OUTPUT = Path("Interface/B21/TalesFromAppalachia/LegendaryPerks")
 BRIDGE = Path(__file__).with_name("resources") / "legendary_perks/MainTimeline.as"
+
+
+def menu_translations(source_interface: Path) -> str:
+    source = (source_interface / "translate_en.txt").read_bytes()
+    encoding = "utf-16" if source.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    prefixes = ("$LegendaryPerk", "$Perks_Rank\t", "$Perks_Cost\t", "$Perks_MaxRank\t",
+                "$Perks_OwnedCount\t", "$Perks_Inspection_DuplicateCountFormat\t", "$RANKS\t",
+                "$FILTER", "$TYPE_")
+    lines = [line for line in source.decode(encoding).splitlines() if line.startswith(prefixes)]
+    if not any(line.startswith("$LegendaryPerks\t") for line in lines):
+        raise ValueError("Source legendary perk translations are missing")
+    return "\n".join(lines) + "\n"
 
 
 def swf_tags(data: bytes) -> list[tuple[int, bytes]]:
@@ -50,22 +59,36 @@ def imports(data: bytes) -> list[str]:
             for code, body in swf_tags(data) if code in (57, 71)]
 
 
-def find_ffdec_jar() -> Path:
-    launcher = shutil.which("ffdec") or shutil.which("ffdec-cli")
-    candidates = [Path(launcher).parent / "ffdec.jar"] if launcher else []
-    for variable in ("ProgramFiles(x86)", "ProgramFiles"):
-        if location := os.environ.get(variable):
-            candidates.append(Path(location) / "FFDec/ffdec.jar")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise FileNotFoundError("Legendary perk UI conversion requires JPEXS FFDec (ffdec.jar)")
+def verify_script_only(source: bytes, converted: bytes) -> bytes:
+    if [tag for tag in swf_tags(source) if tag[0] not in (72, 82)] != [
+            tag for tag in swf_tags(converted) if tag[0] not in (72, 82)]:
+        raise ValueError("UI conversion changed non-ActionScript tags")
+    return converted
+
+
+def remap_menu_fonts(data: bytes) -> bytes:
+    tags = swf_tags(data)
+    converted = [(code, payload.replace(b"$ChowderHead\0", b"$MAIN_Font\0")
+                              .replace(b"$Brush_Script_Std\0", b"$MAIN_Font\0")
+                              .replace(b"$Futura_Bold\0", b"$MAIN_Font_Bold\0")
+                              .replace(b"$Futura_bold\0", b"$MAIN_Font_Bold\0")
+                              .replace(b"$BerlinDemi\0", b"$MAIN_Font_Bold\0") if code == 37 else payload)
+                 for code, payload in tags]
+    if converted == tags:
+        return data
+    body = zlib.decompress(data[8:]) if data[:3] == b"CWS" else data[8:]
+    frame_header_size = (5 + 4 * (body[0] >> 3) + 7) // 8 + 4
+    body = body[:frame_header_size] + b"".join(
+        struct.pack("<HI", code << 6 | 63, len(payload)) + payload for code, payload in converted)
+    header = data[:4] + struct.pack("<I", len(body) + 8)
+    return header + (zlib.compress(body) if data[:3] == b"CWS" else body)
 
 
 def convert_legendary_perk_ui(
-    source_root: Path, output_data: Path, *, ffdec_jar: Path | None = None,
+    source_root: Path, output_data: Path,
 ) -> dict:
     source_interface = Path(source_root) / "interface"
+    translations = menu_translations(source_interface)
     source_files = {p.name.lower(): p for p in source_interface.iterdir() if p.is_file()}
     pending = [MENU]
     closure: dict[str, bytes] = {}
@@ -81,34 +104,27 @@ def convert_legendary_perk_ui(
         closure[name] = source.read_bytes()
         pending.extend(imports(closure[name]))
 
-    with tempfile.TemporaryDirectory(prefix="b21-legendary-ui-") as directory:
-        staging = Path(directory)
-        source_menu = staging / MENU
-        source_menu.write_bytes(closure[MENU])
-        patched_menu = staging / "patched.swf"
-        result = subprocess.run(
-            ["java", "-jar", str(ffdec_jar or find_ffdec_jar()), "-replace",
-             str(source_menu), str(patched_menu), "LegendaryPerksMenu_fla.MainTimeline",
-             str(BRIDGE)], capture_output=True, text=True, encoding="utf-8", timeout=120,
-        )
-        if result.returncode or not patched_menu.is_file():
-            raise RuntimeError(f"Legendary menu bridge compilation failed: {result.stdout}\n{result.stderr}")
-        patched = patched_menu.read_bytes()
-        original_art = [tag for tag in swf_tags(closure[MENU]) if tag[0] != 82]
-        patched_art = [tag for tag in swf_tags(patched) if tag[0] != 82]
-        if original_art != patched_art:
-            raise ValueError("Legendary UI conversion changed non-ActionScript tags")
+    from creation_lib.swf.native_runtime import replace_as3_classes, patch_as3_method
+    patched = replace_as3_classes(closure[MENU],
+        {"LegendaryPerksMenu_fla.MainTimeline": BRIDGE.read_text(encoding="utf-8")}, list(closure.values()))
+    patched = patch_as3_method(patched, "LegendaryPerksMenu", "populateUpgradeModal",
+        [["getlex", "Shared.GlobalFunc"], ["getscopeobject", None], ["getslot", None],
+         ["callproperty", "CloneObject", 1]],
+        [["getlex", "LegendaryPerksMenu_fla.MainTimeline"], ["keep", 1], ["keep", 2],
+         ["callproperty", "B21CopyCard", 1]])
+    verify_script_only(closure[MENU], patched)
 
     output = Path(output_data) / OUTPUT
     output.mkdir(parents=True, exist_ok=True)
     manifest = {"schema_version": 1, "bridge_sha256": hashlib.sha256(BRIDGE.read_bytes()).hexdigest(),
                 "menu": (OUTPUT / MENU).as_posix(), "files": []}
     for name, source in sorted(closure.items()):
-        converted = patched if name == MENU else source
+        converted = remap_menu_fonts(patched if name == MENU else source)
         destination = output / name
         destination.write_bytes(converted)
         manifest["files"].append({"path": (OUTPUT / name).as_posix(),
                                   "source_sha256": hashlib.sha256(source).hexdigest(),
                                   "sha256": hashlib.sha256(converted).hexdigest()})
     (output / "conversion.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    merge_ui_translations(output_data, parse_lines(translations))
     return manifest

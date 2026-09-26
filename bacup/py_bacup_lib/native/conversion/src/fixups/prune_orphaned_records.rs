@@ -294,301 +294,113 @@ mod tests {
         out
     }
 
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn referenced_prunable_record_is_kept() {
-        let mut interner = StringInterner::new();
+    fn only_unreachable_prunable_records_are_orphans() {
+        let interner = StringInterner::new();
+        let fk = |local: u32| make_fk(&format!("{local:06X}"), "Mod.esp", &interner);
+        for (name, records, expected_orphans) in [
+            (
+                "referenced LVLI kept",
+                vec![("NPC_", 0x801, vec![0x802]), ("LVLI", 0x802, vec![])],
+                vec![],
+            ),
+            (
+                "unreferenced LVLI dropped",
+                vec![("NPC_", 0x801, vec![]), ("LVLI", 0x802, vec![])],
+                vec![0x802],
+            ),
+            (
+                "non-prunable WEAP kept",
+                vec![("NPC_", 0x801, vec![]), ("WEAP", 0x802, vec![])],
+                vec![],
+            ),
+            (
+                "transitive chain kept",
+                vec![
+                    ("NPC_", 0x801, vec![0x802]),
+                    ("LVLI", 0x802, vec![0x803]),
+                    ("AMMO", 0x803, vec![]),
+                ],
+                vec![],
+            ),
+            ("empty plugin", vec![], vec![]),
+            (
+                "CELL root keeps referenced LVLI",
+                vec![("CELL", 0x801, vec![0x802]), ("LVLI", 0x802, vec![])],
+                vec![],
+            ),
+        ] {
+            let records: FxHashMap<FormKey, Record> = records
+                .into_iter()
+                .map(|(sig, local, refs)| {
+                    let form_key = fk(local);
+                    let refs = refs.into_iter().map(fk).collect();
+                    (form_key, make_record(sig, form_key, refs, &interner))
+                })
+                .collect();
+            let refs = build_refs(&records);
 
-        let npc_fk = make_fk("000801", "Mod.esp", &mut interner);
-        let lvli_fk = make_fk("000802", "Mod.esp", &mut interner);
+            let (orphans, _visited) = apply_to_records(&records, &refs);
+            let expected: Vec<FormKey> = expected_orphans.into_iter().map(fk).collect();
+            assert_eq!(orphans, expected, "{name}");
+        }
 
-        // NPC_ references the LVLI.
-        let npc = make_record("NPC_", npc_fk, vec![lvli_fk], &mut interner);
-        let lvli = make_record("LVLI", lvli_fk, vec![], &mut interner);
-
-        let mut records = FxHashMap::default();
-        records.insert(npc_fk, npc);
-        records.insert(lvli_fk, lvli);
-        let refs = build_refs(&records);
-
-        let (orphans, _visited) = apply_to_records(&records, &refs);
-        assert!(
-            orphans.is_empty(),
-            "LVLI referenced by NPC_ should not be pruned"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn unreferenced_prunable_record_is_dropped() {
-        let mut interner = StringInterner::new();
-
-        let npc_fk = make_fk("000801", "Mod.esp", &mut interner);
-        let lvli_fk = make_fk("000802", "Mod.esp", &mut interner);
-
-        // NPC_ does NOT reference the LVLI.
-        let npc = make_record("NPC_", npc_fk, vec![], &mut interner);
-        let lvli = make_record("LVLI", lvli_fk, vec![], &mut interner);
-
-        let mut records = FxHashMap::default();
-        records.insert(npc_fk, npc);
-        records.insert(lvli_fk, lvli);
-        let refs = build_refs(&records);
-
-        let (orphans, _visited) = apply_to_records(&records, &refs);
-        assert_eq!(orphans.len(), 1, "unreferenced LVLI should be pruned");
-        assert_eq!(orphans[0], lvli_fk);
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn non_prunable_record_never_dropped() {
-        let mut interner = StringInterner::new();
-
-        let npc_fk = make_fk("000801", "Mod.esp", &mut interner);
-        let weap_fk = make_fk("000802", "Mod.esp", &mut interner);
-
-        // Neither references the other.
-        let npc = make_record("NPC_", npc_fk, vec![], &mut interner);
-        let weap = make_record("WEAP", weap_fk, vec![], &mut interner);
-
-        let mut records = FxHashMap::default();
-        records.insert(npc_fk, npc);
-        records.insert(weap_fk, weap);
-        let refs = build_refs(&records);
-
-        let (orphans, _visited) = apply_to_records(&records, &refs);
-        assert!(
-            orphans.is_empty(),
-            "WEAP is not prunable, must not be dropped"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn transitive_chain_keeps_records_alive() {
-        let mut interner = StringInterner::new();
-
-        let npc_fk = make_fk("000801", "Mod.esp", &mut interner);
-        let lvli_fk = make_fk("000802", "Mod.esp", &mut interner);
-        let ammo_fk = make_fk("000803", "Mod.esp", &mut interner);
-
-        // NPC_ → LVLI → AMMO (transitive chain)
-        let npc = make_record("NPC_", npc_fk, vec![lvli_fk], &mut interner);
-        let lvli = make_record("LVLI", lvli_fk, vec![ammo_fk], &mut interner);
-        let ammo = make_record("AMMO", ammo_fk, vec![], &mut interner);
-
-        let mut records = FxHashMap::default();
-        records.insert(npc_fk, npc);
-        records.insert(lvli_fk, lvli);
-        records.insert(ammo_fk, ammo);
-        let refs = build_refs(&records);
-
-        let (orphans, _visited) = apply_to_records(&records, &refs);
-        assert!(
-            orphans.is_empty(),
-            "transitively reachable LVLI/AMMO must not be pruned"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn empty_plugin_no_op() {
-        let records: FxHashMap<FormKey, Record> = FxHashMap::default();
-        let refs: FxHashMap<FormKey, FxHashSet<FormKey>> = FxHashMap::default();
-        let (orphans, _) = apply_to_records(&records, &refs);
-        assert!(orphans.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn collect_form_keys_recurses() {
-        let mut interner = StringInterner::new();
-        let fk1 = make_fk("000801", "Mod.esp", &mut interner);
-        let fk2 = make_fk("000802", "Mod.esp", &mut interner);
-
+        let fk1 = fk(0x801);
+        let fk2 = fk(0x802);
         let nested = FieldValue::List(vec![
             FieldValue::Struct(vec![(interner.intern("ref"), FieldValue::FormKey(fk1))]),
             FieldValue::FormKey(fk2),
         ]);
-
         let mut out = FxHashSet::default();
         collect_form_keys(&nested, &mut out);
-        assert!(out.contains(&fk1));
-        assert!(out.contains(&fk2));
-        assert_eq!(out.len(), 2);
+        assert_eq!(out, FxHashSet::from_iter([fk1, fk2]));
     }
 
-    // -----------------------------------------------------------------------
-    //
-    // When is_whole_plugin is set the fixup must be a complete no-op; the
-    // applies_to gate handles this.
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn applies_to_false_when_is_whole_plugin() {
+    fn applies_only_to_creature_root_slices() {
         use crate::fixups::{FixupConfig, FixupContext};
         use crate::schema::AuthoringSchema;
         use std::sync::Arc;
 
-        let mut interner = StringInterner::new();
         let schema = Arc::new(AuthoringSchema::for_game("fo4").expect("fo4 schema"));
-        let root_sig = SigCode::from_str("NPC_").unwrap();
-        let config = FixupConfig {
-            is_whole_plugin: true,
-            root_sig: Some(root_sig),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        let fixup = PruneOrphanedRecordsFixup;
-        assert!(
-            !fixup.applies_to(&ctx),
-            "is_whole_plugin=true must make applies_to return false"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    //
-    // WEAP is not a creature root type, so applies_to must return false
-    // regardless of the record content.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_false_for_non_creature_root() {
-        use crate::fixups::{FixupConfig, FixupContext};
-        use crate::schema::AuthoringSchema;
-        use std::sync::Arc;
-
-        let mut interner = StringInterner::new();
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").expect("fo4 schema"));
-        let root_sig = SigCode::from_str("WEAP").unwrap();
-        let config = FixupConfig {
-            is_whole_plugin: false,
-            root_sig: Some(root_sig),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        let fixup = PruneOrphanedRecordsFixup;
-        assert!(
-            !fixup.applies_to(&ctx),
-            "WEAP root must not trigger orphan pruning"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    //
-    // NPC_ is a creature root — applies_to must return true so the fixup runs.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn applies_to_true_for_npc_root() {
-        use crate::fixups::{FixupConfig, FixupContext};
-        use crate::schema::AuthoringSchema;
-        use std::sync::Arc;
-
-        let mut interner = StringInterner::new();
-        let schema = Arc::new(AuthoringSchema::for_game("fo4").expect("fo4 schema"));
-        let root_sig = SigCode::from_str("NPC_").unwrap();
-        let config = FixupConfig {
-            is_whole_plugin: false,
-            root_sig: Some(root_sig),
-            ..Default::default()
-        };
-        let ctx = FixupContext {
-            source_handle_id: 1,
-            target_handle_id: 2,
-            schema_target: &schema,
-            schema_source: &schema,
-            skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
-            mod_path: None,
-            source_extracted_dir: None,
-            target_master_handle_ids: &[],
-            config: &config,
-        };
-
-        let fixup = PruneOrphanedRecordsFixup;
-        assert!(
-            fixup.applies_to(&ctx),
-            "NPC_ root must enable the orphan pruning fixup"
-        );
-    }
-
-    #[test]
-    fn cell_root_keeps_referenced_lvli() {
-        let mut interner = StringInterner::new();
-
-        let cell_fk = make_fk("000801", "Mod.esp", &mut interner);
-        let lvli_fk = make_fk("000802", "Mod.esp", &mut interner);
-
-        // CELL references LVLI.
-        let cell = make_record("CELL", cell_fk, vec![lvli_fk], &mut interner);
-        let lvli = make_record("LVLI", lvli_fk, vec![], &mut interner);
-
-        let mut records = FxHashMap::default();
-        records.insert(cell_fk, cell);
-        records.insert(lvli_fk, lvli);
-        let refs = build_refs(&records);
-
-        // With the dynamic BFS (CELL is a root because it's not prunable),
-        // LVLI must be kept.
-        let (orphans, _visited) = apply_to_records(&records, &refs);
-        assert!(
-            orphans.is_empty(),
-            "LVLI reachable from CELL root must not be pruned (dynamic sig set)"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn is_creature_root_sig_coverage() {
-        for sig_str in &["NPC_", "LVLN"] {
-            let sig = SigCode::from_str(sig_str).unwrap();
-            assert!(
-                is_creature_root_sig(sig),
-                "{sig_str} must be a creature root"
+        for (name, is_whole_plugin, root, expected) in [
+            ("whole plugin", true, "NPC_", false),
+            ("non-creature root", false, "WEAP", false),
+            ("npc root", false, "NPC_", true),
+        ] {
+            let config = FixupConfig {
+                is_whole_plugin,
+                root_sig: Some(SigCode::from_str(root).unwrap()),
+                ..Default::default()
+            };
+            let ctx = FixupContext {
+                source_handle_id: 1,
+                target_handle_id: 2,
+                schema_target: &schema,
+                schema_source: &schema,
+                skip_record_sigs: crate::fixups::empty_skip_record_sigs(),
+                mod_path: None,
+                source_extracted_dir: None,
+                target_master_handle_ids: &[],
+                config: &config,
+            };
+            assert_eq!(
+                PruneOrphanedRecordsFixup.applies_to(&ctx),
+                expected,
+                "{name}"
             );
         }
-        for sig_str in &["WEAP", "ARMO", "CELL", "REFR", "ACHR", "RACE", "QUST"] {
-            let sig = SigCode::from_str(sig_str).unwrap();
+
+        for sig_str in ["NPC_", "LVLN"] {
             assert!(
-                !is_creature_root_sig(sig),
-                "{sig_str} must NOT be a creature root"
+                is_creature_root_sig(SigCode::from_str(sig_str).unwrap()),
+                "{sig_str}"
+            );
+        }
+        for sig_str in ["WEAP", "ARMO", "CELL", "REFR", "ACHR", "RACE", "QUST"] {
+            assert!(
+                !is_creature_root_sig(SigCode::from_str(sig_str).unwrap()),
+                "{sig_str}"
             );
         }
     }

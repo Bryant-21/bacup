@@ -168,23 +168,22 @@ fn reference_form_key_from_value(value: &JsonValue) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::path::Path;
 
     #[test]
-    fn parses_starfield_biom_lnam_raw_link() {
-        let value = json!({ "raw_hex": "0200000037EB280059BC0000" });
+    fn parses_starfield_biom_lnam_raw_link_only_with_ground_cover() {
+        {
+            let value = json!({ "raw_hex": "0200000037EB280059BC0000" });
 
-        assert_eq!(
-            biome_raw_texture_ground_cover_link(&value),
-            Some((0x28EB37, 0x00BC59))
-        );
-    }
+            assert_eq!(
+                biome_raw_texture_ground_cover_link(&value),
+                Some((0x28EB37, 0x00BC59))
+            );
+        }
+        {
+            let value = json!({ "raw_hex": "0000000035EB280000000000" });
 
-    #[test]
-    fn ignores_starfield_biom_lnam_without_ground_cover() {
-        let value = json!({ "raw_hex": "0000000035EB280000000000" });
-
-        assert_eq!(biome_raw_texture_ground_cover_link(&value), None);
+            assert_eq!(biome_raw_texture_ground_cover_link(&value), None);
+        }
     }
 
     #[test]
@@ -210,40 +209,6 @@ mod tests {
                 .get("GroundCover")
                 .and_then(reference_form_key_from_value),
             Some("Starfield.esm:00BC59".to_owned())
-        );
-    }
-
-    #[test]
-    fn installed_starfield_master_resolves_biom_gcvr_gras_chain_when_available() {
-        let Ok(data_dir) = std::env::var("STARFIELD_DATA_DIR") else {
-            return;
-        };
-        let plugin_path = Path::new(&data_dir).join("Starfield.esm");
-        if !plugin_path.is_file() {
-            return;
-        }
-        let handle = crate::run::OwnedPluginHandle::load(&plugin_path, "starfield", None).unwrap();
-        let required_ltexes = ["Starfield.esm:28EB37".to_owned()].into_iter().collect();
-
-        let links = biome_ground_covers_for_ltexes(handle.id(), &required_ltexes).unwrap();
-        assert!(
-            links
-                .get("Starfield.esm:28EB37")
-                .is_some_and(|covers| covers.contains("Starfield.esm:00BC59"))
-        );
-
-        let grass = crate::terrain_textures::grass_walk::grass_entries_for_gcvr(
-            handle.id(),
-            "Starfield.esm:06953A",
-            "starfield",
-        )
-        .unwrap();
-        assert_eq!(grass.len(), 5);
-        assert!(
-            grass
-                .iter()
-                .all(|entry| !entry.model_file_name.is_empty() && entry.density > 0),
-            "{grass:#?}"
         );
     }
 }

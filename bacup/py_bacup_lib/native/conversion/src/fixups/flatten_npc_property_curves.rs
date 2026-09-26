@@ -1,4 +1,7 @@
-use crate::fixups::curve_table::{CurveMeanCache, cached_curve_mean, source_key_for_target};
+use crate::fixups::curve_table::{
+    CurveMeanCache, CurvePointsCache, cached_curve_at_level, cached_curve_mean,
+    source_key_for_target,
+};
 use crate::fixups::rewrite_raw_object_template_formids::encode_target_form_id;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -10,6 +13,10 @@ use rustc_hash::FxHashMap;
 
 const FO76_PROPERTY_ROW_LEN: usize = 12;
 const FO4_PROPERTY_ROW_LEN: usize = 8;
+const ACBS_LEVEL_OFFSET: usize = 6;
+const ACBS_TEMPLATE_FLAGS_OFFSET: usize = 14;
+const ACBS_FLAG_PC_LEVEL_MULT: u32 = 0x0000_0080;
+const ACBS_TEMPLATE_FLAG_STATS: u16 = 0x0002;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ResolvedProperty {
@@ -73,6 +80,7 @@ impl Fixup for FlattenNpcPropertyCurvesFixup {
             .map(|(source, target)| (target, source))
             .collect();
         let mut curve_cache = CurveMeanCache::default();
+        let mut points_cache = CurvePointsCache::default();
         let mut changed_records = Vec::new();
         let mut report = FixupReport::empty();
 
@@ -90,6 +98,7 @@ impl Fixup for FlattenNpcPropertyCurvesFixup {
                     Ok(record) => record,
                     Err(_) => continue,
                 };
+            let level = npc_concrete_level(&source_record, mapper.interner);
             let (resolved, warnings) = resolve_source_properties(
                 &source_record,
                 &source_masters,
@@ -100,7 +109,9 @@ impl Fixup for FlattenNpcPropertyCurvesFixup {
                 session,
                 source_schema,
                 source_extracted_dir,
+                level,
                 &mut curve_cache,
+                &mut points_cache,
             );
             let eid = source_record
                 .eid
@@ -158,7 +169,9 @@ fn resolve_source_properties(
     session: &mut PluginSession,
     source_schema: &crate::schema::AuthoringSchema,
     source_extracted_dir: &std::path::Path,
+    level: Option<u16>,
     curve_cache: &mut CurveMeanCache,
+    points_cache: &mut CurvePointsCache,
 ) -> (Vec<ResolvedProperty>, Vec<String>) {
     let Some(prps) = source_record
         .fields
@@ -186,14 +199,26 @@ fn resolve_source_properties(
         ) else {
             continue;
         };
-        match cached_curve_mean(
-            curve_fk,
-            session,
-            source_schema,
-            source_extracted_dir,
-            mapper.interner,
-            curve_cache,
-        ) {
+        let value = match level {
+            Some(level) => cached_curve_at_level(
+                curve_fk,
+                level,
+                session,
+                source_schema,
+                source_extracted_dir,
+                mapper.interner,
+                points_cache,
+            ),
+            None => cached_curve_mean(
+                curve_fk,
+                session,
+                source_schema,
+                source_extracted_dir,
+                mapper.interner,
+                curve_cache,
+            ),
+        };
+        match value {
             Ok(value) => resolved.push(ResolvedProperty {
                 target_actor_value_raw,
                 value: value as f32,
@@ -202,6 +227,100 @@ fn resolve_source_properties(
         }
     }
     (resolved, warnings)
+}
+
+/// The level an actor's property curves should be read at, when it has one.
+///
+/// FO76 reads a creature's property curves at its spawn level. The curve mean
+/// gives every tier of a leveled family the same value instead:
+/// `EncScorched_Template_Tier01` (level 1) and `Tier14` (level 100) both came out
+/// at 179 health against a curve that runs 36 → 842. A `PCLevelMult` level is a
+/// multiplier rather than a level, and a Stats-templated actor's own level is a
+/// placeholder its template overrides, so both keep the mean.
+fn npc_concrete_level(record: &Record, interner: &StringInterner) -> Option<u16> {
+    let acbs = record
+        .fields
+        .iter()
+        .find(|entry| entry.sig.as_str() == "ACBS")
+        .map(|entry| &entry.value)?;
+    let (level, pc_level_mult, stats_templated) = match acbs {
+        FieldValue::Bytes(bytes) if bytes.len() >= ACBS_TEMPLATE_FLAGS_OFFSET + 2 => {
+            let flags = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+            let template_flags = u16::from_le_bytes(
+                bytes[ACBS_TEMPLATE_FLAGS_OFFSET..ACBS_TEMPLATE_FLAGS_OFFSET + 2]
+                    .try_into()
+                    .ok()?,
+            );
+            (
+                u16::from_le_bytes(
+                    bytes[ACBS_LEVEL_OFFSET..ACBS_LEVEL_OFFSET + 2]
+                        .try_into()
+                        .ok()?,
+                ),
+                flags & ACBS_FLAG_PC_LEVEL_MULT != 0,
+                template_flags & ACBS_TEMPLATE_FLAG_STATS != 0,
+            )
+        }
+        FieldValue::Struct(members) => {
+            let level = match acbs_member(members, "level", interner)? {
+                FieldValue::Uint(level) => u16::try_from(*level).ok()?,
+                FieldValue::Int(level) => u16::try_from(*level).ok()?,
+                _ => return None,
+            };
+            (
+                level,
+                acbs_flag_set(
+                    acbs_member(members, "flags", interner),
+                    "pclevelmult",
+                    ACBS_FLAG_PC_LEVEL_MULT.into(),
+                    interner,
+                ),
+                acbs_flag_set(
+                    acbs_member(members, "templateflags", interner),
+                    "stats",
+                    ACBS_TEMPLATE_FLAG_STATS.into(),
+                    interner,
+                ),
+            )
+        }
+        _ => return None,
+    };
+    (level > 0 && !pc_level_mult && !stats_templated).then_some(level)
+}
+
+fn normalized(name: &str) -> String {
+    name.replace('_', "").to_ascii_lowercase()
+}
+
+fn acbs_member<'a>(
+    members: &'a [(Sym, FieldValue)],
+    wanted: &str,
+    interner: &StringInterner,
+) -> Option<&'a FieldValue> {
+    members.iter().find_map(|(name, value)| {
+        interner
+            .resolve(*name)
+            .is_some_and(|name| normalized(name) == wanted)
+            .then_some(value)
+    })
+}
+
+/// Decoded flag fields arrive either as a bitfield or as a list of flag names.
+fn acbs_flag_set(
+    value: Option<&FieldValue>,
+    name: &str,
+    bit: u64,
+    interner: &StringInterner,
+) -> bool {
+    match value {
+        Some(FieldValue::Uint(bits)) => bits & bit != 0,
+        Some(FieldValue::Int(bits)) => *bits >= 0 && (*bits as u64) & bit != 0,
+        Some(FieldValue::List(items)) => items.iter().any(|item| {
+            matches!(item, FieldValue::String(sym)
+                if interner.resolve(*sym).is_some_and(|flag| normalized(flag) == name))
+        }),
+        _ => false,
+    }
 }
 
 fn source_property_rows(
@@ -271,7 +390,7 @@ fn apply_resolved_value(value: &mut FieldValue, resolved: &[ResolvedProperty]) -
     }
 }
 
-fn source_raw_to_form_key(
+pub(crate) fn source_raw_to_form_key(
     raw: u32,
     source_masters: &[String],
     source_plugin_name: &str,
@@ -375,10 +494,7 @@ mod tests {
             f32::from_le_bytes(bytes[12..16].try_into().unwrap()),
             40_000.0
         );
-    }
 
-    #[test]
-    fn source_rows_keep_actor_value_literal_and_curve() {
         let interner = StringInterner::new();
         let mut bytes = SmallVec::<[u8; 32]>::new();
         bytes.extend_from_slice(&0x000002D4u32.to_le_bytes());
@@ -392,16 +508,27 @@ mod tests {
     }
 
     #[test]
-    fn scorchbeast_queen_health_uses_points_through_level_fifty() {
+    fn scorchbeast_queen_health_is_the_curve_mean_unless_the_source_level_is_concrete() {
         let json = r#"{"curve":[{"x":1,"y":22061},{"x":12,"y":60165},{"x":23,"y":99004},{"x":34,"y":138723},{"x":45,"y":179495},{"x":56,"y":221108}]}"#;
         assert_eq!(
             crate::fixups::curve_table::mean_curve_value(json),
             Ok(99_890)
         );
+
+        assert_eq!(flatten_queen_template_health(None), 99_890.0);
+
+        assert_eq!(
+            flatten_queen_template_health(Some(raw_acbs(34, 0, 0))),
+            138_723.0
+        );
+
+        assert_eq!(
+            flatten_queen_template_health(Some(raw_acbs(34, ACBS_FLAG_PC_LEVEL_MULT, 0))),
+            99_890.0
+        );
     }
 
-    #[test]
-    fn same_name_template_is_flattened_without_mapper_entry() {
+    fn flatten_queen_template_health(source_acbs: Option<SmallVec<[u8; 32]>>) -> f32 {
         let source_handle = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
         let target_handle = plugin_handle_new_native("SeventySix.esm", Some("fo4")).unwrap();
         plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
@@ -431,10 +558,17 @@ mod tests {
                         form_key: queen_template,
                         eid: Some(interner.intern("EncScorchbeastQueen01Template")),
                         flags: RecordFlags::empty(),
-                        fields: smallvec::smallvec![FieldEntry {
-                            sig: SubrecordSig::from_str("PRPS").unwrap(),
-                            value: FieldValue::Bytes(source_properties),
-                        }],
+                        fields: source_acbs
+                            .map(|acbs| FieldEntry {
+                                sig: SubrecordSig::from_str("ACBS").unwrap(),
+                                value: FieldValue::Bytes(acbs),
+                            })
+                            .into_iter()
+                            .chain([FieldEntry {
+                                sig: SubrecordSig::from_str("PRPS").unwrap(),
+                                value: FieldValue::Bytes(source_properties),
+                            }])
+                            .collect(),
                         warnings: SmallVec::new(),
                     },
                     schema.as_ref(),
@@ -544,14 +678,69 @@ mod tests {
         let FieldValue::Bytes(properties) = &target.fields[0].value else {
             panic!("expected raw PRPS");
         };
-        assert_eq!(
-            f32::from_le_bytes(properties[4..8].try_into().unwrap()),
-            99_890.0
-        );
+        let health = f32::from_le_bytes(properties[4..8].try_into().unwrap());
 
         drop(session);
         let _ = std::fs::remove_dir_all(temp_root);
         assert!(plugin_handle_close_native(source_handle));
         assert!(plugin_handle_close_native(target_handle));
+        health
+    }
+
+    fn raw_acbs(level: u16, flags: u32, template_flags: u16) -> SmallVec<[u8; 32]> {
+        let mut bytes = SmallVec::from_slice(&[0u8; 20]);
+        bytes[0..4].copy_from_slice(&flags.to_le_bytes());
+        bytes[ACBS_LEVEL_OFFSET..ACBS_LEVEL_OFFSET + 2].copy_from_slice(&level.to_le_bytes());
+        bytes[ACBS_TEMPLATE_FLAGS_OFFSET..ACBS_TEMPLATE_FLAGS_OFFSET + 2]
+            .copy_from_slice(&template_flags.to_le_bytes());
+        bytes
+    }
+
+    fn npc_with_acbs(value: FieldValue) -> Record {
+        let mut record = npc_with_raw_properties(&[]);
+        record.fields[0] = FieldEntry {
+            sig: SubrecordSig::from_str("ACBS").unwrap(),
+            value,
+        };
+        record
+    }
+
+    #[test]
+    fn only_a_real_unscaled_untemplated_level_is_concrete() {
+        let interner = StringInterner::new();
+        let level = |acbs| npc_concrete_level(&npc_with_acbs(FieldValue::Bytes(acbs)), &interner);
+
+        assert_eq!(level(raw_acbs(100, 0, 0)), Some(100));
+        assert_eq!(level(raw_acbs(0, 0, 0)), None);
+        assert_eq!(level(raw_acbs(100, ACBS_FLAG_PC_LEVEL_MULT, 0)), None);
+        assert_eq!(level(raw_acbs(100, 0, ACBS_TEMPLATE_FLAG_STATS)), None);
+        assert_eq!(
+            level(raw_acbs(100, 0, !ACBS_TEMPLATE_FLAG_STATS)),
+            Some(100)
+        );
+
+        let names = |names: &[&str]| {
+            FieldValue::List(
+                names
+                    .iter()
+                    .map(|name| FieldValue::String(interner.intern(name)))
+                    .collect(),
+            )
+        };
+        let level = |flags: &[&str], template_flags: &[&str]| {
+            let configuration = FieldValue::Struct(vec![
+                (interner.intern("Flags"), names(flags)),
+                (interner.intern("Level"), FieldValue::Uint(100)),
+                (interner.intern("TemplateFlags"), names(template_flags)),
+            ]);
+            npc_concrete_level(&npc_with_acbs(configuration), &interner)
+        };
+
+        assert_eq!(
+            level(&["Respawn", "AutoCalcStats"], &["Traits", "Inventory"]),
+            Some(100)
+        );
+        assert_eq!(level(&["AutoCalcStats", "PCLevelMult"], &[]), None);
+        assert_eq!(level(&["AutoCalcStats"], &["Traits", "Stats"]), None);
     }
 }

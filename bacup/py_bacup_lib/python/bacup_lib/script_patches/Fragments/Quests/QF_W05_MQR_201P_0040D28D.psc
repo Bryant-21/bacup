@@ -13,6 +13,11 @@ Function Fragment_Stage_0001_Item_00()
     If noteMarkerRef != None
         noteMarkerRef.EnableNoWait()
     EndIf
+    ; The note is created at W05_MQR_201P_HoldingCellMarker in the holding cell; stage 100 points
+    ; the player at it in Lou's room (W05_MQR_201P_LouNote_Marker), so it has to be moved there.
+    If noteRef != None && noteMarkerRef != None && noteRef.GetContainer() == None && !IsStageDone(200)
+        noteRef.MoveTo(noteMarkerRef)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0002_Item_00()
@@ -64,6 +69,9 @@ Function Fragment_Stage_0100_Item_00()
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
+    If IsObjectiveDisplayed(100) && !IsObjectiveCompleted(100)
+        SetObjectiveCompleted(100)
+    EndIf
     SetObjectiveDisplayed(200)
 EndFunction
 
@@ -119,18 +127,44 @@ Function Fragment_Stage_0500_Item_00()
     If !IsStageDone(2)
         SetStage(2)
     EndIf
+    If IsObjectiveDisplayed(200) && !IsObjectiveCompleted(200)
+        SetObjectiveCompleted(200)
+    EndIf
+    If IsObjectiveDisplayed(300) && !IsObjectiveCompleted(300)
+        SetObjectiveCompleted(300)
+    EndIf
+    If IsObjectiveDisplayed(400) && !IsObjectiveCompleted(400)
+        SetObjectiveCompleted(400)
+    EndIf
     SetObjectiveDisplayed(500)
 EndFunction
 
 Function Fragment_Stage_0600_Item_00()
+    If IsObjectiveDisplayed(500) && !IsObjectiveCompleted(500)
+        SetObjectiveCompleted(500)
+    EndIf
     SetObjectiveDisplayed(600)
 EndFunction
 
 Function Fragment_Stage_0610_Item_00()
     SetObjectiveDisplayed(610)
+    Actor koganRef = None
+    If Alias_Kogan != None
+        koganRef = Alias_Kogan.GetActorReference()
+    EndIf
+    Actor playerRef = Game.GetPlayer()
+    If koganRef != None && playerRef != None && !koganRef.IsDead()
+        koganRef.StartCombat(playerRef)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0615_Item_00()
+    ; Fisher's greetings read KoganValue: 1 = spoke with Kogan, 2 = Kogan died. The stage 700
+    ; confrontation greeting needs >= 1 and nothing else in the conversion writes it.
+    Actor koganOutcomePlayer = Game.GetPlayer()
+    If koganOutcomePlayer != None && W05_MQR_201P_KoganValue != None && koganOutcomePlayer.GetValue(W05_MQR_201P_KoganValue) < 1.0
+        koganOutcomePlayer.SetValue(W05_MQR_201P_KoganValue, 1.0)
+    EndIf
     SetObjectiveCompleted(600)
     If !IsStageDone(700)
         SetStage(700)
@@ -138,6 +172,10 @@ Function Fragment_Stage_0615_Item_00()
 EndFunction
 
 Function Fragment_Stage_0620_Item_00()
+    Actor koganOutcomePlayer = Game.GetPlayer()
+    If koganOutcomePlayer != None && W05_MQR_201P_KoganValue != None && koganOutcomePlayer.GetValue(W05_MQR_201P_KoganValue) < 2.0
+        koganOutcomePlayer.SetValue(W05_MQR_201P_KoganValue, 2.0)
+    EndIf
     SetObjectiveCompleted(600)
     SetObjectiveCompleted(610)
     If !IsStageDone(700)
@@ -146,15 +184,37 @@ Function Fragment_Stage_0620_Item_00()
 EndFunction
 
 Function Fragment_Stage_0700_Item_00()
+    If IsObjectiveDisplayed(500) && !IsObjectiveCompleted(500)
+        SetObjectiveCompleted(500)
+    EndIf
+    If IsObjectiveDisplayed(600) && !IsObjectiveCompleted(600)
+        SetObjectiveCompleted(600)
+    EndIf
     SetObjectiveDisplayed(700)
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()
+    If IsObjectiveDisplayed(200) && !IsObjectiveCompleted(200)
+        SetObjectiveCompleted(200)
+    EndIf
+    If IsObjectiveDisplayed(300) && !IsObjectiveCompleted(300)
+        SetObjectiveCompleted(300)
+    EndIf
+    If IsObjectiveDisplayed(400) && !IsObjectiveCompleted(400)
+        SetObjectiveCompleted(400)
+    EndIf
+    If IsObjectiveDisplayed(700) && !IsObjectiveCompleted(700)
+        SetObjectiveCompleted(700)
+    EndIf
     SetObjectiveDisplayed(800)
     SetObjectiveDisplayed(850)
     Actor playerRef = Game.GetPlayer()
     If W05_MQR_201P_Track_RadioQuestStartKeyword != None && playerRef != None
         W05_MQR_201P_Track_RadioQuestStartKeyword.SendStoryEvent(None, playerRef, playerRef)
+    EndIf
+    W05_MQR_201P_QuestScript signalController = (Self as Quest) as W05_MQR_201P_QuestScript
+    If signalController != None
+        signalController.StartSignalTracking()
     EndIf
 EndFunction
 
@@ -163,11 +223,30 @@ Function Fragment_Stage_0860_Item_00()
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()
+    If IsObjectiveDisplayed(800) && !IsObjectiveCompleted(800)
+        SetObjectiveCompleted(800)
+    EndIf
+    If IsObjectiveDisplayed(850) && !IsObjectiveCompleted(850)
+        SetObjectiveCompleted(850)
+    EndIf
     SetObjectiveDisplayed(900)
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()
+    If IsObjectiveDisplayed(800) && !IsObjectiveCompleted(800)
+        SetObjectiveCompleted(800)
+    EndIf
+    If IsObjectiveDisplayed(850) && !IsObjectiveCompleted(850)
+        SetObjectiveCompleted(850)
+    EndIf
+    If IsObjectiveDisplayed(900) && !IsObjectiveCompleted(900)
+        SetObjectiveCompleted(900)
+    EndIf
     SetObjectiveDisplayed(1000)
+    W05_MQR_201P_QuestScript signalController = (Self as Quest) as W05_MQR_201P_QuestScript
+    If signalController != None
+        signalController.StopSignalTracking()
+    EndIf
     Actor weaselRef = None
     If Alias_Weasel != None
         weaselRef = Alias_Weasel.GetActorReference()
@@ -182,6 +261,9 @@ Function Fragment_Stage_1000_Item_00()
 EndFunction
 
 Function Fragment_Stage_1100_Item_00()
+    If IsObjectiveDisplayed(1000) && !IsObjectiveCompleted(1000)
+        SetObjectiveCompleted(1000)
+    EndIf
     SetObjectiveDisplayed(1100)
     Actor weaselRef = None
     If Alias_Weasel != None
@@ -193,10 +275,16 @@ Function Fragment_Stage_1100_Item_00()
 EndFunction
 
 Function Fragment_Stage_1200_Item_00()
+    If IsObjectiveDisplayed(1100) && !IsObjectiveCompleted(1100)
+        SetObjectiveCompleted(1100)
+    EndIf
     SetObjectiveDisplayed(1200)
 EndFunction
 
 Function Fragment_Stage_1300_Item_00()
+    If IsObjectiveDisplayed(1200) && !IsObjectiveCompleted(1200)
+        SetObjectiveCompleted(1200)
+    EndIf
     SetObjectiveDisplayed(1300)
     If W05_MQR_201P_Weasel_004_GoToWall01 != None && !W05_MQR_201P_Weasel_004_GoToWall01.IsPlaying()
         W05_MQR_201P_Weasel_004_GoToWall01.Start()
@@ -204,10 +292,16 @@ Function Fragment_Stage_1300_Item_00()
 EndFunction
 
 Function Fragment_Stage_1400_Item_00()
+    If IsObjectiveDisplayed(1300) && !IsObjectiveCompleted(1300)
+        SetObjectiveCompleted(1300)
+    EndIf
     SetObjectiveDisplayed(1400)
 EndFunction
 
 Function Fragment_Stage_1410_Item_00()
+    If IsObjectiveDisplayed(1400) && !IsObjectiveCompleted(1400)
+        SetObjectiveCompleted(1400)
+    EndIf
     If W05_MQR_201P_Weasel_006_BlowUpWall01 != None && !W05_MQR_201P_Weasel_006_BlowUpWall01.IsPlaying()
         W05_MQR_201P_Weasel_006_BlowUpWall01.Start()
     EndIf
@@ -313,6 +407,12 @@ Function Fragment_Stage_1620_Item_00()
 EndFunction
 
 Function Fragment_Stage_1700_Item_00()
+    If IsObjectiveDisplayed(1300) && !IsObjectiveCompleted(1300)
+        SetObjectiveCompleted(1300)
+    EndIf
+    If IsObjectiveDisplayed(1400) && !IsObjectiveCompleted(1400)
+        SetObjectiveCompleted(1400)
+    EndIf
     SetObjectiveDisplayed(1700)
     Actor weaselRef = None
     If Alias_Weasel != None
@@ -417,10 +517,18 @@ Function Fragment_Stage_9999_Item_00()
     If W05_MQR_201P_Track_RadioQuest != None && W05_MQR_201P_Track_RadioQuest.IsRunning()
         W05_MQR_201P_Track_RadioQuest.SetStage(1000)
     EndIf
+    W05_MQR_201P_QuestScript signalController = (Self as Quest) as W05_MQR_201P_QuestScript
+    If signalController != None
+        signalController.StopSignalTracking()
+    EndIf
 EndFunction
 
 Function Fragment_Stage_10000_Item_00()
     If W05_MQR_201P_Track_RadioQuest != None && W05_MQR_201P_Track_RadioQuest.IsRunning()
         W05_MQR_201P_Track_RadioQuest.SetStage(1000)
+    EndIf
+    W05_MQR_201P_QuestScript signalController = (Self as Quest) as W05_MQR_201P_QuestScript
+    If signalController != None
+        signalController.StopSignalTracking()
     EndIf
 EndFunction

@@ -817,12 +817,19 @@ Function Fragment_Stage_1201_Item_00()
         EndIf
         playerRef.SetValue(FoundationDecision, 6.0)
     EndIf
+    ; Every negotiated outcome closes the talks; FO76 advanced 1200 server-side.
+    If !IsStageDone(1200)
+        SetStage(1200)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1202_Item_00()
     Actor playerRef = Alias_Player.GetActorReference()
     If playerRef != None
         playerRef.SetValue(FoundationDecision, 1.0)
+    EndIf
+    If !IsStageDone(1200)
+        SetStage(1200)
     EndIf
 EndFunction
 
@@ -831,12 +838,18 @@ Function Fragment_Stage_1203_Item_00()
     If playerRef != None
         playerRef.SetValue(FoundationDecision, 4.0)
     EndIf
+    If !IsStageDone(1200)
+        SetStage(1200)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1204_Item_00()
     Actor playerRef = Alias_Player.GetActorReference()
     If playerRef != None
         playerRef.SetValue(FoundationDecision, 3.0)
+    EndIf
+    If !IsStageDone(1200)
+        SetStage(1200)
     EndIf
 EndFunction
 
@@ -845,6 +858,9 @@ Function Fragment_Stage_1205_Item_00()
     If playerRef != None
         playerRef.SetValue(FoundationDecision, 5.0)
     EndIf
+    If !IsStageDone(1200)
+        SetStage(1200)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1206_Item_00()
@@ -852,12 +868,18 @@ Function Fragment_Stage_1206_Item_00()
     If playerRef != None
         playerRef.SetValue(FoundationDecision, 2.0)
     EndIf
+    If !IsStageDone(1200)
+        SetStage(1200)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1207_Item_00()
     Actor playerRef = Alias_Player.GetActorReference()
     If playerRef != None
         playerRef.SetValue(FoundationDecision, 7.0)
+    EndIf
+    If !IsStageDone(1200)
+        SetStage(1200)
     EndIf
 EndFunction
 

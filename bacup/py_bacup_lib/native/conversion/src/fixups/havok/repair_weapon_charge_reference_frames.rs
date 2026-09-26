@@ -113,6 +113,7 @@ fn walk_target_clips(root: &Path, dir: &Path, f: &mut impl FnMut(&Path)) {
 fn is_first_person_charge_hold(path: &str) -> bool {
     let path = path
         .strip_prefix("actors/b21_fo76/source/fo4rig/")
+        .or_else(|| path.strip_prefix("actors/b21_fo76/source/fo4rig_pa_bow/"))
         .unwrap_or(path);
     path.starts_with(FIRST_PERSON_ANIMATIONS_PREFIX)
         && path
@@ -280,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_unrelated_animation_paths_and_non_null_reference_frames() {
+    fn ignores_unrelated_paths_non_null_reference_frames_and_invalid_hkx() {
         let tmp = tempfile::tempdir().unwrap();
         let third_person = tmp.path().join(
             "data/Meshes/Actors/Character/Animations/Weapon/GaussPistol/wpnchargeholdreadyadd.hkx",
@@ -292,6 +293,10 @@ mod tests {
 
         let target = charge_clip_path(tmp.path(), "GaussPistol", "wpnchargeholdreadyadd.hkx");
         write_charge_clip(&target, HkxValue::Pointer(Some(0)));
+
+        let invalid = charge_clip_path(tmp.path(), "CompoundBow", "wpnchargeholdreadyadd.hkx");
+        std::fs::create_dir_all(invalid.parent().unwrap()).unwrap();
+        std::fs::write(invalid, b"not hkx").unwrap();
 
         let report = repair_weapon_charge_reference_frames_in_mod_path(tmp.path()).unwrap();
         assert!(report.is_no_op());
@@ -315,62 +320,5 @@ mod tests {
                 .unwrap()
                 .is_no_op()
         );
-    }
-
-    #[test]
-    fn invalid_target_hkx_is_tolerated() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = charge_clip_path(tmp.path(), "GaussPistol", "wpnchargeholdreadyadd.hkx");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"not hkx").unwrap();
-
-        let report = repair_weapon_charge_reference_frames_in_mod_path(tmp.path()).unwrap();
-        assert!(report.is_no_op());
-    }
-
-    #[test]
-    #[ignore = "requires extracted FO76 Compound Bow animation fixtures"]
-    fn compound_bow_loose_probe_preserves_animation_data() {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let scratch = tempfile::tempdir().unwrap();
-        let relative = "data/Meshes/Actors/B21_FO76/Source/fo4rig/actors/character/_1stperson/animations/compoundbow";
-        for name in CHARGE_HOLD_CLIP_NAMES {
-            let source = repo
-                .join("extracted/fo76/meshes/actors/character/_1stperson/animations/compoundbow")
-                .join(name);
-            let destination = scratch.path().join(relative).join(name);
-            let original = havok_native::api::havok_convert_bytes_report(
-                &std::fs::read(&source).unwrap(),
-                "hk_2014.1.0-r1",
-            )
-            .unwrap()
-            .bytes;
-            let before = read_packfile(&original).unwrap();
-            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
-            std::fs::write(&destination, &original).unwrap();
-            assert!(repair_charge_reference_frame(&destination).unwrap());
-            assert!(!repair_charge_reference_frame(&destination).unwrap());
-            let after = read_packfile(&std::fs::read(&destination).unwrap()).unwrap();
-            assert_eq!(after.objects().len(), before.objects().len() + 1);
-            for (before, after) in before.objects().iter().zip(after.objects()) {
-                assert_eq!(before.class_name, after.class_name);
-                for member in &before.members {
-                    if member.name != "extractedMotion" {
-                        assert_eq!(
-                            after
-                                .members
-                                .iter()
-                                .find(|m| m.name == member.name)
-                                .unwrap()
-                                .value,
-                            member.value,
-                            "{name}: {}.{}",
-                            before.class_name,
-                            member.name
-                        );
-                    }
-                }
-            }
-        }
     }
 }

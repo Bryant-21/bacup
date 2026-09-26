@@ -12,14 +12,41 @@ Function ResetRequiredItemCounts()
 	EndWhile
 EndFunction
 
+Function PublishRequiredItemVariables()
+	B21:QuestVariables variables = OwningQuest as B21:QuestVariables
+	If variables == None || RequiredItems == None
+		Return
+	EndIf
+
+	Int index = 0
+	While index < RequiredItems.Length
+		ItemDatum requiredItem = RequiredItems[index]
+		If requiredItem != None
+			Int requiredCount = requiredItem.NumRequired
+			If requiredCount < 1
+				requiredCount = 1
+			EndIf
+			If requiredItem.RequiredCountTextVar != ""
+				variables.SetVariable(requiredItem.RequiredCountTextVar, requiredCount as Float)
+			EndIf
+			If requiredItem.CurrentCountTextVar != ""
+				variables.SetVariable(requiredItem.CurrentCountTextVar, requiredItem.CurrentCount as Float)
+			EndIf
+		EndIf
+		index += 1
+	EndWhile
+EndFunction
+
 Event OnAliasInit()
 	OwningQuest = GetOwningQuest()
 	ResetRequiredItemCounts()
+	PublishRequiredItemVariables()
 EndEvent
 
 Event OnAliasReset()
 	OwningQuest = GetOwningQuest()
 	ResetRequiredItemCounts()
+	PublishRequiredItemVariables()
 EndEvent
 
 Event OnAliasShutdown()
@@ -72,4 +99,5 @@ Event OnActivate(ObjectReference akActionRef)
 		EndIf
 		index += 1
 	EndWhile
+	PublishRequiredItemVariables()
 EndEvent

@@ -771,6 +771,13 @@ pub fn build_request(
         && roles.contains("reflectivity")
         && roles.contains("lighting");
     let is_fo76_fo4_bundle = is_fo76_fo4_spec_pair && roles.contains("diffuse");
+    // A `_l` with no `_r` reaches neither the bundle nor the spec/gloss remix,
+    // yet the BGSM downgrade still binds it as the glow map.
+    let is_fo76_fo4_lone_lighting = source_game == "fo76"
+        && target_game == "fo4"
+        && roles.contains("lighting")
+        && !roles.contains("reflectivity")
+        && !roles.contains("glow");
 
     let mut inputs: Vec<TexturePathInput> = Vec::new();
     let mut outputs: Vec<TexturePathOutput> = Vec::new();
@@ -792,9 +799,13 @@ pub fn build_request(
             continue;
         }
 
-        let out_role = match output_role(role, source_game, target_game, target_suffixes) {
-            Some(r) => r,
-            None => continue,
+        let out_role = if is_fo76_fo4_lone_lighting && role == "lighting" {
+            "glow"
+        } else {
+            match output_role(role, source_game, target_game, target_suffixes) {
+                Some(r) => r,
+                None => continue,
+            }
         };
 
         let filename = abs_path
@@ -1140,13 +1151,41 @@ mod tests {
     use crate::phase::Phase;
 
     #[test]
-    fn fnv_suffixes_detect_env_mask_and_cubemap() {
-        let sfx = game_texture_suffixes("fnv");
-        assert_eq!(detect_role("crate01_n", sfx), Some("normal"));
-        assert_eq!(detect_role("crate01_m", sfx), Some("envmask"));
-        assert_eq!(detect_role("crate01_em", sfx), Some("envmask"));
-        assert_eq!(detect_role("crate01_e", sfx), Some("cubemap"));
-        assert_eq!(detect_role("crate01_g", sfx), Some("glow"));
+    fn detect_role_matches_game_suffix_tables() {
+        for (game, stem, expected) in [
+            ("fnv", "crate01_n", Some("normal")),
+            ("fnv", "crate01_m", Some("envmask")),
+            ("fnv", "crate01_em", Some("envmask")),
+            ("fnv", "crate01_e", Some("cubemap")),
+            ("fnv", "crate01_g", Some("glow")),
+            ("skyrimse", "argonianfemalebody_s", Some("subsurface")),
+            ("fo4", "armor_d", Some("diffuse")),
+            ("fo4", "armor_n", Some("normal")),
+            ("fo4", "armor_sk", Some("subsurface")),
+            ("fo76", "armor_r", Some("reflectivity")),
+            ("fo76", "armor_l", Some("lighting")),
+        ] {
+            assert_eq!(
+                detect_role(stem, game_texture_suffixes(game)),
+                expected,
+                "{game} {stem}"
+            );
+        }
+        assert!(
+            !game_texture_suffixes("skyrimse")
+                .iter()
+                .any(|(role, _)| *role == "specular"),
+            "Skyrim has no specular source role"
+        );
+        let sfx = game_texture_suffixes("fo76");
+        assert_eq!(
+            detect_role_for_source("woodcratedynamite", sfx, "fo76"),
+            Some("diffuse")
+        );
+        assert_eq!(
+            detect_role_for_source("woodcratedynamite", sfx, "fo4"),
+            None
+        );
     }
 
     #[test]
@@ -1167,44 +1206,45 @@ mod tests {
     }
 
     #[test]
-    fn skyrim_s_suffix_is_subsurface_not_specular() {
-        // actors/character/argonianfemale/argonianfemalebody_s.dds is a skin tint
-        // map, not a specular map.
-        let sfx = game_texture_suffixes("skyrimse");
-        assert_eq!(detect_role("argonianfemalebody_s", sfx), Some("subsurface"));
-        assert!(
-            !sfx.iter().any(|(role, _)| *role == "specular"),
-            "Skyrim has no specular source role"
-        );
-    }
-
-    #[test]
-    fn skyrim_subsurface_converts_to_fo4_sk_not_s() {
-        // Prevents the generated foo_s.dds from colliding with the source's own
-        // subsurface foo_s.dds.
-        let out = convert_filename(
-            "argonianfemalebody_s.dds",
-            game_texture_suffixes("skyrimse"),
-            game_texture_suffixes("fo4"),
-        );
-        assert_eq!(out, "argonianfemalebody_sk.dds");
-    }
-
-    #[test]
-    fn cubemap_role_compresses_to_uncompressed_rgba() {
-        assert_eq!(compression_for_role("cubemap"), "R8G8B8A8_UNORM");
-        assert_eq!(compression_for_role("normal"), "BC5_UNORM");
-        assert_eq!(compression_for_role("specular"), "BC5_UNORM");
-    }
-
-    #[test]
-    fn env_mask_has_no_standalone_fo4_output_role() {
+    fn convert_filename_maps_source_roles_to_fo4_suffixes() {
+        for (source, name, expected) in [
+            ("fo76", "armor_d.dds", "armor_d.dds"),
+            ("fo76", "armor_r.dds", "armor_s.dds"),
+            ("fo76", "armor_l.dds", "armor_g.dds"),
+            (
+                "skyrimse",
+                "argonianfemalebody_s.dds",
+                "argonianfemalebody_sk.dds",
+            ),
+        ] {
+            assert_eq!(
+                convert_filename(
+                    name,
+                    game_texture_suffixes(source),
+                    game_texture_suffixes("fo4")
+                ),
+                expected,
+                "{source} {name}"
+            );
+        }
         for game in ["fnv", "skyrimse"] {
             assert_eq!(
                 output_role("envmask", game, "fo4", game_texture_suffixes("fo4")),
                 None,
                 "{game}: envmask is consumed by the spec bundle"
             );
+        }
+    }
+
+    #[test]
+    fn compression_for_role_picks_format_per_role() {
+        for (role, expected) in [
+            ("cubemap", "R8G8B8A8_UNORM"),
+            ("normal", "BC5_UNORM"),
+            ("specular", "BC5_UNORM"),
+            ("diffuse", "BC7_UNORM"),
+        ] {
+            assert_eq!(compression_for_role(role), expected, "{role}");
         }
     }
 
@@ -1348,105 +1388,22 @@ mod tests {
     }
 
     #[test]
-    fn detect_fo4_diffuse_role() {
-        let sfx = game_texture_suffixes("fo4");
-        assert_eq!(detect_role("armor_d", sfx), Some("diffuse"));
-    }
-
-    #[test]
-    fn detect_fo4_normal_role() {
-        let sfx = game_texture_suffixes("fo4");
-        assert_eq!(detect_role("armor_n", sfx), Some("normal"));
-    }
-
-    #[test]
-    fn detect_fo76_reflectivity_role() {
-        let sfx = game_texture_suffixes("fo76");
-        assert_eq!(detect_role("armor_r", sfx), Some("reflectivity"));
-    }
-
-    #[test]
-    fn detect_fo76_lighting_role() {
-        let sfx = game_texture_suffixes("fo76");
-        assert_eq!(detect_role("armor_l", sfx), Some("lighting"));
-    }
-
-    #[test]
-    fn detect_fo76_bare_texture_as_diffuse_for_source() {
-        let sfx = game_texture_suffixes("fo76");
-        assert_eq!(
-            detect_role_for_source("woodcratedynamite", sfx, "fo76"),
-            Some("diffuse")
-        );
-        assert_eq!(
-            detect_role_for_source("woodcratedynamite", sfx, "fo4"),
-            None
-        );
-    }
-
-    #[test]
-    fn parse_conversion_workers_prefers_phase_param() {
+    fn parse_conversion_workers_prefers_phase_param_then_run_config_and_ignores_zero() {
         let p = serde_json::json!({ "conversion_workers": 3 });
 
         assert_eq!(parse_conversion_workers(&p, Some(7)), Some(3));
-    }
 
-    #[test]
-    fn parse_conversion_workers_uses_run_config_fallback() {
         let p = serde_json::json!({});
 
         assert_eq!(parse_conversion_workers(&p, Some(7)), Some(7));
-    }
 
-    #[test]
-    fn parse_conversion_workers_ignores_zero_values() {
         let p = serde_json::json!({ "conversion_workers": 0 });
 
         assert_eq!(parse_conversion_workers(&p, Some(0)), None);
     }
 
     #[test]
-    fn subsurface_longer_suffix_wins_over_specular() {
-        let sfx = game_texture_suffixes("fo4");
-        // "_sk" must match before "_s".
-        assert_eq!(detect_role("armor_sk", sfx), Some("subsurface"));
-    }
-
-    #[test]
-    fn convert_fo76_diffuse_name_same_suffix() {
-        let src = game_texture_suffixes("fo76");
-        let tgt = game_texture_suffixes("fo4");
-        assert_eq!(convert_filename("armor_d.dds", src, tgt), "armor_d.dds");
-    }
-
-    #[test]
-    fn convert_fo76_reflectivity_to_fo4_specular() {
-        let src = game_texture_suffixes("fo76");
-        let tgt = game_texture_suffixes("fo4");
-        // reflectivity _r → specular _s via fallback.
-        assert_eq!(convert_filename("armor_r.dds", src, tgt), "armor_s.dds");
-    }
-
-    #[test]
-    fn convert_fo76_lighting_to_fo4_glow() {
-        let src = game_texture_suffixes("fo76");
-        let tgt = game_texture_suffixes("fo4");
-        // lighting _l → glow _g via fallback("lighting") = "glow".
-        assert_eq!(convert_filename("armor_l.dds", src, tgt), "armor_g.dds");
-    }
-
-    #[test]
-    fn compression_normal_is_bc5() {
-        assert_eq!(compression_for_role("normal"), "BC5_UNORM");
-    }
-
-    #[test]
-    fn compression_diffuse_is_bc7() {
-        assert_eq!(compression_for_role("diffuse"), "BC7_UNORM");
-    }
-
-    #[test]
-    fn group_textures_produces_single_group_for_fo76_set() {
+    fn group_textures_groups_by_base_name_and_subdir() {
         let suffixes = game_texture_suffixes("fo76");
         let groups = group_textures(
             &[
@@ -1460,10 +1417,39 @@ mod tests {
         );
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].files.len(), 3);
+
+        let suffixes = game_texture_suffixes("fo4");
+        let groups = group_textures(
+            &[
+                "Textures/weapon_d.dds".to_owned(),
+                "Textures/armor_d.dds".to_owned(),
+            ],
+            Path::new("/nonexistent"),
+            suffixes,
+            "fo4",
+        );
+        assert_eq!(groups.len(), 2);
+
+        let mut buckets: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        buckets.insert(
+            "Architecture".to_owned(),
+            vec!["Textures/Architecture/foo_d.dds".to_owned()],
+        );
+        buckets.insert(
+            "Clutter".to_owned(),
+            vec!["Textures/Clutter/foo_d.dds".to_owned()],
+        );
+        let suffixes = game_texture_suffixes("fo4");
+        let base = Path::new("/mod/data/Textures");
+        let items = build_texture_work_items(&buckets, Path::new(""), suffixes, "fo4", base);
+        assert_eq!(items.len(), 2);
+        let dirs: HashSet<PathBuf> = items.iter().map(|i| i.output_dir.clone()).collect();
+        assert!(dirs.contains(&base.join("Architecture")));
+        assert!(dirs.contains(&base.join("Clutter")));
     }
 
     #[test]
-    fn group_textures_adds_existing_fo76_glow_sibling_for_lighting() {
+    fn group_textures_adds_existing_fo76_sibling_bundles() {
         let tmp = std::env::temp_dir().join("group_textures_fo76_implicit_glow");
         let textures_dir = tmp.join("Textures");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1504,10 +1490,7 @@ mod tests {
             HashSet::from(["diffuse", "reflectivity", "lighting", "glow"])
         );
         let _ = std::fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn group_textures_adds_existing_fo76_bundle_siblings_for_reflectivity() {
         let tmp = std::env::temp_dir().join("group_textures_fo76_implicit_bundle");
         let textures_dir = tmp.join("Textures");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1538,10 +1521,7 @@ mod tests {
             HashSet::from(["diffuse", "reflectivity", "lighting"])
         );
         let _ = std::fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn group_textures_adds_bare_fo76_diffuse_sibling_for_reflectivity() {
         let tmp = std::env::temp_dir().join("group_textures_fo76_bare_diffuse_bundle");
         let textures_dir = tmp.join("Textures");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1922,41 +1902,6 @@ mod tests {
     }
 
     #[test]
-    fn group_textures_separates_different_base_names() {
-        let suffixes = game_texture_suffixes("fo4");
-        let groups = group_textures(
-            &[
-                "Textures/weapon_d.dds".to_owned(),
-                "Textures/armor_d.dds".to_owned(),
-            ],
-            Path::new("/nonexistent"),
-            suffixes,
-            "fo4",
-        );
-        assert_eq!(groups.len(), 2);
-    }
-
-    #[test]
-    fn build_texture_work_items_keeps_same_base_in_distinct_subdirs_separate() {
-        let mut buckets: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        buckets.insert(
-            "Architecture".to_owned(),
-            vec!["Textures/Architecture/foo_d.dds".to_owned()],
-        );
-        buckets.insert(
-            "Clutter".to_owned(),
-            vec!["Textures/Clutter/foo_d.dds".to_owned()],
-        );
-        let suffixes = game_texture_suffixes("fo4");
-        let base = Path::new("/mod/data/Textures");
-        let items = build_texture_work_items(&buckets, Path::new(""), suffixes, "fo4", base);
-        assert_eq!(items.len(), 2);
-        let dirs: HashSet<PathBuf> = items.iter().map(|i| i.output_dir.clone()).collect();
-        assert!(dirs.contains(&base.join("Architecture")));
-        assert!(dirs.contains(&base.join("Clutter")));
-    }
-
-    #[test]
     fn texture_output_subdir_preserves_asset_tree_without_game_prefix() {
         assert_eq!(
             texture_output_subdir(
@@ -1978,9 +1923,7 @@ mod tests {
     #[test]
     fn convert_textures_skip_existing_counts_existing_output() {
         use crate::phase::{PhaseCtx, PhaseReport};
-        use crate::run::{
-            ConversionRun, RunConfig, RunError, RunParams, create_run, drop_run, with_run,
-        };
+        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
         use crate::translator::Game;
         use std::sync::atomic::AtomicBool;
 
@@ -2315,7 +2258,7 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_source_textures_walks_dds_recursively() {
+    fn enumerate_source_textures_and_target_output_checks_use_relative_paths() {
         let tmp = std::env::temp_dir().join("enumerate_source_textures_walks_dds");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("Textures").join("Sub")).unwrap();
@@ -2329,10 +2272,7 @@ mod tests {
         assert!(found.iter().any(|p| p.ends_with("a_d.dds")));
         assert!(found.iter().any(|p| p.ends_with("Sub/b_n.dds")));
         let _ = fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn output_exists_in_target_checks_relative_path() {
         let tmp = std::env::temp_dir().join("output_exists_in_target_checks_relative_path");
         let _ = fs::remove_dir_all(&tmp);
         let data_root = tmp.join("mod").join("data");
@@ -2359,7 +2299,7 @@ mod tests {
     }
 
     #[test]
-    fn group_is_base_owned_when_diffuse_in_target_even_if_glow_is_new() {
+    fn group_is_base_owned_only_when_target_owns_the_diffuse() {
         // Regression: FO76 BaseMaleBody collides with FO4 base _d/_n/_s but its
         // _l alpha synthesizes a _g glow the base game lacks. The group must
         // still be skipped (base-owned) so the diffuse never overwrites base.
@@ -2395,10 +2335,7 @@ mod tests {
             &[]
         ));
         let _ = fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn group_is_base_owned_false_when_diffuse_is_fo76_unique() {
         // The diffuse is FO76-unique (absent from base); only an unrelated glow
         // path collides. The set must convert, not be skipped.
         let tmp = std::env::temp_dir().join("group_is_base_owned_new_diffuse");
@@ -2422,10 +2359,17 @@ mod tests {
             &[]
         ));
         let _ = fs::remove_dir_all(&tmp);
+
+        let data_root = Path::new("/mod/data");
+        let outputs = vec![texture_output(
+            "diffuse",
+            PathBuf::from("/mod/data/Textures/body_d.dds"),
+        )];
+        assert!(!group_is_base_owned(&outputs, data_root, &[], None, &[]));
     }
 
     #[test]
-    fn base_overwrite_prefix_lets_a_colliding_group_through() {
+    fn base_overwrite_prefix_lets_only_its_colliding_group_through() {
         // The FO76 pipe-weapon (handmade) kit is deliberately allowed to win at
         // the shared FO4 path, so a colliding diffuse must NOT be skipped.
         let tmp = std::env::temp_dir().join("group_base_overwrite_allowed");
@@ -2458,10 +2402,7 @@ mod tests {
             &outputs, &data_root, &targets, None, &allow
         ));
         let _ = fs::remove_dir_all(&tmp);
-    }
 
-    #[test]
-    fn base_overwrite_prefix_does_not_leak_to_a_sibling_kit() {
         // `handmade_hotrod` is a different, FO76-only kit — a prefix match that
         // ignored the trailing slash would wrongly cover it.
         let tmp = std::env::temp_dir().join("group_base_overwrite_sibling");
@@ -2490,16 +2431,6 @@ mod tests {
             &outputs, &data_root, &targets, None, &allow
         ));
         let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn group_is_base_owned_false_without_target_dirs() {
-        let data_root = Path::new("/mod/data");
-        let outputs = vec![texture_output(
-            "diffuse",
-            PathBuf::from("/mod/data/Textures/body_d.dds"),
-        )];
-        assert!(!group_is_base_owned(&outputs, data_root, &[], None, &[]));
     }
 
     #[test]

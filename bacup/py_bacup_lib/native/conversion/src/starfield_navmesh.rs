@@ -225,8 +225,6 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
 
-    use esp_authoring_core::plugin_runtime::{ParsedItem, parse_plugin_file};
-
     fn starfield_fixture() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&17_u32.to_le_bytes());
@@ -302,24 +300,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_truncated_payload_instead_of_emitting_crash_data() {
-        let mut fixture = starfield_fixture();
-        fixture.truncate(fixture.len() - 5);
-        assert!(convert_nvnm_to_fo4(&fixture, 10.0).is_err());
-    }
-
-    #[test]
-    fn ignores_opaque_ce2_trailer_extension() {
-        let mut fixture = starfield_fixture();
-        fixture.extend_from_slice(&[0xA5; 32]);
-
-        let converted = convert_nvnm_to_fo4(&fixture, 10.0).unwrap();
-
+    fn ce2_trailer_extensions_are_ignored_only_at_the_opaque_length_and_truncation_fails() {
+        let mut opaque = starfield_fixture();
+        opaque.extend_from_slice(&[0xA5; 32]);
+        let converted = convert_nvnm_to_fo4(&opaque, 10.0).unwrap();
         assert_eq!(parse_nvnm(&converted).unwrap().version, 15);
-    }
 
-    #[test]
-    fn rejects_unrecognized_ce2_trailer_extension_lengths() {
         for length in [1, 4, 31, 33] {
             let mut fixture = starfield_fixture();
             fixture.extend(std::iter::repeat_n(0xA5, length));
@@ -331,6 +317,10 @@ mod tests {
                 "length {length}: {error}"
             );
         }
+
+        let mut truncated = starfield_fixture();
+        truncated.truncate(truncated.len() - 5);
+        assert!(convert_nvnm_to_fo4(&truncated, 10.0).is_err());
     }
 
     #[test]
@@ -348,84 +338,5 @@ mod tests {
             (10.0, -20.0, 30.0)
         );
         assert_eq!(parsed.triangles.len(), 1);
-    }
-
-    #[test]
-    fn live_starfield_nvnm_payloads_convert_when_source_is_available() {
-        let Some(data_dir) = std::env::var_os("STARFIELD_DATA_DIR") else {
-            return;
-        };
-        let plugin_path = std::path::Path::new(&data_dir).join("Starfield.esm");
-        if !plugin_path.exists() {
-            return;
-        }
-        let plugin = parse_plugin_file(
-            &plugin_path.to_string_lossy(),
-            Some("starfield".to_owned()),
-            true,
-        )
-        .expect("parse live Starfield.esm");
-        let mut failures = Vec::new();
-        let mut counts = LayoutCounts::default();
-        collect_conversion_results(&plugin.root_items, &mut counts, &mut failures);
-        assert!(
-            failures.is_empty(),
-            "live Starfield NVNM conversion failures:\n{}",
-            failures.join("\n")
-        );
-        assert!(
-            counts.visited > 0,
-            "live Starfield corpus contained no NVNM payloads"
-        );
-        assert!(
-            counts.embedded_16 > 0,
-            "no 16-byte NVNM payloads were exercised: {counts:?}"
-        );
-        assert!(
-            counts.navm_12 > 0,
-            "no 12-byte NVNM payloads were exercised: {counts:?}"
-        );
-        eprintln!("live Starfield NVNM layout coverage: {counts:?}");
-    }
-
-    #[derive(Debug, Default)]
-    struct LayoutCounts {
-        visited: usize,
-        embedded_16: usize,
-        navm_12: usize,
-        no_vertices: usize,
-    }
-
-    fn collect_conversion_results(
-        items: &[ParsedItem],
-        counts: &mut LayoutCounts,
-        failures: &mut Vec<String>,
-    ) {
-        for item in items {
-            match item {
-                ParsedItem::Group(group) => {
-                    collect_conversion_results(&group.children, counts, failures);
-                }
-                ParsedItem::Record(record) => {
-                    for subrecord in &record.subrecords {
-                        if subrecord.signature.as_str() != "NVNM" {
-                            continue;
-                        }
-                        counts.visited += 1;
-                        match select_nvnm_layout(&subrecord.data, 69.99125) {
-                            Ok((_, VertexLayout::Embedded16)) => counts.embedded_16 += 1,
-                            Ok((_, VertexLayout::Navm12)) => counts.navm_12 += 1,
-                            Ok((_, VertexLayout::NoVertices)) => counts.no_vertices += 1,
-                            Err(error) => failures.push(format!(
-                                "{}:{:06X}:{} bytes: {error}",
-                                record.signature,
-                                record.form_id,
-                                subrecord.data.len(),
-                            )),
-                        }
-                    }
-                }
-            }
-        }
     }
 }

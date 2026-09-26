@@ -27,7 +27,6 @@ Function MTNMQ_PlayMadiganScene()
         Return
     EndIf
 
-    bMadiganScenePlayed = True
     If !MTN_MQ_Rose_MadiganScene.IsPlaying()
         MTN_MQ_Rose_MadiganScene.Start()
     EndIf

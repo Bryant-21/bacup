@@ -938,21 +938,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn runtime_origin_identity_uses_master_for_dlc_override_form_id() {
-        assert_eq!(
-            source_identity_for_raw(
-                0x0100_1200,
-                "ThePitt.esm",
-                &["Other.esm".to_string(), "Fallout3.esm".to_string()],
-            ),
-            Some(FlattenedRuntimeParent {
-                source_plugin: "Fallout3.esm".to_string(),
-                source_form_id: 0x1200,
-            })
-        );
-    }
-
     fn skyrim_v12_nvnm(parent: u32, interior: bool, linked_navmesh: u32, door_ref: u32) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&12u32.to_le_bytes());
@@ -1024,37 +1009,52 @@ mod tests {
     }
 
     #[test]
-    fn dlc_override_replaces_base_record_at_preserved_id() {
-        let tmp = tempfile::tempdir().unwrap();
-        let base = write_test_plugin_with_masters(
-            tmp.path(),
-            "Base.esm",
-            "fnv",
-            Vec::new(),
-            vec![rec("GLOB", 0x1200, "OldTimeScale")],
-        );
-        let dlc = write_test_plugin_with_masters(
-            tmp.path(),
-            "DLC.esm",
-            "fnv",
-            vec!["Base.esm".to_string()],
-            vec![rec("GLOB", 0x1200, "NewTimeScale")],
-        );
-        let handles = [
-            super::super::load_no_py(base.to_str().unwrap(), Some("fnv")).unwrap(),
-            super::super::load_no_py(dlc.to_str().unwrap(), Some("fnv")).unwrap(),
-        ];
-        let flattened = flatten_lineage(&handles).unwrap();
-        assert_eq!(
-            find_record(&flattened.tree, "NewTimeScale")
-                .unwrap()
-                .form_id,
-            0x1200
-        );
-        assert!(find_record(&flattened.tree, "OldTimeScale").is_none());
-        handles.into_iter().for_each(|handle| {
-            plugin_handle_close_native(handle);
-        });
+    fn dlc_override_replaces_base_record_with_master_runtime_identity() {
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = write_test_plugin_with_masters(
+                tmp.path(),
+                "Base.esm",
+                "fnv",
+                Vec::new(),
+                vec![rec("GLOB", 0x1200, "OldTimeScale")],
+            );
+            let dlc = write_test_plugin_with_masters(
+                tmp.path(),
+                "DLC.esm",
+                "fnv",
+                vec!["Base.esm".to_string()],
+                vec![rec("GLOB", 0x1200, "NewTimeScale")],
+            );
+            let handles = [
+                super::super::load_no_py(base.to_str().unwrap(), Some("fnv")).unwrap(),
+                super::super::load_no_py(dlc.to_str().unwrap(), Some("fnv")).unwrap(),
+            ];
+            let flattened = flatten_lineage(&handles).unwrap();
+            assert_eq!(
+                find_record(&flattened.tree, "NewTimeScale")
+                    .unwrap()
+                    .form_id,
+                0x1200
+            );
+            assert!(find_record(&flattened.tree, "OldTimeScale").is_none());
+            handles.into_iter().for_each(|handle| {
+                plugin_handle_close_native(handle);
+            });
+        }
+        {
+            assert_eq!(
+                source_identity_for_raw(
+                    0x0100_1200,
+                    "ThePitt.esm",
+                    &["Other.esm".to_string(), "Fallout3.esm".to_string()],
+                ),
+                Some(FlattenedRuntimeParent {
+                    source_plugin: "Fallout3.esm".to_string(),
+                    source_form_id: 0x1200,
+                })
+            );
+        }
     }
 
     #[test]
@@ -1292,118 +1292,118 @@ mod tests {
     }
 
     #[test]
-    fn primary_lineage_preserves_vanilla_invalid_high_byte_reference() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut region = rec("REGN", 0x16B8FE, "AudioINCMountain");
-        region.subrecords.push(formid_sub("RDSI", 0x0102_76B2));
-        let primary = write_test_plugin_with_masters(
-            tmp.path(),
-            "FalloutNV.esm",
-            "fnv",
-            Vec::new(),
-            vec![region],
-        );
-        let handle = super::super::load_no_py(primary.to_str().unwrap(), Some("fnv")).unwrap();
-        let flattened = flatten_lineage(&[handle]).unwrap();
-        let region = find_record(&flattened.tree, "AudioINCMountain").unwrap();
-        let rdsi = region
-            .subrecords
-            .iter()
-            .find(|subrecord| subrecord.signature.as_str() == "RDSI")
-            .unwrap();
-        assert_eq!(
-            u32::from_le_bytes(rdsi.data[0..4].try_into().unwrap()),
-            0x0102_76B2
-        );
-        plugin_handle_close_native(handle);
-    }
-
-    #[test]
-    fn primary_lineage_preserves_existing_low_object_ids() {
-        let tmp = tempfile::tempdir().unwrap();
-        let primary = write_test_plugin_with_masters(
-            tmp.path(),
-            "FalloutNV.esm",
-            "fnv",
-            Vec::new(),
-            vec![rec("GLOB", 0x0005EF, "LowVanillaRecord")],
-        );
-        let handle = super::super::load_no_py(primary.to_str().unwrap(), Some("fnv")).unwrap();
-        let flattened = flatten_lineage(&[handle]).unwrap();
-        assert_eq!(
-            find_record(&flattened.tree, "LowVanillaRecord")
-                .unwrap()
-                .form_id,
-            0x0005EF
-        );
-        plugin_handle_close_native(handle);
-    }
-
-    #[test]
-    fn dlc_master_namespace_injection_without_base_record_is_new() {
-        let tmp = tempfile::tempdir().unwrap();
-        let base = write_test_plugin_with_masters(
-            tmp.path(),
-            "FalloutNV.esm",
-            "fnv",
-            Vec::new(),
-            vec![rec("GLOB", 0x1200, "BaseRecord")],
-        );
-        let dlc = write_test_plugin_with_masters(
-            tmp.path(),
-            "LonesomeRoad.esm",
-            "fnv",
-            vec!["FalloutNV.esm".to_string()],
-            vec![rec("AVIF", 0x000005EF, "AVVariable04")],
-        );
-        let handles = [
-            super::super::load_no_py(base.to_str().unwrap(), Some("fnv")).unwrap(),
-            super::super::load_no_py(dlc.to_str().unwrap(), Some("fnv")).unwrap(),
-        ];
-        let flattened = flatten_lineage(&handles).unwrap();
-        assert_eq!(
-            find_record(&flattened.tree, "AVVariable04")
-                .unwrap()
-                .form_id,
-            0x000005EF
-        );
-        handles.into_iter().for_each(|handle| {
+    fn primary_lineage_preserves_invalid_high_byte_and_low_object_ids() {
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut region = rec("REGN", 0x16B8FE, "AudioINCMountain");
+            region.subrecords.push(formid_sub("RDSI", 0x0102_76B2));
+            let primary = write_test_plugin_with_masters(
+                tmp.path(),
+                "FalloutNV.esm",
+                "fnv",
+                Vec::new(),
+                vec![region],
+            );
+            let handle = super::super::load_no_py(primary.to_str().unwrap(), Some("fnv")).unwrap();
+            let flattened = flatten_lineage(&[handle]).unwrap();
+            let region = find_record(&flattened.tree, "AudioINCMountain").unwrap();
+            let rdsi = region
+                .subrecords
+                .iter()
+                .find(|subrecord| subrecord.signature.as_str() == "RDSI")
+                .unwrap();
+            assert_eq!(
+                u32::from_le_bytes(rdsi.data[0..4].try_into().unwrap()),
+                0x0102_76B2
+            );
             plugin_handle_close_native(handle);
-        });
+        }
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let primary = write_test_plugin_with_masters(
+                tmp.path(),
+                "FalloutNV.esm",
+                "fnv",
+                Vec::new(),
+                vec![rec("GLOB", 0x0005EF, "LowVanillaRecord")],
+            );
+            let handle = super::super::load_no_py(primary.to_str().unwrap(), Some("fnv")).unwrap();
+            let flattened = flatten_lineage(&[handle]).unwrap();
+            assert_eq!(
+                find_record(&flattened.tree, "LowVanillaRecord")
+                    .unwrap()
+                    .form_id,
+                0x0005EF
+            );
+            plugin_handle_close_native(handle);
+        }
     }
 
     #[test]
-    fn dlc_record_header_above_declared_master_count_is_owned() {
-        let tmp = tempfile::tempdir().unwrap();
-        let base = write_test_plugin_with_masters(
-            tmp.path(),
-            "FalloutNV.esm",
-            "fnv",
-            Vec::new(),
-            vec![rec("GLOB", 0x1200, "BaseRecord")],
-        );
-        let dlc = write_test_plugin_with_masters(
-            tmp.path(),
-            "GunRunnersArsenal.esm",
-            "fnv",
-            vec!["FalloutNV.esm".to_string()],
-            vec![rec("REFR", 0x02000801, "GRAOwnedRef")],
-        );
-        let handles = [
-            super::super::load_no_py(base.to_str().unwrap(), Some("fnv")).unwrap(),
-            super::super::load_no_py(dlc.to_str().unwrap(), Some("fnv")).unwrap(),
-        ];
-        let flattened = flatten_lineage(&handles).unwrap();
-        let output_form_id = find_record(&flattened.tree, "GRAOwnedRef").unwrap().form_id;
-        assert_eq!(output_form_id, 0x00000801);
-        let origin = flattened
-            .runtime_origins
-            .get(&output_form_id)
-            .expect("plugin-owned runtime record must keep provenance");
-        assert_eq!(origin.source_plugin, "GunRunnersArsenal.esm");
-        assert_eq!(origin.source_form_id, 0x00000801);
-        handles.into_iter().for_each(|handle| {
-            plugin_handle_close_native(handle);
-        });
+    fn dlc_namespace_injection_and_high_header_records_are_owned() {
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = write_test_plugin_with_masters(
+                tmp.path(),
+                "FalloutNV.esm",
+                "fnv",
+                Vec::new(),
+                vec![rec("GLOB", 0x1200, "BaseRecord")],
+            );
+            let dlc = write_test_plugin_with_masters(
+                tmp.path(),
+                "LonesomeRoad.esm",
+                "fnv",
+                vec!["FalloutNV.esm".to_string()],
+                vec![rec("AVIF", 0x000005EF, "AVVariable04")],
+            );
+            let handles = [
+                super::super::load_no_py(base.to_str().unwrap(), Some("fnv")).unwrap(),
+                super::super::load_no_py(dlc.to_str().unwrap(), Some("fnv")).unwrap(),
+            ];
+            let flattened = flatten_lineage(&handles).unwrap();
+            assert_eq!(
+                find_record(&flattened.tree, "AVVariable04")
+                    .unwrap()
+                    .form_id,
+                0x000005EF
+            );
+            handles.into_iter().for_each(|handle| {
+                plugin_handle_close_native(handle);
+            });
+        }
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = write_test_plugin_with_masters(
+                tmp.path(),
+                "FalloutNV.esm",
+                "fnv",
+                Vec::new(),
+                vec![rec("GLOB", 0x1200, "BaseRecord")],
+            );
+            let dlc = write_test_plugin_with_masters(
+                tmp.path(),
+                "GunRunnersArsenal.esm",
+                "fnv",
+                vec!["FalloutNV.esm".to_string()],
+                vec![rec("REFR", 0x02000801, "GRAOwnedRef")],
+            );
+            let handles = [
+                super::super::load_no_py(base.to_str().unwrap(), Some("fnv")).unwrap(),
+                super::super::load_no_py(dlc.to_str().unwrap(), Some("fnv")).unwrap(),
+            ];
+            let flattened = flatten_lineage(&handles).unwrap();
+            let output_form_id = find_record(&flattened.tree, "GRAOwnedRef").unwrap().form_id;
+            assert_eq!(output_form_id, 0x00000801);
+            let origin = flattened
+                .runtime_origins
+                .get(&output_form_id)
+                .expect("plugin-owned runtime record must keep provenance");
+            assert_eq!(origin.source_plugin, "GunRunnersArsenal.esm");
+            assert_eq!(origin.source_form_id, 0x00000801);
+            handles.into_iter().for_each(|handle| {
+                plugin_handle_close_native(handle);
+            });
+        }
     }
 }

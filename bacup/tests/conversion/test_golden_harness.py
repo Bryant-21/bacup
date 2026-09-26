@@ -12,6 +12,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[3]
 
 
@@ -30,47 +32,24 @@ _is_excluded = golden._is_excluded
 _is_set_only = golden._is_set_only
 
 
-def test_identical_trees_no_problems():
-    tree = {"data/x.esp": "aaa", "data/Meshes/a.nif": "bbb"}
-    assert diff_trees(dict(tree), dict(tree)) == []
-
-
-def test_nif_different_hash_same_path_ignored():
-    g = {"data/Meshes/a.nif": "hash1"}
-    a = {"data/Meshes/a.nif": "hash2"}
-    assert diff_trees(g, a) == []
-
-
-def test_nif_missing_in_actual_is_problem():
-    g = {"data/Meshes/a.nif": "hash1"}
-    a: dict[str, str] = {}
-    problems = diff_trees(g, a)
-    assert problems == ["data/Meshes/a.nif: missing in actual"]
-
-
-def test_deterministic_type_hash_mismatch_is_problem():
-    for name in ("data/x.dds", "data/x.esp", "data/x.yaml"):
-        g = {name: "hash1"}
-        a = {name: "hash2"}
-        assert diff_trees(g, a) == [f"{name}: hash mismatch"]
-
-
-def test_case_only_path_difference_no_problem():
-    g = {"Meshes/Foo/Bar.dds": "h"}
-    a = {"meshes/foo/bar.dds": "h"}
-    assert diff_trees(g, a) == []
-
-
-def test_ba2_bytes_differ_no_problem_but_missing_is_problem():
-    g = {"data/Main.ba2": "h1"}
-    assert diff_trees(g, {"data/Main.ba2": "h2"}) == []
-    assert diff_trees(g, {}) == ["data/Main.ba2: missing in actual"]
-
-
-def test_unexpected_in_actual_is_problem():
-    g: dict[str, str] = {}
-    a = {"data/x.dds": "h"}
-    assert diff_trees(g, a) == ["data/x.dds: unexpected in actual"]
+@pytest.mark.parametrize(
+    "golden_tree,actual_tree,expected",
+    [
+        ({"data/x.esp": "aaa", "data/Meshes/a.nif": "bbb"},
+         {"data/x.esp": "aaa", "data/Meshes/a.nif": "bbb"}, []),
+        ({"data/Meshes/a.nif": "hash1"}, {"data/Meshes/a.nif": "hash2"}, []),
+        ({"data/Main.ba2": "h1"}, {"data/Main.ba2": "h2"}, []),
+        ({"Meshes/Foo/Bar.dds": "h"}, {"meshes/foo/bar.dds": "h"}, []),
+        ({"data/Meshes/a.nif": "hash1"}, {}, ["data/Meshes/a.nif: missing in actual"]),
+        ({"data/Main.ba2": "h1"}, {}, ["data/Main.ba2: missing in actual"]),
+        ({"data/x.dds": "hash1"}, {"data/x.dds": "hash2"}, ["data/x.dds: hash mismatch"]),
+        ({"data/x.esp": "hash1"}, {"data/x.esp": "hash2"}, ["data/x.esp: hash mismatch"]),
+        ({"data/x.yaml": "hash1"}, {"data/x.yaml": "hash2"}, ["data/x.yaml: hash mismatch"]),
+        ({}, {"data/x.dds": "h"}, ["data/x.dds: unexpected in actual"]),
+    ],
+)
+def test_diff_trees(golden_tree, actual_tree, expected):
+    assert diff_trees(golden_tree, actual_tree) == expected
 
 
 def test_is_set_only():

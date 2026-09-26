@@ -11,6 +11,8 @@ use super::model_paths;
 use crate::record::Record;
 use crate::translator::pair_hook::{HookError, HookResult, PairCtx, PairHook};
 
+#[cfg(test)]
+pub(crate) use runtime_magic::validate_magic_donor;
 #[allow(unused_imports)]
 pub(crate) use runtime_magic::{
     MagicArchetype, MagicCast, MagicComponent, MagicComponentRequirements, MagicContractError,
@@ -18,7 +20,7 @@ pub(crate) use runtime_magic::{
     MagicLinkedRecordRequirement, MagicLinkedRole, MagicLoweringPlan, MagicLoweringReceipt,
     MagicSupport, MagicUnsupportedReason, MagicVmadIntent, classify_magic_component,
     lower_magic_record_for_fo4, lower_supported_magic_record, magic_donor_identity,
-    normalize_standalone_vmad_for_fo4, strip_source_vmad, validate_magic_donor,
+    normalize_standalone_vmad_for_fo4, strip_source_vmad,
 };
 pub(crate) use weather::{
     normalize_skyrim_weather, rewrite_skyrim_weather_master_refs,

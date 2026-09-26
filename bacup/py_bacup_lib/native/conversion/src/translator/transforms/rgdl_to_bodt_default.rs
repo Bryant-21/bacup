@@ -93,10 +93,7 @@ mod tests {
             (flags_sym, FieldValue::List(vec![])),
         ]);
         assert_eq!(value, expected);
-    }
 
-    #[test]
-    fn discards_input_bytes_value() {
         use smallvec::SmallVec;
         let mut interner = StringInterner::new();
         let mut value = FieldValue::Bytes(SmallVec::from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]));
@@ -109,10 +106,7 @@ mod tests {
 
         // Must be a Struct, not Bytes.
         assert!(matches!(value, FieldValue::Struct(_)));
-    }
 
-    #[test]
-    fn discards_null_value_input() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::None;
         let config = serde_json::Value::Null;
@@ -123,10 +117,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(value, FieldValue::Struct(_)));
-    }
 
-    #[test]
-    fn first_person_flags_contains_33body() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::None;
         let config = serde_json::Value::Null;
@@ -146,10 +137,7 @@ mod tests {
         } else {
             panic!("expected FieldValue::Struct");
         }
-    }
 
-    #[test]
-    fn flags_list_is_empty() {
         let mut interner = StringInterner::new();
         let mut value = FieldValue::None;
         let config = serde_json::Value::Null;

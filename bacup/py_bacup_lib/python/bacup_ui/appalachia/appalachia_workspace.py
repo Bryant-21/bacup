@@ -17,6 +17,7 @@ from creation_lib.ui.widgets.modern import (
 _log = logging.getLogger("toolkit.appalachia")
 _NS = "##appalachia"
 _CHANGELOG_POPUP = f"Changelog{_NS}"
+_KNOWN_ISSUES_POPUP = f"Known Issues{_NS}"
 _SETUP_CONFIRM_POPUP = f"Re-run Setup{_NS}"
 
 APP_NAME = "B.A.C.U.P."
@@ -45,6 +46,7 @@ class AppalachiaWorkspace(BaseWorkspace):
             else "appalachia"
         )
         self._changelog_pending = False
+        self._known_issues_pending = False
         self._setup_confirm_pending = False
         self._navigation_state = InteractionState()
         self._music_controls_height = 0.0
@@ -181,6 +183,8 @@ class AppalachiaWorkspace(BaseWorkspace):
         if imgui.begin_menu("Help"):
             if imgui.menu_item("Changelog...", "", False)[0]:
                 self._changelog_pending = True
+            if imgui.menu_item("Known Issues...", "", False)[0]:
+                self._known_issues_pending = True
             imgui.end_menu()
         if imgui.begin_menu("Setup"):
             if imgui.menu_item("Re-run Setup / Re-extract Game Data...", "", False)[0]:
@@ -202,6 +206,7 @@ class AppalachiaWorkspace(BaseWorkspace):
                 self._runner = None
                 self._runner_owner = None
         self._draw_changelog_popup()
+        self._draw_known_issues_popup()
         self._draw_setup_confirm_popup()
 
     def _changelog_entries(self) -> list[tuple[str, bool, tuple[str, ...]]]:
@@ -251,6 +256,44 @@ class AppalachiaWorkspace(BaseWorkspace):
                         imgui.pop_text_wrap_pos()
                     imgui.unindent()
                     imgui.dummy(imgui.ImVec2(0, 4))
+            imgui.end_child()
+            if imgui.button("Close"):
+                imgui.close_current_popup()
+            imgui.end_popup()
+
+    def _known_issues(self) -> tuple[str, ...]:
+        from bacup_lib.upgrade_manifest import (
+            bundled_upgrade_manifest_path,
+            load_upgrade_manifest,
+        )
+
+        try:
+            manifest = load_upgrade_manifest(bundled_upgrade_manifest_path())
+        except Exception:
+            return ()
+        return manifest.known_issues_for_conversion(self._active_pair_id())
+
+    def _draw_known_issues_popup(self) -> None:
+        if self._known_issues_pending:
+            imgui.open_popup(_KNOWN_ISSUES_POPUP)
+            self._known_issues_pending = False
+        prepare_dialog(640, 520)
+        opened, _ = imgui.begin_popup_modal(_KNOWN_ISSUES_POPUP)
+        if opened:
+            heading(f"Known Issues — {self._active_project_label()}")
+            imgui.separator()
+            issues = self._known_issues()
+            imgui.begin_child(
+                f"known_issues_body{_NS}",
+                imgui.ImVec2(0, -imgui.get_frame_height_with_spacing()),
+            )
+            if not issues:
+                imgui.text_disabled("No known issues.")
+            else:
+                for issue in issues:
+                    imgui.push_text_wrap_pos(0)
+                    imgui.bullet_text(issue)
+                    imgui.pop_text_wrap_pos()
             imgui.end_child()
             if imgui.button("Close"):
                 imgui.close_current_popup()

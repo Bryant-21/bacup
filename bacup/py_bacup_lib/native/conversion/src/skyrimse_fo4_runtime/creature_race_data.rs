@@ -1616,52 +1616,166 @@ mod tests {
     }
 
     #[test]
-    fn raw_skyrim_race_data_decodes_the_live_128_byte_layout() {
-        let interner = StringInterner::new();
-        let mut record = source_race(&interner, 1, 0, 0);
-        let mut bytes = vec![0_u8; 128];
-        bytes[16..20].copy_from_slice(&1.25_f32.to_le_bytes());
-        bytes[20..24].copy_from_slice(&0.75_f32.to_le_bytes());
-        bytes[24..28].copy_from_slice(&0.4_f32.to_le_bytes());
-        bytes[28..32].copy_from_slice(&0.6_f32.to_le_bytes());
-        bytes[32..36].copy_from_slice(&FLAG_WALKS.to_le_bytes());
-        bytes[56..60].copy_from_slice(&240.0_f32.to_le_bytes());
-        bytes[60..64].copy_from_slice(&480.0_f32.to_le_bytes());
-        bytes[76..80].copy_from_slice(&0.2_f32.to_le_bytes());
-        bytes[96..100].copy_from_slice(&12.0_f32.to_le_bytes());
-        bytes[100..104].copy_from_slice(&0.68_f32.to_le_bytes());
-        bytes[104..108].copy_from_slice(&3_i32.to_le_bytes());
-        bytes[108..112].copy_from_slice(&30.0_f32.to_le_bytes());
-        bytes[116..120].copy_from_slice(&180.0_f32.to_le_bytes());
-        bytes[120..124].copy_from_slice(&15.0_f32.to_le_bytes());
-        bytes[124..128].copy_from_slice(&FLAG_2_NON_HOSTILE.to_le_bytes());
-        record
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "DATA")
-            .unwrap()
-            .value = FieldValue::Bytes(smallvec::SmallVec::from_vec(bytes));
+    fn raw_race_data_decodes_layout_unarmed_flags_and_weights() {
+        {
+            let interner = StringInterner::new();
+            let mut record = source_race(&interner, 1, 0, 0);
+            let mut bytes = vec![0_u8; 128];
+            bytes[16..20].copy_from_slice(&1.25_f32.to_le_bytes());
+            bytes[20..24].copy_from_slice(&0.75_f32.to_le_bytes());
+            bytes[24..28].copy_from_slice(&0.4_f32.to_le_bytes());
+            bytes[28..32].copy_from_slice(&0.6_f32.to_le_bytes());
+            bytes[32..36].copy_from_slice(&FLAG_WALKS.to_le_bytes());
+            bytes[56..60].copy_from_slice(&240.0_f32.to_le_bytes());
+            bytes[60..64].copy_from_slice(&480.0_f32.to_le_bytes());
+            bytes[76..80].copy_from_slice(&0.2_f32.to_le_bytes());
+            bytes[96..100].copy_from_slice(&12.0_f32.to_le_bytes());
+            bytes[100..104].copy_from_slice(&0.68_f32.to_le_bytes());
+            bytes[104..108].copy_from_slice(&3_i32.to_le_bytes());
+            bytes[108..112].copy_from_slice(&30.0_f32.to_le_bytes());
+            bytes[116..120].copy_from_slice(&180.0_f32.to_le_bytes());
+            bytes[120..124].copy_from_slice(&15.0_f32.to_le_bytes());
+            bytes[124..128].copy_from_slice(&FLAG_2_NON_HOSTILE.to_le_bytes());
+            record
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.as_str() == "DATA")
+                .unwrap()
+                .value = FieldValue::Bytes(smallvec::SmallVec::from_vec(bytes));
 
-        let data = parsed_race_data(&record, &interner).unwrap();
-        assert_eq!(
-            data_field(Some(&data), "male_height", &interner).and_then(field_f32),
-            Some(1.25)
-        );
-        assert_eq!(data_u32(Some(&data), "flags", &interner), Some(FLAG_WALKS));
-        assert_eq!(
-            data_i32(
-                Some(&data),
-                "body_biped_object",
-                CreatureRaceDataInputField::BodyBipedObject,
+            let data = parsed_race_data(&record, &interner).unwrap();
+            assert_eq!(
+                data_field(Some(&data), "male_height", &interner).and_then(field_f32),
+                Some(1.25)
+            );
+            assert_eq!(data_u32(Some(&data), "flags", &interner), Some(FLAG_WALKS));
+            assert_eq!(
+                data_i32(
+                    Some(&data),
+                    "body_biped_object",
+                    CreatureRaceDataInputField::BodyBipedObject,
+                    &interner,
+                    &mut Vec::new(),
+                ),
+                Some(3)
+            );
+            assert_eq!(
+                data_u32(Some(&data), "flags_2", &interner),
+                Some(FLAG_2_NON_HOSTILE)
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let project = "Actors\\Wolf\\WolfProject.hkx";
+            let catalog = CreatureCorpusPlan {
+                races: vec![race_plan(&interner, 1, project)],
+                ..Default::default()
+            };
+            let mut record = source_race(&interner, 1, FLAG_WALKS, 0);
+            let damage_field = interner.intern("unarmed_damage");
+            let fields = record
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.as_str() == "DATA")
+                .and_then(|field| match &mut field.value {
+                    FieldValue::Struct(fields) => Some(fields),
+                    _ => None,
+                })
+                .expect("RACE DATA");
+            let damage = fields
+                .iter_mut()
+                .find(|(name, _)| *name == damage_field)
+                .expect("unarmed damage");
+            damage.1 = FieldValue::Float(10.5);
+
+            let plan = build_creature_race_data_evidence(
+                &catalog,
+                &[record],
+                &[measured(
+                    project,
+                    80.0,
+                    MovementArchitecture::Grounded,
+                    ControllerArchitecture::Quadruped,
+                )],
+                &policy(),
                 &interner,
-                &mut Vec::new(),
-            ),
-            Some(3)
-        );
-        assert_eq!(
-            data_u32(Some(&data), "flags_2", &interner),
-            Some(FLAG_2_NON_HOSTILE)
-        );
+            );
+
+            assert_eq!(
+                plan.races[0].unarmed_data,
+                Some(CreatureRaceUnarmedDataEvidence {
+                    damage_bits: 10.5_f32.to_bits(),
+                    reach_bits: 0.68_f32.to_bits(),
+                })
+            );
+            assert_eq!(plan.races[0].invalid_fields, Vec::new());
+            assert_eq!(plan.summary.complete_races, 1);
+        }
+        {
+            assert_eq!(
+                source_movement_architectures(FLAG_WALKS | FLAG_FLIES),
+                vec![
+                    MovementArchitecture::Grounded,
+                    MovementArchitecture::Flying,
+                    MovementArchitecture::GroundedFlying,
+                ]
+            );
+            assert_eq!(
+                source_movement_architectures(FLAG_WALKS | FLAG_SWIMS),
+                vec![
+                    MovementArchitecture::Grounded,
+                    MovementArchitecture::Swimming,
+                    MovementArchitecture::GroundedSwimming,
+                ]
+            );
+        }
+        {
+            let interner = StringInterner::new();
+            let project = "Actors\\Giant\\GiantProject.hkx";
+            let catalog = CreatureCorpusPlan {
+                races: vec![race_plan(&interner, 1, project)],
+                ..Default::default()
+            };
+            let mut record = source_race(&interner, 1, FLAG_WALKS, 0);
+            let male_weight = interner.intern("male_weight");
+            let fields = record
+                .fields
+                .iter_mut()
+                .find(|field| field.sig.as_str() == "DATA")
+                .and_then(|field| match &mut field.value {
+                    FieldValue::Struct(fields) => Some(fields),
+                    _ => None,
+                })
+                .expect("RACE DATA");
+            fields
+                .iter_mut()
+                .find(|(name, _)| *name == male_weight)
+                .expect("male weight")
+                .1 = FieldValue::Float(1.1);
+
+            let plan = build_creature_race_data_evidence(
+                &catalog,
+                &[record],
+                &[measured(
+                    project,
+                    180.0,
+                    MovementArchitecture::Grounded,
+                    ControllerArchitecture::Standard,
+                )],
+                &policy(),
+                &interner,
+            );
+
+            assert_eq!(plan.summary.complete_races, 1);
+            assert_eq!(
+                plan.races[0]
+                    .evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.default_weights.as_ref())
+                    .map(|weights| weights.male),
+                Some([0.0, 0.0, 1.0])
+            );
+        }
     }
 
     fn measured(
@@ -1805,242 +1919,174 @@ mod tests {
     }
 
     #[test]
-    fn unarmed_data_preserves_fractional_source_damage() {
-        let interner = StringInterner::new();
-        let project = "Actors\\Wolf\\WolfProject.hkx";
-        let catalog = CreatureCorpusPlan {
-            races: vec![race_plan(&interner, 1, project)],
-            ..Default::default()
-        };
-        let mut record = source_race(&interner, 1, FLAG_WALKS, 0);
-        let damage_field = interner.intern("unarmed_damage");
-        let fields = record
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "DATA")
-            .and_then(|field| match &mut field.value {
-                FieldValue::Struct(fields) => Some(fields),
-                _ => None,
-            })
-            .expect("RACE DATA");
-        let damage = fields
-            .iter_mut()
-            .find(|(name, _)| *name == damage_field)
-            .expect("unarmed damage");
-        damage.1 = FieldValue::Float(10.5);
+    fn gender_project_variants_envelope_without_blocking_primary() {
+        {
+            let interner = StringInterner::new();
+            let primary = "Actors\\Dragon\\DragonProject.hkx";
+            let fallback = "Actors\\Character\\DefaultMale.hkx";
+            let mut race = race_plan(&interner, 1, primary);
+            race.project_paths.push(fallback.to_string());
+            let catalog = CreatureCorpusPlan {
+                races: vec![race],
+                ..Default::default()
+            };
 
-        let plan = build_creature_race_data_evidence(
-            &catalog,
-            &[record],
-            &[measured(
+            let plan = build_creature_race_data_evidence(
+                &catalog,
+                &[source_race(&interner, 1, FLAG_WALKS | FLAG_FLIES, 0)],
+                &[measured(
+                    primary,
+                    300.0,
+                    MovementArchitecture::GroundedFlying,
+                    ControllerArchitecture::Standard,
+                )],
+                &policy(),
+                &interner,
+            );
+
+            assert_eq!(plan.summary.complete_races, 1);
+            assert_eq!(plan.races[0].missing_fields, Vec::new());
+            assert_eq!(plan.races[0].invalid_fields, Vec::new());
+        }
+        {
+            let interner = StringInterner::new();
+            let male_project = "Actors\\Dragon\\DragonProject.hkx";
+            let female_project = "Actors\\Character\\DefaultMale.hkx";
+            let mut race = race_plan(&interner, 1, male_project);
+            race.project_paths.push(female_project.to_string());
+            let catalog = CreatureCorpusPlan {
+                races: vec![race],
+                ..Default::default()
+            };
+            let source = source_race(&interner, 1, FLAG_FLIES | FLAG_WALKS, 0);
+            let male = measured(
+                male_project,
+                300.0,
+                MovementArchitecture::Flying,
+                ControllerArchitecture::Standard,
+            );
+            let mut female = measured(
+                female_project,
+                240.0,
+                MovementArchitecture::Flying,
+                ControllerArchitecture::Standard,
+            );
+            female.max_linear_speed = Some(150.0);
+
+            let plan = build_creature_race_data_evidence(
+                &catalog,
+                &[source],
+                &[male, female],
+                &policy(),
+                &interner,
+            );
+
+            assert_eq!(plan.summary.complete_races, 1);
+            assert_eq!(plan.summary.invalid_races, 0);
+            assert_eq!(plan.races[0].project_paths.len(), 2);
+            assert_eq!(
+                plan.races[0]
+                    .evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.movement.as_ref())
+                    .and_then(|movement| movement.linear.as_ref())
+                    .map(|linear| linear.max_speed),
+                Some(150.0)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_invalid_and_inferred_inputs_are_reported_never_defaulted() {
+        {
+            let interner = StringInterner::new();
+            let project = "Actors\\Wolf\\WolfProject.hkx";
+            let catalog = CreatureCorpusPlan {
+                races: vec![race_plan(&interner, 1, project)],
+                ..Default::default()
+            };
+            let record = source_race(&interner, 1, FLAG_WALKS, 0);
+            let mut evidence = measured(
                 project,
                 80.0,
                 MovementArchitecture::Grounded,
                 ControllerArchitecture::Quadruped,
-            )],
-            &policy(),
-            &interner,
-        );
+            );
+            evidence.body_bounds = None;
+            evidence.capsule = None;
+            evidence.xp_value = None;
+            evidence.max_linear_speed = None;
+            evidence.pitch_limit_degrees = None;
 
-        assert_eq!(
-            plan.races[0].unarmed_data,
-            Some(CreatureRaceUnarmedDataEvidence {
-                damage_bits: 10.5_f32.to_bits(),
-                reach_bits: 0.68_f32.to_bits(),
-            })
-        );
-        assert_eq!(plan.races[0].invalid_fields, Vec::new());
-        assert_eq!(plan.summary.complete_races, 1);
-    }
+            let plan = build_creature_race_data_evidence(
+                &catalog,
+                &[record],
+                &[evidence],
+                &policy(),
+                &interner,
+            );
 
-    #[test]
-    fn source_movement_flags_include_hybrid_architectures() {
-        assert_eq!(
-            source_movement_architectures(FLAG_WALKS | FLAG_FLIES),
-            vec![
-                MovementArchitecture::Grounded,
-                MovementArchitecture::Flying,
-                MovementArchitecture::GroundedFlying,
-            ]
-        );
-        assert_eq!(
-            source_movement_architectures(FLAG_WALKS | FLAG_SWIMS),
-            vec![
-                MovementArchitecture::Grounded,
-                MovementArchitecture::Swimming,
-                MovementArchitecture::GroundedSwimming,
-            ]
-        );
-    }
+            assert_eq!(plan.summary.missing_races, 1);
+            assert_eq!(
+                plan.races[0].missing_fields,
+                vec![
+                    CreatureRaceDataInputField::BodyBounds,
+                    CreatureRaceDataInputField::ControllerCapsule,
+                    CreatureRaceDataInputField::MaxLinearSpeed,
+                    CreatureRaceDataInputField::PitchLimit,
+                    CreatureRaceDataInputField::XpValue,
+                ]
+            );
+            assert_eq!(plan.races[0].invalid_fields, Vec::new());
+        }
+        {
+            let source_root = tempfile::tempdir().unwrap();
+            for relative in ["Actors\\Test\\Skeleton.nif", "Actors\\Test\\Body.nif"] {
+                let path = relative
+                    .split(['/', '\\'])
+                    .fold(source_root.path().to_path_buf(), |path, part| {
+                        path.join(part)
+                    });
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                nif_core_native::model::NifFile::new("skyrimse")
+                    .save(Some(path))
+                    .unwrap();
+            }
+            let paths = CreatureFamilySourcePaths {
+                project_paths: vec!["Actors\\Test\\TestProject.hkx".to_string()],
+                character_paths: vec!["..\\Characters\\Test.hkx".to_string()],
+                skeleton_paths: vec!["Actors\\Test\\Skeleton.nif".to_string()],
+                body_paths: vec!["Actors\\Test\\Body.nif".to_string()],
+            };
+            let semantics = CreatureFamilyRuntimeSemantics {
+                up_axis: MeasurementAxis::Z,
+                controller_architecture: Some(ControllerArchitecture::Standard),
+                geometry_scale_to_fo4: Some(1.0),
+                movement_architecture: Some(MovementArchitecture::Grounded),
+                max_linear_speed: Some(100.0),
+                max_yaw_speed_degrees_per_second: Some(90.0),
+                pitch_limit_degrees: Some(45.0),
+                roll_limit_degrees: Some(20.0),
+                use_large_actor_pathing: Some(false),
+                use_subsegmented_damage: Some(false),
+                xp_value: Some(10),
+            };
 
-    #[test]
-    fn source_default_weights_saturate_to_fo4_morph_endpoints() {
-        let interner = StringInterner::new();
-        let project = "Actors\\Giant\\GiantProject.hkx";
-        let catalog = CreatureCorpusPlan {
-            races: vec![race_plan(&interner, 1, project)],
-            ..Default::default()
-        };
-        let mut record = source_race(&interner, 1, FLAG_WALKS, 0);
-        let male_weight = interner.intern("male_weight");
-        let fields = record
-            .fields
-            .iter_mut()
-            .find(|field| field.sig.as_str() == "DATA")
-            .and_then(|field| match &mut field.value {
-                FieldValue::Struct(fields) => Some(fields),
-                _ => None,
-            })
-            .expect("RACE DATA");
-        fields
-            .iter_mut()
-            .find(|(name, _)| *name == male_weight)
-            .expect("male weight")
-            .1 = FieldValue::Float(1.1);
+            let result = load_creature_family_evidence(source_root.path(), &paths, &semantics);
 
-        let plan = build_creature_race_data_evidence(
-            &catalog,
-            &[record],
-            &[measured(
-                project,
-                180.0,
-                MovementArchitecture::Grounded,
-                ControllerArchitecture::Standard,
-            )],
-            &policy(),
-            &interner,
-        );
-
-        assert_eq!(plan.summary.complete_races, 1);
-        assert_eq!(
-            plan.races[0]
-                .evidence
-                .as_ref()
-                .and_then(|evidence| evidence.default_weights.as_ref())
-                .map(|weights| weights.male),
-            Some([0.0, 0.0, 1.0])
-        );
-    }
-
-    #[test]
-    fn secondary_gender_project_without_family_evidence_does_not_block_primary() {
-        let interner = StringInterner::new();
-        let primary = "Actors\\Dragon\\DragonProject.hkx";
-        let fallback = "Actors\\Character\\DefaultMale.hkx";
-        let mut race = race_plan(&interner, 1, primary);
-        race.project_paths.push(fallback.to_string());
-        let catalog = CreatureCorpusPlan {
-            races: vec![race],
-            ..Default::default()
-        };
-
-        let plan = build_creature_race_data_evidence(
-            &catalog,
-            &[source_race(&interner, 1, FLAG_WALKS | FLAG_FLIES, 0)],
-            &[measured(
-                primary,
-                300.0,
-                MovementArchitecture::GroundedFlying,
-                ControllerArchitecture::Standard,
-            )],
-            &policy(),
-            &interner,
-        );
-
-        assert_eq!(plan.summary.complete_races, 1);
-        assert_eq!(plan.races[0].missing_fields, Vec::new());
-        assert_eq!(plan.races[0].invalid_fields, Vec::new());
-    }
-
-    #[test]
-    fn missing_and_invalid_inputs_are_ordered_and_never_defaulted() {
-        let interner = StringInterner::new();
-        let project = "Actors\\Wolf\\WolfProject.hkx";
-        let catalog = CreatureCorpusPlan {
-            races: vec![race_plan(&interner, 1, project)],
-            ..Default::default()
-        };
-        let record = source_race(&interner, 1, FLAG_WALKS, 0);
-        let mut evidence = measured(
-            project,
-            80.0,
-            MovementArchitecture::Grounded,
-            ControllerArchitecture::Quadruped,
-        );
-        evidence.body_bounds = None;
-        evidence.capsule = None;
-        evidence.xp_value = None;
-        evidence.max_linear_speed = None;
-        evidence.pitch_limit_degrees = None;
-
-        let plan = build_creature_race_data_evidence(
-            &catalog,
-            &[record],
-            &[evidence],
-            &policy(),
-            &interner,
-        );
-
-        assert_eq!(plan.summary.missing_races, 1);
-        assert_eq!(
-            plan.races[0].missing_fields,
-            vec![
-                CreatureRaceDataInputField::BodyBounds,
-                CreatureRaceDataInputField::ControllerCapsule,
-                CreatureRaceDataInputField::MaxLinearSpeed,
-                CreatureRaceDataInputField::PitchLimit,
-                CreatureRaceDataInputField::XpValue,
-            ]
-        );
-        assert_eq!(plan.races[0].invalid_fields, Vec::new());
-    }
-
-    #[test]
-    fn gender_project_variants_are_enveloped_without_rejecting_the_race() {
-        let interner = StringInterner::new();
-        let male_project = "Actors\\Dragon\\DragonProject.hkx";
-        let female_project = "Actors\\Character\\DefaultMale.hkx";
-        let mut race = race_plan(&interner, 1, male_project);
-        race.project_paths.push(female_project.to_string());
-        let catalog = CreatureCorpusPlan {
-            races: vec![race],
-            ..Default::default()
-        };
-        let source = source_race(&interner, 1, FLAG_FLIES | FLAG_WALKS, 0);
-        let male = measured(
-            male_project,
-            300.0,
-            MovementArchitecture::Flying,
-            ControllerArchitecture::Standard,
-        );
-        let mut female = measured(
-            female_project,
-            240.0,
-            MovementArchitecture::Flying,
-            ControllerArchitecture::Standard,
-        );
-        female.max_linear_speed = Some(150.0);
-
-        let plan = build_creature_race_data_evidence(
-            &catalog,
-            &[source],
-            &[male, female],
-            &policy(),
-            &interner,
-        );
-
-        assert_eq!(plan.summary.complete_races, 1);
-        assert_eq!(plan.summary.invalid_races, 0);
-        assert_eq!(plan.races[0].project_paths.len(), 2);
-        assert_eq!(
-            plan.races[0]
-                .evidence
-                .as_ref()
-                .and_then(|evidence| evidence.movement.as_ref())
-                .and_then(|movement| movement.linear.as_ref())
-                .map(|linear| linear.max_speed),
-            Some(150.0)
-        );
+            assert!(result.issues.iter().any(|issue| matches!(
+                issue,
+                CreatureRaceDataLoaderIssue::UnsafeSourcePath { .. }
+            )));
+            for expected in ["Actors\\Test\\Body.nif", "Actors\\Test\\Skeleton.nif"] {
+                assert!(result.issues.iter().any(|issue| matches!(
+                    issue,
+                    CreatureRaceDataLoaderIssue::ReadFailed { path, .. } if path == expected
+                )));
+            }
+            assert_eq!(result.evidence.body_bounds, None);
+            assert_eq!(result.evidence.skeleton_bounds, None);
+        }
     }
 
     #[test]
@@ -2093,58 +2139,6 @@ mod tests {
     }
 
     #[test]
-    fn loader_rejects_inferred_paths_and_reports_invalid_nif_inputs() {
-        let source_root = tempfile::tempdir().unwrap();
-        for relative in ["Actors\\Test\\Skeleton.nif", "Actors\\Test\\Body.nif"] {
-            let path = relative
-                .split(['/', '\\'])
-                .fold(source_root.path().to_path_buf(), |path, part| {
-                    path.join(part)
-                });
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            nif_core_native::model::NifFile::new("skyrimse")
-                .save(Some(path))
-                .unwrap();
-        }
-        let paths = CreatureFamilySourcePaths {
-            project_paths: vec!["Actors\\Test\\TestProject.hkx".to_string()],
-            character_paths: vec!["..\\Characters\\Test.hkx".to_string()],
-            skeleton_paths: vec!["Actors\\Test\\Skeleton.nif".to_string()],
-            body_paths: vec!["Actors\\Test\\Body.nif".to_string()],
-        };
-        let semantics = CreatureFamilyRuntimeSemantics {
-            up_axis: MeasurementAxis::Z,
-            controller_architecture: Some(ControllerArchitecture::Standard),
-            geometry_scale_to_fo4: Some(1.0),
-            movement_architecture: Some(MovementArchitecture::Grounded),
-            max_linear_speed: Some(100.0),
-            max_yaw_speed_degrees_per_second: Some(90.0),
-            pitch_limit_degrees: Some(45.0),
-            roll_limit_degrees: Some(20.0),
-            use_large_actor_pathing: Some(false),
-            use_subsegmented_damage: Some(false),
-            xp_value: Some(10),
-        };
-
-        let result = load_creature_family_evidence(source_root.path(), &paths, &semantics);
-
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| matches!(issue, CreatureRaceDataLoaderIssue::UnsafeSourcePath { .. }))
-        );
-        for expected in ["Actors\\Test\\Body.nif", "Actors\\Test\\Skeleton.nif"] {
-            assert!(result.issues.iter().any(|issue| matches!(
-                issue,
-                CreatureRaceDataLoaderIssue::ReadFailed { path, .. } if path == expected
-            )));
-        }
-        assert_eq!(result.evidence.body_bounds, None);
-        assert_eq!(result.evidence.skeleton_bounds, None);
-    }
-
-    #[test]
     fn world_bounds_merge_is_an_order_independent_envelope() {
         let mut forward = None;
         merge_bounds(
@@ -2169,95 +2163,5 @@ mod tests {
                 max: [9.0, 3.0, 8.0],
             })
         );
-    }
-
-    #[test]
-    fn optional_live_wolf_loader_reads_controller_and_nif_bounds() {
-        let Some(source_root) = std::env::var_os("SKYRIMSE_CREATURE_ASSET_ROOT").map(PathBuf::from)
-        else {
-            return;
-        };
-        if !source_root.is_dir() {
-            return;
-        }
-        let result = load_creature_family_evidence(
-            &source_root,
-            &CreatureFamilySourcePaths {
-                project_paths: vec!["Actors\\Canine\\WolfProject.hkx".to_string()],
-                character_paths: vec!["Actors\\Canine\\Characters Wolf\\Wolf.hkx".to_string()],
-                skeleton_paths: vec![
-                    "Actors\\Canine\\Character Assets Wolf\\skeleton.nif".to_string(),
-                ],
-                body_paths: vec!["Actors\\Canine\\Character Assets Wolf\\wolf.nif".to_string()],
-            },
-            &CreatureFamilyRuntimeSemantics {
-                up_axis: MeasurementAxis::Z,
-                controller_architecture: Some(ControllerArchitecture::Quadruped),
-                geometry_scale_to_fo4: None,
-                movement_architecture: Some(MovementArchitecture::Grounded),
-                max_linear_speed: None,
-                max_yaw_speed_degrees_per_second: None,
-                pitch_limit_degrees: None,
-                roll_limit_degrees: None,
-                use_large_actor_pathing: None,
-                use_subsegmented_damage: None,
-                xp_value: None,
-            },
-        );
-
-        assert_eq!(result.issues, Vec::new());
-        assert!(result.evidence.capsule.is_some());
-        assert!(result.evidence.body_bounds.is_some());
-        assert!(result.evidence.skeleton_bounds.is_some());
-    }
-
-    #[test]
-    fn optional_live_merged_corpus_accounts_for_every_race() {
-        let Some(path) = std::env::var_os("SKYRIMSE_CREATURE_CORPUS_PLUGIN").map(PathBuf::from)
-        else {
-            return;
-        };
-        if !path.is_file() {
-            return;
-        }
-        let handle = esp_authoring_core::plugin_runtime::plugin_handle_load_no_py(
-            path.to_str().unwrap(),
-            Some("skyrimse"),
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        let interner = StringInterner::new();
-        let schema = crate::schema::AuthoringSchema::for_game("skyrimse").unwrap();
-        let mut records = Vec::new();
-        for signature in [
-            "KYWD", "RACE", "NPC_", "LVLN", "ARMO", "ARMA", "BPTD", "SPEL", "SHOU",
-        ] {
-            let sig = SigCode::from_str(signature).unwrap();
-            for form_key in
-                crate::source_read::iter_form_keys_of_sig(handle, sig, &interner).unwrap()
-            {
-                records.push(
-                    crate::source_read::read_record_relayout_by_form_key(
-                        handle, &form_key, &schema, &interner, None,
-                    )
-                    .unwrap(),
-                );
-            }
-        }
-        esp_authoring_core::plugin_runtime::plugin_handle_close_native(handle);
-        let catalog =
-            super::super::creature_catalog::build_creature_corpus_plan(&records, &interner);
-        let evidence =
-            build_creature_race_data_evidence(&catalog, &records, &[], &policy(), &interner);
-
-        assert_eq!(catalog.summary.candidate_races, 121);
-        assert_eq!(evidence.summary.race_count, 121);
-        assert_eq!(evidence.summary.complete_races, 0);
-        assert_eq!(evidence.summary.missing_races, 121);
-        assert_eq!(evidence.summary.invalid_races, 0);
-        assert_eq!(evidence.summary.family_count, 47);
-        assert_eq!(evidence.summary.missing_families, 47);
     }
 }

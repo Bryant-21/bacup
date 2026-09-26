@@ -1510,26 +1510,26 @@ mod tests {
     }
 
     #[test]
-    fn production_raw_sctx_decodes_windows_1252_and_trailing_nul() {
-        let record = json!({
-            "fields": [{ "SCTX": { "encoding": "raw-bytes-hex", "hex": "73636E20546573748000" } }]
-        });
-        let SourcePayload::Decoded(source) = extract_script_source(&record) else {
-            panic!("expected decoded source");
-        };
-        assert_eq!(source, "scn Test€");
-    }
-
-    #[test]
-    fn raw_scda_without_source_has_terminal_status() {
-        let record = json!({
-            "eid": "CompiledOnly",
-            "fields": [{ "SCDA": { "encoding": "raw-bytes-hex", "hex": "010203" } }]
-        });
-        let outcome =
-            translate_scpt_record_outcome(&record, "B21", "001234:FNV.esm", &HashMap::new());
-        assert_eq!(outcome.status, ScriptTerminalStatus::ScdaOnlyUnsupported);
-        assert!(outcome.translated.is_none());
+    fn raw_script_bytes_decode_or_report_terminal_status() {
+        {
+            let record = json!({
+                "fields": [{ "SCTX": { "encoding": "raw-bytes-hex", "hex": "73636E20546573748000" } }]
+            });
+            let SourcePayload::Decoded(source) = extract_script_source(&record) else {
+                panic!("expected decoded source");
+            };
+            assert_eq!(source, "scn Test€");
+        }
+        {
+            let record = json!({
+                "eid": "CompiledOnly",
+                "fields": [{ "SCDA": { "encoding": "raw-bytes-hex", "hex": "010203" } }]
+            });
+            let outcome =
+                translate_scpt_record_outcome(&record, "B21", "001234:FNV.esm", &HashMap::new());
+            assert_eq!(outcome.status, ScriptTerminalStatus::ScdaOnlyUnsupported);
+            assert!(outcome.translated.is_none());
+        }
     }
 
     #[test]
@@ -1649,7 +1649,7 @@ mod tests {
         let wrong_plugin = translate_scpt_record_with_attachments(
             &record,
             "B21",
-            "11FC64:FalloutNV.esm",
+            "11FC64:FNV_FO3_Merged.esm",
             &attachment,
         )
         .unwrap_err();
@@ -1668,33 +1668,33 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_external_symbol_fails_closed() {
-        let source = "scn UnknownScript\nBegin OnLoad\n  UnknownREF.Disable\nEnd";
-        let record = json!({
-            "eid": "UnknownScript",
-            "fields": [
-                { "SCTX": raw_source(source) },
-                { "SCRO": "123456:FNV.esm" }
-            ]
-        });
-        let outcome =
-            translate_scpt_record_outcome(&record, "B21", "100000:FNV.esm", &HashMap::new());
-        assert_eq!(outcome.status, ScriptTerminalStatus::Unsupported);
-        assert!(outcome.diagnostic.unwrap().contains("no verified FO4 type"));
-    }
-
-    #[test]
-    fn production_aliases_are_accepted_for_authoring_inspection() {
-        let record = json!({
-            "eid": "AliasShape",
-            "fields": [
-                { "BasicScriptData": { "Type": { "value": 1 } } },
-                { "ScriptSource": { "raw_hex": hex::encode_upper(b"scn AliasShape\nshort x\nBegin GameMode\nset x to 1\nEnd") } }
-            ]
-        });
-        let translated = translate_scpt_record(&record, "B21", "001234:FNV.esm").unwrap();
-        assert_eq!(translated.papyrus_type, PapyrusType::Quest);
-        assert!(translated.psc_text.contains("extends Quest"));
+    fn external_symbols_fail_closed_but_production_aliases_are_accepted() {
+        {
+            let source = "scn UnknownScript\nBegin OnLoad\n  UnknownREF.Disable\nEnd";
+            let record = json!({
+                "eid": "UnknownScript",
+                "fields": [
+                    { "SCTX": raw_source(source) },
+                    { "SCRO": "123456:FNV.esm" }
+                ]
+            });
+            let outcome =
+                translate_scpt_record_outcome(&record, "B21", "100000:FNV.esm", &HashMap::new());
+            assert_eq!(outcome.status, ScriptTerminalStatus::Unsupported);
+            assert!(outcome.diagnostic.unwrap().contains("no verified FO4 type"));
+        }
+        {
+            let record = json!({
+                "eid": "AliasShape",
+                "fields": [
+                    { "BasicScriptData": { "Type": { "value": 1 } } },
+                    { "ScriptSource": { "raw_hex": hex::encode_upper(b"scn AliasShape\nshort x\nBegin GameMode\nset x to 1\nEnd") } }
+                ]
+            });
+            let translated = translate_scpt_record(&record, "B21", "001234:FNV.esm").unwrap();
+            assert_eq!(translated.papyrus_type, PapyrusType::Quest);
+            assert!(translated.psc_text.contains("extends Quest"));
+        }
     }
 
     #[test]
@@ -1777,7 +1777,7 @@ mod tests {
         assert!(wrong_id.to_string().contains("AddScriptPackage"));
 
         let wrong_plugin =
-            translate_scpt_record(&record, "B21", "134491:FalloutNV.esm").unwrap_err();
+            translate_scpt_record(&record, "B21", "134491:FNV_FO3_Merged.esm").unwrap_err();
         assert!(wrong_plugin.to_string().contains("AddScriptPackage"));
     }
 
@@ -1989,10 +1989,11 @@ End"#;
         assert!(!is_exact_compat_consumed_scro(
             "TecMineHostage",
             "123191:FalloutNV.esm",
-            "0F43DE:FalloutNV.esm"
+            "0F43DE:FNV_FO3_Merged.esm"
         ));
         assert!(
-            exact_consumed_scro_dependencies("TecMineHostage", "123191:FalloutNV.esm").is_empty()
+            exact_consumed_scro_dependencies("TecMineHostage", "123191:FNV_FO3_Merged.esm")
+                .is_empty()
         );
 
         let renolds_plan = exact_consumed_scro_dependencies(
@@ -2008,7 +2009,7 @@ End"#;
         assert!(!is_exact_compat_consumed_scro(
             "NVTechatticupRenoldsDialogueScript",
             "134491:FalloutNV.esm",
-            "000014:FalloutNV.esm"
+            "000014:FNV_FO3_Merged.esm"
         ));
         assert!(!is_exact_compat_consumed_scro(
             "NVTechatticupRenoldsDialogueScript",
