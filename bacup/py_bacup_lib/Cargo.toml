@@ -2,7 +2,6 @@
 members = [
     "native/bacup_lib_native",
     "native/conversion",
-    "native/previs",
 ]
 resolver = "3"
 

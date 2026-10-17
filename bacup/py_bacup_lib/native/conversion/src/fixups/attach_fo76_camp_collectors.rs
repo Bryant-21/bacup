@@ -24,6 +24,7 @@ use rustc_hash::FxHashMap;
 
 use esp_authoring_core::plugin_runtime::build_vmad_bytes_from_payload;
 
+use crate::fixups::validate_reference_target_types::FO4_HARDCODED_AVIF_LOCAL_IDS;
 use crate::fixups::quest_script_vmad::{AttachResult, attach_script_bytes};
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -55,6 +56,11 @@ const FALLOUT4_PLUGIN: &str = "Fallout4.esm";
 /// FO76 `PRPS` is `array_struct:I,f,I` — actor value, value, curve table.
 const SOURCE_PRPS_ROW_LEN: usize = 12;
 const MAX_PRODUCE_LIST_DEPTH: u32 = 4;
+/// `Fallout4.esm:000330` — `PowerRequired`; the FO76 value is the collector's
+/// power draw and decides whether it stops producing when unpowered.
+const POWER_REQUIRED_LOCAL: u32 = 0x00_0330;
+const MODE_SCRIPT_NAME: &str = "WorkshopTerminalActorValueScript";
+const MODE_LIST_PROPERTY: &str = "ActorValueList";
 
 /// One collector's production data, already mapped into target FormKeys.
 /// `source_produce` is the unmapped FO76 list: the storage cap is FO76 pounds
@@ -64,6 +70,29 @@ struct ResourceSpec {
     produce: FormKey,
     interval: FormKey,
     source_produce: FormKey,
+}
+
+/// A collector's matched resource `PRPS` row. `rate` is the row value: FO76
+/// scales output per interval by it (a large water purifier is 5, a small one 1).
+struct MatchedResource {
+    actor_value: FormKey,
+    spec: ResourceSpec,
+    rate: Option<f32>,
+}
+
+/// One selectable production mode of a terminal-driven collector.
+struct CollectorMode {
+    actor_value: FormKey,
+    spec: ResourceSpec,
+    max_stored: Option<i32>,
+}
+
+struct CollectorBinding<'a> {
+    spec: ResourceSpec,
+    max_stored_items: Option<i32>,
+    produce_count: Option<i32>,
+    needs_power: bool,
+    modes: &'a [CollectorMode],
 }
 
 pub struct AttachFo76CampCollectorsFixup;
@@ -118,6 +147,7 @@ fn apply(
     });
 
     let specs = build_resource_specs(session, mapper, &mut report)?;
+    let mode_groups = build_mode_groups(session, mapper, &specs, &mut report)?;
 
     let target_schema = session
         .schema()
@@ -138,6 +168,7 @@ fn apply(
     let mut conflicts = 0u32;
     let mut uncapped = 0u32;
     let mut snap_rows = 0u32;
+    let mut modes_attached = 0u32;
 
     for form_key in cont_keys {
         let Ok(mut record) =
@@ -171,7 +202,7 @@ fn apply(
         if snap_added {
             snap_rows = snap_rows.saturating_add(1);
         }
-        let Some(spec) = resource_spec_for(
+        let Some(matched) = resource_spec_for(
             &record,
             &specs,
             session.target_masters(),
@@ -184,20 +215,7 @@ fn apply(
             }
             continue;
         };
-        let average_weight = match produce_weights.get(&spec.source_produce) {
-            Some(weight) => *weight,
-            None => {
-                let weight = average_source_item_weight(
-                    session,
-                    source_schema.as_ref(),
-                    spec.source_produce,
-                    mapper.interner,
-                    0,
-                );
-                produce_weights.insert(spec.source_produce, weight);
-                weight
-            }
-        };
+        let spec = matched.spec;
         let source_collector = FormKey {
             local: record.form_key.local,
             plugin: source_plugin,
@@ -222,28 +240,73 @@ fn apply(
         } else {
             None
         };
-        let max_stored = source_capacity
-            .or_else(|| {
-                carry_weight(
-                    &record,
-                    FormKey {
-                        local: CARRY_WEIGHT_LOCAL,
-                        plugin: mapper.interner.intern(FALLOUT4_PLUGIN),
-                    },
-                    PRPS_ROW_LEN,
-                    session.target_masters(),
-                    &target_plugin,
-                    mapper.interner,
-                )
-            })
-            .zip(average_weight)
-            .and_then(|(capacity, weight)| max_stored_items(capacity, weight));
+        let capacity = source_capacity.or_else(|| {
+            carry_weight(
+                &record,
+                FormKey {
+                    local: CARRY_WEIGHT_LOCAL,
+                    plugin: mapper.interner.intern(FALLOUT4_PLUGIN),
+                },
+                PRPS_ROW_LEN,
+                session.target_masters(),
+                &target_plugin,
+                mapper.interner,
+            )
+        });
+        let mut max_stored_for = |session: &mut PluginSession, spec: ResourceSpec| {
+            let weight = match produce_weights.get(&spec.source_produce) {
+                Some(weight) => *weight,
+                None => {
+                    let weight = average_source_item_weight(
+                        session,
+                        source_schema.as_ref(),
+                        spec.source_produce,
+                        mapper.interner,
+                        0,
+                    );
+                    produce_weights.insert(spec.source_produce, weight);
+                    weight
+                }
+            };
+            capacity
+                .zip(weight)
+                .and_then(|(capacity, weight)| max_stored_items(capacity, weight))
+        };
+        let max_stored = max_stored_for(session, spec);
         if max_stored.is_none() {
             uncapped = uncapped.saturating_add(1);
         }
+        let mut modes = Vec::new();
+        if let Some(group) = mode_groups.get(&matched.actor_value) {
+            for (actor_value, mode_spec) in group {
+                modes.push(CollectorMode {
+                    actor_value: *actor_value,
+                    spec: *mode_spec,
+                    max_stored: max_stored_for(session, *mode_spec),
+                });
+            }
+            modes_attached = modes_attached.saturating_add(1);
+        }
+        let needs_power = carry_weight(
+            &record,
+            FormKey {
+                local: POWER_REQUIRED_LOCAL,
+                plugin: mapper.interner.intern(FALLOUT4_PLUGIN),
+            },
+            PRPS_ROW_LEN,
+            session.target_masters(),
+            &target_plugin,
+            mapper.interner,
+        )
+        .is_some_and(|draw| draw > 0.0);
         let Some(vmad) = collector_vmad(
-            spec,
-            max_stored,
+            &CollectorBinding {
+                spec,
+                max_stored_items: max_stored,
+                produce_count: matched.rate.map(|rate| rate.round().max(1.0) as i32),
+                needs_power,
+                modes: &modes,
+            },
             session.target_masters(),
             &target_plugin,
             mapper.interner,
@@ -279,7 +342,7 @@ fn apply(
 
     report.records_changed = replaced as u32;
     report.diagnostics.push(mapper.interner.intern(&format!(
-        "attach_fo76_camp_collectors:changed={replaced}:uncapped={uncapped}:snap_rows={snap_rows}"
+        "attach_fo76_camp_collectors:changed={replaced}:uncapped={uncapped}:snap_rows={snap_rows}:mode_collectors={modes_attached}"
     )));
     if unresolved > 0 || conflicts > 0 {
         report.warnings.push(mapper.interner.intern(&format!(
@@ -308,7 +371,9 @@ fn build_resource_specs(
         .map_err(|error| FixupError::HandleError(error.to_string()))?;
 
     let mut specs: FxHashMap<FormKey, ResourceSpec> = FxHashMap::default();
+    let mut chosen: FxHashMap<FormKey, u32> = FxHashMap::default();
     let mut dropped = 0u32;
+    let mut duplicates = 0u32;
     for form_key in reso_keys {
         let Ok(record) =
             session.source_record_decoded(&form_key, source_schema.as_ref(), mapper.interner)
@@ -326,13 +391,20 @@ fn build_resource_specs(
         };
         let source_produce = produce;
         let (Some(actor_value), Some(produce), Some(interval)) = (
-            mapper.lookup(actor_value),
+            target_actor_value(actor_value, mapper),
             mapper.lookup(produce),
             mapper.lookup(interval),
         ) else {
             dropped = dropped.saturating_add(1);
             continue;
         };
+        if let Some(previous) = chosen.get(&actor_value) {
+            duplicates = duplicates.saturating_add(1);
+            if !prefer_duplicate_reso(form_key.local, *previous) {
+                continue;
+            }
+        }
+        chosen.insert(actor_value, form_key.local);
         specs.insert(
             actor_value,
             ResourceSpec {
@@ -344,10 +416,233 @@ fn build_resource_specs(
     }
 
     report.diagnostics.push(mapper.interner.intern(&format!(
-        "attach_fo76_camp_collectors:resources={}:dropped={dropped}",
+        "attach_fo76_camp_collectors:resources={}:dropped={dropped}:duplicate_avs={duplicates}",
         specs.len()
     )));
     Ok(specs)
+}
+
+/// FO76 pairs three resource AVs with two `RESO` records each. The kept one is the
+/// `RESO` named after the AV, which is also the one its station was authored for:
+/// - `5F0D2B` `ATX_Resource_Collectron_Gold` over `54B432` `ScrapResourceGold` for
+///   `ATX_ResourceAV_Collectron_Gold_Scrap` (Gold bot station 536D42);
+/// - `5698B9` `ATX_Resource_Raider_Collectron` over `55417E` (Free States, no station)
+///   for `ATX_ResourceAV_Collectron_Raider`;
+/// - `59947E` `..._FusionCell` (0.024 h, as all 11 other ArmCo modes) over `599481`
+///   `..._Explosive` (same AV and list, 0.05 h) for ArmCo's fusion-cell mode.
+const PREFERRED_DUPLICATE_RESO: [u32; 3] = [0x5F_0D2B, 0x56_98B9, 0x59_947E];
+
+/// Whether `candidate` replaces `previous` for a shared resource AV. Unlisted pairs
+/// keep the lower FormID so the choice never depends on record order.
+fn prefer_duplicate_reso(candidate: u32, previous: u32) -> bool {
+    let preferred = |local: u32| PREFERRED_DUPLICATE_RESO.contains(&local);
+    match (preferred(candidate), preferred(previous)) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => candidate < previous,
+    }
+}
+
+/// The converted plugin carries no AVIF for the actor values FO4 hardcodes
+/// (`Water` 000332, `Food` 000331, ...), so the mapper has no entry for them.
+/// Every water collector keys on `Water`; its collectors' `PRPS` rows keep
+/// pointing at the `Fallout4.esm` record.
+fn target_actor_value(source: FormKey, mapper: &FormKeyMapper) -> Option<FormKey> {
+    mapper.lookup(source).or_else(|| {
+        FO4_HARDCODED_AVIF_LOCAL_IDS
+            .contains(&source.local)
+            .then(|| FormKey {
+                local: source.local,
+                plugin: mapper.interner.intern(FALLOUT4_PLUGIN),
+            })
+    })
+}
+
+/// Collector terminals (`WorkshopTerminalActorValueScript`) choose a mode by
+/// setting one of their `ActorValueList` resource AVs to 1 on the linked
+/// collector. Each list becomes a group keyed by every member AV, so a
+/// collector whose `PRPS` names any member can read all of the modes.
+fn build_mode_groups(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    specs: &FxHashMap<FormKey, ResourceSpec>,
+    report: &mut FixupReport,
+) -> Result<FxHashMap<FormKey, Vec<(FormKey, ResourceSpec)>>, FixupError> {
+    let source_schema = session
+        .source_schema()
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    let term_sig =
+        SigCode::from_str("TERM").map_err(|error| FixupError::Other(error.to_string()))?;
+    let term_keys = session
+        .source_form_keys_of_sig(term_sig, mapper.interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    let source_plugin = mapper.interner.intern(SOURCE_PLUGIN);
+
+    let mut groups: FxHashMap<FormKey, Vec<(FormKey, ResourceSpec)>> = FxHashMap::default();
+    let mut terminals = 0u32;
+    for form_key in term_keys {
+        let Ok(record) =
+            session.source_record_decoded(&form_key, source_schema.as_ref(), mapper.interner)
+        else {
+            continue;
+        };
+        let Some(vmad) = record.fields.iter().find_map(|entry| match &entry.value {
+            FieldValue::Bytes(bytes) if entry.sig.0 == *b"VMAD" => Some(bytes.clone()),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let Some(raw_list) = script_object_array(&vmad, MODE_SCRIPT_NAME, MODE_LIST_PROPERTY)
+        else {
+            continue;
+        };
+        for raw_group in mode_slices(&raw_list) {
+            let members: Vec<(FormKey, ResourceSpec)> = raw_group
+                .iter()
+                .filter(|raw| **raw & 0x00FF_FFFF != 0)
+                .filter_map(|raw| {
+                    target_actor_value(
+                        FormKey {
+                            local: raw & 0x00FF_FFFF,
+                            plugin: source_plugin,
+                        },
+                        mapper,
+                    )
+                })
+                .filter_map(|actor_value| {
+                    specs.get(&actor_value).map(|spec| (actor_value, *spec))
+                })
+                .collect();
+            if members.len() < 2 {
+                continue;
+            }
+            terminals = terminals.saturating_add(1);
+            for (actor_value, _) in &members {
+                groups.entry(*actor_value).or_insert_with(|| members.clone());
+            }
+        }
+    }
+    report.diagnostics.push(mapper.interner.intern(&format!(
+        "attach_fo76_camp_collectors:mode_terminals={terminals}:mode_resources={}",
+        groups.len()
+    )));
+    Ok(groups)
+}
+
+/// Length of the shared terminal list that every Collectron station reads.
+const COLLECTRON_TERMINAL_LIST_LEN: usize = 29;
+/// Its one-of-N groups by list index: Scavenger, Raider, Comrade. The terminal
+/// shows every station's items, so the whole list is not one mode group.
+const COLLECTRON_MODE_RANGES: [(usize, usize); 3] = [(0, 2), (2, 5), (5, 7)];
+/// Longest list that is a single mode group (ArmCo lists 12).
+const MAX_MODE_LIST_LEN: usize = 16;
+
+fn mode_slices(list: &[u32]) -> Vec<&[u32]> {
+    if list.len() == COLLECTRON_TERMINAL_LIST_LEN {
+        COLLECTRON_MODE_RANGES
+            .iter()
+            .map(|(start, end)| &list[*start..*end])
+            .collect()
+    } else if list.len() <= MAX_MODE_LIST_LEN {
+        vec![list]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Raw form ids of the named `Object[]` property of the named script in a
+/// VMAD blob. Returns `None` for malformed data or a VMAD whose scripts hold a
+/// property type this scanner cannot step over (structs), since every later
+/// offset would be wrong.
+fn script_object_array(vmad: &[u8], script: &str, property: &str) -> Option<Vec<u32>> {
+    struct Cursor<'a> {
+        bytes: &'a [u8],
+        at: usize,
+    }
+    impl Cursor<'_> {
+        fn take(&mut self, len: usize) -> Option<&[u8]> {
+            let slice = self.bytes.get(self.at..self.at.checked_add(len)?)?;
+            self.at += len;
+            Some(slice)
+        }
+        fn u8(&mut self) -> Option<u8> {
+            Some(self.take(1)?[0])
+        }
+        fn u16(&mut self) -> Option<u16> {
+            let b = self.take(2)?;
+            Some(u16::from_le_bytes([b[0], b[1]]))
+        }
+        fn u32(&mut self) -> Option<u32> {
+            let b = self.take(4)?;
+            Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        }
+        fn text(&mut self) -> Option<String> {
+            let len = self.u16()? as usize;
+            Some(String::from_utf8_lossy(self.take(len)?).into_owned())
+        }
+        fn object(&mut self, object_format: u16) -> Option<u32> {
+            let b = self.take(8)?;
+            let at = if object_format == 2 { 4 } else { 0 };
+            Some(u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]))
+        }
+    }
+
+    let mut cursor = Cursor { bytes: vmad, at: 0 };
+    let version = cursor.u16()?;
+    let object_format = cursor.u16()?;
+    if !matches!(object_format, 1 | 2) {
+        return None;
+    }
+    for _ in 0..cursor.u16()? {
+        let name = cursor.text()?;
+        if version >= 4 {
+            cursor.u8()?;
+        }
+        let wanted = name.eq_ignore_ascii_case(script);
+        for _ in 0..cursor.u16()? {
+            let property_name = cursor.text()?;
+            let kind = cursor.u8()?;
+            if version >= 4 {
+                cursor.u8()?;
+            }
+            let mut objects = Vec::new();
+            match kind {
+                1 => objects.push(cursor.object(object_format)?),
+                2 => {
+                    cursor.text()?;
+                }
+                3 | 4 => {
+                    cursor.u32()?;
+                }
+                5 => {
+                    cursor.u8()?;
+                }
+                11 => {
+                    for _ in 0..cursor.u32()? {
+                        objects.push(cursor.object(object_format)?);
+                    }
+                }
+                12 => {
+                    for _ in 0..cursor.u32()? {
+                        cursor.text()?;
+                    }
+                }
+                13 | 14 => {
+                    let count = cursor.u32()? as usize;
+                    cursor.take(count.checked_mul(4)?)?;
+                }
+                15 => {
+                    let count = cursor.u32()? as usize;
+                    cursor.take(count)?;
+                }
+                _ => return None,
+            }
+            if kind == 11 && wanted && property_name.eq_ignore_ascii_case(property) {
+                return Some(objects);
+            }
+        }
+    }
+    None
 }
 
 /// Read a `formid`-codec subrecord off a decoded source record.
@@ -401,7 +696,7 @@ fn resource_spec_for(
     target_masters: &[String],
     target_plugin: &str,
     interner: &StringInterner,
-) -> Option<ResourceSpec> {
+) -> Option<MatchedResource> {
     record
         .fields
         .iter()
@@ -417,7 +712,7 @@ fn resource_from_value(
     target_masters: &[String],
     target_plugin: &str,
     interner: &StringInterner,
-) -> Option<ResourceSpec> {
+) -> Option<MatchedResource> {
     match &entry.value {
         FieldValue::List(rows) => rows
             .iter()
@@ -434,23 +729,33 @@ fn row_resource(
     target_masters: &[String],
     target_plugin: &str,
     interner: &StringInterner,
-) -> Option<ResourceSpec> {
+) -> Option<MatchedResource> {
+    let matched = |actor_value: FormKey, rate: Option<f32>| {
+        specs.get(&actor_value).map(|spec| MatchedResource {
+            actor_value,
+            spec: *spec,
+            rate,
+        })
+    };
     match row {
-        FieldValue::Struct(fields) => fields.iter().find_map(|(_, value)| match value {
-            FieldValue::FormKey(fk) => specs.get(fk).copied(),
-            _ => None,
-        }),
-        FieldValue::FormKey(fk) => specs.get(fk).copied(),
+        FieldValue::Struct(fields) => {
+            let rate = fields.iter().find_map(|(_, value)| match value {
+                FieldValue::Float(rate) => Some(*rate),
+                _ => None,
+            });
+            fields.iter().find_map(|(_, value)| match value {
+                FieldValue::FormKey(fk) => matched(*fk, rate),
+                _ => None,
+            })
+        }
+        FieldValue::FormKey(fk) => matched(*fk, None),
         FieldValue::Bytes(bytes) => bytes.chunks_exact(PRPS_ROW_LEN).find_map(|chunk| {
             let raw = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            specs
-                .get(&resolve_raw_form_id(
-                    raw,
-                    target_masters,
-                    target_plugin,
-                    interner,
-                ))
-                .copied()
+            let rate = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            matched(
+                resolve_raw_form_id(raw, target_masters, target_plugin, interner),
+                Some(rate),
+            )
         }),
         _ => None,
     }
@@ -745,17 +1050,68 @@ fn object_property(
 }
 
 fn collector_vmad(
-    spec: ResourceSpec,
-    max_stored_items: Option<i32>,
+    binding: &CollectorBinding,
     target_masters: &[String],
     target_plugin: &str,
     interner: &StringInterner,
 ) -> Option<Vec<u8>> {
     let mut properties = vec![
-        object_property("Produce", spec.produce, interner)?,
-        object_property("IntervalHours", spec.interval, interner)?,
+        object_property("Produce", binding.spec.produce, interner)?,
+        object_property("IntervalHours", binding.spec.interval, interner)?,
     ];
-    if let Some(max_stored_items) = max_stored_items {
+    if let Some(produce_count) = binding.produce_count.filter(|count| *count > 1) {
+        properties.push(serde_json::json!({
+            "propertyName": "ProduceCount",
+            "Type": "Int32",
+            "Flags": VMAD_PROPERTY_FLAG_EDITED,
+            "Value": produce_count,
+        }));
+    }
+    if binding.needs_power {
+        properties.push(serde_json::json!({
+            "propertyName": "RequiresPower",
+            "Type": "Bool",
+            "Flags": VMAD_PROPERTY_FLAG_EDITED,
+            "Value": true,
+        }));
+    }
+    if binding.modes.len() > 1 {
+        let object_array = |name: &str, keys: Vec<FormKey>| -> Option<serde_json::Value> {
+            let values = keys
+                .into_iter()
+                .map(|key| object_value(key, interner))
+                .collect::<Option<Vec<_>>>()?;
+            Some(serde_json::json!({
+                "propertyName": name,
+                "Type": "Array of Object",
+                "Flags": VMAD_PROPERTY_FLAG_EDITED,
+                "Value": values,
+            }))
+        };
+        properties.push(object_array(
+            "ModeActorValues",
+            binding.modes.iter().map(|mode| mode.actor_value).collect(),
+        )?);
+        properties.push(object_array(
+            "ModeProduce",
+            binding.modes.iter().map(|mode| mode.spec.produce).collect(),
+        )?);
+        properties.push(object_array(
+            "ModeIntervalHours",
+            binding.modes.iter().map(|mode| mode.spec.interval).collect(),
+        )?);
+        properties.push(serde_json::json!({
+            "propertyName": "ModeMaxStoredItems",
+            "Type": "Array of Int32",
+            "Flags": VMAD_PROPERTY_FLAG_EDITED,
+            "Value": binding
+                .modes
+                .iter()
+                .map(|mode| mode.max_stored.unwrap_or(0))
+                .collect::<Vec<_>>(),
+        }));
+    }
+    if let Some(max_stored_items) = binding.max_stored_items {
         properties.push(serde_json::json!({
             "propertyName": "MaxStoredItems",
             "Type": "Int32",
@@ -776,6 +1132,16 @@ fn collector_vmad(
         target_masters,
         target_plugin,
     )
+}
+
+fn object_value(form_key: FormKey, interner: &StringInterner) -> Option<serde_json::Value> {
+    Some(serde_json::json!({
+        "Alias": -1,
+        "FormID": {"reference": {
+            "plugin": interner.resolve(form_key.plugin)?,
+            "object_id": format!("{:06X}", form_key.local),
+        }},
+    }))
 }
 
 fn attach_collector_script(record: &mut Record, vmad: &[u8]) -> Result<AttachResult, FixupError> {
@@ -881,6 +1247,8 @@ mod tests {
             &interner,
         )
         .expect("resource matched");
+        assert_eq!(spec.rate, Some(1.0));
+        let spec = spec.spec;
         assert_eq!(spec.produce.local, 0x5F_E790);
         assert_eq!(spec.interval.local, 0x5F_E78F);
 
@@ -942,7 +1310,8 @@ mod tests {
             &interner,
         )
         .expect("raw resource row matched");
-        assert_eq!(spec.produce.local, 0x5F_E790);
+        assert_eq!(spec.rate, Some(1.0));
+        assert_eq!(spec.spec.produce.local, 0x5F_E790);
 
         let keyword = fk(&interner, COLLECTOR_KEYWORD_LOCAL);
         let record = cont(
@@ -1247,12 +1616,163 @@ mod tests {
         );
 
         let spec = beehive_specs(&interner).into_values().next().expect("spec");
-        let with_cap =
-            collector_vmad(spec, Some(5), &[], "SeventySix.esm", &interner).expect("vmad with cap");
+        let binding = |max_stored_items| CollectorBinding {
+            spec,
+            max_stored_items,
+            produce_count: None,
+            needs_power: false,
+            modes: &[],
+        };
+        let with_cap = collector_vmad(&binding(Some(5)), &[], "SeventySix.esm", &interner)
+            .expect("vmad with cap");
         let without_cap =
-            collector_vmad(spec, None, &[], "SeventySix.esm", &interner).expect("vmad");
+            collector_vmad(&binding(None), &[], "SeventySix.esm", &interner).expect("vmad");
         assert!(String::from_utf8_lossy(&with_cap).contains("MaxStoredItems"));
         assert!(with_cap.ends_with(&[3, VMAD_PROPERTY_FLAG_EDITED, 5, 0, 0, 0]));
         assert!(!String::from_utf8_lossy(&without_cap).contains("MaxStoredItems"));
+    }
+
+    #[test]
+    fn water_collectors_key_on_the_hardcoded_fo4_actor_value_and_carry_their_rate() {
+        let interner = interner();
+        let water = FormKey {
+            local: 0x00_0332,
+            plugin: interner.intern(FALLOUT4_PLUGIN),
+        };
+        let mut specs = FxHashMap::default();
+        specs.insert(
+            water,
+            ResourceSpec {
+                produce: fk(&interner, 0x02_6833),
+                interval: fk(&interner, 0x45_128B),
+                source_produce: fk(&interner, 0x02_6833),
+            },
+        );
+        // Large purifier: Water 5.0 in a Fallout4.esm-mastered raw row.
+        let masters = ["Fallout4.esm".to_string()];
+        let mut prps = Vec::new();
+        prps.extend_from_slice(&0x0000_0332u32.to_le_bytes());
+        prps.extend_from_slice(&5.0f32.to_le_bytes());
+        let record = cont(
+            smallvec![field("PRPS", FieldValue::Bytes(prps.into()))],
+            &interner,
+        );
+        let matched = resource_spec_for(&record, &specs, &masters, "SeventySix.esm", &interner)
+            .expect("water row matched");
+        assert_eq!(matched.actor_value, water);
+        assert_eq!(matched.rate, Some(5.0));
+        assert!(FO4_HARDCODED_AVIF_LOCAL_IDS.contains(&0x332));
+    }
+
+    #[test]
+    fn mode_and_rate_properties_serialize_before_the_storage_cap() {
+        let interner = interner();
+        let spec = beehive_specs(&interner).into_values().next().expect("spec");
+        let modes = [
+            CollectorMode {
+                actor_value: fk(&interner, 0x59_946A),
+                spec,
+                max_stored: Some(5),
+            },
+            CollectorMode {
+                actor_value: fk(&interner, 0x59_946B),
+                spec,
+                max_stored: None,
+            },
+        ];
+        let vmad = collector_vmad(
+            &CollectorBinding {
+                spec,
+                max_stored_items: Some(7),
+                produce_count: Some(5),
+                needs_power: true,
+                modes: &modes,
+            },
+            &[],
+            "SeventySix.esm",
+            &interner,
+        )
+        .expect("vmad");
+        let text = String::from_utf8_lossy(&vmad);
+        for name in [
+            "ProduceCount",
+            "RequiresPower",
+            "ModeActorValues",
+            "ModeProduce",
+            "ModeIntervalHours",
+            "ModeMaxStoredItems",
+            "MaxStoredItems",
+        ] {
+            assert!(text.contains(name), "missing {name}");
+        }
+        assert!(vmad.ends_with(&[3, VMAD_PROPERTY_FLAG_EDITED, 7, 0, 0, 0]));
+    }
+
+    #[test]
+    fn terminal_mode_list_is_read_from_the_vmad_object_array() {
+        fn text(out: &mut Vec<u8>, value: &str) {
+            out.extend_from_slice(&(value.len() as u16).to_le_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&6u16.to_le_bytes());
+        vmad.extend_from_slice(&2u16.to_le_bytes());
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        text(&mut vmad, MODE_SCRIPT_NAME);
+        vmad.push(0);
+        vmad.extend_from_slice(&3u16.to_le_bytes());
+        text(&mut vmad, "ValueToSet");
+        vmad.extend_from_slice(&3u8.to_le_bytes());
+        vmad.push(1);
+        vmad.extend_from_slice(&1u32.to_le_bytes());
+        text(&mut vmad, "LinkTerminalKeyword");
+        vmad.push(1);
+        vmad.push(1);
+        vmad.extend_from_slice(&[0, 0, 0xFF, 0xFF]);
+        vmad.extend_from_slice(&0x0011_1FE1u32.to_le_bytes());
+        text(&mut vmad, MODE_LIST_PROPERTY);
+        vmad.push(11);
+        vmad.push(1);
+        vmad.extend_from_slice(&2u32.to_le_bytes());
+        for form_id in [0x0059_946Au32, 0x0059_EB0C] {
+            vmad.extend_from_slice(&[0, 0, 0xFF, 0xFF]);
+            vmad.extend_from_slice(&form_id.to_le_bytes());
+        }
+        assert_eq!(
+            script_object_array(&vmad, MODE_SCRIPT_NAME, MODE_LIST_PROPERTY),
+            Some(vec![0x0059_946A, 0x0059_EB0C])
+        );
+        assert_eq!(
+            script_object_array(&vmad, "OtherScript", MODE_LIST_PROPERTY),
+            None
+        );
+        assert_eq!(
+            script_object_array(&vmad[..vmad.len() - 3], MODE_SCRIPT_NAME, MODE_LIST_PROPERTY),
+            None
+        );
+    }
+
+    #[test]
+    fn shared_resource_av_keeps_the_reso_named_after_it_in_any_record_order() {
+        for (preferred, other) in [
+            (0x5F_0D2B, 0x54_B432),
+            (0x56_98B9, 0x55_417E),
+            (0x59_947E, 0x59_9481),
+        ] {
+            assert!(prefer_duplicate_reso(preferred, other));
+            assert!(!prefer_duplicate_reso(other, preferred));
+        }
+        assert!(prefer_duplicate_reso(0x10, 0x20));
+        assert!(!prefer_duplicate_reso(0x20, 0x10));
+    }
+
+    #[test]
+    fn collectron_terminal_list_is_split_into_station_groups() {
+        let list: Vec<u32> = (0..29).collect();
+        let slices = mode_slices(&list);
+        assert_eq!(slices.len(), 3);
+        assert_eq!(slices[1], &[2, 3, 4]);
+        assert_eq!(mode_slices(&list[..12]).len(), 1);
+        assert!(mode_slices(&list[..20]).is_empty());
     }
 }

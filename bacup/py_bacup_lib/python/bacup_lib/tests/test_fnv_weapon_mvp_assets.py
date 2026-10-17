@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from bacup_lib.fnv_weapon_mvp_assets import fnv_weapon_mvp_asset_closure
-from bacup_lib.models import AssetProvenance, AssetRef
+from bacup_lib.models import AssetProvenance, AssetRef, PluginPortRequest
 from bacup_lib.source_pairs import FNV_MVP_EXCLUDE_SIGNATURES
 from bacup_lib.workflows.unified import _UnifiedRecordRuntime, _is_world_only_mvp_asset
 
@@ -183,15 +183,13 @@ def test_exact_closure_materializes_only_missing_hatchet_textures(tmp_path) -> N
     diffuse.write_bytes(b"diffuse")
     normal.write_bytes(b"normal")
     runtime = _UnifiedRecordRuntime(
-        type(
-            "Request",
-            (),
-            {
-                "source_game": "fnv",
-                "target_game": "fo4",
-                "output_root": tmp_path / "output",
-            },
-        )()
+        PluginPortRequest(
+            source_game="fnv",
+            target_game="fo4",
+            source_plugins=[tmp_path / "FalloutNV.esm"],
+            output_root=tmp_path / "output",
+            source_data_dir=source_root,
+        )
     )
     ctx = type("Context", (), {"source_data_dir": source_root})()
 

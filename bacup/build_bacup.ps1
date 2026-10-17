@@ -3,7 +3,8 @@
 # runtime payload.
 #
 # Output: ..\dist\BACUP.exe plus ..\dist\mods\B21_TalesFromAppalachia\,
-# ..\dist\mods\B21_FullScreenMap\ and ..\dist\mods\B21_DevTools\.
+# ..\dist\mods\B21_FullScreenMap\, ..\dist\mods\B21_DevTools\ and
+# ..\dist\mods\fallout4-community-shaders\.
 # User data (settings, extracted/, mods/, logs/) is created next to the EXE on
 # first run. For the multi-variant onedir release pipeline use build_toolkit.ps1.
 #
@@ -40,6 +41,9 @@ $BundledMods = @(
             LogCatalogRequests = "0"; FliesToggle = "0"; FliesReport = "0"; FliesActorSwap = "0"
         }
     } }
+    # Optional install: BACUP deploys it only when native assets and "Install FO4CS" are on.
+    # Its xmake target is FO4CS and it has no Papyrus, plugin or archives.
+    @{ Name = "fallout4-community-shaders"; Target = "FO4CS"; NativeOnly = $true; RootFiles = @(); RuntimeDirs = @("F4SE") }
 )
 $RetiredModNames = @(
     "B21_LegendaryStars"
@@ -156,6 +160,147 @@ function Get-Sha256Hex($Path) {
     }
 }
 
+function Get-DllPdbReference($DllPath) {
+    $reader = New-Object System.IO.BinaryReader([System.IO.File]::OpenRead($DllPath))
+    try {
+        $stream = $reader.BaseStream
+        $stream.Position = 0x3C
+        $coff = $reader.ReadInt32() + 4
+        $stream.Position = $coff + 2
+        $sectionCount = $reader.ReadUInt16()
+        $stream.Position = $coff + 16
+        $optionalSize = $reader.ReadUInt16()
+        $optional = $coff + 20
+        # PE32+ only: the debug data directory is entry 6 of the table at +112.
+        $stream.Position = $optional + 112 + 6 * 8
+        $debugRva = $reader.ReadUInt32()
+        $debugSize = $reader.ReadUInt32()
+        $debugOffset = $null
+        for ($i = 0; $i -lt $sectionCount; $i++) {
+            $stream.Position = $optional + $optionalSize + $i * 40 + 8
+            $virtualSize = $reader.ReadUInt32()
+            $virtualAddress = $reader.ReadUInt32()
+            $null = $reader.ReadUInt32()
+            $rawPointer = $reader.ReadUInt32()
+            if ($debugRva -ge $virtualAddress -and $debugRva -lt $virtualAddress + $virtualSize) {
+                $debugOffset = $debugRva - $virtualAddress + $rawPointer
+            }
+        }
+        if ($null -eq $debugOffset) { return $null }
+        for ($entry = 0; $entry -lt [int]($debugSize / 28); $entry++) {
+            $stream.Position = $debugOffset + $entry * 28 + 12
+            if ($reader.ReadUInt32() -ne 2) { continue }
+            $dataSize = $reader.ReadUInt32()
+            $null = $reader.ReadUInt32()
+            $stream.Position = $reader.ReadUInt32()
+            if ([Text.Encoding]::ASCII.GetString($reader.ReadBytes(4)) -ne "RSDS") { continue }
+            $guid = [BitConverter]::ToString($reader.ReadBytes(16))
+            $null = $reader.ReadUInt32()
+            $path = [Text.Encoding]::UTF8.GetString($reader.ReadBytes($dataSize - 24)).TrimEnd([char]0)
+            return @{ Guid = $guid; Path = $path }
+        }
+        return $null
+    } finally {
+        $reader.Dispose()
+    }
+}
+
+function Get-PdbGuid($PdbPath) {
+    $reader = New-Object System.IO.BinaryReader([System.IO.File]::OpenRead($PdbPath))
+    try {
+        $stream = $reader.BaseStream
+        if ([Text.Encoding]::ASCII.GetString($reader.ReadBytes(24)) -ne "Microsoft C/C++ MSF 7.00") {
+            throw "Not an MSF 7.00 PDB: $PdbPath"
+        }
+        $stream.Position = 32
+        $blockSize = $reader.ReadUInt32()
+        $stream.Position = 44
+        $directoryBytes = $reader.ReadUInt32()
+        $stream.Position = 52
+        $blockMap = $reader.ReadUInt32()
+        $directoryBlockCount = [int][Math]::Ceiling($directoryBytes / $blockSize)
+        $stream.Position = [int64]$blockMap * $blockSize
+        $directoryBlocks = @(for ($i = 0; $i -lt $directoryBlockCount; $i++) { $reader.ReadUInt32() })
+        $directory = New-Object System.IO.MemoryStream
+        foreach ($block in $directoryBlocks) {
+            $stream.Position = [int64]$block * $blockSize
+            $chunk = $reader.ReadBytes([int]$blockSize)
+            $directory.Write($chunk, 0, $chunk.Length)
+        }
+        $directory.Position = 0
+        $dir = New-Object System.IO.BinaryReader($directory)
+        $streamCount = $dir.ReadUInt32()
+        $streamZeroSize = $dir.ReadUInt32()
+        $streamZeroBlocks = if ($streamZeroSize -eq [uint32]::MaxValue) { 0 } else { [int][Math]::Ceiling($streamZeroSize / $blockSize) }
+        # The PDB info stream (1) starts after the remaining sizes and stream 0's block list.
+        $directory.Position = 4 + 4 * $streamCount + 4 * $streamZeroBlocks
+        $infoBlock = $dir.ReadUInt32()
+        $stream.Position = [int64]$infoBlock * $blockSize + 12
+        return [BitConverter]::ToString($reader.ReadBytes(16))
+    } finally {
+        $reader.Dispose()
+    }
+}
+
+# Full PDBs name every source, object and library by local path. Ship the linker's
+# /PDBSTRIPPED copy (public symbols name crash-log frames) with those paths cut to file names.
+function Install-CleanPluginPdbs($Root) {
+    $cleaner = Join-Path $BacupRoot "scripts\clean_pdb.py"
+    foreach ($modDir in Get-ChildItem -LiteralPath (Join-Path $Root "mods") -Directory) {
+        $pluginsDir = Join-Path $modDir.FullName "F4SE\Plugins"
+        if (-not (Test-Path -LiteralPath $pluginsDir)) { continue }
+        foreach ($dll in Get-ChildItem -LiteralPath $pluginsDir -Filter "*.dll" -File) {
+            $pdb = [IO.Path]::ChangeExtension($dll.FullName, ".pdb")
+            if (-not (Test-Path -LiteralPath $pdb -PathType Leaf)) { continue }
+            # /PDBSTRIPPED writes to $(builddir): build\ or a session's build\<name>\.
+            $buildRoot = Join-Path $RepoRoot "mods\$($modDir.Name)\build"
+            $strippedName = "$($dll.BaseName).stripped.pdb"
+            $guid = (Get-DllPdbReference $dll.FullName).Guid
+            $stripped = @(
+                (Join-Path $buildRoot $strippedName)
+                Get-ChildItem -LiteralPath $buildRoot -Directory -ErrorAction SilentlyContinue |
+                    ForEach-Object { Join-Path $_.FullName $strippedName }
+            ) | Where-Object { (Test-Path -LiteralPath $_ -PathType Leaf) -and (Get-PdbGuid $_) -eq $guid } |
+                Select-Object -First 1
+            if (-not $stripped) {
+                throw "No stripped PDB matching $($dll.Name) under $buildRoot. Rebuild $($modDir.Name) (its link writes $strippedName via /PDBSTRIPPED)."
+            }
+            & uv run python $cleaner $stripped $pdb
+            if ($LASTEXITCODE -ne 0) { throw "PDB cleaning failed for $stripped ($LASTEXITCODE)" }
+        }
+    }
+}
+
+# A shipped .pdb must be the one linked with its DLL and must not leak build paths;
+# a stale one mis-symbolicates user crash reports.
+function Assert-CleanPluginPdbs($Root) {
+    $pluginDirs = Get-ChildItem -LiteralPath (Join-Path $Root "mods") -Directory |
+        ForEach-Object { Join-Path $_.FullName "F4SE\Plugins" } |
+        Where-Object { Test-Path -LiteralPath $_ }
+    foreach ($pluginsDir in $pluginDirs) {
+        foreach ($dll in Get-ChildItem -LiteralPath $pluginsDir -Filter "*.dll" -File) {
+            $pdb = [IO.Path]::ChangeExtension($dll.FullName, ".pdb")
+            if (-not (Test-Path -LiteralPath $pdb -PathType Leaf)) { continue }
+            $reference = Get-DllPdbReference $dll.FullName
+            if ($null -eq $reference) {
+                throw "Shipped PDB has no CodeView record in its DLL: $($dll.FullName)"
+            }
+            $pdbName = Split-Path -Leaf $pdb
+            if ($reference.Path -ne $pdbName) {
+                throw "DLL embeds a build path instead of '$pdbName': $($dll.FullName) -> $($reference.Path)"
+            }
+            if ((Get-PdbGuid $pdb) -ne $reference.Guid) {
+                throw "Shipped PDB does not match its DLL (stale build): $pdb. Rebuild $(Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $pluginsDir)))."
+            }
+            $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($pdb))
+            $leak = [regex]::Match($text, '[A-Za-z]:[\\/][\x20-\x7e]{2,}')
+            if ($leak.Success) {
+                throw "Shipped PDB leaks a local path: $pdb -> $($leak.Value)"
+            }
+        }
+    }
+}
+
 function Copy-AppalachiaCompanionMod($DestinationRoot) {
     $src = Join-Path $RepoRoot "mods\$CompanionModName"
     if (-not (Test-Path $src)) {
@@ -201,7 +346,7 @@ function Copy-AppalachiaCompanionMod($DestinationRoot) {
 }
 
 function Assert-CompanionPluginIni($Root) {
-    # Copy-AppalachiaCompanionMod stages F4SE/ without rebuilding Tales, so a stale
+    # Copy-AppalachiaCompanionMod stages F4SE/, so a stale
     # staging folder can ship a missing/outdated INI or leftover per-feature INIs.
     $pluginsDir = Join-Path $Root "mods\$CompanionModName\F4SE\Plugins"
     $stagedIni = Join-Path $pluginsDir "$CompanionModName.ini"
@@ -232,7 +377,34 @@ function Assert-BacupTranslationResource($Root) {
     }
 }
 
-function Build-BundledMod($ModName) {
+function Build-AppalachiaCompanionPlugin {
+    $modDir = Join-Path $RepoRoot "mods\$CompanionModName"
+    Remove-Item Env:\XSE_FO4_MODS_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\XSE_FO4_GAME_PATH -ErrorAction SilentlyContinue
+    Push-Location $modDir
+    try {
+        & xmake f -m releasedbg -o build\bacup -y
+        if ($LASTEXITCODE -ne 0) { throw "xmake configure failed for $CompanionModName ($LASTEXITCODE)" }
+        & xmake build -y $CompanionModName
+        if ($LASTEXITCODE -ne 0) { throw "xmake build failed for $CompanionModName ($LASTEXITCODE)" }
+        # An incremental build can keep a DLL linked before /PDBSTRIPPED was added.
+        # Tales stages through after_build; xmake install can restore a stale DLL.
+        & xmake build -r --linkonly -y $CompanionModName
+        if ($LASTEXITCODE -ne 0) { throw "xmake relink failed for $CompanionModName ($LASTEXITCODE)" }
+    } finally {
+        Pop-Location
+    }
+    $dll = Join-Path $modDir "F4SE\Plugins\$CompanionModName.dll"
+    $stripped = Join-Path $modDir "build\bacup\$CompanionModName.stripped.pdb"
+    if ((Get-PdbGuid $stripped) -ne (Get-DllPdbReference $dll).Guid) {
+        throw "Rebuilt $CompanionModName DLL does not match its stripped PDB."
+    }
+    Write-Host "  Built: mods/$CompanionModName native runtime and stripped symbols"
+}
+
+function Build-BundledMod($Mod) {
+    $ModName = $Mod.Name
+    $target = if ($Mod.Target) { $Mod.Target } else { $ModName }
     $modDir = Join-Path $RepoRoot "mods\$ModName"
 
     # The commonlibf4 plugin rule installs into these locations instead of the mod
@@ -254,13 +426,18 @@ function Build-BundledMod($ModName) {
     try {
         & xmake f -m releasedbg -y
         if ($LASTEXITCODE -ne 0) { throw "xmake configure failed for $ModName ($LASTEXITCODE)" }
-        & xmake build -y $ModName
+        & xmake build -y $target
         if ($LASTEXITCODE -ne 0) { throw "xmake build failed for $ModName ($LASTEXITCODE)" }
         # The build only stages F4SE/ when it relinks the DLL.
-        & xmake install -y $ModName
+        & xmake install -y $target
         if ($LASTEXITCODE -ne 0) { throw "xmake install failed for $ModName ($LASTEXITCODE)" }
     } finally {
         Pop-Location
+    }
+
+    if ($Mod.NativeOnly) {
+        Write-Host "  Built: mods/$ModName"
+        return
     }
 
     Push-Location $RepoRoot
@@ -372,9 +549,12 @@ foreach ($retiredModName in $RetiredModNames) {
 # Step 2: Rebuild the bundled mods from source so the payload never ships a stale
 # DLL, script, plugin or archive.
 Write-Host "`n[2/6] Building bundled mods..." -ForegroundColor Yellow
+if (Test-Path (Join-Path $RepoRoot "mods\$CompanionModName")) {
+    Build-AppalachiaCompanionPlugin
+}
 foreach ($bundledMod in $BundledMods) {
     if (Test-Path (Join-Path $RepoRoot "mods\$($bundledMod.Name)")) {
-        Build-BundledMod $bundledMod.Name
+        Build-BundledMod $bundledMod
     } else {
         Write-Host "  skip $($bundledMod.Name) (not present)"
     }
@@ -461,6 +641,8 @@ foreach ($bundledMod in $BundledMods) {
 Remove-SteamworksPayloadFiles $PayloadRoot
 Assert-NoBundledGameAssets $PayloadRoot
 Assert-NoSteamworksPayloadFiles $PayloadRoot
+Install-CleanPluginPdbs $PayloadRoot
+Assert-CleanPluginPdbs $PayloadRoot
 if (-not $OneFile) {
     Assert-NoDeveloperPayload $PayloadRoot
     Assert-BacupTranslationResource $PayloadRoot

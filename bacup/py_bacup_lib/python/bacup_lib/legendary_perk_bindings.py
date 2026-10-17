@@ -5,9 +5,9 @@ import re
 from pathlib import Path
 
 from bacup_lib.esp_native_runtime import load_esp_native
+from bacup_lib.plugin_catalog import catalog_path, form_key, write_document
 
-
-OUTPUT = Path("F4SE/Plugins/B21_TalesFromAppalachia/LegendaryPerks.json")
+FEATURE = "LegendaryPerks"
 RECORD = re.compile(r"B21_Legendary_[A-Za-z]+_[1-4](_Value)?\Z")
 
 
@@ -23,8 +23,12 @@ def binding_catalog(plugin: str, records: list) -> dict:
         local = raw_id & 0xFFFFFF
         if not local or editor_id in forms:
             raise ValueError(f"Invalid or duplicate legendary binding: {editor_id}")
-        forms[editor_id] = local
-    return {"schema_version": 1, "plugin": plugin, "forms": dict(sorted(forms.items()))}
+        forms[editor_id] = form_key(plugin, local)
+    return {"version": 1, "plugin": plugin, "forms": dict(sorted(forms.items()))}
+
+
+def to_document(catalog: dict) -> dict:
+    return {"version": catalog["version"], "bindings": catalog["forms"]}
 
 
 def emit_legendary_perk_bindings(plugin: Path, output_mod: Path) -> dict:
@@ -37,9 +41,7 @@ def emit_legendary_perk_bindings(plugin: Path, output_mod: Path) -> dict:
         catalog = binding_catalog(plugin.name, records)
     finally:
         native.plugin_handle_close(handle)
-    destination = output_mod / OUTPUT
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    write_document(FEATURE, plugin.name, to_document(catalog), output_mod)
     return catalog
 
 
@@ -51,4 +53,4 @@ if __name__ == "__main__":
     parser.add_argument("output_mod", type=Path)
     args = parser.parse_args()
     result = emit_legendary_perk_bindings(args.plugin, args.output_mod)
-    print(f"Wrote {len(result['forms'])} legendary bindings to {args.output_mod / OUTPUT}")
+    print(f"Wrote {len(result['forms'])} legendary bindings to {args.output_mod / catalog_path(FEATURE, args.plugin.name)}")

@@ -480,7 +480,7 @@ pub fn load_creature_record_race_data_evidence(
     }
 }
 
-fn scalar_f32(
+pub(super) fn scalar_f32(
     record: &Record,
     signature: &str,
     member: &str,
@@ -511,7 +511,7 @@ fn scalar_f32(
     }
 }
 
-fn struct_u16(
+pub(super) fn struct_u16(
     record: &Record,
     signature: &str,
     member: &str,
@@ -1146,13 +1146,13 @@ pub fn build_legacy_movement_mvp_contexts(
 }
 
 #[derive(Clone, Copy)]
-struct SelectedCycle {
-    duration_seconds: f32,
-    planar_distance: f32,
-    yaw_degrees: f32,
+pub(super) struct SelectedCycle {
+    pub duration_seconds: f32,
+    pub planar_distance: f32,
+    pub yaw_degrees: f32,
 }
 
-fn selected_cycle(
+pub(super) fn selected_cycle(
     family: &CreatureMotionFamilyEvidence,
     source_kf: &str,
 ) -> Result<SelectedCycle, LegacyMovementMvpIssue> {
@@ -2948,6 +2948,8 @@ mod tests {
                     controller_types: Vec::new(),
                     interpolator_types: Vec::new(),
                     target_names: Vec::new(),
+                    transform_priorities: Default::default(),
+                    transform_components: Default::default(),
                     required_float_slots: Vec::new(),
                     compatibility: BindingCompatibility::Verified,
                     compatibility_detail: None,
@@ -2966,6 +2968,7 @@ mod tests {
             rig: rig.clone(),
             referenced_kfs: clips.iter().map(|clip| clip.source_kf.clone()).collect(),
             kf_evidence: clips,
+            weapon_attacks: Vec::new(),
             creature_traits: Vec::new(),
         }
     }

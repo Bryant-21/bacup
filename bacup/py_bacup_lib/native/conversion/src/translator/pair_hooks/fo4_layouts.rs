@@ -465,6 +465,8 @@ const FO4_WTHR_FOG_MAX_DAY: f32 = 0.85;
 const FO4_WTHR_FOG_MAX_NIGHT: f32 = 0.95;
 /// FO3 and FNV name their four cloud layer textures rather than numbering them.
 const LEGACY_CLOUD_LAYER_SIGS: [[u8; 4]; 4] = [*b"DNAM", *b"CNAM", *b"ANAM", *b"BNAM"];
+// FNV's tiled dome textures cannot use FO4's quarter-atlas horizon cards.
+const FNV_CLOUD_LAYER_TARGETS: [usize; 4] = [4, 1, 2, 5];
 const DEFAULT_CLOUD_ROWS: usize = 32;
 const LEGACY_TO_FO4_WEATHER_PERIODS: [usize; 8] = [0, 1, 2, 3, 3, 0, 1, 2];
 const FO4_GDRY_NONE: u32 = 0x001B_40E8;
@@ -588,9 +590,7 @@ fn rebuild_legacy_wthr_nam0(value: &mut FieldValue, source_periods: usize) {
     if source.len() == FO4_WTHR_NAM0_SIZE {
         return;
     }
-    // Both source games carry the same ten colours; only the period count
-    // differs, so the row width is what tells them apart.  Leave the FO4-only
-    // trailing categories at zero instead of blacking the entire weather.
+    // Both source games carry the same ten colours; only the period count differs.
     let source_row = source_periods * 4;
     if source.is_empty() || source.len() % source_row != 0 {
         *value = raw_value(vec![0_u8; FO4_WTHR_NAM0_SIZE]);
@@ -607,14 +607,17 @@ fn rebuild_legacy_wthr_nam0(value: &mut FieldValue, source_periods: usize) {
                 .expect("source weather color periods"),
         );
     }
+    // Writing a full-sized NAM0 bypasses TESWeather::Load's legacy fog defaults.
+    target.copy_within(32..64, 17 * 32);
+    target.copy_within(12 * 32..13 * 32, 18 * 32);
     *value = raw_value(target);
 }
 
 /// Rename FO3/FNV's named cloud layer textures to Fallout 4's numbered layers.
 /// Dropping them leaves the sky with no cloud layers at all.
-fn carry_legacy_cloud_layer_textures(record: &mut Record) {
+fn carry_legacy_cloud_layer_textures(record: &mut Record, layers: &[usize; 4]) {
     for (layer, legacy) in LEGACY_CLOUD_LAYER_SIGS.iter().enumerate() {
-        let target = fo4_cloud_layer_sig(layer);
+        let target = fo4_cloud_layer_sig(layers[layer]);
         if record.fields.iter().any(|entry| entry.sig.0 == target) {
             continue;
         }
@@ -629,6 +632,37 @@ fn carry_legacy_cloud_layer_textures(record: &mut Record) {
     record
         .fields
         .retain(|entry| !LEGACY_CLOUD_LAYER_SIGS.contains(&entry.sig.0));
+}
+
+fn remap_fnv_cloud_rows(record: &mut Record) {
+    for entry in &mut record.fields {
+        if entry.sig.0 == *b"LNAM" {
+            entry.value = raw_value(16_u32.to_le_bytes().to_vec());
+            continue;
+        }
+        let stride = match &entry.sig.0 {
+            b"RNAM" | b"QNAM" => 1,
+            b"NAM4" => 4,
+            b"PNAM" | b"JNAM" => 32,
+            _ => continue,
+        };
+        match &mut entry.value {
+            FieldValue::Bytes(bytes) if bytes.len() == DEFAULT_CLOUD_ROWS * stride => {
+                let original = bytes.clone();
+                for (source, target) in FNV_CLOUD_LAYER_TARGETS.iter().copied().enumerate() {
+                    bytes[target * stride..(target + 1) * stride]
+                        .copy_from_slice(&original[source * stride..(source + 1) * stride]);
+                }
+            }
+            FieldValue::List(rows) if rows.len() == DEFAULT_CLOUD_ROWS => {
+                let original = rows.clone();
+                for (source, target) in FNV_CLOUD_LAYER_TARGETS.iter().copied().enumerate() {
+                    rows[target] = original[source].clone();
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Fallout 4 walks all thirty-two cloud layers. The legacy games author at most
@@ -814,8 +848,15 @@ fn normalize_fixed_or_default(value: &mut FieldValue, len: usize) {
 
 fn normalize_byte_array_or_default(value: &mut FieldValue, len: usize) {
     match value {
-        FieldValue::Bytes(bytes) if bytes.len() == len => {}
-        FieldValue::Bytes(_) | FieldValue::None => *value = raw_value(vec![0_u8; len]),
+        FieldValue::Bytes(bytes) if bytes.len() <= len => {
+            bytes.resize(len, FO4_WTHR_CLOUD_SPEED_STILL)
+        }
+        FieldValue::Bytes(_) | FieldValue::None => {
+            *value = raw_value(vec![FO4_WTHR_CLOUD_SPEED_STILL; len])
+        }
+        FieldValue::List(values) if values.len() <= len => {
+            values.resize(len, FieldValue::Uint(FO4_WTHR_CLOUD_SPEED_STILL.into()));
+        }
         // Decoded list/struct/scalar values keep normal schema-aware encoding.
         _ => {}
     }
@@ -912,12 +953,24 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
             || (entry.sig.0 == *b"IMSP"
                 && matches!(&entry.value, FieldValue::Bytes(bytes) if bytes.len() == 32))
     });
-    carry_legacy_cloud_layer_textures(record);
-
     // Probe before the loop: the rewrite below reshapes NAM0 into FO4 layout,
     // erasing the length that distinguishes a four-period FO3 record from a
     // six-period FNV one.
     let source_periods = legacy_weather_source_periods(record);
+    let remap_clouds = !already_target_layout
+        && source_periods == 6
+        && record
+            .fields
+            .iter()
+            .any(|entry| LEGACY_CLOUD_LAYER_SIGS.contains(&entry.sig.0));
+    carry_legacy_cloud_layer_textures(
+        record,
+        if remap_clouds {
+            &FNV_CLOUD_LAYER_TARGETS
+        } else {
+            &[0, 1, 2, 3]
+        },
+    );
     let pnam_rows = DEFAULT_CLOUD_ROWS;
     for entry in &mut record.fields {
         match entry.sig.0 {
@@ -1147,6 +1200,10 @@ pub(crate) fn normalize_legacy_wthr(record: &mut Record, interner: &StringIntern
     }
     if !record.fields.iter().any(|entry| entry.sig.0 == *b"IMSP") {
         push_zero_field(record, *b"IMSP", 32);
+    }
+    if remap_clouds {
+        remap_fnv_cloud_rows(record);
+        record.fields.retain(|entry| entry.sig.0 != *b"NAM1");
     }
     rebuild_legacy_wthr_disabled_cloud_layers(record);
     rebuild_legacy_wthr_god_rays(record, interner);
@@ -1520,6 +1577,49 @@ const FO4_WATR_NOISE_TEXTURES: [(&[u8; 4], &str); 3] = [
     (b"NAM4", "data\\Textures\\Water\\DefaultWater.dds"),
 ];
 
+pub(crate) fn normalize_legacy_imgs(record: &mut Record) {
+    let Some(source) = record.fields.iter().find_map(|entry| {
+        (entry.sig.0 == *b"DNAM")
+            .then(|| raw(&entry.value))
+            .flatten()
+    }) else {
+        return;
+    };
+    let cinematic = match source.len() {
+        148 => 96,
+        152 => 100,
+        _ => return,
+    };
+    let value = |offset| f32::from_le_bytes(source[offset..offset + 4].try_into().unwrap());
+    // Legacy luminance ramps and FO4's tonemapper have different contracts.
+    // Start with DefaultImageSpaceF4, carrying only equivalent parameters.
+    let hdr = [value(0), 0.02, 0.33, 0.1, 10.0, 0.5, value(44), 1.0, 0.18];
+    let cinema = [
+        value(cinematic),
+        value(cinematic + 12),
+        value(cinematic + 8),
+    ];
+    let tint = [
+        value(cinematic + 28),
+        value(cinematic + 16),
+        value(cinematic + 20),
+        value(cinematic + 24),
+    ];
+    let floats = |values: &[f32]| raw_value(values.iter().flat_map(|v| v.to_le_bytes()).collect());
+    record.fields.retain(|entry| {
+        !matches!(
+            &entry.sig.0,
+            b"DNAM" | b"HNAM" | b"CNAM" | b"TNAM" | b"ENAM"
+        )
+    });
+    record.fields.extend([
+        field(*b"HNAM", floats(&hdr)),
+        field(*b"CNAM", floats(&cinema)),
+        field(*b"TNAM", floats(&tint)),
+        field(*b"DNAM", floats(&[1.0, 500.0, 3500.0, 62.0, 0.0, 0.0])),
+    ]);
+}
+
 /// Rebuild a legacy `WATR` into Fallout 4's contract.
 ///
 /// All 42 vanilla FO4 waters carry `DATA`, `DNAM`, `NAM0`..`NAM4`; a legacy
@@ -1756,6 +1856,57 @@ mod tests {
         record
             .fields
             .push(field(sig, FieldValue::String(interner.intern(value))));
+    }
+
+    #[test]
+    fn legacy_imgs_layouts_preserve_cinematic_values_and_replace_dof() {
+        use crate::translator::pair_hook::PairCtx;
+        use crate::translator::{Game, TranslateResult, Translator};
+
+        for game in [Game::Fnv, Game::Fo3] {
+            for (size, cinematic) in [(148, 96), (152, 100)] {
+                let interner = StringInterner::new();
+                let mut imgs = record("IMGS", &interner);
+                let mut source = vec![0; size];
+                for (offset, value) in [
+                    (0, 0.9_f32),
+                    (44, 0.8),
+                    (cinematic, 0.55),
+                    (cinematic + 8, 1.01),
+                    (cinematic + 12, 1.08),
+                    (cinematic + 16, 0.2),
+                    (cinematic + 20, 0.3),
+                    (cinematic + 24, 0.4),
+                    (cinematic + 28, 0.25),
+                ] {
+                    source[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                push(&mut imgs, *b"DNAM", source);
+                let translator = Translator::new(game, Game::Fo4).unwrap();
+                translator
+                    .pre_translate(&mut PairCtx::new(&interner), &mut imgs)
+                    .unwrap();
+                let TranslateResult::Translated(mut target) =
+                    translator.translate(&imgs, &interner)
+                else {
+                    panic!("IMGS should translate");
+                };
+                let values = |sig| {
+                    bytes(&target, sig)
+                        .chunks_exact(4)
+                        .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(values(b"CNAM"), [0.55, 1.08, 1.01]);
+                assert_eq!(values(b"TNAM"), [0.25, 0.2, 0.3, 0.4]);
+                assert_eq!(values(b"HNAM")[0], 0.9);
+                assert_eq!(values(b"HNAM")[6], 0.8);
+                assert_eq!(values(b"DNAM"), [1.0, 500.0, 3500.0, 62.0, 0.0, 0.0]);
+                let fields = target.fields.clone();
+                normalize_legacy_imgs(&mut target);
+                assert_eq!(target.fields, fields);
+            }
+        }
     }
 
     fn slot<'a>(record: &'a Record, sig: [u8; 4], interner: &'a StringInterner) -> Option<&'a str> {
@@ -2131,9 +2282,10 @@ mod tests {
                 "weather colour row {row}"
             );
         }
-        // FO3 and FNV both stop at ten colours; the Fallout 4-only categories
-        // past that point stay zero rather than inheriting neighbouring rows.
-        assert!(bytes(wthr, b"NAM0")[320..].iter().all(|byte| *byte == 0));
+        let colors = bytes(wthr, b"NAM0");
+        assert!(colors[320..17 * 32].iter().all(|byte| *byte == 0));
+        assert_eq!(&colors[17 * 32..18 * 32], &colors[32..64]);
+        assert_eq!(&colors[18 * 32..], &colors[12 * 32..13 * 32]);
     }
 
     fn period_values(bytes: &[u8]) -> Vec<u32> {
@@ -2330,10 +2482,10 @@ mod tests {
         normalize_legacy_wthr(&mut wthr, &interner);
 
         for (sig, path) in [
-            (*b"00TX", "sky\\upper.dds\0"),
+            (*b"40TX", "sky\\upper.dds\0"),
             (*b"10TX", "sky\\lower.dds\0"),
             (*b"20TX", "sky\\two.dds\0"),
-            (*b"30TX", "sky\\three.dds\0"),
+            (*b"50TX", "sky\\three.dds\0"),
         ] {
             assert_eq!(bytes(&wthr, &sig), path.as_bytes(), "layer {sig:?}");
         }
@@ -2344,8 +2496,19 @@ mod tests {
         // walk the other twenty-eight.
         assert_eq!(
             u32::from_le_bytes(bytes(&wthr, b"NAM1").try_into().unwrap()),
-            !0b1111_u32
+            !0b110110_u32
         );
+        assert_eq!(bytes(&wthr, b"RNAM")[4], 0);
+        assert_eq!(bytes(&wthr, b"RNAM")[5], 3);
+        assert_eq!(bytes(&wthr, b"QNAM")[4], 32);
+        assert_eq!(bytes(&wthr, b"QNAM")[5], 35);
+        assert_eq!(
+            &bytes(&wthr, b"PNAM")[4 * 32..5 * 32],
+            &bytes(&wthr, b"PNAM")[..32]
+        );
+        let fields = wthr.fields.clone();
+        normalize_legacy_wthr(&mut wthr, &interner);
+        assert_eq!(wthr.fields, fields);
 
         let interner = StringInterner::new();
         let mut wthr = legacy_wthr_fixture(&interner, 240);

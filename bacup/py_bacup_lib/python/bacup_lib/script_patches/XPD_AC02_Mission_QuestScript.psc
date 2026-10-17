@@ -27,6 +27,7 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
 		CancelTimer(92)
 	ElseIf auiStageID == 3000
 		StartTimer(1.0, 93)
+		StartCheaterObjective()
 	ElseIf auiStageID == 3600
 		CancelTimer(93)
 	ElseIf auiStageID >= slotStagesMin && auiStageID <= slotStagesMax
@@ -270,5 +271,18 @@ Function StopLocalTaxDialogueQuests()
 	EndIf
 	If salDialogue != None && (salDialogue.IsRunning() || salDialogue.IsStarting())
 		salDialogue.Stop()
+	EndIf
+EndFunction
+
+; FO76's server picked one cheater corpse (stages 3681-3684 enable CheaterCorpse01-04)
+; and showed "(Optional) Find the dead gambler" (objective 1652) when objective phase C
+; began; nothing in the converted records does either.
+Function StartCheaterObjective()
+	If IsStageDone(3681) || IsStageDone(3682) || IsStageDone(3683) || IsStageDone(3684)
+		Return
+	EndIf
+	SetStage(3681 + Utility.RandomInt(0, 3))
+	If !IsStageDone(3690)
+		SetObjectiveDisplayed(1652, True)
 	EndIf
 EndFunction

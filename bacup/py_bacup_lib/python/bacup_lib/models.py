@@ -41,14 +41,6 @@ class RecordProvenance:
 
 
 @dataclass
-class WorkshopSnapPoint:
-    name: str
-    translation: tuple[float, float, float]
-    rotation: tuple[float, float, float, float]
-    scale: float = 1.0
-
-
-@dataclass
 class AssetRef:
     """Reference to a game asset (mesh, texture, material, sound, etc.)."""
 
@@ -62,7 +54,9 @@ class AssetRef:
     force_reason: str = ""
     output_subpath: str | None = None
     workshop_wire_point: tuple[float, float, float] | None = None
-    workshop_snap_points: tuple[WorkshopSnapPoint, ...] = ()
+    owner_claims: list[dict[str, object]] = field(default_factory=list)
+    cloth_companion_claims: list[dict[str, object]] = field(default_factory=list)
+    cloth_companion_errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -321,7 +315,7 @@ class PhaseSelection:
     # Umbra previs (Vis/*.uvd + CELL VISI/RVIS/XPRI) from the clean-room Rust
     # visibility solve. On by default; opt out per run.
     generate_previs: bool = True
-    lod_mode: str = "convert"  # {"convert","generate","hybrid","hybrid-atlas","none"}: native lodgen delivery switch
+    lod_mode: str = "convert"  # {"convert","generate","hybrid","hybrid-atlas","hybrid-instanced","none"}: native lodgen delivery switch
 
     @classmethod
     def defaults(cls) -> "PhaseSelection":
@@ -378,6 +372,8 @@ class ConversionContext:
     force_cpu_textures: bool = False
     pbr_carry: bool = False
     texture_landscape_mip_flooding: bool = False
+    native_assets: bool = False
+    replace_fo4_materials: bool = False
     convert_precombined_nifs: bool = True
     base_asset_relocation_mesh_roots: tuple[str, ...] = ()
     base_asset_namespace: str = ""
@@ -478,6 +474,12 @@ class PluginPortOptions:
     force_cpu_textures: bool = False
     pbr_carry: bool = False
     texture_landscape_mip_flooding: bool = False
+    native_assets: bool = False
+    replace_fo4_materials: bool = False
+    # With native_assets: FO4's materials outside the replace set are upgraded to BGSM v22+.
+    upgrade_fo4_materials: bool = False
+    # When set, only these post phases run (by label); None runs them all.
+    post_phases_only: tuple[str, ...] | None = None
     convert_precombined_nifs: bool = True
     base_asset_relocation_mesh_roots: tuple[str, ...] = ()
     base_asset_namespace: str = ""

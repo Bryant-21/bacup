@@ -52,10 +52,18 @@ pub struct IdleAncestryNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdleClaimEvidence {
     pub source_idle: StableFormKey,
-    /// Leaf first, then the exact parent chain. Previous remains an edge on
-    /// each node and is not rewritten into parent ancestry.
+    #[serde(default = "whole_body_idle_group")]
+    pub source_group: u8,
+    #[serde(default)]
+    pub looping_min: u8,
+    #[serde(default)]
+    pub looping_max: u8,
+    /// Empty for a direct MODL binding; when indexed, leaf first followed by
+    /// the exact parent chain. Previous remains a separate edge.
     pub ancestry: Vec<IdleAncestryNode>,
 }
+
+fn whole_body_idle_group() -> u8 { 20 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +101,10 @@ pub struct BindingEvidence {
     pub controller_types: Vec<String>,
     pub interpolator_types: Vec<String>,
     pub target_names: Vec<String>,
+    #[serde(default)]
+    pub transform_priorities: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub transform_components: BTreeMap<String, u8>,
     pub required_float_slots: Vec<String>,
     pub compatibility: BindingCompatibility,
     pub compatibility_detail: Option<String>,
@@ -152,6 +164,8 @@ pub struct CreatureMotionFamilyEvidence {
     pub referenced_kfs: Vec<String>,
     pub kf_evidence: Vec<CreatureKfEvidence>,
     pub creature_traits: Vec<CreatureTraitEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weapon_attacks: Vec<super::creature_weapon_attacks::CreatureWeaponAttackEvidence>,
 }
 
 pub(crate) fn parse_creature_kf_evidence(
@@ -223,6 +237,8 @@ pub(crate) fn parse_creature_kf_evidence(
                 controller_types: parsed.binding.controller_types,
                 interpolator_types: parsed.binding.interpolator_types,
                 target_names: parsed.binding.target_names,
+                transform_priorities: parsed.binding.transform_priorities,
+                transform_components: parsed.binding.transform_components,
                 required_float_slots: parsed.binding.required_float_slots,
                 compatibility: compatibility.0,
                 compatibility_detail: compatibility.1,
@@ -250,9 +266,10 @@ pub enum MotionRole {
     Overlay,
     Hurt,
     Death,
+    ScriptedIdle,
 }
 
-const ALL_MOTION_ROLES: [MotionRole; 14] = [
+const ALL_MOTION_ROLES: [MotionRole; 15] = [
     MotionRole::Idle,
     MotionRole::GroundLocomotion,
     MotionRole::Swim,
@@ -267,6 +284,7 @@ const ALL_MOTION_ROLES: [MotionRole; 14] = [
     MotionRole::Overlay,
     MotionRole::Hurt,
     MotionRole::Death,
+    MotionRole::ScriptedIdle,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -320,6 +338,8 @@ pub struct MotionEventProvenance {
 pub struct BindingSummary {
     pub source_skeleton_path: String,
     pub transform_track_count: usize,
+    #[serde(default)]
+    pub ordered_transform_targets: Vec<String>,
     pub float_track_count: usize,
     pub controller_types: Vec<String>,
     pub interpolator_types: Vec<String>,
@@ -388,7 +408,7 @@ pub(crate) fn stage_request_from_motion_candidate<'a>(
             receipt_path: source_skeleton_path.to_string(),
         });
     }
-    for required in &candidate.binding.required_float_slots {
+    for required in candidate.binding.required_float_slots.iter().filter(|_| !skeleton.float_slot_names.is_empty()) {
         if !skeleton
             .float_slot_names
             .iter()
@@ -424,10 +444,15 @@ pub(crate) fn stage_request_from_motion_candidate<'a>(
             ordered_bone_names: &skeleton.ordered_bone_names,
             ordered_float_slot_names: &skeleton.float_slot_names,
         },
+        reference_skeleton_hkx: &skeleton.hkx_bytes,
         original_skeleton_name: &skeleton.skeleton_name,
         event_map,
         target_sample_rate_hz,
         extracted_motion_policy,
+        attack_kind: None,
+        automatic_attack: None,
+        attack_playback_speed: None,
+        equipment_index: None,
     })
 }
 
@@ -738,6 +763,10 @@ fn classify_sequence(
     let name = normalized_words(&sequence.name);
     let path = normalized_words(source_kf);
     let events = event_provenance(&sequence.text_keys);
+    if !evidence.idle_claims.is_empty() {
+        add_signal(&mut signals, MotionRole::ScriptedIdle, CandidateConfidence::High,
+            RoleSignalSource::IdleAncestry, "source IDLE MODL binds this exact KF", None);
+    }
     let event_text = sequence
         .text_keys
         .iter()
@@ -777,8 +806,10 @@ fn classify_sequence(
             .any(|text| tokens.iter().any(|token| text.contains(token)))
     };
 
-    let death_name = has_name(&["death", "die", "dead", "unconscious"]);
-    let death_ancestry = has_ancestry(&["death", "dead", "unconscious"]);
+    let death_name = has_name(&["die", "dead", "unconscious"])
+        || (name.contains("death") && !name.contains("deathclaw"));
+    let death_ancestry = has_ancestry(&["dead", "unconscious"])
+        || ancestry_text.iter().any(|name| name.contains("death") && !name.contains("deathclaw"));
     let death = death_name || death_ancestry;
     let hurt_name = has_name(&["hurt", "recoil", "hitreaction", "criticalhit"]);
     let hurt_ancestry = has_ancestry(&["hitreaction", "criticalhit", "hurt"]);
@@ -795,8 +826,9 @@ fn classify_sequence(
         "strafe",
         "walk",
         "run",
-    ]);
-    let explicit_swim = has_name(&["swim"]);
+    ]) || matches!(name.split_whitespace().next(), Some("left" | "right" | "fastleft" | "fastright"));
+    let filename = normalized_words(source_kf.rsplit(['/', '\\']).next().unwrap_or(source_kf));
+    let explicit_swim = has_name(&["swim"]) || filename.contains("swim");
     let explicit_fly = has_name(&["fly", "hover", "land", "takeoff"])
         || has_ancestry(&["fly", "hover", "land", "takeoff"]);
     let projectile = has_name(&["throw", "projectile", "spit", "dart", "missile"])
@@ -852,7 +884,7 @@ fn classify_sequence(
         sequence_signal(MotionRole::Turn, &sequence.name, &mut signals);
     }
 
-    if movement {
+    if !attack && (movement || (explicit_swim && has_name(&["idle"]))) {
         classify_mobility(
             family,
             source_kf,
@@ -1010,6 +1042,29 @@ fn classify_sequence(
 
     add_secondary_filename_signal(source_kf, &path, &mut signals);
 
+    let source_weapons = family.weapon_attacks.iter().filter(|weapon| {
+        weapon.matches_clip(source_kf, &sequence.name)
+    }).collect::<Vec<_>>();
+    let weapon_stem = source_kf.rsplit(['/', '\\']).next().unwrap_or(source_kf).to_ascii_lowercase();
+    let equipped_weapon_clip = ["1hm", "2hm", "1hp", "2hr", "2ha", "2hh", "2hl", "1gt", "1lm", "1md"]
+        .iter().any(|prefix| weapon_stem.starts_with(prefix));
+    if equipped_weapon_clip || !source_weapons.is_empty() {
+        signals.remove(&MotionRole::MeleeAttack);
+        signals.remove(&MotionRole::RangedAttack);
+        signals.remove(&MotionRole::Fire);
+        signals.remove(&MotionRole::Projectile);
+        for weapon in source_weapons {
+            add_signal(
+                &mut signals,
+                if weapon.is_ranged() { MotionRole::RangedAttack } else { MotionRole::MeleeAttack },
+                CandidateConfidence::High,
+                RoleSignalSource::CreatureField,
+                &format!("WEAP {} DNAM animation_type={} attack_animation={}", weapon.source, weapon.animation.animation_type, weapon.animation.attack_animation),
+                first_event_time(&sequence.text_keys, &["hit", "fire", "release"]),
+            );
+        }
+    }
+
     let binding = binding_summary(&sequence.binding);
     let mut events = events;
     events.sort_by(|left, right| {
@@ -1069,12 +1124,20 @@ fn classify_mobility(
     let path = path_key(source_kf);
     let path_swim = path.contains("swim");
     let path_fly = path.contains("fly") || path.contains("hover");
-    if explicit_swim || (path_swim && traits.contains(&CreatureMotionTrait::Swims)) {
+    if explicit_swim || path_swim {
         add_trait_signal(
             signals,
             MotionRole::Swim,
             family,
             &[CreatureMotionTrait::Swims],
+        );
+        add_signal(
+            signals,
+            MotionRole::Swim,
+            CandidateConfidence::High,
+            RoleSignalSource::SequenceName,
+            "source swim animation",
+            None,
         );
         if path_swim && !explicit_swim {
             add_signal(
@@ -1189,14 +1252,15 @@ fn add_trait_signal(
 
 fn add_secondary_filename_signal(
     source_kf: &str,
-    normalized_path: &str,
+    _normalized_path: &str,
     signals: &mut BTreeMap<MotionRole, Vec<(CandidateConfidence, RoleSignalProvenance)>>,
 ) {
-    let role = if normalized_path.contains("death") {
+    let filename = normalized_words(source_kf.rsplit(['/', '\\']).next().unwrap_or(source_kf));
+    let role = if filename.contains("death") {
         Some(MotionRole::Death)
-    } else if normalized_path.contains("hurt") || normalized_path.contains("recoil") {
+    } else if filename.contains("hurt") || filename.contains("recoil") {
         Some(MotionRole::Hurt)
-    } else if normalized_path.contains("idle") {
+    } else if filename.contains("idle") {
         Some(MotionRole::Idle)
     } else {
         None
@@ -1231,7 +1295,7 @@ fn add_signal(
     ));
 }
 
-fn event_provenance(events: &[TextKeyEvidence]) -> Vec<MotionEventProvenance> {
+pub(super) fn event_provenance(events: &[TextKeyEvidence]) -> Vec<MotionEventProvenance> {
     events
         .iter()
         .map(|event| {
@@ -1278,7 +1342,7 @@ fn first_event_time(events: &[TextKeyEvidence], tokens: &[&str]) -> Option<f64> 
     })
 }
 
-fn binding_summary(binding: &BindingEvidence) -> BindingSummary {
+pub(super) fn binding_summary(binding: &BindingEvidence) -> BindingSummary {
     let mut controller_types = binding.controller_types.clone();
     sort_case_insensitive(&mut controller_types);
     controller_types.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
@@ -1296,6 +1360,8 @@ fn binding_summary(binding: &BindingEvidence) -> BindingSummary {
     BindingSummary {
         source_skeleton_path: binding.source_skeleton_path.clone(),
         transform_track_count: binding.transform_track_count,
+        ordered_transform_targets: binding.target_names.iter()
+            .take(binding.transform_track_count).cloned().collect(),
         float_track_count: binding.float_track_count,
         controller_types,
         interpolator_types,
@@ -1614,6 +1680,8 @@ mod tests {
                         "NiTransformInterpolator".to_string()
                     }],
                     target_names: targets.iter().map(|target| (*target).to_string()).collect(),
+                    transform_priorities: Default::default(),
+                    transform_components: Default::default(),
                     required_float_slots: Vec::new(),
                     compatibility: BindingCompatibility::Verified,
                     compatibility_detail: None,
@@ -1630,6 +1698,62 @@ mod tests {
             .iter()
             .find(|candidates| candidates.role == role)
             .unwrap()
+    }
+
+    #[test]
+    fn creature_directory_does_not_classify_idle_as_death() {
+        let mut signals = BTreeMap::new();
+        add_secondary_filename_signal(
+            "creatures/deathclaw/mtidle.kf",
+            "creatures deathclaw mtidle kf",
+            &mut signals,
+        );
+        assert!(!signals.contains_key(&MotionRole::Death));
+        assert!(signals.contains_key(&MotionRole::Idle));
+    }
+
+    #[test]
+    fn filename_identifies_swim_and_sequence_identifies_strafe() {
+        let skeleton = "creatures/mirelurk/skeleton.nif";
+        let mut evidence = CreatureMotionFamilyEvidence {
+            rig: rig(LegacyCreatureGame::Fnv, skeleton),
+            referenced_kfs: Vec::new(),
+            kf_evidence: Vec::new(),
+            weapon_attacks: Vec::new(),
+            creature_traits: Vec::new(),
+        };
+        for (path, name) in [
+            ("creatures/mirelurk/swimmtforward.kf", "Forward"),
+            ("creatures/mirelurk/swimmtidle.kf", "Idle"),
+            ("creatures/mirelurk/mtleft.kf", "Left"),
+            ("creatures/mirelurk/mtright.kf", "Right"),
+        ] {
+            evidence.referenced_kfs.push(path.to_string());
+            evidence.kf_evidence.push(parsed(
+                LegacyCreatureGame::Fnv,
+                path,
+                skeleton,
+                name,
+                SequenceCycle::Loop,
+                vec![event(0.0, "start"), event(1.0, "end")],
+                RootMotionEvidence::None,
+                &["Bip01"],
+                false,
+            ));
+        }
+        let catalog = build_creature_motion_catalog(&[evidence]).unwrap();
+        assert_eq!(
+            role(&catalog.families[0], MotionRole::Swim)
+                .candidates
+                .len(),
+            2
+        );
+        assert_eq!(
+            role(&catalog.families[0], MotionRole::GroundLocomotion)
+                .candidates
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -1652,6 +1776,7 @@ mod tests {
                 &["Bip01 Pelvis"],
                 false,
             )],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![creature_trait(
                 CreatureMotionTrait::Walks,
                 0x00_0188,
@@ -1766,6 +1891,7 @@ mod tests {
                     false,
                 ),
             ],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![creature_trait(
                 CreatureMotionTrait::Walks,
                 0x10_CD73,
@@ -1870,6 +1996,7 @@ mod tests {
                     true,
                 ),
             ],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![
                 creature_trait(
                     CreatureMotionTrait::Walks,
@@ -1957,6 +2084,7 @@ mod tests {
                     false,
                 ),
             ],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![creature_trait(
                 CreatureMotionTrait::Stationary,
                 0x0F_E036,
@@ -2014,6 +2142,7 @@ mod tests {
                 &["Bip01 Pelvis"],
                 false,
             )],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![
                 creature_trait(
                     CreatureMotionTrait::Flies,
@@ -2068,6 +2197,7 @@ mod tests {
                     true,
                 ),
             ],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![
                 creature_trait(
                     CreatureMotionTrait::Walks,
@@ -2143,6 +2273,7 @@ mod tests {
                 &["##DLC03GoreGrenade", "Bip01 R Hand"],
                 true,
             )],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![creature_trait(
                 CreatureMotionTrait::HumanoidWeaponOverlay,
                 0x01_0001,
@@ -2210,6 +2341,9 @@ mod tests {
         );
         feed.idle_claims.push(IdleClaimEvidence {
             source_idle: key(0x07_2DC0, "Fallout3.esm"),
+            source_group: 20,
+            looping_min: 0,
+            looping_max: 0,
             ancestry: vec![
                 IdleAncestryNode {
                     form_key: key(0x07_2DC0, "Fallout3.esm"),
@@ -2292,6 +2426,7 @@ mod tests {
                 attack,
                 feed,
             ],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![creature_trait(
                 CreatureMotionTrait::Walks,
                 0x01_CF83,
@@ -2360,6 +2495,7 @@ mod tests {
                     false,
                 ),
             ],
+            weapon_attacks: Vec::new(),
             creature_traits: vec![creature_trait(
                 CreatureMotionTrait::Walks,
                 0x10_CD73,
@@ -2389,6 +2525,7 @@ mod tests {
                 "CREATURES/dog/MTIDLE.KF".to_string(),
             ],
             kf_evidence: Vec::new(),
+            weapon_attacks: Vec::new(),
             creature_traits: Vec::new(),
         };
         assert!(matches!(

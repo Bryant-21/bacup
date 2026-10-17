@@ -547,18 +547,21 @@ fn variants_stay_dense_when_a_wave_record_loses_every_spawn() {
     let rows = [
         SourceRow {
             wave_index: 0,
+            keyword: None,
             source_variant: 0,
             spawn_slot: 0,
             spawn: wave(UNEMITTED_SPAWN),
         },
         SourceRow {
             wave_index: 0,
+            keyword: None,
             source_variant: 1,
             spawn_slot: 2,
             spawn: wave(SCORCHED_A),
         },
         SourceRow {
             wave_index: 1,
+            keyword: None,
             source_variant: 0,
             spawn_slot: 0,
             spawn: wave(SCORCHED_B),
@@ -573,16 +576,271 @@ fn variants_stay_dense_when_a_wave_record_loses_every_spawn() {
         vec![
             CatalogRow {
                 wave_index: 0,
+                keyword: None,
                 variant: 0,
                 spawn_slot: 2,
                 form: wave(SCORCHED_A),
             },
             CatalogRow {
                 wave_index: 1,
+                keyword: None,
                 variant: 0,
                 spawn_slot: 0,
                 form: wave(SCORCHED_B),
             },
         ]
     );
+}
+
+#[test]
+fn roaming_scripts_choose_their_keyword_pool() {
+    let interner = StringInterner::new();
+    let boss = json!({"Scripts": [
+        {"ScriptName": "defaultquestencounterwavescript", "Properties": []},
+        {"ScriptName": "GQ_WanderingBossScript", "Properties": [
+            {"propertyName": "LocEncKeywords", "Type": "Array of Object", "Value": [object(0x0581DD, -1), object(0x0067D1, -1)]},
+        ]},
+    ]});
+    assert_eq!(
+        keyword_pool(&boss, &interner),
+        KeywordPool::Keywords(vec![fk(0x0581DD, &interner), fk(0x0067D1, &interner)])
+    );
+    for script in ["GQ_HordeQuestScript", "gq_swarmscript"] {
+        let payload = json!({"Scripts": [{"ScriptName": script, "Properties": []}]});
+        assert_eq!(keyword_pool(&payload, &interner), KeywordPool::MainAxis, "{script}");
+    }
+    let other = json!({"Scripts": [{"ScriptName": "defaultquestencounterwavescript", "Properties": []}]});
+    assert_eq!(keyword_pool(&other, &interner), KeywordPool::None);
+}
+
+#[test]
+fn keyword_pool_rows_number_variants_per_keyword_and_drop_unemitted_keywords() {
+    let interner = StringInterner::new();
+    let key = |local| fk(local, &interner);
+    let mut index = WaveIndex::default();
+    index.insert(key(0x529DF0), &[key(0x0067D1)], vec![WaveEntry { spawn_slot: 0, spawn: key(SCORCHED_A) }]);
+    index.insert(
+        key(0x5307EF),
+        &[key(0x0067D1)],
+        vec![
+            WaveEntry { spawn_slot: 0, spawn: key(SCORCHED_B) },
+            WaveEntry { spawn_slot: 1, spawn: key(SCORCHED_A) },
+        ],
+    );
+    index.insert(key(0x4F60B0), &[key(0x0581DD)], vec![WaveEntry { spawn_slot: 0, spawn: key(FERAL_GHOUL) }]);
+    index.insert(key(0x9000B0), &[key(0x9000B1)], vec![WaveEntry { spawn_slot: 0, spawn: key(LIBERATOR) }]);
+    index.sort_keyword_matches();
+
+    let pool = [key(0x0581DD), key(0x0067D1), key(0x0581DD), key(0x9000B1), key(0x9000C0)];
+    let rows = resolve_keyword_pool_rows(&pool, &index);
+    assert_eq!(rows.len(), 5, "duplicates and keywords without a WAVE add nothing");
+    assert!(rows.iter().all(|row| row.wave_index == KEYWORD_POOL_WAVE_INDEX));
+
+    let (mapped, dropped) = map_catalog_rows(&rows, |form| (form.local != 0x9000B1).then_some(form));
+    assert_eq!(dropped, 1, "an unemitted keyword drops its rows");
+    let pool_row = |keyword, variant, spawn_slot, form| CatalogRow {
+        wave_index: KEYWORD_POOL_WAVE_INDEX,
+        keyword: Some(key(keyword)),
+        variant,
+        spawn_slot,
+        form: key(form),
+    };
+    assert_eq!(
+        mapped,
+        vec![
+            pool_row(0x0581DD, 0, 0, FERAL_GHOUL),
+            pool_row(0x0067D1, 0, 0, SCORCHED_A),
+            pool_row(0x0067D1, 1, 0, SCORCHED_B),
+            pool_row(0x0067D1, 1, 1, SCORCHED_A),
+        ]
+    );
+
+    let vmad = catalog_script_vmad(&mapped, &[], PLUGIN, &interner).expect("pool VMAD");
+    let decoded = compact_vmad_payload_json(&vmad, &[], PLUGIN, Some("QUST")).unwrap();
+    let properties = &decoded["Scripts"][0]["Properties"];
+    let keywords = named_value(properties, "propertyName", "CandidateKeywords")
+        .and_then(Value::as_array)
+        .expect("keyword column");
+    assert_eq!(keywords.len(), mapped.len());
+    assert_eq!(object_form(&keywords[0], &interner), Some(key(0x0581DD)));
+    assert_eq!(catalog_rows(properties, &interner).len(), mapped.len());
+
+    let plain = [CatalogRow { wave_index: 0, keyword: None, variant: 0, spawn_slot: 0, form: key(SCORCHED_A) }];
+    let vmad = catalog_script_vmad(&plain, &[], PLUGIN, &interner).unwrap();
+    let decoded = compact_vmad_payload_json(&vmad, &[], PLUGIN, Some("QUST")).unwrap();
+    assert!(
+        named_value(&decoded["Scripts"][0]["Properties"], "propertyName", "CandidateKeywords").is_none(),
+        "catalogs without a pool keep their shape"
+    );
+}
+
+const TRIGGER_QUEST: u32 = 0x18B8EA;
+const LOC_ENC_MAIN_CURRENT: u32 = 0x12D5B9;
+const LOC_ENC_MAIN_SCORCHED: u32 = 0x0067D1;
+const VINE_KEYWORD: u32 = 0x30CB7C;
+const VINE_CREATURE: u32 = 0x9000E0;
+const OTHER_SCRIPT_KEYWORD: u32 = 0x9000B1;
+
+fn trigger_vmad(semantic_type: &str, scripts: Vec<Value>) -> Vec<u8> {
+    build_vmad_bytes_from_payload(
+        &json!({"Version": 6, "Object Format": 2, "semantic_type": semantic_type, "Scripts": scripts}),
+        &[],
+        PLUGIN,
+    )
+    .expect("trigger VMAD")
+}
+
+fn trigger_script(keyword: Option<u32>, extra: Vec<Value>) -> Value {
+    let mut properties = extra;
+    if let Some(keyword) = keyword {
+        properties.push(json!({"propertyName": "EncounterTypeKeyword", "Type": "Object", "Flags": 1, "Value": object(keyword, -1)}));
+    }
+    json!({"ScriptName": "DefaultTriggerEncounterWaveScript", "Flags": 0, "Properties": properties})
+}
+
+#[test]
+fn trigger_wave_quest_chooses_the_trigger_pool() {
+    let interner = StringInterner::new();
+    let payload = json!({"Scripts": [{"ScriptName": "defaulttriggerencounterwavequestscript", "Properties": []}]});
+    assert_eq!(keyword_pool(&payload, &interner), KeywordPool::TriggerVolumes);
+}
+
+#[test]
+fn trigger_keyword_reads_only_the_trigger_script() {
+    let interner = StringInterner::new();
+    let bound = json!({"Scripts": [
+        {"ScriptName": "BloodEagleSpotterAlarmActivatorScript", "Properties": [
+            {"propertyName": "EncounterTypeKeyword", "Type": "Object", "Value": object(0x9000C0, -1)},
+        ]},
+        trigger_script(Some(VINE_KEYWORD), vec![json!({"propertyName": "ResetTimeSeconds", "Type": "Float", "Flags": 1, "Value": 450.0})]),
+    ]});
+    assert_eq!(trigger_keyword(&bound, &interner), Some(fk(VINE_KEYWORD, &interner)));
+    let inherits = json!({"Scripts": [trigger_script(None, vec![json!({"propertyName": "Difficulty", "Type": "Int32", "Flags": 1, "Value": 1})])]});
+    assert_eq!(trigger_keyword(&inherits, &interner), None, "a REFR without an override inherits its base keyword");
+}
+
+#[test]
+fn trigger_wave_quest_gets_every_trigger_keyword_then_the_main_axis() {
+    let interner = StringInterner::new();
+    let source = plugin_handle_new_native(PLUGIN, Some("fo76")).unwrap();
+    let target = plugin_handle_new_native(PLUGIN, Some("fo4")).unwrap();
+    {
+        let mut session = open_session(source, None).unwrap();
+        let schema = session.schema().unwrap();
+        let mut records = vec![
+            record(b"KYWD", LOC_ENC_MAIN_SCORCHED, "LocEncMainScorched", &interner),
+            record(b"KYWD", LOC_ENC_MAIN_CURRENT, "LocEncMain_Current", &interner),
+            record(b"KYWD", VINE_KEYWORD, "WaveKeywordVineCreatures", &interner),
+            record(b"KYWD", OTHER_SCRIPT_KEYWORD, "WaveKeywordOther", &interner),
+            wave_record(0x529DF0, "WaveTypeScorched", &[LOC_ENC_MAIN_SCORCHED], &scorched_entries(), &interner),
+            wave_record(0x5307EF, "WaveTypeScorchedBoss", &[LOC_ENC_MAIN_SCORCHED], &scorched_boss_entries(), &interner),
+            wave_record(0x9000E1, "WaveType_SpecialVineCreatures", &[VINE_KEYWORD], &repeated(2, VINE_CREATURE, 30), &interner),
+            wave_record(0x9000B0, "WaveTypeOther", &[OTHER_SCRIPT_KEYWORD], &repeated(3, VINE_CREATURE, 30), &interner),
+        ];
+        // The base trigger: LocEncMain_Current has no WAVE, so it contributes no rows.
+        let mut base = record(b"ACTI", 0x242D61, "DefaultTriggerEncounterWave", &interner);
+        base.fields.push(bytes_field(b"VMAD", trigger_vmad("ACTI", vec![trigger_script(Some(LOC_ENC_MAIN_CURRENT), Vec::new())])));
+        records.push(base);
+        // A placed override naming its own keyword.
+        let mut placed = record(b"REFR", 0x30CB73, "VineTrigger", &interner);
+        placed.fields.push(bytes_field(b"VMAD", trigger_vmad("REFR", vec![trigger_script(Some(VINE_KEYWORD), Vec::new())])));
+        records.push(placed);
+        // A keyword property on another script is not a trigger keyword.
+        let mut other = record(b"ACTI", 0x9000D0, "NotATrigger", &interner);
+        other.fields.push(bytes_field(b"VMAD", trigger_vmad("ACTI", vec![json!({"ScriptName": "SomeOtherScript", "Flags": 0, "Properties": [
+            {"propertyName": "EncounterTypeKeyword", "Type": "Object", "Flags": 1, "Value": object(OTHER_SCRIPT_KEYWORD, -1)},
+        ]})])));
+        records.push(other);
+        let mut quest = record(b"QUST", TRIGGER_QUEST, "DefaultTriggerEncounterWaveQuest", &interner);
+        quest.fields.push(bytes_field(
+            b"VMAD",
+            wave_script_quest_vmad(
+                TRIGGER_QUEST,
+                "DefaultTriggerEncounterWaveQuestScript",
+                Vec::new(),
+                vec![json!([member("StageToSetAtEnd", "Int32", json!(200))])],
+            ),
+        ));
+        records.push(quest);
+        for record in records {
+            session.add_record(record, &schema, &interner).unwrap();
+        }
+    }
+
+    let mut session = open_session(target, Some(source)).unwrap();
+    let schema = session.schema().unwrap();
+    let mut mapper = FormKeyMapper::new(
+        std::iter::empty(),
+        MapperOptions {
+            output_plugin_name: PLUGIN.into(),
+            source_plugin_name: PLUGIN.into(),
+            ..MapperOptions::default()
+        },
+        &interner,
+    );
+    let mut target_quest = record(b"QUST", TRIGGER_QUEST, "DefaultTriggerEncounterWaveQuest", &interner);
+    target_quest.fields.push(bytes_field(
+        b"VMAD",
+        build_vmad_bytes_from_payload(
+            &json!({"Version": 6, "Object Format": 2, "Scripts": [
+                {"ScriptName": "DefaultTriggerEncounterWaveQuestScript", "Flags": 0, "Properties": []},
+            ]}),
+            &[],
+            PLUGIN,
+        )
+        .unwrap(),
+    ));
+    mapper.add_mapping(fk(TRIGGER_QUEST, &interner), fk(TRIGGER_QUEST, &interner));
+    session.add_record(target_quest, &schema, &interner).unwrap();
+    for (sig, local) in [
+        (b"KYWD", LOC_ENC_MAIN_SCORCHED),
+        (b"KYWD", VINE_KEYWORD),
+        (b"KYWD", OTHER_SCRIPT_KEYWORD),
+        (b"NPC_", SCORCHED_A),
+        (b"NPC_", SCORCHED_B),
+        (b"NPC_", VINE_CREATURE),
+    ] {
+        mapper.add_mapping(fk(local, &interner), fk(local, &interner));
+        session
+            .add_record(record(sig, local, "Emitted", &interner), &schema, &interner)
+            .unwrap();
+    }
+
+    let report = AttachFo76EncounterWaveCatalogFixup
+        .run_with_session(&mut session, &mut mapper, &FixupConfig::default())
+        .unwrap();
+    let warnings = report
+        .warnings
+        .iter()
+        .filter_map(|warning| interner.resolve(*warning))
+        .collect::<Vec<_>>();
+    assert_eq!(report.records_changed, 1, "{warnings:?}");
+
+    let (names, properties) =
+        catalog(&mut session, fk(TRIGGER_QUEST, &interner)).expect("trigger catalog");
+    assert_eq!(
+        names,
+        vec!["DefaultTriggerEncounterWaveQuestScript", CATALOG_SCRIPT_NAME]
+    );
+    let local = |spawn| fk(spawn, &interner);
+    let mut rows = expected(-1, 0, &repeated(2, VINE_CREATURE, 30), local);
+    rows.extend(expected(-1, 0, &scorched_entries(), local));
+    rows.extend(expected(-1, 1, &scorched_boss_entries(), local));
+    assert_eq!(catalog_rows(&properties, &interner), rows);
+    let keywords = named_value(&properties, "propertyName", "CandidateKeywords")
+        .and_then(Value::as_array)
+        .expect("keyword column")
+        .iter()
+        .map(|value| object_form(value, &interner).unwrap().local)
+        .collect::<Vec<_>>();
+    let mut expected_keywords = vec![VINE_KEYWORD; 2];
+    expected_keywords.extend(vec![LOC_ENC_MAIN_SCORCHED; rows.len() - 2]);
+    assert_eq!(
+        keywords, expected_keywords,
+        "trigger keywords lead; the main axis stands in for LocEncMain_Current"
+    );
+
+    drop(session);
+    assert!(plugin_handle_close_native(target));
+    assert!(plugin_handle_close_native(source));
 }

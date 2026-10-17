@@ -19,6 +19,7 @@ class DirectSelectTool(BaseTool):
         self._dragging = False
         self._drag_start_x = 0.0
         self._drag_start_y = 0.0
+        self._editing_control = False
 
     def on_mouse_down(self, x: float, y: float, button: int) -> bool:
         if button != 0:
@@ -33,6 +34,8 @@ class DirectSelectTool(BaseTool):
 
         layer_idx, entry_idx = scene.selection[0]
         layer = scene.layers[layer_idx]
+        if layer.locked:
+            return False
         kf = layer.keyframe_at(scene.current_frame)
         if not kf or entry_idx >= len(kf.display_list):
             return False
@@ -45,6 +48,7 @@ class DirectSelectTool(BaseTool):
         # Walk shape records and find nearest anchor point
         best_idx = -1
         best_dist = float("inf")
+        self._editing_control = False
         cur_x, cur_y = 0.0, 0.0
         threshold = 6.0 / self.app.camera.zoom
 
@@ -55,16 +59,21 @@ class DirectSelectTool(BaseTool):
                 cur_x += rec.dx / 20.0
                 cur_y += rec.dy / 20.0
             elif isinstance(rec, CurvedEdge):
+                hx, hy = de.transform.apply(cur_x + rec.cx / 20, cur_y + rec.cy / 20)
+                distance = math.hypot(cx - hx, cy - hy)
+                if distance < threshold and distance < best_dist:
+                    best_dist, best_idx = distance, i
+                    self._editing_control = True
                 cur_x += (rec.cx + rec.ax) / 20.0
                 cur_y += (rec.cy + rec.ay) / 20.0
 
             # Check distance to this point (transformed)
-            px = de.transform.x + cur_x
-            py = de.transform.y + cur_y
+            px, py = de.transform.apply(cur_x, cur_y)
             dist = math.hypot(cx - px, cy - py)
             if dist < threshold and dist < best_dist:
                 best_dist = dist
                 best_idx = i
+                self._editing_control = False
 
         if best_idx >= 0:
             self._selected_record_idx = best_idx
@@ -96,6 +105,9 @@ class DirectSelectTool(BaseTool):
             return
 
         de = kf.display_list[entry_idx]
+        local_start = de.transform.inverse(self._drag_start_x, self._drag_start_y)
+        local_end = de.transform.inverse(cx, cy)
+        dx, dy = (round((local_end[i] - local_start[i]) * 20) for i in (0, 1))
         shape = scene.library_symbols.get(de.shape_id)
         if not shape or self._selected_record_idx >= len(shape.records):
             return
@@ -108,12 +120,37 @@ class DirectSelectTool(BaseTool):
             rec.dx += dx
             rec.dy += dy
         elif isinstance(rec, CurvedEdge):
-            rec.ax += dx
-            rec.ay += dy
+            if self._editing_control:
+                rec.cx += dx
+                rec.cy += dy
+                rec.ax -= dx
+                rec.ay -= dy
+            else:
+                rec.ax += dx
+                rec.ay += dy
+        if not self._editing_control:
+            # Relative SWF edges would otherwise move every later anchor.
+            for following in shape.records[self._selected_record_idx + 1:]:
+                if isinstance(following, StyleChange) and following.has_move:
+                    break
+                if isinstance(following, StraightEdge):
+                    following.dx -= dx
+                    following.dy -= dy
+                    break
+                if isinstance(following, CurvedEdge):
+                    following.cx -= dx
+                    following.cy -= dy
+                    break
+        from creation_lib.swf.svg_io import _compute_bounds
+        shape.bounds = _compute_bounds(shape.records)
+        if shape.edge_bounds is not None:
+            shape.edge_bounds = shape.bounds
 
         self._drag_start_x = cx
         self._drag_start_y = cy
         scene.dirty = True
+        if self.app.renderer:
+            self.app.renderer.invalidate_shape(de.shape_id)
 
     def on_mouse_up(self, x: float, y: float, button: int) -> None:
         self._dragging = False
@@ -152,10 +189,8 @@ class DirectSelectTool(BaseTool):
                 # Draw control point handle
                 ctrl_x = cur_x + rec.cx / 20.0
                 ctrl_y = cur_y + rec.cy / 20.0
-                sc = camera.canvas_to_screen(
-                    de.transform.x + cur_x, de.transform.y + cur_y)
-                sh = camera.canvas_to_screen(
-                    de.transform.x + ctrl_x, de.transform.y + ctrl_y)
+                sc = camera.canvas_to_screen(*de.transform.apply(cur_x, cur_y))
+                sh = camera.canvas_to_screen(*de.transform.apply(ctrl_x, ctrl_y))
                 draw_list.add_line(
                     imgui.ImVec2(sc[0], sc[1]),
                     imgui.ImVec2(sh[0], sh[1]),
@@ -170,7 +205,6 @@ class DirectSelectTool(BaseTool):
                 continue
 
             # Draw anchor point
-            sp = camera.canvas_to_screen(
-                de.transform.x + cur_x, de.transform.y + cur_y)
+            sp = camera.canvas_to_screen(*de.transform.apply(cur_x, cur_y))
             c = selected_color if i == self._selected_record_idx else point_color
             draw_list.add_circle_filled(imgui.ImVec2(sp[0], sp[1]), 4, c)

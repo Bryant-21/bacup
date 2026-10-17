@@ -17,6 +17,7 @@ struct GamebryoNifEntry {
     source_path: String,
     resolved_path: String,
     output_subpath: Option<String>,
+    weapon_role: Option<String>,
 }
 
 #[derive(Default)]
@@ -189,10 +190,15 @@ fn parse_nif_entries(params: &JsonValue) -> Result<Vec<GamebryoNifEntry>, PhaseE
                 .get("output_subpath")
                 .and_then(JsonValue::as_str)
                 .map(str::to_string);
+            let weapon_role = entry
+                .get("weapon_role")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
             Ok(GamebryoNifEntry {
                 source_path,
                 resolved_path,
                 output_subpath,
+                weapon_role,
             })
         })
         .collect()
@@ -220,6 +226,10 @@ fn convert_entry(
             .as_deref()
             .unwrap_or(&entry.source_path),
     )?;
+    let convert_options = ConvertFileOptions {
+        weapon_role: entry.weapon_role.clone(),
+        ..convert_options.clone()
+    };
     let result = convert_entry_staged(
         source,
         &output,
@@ -230,7 +240,7 @@ fn convert_entry(
         written_materials,
         sink,
         data_root,
-        convert_options,
+        &convert_options,
     );
     if result.is_err() {
         let _ = std::fs::remove_file(&output);
@@ -348,6 +358,7 @@ pub(crate) struct GamebryoMaterialSpec {
     pub(crate) textures: Vec<String>,
     pub(crate) flags_1: u64,
     pub(crate) flags_2: u64,
+    pub(crate) specular_color: Option<[f32; 3]>,
     pub(crate) specular_strength: f32,
     pub(crate) smoothness: f32,
     pub(crate) environment_map_scale: f32,
@@ -360,9 +371,13 @@ pub(crate) struct GamebryoMaterialSpec {
 
 pub(crate) fn material_spec_hash(spec: &GamebryoMaterialSpec) -> u64 {
     let mut hash = texture_set_hash(&spec.textures);
+    let specular_color = spec.specular_color.unwrap_or([1.0; 3]);
     for value in [
         spec.flags_1,
         spec.flags_2,
+        u64::from(specular_color[0].to_bits()),
+        u64::from(specular_color[1].to_bits()),
+        u64::from(specular_color[2].to_bits()),
         u64::from(spec.specular_strength.to_bits()),
         u64::from(spec.smoothness.to_bits()),
         u64::from(spec.environment_map_scale.to_bits()),
@@ -495,6 +510,7 @@ pub(crate) fn fo4_bgsm_from_spec(spec: &GamebryoMaterialSpec) -> bgsm::BgsmData 
         // per-texel strength now comes from the synthesized `_s` map.
         true
     };
+    material.SpecularColor = spec.specular_color.unwrap_or([1.0; 3]);
     material.SpecularMult = spec.specular_strength;
     material.Smoothness = spec.smoothness;
     material.Glowmap = spec.flags_2 & SLSF2_GLOW_MAP != 0;
@@ -601,6 +617,20 @@ fn shader_f32(block: &nif_core_native::model::NifBlock, field: &str, default: f3
     match block.get_field(field) {
         Some(NifValue::Float(value)) => *value as f32,
         _ => default,
+    }
+}
+
+fn shader_color3(value: Option<&NifValue>) -> Option<[f32; 3]> {
+    match value {
+        Some(NifValue::Color3(color)) => Some(*color),
+        Some(NifValue::Struct(fields)) => {
+            let channel = |key: &str| match fields.get(key) {
+                Some(NifValue::Float(value)) => Some(*value as f32),
+                _ => None,
+            };
+            Some([channel("r")?, channel("g")?, channel("b")?])
+        }
+        _ => None,
     }
 }
 
@@ -715,6 +745,7 @@ fn synthesize_materials(
             textures: textures.clone(),
             flags_1: shader_u64(block, "Shader Flags 1"),
             flags_2,
+            specular_color: shader_color3(block.get_field("Specular Color")),
             specular_strength: shader_f32(block, "Specular Strength", 1.0),
             smoothness: shader_f32(block, "Smoothness", 0.5),
             environment_map_scale: shader_f32(block, "Environment Map Scale", 1.0),
@@ -727,33 +758,25 @@ fn synthesize_materials(
         // Must run before the hash so substituted materials do not collide with
         // unsubstituted ones sharing the same texture set.
         substitute_non_cube_envmap(&mut spec, source_root, material_root);
-        specs.insert(texture_set_id, spec);
+        specs.insert(block.block_id, spec);
     }
 
-    let mut material_by_texture_set = HashMap::new();
-    for (texture_set_id, spec) in &specs {
+    let mut material_by_shader = HashMap::new();
+    for (shader_id, spec) in &specs {
         let filename = format!("gamebryo_{:016x}.bgsm", material_spec_hash(spec));
         let material_ref = format!("{}\\{filename}", material_root.replace('/', "\\"));
         let material_path = mod_path.join("data").join(material_root).join(&filename);
         write_material_once(&material_path, spec, written_materials, sink, data_root)?;
-        material_by_texture_set.insert(*texture_set_id, material_ref);
+        material_by_shader.insert(*shader_id, material_ref);
     }
 
     for block in nif.blocks.iter_mut() {
         if block.type_name != "BSLightingShaderProperty" {
             continue;
         }
-        let Some(texture_set_id) = block
-            .get_field("Texture Set")
-            .map(NifValue::as_i64)
-            .filter(|id| *id >= 0)
-            .map(|id| id as usize)
-        else {
-            continue;
-        };
-        if let Some(material_ref) = material_by_texture_set.get(&texture_set_id) {
+        if let Some(material_ref) = material_by_shader.get(&block.block_id) {
             block.set_field("Name", NifValue::String(material_ref.clone()));
-            if let Some(spec) = specs.get(&texture_set_id) {
+            if let Some(spec) = specs.get(&block.block_id) {
                 synchronize_fo4_environment_map_shader(block, spec);
             }
         }
@@ -1031,6 +1054,10 @@ mod tests {
                 "nif_paths": [{
                     "source_path": "Meshes/fnv/clutter/crate/cratelarge01.nif",
                     "resolved_path": fixture.to_string_lossy(),
+                }, {
+                    "source_path": "Meshes/fnv/weapons/test/gun.nif",
+                    "resolved_path": fixture.to_string_lossy(),
+                    "weapon_role": "gun",
                 }],
                 "material_out_rel": "materials/Test/gamebryo",
             });
@@ -1049,10 +1076,25 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(report.assets_written, 1);
+        assert_eq!(report.assets_written, 2);
         assert_eq!(report.items_failed, 0);
         let output_nif = mod_path.join("data/Meshes/clutter/crate/cratelarge01.nif");
         let converted = NifFile::load(output_nif).unwrap();
+        let weapon = NifFile::load(mod_path.join("data/Meshes/weapons/test/gun.nif")).unwrap();
+        assert_eq!(
+            weapon.blocks[0].get_field("Name").and_then(|value| {
+                if let NifValue::String(name) = value {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            }),
+            Some("Weapon")
+        );
+        assert_ne!(
+            converted.blocks[0].get_field("Name"),
+            Some(&NifValue::String("Weapon".into()))
+        );
         assert!(converted.find_blocks("BSTriShape").len() >= 1);
         assert!(converted.find_blocks("NiTriStrips").is_empty());
         assert_eq!(converted.find_blocks("bhkNPCollisionObject").len(), 1);
@@ -1078,9 +1120,9 @@ mod tests {
         assert!(material.header.zbuffer_test);
         assert_eq!(material.header.alpha_test_ref, 128);
         assert!(material.SpecularEnabled);
-        assert_eq!(material.SpecularColor, [1.0, 1.0, 1.0]);
+        assert_eq!(material.SpecularColor, [0.0, 0.0, 0.0]);
         assert_eq!(material.SpecularMult, 1.0);
-        assert_eq!(material.Smoothness, 0.5);
+        assert!(((10.0 * material.Smoothness + 1.0).exp2() - 50.0).abs() < 0.0001);
         assert_eq!(material.FresnelPower, 5.0);
         assert!(material.ReceiveShadows);
         assert!(material.CastShadows);
@@ -1098,7 +1140,8 @@ mod tests {
         assert!(material_names[0].starts_with("Materials\\Test\\gamebryo\\"));
         assert!(material_names[0].ends_with(".bgsm"));
         let streamed = sink.ba2.as_ref().unwrap().streamed_rel_paths();
-        assert_eq!(streamed.len(), 2);
+        assert_eq!(streamed.len(), 3);
+        assert!(streamed.contains(&"meshes/weapons/test/gun.nif".to_string()));
         assert!(streamed.contains(&"meshes/clutter/crate/cratelarge01.nif".to_string()));
         assert!(
             streamed
@@ -1201,6 +1244,76 @@ mod tests {
     }
 
     #[test]
+    fn shaders_sharing_textures_keep_their_own_specular_materials() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/test_fixtures/gamebryo_nifs/cratelarge01.nif");
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let nif_path = data_root.join("Meshes/shared_textures.nif");
+        std::fs::create_dir_all(nif_path.parent().unwrap()).unwrap();
+        convert_nif_file(
+            &fixture,
+            &nif_path,
+            "fnv",
+            "fo4",
+            None,
+            &ConvertFileOptions::default(),
+        )
+        .unwrap();
+
+        let mut nif = NifFile::load(nif_path.clone()).unwrap();
+        let shader_id = nif
+            .blocks
+            .iter()
+            .position(|block| block.type_name == "BSLightingShaderProperty")
+            .unwrap();
+        nif.blocks[shader_id].set_field("Specular Strength", NifValue::Float(0.25));
+        let mut second_shader = nif.blocks[shader_id].clone();
+        let second_shader_id = nif.add_block("BSLightingShaderProperty", None);
+        second_shader.block_id = second_shader_id;
+        second_shader.set_field("Specular Color", NifValue::Color3([0.1, 0.2, 0.3]));
+        second_shader.set_field("Specular Strength", NifValue::Float(0.75));
+        nif.blocks[second_shader_id] = second_shader;
+        nif.save(Some(nif_path.clone())).unwrap();
+
+        synthesize_materials(
+            &nif_path,
+            temp.path(),
+            "Materials/Test/gamebryo",
+            &Mutex::new(HashSet::new()),
+            None,
+            &data_root,
+            None,
+        )
+        .unwrap();
+
+        let nif = NifFile::load(nif_path).unwrap();
+        let material_paths = nif
+            .blocks
+            .iter()
+            .filter(|block| block.type_name == "BSLightingShaderProperty")
+            .map(|block| match block.get_field("Name") {
+                Some(NifValue::String(path)) => path.clone(),
+                other => panic!("missing synthesized material: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(material_paths.len(), 2);
+        assert_ne!(material_paths[0], material_paths[1]);
+        let materials = material_paths
+            .iter()
+            .map(|path| {
+                bgsm::parse(&std::fs::read(data_root.join(path.replace('\\', "/"))).unwrap())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(materials[0].SpecularColor, [0.0; 3]);
+        assert_eq!(materials[0].SpecularMult, 0.25);
+        assert_eq!(materials[1].SpecularColor, [0.1, 0.2, 0.3]);
+        assert_eq!(materials[1].SpecularMult, 0.75);
+        assert_eq!(materials[0].DiffuseTexture, materials[1].DiffuseTexture);
+    }
+
+    #[test]
     fn failed_material_write_or_synthesis_leaves_no_output_or_poisoned_state() {
         let temp = std::env::temp_dir().join(format!(
             "conversion_gamebryo_material_retry_{}_{}",
@@ -1256,6 +1369,7 @@ mod tests {
             source_path: "Meshes/fnv/clutter/crate/cratelarge01.nif".to_string(),
             resolved_path: fixture.to_string_lossy().to_string(),
             output_subpath: None,
+            weapon_role: None,
         };
 
         let result = convert_entry(
@@ -1411,6 +1525,12 @@ mod tests {
             material_spec_hash(&env_mapped),
             "two materials sharing a texture set but differing in flags must not collide"
         );
+        let mut tinted = base.clone();
+        tinted.specular_color = Some([0.1, 0.2, 0.3]);
+        assert_eq!(fo4_bgsm_from_spec(&tinted).SpecularColor, [0.1, 0.2, 0.3]);
+        assert_ne!(material_spec_hash(&base), material_spec_hash(&tinted));
+        tinted.specular_color = Some([1.0; 3]);
+        assert_eq!(material_spec_hash(&base), material_spec_hash(&tinted));
     }
 
     #[test]

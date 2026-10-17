@@ -56,11 +56,11 @@ Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akAct
 EndEvent
 
 Function Fragment_Stage_0100_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(10)
+    Self.SetObjectiveDisplayed(10)
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self
     owningQuest.SetObjectiveCompleted(10)
     TryStartDaily(Game.GetPlayer())
 EndFunction

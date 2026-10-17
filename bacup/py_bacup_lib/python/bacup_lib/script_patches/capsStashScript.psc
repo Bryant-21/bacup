@@ -17,21 +17,22 @@ Event OnActivate(ObjectReference akActionRef)
         amount = Utility.RandomInt(capsStandardMin, capsStandardMax)
     EndIf
 
+    Actor activatingActor = akActionRef as Actor
     Float bonusChance = 0.0
     Float bonusMod = 1.0
-    If akActionRef.HasPerk(CapCollector03)
+    If activatingActor.HasPerk(CapCollector03)
         bonusChance = capCollectorChanceRank3
         bonusMod = capCollectorCapsModRank3
-    ElseIf akActionRef.HasPerk(CapCollector02)
+    ElseIf activatingActor.HasPerk(CapCollector02)
         bonusChance = capCollectorChanceRank2
         bonusMod = capCollectorCapsModRank2
-    ElseIf akActionRef.HasPerk(CapCollector01)
+    ElseIf activatingActor.HasPerk(CapCollector01)
         bonusChance = capCollectorChanceRank1
         bonusMod = capCollectorCapsModRank1
     EndIf
 
     If bonusChance > 0.0
-        If akActionRef.HasPerk(CapsBobbleheadPerk)
+        If activatingActor.HasPerk(CapsBobbleheadPerk)
             bonusChance = bonusChance * capsBobbleheadChanceMultiplier
             If bonusChance > 1.0
                 bonusChance = 1.0

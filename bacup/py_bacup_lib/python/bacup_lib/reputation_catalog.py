@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Protocol
 
 from bacup_lib.esp_native_runtime import load_esp_native
+from bacup_lib.plugin_catalog import catalog_path, write_document
 
 SCHEMA_VERSION = 1
-OUTPUT = Path("F4SE/Plugins/B21_TalesFromAppalachia/reputation.json")
+FEATURE = "Reputation"
 
 FACTIONS = (
     {
@@ -228,7 +229,13 @@ class NativeResolver:
 
 
 def plugin_masters(native, handle: int) -> list[str]:
-    return list(native.plugin_handle_get_meta(handle)[4][5])
+    return list(native.plugin_handle_get_meta(handle, include_record_count=False)[4][5])
+
+
+def to_document(catalog: dict) -> dict:
+    """Tales layout: factions (key code) is the section; HUD sounds and the movie contract are settings."""
+    settings = {key: catalog[key] for key in ("source", "output_plugin", "source_movie_contract", "sounds", "missing_converted")}
+    return {"version": catalog["schema_version"], "settings": settings, "factions": catalog["factions"]}
 
 
 def emit_reputation_catalog(source_plugin: Path, converted_plugin: Path, output_mod: Path,
@@ -255,12 +262,9 @@ def emit_reputation_catalog(source_plugin: Path, converted_plugin: Path, output_
     finally:
         for handle in reversed(handles):
             native.plugin_handle_close(handle)
-    destination = output_mod / OUTPUT
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(
-        json.dumps(catalog, indent=2, sort_keys=True, allow_nan=False) + "\n",
-        encoding="utf-8", newline="\n",
-    )
+    document = to_document(catalog)
+    json.dumps(document, allow_nan=False)
+    write_document(FEATURE, output_plugin, document, output_mod)
     return catalog
 
 
@@ -273,4 +277,4 @@ if __name__ == "__main__":
     parser.add_argument("--output-mod", type=Path, required=True)
     args = parser.parse_args()
     result = emit_reputation_catalog(args.source, args.converted_plugin, args.output_mod)
-    print(f"Wrote {len(result['factions'])} factions to {args.output_mod / OUTPUT}")
+    print(f"Wrote {len(result['factions'])} factions to {args.output_mod / catalog_path(FEATURE, args.converted_plugin.name)}")

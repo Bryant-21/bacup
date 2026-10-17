@@ -33,6 +33,8 @@ const THIRD_PERSON: &[&str] = &["meshes", "pipboy2000", "characterassets", "pipb
 
 const FO4_SCREEN_GLOW: &str = "ScreenGlowEffect01";
 const FO76_SCREEN_GLOW: &str = "ScreenGlowEffect";
+const FO76_DEFAULT_TEXTURE: &str = "textures\\shared\\default_d.dds";
+const WHITE_EFFECT_TEXTURE: &str = "textures\\Effects\\ColorWhiteUtility.dds";
 
 const VERTEX_ATTRIBUTE_SHIFT: u32 = 44;
 const VERTEX_ATTRIBUTE_SKINNED: u64 = 0x40;
@@ -53,6 +55,9 @@ pub fn fix_pipboy2000_nifs(data_root: &Path) -> Pipboy2000NifSummary {
         match edit(&path, rigidify_single_bone_skins) {
             Ok(count) => summary.rigid_shapes = count,
             Err(error) => summary.failures.push(error),
+        }
+        if let Err(error) = edit(&path, replace_missing_effect_texture) {
+            summary.failures.push(error);
         }
     }
     if let Some(path) = find_ci(data_root, THIRD_PERSON) {
@@ -146,6 +151,26 @@ pub(crate) fn enable_fo4_screen_glow(nif: &mut NifFile) -> bool {
         nif.remove_blocks(&dropped);
     }
     true
+}
+
+/// FO76's 1st-person screen glow samples `textures\Shared\Default_d.dds`, which
+/// FO4 does not ship, so the whole Pip-Boy screen draws with the engine's purple
+/// missing-texture fallback. Use the white utility texture the 3rd-person glow uses.
+pub(crate) fn replace_missing_effect_texture(nif: &mut NifFile) -> usize {
+    let mut changed = 0;
+    for block in &mut nif.blocks {
+        if block.type_name == "BSEffectShaderProperty"
+            && name_of(block.get_field("Source Texture"))
+                .is_some_and(|path| path.eq_ignore_ascii_case(FO76_DEFAULT_TEXTURE))
+        {
+            block.set_field(
+                "Source Texture",
+                NifValue::String(WHITE_EFFECT_TEXTURE.into()),
+            );
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// Replace every `BSTriShape` skinned rigidly (each vertex fully weighted to one
@@ -900,6 +925,24 @@ mod tests {
         assert!(!nif.blocks.iter().any(|b| b.type_name == "NiVisController"
             || b.type_name == "NiBoolInterpolator"
             || b.type_name == "NiBoolData"));
+    }
+
+    #[test]
+    fn first_person_glow_loses_the_missing_default_texture() {
+        let mut nif = NifFile::new("fo4");
+        let shader = nif.add_block(
+            "BSEffectShaderProperty",
+            Some(IndexMap::from([(
+                "Source Texture".to_string(),
+                NifValue::String("textures\\Shared\\Default_d.dds".into()),
+            )])),
+        );
+        assert_eq!(replace_missing_effect_texture(&mut nif), 1);
+        assert_eq!(
+            name_of(nif.blocks[shader].get_field("Source Texture")).as_deref(),
+            Some(WHITE_EFFECT_TEXTURE)
+        );
+        assert_eq!(replace_missing_effect_texture(&mut nif), 0);
     }
 
     #[test]

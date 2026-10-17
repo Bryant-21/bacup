@@ -37,9 +37,7 @@
 // event, and float channels are extracted, events remapped via event_map, then
 // written as hkaInterleavedUncompressedAnimation XML and packed by havok_native.
 //
-// weapon_family_table.yaml is embedded for callers that need overlay synthesis.
-// Weapon overlay synthesis itself stays in the Python orchestrator because it
-// needs per-weapon EditorIDs from the translated WEAP records.
+// Record-driven legacy weapon profiles are emitted by legacy_weapons.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -51,6 +49,27 @@ use serde_json::Value as JsonValue;
 use crate::phase::progress::ProgressReporter;
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 use crate::source_rig::{ClipBinding, ClipDecl};
+
+pub(crate) mod legacy_weapons;
+mod fnv_actor_accumulator;
+pub(crate) mod fnv_creature_events;
+pub(crate) mod fnv_creature_blend;
+pub(crate) mod fnv_creature_automatic;
+pub(crate) mod starfield_decoder;
+pub(crate) mod starfield_afx;
+pub(crate) mod starfield_ammo;
+pub(crate) mod starfield_retarget;
+pub(crate) mod starfield_weapons;
+pub(crate) mod starfield_subgraphs;
+pub(crate) mod starfield_weapon_parts;
+pub(crate) mod weapon_actor_graph;
+#[cfg(test)]
+mod weapon_coverage;
+pub(crate) mod weapon_events;
+pub(crate) mod weapon_parts;
+pub(crate) mod weapon_retarget;
+pub(crate) mod skyrim_rider;
+pub(crate) mod skyrim_weapons;
 
 // ---------------------------------------------------------------------------
 // Embedded weapon-family table
@@ -460,10 +479,15 @@ pub(crate) struct FnvKfStageRequest<'a> {
     pub(crate) output_clip_path: &'a str,
     pub(crate) sequence_index: Option<usize>,
     pub(crate) skeleton: FnvKfSkeletonContract<'a>,
+    pub(crate) reference_skeleton_hkx: &'a [u8],
     pub(crate) original_skeleton_name: &'a str,
     pub(crate) event_map: &'a HashMap<String, String>,
     pub(crate) target_sample_rate_hz: Option<f64>,
     pub(crate) extracted_motion_policy: FnvExtractedMotionPolicy,
+    pub(crate) attack_kind: Option<fnv_creature_events::FnvCreatureAttackKind>,
+    pub(crate) automatic_attack: Option<fnv_creature_automatic::AutomaticAttackSegment>,
+    pub(crate) attack_playback_speed: Option<f64>,
+    pub(crate) equipment_index: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -587,6 +611,11 @@ pub(crate) fn convert_kf_to_hkx_with_channels(
         target_sample_rate_hz,
         extracted_motion_policy,
         sequence_index,
+        None,
+        None,
+        None,
+        None,
+        None,
     )?;
 
     if let Some(parent) = out_path.parent() {
@@ -625,6 +654,11 @@ pub(crate) fn stage_fnv_creature_kf(
         request.target_sample_rate_hz,
         request.extracted_motion_policy,
         request.sequence_index,
+        Some(request.reference_skeleton_hkx),
+        request.attack_kind,
+        request.automatic_attack,
+        request.attack_playback_speed,
+        request.equipment_index,
     )
 }
 
@@ -641,6 +675,11 @@ fn stage_fnv_kf_bytes_with_channels(
     target_sample_rate_hz: Option<f64>,
     extracted_motion_policy: FnvExtractedMotionPolicy,
     sequence_index: Option<usize>,
+    actor_reference_skeleton_hkx: Option<&[u8]>,
+    attack_kind: Option<fnv_creature_events::FnvCreatureAttackKind>,
+    automatic_attack: Option<fnv_creature_automatic::AutomaticAttackSegment>,
+    attack_playback_speed: Option<f64>,
+    equipment_index: Option<u8>,
 ) -> Result<StagedFnvKfArtifact, FnvKfConversionError> {
     let runtime_clip_path = validate_output_clip_path(output_clip_path).map_err(|reason| {
         FnvKfConversionError::InvalidOutputClipPath {
@@ -718,6 +757,16 @@ fn stage_fnv_kf_bytes_with_channels(
 
     omit_missing_weapon_attachment_track(&mut clip, ordered_source_bone_names);
     omit_unbound_stationary_scene_tracks(&mut clip, ordered_source_bone_names, source_rel);
+    if let Some(skeleton_hkx) = actor_reference_skeleton_hkx {
+        // Actor property controllers are driven by paired NIF sequences; their
+        // synthetic scalar identities are not FO4 hkaSkeleton float-slot names.
+        clip.float_channels.clear();
+        fnv_actor_accumulator::prepare(&mut clip, ordered_source_bone_names, skeleton_hkx)
+            .map_err(|message| FnvKfConversionError::Parse {
+                path: source_rel.to_string(),
+                message,
+            })?;
+    }
 
     clip.events = clip
         .events
@@ -735,6 +784,22 @@ fn stage_fnv_kf_bytes_with_channels(
         })
         .collect();
 
+    if let Some(kind) = attack_kind {
+        fnv_creature_events::lower(&mut clip, kind);
+    }
+    if let Some(segment) = automatic_attack {
+        fnv_creature_automatic::apply(&mut clip, segment)
+            .map_err(|message| FnvKfConversionError::Parse { path: source_rel.to_string(), message })?;
+    } else if let Some(speed) = attack_playback_speed {
+        fnv_creature_automatic::scale_playback(&mut clip, speed)
+            .map_err(|message| FnvKfConversionError::Parse { path: source_rel.to_string(), message })?;
+    }
+    if let Some(index) = equipment_index {
+        if index > 4 {
+            return Err(FnvKfConversionError::Parse { path: source_rel.to_string(), message: format!("invalid creature equipment index {index}") });
+        }
+        fnv_creature_events::set_equipment_index(&mut clip, index);
+    }
     let parse_warnings = std::mem::take(&mut clip.warnings);
     let sequence_name = clip.name.clone();
     let transform_track_count = clip.channels.len();
@@ -901,6 +966,7 @@ pub(crate) struct AnimationClip {
     interpolator_types: Vec<String>,
     events: Vec<AnimationEvent>,
     warnings: Vec<String>,
+    actor_accumulator_track: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -931,6 +997,8 @@ pub(crate) struct FnvKfBindingEvidence {
     pub(crate) controller_types: Vec<String>,
     pub(crate) interpolator_types: Vec<String>,
     pub(crate) target_names: Vec<String>,
+    pub(crate) transform_priorities: std::collections::BTreeMap<String, u8>,
+    pub(crate) transform_components: std::collections::BTreeMap<String, u8>,
     pub(crate) required_float_slots: Vec<String>,
     pub(crate) compatibility: FnvKfBindingCompatibility,
 }
@@ -985,16 +1053,6 @@ pub(crate) enum FnvKfFloatBindingError {
     DuplicateFloatSlot {
         name: String,
         first: usize,
-        second: usize,
-    },
-    #[error(
-        "ambiguous normalized source animation float slot {normalized:?}: {first_name:?} at {first} and {second_name:?} at {second}"
-    )]
-    AmbiguousFloatSlot {
-        normalized: String,
-        first_name: String,
-        first: usize,
-        second_name: String,
         second: usize,
     },
     #[error("duplicate KF float target {name:?} at tracks {first} and {second}")]
@@ -1248,7 +1306,6 @@ fn bind_fnv_kf_float_tracks(
             track_count: channels.len(),
         })?;
     let mut exact_slots: HashMap<&str, usize> = HashMap::with_capacity(slots.len());
-    let mut normalized_slots: HashMap<String, (usize, &str)> = HashMap::with_capacity(slots.len());
     for (index, name) in slots.iter().enumerate() {
         if name.trim().is_empty() {
             return Err(FnvKfFloatBindingError::EmptyFloatSlotName { index });
@@ -1260,24 +1317,12 @@ fn bind_fnv_kf_float_tracks(
                 second: index,
             });
         }
-        let normalized = normalize_fnv_bone_name(name);
-        if let Some(&(first, first_name)) = normalized_slots.get(&normalized) {
-            return Err(FnvKfFloatBindingError::AmbiguousFloatSlot {
-                normalized,
-                first_name: first_name.to_string(),
-                first,
-                second_name: name.clone(),
-                second: index,
-            });
-        }
-        normalized_slots.insert(normalized, (index, name));
     }
 
     let mut seen_tracks = HashMap::with_capacity(channels.len());
     let mut mapping = Vec::with_capacity(channels.len());
     for (track, channel) in channels.iter().enumerate() {
-        let normalized = normalize_fnv_bone_name(&channel.slot_name);
-        if let Some(first) = seen_tracks.insert(normalized.clone(), track) {
+        if let Some(first) = seen_tracks.insert(channel.slot_name.as_str(), track) {
             return Err(FnvKfFloatBindingError::DuplicateFloatTrack {
                 name: channel.slot_name.clone(),
                 first,
@@ -1287,7 +1332,6 @@ fn bind_fnv_kf_float_tracks(
         let slot_index = exact_slots
             .get(channel.slot_name.as_str())
             .copied()
-            .or_else(|| normalized_slots.get(&normalized).map(|(index, _)| *index))
             .ok_or_else(|| FnvKfFloatBindingError::MissingFloatTrackTarget {
                 track,
                 name: channel.slot_name.clone(),
@@ -1794,6 +1838,21 @@ pub(crate) fn parse_fnv_creature_kf(
         }
     };
     let root_motion = creature_kf_root_motion_evidence(&clip);
+    let transform_components = clip.channels.iter().map(|channel| {
+        let mask = u8::from(!channel.translations.is_empty())
+            | (u8::from(!channel.rotations.is_empty()) << 1)
+            | (u8::from(!channel.scales.is_empty()) << 2);
+        (channel.bone_name.clone(), mask)
+    }).collect();
+    let transform_priorities = nif.blocks[entry.block_index]
+        .array_of_structs("Controlled Blocks")
+        .into_iter()
+        .filter_map(|block| {
+            let name = block.string_or("Node Name", "");
+            (block.string_or("Controller Type", "") == "NiTransformController" && transform_targets.contains(&name))
+                .then(|| (name, block.u32_or("Priority", 0) as u8))
+        })
+        .collect();
     Ok(ParsedFnvCreatureKf {
         source_kf: source_kf.to_string(),
         sequence_index: entry.index,
@@ -1817,11 +1876,59 @@ pub(crate) fn parse_fnv_creature_kf(
             controller_types: clip.controller_types,
             interpolator_types: clip.interpolator_types,
             target_names,
+            transform_priorities,
+            transform_components,
             required_float_slots,
             compatibility,
         },
         root_motion,
     })
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "requires B21_FNV_SOURCE_MESHES pointing to extracted source meshes"]
+fn source_securitron_partial_idle_keeps_transform_priorities() {
+    let root = std::path::PathBuf::from(std::env::var("B21_FNV_SOURCE_MESHES").unwrap());
+    let parse = |path: &str| {
+        parse_fnv_creature_kf(&std::fs::read(root.join(path)).unwrap(), path, None, None).unwrap()
+    };
+    let idle = parse("creatures/nvsecuritron/mtidle.kf");
+    let forward = parse("creatures/nvsecuritron/locomotion/mtforward.kf");
+    let fidget = parse("creatures/nvsecuritron/idleanims/specialidle_fidgeta.kf");
+    let attack_up = parse("creatures/nvsecuritron/1hpattackleftup.kf");
+    assert_eq!(attack_up.binding.transform_components["Bip01 Spin01"], 6);
+    assert_eq!(idle.binding.transform_components["Bip01 Pelvis"], 7);
+    assert_eq!(forward.binding.transform_components["Bip01 Wheel"], 2);
+    assert_eq!(idle.binding.transform_priorities["Bip01 Wheel"], 20);
+    assert_eq!(forward.binding.transform_priorities["Bip01 Wheel"], 22);
+    assert_eq!(fidget.binding.transform_priorities["Bip01 Wheel"], 22);
+    assert_eq!(fidget.binding.transform_priorities["Bip01 LShoulder"], 60);
+    assert_eq!(fidget.binding.transform_priorities["Weapon"], 70);
+    assert!(!fidget.binding.transform_priorities.contains_key("Bip01"));
+    assert!(fidget.binding.transform_priorities.len() < fidget.binding.target_names.len());
+    let idle_float_slots = idle.binding.required_float_slots.iter().collect::<std::collections::BTreeSet<_>>();
+    let fidget_float_slots = fidget.binding.required_float_slots.iter().collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(idle_float_slots.len(), 16);
+    assert_eq!(fidget_float_slots.len(), 8);
+    assert!(fidget_float_slots.is_subset(&idle_float_slots), "same source controllers must retain identity across reordered controlled blocks");
+}
+
+#[cfg(test)]
+#[test]
+fn source_float_controller_identity_is_exact_and_order_independent() {
+    let name = |target, property, controller, id| canonical_float_slot_name(target, property, controller, id, None);
+    assert_ne!(name("A|B", "C", "D", "E"), name("A", "B|C", "D", "E"));
+    assert_ne!(name(" A", "B", "C", "D"), name("A", "B", "C", "D"));
+    assert_ne!(canonical_float_slot_name("A", "B", "C", "D", Some("X")), canonical_float_slot_name("A", "B", "C", "D", Some("Y")));
+    let mut channel = FloatChannel { slot_name: name("A", "B", "C", "D"), target_name: "A".into(), keyframes: Vec::new() };
+    let mut other = channel.clone();
+    qualify_float_slot(&mut channel, "First");
+    qualify_float_slot(&mut other, "Second");
+    assert_ne!(channel.slot_name, other.slot_name);
+    let slots = vec![channel.slot_name.clone(), other.slot_name.clone()];
+    assert_eq!(bind_fnv_kf_float_tracks(Some(&slots), &[other.clone(), channel.clone()]).unwrap(), [1, 0]);
+    assert!(bind_fnv_kf_float_tracks(Some(&slots), &[channel.clone(), channel]).is_err());
 }
 
 fn creature_kf_root_motion_evidence(clip: &AnimationClip) -> FnvKfRootMotionEvidence {
@@ -1913,15 +2020,15 @@ fn parse_kf_sequence(
     let mut interpolator_types = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    for (controlled_index, cb) in seq
+    for cb in seq
         .array_of_structs("Controlled Blocks")
         .into_iter()
-        .enumerate()
     {
         let interp_ref = cb.block_ref_or("Interpolator", -1);
         let node_name = cb.string_or("Node Name", "");
         let ctrl_type = cb.string_or("Controller Type", "");
         let ctrl_id = cb.string_or("Controller ID", "");
+        let interpolator_id = cb.string_or("Interpolator ID", "");
         let prop_type = cb.string_or("Property Type", "");
 
         if interp_ref < 0 {
@@ -2011,7 +2118,7 @@ fn parse_kf_sequence(
                         interpolator_type: interp.type_name.clone(),
                         source,
                     })?;
-                qualify_float_slot(&mut fc, controlled_index);
+                qualify_float_slot(&mut fc, &interpolator_id);
                 float_channels.push(fc);
             }
             "NiBSplineCompFloatInterpolator" => {
@@ -2023,7 +2130,7 @@ fn parse_kf_sequence(
                     interpolator_type: interp.type_name.clone(),
                     source,
                 })?;
-                qualify_float_slot(&mut fc, controlled_index);
+                qualify_float_slot(&mut fc, &interpolator_id);
                 float_channels.push(fc);
             }
             "NiBSplineCompPoint3Interpolator" => {
@@ -2036,7 +2143,7 @@ fn parse_kf_sequence(
                     source,
                 })?;
                 for channel in &mut channels {
-                    qualify_float_slot(channel, controlled_index);
+                    qualify_float_slot(channel, &interpolator_id);
                 }
                 float_channels.extend(channels);
             }
@@ -2049,7 +2156,7 @@ fn parse_kf_sequence(
                             source,
                         })?;
                 for channel in &mut channels {
-                    qualify_float_slot(channel, controlled_index);
+                    qualify_float_slot(channel, &interpolator_id);
                 }
                 float_channels.extend(channels);
             }
@@ -2091,6 +2198,7 @@ fn parse_kf_sequence(
         interpolator_types,
         events,
         warnings,
+        actor_accumulator_track: None,
     })
 }
 
@@ -3506,24 +3614,14 @@ fn canonical_float_slot_name(
     controller_id: &str,
     component: Option<&str>,
 ) -> String {
-    let mut name = format!(
-        "{}|{}|{}|{}",
-        target_name.trim(),
-        property_type.trim(),
-        controller_type.trim(),
-        controller_id.trim()
-    );
-    if let Some(component) = component {
-        name.push('|');
-        name.push_str(component);
-    }
-    name
+    serde_json::to_string(&[target_name, property_type, controller_type, controller_id, component.unwrap_or("")])
+        .expect("string array serialization is infallible")
 }
 
-fn qualify_float_slot(channel: &mut FloatChannel, controlled_index: usize) {
+fn qualify_float_slot(channel: &mut FloatChannel, interpolator_id: &str) {
     channel
         .slot_name
-        .push_str(&format!("|controlled:{controlled_index}"));
+        .push_str(&format!("|interpolator:{}:{interpolator_id}", interpolator_id.len()));
 }
 
 // ---------------------------------------------------------------------------
@@ -3661,9 +3759,13 @@ fn sample_rotation(keys: &[AnimationKeyframe], t: f64) -> (f64, f64, f64, f64) {
     normalize(&keys[keys.len() - 1].value)
 }
 
-fn sample_scale_val(keys: &[AnimationKeyframe], t: f64) -> f64 {
-    let v = interp_keyframes(keys, t);
-    v.first().copied().unwrap_or(1.0)
+fn sample_scale_axes(keys: &[AnimationKeyframe], t: f64) -> [f64; 3] {
+    let value = interp_keyframes(keys, t);
+    match value.as_slice() {
+        [x, y, z, ..] => [*x, *y, *z],
+        [uniform] => [*uniform; 3],
+        _ => [1.0; 3],
+    }
 }
 
 fn xml_escape(s: &str) -> String {
@@ -3995,8 +4097,12 @@ fn clip_to_havok_xml_with_float_tracks(
             0.0
         };
         for (track_index, ch) in clip.channels.iter().enumerate() {
-            let (mut tx, mut ty, tz) = sample_translation(&ch.translations, t);
-            if root_motion
+            let (mut tx, mut ty, mut tz) = sample_translation(&ch.translations, t);
+            if clip.actor_accumulator_track == Some(track_index) {
+                tx = 0.0;
+                ty = 0.0;
+                tz = 0.0;
+            } else if root_motion
                 .as_ref()
                 .is_some_and(|motion| motion.root_track_index == track_index)
             {
@@ -4011,11 +4117,11 @@ fn clip_to_havok_xml_with_float_tracks(
             } else {
                 sample_rotation(&ch.rotations, t)
             };
-            let scale = sample_scale_val(&ch.scales, t);
+            let [sx, sy, sz] = sample_scale_axes(&ch.scales, t);
             transform_data.push_str(&format!(
                 "\n                    ({tx:.6} {ty:.6} {tz:.6})\
                  ({qx:.6} {qy:.6} {qz:.6} {qw:.6})\
-                 ({scale:.6} {scale:.6} {scale:.6})"
+                 ({sx:.6} {sy:.6} {sz:.6})"
             ));
         }
     }

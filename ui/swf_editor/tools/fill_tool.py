@@ -42,11 +42,8 @@ class FillTool(BaseTool):
                 if not shape:
                     continue
                 bx, by, bw, bh = shape.bounds_px
-                tx = de.transform.x + bx
-                ty = de.transform.y + by
-                tw = (bw - bx) * de.transform.scale_x
-                th = (bh - by) * de.transform.scale_y
-                if tx <= cx <= tx + tw and ty <= cy <= ty + th:
+                lx, ly = de.transform.inverse(cx, cy)
+                if bx <= lx <= bw and by <= ly <= bh:
                     hit_shape_id = de.shape_id
                     break
             if hit_shape_id is not None:
@@ -59,13 +56,15 @@ class FillTool(BaseTool):
 
         if self.mode == FillMode.EYEDROPPER:
             # Sample color from shape
-            if shape.fill_styles:
+            if shape.fill_styles and shape.fill_styles[0].color:
                 self.active_color = RGBA(
                     shape.fill_styles[0].color.r,
                     shape.fill_styles[0].color.g,
                     shape.fill_styles[0].color.b,
                     shape.fill_styles[0].color.a,
                 )
+                if "fill" in self.app._tools:
+                    self.app._tools["fill"].active_color = self.active_color
         else:
             # Bucket: apply active color to shape
             if shape.fill_styles:
@@ -77,6 +76,8 @@ class FillTool(BaseTool):
                     self.active_color.a,
                 )
                 scene.dirty = True
+                if self.app.renderer:
+                    self.app.renderer.invalidate_shape(hit_shape_id)
 
         return True
 

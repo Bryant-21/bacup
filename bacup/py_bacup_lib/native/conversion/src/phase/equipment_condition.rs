@@ -9,8 +9,10 @@ use esp_authoring_core::plugin_runtime::{
 use serde_json::{Value, json};
 
 use crate::fixups::rewrite_raw_object_template_formids::fo76_condition_references;
+use crate::fixups::flatten_omod_includes::parse_data_layout;
 use crate::ids::{FormKey, SigCode};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
+use crate::plugin_catalog;
 use crate::session::open_session;
 use crate::translator::Game;
 
@@ -18,8 +20,25 @@ pub struct EquipmentConditionPhase;
 
 const TYPES: &[&str] = &[
     "WEAP", "ARMO", "OMOD", "PERK", "COBJ", "UTIL", "CURV", "ENCH", "MGEF", "SPEL", "KYWD", "FLST",
-    "CNDF", "GLOB", "AVIF",
+    "CNDF", "GLOB", "AVIF", "CMPO",
 ];
+
+fn attachment_references(bytes: &[u8]) -> Result<Vec<u32>, PhaseError> {
+    let layout = parse_data_layout(bytes)
+        .ok_or_else(|| PhaseError::Internal("invalid source equipment attachment".into()))?;
+    let mut result = Vec::new();
+    let includes = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    for row in bytes[layout.properties_start - includes * 7..layout.properties_start].chunks_exact(7) {
+        result.push(u32::from_le_bytes(row[0..4].try_into().unwrap()));
+    }
+    // Property ids newer than FO4 (including direct perk grants) have no schema reference path.
+    for row in bytes[layout.properties_start..layout.properties_end].chunks_exact(24) {
+        if matches!(row[0], 4 | 6) {
+            result.push(u32::from_le_bytes(row[12..16].try_into().unwrap()));
+        }
+    }
+    Ok(result)
+}
 
 fn editor_id(fields: &[ParsedSubrecord]) -> String {
     fields
@@ -60,6 +79,18 @@ fn is_root(signature: &str, fields: &[ParsedSubrecord]) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_armor_creation_recipe(fields: &[ParsedSubrecord], armor: &BTreeSet<u32>) -> bool {
+    let has_components = fields
+        .iter()
+        .any(|field| field.signature == "FVPA" && !field.data.is_empty());
+    has_components
+        && fields.iter().any(|field| {
+            field.signature == "CNAM"
+                && field.data.len() == 4
+                && armor.contains(&u32::from_le_bytes(field.data.as_ref().try_into().unwrap()))
+        })
 }
 
 fn keep_field(signature: &str, field: &str) -> bool {
@@ -107,6 +138,7 @@ fn keep_field(signature: &str, field: &str) -> bool {
             "FVPA" | "REPR" | "REPM" | "CNAM" | "BNAM" | "FNAM" | "DNAM" | "INTV" | "RCND" | "CTDA"
         ),
         "CURV" => matches!(field, "CRVE" | "JASF"),
+        "CMPO" => field == "ILAC",
         "MGEF" => matches!(field, "DATA" | "CTDA"),
         "ENCH" | "SPEL" => matches!(field, "ENIT" | "SPIT" | "EFID" | "EFIT" | "CTDA"),
         "FLST" => field == "LNAM",
@@ -126,10 +158,10 @@ fn source_key(raw: u32, masters: &[String], plugin: &str) -> Result<String, Phas
             PhaseError::Internal(format!("invalid condition catalog FormID {raw:08X}"))
         })?
     };
-    Ok(format!("{:06X}:{owner}", raw & 0xffffff))
+    Ok(plugin_catalog::form_key(owner, raw & 0xffffff))
 }
 
-fn curve_path(root: &Path, relative: &str) -> Result<std::path::PathBuf, PhaseError> {
+pub(crate) fn curve_path(root: &Path, relative: &str) -> Result<std::path::PathBuf, PhaseError> {
     let normalized = relative.replace('\\', "/");
     let path = Path::new(&normalized);
     if path.as_os_str().is_empty()
@@ -169,6 +201,10 @@ impl Phase for EquipmentConditionPhase {
         let scan = session
             .handle_raw_scan(ctx.run.source_handle_id)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
+        let armor = scan
+            .raw_form_ids_of_sig(SigCode::from_str("ARMO").unwrap())
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         let mut candidates = BTreeMap::new();
         let mut pending = BTreeSet::new();
         for signature in TYPES {
@@ -179,7 +215,12 @@ impl Phase for EquipmentConditionPhase {
                         if record.flags & 0x20 != 0 {
                             return None;
                         }
-                        Some(is_root(signature, &effective_subrecords_for_record(record)))
+                        let fields = effective_subrecords_for_record(record);
+                        Some(
+                            is_root(signature, &fields)
+                                || (*signature == "COBJ"
+                                    && is_armor_creation_recipe(&fields, &armor)),
+                        )
                     })
                     .flatten();
                 if let Some(root) = root {
@@ -231,6 +272,9 @@ impl Phase for EquipmentConditionPhase {
             let mut links = Vec::new();
             let mut perk_data_type = None;
             for field in &fields {
+                if signature == "OMOD" && field.signature == "DATA" {
+                    links.extend(attachment_references(&field.data)?);
+                }
                 let occurrence = occurrences.entry(field.signature.clone()).or_insert(0);
                 if signature == "PERK" && field.signature == "PRKE" {
                     perk_data_type = None;
@@ -256,6 +300,15 @@ impl Phase for EquipmentConditionPhase {
                         links.push(u32::from_le_bytes(component[0..4].try_into().unwrap()));
                         links.push(u32::from_le_bytes(component[8..12].try_into().unwrap()));
                     }
+                } else if signature == "CMPO" && field.signature == "ILAC" {
+                    if field.data.len() % 8 != 0 {
+                        return Err(PhaseError::Internal(format!(
+                            "invalid component level curve table at {raw:08X}"
+                        )));
+                    }
+                    for entry in field.data.chunks_exact(8) {
+                        links.push(u32::from_le_bytes(entry[4..8].try_into().unwrap()));
+                    }
                 } else if field.signature == "CTDA" {
                     if field.data.len() != 32 {
                         return Err(PhaseError::Internal(format!(
@@ -280,7 +333,7 @@ impl Phase for EquipmentConditionPhase {
             }
             // Ordered subrecords preserve perk effect/tab boundaries and OR condition groups.
             let mut saved = json!({"source_form_id": format!("{raw:08X}"),
-                "form_key": source_key(raw, &masters, &plugin)?, "signature": signature, "editor_id": eid,
+                "form": source_key(raw, &masters, &plugin)?, "signature": signature, "editor_id": eid,
                 "fields": fields.iter().map(|f| json!({"signature": f.signature.as_str(), "hex": hex::encode(&f.data)})).collect::<Vec<_>>()});
             if signature == "CURV" {
                 if let Some(field) = fields
@@ -316,7 +369,7 @@ impl Phase for EquipmentConditionPhase {
         let mut target_forms = BTreeMap::new();
         for raw in references {
             let key = source_key(raw, &masters, &plugin)?;
-            let owner = key.split_once(':').unwrap().1;
+            let owner = key.split_once(':').unwrap().0;
             let source = FormKey {
                 local: raw & 0xffffff,
                 plugin: ctx.run.interner.intern(owner),
@@ -336,25 +389,26 @@ impl Phase for EquipmentConditionPhase {
                     let scan = session
                         .handle_raw_scan(handle)
                         .map_err(|e| PhaseError::Internal(e.to_string()))?;
-                    if let Some((raw, signature, _)) = scan.record_metadata_by_form_key(&target_key)
-                    {
-                        identity = scan.with_record(raw, |r| json!({"plugin": owner, "object_id": format!("{:06X}", target.local),
-                            "signature": signature, "editor_id": editor_id(&effective_subrecords_for_record(r))}));
+                    if scan.record_metadata_by_form_key(&target_key).is_some() {
+                        identity = Some(plugin_catalog::form_key(owner, target.local));
                         break;
                     }
                 }
             }
             target_forms.insert(key, identity);
         }
-        let catalog = json!({"schema_version": 1, "source_plugin": plugin, "source_masters": masters,
-            "output_plugin": ctx.run.config.output_plugin_name, "mapping_available": ctx.run.mapper_state.is_some(),
-            "missing_curves": missing_curves, "records": records.into_values().collect::<Vec<_>>(), "target_forms": target_forms});
-        let directory = ctx
-            .mod_path
-            .join("F4SE/Plugins/B21_TalesFromAppalachia/Condition");
+        let catalog = json!({"version": 1,
+            "settings": {"crafting_cost_schema": 1, "source_plugin": plugin, "source_masters": masters,
+                "output_plugin": ctx.run.config.output_plugin_name, "mapping_available": ctx.run.mapper_state.is_some(),
+                "missing_curves": missing_curves},
+            "records": records.into_values().collect::<Vec<_>>(), "target_forms": target_forms});
         let filename = Path::new(&ctx.run.config.output_plugin_name)
             .file_name()
             .ok_or_else(|| PhaseError::BadParams("missing output plugin filename".into()))?;
+        let destination = ctx
+            .mod_path
+            .join(plugin_catalog::catalog_path("Condition", &filename.to_string_lossy()));
+        let directory = destination.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&directory).map_err(|e| PhaseError::Internal(e.to_string()))?;
         let mut temporary = tempfile::NamedTempFile::new_in(&directory)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
@@ -364,7 +418,7 @@ impl Phase for EquipmentConditionPhase {
             )
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
         temporary
-            .persist(directory.join(format!("{}.json", filename.to_string_lossy())))
+            .persist(destination)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
         Ok(PhaseReport {
             assets_written: 1,
@@ -376,6 +430,22 @@ impl Phase for EquipmentConditionPhase {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn attachment_links_include_perk_grants_and_pairs_without_treating_scalars_as_forms() {
+        let mut bytes = vec![0u8; 28 + 7 + 3 * 24];
+        bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&0x801u32.to_le_bytes());
+        for (index, value_type) in [4u8, 6, 1].into_iter().enumerate() {
+            let offset = 35 + index * 24;
+            bytes[offset] = value_type;
+            bytes[offset + 8..offset + 12].copy_from_slice(&116u32.to_le_bytes());
+            bytes[offset + 12..offset + 16].copy_from_slice(&(0x802u32 + index as u32).to_le_bytes());
+        }
+        assert_eq!(super::attachment_references(&bytes).unwrap(), vec![0x801, 0x802, 0x803]);
+        bytes.pop();
+        assert!(super::attachment_references(&bytes).is_err());
+    }
     use super::*;
 
     fn field(signature: &str, data: &[u8]) -> ParsedSubrecord {
@@ -417,6 +487,26 @@ mod tests {
                 field("DATA", &[163, 3, 2, 0])
             ]
         ));
+    }
+
+    #[test]
+    fn armor_creation_curves_are_retained_without_repair_fields() {
+        let armor = BTreeSet::from([0x123]);
+        let fields = [
+            field("CNAM", &0x123_u32.to_le_bytes()),
+            field("FVPA", &[1; 12]),
+        ];
+        assert!(!is_root("COBJ", &fields));
+        assert!(is_armor_creation_recipe(&fields, &armor));
+        assert!(!is_armor_creation_recipe(&fields, &BTreeSet::from([0x456])));
+        assert!(!is_armor_creation_recipe(&fields[..1], &armor));
+        assert!(!is_armor_creation_recipe(
+            &[field("CNAM", &[0x23]), field("FVPA", &[1; 12])],
+            &armor
+        ));
+        assert!(keep_field("COBJ", "FVPA"));
+        assert!(keep_field("CMPO", "ILAC"));
+        assert!(!keep_field("CMPO", "CVPA"));
     }
 
     #[test]
@@ -475,6 +565,13 @@ mod tests {
         ];
         let source = plugin_handle_new_no_py("Source.esm", Some("fo76"));
         let target = plugin_handle_new_no_py("Renamed.esp", Some("fo4"));
+        let mut unique_mod = vec![0u8; 28 + 24];
+        unique_mod[4..8].copy_from_slice(&1u32.to_le_bytes());
+        unique_mod[10..14].copy_from_slice(b"WEAP");
+        unique_mod[28] = 4;
+        unique_mod[32] = 2;
+        unique_mod[36..40].copy_from_slice(&116u32.to_le_bytes());
+        unique_mod[40..44].copy_from_slice(&0x806u32.to_le_bytes());
         {
             let mut store = plugin_handle_store_ref().lock().unwrap();
             for (handle, records) in [
@@ -513,7 +610,30 @@ mod tests {
                                 field("UITV", &1.5f32.to_le_bytes()),
                             ],
                         ),
-                        record("PERK", 0x806, vec![field("EDID", b"B21_Unrelated\0")]),
+                        record("PERK", 0x806, vec![field("EDID", b"B21_GrantedPerk\0")]),
+                        record("OMOD", 0x80c, vec![field("DATA", &unique_mod)]),
+                        record(
+                            "CMPO",
+                            0x807,
+                            vec![
+                                field("EDID", b"B21_Component\0"),
+                                field("ILAC", &[0x41, 0x52, 0x4d, 0x4f, 9, 8, 0, 0]),
+                            ],
+                        ),
+                        record(
+                            "CURV",
+                            0x809,
+                            vec![field("CRVE", b"Crafting\\Armor.json\0")],
+                        ),
+                        record("ARMO", 0x80a, vec![field("EILV", &50u32.to_le_bytes())]),
+                        record(
+                            "COBJ",
+                            0x80b,
+                            vec![
+                                field("CNAM", &0x80au32.to_le_bytes()),
+                                field("FVPA", &[0x07, 0x08, 0, 0, 5, 0, 0, 0, 1, 8, 0, 0]),
+                            ],
+                        ),
                         record(
                             "COBJ",
                             0x808,
@@ -529,6 +649,7 @@ mod tests {
                     vec![
                         record("WEAP", 0x900, vec![field("EDID", b"B21_ConvertedWeapon\0")]),
                         record("CMPO", 0x907, vec![field("EDID", b"B21_RepairComponent\0")]),
+                        record("PERK", 0x906, vec![field("EDID", b"B21_GrantedPerk\0")]),
                     ],
                 ),
             ] {
@@ -554,6 +675,10 @@ mod tests {
         let run_phase = || {
             with_run(id, |run| -> Result<PhaseReport, RunError> {
                 let mut mapper = MapperState::new([], MapperOptions::default());
+                mapper.source_to_target.insert(
+                    FormKey { local: 0x806, plugin: run.interner.intern("Source.esm") },
+                    FormKey { local: 0x906, plugin: run.interner.intern("Renamed.esp") },
+                );
                 mapper.source_to_target.insert(
                     FormKey {
                         local: 0x800,
@@ -600,10 +725,17 @@ mod tests {
             })
             .unwrap()
         };
-        assert_eq!(run_phase().warnings, 1);
+        assert_eq!(run_phase().warnings, 2);
         let curve = curve_path(directory.path(), "ItemCondition/Weapon.json").unwrap();
         std::fs::create_dir_all(curve.parent().unwrap()).unwrap();
         std::fs::write(curve, br#"{"curve":[{"x":1,"y":30},{"x":50,"y":70}]}"#).unwrap();
+        let crafting_curve = curve_path(directory.path(), "Crafting/Armor.json").unwrap();
+        std::fs::create_dir_all(crafting_curve.parent().unwrap()).unwrap();
+        std::fs::write(
+            crafting_curve,
+            br#"{"curve":[{"x":1,"y":0},{"x":50,"y":17}]}"#,
+        )
+        .unwrap();
         assert_eq!(run_phase().warnings, 0);
         let catalog: Value = serde_json::from_slice(
             &std::fs::read(
@@ -614,17 +746,29 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            catalog["target_forms"]["000800:Source.esm"]["object_id"],
-            "000900"
-        );
-        assert!(catalog["target_forms"]["000803:Source.esm"].is_null());
+        assert_eq!(catalog["version"], 1);
+        assert_eq!(catalog["target_forms"]["Source.esm:000800"], "Renamed.esp:000900");
+        assert!(catalog["target_forms"]["Source.esm:000803"].is_null());
         let records = catalog["records"].as_array().unwrap();
-        assert_eq!(records.len(), 6);
-        assert_eq!(
-            catalog["target_forms"]["000807:Source.esm"]["object_id"],
-            "000907"
+        assert_eq!(catalog["settings"]["crafting_cost_schema"], 1);
+        assert_eq!(records.len(), 12);
+        assert_eq!(catalog["target_forms"]["Source.esm:000806"], "Renamed.esp:000906");
+        assert!(records.iter().any(|r| r["source_form_id"] == "00000806"));
+        assert!(records.iter().any(|r| r["source_form_id"] == "0000080B"));
+        let component = records.iter().find(|r| r["signature"] == "CMPO").unwrap();
+        assert!(
+            component["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["signature"] == "ILAC")
         );
+        let crafting_curve = records
+            .iter()
+            .find(|r| r["source_form_id"] == "00000809")
+            .unwrap();
+        assert_eq!(crafting_curve["curve"]["curve"][1]["y"], 17);
+        assert_eq!(catalog["target_forms"]["Source.esm:000807"], "Renamed.esp:000907");
         assert!(records.iter().any(|r| r["source_form_id"] == "00000804"));
         let perk = records
             .iter()

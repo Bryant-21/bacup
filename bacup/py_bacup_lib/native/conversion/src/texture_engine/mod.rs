@@ -5,6 +5,8 @@
 //! shader math, BC7 GPU encodes through one submission thread (GpuService).
 //! Standalone library consumed by the canonical `convert_textures_v2` phase.
 
+pub mod bc5_endpoint_shift;
+pub mod native_textures;
 pub mod gpu_service;
 pub mod materials;
 pub mod triage;
@@ -57,7 +59,7 @@ use rayon::prelude::*;
 use crate::phase::textures::{
     TextureEntry, TextureWorkItem, bucket_textures_by_output_subdir, build_request,
     build_texture_work_items, enumerate_source_textures, game_texture_suffixes,
-    group_is_base_owned, output_exists_in_target_game,
+    group_is_base_owned, output_exists_in_target_game, output_overwrites_target,
 };
 use crate::terrain_textures::manifest::TerrainTextureJob;
 use executors::TextureOutputSink;
@@ -91,6 +93,9 @@ pub struct TextureEngineParams {
     /// Data-relative prefixes exempt from the base-owned skip, so the source
     /// game's version of a kit deliberately overwrites the target's.
     pub base_overwrite_prefixes: Vec<String>,
+    /// Native copies at these exact paths overwrite the target's file
+    /// (`ConversionRun::native_overwrite_paths`); derived outputs never do.
+    pub base_overwrite_paths: HashSet<String>,
     pub skip_existing: bool,
     pub use_gpu: bool,
     pub gpu_min_pixels: u32,
@@ -101,6 +106,8 @@ pub struct TextureEngineParams {
     /// Output sink — successful outputs are streamed to the sink when an
     /// executor has the bytes in memory (None = legacy behavior).
     pub sink: Option<std::sync::Arc<crate::sinks::SinkSet>>,
+    /// FO76 native materials/NIFs retain source texture bindings; only terrain needs FO4-derived maps.
+    pub native_copy: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -287,6 +294,47 @@ fn create_starfield_terrain_fallbacks() -> Result<TerrainFallbackInputs, String>
         flat_normal,
         dielectric_reflectivity,
     })
+}
+
+/// The raw bank's `<prefix>_source_{d,n,l,r}.dds`: d/n/l are byte copies, `_r` is normalized
+/// by `executors::execute_raw_reflectance` (input `None` when the TXST has no `_r`).
+struct TerrainSourceCopies {
+    pass_through: Vec<(TexturePathInput, TexturePathOutput)>,
+    reflectance: Option<(Option<TexturePathInput>, TexturePathOutput)>,
+}
+
+fn terrain_source_copies(job: &TerrainTextureJob, params: &TextureEngineParams)
+    -> Result<TerrainSourceCopies, String>
+{
+    let Some(prefix) = job.raw_source_prefix.as_deref() else {
+        return Ok(TerrainSourceCopies { pass_through: Vec::new(), reflectance: None });
+    };
+    let prefix = prefix.trim().replace('\\', "/");
+    let expected = format!("{}_source", job.output_prefix.trim().replace('\\', "/"));
+    if params.source_game != "fo76" || params.target_game != "fo4" || prefix != expected ||
+        Path::new(&prefix).components().any(|part| matches!(part,
+            std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+        return Err("invalid raw FO76 terrain output prefix".into());
+    }
+    let base = params.data_root.join(prefix);
+    let pass_through = [("diffuse", "d", &job.diffuse_path), ("normal", "n", &job.normal_path), ("lighting", "l", &job.lighting_path)]
+        .into_iter().map(|(role, suffix, path)| {
+            if path.trim().is_empty() || !Path::new(path).is_file() {
+                return Err(format!("raw FO76 terrain {role} source is unavailable: {path}"));
+            }
+            Ok((TexturePathInput { role: role.into(), path: PathBuf::from(path) },
+                TexturePathOutput { role: role.into(), path: path_with_suffix(&base, &format!("_{suffix}.dds")), format: String::new() }))
+        }).collect::<Result<Vec<_>, String>>()?;
+    let reflectivity = job.reflectivity_path.trim();
+    let input = if reflectivity.is_empty() {
+        None
+    } else if Path::new(reflectivity).is_file() {
+        Some(TexturePathInput { role: "reflectivity".into(), path: PathBuf::from(reflectivity) })
+    } else {
+        return Err(format!("raw FO76 terrain reflectivity source is unavailable: {reflectivity}"));
+    };
+    let output = TexturePathOutput { role: "reflectivity".into(), path: path_with_suffix(&base, "_r.dds"), format: String::new() };
+    Ok(TerrainSourceCopies { pass_through, reflectance: Some((input, output)) })
 }
 
 fn terrain_texture_request(
@@ -598,6 +646,27 @@ pub fn run_texture_engine(
                             })
                 })
             });
+            if params.native_copy && !terrain {
+                // The copied FO76 material names every native file, so one FO4 lacks (`_r`/`_l`
+                // beside FO4's `_d/_n/_s`) must ship even when FO4 owns the set's diffuse.
+                for native in native_textures::native_outputs(request) {
+                    if (output_overwrites_target(
+                        &native.path,
+                        &params.data_root,
+                        &params.base_overwrite_paths,
+                    ) || !output_exists_in_target_game(
+                        &native.path,
+                        &params.data_root,
+                        &params.target_dirs,
+                        params.target_assets.as_deref(),
+                    )) && !missing_identity_outputs
+                        .iter()
+                        .any(|output| native_textures::same_file_name(&output.path, &native.path))
+                    {
+                        missing_identity_outputs.push(native);
+                    }
+                }
+            }
             outcome.skipped_base_owned_groups += 1;
             outcome.skipped_base_owned_outputs += request
                 .outputs
@@ -612,6 +681,57 @@ pub fn run_texture_engine(
             filtered_request = Some(request_with_missing_dependencies);
         }
         let request = filtered_request.as_ref().unwrap_or(request);
+        if params.native_copy && !terrain {
+            let native = native_textures::native_outputs(request);
+            for output in &native {
+                let Some(input) = request.inputs.iter().find(|input| {
+                    native_textures::same_file_name(&input.path, &output.path)
+                }) else {
+                    continue;
+                };
+                if (output_exists_in_target_game(
+                    &output.path,
+                    &params.data_root,
+                    &params.target_dirs,
+                    params.target_assets.as_deref(),
+                ) && !output_overwrites_target(
+                    &output.path,
+                    &params.data_root,
+                    &params.base_overwrite_paths,
+                )) || (params.skip_existing && output.path.is_file())
+                {
+                    continue;
+                }
+                let copied = catch_unwind(AssertUnwindSafe(|| {
+                    executors::execute_native_copy(
+                        input,
+                        output,
+                        &gpu,
+                        params.gpu_min_pixels,
+                        texture_output_sink.as_ref(),
+                    )
+                }));
+                match copied {
+                    Ok(Ok(())) => outcome.outputs_written += 1,
+                    Ok(Err(error)) => {
+                        outcome.failed += 1;
+                        outcome.error_messages.push(format!(
+                            "native texture copy failed {}: {error}",
+                            input.path.display()
+                        ));
+                    }
+                    Err(payload) => {
+                        outcome.failed += 1;
+                        outcome.error_messages.push(format!(
+                            "native texture copy panicked {}: {}",
+                            input.path.display(),
+                            panic_payload_to_string(&*payload)
+                        ));
+                    }
+                }
+            }
+            return outcome;
+        }
         let tasks = if terrain {
             triage_terrain_request(request, &params.format_overrides)
         } else {
@@ -755,7 +875,25 @@ pub fn run_texture_engine(
             Ok(request) => {
                 let (mut outcome, timings) = output_directories.scope(|| {
                     directxtex_native::profiling::capture(|| {
-                        process_request(&request, &label, false, true)
+                        let mut outcome = process_request(&request, &label, false, true);
+                        match terrain_source_copies(job, params) {
+                            Ok(copies) => {
+                                for (input, output) in copies.pass_through {
+                                    match executors::execute_pass_through(&input, &output, texture_output_sink.as_ref()) {
+                                        Ok(()) => { outcome.outputs_written += 1; outcome.pass_through += 1; }
+                                        Err(error) => { outcome.failed += 1; outcome.error_messages.push(format!("raw terrain copy failed {label}: {error}")); }
+                                    }
+                                }
+                                if let Some((input, output)) = copies.reflectance {
+                                    match executors::execute_raw_reflectance(input.as_ref(), &output, texture_output_sink.as_ref()) {
+                                        Ok(()) => outcome.outputs_written += 1,
+                                        Err(error) => { outcome.failed += 1; outcome.error_messages.push(format!("raw terrain _r failed {label}: {error}")); }
+                                    }
+                                }
+                            }
+                            Err(error) => { outcome.failed += 1; outcome.error_messages.push(format!("raw terrain copy failed {label}: {error}")); }
+                        }
+                        outcome
                     })
                 });
                 outcome.timings = timings;
@@ -905,6 +1043,7 @@ mod tests {
             target_dirs: Vec::new(),
             target_assets: None,
             base_overwrite_prefixes: Vec::new(),
+            base_overwrite_paths: HashSet::new(),
             skip_existing: false,
             use_gpu: false,
             gpu_min_pixels: 512 * 512,
@@ -914,12 +1053,206 @@ mod tests {
             ),
             format_overrides: HashMap::new(),
             sink: None,
+            native_copy: false,
         }
     }
 
     fn run(params: &TextureEngineParams) -> TextureEngineReport {
         let cancel = AtomicBool::new(false);
         run_texture_engine(params, &cancel, None).unwrap()
+    }
+
+    #[test]
+    fn raw_terrain_sources_preserve_every_byte_beside_converted_native_assets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        for (suffix, format) in [("d", "BC3_UNORM_SRGB"), ("n", "BC5_SNORM"), ("l", "BC3_UNORM")] {
+            write_tex(&source, &format!("soil_{suffix}.dds"), 16, 16, format, true);
+        }
+        let data = tmp.path().join("data");
+        let params = base_params(&source, &data);
+        let path = |suffix: &str| source.join(format!("soil_{suffix}.dds")).to_string_lossy().into_owned();
+        let mut job = TerrainTextureJob { diffuse_path:path("d"), normal_path:path("n"),
+            reflectivity_path:String::new(), lighting_path:path("l"),
+            output_prefix:"textures/terrain/test/soil".into(),
+            raw_source_prefix:Some("textures/terrain/test/soil_source".into()) };
+        std::fs::create_dir_all(data.join("textures/terrain/test")).unwrap();
+        for suffix in ["d", "n", "s", "g"] {
+            std::fs::write(data.join(format!("textures/terrain/test/soil_{suffix}.dds")), b"existing converted asset").unwrap();
+        }
+        let copies = terrain_source_copies(&job, &params).unwrap();
+        assert_eq!(copies.pass_through.len(),3);
+        let (reflectance_input, reflectance_output) = copies.reflectance.unwrap();
+        assert!(reflectance_input.is_none(), "no TXST _r");
+        assert_eq!(reflectance_output.path, data.join("textures/terrain/test/soil_source_r.dds"));
+        for (input, output) in copies.pass_through {
+            executors::execute_pass_through(&input, &output, None).unwrap();
+            let original = std::fs::read(&input.path).unwrap();
+            assert_eq!(std::fs::read(&output.path).unwrap(),original);
+            assert!(u32::from_le_bytes(original[28..32].try_into().unwrap()) > 1);
+        }
+        for suffix in ["d", "n", "s", "g"] {
+            assert_eq!(std::fs::read(data.join(format!("textures/terrain/test/soil_{suffix}.dds"))).unwrap(),b"existing converted asset");
+        }
+        job.raw_source_prefix=Some(job.output_prefix.clone());
+        assert!(terrain_source_copies(&job,&params).is_err());
+        job.raw_source_prefix=Some("../escape_source".into());
+        assert!(terrain_source_copies(&job,&params).is_err());
+        job.raw_source_prefix=None;
+        let none = terrain_source_copies(&job,&params).unwrap();
+        assert!(none.pass_through.is_empty() && none.reflectance.is_none());
+    }
+
+    #[test]
+    fn raw_terrain_reflectance_is_one_size_bc4_and_keeps_its_f0() {
+        use terrain_native::raw_terrain::REFLECTANCE_SIZE;
+        let tmp = tempfile::tempdir().unwrap();
+        let output = |name: &str| TexturePathOutput { role: "reflectivity".into(), path: tmp.path().join(name), format: String::new() };
+        let check = |name: &str, expected: u8| {
+            let image = directxtex_native::read_dds_rgba_image(&tmp.path().join(name)).unwrap();
+            assert_eq!((image.width, image.height, image.dxgi_format), (REFLECTANCE_SIZE, REFLECTANCE_SIZE, 80), "{name}: BC4_UNORM");
+            assert!(image.rgba.chunks_exact(4).all(|texel| (texel[0] as i32 - expected as i32).abs() <= 1), "{name}");
+            let probe = directxtex_native::read_dds_probe(&tmp.path().join(name)).unwrap();
+            assert_eq!(probe.mip_levels, REFLECTANCE_SIZE.trailing_zeros() + 1, "{name}: full mips");
+        };
+        for (name, edge) in [("small_r.dds", 4u32), ("large_r.dds", 512)] {
+            directxtex_native::write_dds_rgba_image(&tmp.path().join(name), edge, edge,
+                &[60u8, 0, 0, 255].repeat((edge * edge) as usize), "BC4_UNORM", true).unwrap();
+            let input = TexturePathInput { role: "reflectivity".into(), path: tmp.path().join(name) };
+            executors::execute_raw_reflectance(Some(&input), &output(&format!("out_{name}")), None).unwrap();
+            check(&format!("out_{name}"), 60);
+        }
+        executors::execute_raw_reflectance(None, &output("dielectric_r.dds"), None).unwrap();
+        check("dielectric_r.dds", 10);
+    }
+
+    #[test]
+    fn raw_terrain_source_archive_roundtrip_preserves_formats_and_all_mip_blocks() {
+        use crate::sinks::{Ba2ShardWriter, LooseSink, SinkSet, TerrainSidecarSink};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let data = temp.path().join("mod/data");
+        let params = base_params(&source, &data);
+        for (map, format) in [("d","BC3_UNORM_SRGB"),("n","BC5_SNORM"),("l","BC3_UNORM")] {
+            write_tex(&source, &format!("soil_{map}.dds"), 64, 32, format, true);
+        }
+        let path = |map| source.join(format!("soil_{map}.dds")).to_string_lossy().into_owned();
+        let job = TerrainTextureJob { diffuse_path:path("d"),normal_path:path("n"),reflectivity_path:String::new(),
+            lighting_path:path("l"),output_prefix:"textures/terrain/test/soil".into(),
+            raw_source_prefix:Some("textures/terrain/test/soil_source".into()) };
+        let sink = SinkSet { ba2:Some(Ba2ShardWriter::new(temp.path().join("spill")).unwrap()),
+            loose:LooseSink {enabled:false,mod_root:temp.path().join("mod")},terrain:TerrainSidecarSink::default() };
+        let output_sink = executors::TextureOutputSink {data_root:&data,sink:&sink};
+        let copies = terrain_source_copies(&job,&params).unwrap().pass_through;
+        let mut names = Vec::new();
+        for (input,output) in &copies {
+            executors::execute_pass_through(input,output,Some(&output_sink)).unwrap();
+            assert!(!output.path.exists());
+            names.push(output.path.strip_prefix(&data).unwrap().to_string_lossy().replace('\\',"/"));
+        }
+        let archive = temp.path().join("Raw - Textures.ba2");
+        sink.ba2.as_ref().unwrap().finalize_archive(&archive,true,&names.iter().map(String::as_str).collect::<Vec<_>>()).unwrap();
+        for ((input,_),name) in copies.iter().zip(&names) {
+            let original = std::fs::read(&input.path).unwrap();
+            let extracted = bsarchive_native::python::extract_one_impl(&archive,name).unwrap();
+            let before = directxtex_native::read_dds_probe_bytes(&original).unwrap();
+            let after = directxtex_native::read_dds_probe_bytes(&extracted).unwrap();
+            assert_eq!((after.width,after.height,after.mip_levels),
+                (before.width,before.height,before.mip_levels));
+            let original_format=directxtex_native::read_dds_rgba_image_bytes(&original).unwrap().dxgi_format;
+            let extracted_format=directxtex_native::read_dds_rgba_image_bytes(&extracted).unwrap().dxgi_format;
+            assert_eq!(extracted_format,original_format);
+            assert!(after.mip_levels > 1);
+            let payload_offset = |bytes:&[u8]| if &bytes[84..88] == b"DX10" {148} else {128};
+            assert_eq!(&extracted[payload_offset(&extracted)..],&original[payload_offset(&original)..]);
+        }
+    }
+
+    #[test]
+    fn native_copy_skips_legacy_outputs_but_normal_conversion_keeps_them() {
+        let tmp = std::env::temp_dir().join("engine_native_copy");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        for role in ["d", "r", "l"] {
+            write_tex(&source, &format!("Textures/B/kit_{role}.dds"), 16, 16, "BC7_UNORM", true);
+        }
+        write_tex(&source, "Textures/C/lone_l.dds", 16, 16, "BC7_UNORM", true);
+        let data_root = tmp.join("mod").join("data");
+        let mut params = base_params(&source, &data_root);
+        params.convert_all = true;
+        params.native_copy = true;
+        let report = run(&params);
+
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        for role in ["d", "r", "l"] {
+            let rel = format!("Textures/B/kit_{role}.dds");
+            assert!(
+                std::fs::read(data_root.join(&rel)).unwrap()
+                    == std::fs::read(source.join(&rel)).unwrap(),
+                "{rel} is not the FO76 file"
+            );
+        }
+        assert!(data_root.join("Textures/C/lone_l.dds").is_file());
+        assert!(!data_root.join("Textures/B/kit_s.dds").exists());
+        assert!(!data_root.join("Textures/C/lone_g.dds").exists());
+        assert_eq!(report.class.bundle, 0);
+        assert_eq!(report.outputs_written, 4);
+        params.native_copy = false;
+        params.data_root = tmp.join("legacy").join("data");
+        let legacy = run(&params);
+        assert_eq!(legacy.failed, 0, "{:?}", legacy.errors);
+        assert!(params.data_root.join("Textures/B/kit_s.dds").is_file());
+        assert!(params.data_root.join("Textures/C/lone_g.dds").is_file());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn native_copy_overwrites_only_the_listed_target_textures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let target = tmp.path().join("target");
+        for role in ["d", "r", "l"] {
+            write_tex(&source, &format!("Textures/B/kit_{role}.dds"), 16, 16, "BC7_UNORM", true);
+            write_tex(&source, &format!("Textures/C/other_{role}.dds"), 16, 16, "BC7_UNORM", true);
+        }
+        for rel in [
+            "Textures/B/kit_d.dds",
+            "Textures/B/kit_r.dds",
+            "Textures/B/kit_s.dds",
+            "Textures/C/other_d.dds",
+            "Textures/C/other_r.dds",
+        ] {
+            let path = target.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fo4").unwrap();
+        }
+        let data_root = tmp.path().join("mod").join("data");
+        let mut params = base_params(&source, &data_root);
+        params.convert_all = true;
+        params.native_copy = true;
+        params.target_dirs = vec![target.clone()];
+        params.base_overwrite_paths =
+            ["textures/b/kit_d.dds".to_string(), "textures/b/kit_r.dds".to_string()].into();
+        let report = run(&params);
+
+        assert_eq!(report.failed, 0, "{:?}", report.errors);
+        for rel in ["Textures/B/kit_d.dds", "Textures/B/kit_r.dds"] {
+            assert_eq!(
+                std::fs::read(data_root.join(rel)).unwrap(),
+                std::fs::read(source.join(rel)).unwrap(),
+                "{rel} must be the FO76 file"
+            );
+        }
+        for rel in ["Textures/B/kit_s.dds", "Textures/C/other_d.dds", "Textures/C/other_r.dds"] {
+            assert!(!data_root.join(rel).exists(), "{rel} is FO4's and not listed");
+        }
+        for rel in ["Textures/B/kit_l.dds", "Textures/C/other_l.dds"] {
+            assert_eq!(
+                std::fs::read(data_root.join(rel)).unwrap(),
+                std::fs::read(source.join(rel)).unwrap(),
+                "{rel} is absent from FO4 and named by the FO76 material"
+            );
+        }
     }
 
     #[test]
@@ -1192,6 +1525,7 @@ mod tests {
                     .insert(format!("textures/land/soil_{suffix}.dds"));
             }
             params.terrain_jobs = vec![TerrainTextureJob {
+                raw_source_prefix: Some("textures/terrain/appalachia/Soil_source".into()),
                 diffuse_path: input("d"),
                 normal_path: input("n"),
                 reflectivity_path: input("r"),
@@ -1205,7 +1539,7 @@ mod tests {
             assert_eq!(report.skipped_terrain_groups, 0);
             assert_eq!(report.class.bundle, 2);
             assert_eq!(report.failed, 0, "{:?}", report.errors);
-            assert_eq!(report.outputs_written, 8);
+            assert_eq!(report.outputs_written, 12);
             for suffix in ["d", "n", "s", "g"] {
                 assert!(
                     data_root
@@ -1224,6 +1558,12 @@ mod tests {
                         .is_file()
                 );
             }
+            for suffix in ["d", "n", "l"] {
+                let raw_output = data_root.join(format!("textures/terrain/appalachia/Soil_source_{suffix}.dds"));
+                assert_eq!(std::fs::read(raw_output).unwrap(), std::fs::read(input(suffix)).unwrap());
+            }
+            let raw_r = directxtex_native::read_dds_probe(&data_root.join("textures/terrain/appalachia/Soil_source_r.dds")).unwrap();
+            assert_eq!((raw_r.width, raw_r.dxgi_format), (terrain_native::raw_terrain::REFLECTANCE_SIZE, 80));
             let diffuse = directxtex_native::read_dds_rgba_image(
                 &data_root
                     .join("textures")
@@ -1261,6 +1601,7 @@ mod tests {
             let mut params = base_params(&source, &data_root);
             params.source_game = "starfield".to_owned();
             params.terrain_jobs = vec![TerrainTextureJob {
+                raw_source_prefix: None,
                 diffuse_path: input("d"),
                 normal_path: String::new(),
                 reflectivity_path: String::new(),
@@ -1735,3 +2076,6 @@ mod tests {
 
 #[cfg(test)]
 mod optimization_tests;
+
+#[cfg(test)]
+mod lod_cutout_tests;

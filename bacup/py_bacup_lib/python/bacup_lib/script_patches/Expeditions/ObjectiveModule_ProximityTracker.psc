@@ -28,7 +28,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		If AllPendingTargets == None || AllPendingTargets.Length == 0
 			PrepareNextLocalSignalSet()
 		Else
@@ -50,14 +50,11 @@ Event ObjectReference.OnTriggerEnter(ObjectReference akSender, ObjectReference a
 EndEvent
 
 Function InitializeLocalTrackerStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 	SetObjectiveDisplayed(TrackerObjID, True)
@@ -76,7 +73,7 @@ Function InitializeLocalTrackerStages()
 EndFunction
 
 Function PrepareNextLocalSignalSet()
-	If IsStageDone(CompleteStage) || SignalTargetSets == None
+	If IsStageDone(GetCompleteStage()) || SignalTargetSets == None
 		Return
 	EndIf
 	While TargetSetsTrackedDown < TargetSetsTotal
@@ -121,7 +118,7 @@ Function PrepareNextLocalSignalSet()
 		EndIf
 	EndWhile
 	SetObjectiveCompleted(TrackerObjID, True)
-	SetStage(CompleteStage)
+	SetStage(GetCompleteStage())
 EndFunction
 
 Function RegisterLocalSignalTargets()
@@ -137,7 +134,7 @@ Function RegisterLocalSignalTargets()
 EndFunction
 
 Function HandleLocalSignalTarget(ObjectReference targetRef)
-	If IsStageDone(CompleteStage) || AllPendingTargets == None
+	If IsStageDone(GetCompleteStage()) || AllPendingTargets == None
 		Return
 	EndIf
 	Int pendingIndex = AllPendingTargets.Find(targetRef)

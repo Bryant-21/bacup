@@ -16,6 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::fixups::creature::creature_predicate::npc_acbs_template_flags;
+use crate::fixups::master_record_numbering::record_decoded_in_master_for_target;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::full_plugin::FixupScope;
@@ -1175,9 +1176,7 @@ pub(crate) fn read_target_or_master_record(
     }
     let handle =
         target_master_handle_for_fk(form_key, target_masters, target_master_handle_ids, interner)?;
-    session
-        .record_decoded_in_handle(handle, &form_key, schema, interner)
-        .ok()
+    record_decoded_in_master_for_target(session, handle, &form_key, schema, interner).ok()
 }
 
 fn template_slots(

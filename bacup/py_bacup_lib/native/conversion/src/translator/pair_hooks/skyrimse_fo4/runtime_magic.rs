@@ -2,7 +2,12 @@ use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::sym::StringInterner;
 
+mod contact_magic;
+pub(crate) use contact_magic::actor_value as skyrim_actor_value_for_fo4;
+pub(crate) use contact_magic::decode_source_contact_data;
+
 const VMAD: SubrecordSig = SubrecordSig(*b"VMAD");
+const NATIVE_MAGIC_LOWERED: &str = "skyrim_native_magic_source_fields_lowered";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MagicComponent {
@@ -10,10 +15,13 @@ pub(crate) enum MagicComponent {
     Spell,
     CloakEffect,
     AimedFireDamageEffect,
+    NativeSpell,
+    NativeEffect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MagicCast {
+    ConstantEffect,
     Scroll,
     FireAndForget,
     Concentration,
@@ -22,6 +30,7 @@ pub(crate) enum MagicCast {
 impl MagicCast {
     fn target_value(self) -> u64 {
         match self {
+            Self::ConstantEffect => 0,
             Self::Scroll | Self::FireAndForget => 1,
             Self::Concentration => 2,
         }
@@ -32,6 +41,9 @@ impl MagicCast {
 pub(crate) enum MagicDelivery {
     SelfTarget,
     Aimed,
+    Touch,
+    TargetActor,
+    TargetLocation,
 }
 
 impl MagicDelivery {
@@ -39,6 +51,9 @@ impl MagicDelivery {
         match self {
             Self::SelfTarget => 0,
             Self::Aimed => 2,
+            Self::Touch => 1,
+            Self::TargetActor => 3,
+            Self::TargetLocation => 4,
         }
     }
 }
@@ -117,6 +132,7 @@ pub(crate) struct MagicLoweringPlan {
     pub effect_flags: Vec<MagicEffectFlag>,
     pub donor_roles: Vec<MagicDonorRole>,
     pub vmad_intent: MagicVmadIntent,
+    pub target_fields: Option<Vec<FieldEntry>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +165,7 @@ pub(crate) enum MagicUnsupportedReason {
     Resistance,
     Projectile,
     EffectFlags,
+    SoundLevel,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,6 +200,10 @@ pub(crate) enum MagicContractError {
     PlanDrift {
         form_key: FormKey,
     },
+    UnsupportedNativeMagic {
+        form_key: FormKey,
+        reason: MagicUnsupportedReason,
+    },
     #[cfg(test)]
     DonorSignatureDrift {
         role: MagicDonorRole,
@@ -203,6 +224,11 @@ impl std::fmt::Display for MagicContractError {
             Self::PlanDrift { form_key } => write!(
                 f,
                 "Skyrim magic lowering plan no longer matches {:06X}",
+                form_key.local
+            ),
+            Self::UnsupportedNativeMagic { form_key, reason } => write!(
+                f,
+                "Skyrim magic {:06X} cannot preserve {reason:?}",
                 form_key.local
             ),
             #[cfg(test)]
@@ -233,6 +259,9 @@ impl std::fmt::Display for MagicContractError {
 impl std::error::Error for MagicContractError {}
 
 pub(crate) fn classify_magic_component(record: &Record, interner: &StringInterner) -> MagicSupport {
+    if let Some(support) = contact_magic::classify(record, interner) {
+        return support;
+    }
     match record.sig.0 {
         sig if sig == *b"SCRL" => classify_scroll(record, interner),
         sig if sig == *b"SPEL" => classify_spell(record, interner),
@@ -291,6 +320,10 @@ pub(crate) fn lower_supported_magic_record(
         MagicComponent::Spell => lower_spell(record, plan, interner),
         MagicComponent::CloakEffect => lower_cloak_effect(record, plan, interner),
         MagicComponent::AimedFireDamageEffect => lower_aimed_fire_effect(record, plan, interner),
+        MagicComponent::NativeSpell | MagicComponent::NativeEffect => {
+            record.fields = plan.target_fields.clone().expect("contact fields").into();
+            record.warnings.push(interner.intern(NATIVE_MAGIC_LOWERED));
+        }
     }
     Ok(MagicLoweringReceipt {
         source_form: plan.source_form,
@@ -306,8 +339,21 @@ pub(crate) fn lower_magic_record_for_fo4(
     record: &mut Record,
     interner: &StringInterner,
 ) -> Result<Option<MagicLoweringReceipt>, MagicContractError> {
+    if record
+        .warnings
+        .iter()
+        .any(|warning| interner.resolve(*warning) == Some(NATIVE_MAGIC_LOWERED))
+    {
+        return Ok(None);
+    }
     if let Some(plan) = classify_magic_component(record, interner).plan().cloned() {
         return lower_supported_magic_record(record, &plan, interner).map(Some);
+    }
+    if let Some(MagicSupport::Unsupported { reason }) = contact_magic::classify(record, interner) {
+        return Err(MagicContractError::UnsupportedNativeMagic {
+            form_key: record.form_key,
+            reason,
+        });
     }
     match record.sig.0 {
         sig if sig == *b"SCRL" => lower_fallback_scroll(record, interner),
@@ -656,6 +702,7 @@ fn plan(
         effect_flags,
         donor_roles,
         vmad_intent: MagicVmadIntent::PreserveForFo4Port,
+        target_fields: None,
     }
 }
 
@@ -820,10 +867,7 @@ fn fo4_magic_effect_data(plan: &MagicLoweringPlan, interner: &StringInterner) ->
             ("Flags", FieldValue::Uint(flags)),
             ("BaseCost", FieldValue::Float(0.0)),
             ("AssocItem", associated_item),
-            ("MagicSkillUnusedByte1", zero_byte()),
-            ("MagicSkillUnusedByte2", zero_byte()),
-            ("MagicSkillUnusedByte3", zero_byte()),
-            ("MagicSkillUnusedByte4", zero_byte()),
+            ("AssociatedSkill", FieldValue::Uint(0)),
             (
                 "ResistValue",
                 aimed
@@ -944,6 +988,7 @@ fn named<'a>(
 
 fn parse_cast(value: Option<&FieldValue>, interner: &StringInterner) -> Option<MagicCast> {
     match semantic(value, interner).as_deref() {
+        Some("0") | Some("constanteffect") => Some(MagicCast::ConstantEffect),
         Some("3") | Some("scroll") => Some(MagicCast::Scroll),
         Some("1") | Some("fireandforget") => Some(MagicCast::FireAndForget),
         Some("2") | Some("concentration") => Some(MagicCast::Concentration),
@@ -954,7 +999,10 @@ fn parse_cast(value: Option<&FieldValue>, interner: &StringInterner) -> Option<M
 fn parse_delivery(value: Option<&FieldValue>, interner: &StringInterner) -> Option<MagicDelivery> {
     match semantic(value, interner).as_deref() {
         Some("0") | Some("self") => Some(MagicDelivery::SelfTarget),
+        Some("1") | Some("touch") | Some("contact") => Some(MagicDelivery::Touch),
         Some("2") | Some("aimed") => Some(MagicDelivery::Aimed),
+        Some("3") | Some("targetactor") => Some(MagicDelivery::TargetActor),
+        Some("4") | Some("targetlocation") => Some(MagicDelivery::TargetLocation),
         _ => None,
     }
 }

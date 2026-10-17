@@ -22,14 +22,23 @@ Function Fragment_Stage_0100_Item_00()
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
+    If IsObjectiveDisplayed(100) && !IsObjectiveCompleted(100)
+        SetObjectiveCompleted(100, True)
+    EndIf
     SetObjectiveDisplayed(200)
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
+    If IsObjectiveDisplayed(200) && !IsObjectiveCompleted(200)
+        SetObjectiveCompleted(200, True)
+    EndIf
     SetObjectiveDisplayed(300)
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()
+    If IsObjectiveDisplayed(300) && !IsObjectiveCompleted(300)
+        SetObjectiveCompleted(300, True)
+    EndIf
     SetObjectiveDisplayed(400)
     ; FO4 lacks the FO76 proximity callback that continued registration.
     If !IsStageDone(405)
@@ -58,6 +67,9 @@ Function Fragment_Stage_0420_Item_00()
 EndFunction
 
 Function Fragment_Stage_0499_Item_00()
+    If IsObjectiveDisplayed(400) && !IsObjectiveCompleted(400)
+        SetObjectiveCompleted(400, True)
+    EndIf
     If W05_MQR_203P_Johnny_002C_RegistrationScene != None
         W05_MQR_203P_Johnny_002C_RegistrationScene.Start()
     EndIf
@@ -75,6 +87,9 @@ Function Fragment_Stage_0510_Item_00()
 EndFunction
 
 Function Fragment_Stage_0550_Item_00()
+    If IsObjectiveDisplayed(500) && !IsObjectiveCompleted(500)
+        SetObjectiveCompleted(500, True)
+    EndIf
     If W05_MQR_203P_SargentoPA_002_Round01GhouldenBoy != None
         W05_MQR_203P_SargentoPA_002_Round01GhouldenBoy.Start()
     EndIf
@@ -91,6 +106,9 @@ Function Fragment_Stage_0605_Item_00()
 EndFunction
 
 Function Fragment_Stage_0610_Item_00()
+    If IsObjectiveDisplayed(600) && !IsObjectiveCompleted(600)
+        SetObjectiveCompleted(600, True)
+    EndIf
     If W05_MQR_203P_GuardArena_001_Round01 != None
         W05_MQR_203P_GuardArena_001_Round01.Start()
     EndIf
@@ -108,6 +126,9 @@ Function Fragment_Stage_0710_Item_00()
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()
+    If IsObjectiveDisplayed(700) && !IsObjectiveCompleted(700)
+        SetObjectiveCompleted(700, True)
+    EndIf
     SetObjectiveDisplayed(799)
     SetObjectiveDisplayed(800)
     If W05_MQR_203P_SargentoPA_004_Round01PlayerArena != None
@@ -124,6 +145,12 @@ Function Fragment_Stage_0800_Item_01()
 EndFunction
 
 Function Fragment_Stage_0810_Item_00()
+    If IsObjectiveDisplayed(799) && !IsObjectiveCompleted(799)
+        SetObjectiveCompleted(799, True)
+    EndIf
+    If IsObjectiveDisplayed(800) && !IsObjectiveCompleted(800)
+        SetObjectiveCompleted(800, True)
+    EndIf
     If IsStageDone(9001) || IsStageDone(8000) || IsStageDone(8100)
         Return
     EndIf
@@ -163,6 +190,9 @@ Function Fragment_Stage_0822_Item_00()
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()
+    If IsObjectiveDisplayed(850) && !IsObjectiveCompleted(850)
+        SetObjectiveCompleted(850, True)
+    EndIf
     SetObjectiveDisplayed(900)
     If W05_MQR_203P_Johnny_EnterLockerRoom != None
         W05_MQR_203P_Johnny_EnterLockerRoom.Start()
@@ -176,12 +206,18 @@ Function Fragment_Stage_0901_Item_00()
 EndFunction
 
 Function Fragment_Stage_0910_Item_00()
+    If IsObjectiveDisplayed(900) && !IsObjectiveCompleted(900)
+        SetObjectiveCompleted(900, True)
+    EndIf
     If !IsStageDone(1000)
         SetStage(1000)
     EndIf
 EndFunction
 
 Function Fragment_Stage_0950_Item_00()
+    If IsObjectiveDisplayed(900) && !IsObjectiveCompleted(900)
+        SetObjectiveCompleted(900, True)
+    EndIf
     SetObjectiveDisplayed(950)
     If !IsStageDone(1000)
         SetStage(1000)
@@ -189,6 +225,9 @@ Function Fragment_Stage_0950_Item_00()
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()
+    If IsObjectiveDisplayed(950) && !IsObjectiveCompleted(950)
+        SetObjectiveCompleted(950, True)
+    EndIf
     SetObjectiveDisplayed(1000)
     If !IsStageDone(1050)
         SetStage(1050)
@@ -214,6 +253,9 @@ Function Fragment_Stage_1110_Item_00()
 EndFunction
 
 Function Fragment_Stage_1200_Item_00()
+    If IsObjectiveDisplayed(1100) && !IsObjectiveCompleted(1100)
+        SetObjectiveCompleted(1100, True)
+    EndIf
     SetObjectiveDisplayed(1199)
     SetObjectiveDisplayed(1200)
     If W05_MQR_203P_SargentoPA_006_Round02PlayerArena != None
@@ -264,6 +306,12 @@ Function Fragment_Stage_1205_Item_00()
 EndFunction
 
 Function Fragment_Stage_1210_Item_00()
+    If IsObjectiveDisplayed(1199) && !IsObjectiveCompleted(1199)
+        SetObjectiveCompleted(1199, True)
+    EndIf
+    If IsObjectiveDisplayed(1200) && !IsObjectiveCompleted(1200)
+        SetObjectiveCompleted(1200, True)
+    EndIf
     If IsStageDone(9001) || IsStageDone(8000) || IsStageDone(8100)
         Return
     EndIf
@@ -313,6 +361,9 @@ Function Fragment_Stage_1222_Item_00()
 EndFunction
 
 Function Fragment_Stage_1300_Item_00()
+    If IsObjectiveDisplayed(1250) && !IsObjectiveCompleted(1250)
+        SetObjectiveCompleted(1250, True)
+    EndIf
     SetObjectiveDisplayed(1300)
     If W05_MQR_203P_Johnny_EnterLockerRoom != None
         W05_MQR_203P_Johnny_EnterLockerRoom.Start()
@@ -326,12 +377,18 @@ Function Fragment_Stage_1301_Item_00()
 EndFunction
 
 Function Fragment_Stage_1310_Item_00()
+    If IsObjectiveDisplayed(1300) && !IsObjectiveCompleted(1300)
+        SetObjectiveCompleted(1300, True)
+    EndIf
     If !IsStageDone(1400)
         SetStage(1400)
     EndIf
 EndFunction
 
 Function Fragment_Stage_1350_Item_00()
+    If IsObjectiveDisplayed(1300) && !IsObjectiveCompleted(1300)
+        SetObjectiveCompleted(1300, True)
+    EndIf
     SetObjectiveDisplayed(1350)
     If !IsStageDone(1400)
         SetStage(1400)
@@ -339,6 +396,9 @@ Function Fragment_Stage_1350_Item_00()
 EndFunction
 
 Function Fragment_Stage_1400_Item_00()
+    If IsObjectiveDisplayed(1350) && !IsObjectiveCompleted(1350)
+        SetObjectiveCompleted(1350, True)
+    EndIf
     SetObjectiveDisplayed(1400)
     If !IsStageDone(1450)
         SetStage(1450)
@@ -350,6 +410,9 @@ Function Fragment_Stage_1450_Item_00()
 EndFunction
 
 Function Fragment_Stage_1500_Item_00()
+    If IsObjectiveDisplayed(1400) && !IsObjectiveCompleted(1400)
+        SetObjectiveCompleted(1400, True)
+    EndIf
     SetObjectiveDisplayed(1500)
     If W05_MQR_203P_SargentoPA_007_Round03CallPlayer != None
         W05_MQR_203P_SargentoPA_007_Round03CallPlayer.Start()
@@ -364,6 +427,9 @@ Function Fragment_Stage_1510_Item_00()
 EndFunction
 
 Function Fragment_Stage_1600_Item_00()
+    If IsObjectiveDisplayed(1500) && !IsObjectiveCompleted(1500)
+        SetObjectiveCompleted(1500, True)
+    EndIf
     SetObjectiveDisplayed(1600)
     If W05_MQR_203P_SargentoPA_008_Round03PlayerArena != None
         W05_MQR_203P_SargentoPA_008_Round03PlayerArena.Start()
@@ -437,6 +503,9 @@ Function Fragment_Stage_1605_Item_00()
 EndFunction
 
 Function Fragment_Stage_1610_Item_00()
+    If IsObjectiveDisplayed(1600) && !IsObjectiveCompleted(1600)
+        SetObjectiveCompleted(1600, True)
+    EndIf
     If IsStageDone(9001) || IsStageDone(8000) || IsStageDone(8100)
         Return
     EndIf
@@ -524,6 +593,9 @@ Function Fragment_Stage_1750_Item_00()
 EndFunction
 
 Function Fragment_Stage_1800_Item_00()
+    If IsObjectiveDisplayed(1700) && !IsObjectiveCompleted(1700)
+        SetObjectiveCompleted(1700, True)
+    EndIf
     SetObjectiveDisplayed(1800)
     Actor playerRef = Game.GetPlayer()
     If playerRef != None && W05_MQR_203P_WinnersCup_Blackout != None
@@ -532,10 +604,16 @@ Function Fragment_Stage_1800_Item_00()
 EndFunction
 
 Function Fragment_Stage_1900_Item_00()
+    If IsObjectiveDisplayed(1800) && !IsObjectiveCompleted(1800)
+        SetObjectiveCompleted(1800, True)
+    EndIf
     SetObjectiveDisplayed(1900)
 EndFunction
 
 Function Fragment_Stage_2000_Item_00()
+    If IsObjectiveDisplayed(1900) && !IsObjectiveCompleted(1900)
+        SetObjectiveCompleted(1900, True)
+    EndIf
     SetObjectiveDisplayed(2000)
 EndFunction
 
@@ -546,6 +624,9 @@ Function Fragment_Stage_2010_Item_00()
 EndFunction
 
 Function Fragment_Stage_2100_Item_00()
+    If IsObjectiveDisplayed(2000) && !IsObjectiveCompleted(2000)
+        SetObjectiveCompleted(2000, True)
+    EndIf
     SetObjectiveDisplayed(2100)
     If W05_MQR_203P_HalJohnny_001_Shoot != None
         W05_MQR_203P_HalJohnny_001_Shoot.Start()
@@ -564,6 +645,9 @@ Function Fragment_Stage_2110_Item_00()
 EndFunction
 
 Function Fragment_Stage_2200_Item_00()
+    If IsObjectiveDisplayed(2100) && !IsObjectiveCompleted(2100)
+        SetObjectiveCompleted(2100, True)
+    EndIf
     SetObjectiveDisplayed(2200)
 EndFunction
 
@@ -598,10 +682,16 @@ Function Fragment_Stage_2221_Item_00()
 EndFunction
 
 Function Fragment_Stage_2300_Item_00()
+    If IsObjectiveDisplayed(2200) && !IsObjectiveCompleted(2200)
+        SetObjectiveCompleted(2200, True)
+    EndIf
     SetObjectiveDisplayed(2300)
 EndFunction
 
 Function Fragment_Stage_2400_Item_00()
+    If IsObjectiveDisplayed(2300) && !IsObjectiveCompleted(2300)
+        SetObjectiveCompleted(2300, True)
+    EndIf
     SetObjectiveDisplayed(2400)
 EndFunction
 

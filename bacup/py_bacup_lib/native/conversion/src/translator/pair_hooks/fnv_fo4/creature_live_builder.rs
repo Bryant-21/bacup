@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use havok_native::convert::creature_ragdoll::reconstruct_fo4_creature_ragdoll_packfile;
+use havok_native::convert::creature_ragdoll::{
+    lower_primitive_shapes_to_fo4_convex_hulls, reconstruct_fo4_creature_ragdoll_packfile,
+};
 use nif_core_native::creature_ragdoll::{
     LegacyCreatureRagdollError, extract_fnv_fo3_creature_ragdoll,
 };
@@ -46,6 +48,7 @@ const TARGET_DEFAULT_ROLL_LIMIT_DEGREES: f32 = 20.0;
 #[derive(Clone, Copy)]
 pub struct FnvFo3LiveRecipeBuildInput<'a> {
     pub winning_records: &'a [LegacyRecordSource<'a>],
+    pub dependency_ledger: &'a super::creature_dependencies::FnvFo3CreatureDependencyLedger,
     pub source_data_root: &'a Path,
     pub expected_creature_winners: Option<usize>,
 }
@@ -87,7 +90,14 @@ pub fn build_live_fnv_fo3_creature_recipe_evidence(
     )?;
     let required_float_slots = collect_required_float_slots(&catalog, &mesh_root);
     let skeletons = reconstruct_skeleton_evidence(&catalog, &mesh_root, &required_float_slots);
-    let motion_families = load_motion_evidence(&catalog, &mesh_root, &skeletons);
+    let mut motion_families = load_motion_evidence(&catalog, &mesh_root, &skeletons);
+    super::creature_source_idles::attach_source_idle_claims(input.winning_records, &mut motion_families, interner)
+        .map_err(FnvFo3LiveRecipeBuildError::Input)?;
+    let reachable_idles = super::creature_source_idles::reachable_shared_rig_idles(&catalog, input.dependency_ledger);
+    super::creature_source_idles::restrict_shared_rig_idle_claims(&mut motion_families, &reachable_idles);
+    super::creature_weapon_attacks::load_weapon_attack_evidence(
+        &catalog, input.winning_records, input.dependency_ledger, &mut motion_families, interner,
+    ).map_err(FnvFo3LiveRecipeBuildError::Input)?;
     let motion_catalog = build_creature_motion_catalog(&motion_families)?;
     let ragdoll_evidence = load_ragdoll_evidence(&catalog, &mesh_root);
     let graph_contracts =
@@ -313,6 +323,7 @@ fn load_motion_evidence(
                 rig: family.key.clone(),
                 referenced_kfs: family.recursive_kf_paths.clone(),
                 kf_evidence,
+                weapon_attacks: Vec::new(),
                 creature_traits: Vec::new(),
             }
         })
@@ -333,6 +344,10 @@ fn load_ragdoll_evidence(
                 .map_err(|error| error.to_string())
                 .and_then(|nif| {
                     extract_fnv_fo3_creature_ragdoll(&nif).map_err(|error| error.to_string())
+                })
+                .and_then(|ir| {
+                    lower_primitive_shapes_to_fo4_convex_hulls(&ir, 12)
+                        .map_err(|error| error.to_string())
                 })
                 .and_then(|ir| {
                     reconstruct_fo4_creature_ragdoll_packfile(&ir)
@@ -386,7 +401,7 @@ fn build_graph_contracts(
         .map(|attack| {
             let family_motion = motion.get(&attack.rig).copied();
             let capability = infer_capability(attack, family_motion);
-            let required_roles = required_capability_roles(capability, attack, family_motion);
+            let required_roles = required_capability_roles(capability, family_motion);
             let requires_ragdoll = matches!(
                 ragdolls.get(&attack.rig),
                 Some(RagdollCapabilityEvidence::Supported { .. })
@@ -415,14 +430,14 @@ fn infer_capability(
     let has_ground = has(MotionRole::GroundLocomotion);
     let has_mobility = has_ground || has(MotionRole::Fly) || has(MotionRole::Swim);
     let has_melee = has(MotionRole::MeleeAttack)
-        || matches!(attack.profile, AttackProfile::Melee | AttackProfile::Mixed);
+        || (motion.is_none() && matches!(attack.profile, AttackProfile::Melee | AttackProfile::Mixed));
     let has_ranged = has(MotionRole::RangedAttack)
+        || has(MotionRole::Fire)
         || has(MotionRole::Projectile)
-        || matches!(attack.profile, AttackProfile::Ranged | AttackProfile::Mixed);
+        || (motion.is_none() && matches!(attack.profile, AttackProfile::Ranged | AttackProfile::Mixed));
     if matches!(attack.profile, AttackProfile::Undetermined)
         && !has_melee
         && !has_ranged
-        && !has(MotionRole::ContinuousOrRobot)
     {
         CreatureGraphCapability::PassiveGround
     } else if has_looping_motion_candidate(motion, MotionRole::Overlay) {
@@ -435,8 +450,6 @@ fn infer_capability(
         CreatureGraphCapability::Fly
     } else if has(MotionRole::Swim) {
         CreatureGraphCapability::Swim
-    } else if has(MotionRole::ContinuousOrRobot) {
-        CreatureGraphCapability::RobotContinuousAttack
     } else if !has_mobility && has(MotionRole::Idle) && (has_melee || has_ranged) {
         CreatureGraphCapability::StationaryTurret
     } else if has(MotionRole::StationaryOrTurret)
@@ -461,9 +474,8 @@ fn has_looping_motion_candidate(
         .is_some_and(|entry| entry.candidates.iter().any(|candidate| candidate.looping))
 }
 
-fn required_capability_roles(
+pub(super) fn required_capability_roles(
     capability: CreatureGraphCapability,
-    _attack: &super::creature_catalog::AttackSet,
     motion: Option<&CreatureFamilyMotionSet>,
 ) -> Vec<MotionRole> {
     let has = |role| {
@@ -495,6 +507,7 @@ fn required_capability_roles(
             | CreatureGraphCapability::GroundFly
             | CreatureGraphCapability::Swim
             | CreatureGraphCapability::Fly
+            | CreatureGraphCapability::HumanoidWeaponOverlay
     ) {
         if melee {
             roles.push(MotionRole::MeleeAttack);
@@ -503,10 +516,18 @@ fn required_capability_roles(
             roles.push(preferred_ranged_motion_role(motion));
         }
     }
-    if capability == CreatureGraphCapability::HumanoidWeaponOverlay
+    if matches!(capability, CreatureGraphCapability::HumanoidWeaponOverlay | CreatureGraphCapability::PassiveGround)
         && has(MotionRole::GroundLocomotion)
     {
         roles.push(MotionRole::GroundLocomotion);
+    }
+    for role in [MotionRole::Turn, MotionRole::Hurt, MotionRole::Death] {
+        if has(role) {
+            roles.push(role);
+        }
+    }
+    if has(MotionRole::ScriptedIdle) {
+        roles.push(MotionRole::ScriptedIdle);
     }
     roles.sort();
     roles.dedup();
@@ -553,7 +574,7 @@ fn preferred_ranged_motion_role(motion: Option<&CreatureFamilyMotionSet>) -> Mot
     .unwrap_or(MotionRole::RangedAttack)
 }
 
-fn build_movement_selections(
+pub(super) fn build_movement_selections(
     contracts: &[CreatureGraphContractEvidence],
     motion: &[CreatureFamilyMotionSet],
 ) -> Vec<LegacyMovementGraphSelection> {
@@ -804,11 +825,56 @@ fn canonical_asset_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::creature_catalog::{AssetReadiness, CorpusAccounting, RigFamily};
     use super::super::creature_motion::{
         BindingCompatibility, BindingSummary, CandidateConfidence, FamilyMotionReadiness,
         MotionCandidate, MotionRoleCandidates, RoleReadiness, RootMotionEvidence, SequenceCycle,
     };
     use super::*;
+
+    #[test]
+    #[ignore = "requires MODKIT_FNV_CREATURE_MESH_ROOT containing extracted source meshes"]
+    fn live_ragdoll_classifier_accepts_source_primitive_shapes() {
+        let mesh_root = PathBuf::from(
+            std::env::var_os("MODKIT_FNV_CREATURE_MESH_ROOT")
+                .expect("set MODKIT_FNV_CREATURE_MESH_ROOT to the extracted FNV meshes directory"),
+        );
+        let catalog = CreatureCorpusPlan {
+            records: Vec::new(),
+            rig_families: [
+                "creatures/deathclaw/skeleton.nif",
+                "creatures/dog/skeleton.nif",
+                "creatures/robobrain/skeleton.nif",
+                "dlc05/creatures/combatdroid/skeleton.nif",
+                "dlcanch/creatures/chimera/skeleton.nif",
+            ]
+            .into_iter()
+            .map(|path| RigFamily {
+                key: RigFamilyKey {
+                    game: LegacyCreatureGame::Fnv,
+                    skeleton_path: path.to_string(),
+                },
+                members: Vec::new(),
+                direct_kf_paths: Vec::new(),
+                recursive_kf_paths: Vec::new(),
+                asset_dependencies: Vec::new(),
+                readiness: AssetReadiness::Ready,
+            })
+            .collect(),
+            body_variants: Vec::new(),
+            attack_sets: Vec::new(),
+            accounting: CorpusAccounting::default(),
+        };
+
+        let evidence = load_ragdoll_evidence(&catalog, &mesh_root);
+        assert_eq!(evidence.len(), 5);
+        for family in evidence {
+            assert!(
+                matches!(family, RagdollCapabilityEvidence::Supported { .. }),
+                "source primitive ragdoll rejected: {family:?}"
+            );
+        }
+    }
 
     #[test]
     fn float_slot_union_is_deterministic_and_normalized() {
@@ -865,6 +931,7 @@ mod tests {
             binding: BindingSummary {
                 source_skeleton_path: "creatures/alien/skeleton.nif".to_string(),
                 transform_track_count: 1,
+                ordered_transform_targets: vec!["Bip01".to_string()],
                 float_track_count: 0,
                 controller_types: Vec::new(),
                 interpolator_types: Vec::new(),
@@ -907,5 +974,28 @@ mod tests {
             Some(&looping),
             MotionRole::Overlay
         ));
+        let attack = super::super::creature_catalog::AttackSet {
+            rig: looping.rig.clone(),
+            family_kind: super::super::creature_catalog::CreatureFamilyKind::RobotOrTurret,
+            profile: AttackProfile::Undetermined,
+            animation_paths: Vec::new(),
+            melee_candidates: Vec::new(),
+            ranged_candidates: Vec::new(),
+            looping_candidates: Vec::new(),
+            graph_readiness: super::super::creature_catalog::GraphReadiness::NeedsClipClassification,
+        };
+        looping.roles[0].role = MotionRole::ContinuousOrRobot;
+        assert_eq!(infer_capability(&attack, Some(&looping)), CreatureGraphCapability::PassiveGround);
+        looping.roles.push(MotionRoleCandidates {
+            role: MotionRole::GroundLocomotion,
+            candidates: looping.roles[0].candidates.clone(),
+            readiness: RoleReadiness::Ready,
+        });
+        looping.roles.push(MotionRoleCandidates {
+            role: MotionRole::RangedAttack,
+            candidates: looping.roles[0].candidates.clone(),
+            readiness: RoleReadiness::Ready,
+        });
+        assert_eq!(infer_capability(&attack, Some(&looping)), CreatureGraphCapability::GroundRangedProjectile);
     }
 }

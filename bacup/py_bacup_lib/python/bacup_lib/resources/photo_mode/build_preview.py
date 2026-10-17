@@ -56,7 +56,7 @@ def preview_compatible(movie: bytes) -> bytes:
     return movie[:4] + struct.pack("<I", len(result) + 8) + zlib.compress(result)
 
 
-def build_preview(source: Path, output: Path, ruffle_package: Path):
+def build_preview(source: Path, output: Path, ruffle_package: Path, catalog_path: Path | None = None):
     manifest = convert_photo_mode_ui(source, output / "data")
     merge_packaged(translation_path(output / 'data'))
     movie = (output / "data" / OUTPUT / MENU).read_bytes()
@@ -74,8 +74,24 @@ def build_preview(source: Path, output: Path, ruffle_package: Path):
                         'Saturated', 'BlackAndWhite', 'Sepia', 'PhotoFlash', 'Cool', 'Dandy', 'Daytripper', 'Enhance',
                         'Gamma', 'Nuke', 'Tintype', 'Vintage', 'Warm', 'Acid', 'Electric', 'Jet', '3dViz', 'OnlyRed',
                         'Feral', 'SugarBomb', 'VaultBlue')]})
+    options['Expression'] = ['$NONE'] + sorted(key for key in strings if key.startswith('$B21_PM_Expression'))
+    options['Vanity Light Style'] = ['$NONE', 'Portrait', 'Neon Blues', 'Runway', 'Film Noir', 'Toxic Waste']
+    options['Texture Category'] = ['Standard']
+    options['Texture'] = ['$NONE', 'Dust', 'Scratches']
+    groups = {}
+    if catalog_path is not None:
+        catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
+        strings.update(dict(line.split('\t', 1) for line in read_table(catalog_path.parents[1] / 'B21_TalesFromAppalachia_en.txt') if '\t' in line))
+        for kind, control in (('poses', 'Pose'), ('frames', 'Frame'), ('textures', 'Texture')):
+            categories = list(dict.fromkeys(row['category'] for row in catalog[kind]))
+            options[control + ' Category'] = categories
+            groups[control] = [['$NONE'] + [row['name'] for row in catalog[kind] if row['category'] == category]
+                               for category in categories]
+            options[control] = groups[control][0]
+        options['Vanity Light Style'] = ['$NONE'] + [style['name'] for style in catalog['lights']]
     script = ('package { public class B21_PhotoStrings { public static var values:Object = ' + json.dumps(strings) +
-              '; public static var options:Object = ' + json.dumps(options) + '; } }')
+              '; public static var options:Object = ' + json.dumps(options) +
+              '; public static var groups:Object = ' + json.dumps(groups) + '; } }')
     tags = swf_tags(movie)
     tags.insert(next(i for i, (c, _) in enumerate(tags) if c == 76), (82, native_runtime.compile_as3_do_abc([script])))
     movie = replace_tags(movie, tags)
@@ -89,6 +105,9 @@ def build_preview(source: Path, output: Path, ruffle_package: Path):
             ' extends MovieClip { public function B21PreviewBounds(root:DisplayObject):Object {'
             'var b:Object=getBounds(root); try { b=' + clip + '.getBounds(root); } catch (error:Error) {} '
             'return {x:b.x,y:b.y,width:b.width,height:b.height}; } } }'})
+    movie = native_runtime.augment_as3_classes(movie, {'OptionStepperWithLabel':
+        'package { import flash.display.MovieClip; public class OptionStepperWithLabel extends MovieClip {'
+        'public function B21PreviewOptions():Object { return {count:Options.length,selection:Selection,text:Options[Selection]}; } } }'})
     movie = native_runtime.patch_as3_method(movie, "SelfieMenu", "$constructor",
         [["callproperty", "B21RegisterHandler", 0], ["callpropvoid", "addEventListener", 2]],
         [["keep", 0], ["keep", 1], ["getlocal", 0], ["callpropvoid", "B21PreviewInit", 0]])

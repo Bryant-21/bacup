@@ -1,4 +1,4 @@
-"""Mod tool workspaces — SubGraph Maker, archive tools, Archlist Creator, Folder Renamer, Modlist Merger, Verified Creations."""
+"""Mod tool workspaces — SubGraph Maker, archive tools, Archlist Creator, Folder Renamer, Modlist Merger, Verified Creations, Tales Catalogs."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from ui.tools.assets.archlist_creator import ArchlistCreatorTool
 from ui.tools.assets.folder_renamer import FolderRenamerTool
 from ui.tools.assets.mass_bsa import MassBSATool
 from ui.tools.assets.modlist_merger import ModlistMergerTool
+from ui.tools.catalog_editor.tool import CatalogEditorTool
 from ui.tools.verified_creations.tool import VerifiedCreationsTool
 
 
@@ -73,6 +74,19 @@ class ModlistMergerWorkspace(ToolWorkspace):
     icon = "MLG"
     id = "modlist_merger"
     tool_class = ModlistMergerTool
+
+
+class CatalogEditorWorkspace(ToolWorkspace):
+    name = "Tales Catalogs"
+    icon = "CAT"
+    id = "catalog_editor"
+    tool_class = CatalogEditorTool
+
+    def initialize(self) -> None:
+        # Masters are found through the FO4 game paths.
+        if self._toolkit_settings:
+            self._tool._toolkit_settings = self._toolkit_settings
+        super().initialize()
 
 
 class VerifiedCreationsWorkspace(ToolWorkspace):

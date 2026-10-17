@@ -6,202 +6,49 @@ from types import SimpleNamespace
 import pytest
 
 
-class FakePlugin:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.file_path = path
-        self.closed = False
-
-    def record_index_rows(self):
-        return [("Fallout4.esm:01F276", "Ammo10mm", "AMMO", 0x01F276, 0x01F276)]
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def test_record_preflight_dedupes_by_official_master_order(monkeypatch, tmp_path):
+def test_record_preflight_dispatches_official_paths_and_keeps_native_rows(monkeypatch, tmp_path):
     from bacup_lib import target_preflight
 
-    data_dir = tmp_path / "Data"
-    data_dir.mkdir()
-    fallout4 = data_dir / "Fallout4.esm"
-    robot = data_dir / "DLCRobot.esm"
-    fallout4.write_bytes(b"")
-    robot.write_bytes(b"")
-    opened: list[FakePlugin] = []
+    fallout4 = tmp_path / "Fallout4.esm"
+    robot = tmp_path / "DLCRobot.esm"
+    fallout4.touch()
+    robot.touch()
+    rows = [("Ammo10mm", "AMMO", "01F276:Fallout4.esm")]
+    warnings = ["native duplicate warning"]
+    calls = []
 
-    def fake_load(path, *, game=None, lazy_index=False):
-        plugin = FakePlugin(Path(path))
-        opened.append(plugin)
-        return plugin
+    def build(game, paths):
+        calls.append((game, paths))
+        return rows, warnings
 
-    def fake_collect(plugin, game):
-        if plugin.path.name == "Fallout4.esm":
-            return [
-                {
-                    "editor_id": "Ammo10mm",
-                    "signature": "AMMO",
-                    "form_key": "01F276:Fallout4.esm",
-                }
-            ]
-        return [
-            {
-                "editor_id": "ammo10mm",
-                "signature": "AMMO",
-                "form_key": "099999:DLCRobot.esm",
-            }
-        ]
+    monkeypatch.setattr(target_preflight, "load_native_module", lambda: SimpleNamespace(
+        conversion_target_record_preflight=build,
+    ))
+    result = target_preflight.build_target_record_preflight("fo4", target_data_dir=tmp_path)
 
-    monkeypatch.setattr(target_preflight.Plugin, "load", fake_load)
-
-    result = target_preflight.build_target_record_preflight(
-        "fo4",
-        target_data_dir=data_dir,
-        collect_eid_rows=fake_collect,
-    )
-
-    rows = result.rows_for_native()
+    assert calls == [("fo4", [str(fallout4), str(robot)])]
+    assert result.rows_for_native() is rows
+    assert result.warnings is warnings
     assert result.master_names == ["Fallout4.esm", "DLCRobot.esm"]
-    assert ("Ammo10mm", "AMMO", "01F276:Fallout4.esm") in rows
-    assert ("ammo10mm", "AMMO", "099999:DLCRobot.esm") not in rows
-    assert any("duplicate target EditorID/signature" in warning for warning in result.warnings)
-    assert all(plugin.closed for plugin in opened)
-
-
-def test_record_preflight_uses_public_record_index_rows(monkeypatch, tmp_path):
-    from bacup_lib import target_preflight
-
-    data_dir = tmp_path / "Data"
-    data_dir.mkdir()
-    fallout4 = data_dir / "Fallout4.esm"
-    fallout4.write_bytes(b"")
-    opened: list[FakePlugin] = []
-
-    def fake_load(path, *, game=None, lazy_index=False):
-        assert game == "fo4"
-        assert lazy_index is True
-        plugin = FakePlugin(Path(path))
-        opened.append(plugin)
-        return plugin
-
-    monkeypatch.setattr(target_preflight.Plugin, "load", fake_load)
-
-    result = target_preflight.build_target_record_preflight(
-        "fo4", target_data_dir=data_dir
-    )
-
-    assert ("Ammo10mm", "AMMO", "01F276:Fallout4.esm") in result.rows_for_native()
-    assert opened and opened[0].closed
-
-
-def test_record_preflight_adds_fo4_hardcoded_actor_values_unless_physical(monkeypatch, tmp_path):
-    from bacup_lib import target_preflight
-
-    data_dir = tmp_path / "Data"
-    data_dir.mkdir()
-    fallout4 = data_dir / "Fallout4.esm"
-    fallout4.write_bytes(b"")
-
-    def fake_load(path, *, game=None, lazy_index=False):
-        return FakePlugin(Path(path))
-
-    monkeypatch.setattr(target_preflight.Plugin, "load", fake_load)
-
-    result = target_preflight.build_target_record_preflight(
-        "fo4",
-        target_data_dir=data_dir,
-        collect_eid_rows=lambda plugin, game: [],
-    )
-
-    rows = result.rows_for_native()
-    assert ("PowerGenerated", "AVIF", "00032E:Fallout4.esm") in rows
-    assert ("ReflectDamage", "AVIF", "00035F:Fallout4.esm") in rows
-    assert ("PlayCredits", "GLOB", "000063:Fallout4.esm") in rows
-
-    physical = target_preflight.build_target_record_preflight(
-        "fo4",
-        target_data_dir=data_dir,
-        collect_eid_rows=lambda plugin, game: [
-            {
-                "editor_id": "PowerGenerated",
-                "signature": "AVIF",
-                "form_key": "123456:Fallout4.esm",
-            }
-        ],
-    )
-
-    assert physical.records[("powergenerated", "AVIF")].form_key == "123456:Fallout4.esm"
-
-
-def test_record_preflight_reuses_open_target_master_handles(monkeypatch, tmp_path):
-    from bacup_lib import target_preflight
-
-    data_dir = tmp_path / "Data"
-    data_dir.mkdir()
-    fallout4 = data_dir / "Fallout4.esm"
-    fallout4.write_bytes(b"")
-    handle = FakePlugin(fallout4)
-
-    def fail_load(path, *, game=None, lazy_index=False):
-        raise AssertionError(f"unexpected load: {path}")
-
-    monkeypatch.setattr(target_preflight.Plugin, "load", fail_load)
-
-    result = target_preflight.build_target_record_preflight(
-        "fo4",
-        target_data_dir=data_dir,
-        target_master_handles=[handle],
-        collect_eid_rows=lambda plugin, game: [
-            {
-                "editor_id": "Ammo10mm",
-                "signature": "AMMO",
-                "form_key": "01F276:Fallout4.esm",
-            },
-            {
-                "editor_id": "ammo10mm",
-                "signature": "AMMO",
-                "form_key": "01F276:Fallout4.esm",
-            },
-        ],
-    )
-
-    assert result.rows_for_native().count(("Ammo10mm", "AMMO", "01F276:Fallout4.esm")) == 1
-    assert not result.warnings
-    assert not handle.closed
-
-
-def test_record_preflight_keeps_dlc_owner_when_base_missing(monkeypatch, tmp_path):
-    from bacup_lib import target_preflight
-
-    data_dir = tmp_path / "Data"
-    data_dir.mkdir()
-    nuka = data_dir / "DLCNukaWorld.esm"
-    nuka.write_bytes(b"")
-
-    def fake_load(path, *, game=None, lazy_index=False):
-        return FakePlugin(Path(path))
-
-    def fake_collect(plugin, game):
-        return [
-            {
-                "editor_id": "DLC04_Ammo_HandmadeRound",
-                "signature": "AMMO",
-                "form_key": "037897:DLCNukaWorld.esm",
-            }
-        ]
-
-    monkeypatch.setattr(target_preflight.Plugin, "load", fake_load)
-
-    result = target_preflight.build_target_record_preflight(
-        "fo4",
-        target_data_dir=data_dir,
-        collect_eid_rows=fake_collect,
-    )
-
-    assert result.master_names == ["DLCNukaWorld.esm"]
-    assert result.rows_for_native() == [
-        ("DLC04_Ammo_HandmadeRound", "AMMO", "037897:DLCNukaWorld.esm")
+    assert result.missing_masters == [
+        "DLCworkshop01.esm", "DLCCoast.esm", "DLCworkshop02.esm",
+        "DLCworkshop03.esm", "DLCNukaWorld.esm",
     ]
+
+
+def test_record_preflight_preserves_native_failure(monkeypatch, tmp_path):
+    from bacup_lib import target_preflight
+
+    (tmp_path / "Fallout4.esm").touch()
+
+    def fail(game, paths):
+        raise RuntimeError("invalid target master")
+
+    monkeypatch.setattr(target_preflight, "load_native_module", lambda: SimpleNamespace(
+        conversion_target_record_preflight=fail,
+    ))
+    with pytest.raises(RuntimeError, match="invalid target master"):
+        target_preflight.build_target_record_preflight("fo4", target_data_dir=tmp_path)
 
 
 @pytest.mark.parametrize(

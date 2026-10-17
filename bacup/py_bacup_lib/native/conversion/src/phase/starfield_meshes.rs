@@ -31,7 +31,6 @@ use serde_json::Value as JsonValue;
 use crate::phase::progress::ProgressReporter;
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 use nif_core_native::model::{NifBlock, NifFile, NifValue};
-use nif_core_native::starfield_collision::{self, CollisionPrim};
 use nif_core_native::starfield_write::{self, CollisionMode};
 
 /// Emit a `Log` progress update every N converted entries, independent of the throttled
@@ -75,19 +74,6 @@ fn shader_material_rel(nif: &NifFile, shape: &NifBlock) -> Option<String> {
     }
 }
 
-/// `true` when the source NIF has collision that exists but failed to decode, so
-/// `extract_fo4_collision_prims` fell back to a render-geometry AABB box (the only path that
-/// produces an all-`Box` result — a genuine decode always yields `ConvexHull`s, and "no
-/// collision at all" yields an empty `Vec`, per R7 spec-delta 8).
-fn collision_used_fallback(fo4_bytes: &[u8]) -> bool {
-    match starfield_collision::extract_fo4_collision_prims(fo4_bytes) {
-        Ok(prims) => {
-            !prims.is_empty() && prims.iter().all(|p| matches!(p, CollisionPrim::Box { .. }))
-        }
-        Err(_) => false,
-    }
-}
-
 #[derive(Debug)]
 pub struct ConvertedNif {
     pub nif_bytes: Vec<u8>,
@@ -103,14 +89,14 @@ pub fn convert_one_nif(fo4_bytes: &[u8], rel_path: &str) -> Result<ConvertedNif,
     let nif_in = NifFile::from_bytes(fo4_bytes, None)
         .map_err(|error| format!("{rel_path}: failed to parse FO4 NIF: {error}"))?;
 
-    let mat_path_for = move |shape: &NifBlock| -> String {
+    let mat_path_for = |shape: &NifBlock| -> String {
         shader_material_rel(&nif_in, shape)
             .map(|bgsm_rel| mat_out_rel(&bgsm_rel))
             .unwrap_or_default()
     };
 
-    let out = starfield_write::convert_fo4_nif_to_starfield(
-        fo4_bytes,
+    let out = starfield_write::convert_fo4_nif_to_starfield_parsed(
+        &nif_in,
         &mat_path_for,
         CollisionMode::FromFo4Prims,
     )
@@ -119,7 +105,7 @@ pub fn convert_one_nif(fo4_bytes: &[u8], rel_path: &str) -> Result<ConvertedNif,
     Ok(ConvertedNif {
         nif_bytes: out.nif_bytes,
         mesh_files: out.mesh_files,
-        collision_fallback: collision_used_fallback(fo4_bytes),
+        collision_fallback: out.collision_fallback,
     })
 }
 

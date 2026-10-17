@@ -46,6 +46,7 @@ Function Fragment_Stage_0200_Item_00()
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
+    ; TODO(recipes): FO76 teaches co_P01B_Wolf_RecallKey at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(20, True)
     SetObjectiveDisplayed(30, True)
     ObjectReference playerRef = Alias_Player.GetReference()

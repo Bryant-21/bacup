@@ -76,8 +76,8 @@ class CollisionGeneratorTool(BaseTool):
 
         pick_input = pick_output = False
         if begin_form("io##colgen"):
-            _, pick_input = draw_path_row("Input", self._input_path)
-            _, pick_output = draw_path_row("Output", self._output_dir, "Browse...##out")
+            self._input_path, pick_input = draw_path_row("Input", self._input_path)
+            self._output_dir, pick_output = draw_path_row("Output", self._output_dir, "Browse...##out")
             end_form()
 
         if pick_input:
@@ -85,7 +85,7 @@ class CollisionGeneratorTool(BaseTool):
             if path:
                 self._input_path = path
         if pick_output:
-            folder = pick_folder("Output directory (optional)")
+            folder = pick_folder("Output directory (optional)", self._output_dir)
             if folder:
                 self._output_dir = folder
 

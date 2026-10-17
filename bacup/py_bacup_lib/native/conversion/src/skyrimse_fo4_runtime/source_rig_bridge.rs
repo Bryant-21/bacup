@@ -184,6 +184,7 @@ fn assemble_skyrim_source_rig_bridge_input(
         .canonical_json()
         .map_err(|error| SkyrimSourceRigBridgeError::Ledger(error.to_string()))?;
     let pair_ledger = SourceRigPairLedgerEvidence {
+        source_root_identity: None,
         schema: SKYRIM_SOURCE_RIG_BRIDGE_SCHEMA.to_string(),
         canonical_json: canonical_json.clone(),
         ledger_blake3: input.ledger.content_blake3.clone(),
@@ -426,9 +427,9 @@ fn validate_root(
             "decoded root is not a converted skeleton root",
         ));
     }
-    let crate::source_rig::CreatureBodyPartProjection::RootOnly32 {
-        node, vats_target, ..
-    } = &projection.body_parts;
+    let root = projection.body_parts.profile();
+    let node = &root.node;
+    let vats_target = &root.vats_target;
     if node != &variant.actual_root_bone || vats_target != &variant.actual_root_bone {
         return Err(invalid(
             "actual_root",
@@ -447,9 +448,11 @@ pub(crate) fn graph_manifest(
         .clone()
         .ok_or_else(|| invalid("graph_idle_event", "Ready graph has no explicit idle event"))?;
     Ok(CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template: family.graph.template,
         roles: family.graph.roles.clone(),
         candidate_attack_bindings: family.graph.candidate_attack_bindings.clone(),
+        source_inert_attack_receipts: family.graph.source_inert_attack_receipts.clone(),
         idle_event,
         explicit_events: family.graph.explicit_events.clone(),
         overlays: family.graph.overlays.clone(),
@@ -795,6 +798,13 @@ fn validate_nif_closure(
         let role = match input.role {
             CreatureNifRole::Skeleton => SkyrimAssetRole::VisualSkeletonNif,
             CreatureNifRole::Body => SkyrimAssetRole::BodyNif,
+            CreatureNifRole::BodyPartReplacement | CreatureNifRole::DependencyModel => {
+                if input.source_byte_len == 0 || !is_blake3(&input.source_blake3) {
+                    return Err(invalid("nif_source_hash", "replacement NIF lacks source byte evidence"));
+                }
+                validate_nif_input(closure, input.role, &input.source_data_relative_path, &input.target_data_relative_path)?;
+                continue;
+            }
         };
         let expected = closure_claim_hash(family, &input.source_data_relative_path, role)?;
         if input.source_byte_len == 0 || !input.source_blake3.eq_ignore_ascii_case(&expected) {
@@ -819,6 +829,13 @@ fn validate_nif_closure(
         &selection.body_nif_path,
         &projection.base.body_nif,
     )?;
+    if let crate::source_rig::CreatureBodyPartProjection::SourceParts { parts, .. } = &projection.body_parts {
+        for part in parts.iter().filter(|part| !part.limb_replacement.is_empty()) {
+            if !closure.inputs.iter().any(|input| input.role == CreatureNifRole::BodyPartReplacement && same_data_path(&input.target_data_relative_path, &part.limb_replacement)) {
+                return Err(invalid("replacement_projection_mismatch", "BPTD replacement NIF is absent from converted closure"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1365,6 +1382,7 @@ mod tests {
             model_scale: 1.0,
         };
         let rig = CreatureManifest {
+            property_sequences: Vec::new(),
             creature_name: "BridgeWolf".to_string(),
             visual_skeleton_nif: runtime_path(&skeleton_target),
             animation_skeleton: crate::source_rig::SkeletonDecl {
@@ -1408,12 +1426,16 @@ mod tests {
         };
         let base = record_manifest(runtime_path(&body_target));
         let projection = CreatureRecordProjectionManifest {
+            race_keywords: Vec::new(),
+            templates: None,
+            equipment_slots: Vec::new(),
             base: base.clone(),
             source_primary_identity: source.clone(),
             race_data: race_data(),
             body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
             body_nif_parts: Vec::new(),
             variants: vec![CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: source.clone(),
                 form_key: base.form_keys.npc.clone(),
                 editor_id: base.editor_ids.npc.clone(),
@@ -1425,6 +1447,7 @@ mod tests {
                 npc_inventory: None,
                 npc_equipment: None,
                 npc_spells: None,
+                npc_perks: Vec::new(),
                 npc_death_item: None,
             }],
             npc_inventory: Vec::new(),
@@ -1492,6 +1515,7 @@ mod tests {
             .map(|((id, file, _), role)| SkyrimCreatureClipReceipt {
                 clip_id: (*id).to_string(),
                 clip_path: format!("actors\\wolf\\{file}"),
+                source_duration: None,
                 family_ids: vec!["wolf".to_string()],
                 role: SkyrimCreatureClipRoleReceipt::Role(role),
                 trigger_event: graph
@@ -1582,6 +1606,7 @@ mod tests {
                 ready: true,
                 roles: graph.roles.clone(),
                 candidate_attack_bindings: graph.candidate_attack_bindings.clone(),
+                source_inert_attack_receipts: graph.source_inert_attack_receipts.clone(),
                 idle_event: Some(graph.idle_event.clone()),
                 explicit_events: graph.explicit_events.clone(),
                 variables: Vec::new(),

@@ -152,21 +152,21 @@ class ImageUtilsTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##image_utils"):
-            _, clicked = draw_path_row("Input", self._input_path)
+            self._input_path, clicked = draw_path_row("Input", self._input_path)
             if clicked:
                 path = pick_file("Select image", IMAGE_FILTERS)
                 if not path:
-                    path = pick_folder("Select image folder")
+                    path = pick_folder("Select image folder", self._input_path)
                 if path:
                     self._input_path = path
 
-            _, clicked = draw_path_row("Output Folder", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output Folder", self._output_dir)
             if clicked:
-                path = pick_folder("Select output folder")
+                path = pick_folder("Select output folder", self._output_dir)
                 if path:
                     self._output_dir = path
 
-            _, clicked = draw_path_row("Output File", self._output_file)
+            self._output_file, clicked = draw_path_row("Output File", self._output_file)
             if clicked:
                 ext = f".{self._target_format().value}"
                 filetypes = [("Selected Format", f"*{ext}"), ("All", "*.*")]

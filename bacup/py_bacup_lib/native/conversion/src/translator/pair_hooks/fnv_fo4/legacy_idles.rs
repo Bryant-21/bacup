@@ -58,7 +58,7 @@ pub(crate) fn classify_legacy_idle(record: &Record) -> LegacyIdleSupport {
             }
         }
     }
-    if editor_ids != 1 || model_paths != 1 || animation_links != 1 || data_rows != 1 {
+    if editor_ids != 1 || model_paths > 1 || animation_links != 1 || data_rows != 1 {
         reasons.insert("legacy_idle_field_multiplicity_unverified".to_string());
     }
 
@@ -71,17 +71,10 @@ pub(crate) fn legacy_idle_fallback_warnings(record: &Record) -> Vec<String> {
     if !classify_legacy_idle(record).is_ready() {
         return Vec::new();
     }
-    let mut warnings = vec![
+    let warnings = vec![
         "legacy_idle_source_kf_replaced_by_generated_behavior".to_string(),
         "legacy_idle_source_data_semantics_omitted".to_string(),
     ];
-    if record
-        .fields
-        .iter()
-        .any(|field| matches!(field.sig.as_str(), "CTDA" | "CTDT"))
-    {
-        warnings.push("legacy_idle_conditions_omitted".to_string());
-    }
     warnings
 }
 
@@ -221,6 +214,75 @@ mod tests {
     }
 
     #[test]
+    fn legacy_bfhover_idle_decodes_for_admission_and_lowering() {
+        use crate::translator::pair_hook::PairCtx;
+        use crate::translator::pair_hooks::fnv_conditions::LegacyConditionFamily;
+        use crate::translator::pair_hooks::fnv_fo4::creature_catalog::{LegacyCreatureGame, RigFamilyKey};
+        use crate::translator::pair_hooks::fnv_fo4::creature_idle_projection::{LegacyCreatureIdleBinding, lower_source_idle};
+        use crate::schema::AuthoringSchema;
+        use crate::source_read::decode_record_from_parsed;
+        use esp_authoring_core::plugin_runtime::{ParsedRecord, ParsedSubrecord};
+        use smol_str::SmolStr;
+
+        let parsed_subrecord = |signature: &str, data: Vec<u8>| ParsedSubrecord {
+            signature: SmolStr::new(signature), data: bytes::Bytes::from(data), semantic_type: None,
+        };
+        let field_value = |fields: &[(crate::sym::Sym, FieldValue)], interner: &StringInterner, name: &str| {
+            fields.iter().find(|(key, _)| interner.resolve(*key) == Some(name)).unwrap().1.clone()
+        };
+
+        for (game, plugin, creature_game, condition_family) in [
+            ("fnv", "FalloutNV.esm", LegacyCreatureGame::Fnv, LegacyConditionFamily::Fnv),
+            ("fo3", "Fallout3.esm", LegacyCreatureGame::Fo3, LegacyConditionFamily::Fo3),
+        ] {
+            let interner = StringInterner::new();
+            let schema = AuthoringSchema::for_game(game).unwrap();
+            let fk = FormKey { local: 0x033FE4, plugin: interner.intern(plugin) };
+            let source_kf = "Creatures\\Blowfly\\IdleAnims\\SpecialIdle_Hover.kf";
+            let links = [0x044C9E_u32.to_le_bytes(), 0x060C7E_u32.to_le_bytes()].concat();
+            let mut condition = vec![0; 28];
+            condition[0] = 0xa0;
+            condition[4..8].copy_from_slice(&25f32.to_le_bytes());
+            condition[8..10].copy_from_slice(&77u16.to_le_bytes());
+            let parsed = ParsedRecord {
+                signature: SmolStr::new_static("IDLE"), form_id: fk.local, flags: 0,
+                version_control: 0, form_version: Some(15), version2: Some(3),
+                subrecords: vec![
+                    parsed_subrecord("EDID", b"BFHover\0".to_vec()),
+                    parsed_subrecord("MODL", format!("{source_kf}\0").into_bytes()),
+                    parsed_subrecord("CTDA", condition),
+                    parsed_subrecord("ANAM", links.clone()),
+                    parsed_subrecord("DATA", vec![7, 0, 0, 205, 0, 0]),
+                ],
+                raw_payload: None, parse_error: None,
+            };
+            let mut record = decode_record_from_parsed(
+                &parsed, &fk, &schema, &[], plugin, None, false, &interner,
+            ).unwrap();
+            assert!(classify_legacy_idle(&record).is_ready(), "{game}");
+            assert_eq!(record.fields[3].value, FieldValue::Bytes(links.into_iter().collect()));
+            let references = legacy_idle_embedded_references(
+                &record, condition_family, plugin, &[], &interner,
+            ).unwrap();
+            assert_eq!(references.len(), 2);
+            for (reference, local) in references.iter().zip([0x044C9E, 0x060C7E]) {
+                assert_eq!(reference.form_key, FormKey { local, plugin: fk.plugin });
+            }
+            let binding = LegacyCreatureIdleBinding {
+                previous: Some(references[1].form_key),
+                rigs: BTreeSet::from([RigFamilyKey { game: creature_game, skeleton_path: "creatures/blowfly/skeleton.nif".into() }]),
+                source_kf: source_kf.into(),
+            };
+            lower_source_idle(&mut record, &binding, &PairCtx::with_source(&interner, plugin, &[])).unwrap();
+            let FieldValue::Struct(fields) = &record.fields.iter().find(|field| field.sig.as_str() == "ANAM").unwrap().value else {
+                panic!("lowered IDLE links must be typed");
+            };
+            assert_eq!(field_value(fields, &interner, "parent"), FieldValue::FormKey(references[0].form_key));
+            assert_eq!(field_value(fields, &interner, "previous"), FieldValue::FormKey(references[1].form_key));
+        }
+    }
+
+    #[test]
     fn exposes_parent_and_previous_with_exact_load_order_aware_locators() {
         let interner = StringInterner::new();
         let record = fixture(&interner, 0x0000_1234, 0x0100_5678);
@@ -337,7 +399,6 @@ mod tests {
             [
                 "legacy_idle_source_kf_replaced_by_generated_behavior",
                 "legacy_idle_source_data_semantics_omitted",
-                "legacy_idle_conditions_omitted",
             ]
         );
     }

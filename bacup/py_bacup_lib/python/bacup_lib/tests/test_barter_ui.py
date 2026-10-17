@@ -4,6 +4,7 @@ from bacup_lib import barter_ui as ui
 
 
 def test_regeneration_includes_barter_without_other_game_pairs(tmp_path, monkeypatch):
+    from bacup_lib import inventory_lists_ui
     from bacup_lib.workflows import unified
 
     interface = tmp_path / "source/interface"
@@ -13,11 +14,16 @@ def test_regeneration_includes_barter_without_other_game_pairs(tmp_path, monkeyp
     ctx = SimpleNamespace(source_data_dir=interface.parent, mod_path=tmp_path / "converted")
     calls = []
     monkeypatch.setattr(ui, "convert_barter_ui", lambda *args, **kwargs: calls.append((args, kwargs)) or {"files":[1,2]})
-    assert unified._convert_fo76_barter_ui(request, ctx) == 2
+    inventory_calls = []
+    monkeypatch.setattr(inventory_lists_ui, "convert_inventory_lists",
+                        lambda *args: inventory_calls.append(args) or ["pipboymenu.swf", "pipboy_invpage.swf"])
+    assert unified._convert_fo76_barter_ui(request, ctx) == 5
     assert calls == [((interface.parent, ctx.mod_path / "data"), {"target_data_dir":request.target_data_dir})]
+    assert inventory_calls == [(request.target_data_dir, ctx.mod_path / "data")]
     request.source_game = "skyrimse"
     assert unified._convert_fo76_barter_ui(request, ctx) == 0
     assert len(calls) == 1
+    assert len(inventory_calls) == 1
 
 
 def test_container_menu_shares_the_trade_bridge(tmp_path):

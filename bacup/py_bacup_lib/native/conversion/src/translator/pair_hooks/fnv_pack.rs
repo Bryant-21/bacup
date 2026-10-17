@@ -1,7 +1,7 @@
 //! FNV/FO3 PACK inventory plus the first verified FO4 template-backed lowerer.
 //!
 //! Legacy PACK records and FO4 PACK records share several subrecord signatures, but their
-//! payloads are not ABI-compatible. In particular, both PKDT layouts are 12 bytes while assigning
+//! payloads are not ABI-compatible. In particular, modern PKDT layouts are 12 bytes while assigning
 //! those bytes different meanings. This module therefore classifies legacy records without
 //! mutating them. Lowering is restricted to source shapes that have an audited FO4 base-game
 //! package template; unsupported shapes remain fail-closed.
@@ -1774,13 +1774,21 @@ fn parse_pkdt(
 ) -> Result<LegacyPackPkdt, LegacyPackRejectionReason> {
     let (general_flags, type_code, fallout_behavior_flags, type_specific_flags, unused_1, unused_2) =
         match value {
-            FieldValue::Bytes(bytes) if bytes.len() == LEGACY_PKDT_LEN => (
+            FieldValue::Bytes(bytes) if matches!(bytes.len(), 8 | LEGACY_PKDT_LEN) => (
                 read_u32(bytes, 0),
                 bytes[4],
                 read_u16(bytes, 6),
-                read_u16(bytes, 8),
+                if bytes.len() == LEGACY_PKDT_LEN {
+                    read_u16(bytes, 8)
+                } else {
+                    0
+                },
                 bytes[5],
-                read_u16(bytes, 10),
+                if bytes.len() == LEGACY_PKDT_LEN {
+                    read_u16(bytes, 10)
+                } else {
+                    0
+                },
             ),
             FieldValue::Struct(fields) => {
                 let general_flags = struct_u32(fields, "general_flags", interner);
@@ -1816,7 +1824,7 @@ fn parse_pkdt(
                 return Err(malformed(
                     "PKDT",
                     field_index,
-                    &[LEGACY_PKDT_LEN],
+                    &[8, LEGACY_PKDT_LEN],
                     value_size(other, interner),
                 ));
             }
@@ -1827,7 +1835,7 @@ fn parse_pkdt(
         });
     };
     Ok(LegacyPackPkdt {
-        observed_size: LEGACY_PKDT_LEN,
+        observed_size: value_size(value, interner).unwrap_or(LEGACY_PKDT_LEN),
         general_flags,
         package_type_code: type_code,
         package_type,
@@ -1896,11 +1904,11 @@ fn classify_conditions(
             b"CTDA" => {
                 let condition_field_index = index;
                 let observed_size = value_size(&record.fields[index].value, interner);
-                if !matches!(observed_size, Some(LEGACY_OLD_CTDA_LEN | LEGACY_CTDA_LEN)) {
+                if !matches!(observed_size, Some(LEGACY_OLD_CTDA_LEN | 24 | LEGACY_CTDA_LEN)) {
                     rejections.push(malformed(
                         "CTDA",
                         index,
-                        &[LEGACY_OLD_CTDA_LEN, LEGACY_CTDA_LEN],
+                        &[LEGACY_OLD_CTDA_LEN, 24, LEGACY_CTDA_LEN],
                         observed_size,
                     ));
                 }
@@ -2013,6 +2021,11 @@ fn parse_union(
     } else {
         LEGACY_TARGET_LEN
     };
+    let expected_sizes: &[usize] = if is_location {
+        &[LEGACY_LOCATION_LEN]
+    } else {
+        &[12, LEGACY_TARGET_LEN]
+    };
     let (
         type_code,
         payload_value,
@@ -2021,7 +2034,7 @@ fn parse_union(
         radius_or_distance,
         trailing_nonzero,
     ) = match &field.value {
-        FieldValue::Bytes(bytes) if bytes.len() == expected_size => {
+        FieldValue::Bytes(bytes) if expected_sizes.contains(&bytes.len()) => {
             let type_code = read_u32(bytes, 0);
             let payload_value = read_u32(bytes, 4);
             let reference_typed = if is_location {
@@ -2040,7 +2053,7 @@ fn parse_union(
                 source_form_key.is_some(),
                 source_form_key,
                 read_i32(bytes, 8),
-                !is_location && read_u32(bytes, 12) != 0,
+                !is_location && bytes.len() == LEGACY_TARGET_LEN && read_u32(bytes, 12) != 0,
             )
         }
         FieldValue::Struct(fields) => {
@@ -2057,7 +2070,7 @@ fn parse_union(
                 return Err(malformed(
                     field.sig.as_str(),
                     field_index,
-                    &[expected_size],
+                    expected_sizes,
                     None,
                 ));
             };
@@ -2084,7 +2097,7 @@ fn parse_union(
             return Err(malformed(
                 field.sig.as_str(),
                 field_index,
-                &[expected_size],
+                expected_sizes,
                 value_size(other, interner),
             ));
         }
@@ -2154,7 +2167,7 @@ fn parse_union(
     };
     Ok(LegacyPackUnionInventory {
         sig: field.sig.as_str().to_string(),
-        observed_size: expected_size,
+        observed_size: value_size(&field.value, interner).unwrap_or(expected_size),
         type_code,
         union_kind,
         payload,
@@ -2389,6 +2402,11 @@ fn classify_type_specific(
             });
         }
         let expected = expected_type_specific_size(sig);
+        let expected_sizes: &[usize] = match &sig {
+            b"PKPT" => &[1, 2],
+            b"PKDD" => &[12, 16, 20, 24],
+            _ => std::slice::from_ref(&expected),
+        };
         let mut observed_sizes = Vec::new();
         for (field_index, field) in &matches {
             let observed = if matches!(&field.value, FieldValue::Struct(_)) {
@@ -2396,11 +2414,11 @@ fn classify_type_specific(
             } else {
                 value_size(&field.value, interner)
             };
-            if observed != Some(expected) {
+            if !observed.is_some_and(|size| expected_sizes.contains(&size)) {
                 rejections.push(malformed(
                     field.sig.as_str(),
                     *field_index,
-                    &[expected],
+                    expected_sizes,
                     observed,
                 ));
             }
@@ -2433,9 +2451,9 @@ fn parse_patrol_data(
     interner: &StringInterner,
 ) -> Result<LegacyPackPatrolData, LegacyPackRejectionReason> {
     match value {
-        FieldValue::Bytes(bytes) if bytes.len() == 2 => Ok(LegacyPackPatrolData {
+        FieldValue::Bytes(bytes) if matches!(bytes.len(), 1 | 2) => Ok(LegacyPackPatrolData {
             repeatable: bytes[0] != 0,
-            unused_byte_nonzero: bytes[1] != 0,
+            unused_byte_nonzero: bytes.get(1).is_some_and(|byte| *byte != 0),
         }),
         FieldValue::Struct(fields) => {
             let Some(repeatable) = struct_u8(fields, "repeatable", interner) else {
@@ -2449,7 +2467,7 @@ fn parse_patrol_data(
         other => Err(malformed(
             "PKPT",
             field_index,
-            &[2],
+            &[1, 2],
             value_size(other, interner),
         )),
     }
@@ -3154,6 +3172,107 @@ mod tests {
         );
         record.fields.extend([pkdt(package_type.code()), psdt()]);
         record
+    }
+
+    #[test]
+    fn fnv_pack_meg_lucas_stand_in_place_source_layout() {
+        let interner = StringInterner::new();
+        let mut record = record(
+            &interner,
+            0x003b8f,
+            "FalloutNV.esm",
+            "MegLucasStandInPlaceDefault",
+        );
+        record.fields.extend([
+            field(b"PKDT", &[0, 0, 0, 0, 6, 0, 0, 0]),
+            field(b"PLDT", &[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            field(b"PSDT", &[255, 255, 0, 255, 0, 0, 0, 0]),
+        ]);
+        let report = classify_legacy_pack(&record, LegacyPackSourceFamily::Fnv, &interner);
+        assert_eq!(report.status, LegacyPackClassificationStatus::Accepted);
+        let inventory = report.inventory.unwrap();
+        assert_eq!(inventory.pkdt.observed_size, 8);
+        assert_eq!(inventory.package_type, LegacyPackType::Travel);
+        assert_eq!(
+            legacy_pack_type_hint(&record, &interner),
+            Some((6, LegacyPackType::Travel))
+        );
+        assert!(!inventory.support.lowering_supported);
+    }
+
+    #[test]
+    fn fnv_pack_older_source_layouts_preserve_values_and_sizes() {
+        let interner = StringInterner::new();
+        for source in [LegacyPackSourceFamily::Fnv, LegacyPackSourceFamily::Fo3] {
+            for dialogue_size in [12, 16, 20, 24] {
+                let mut record = base_pack(&interner, source, LegacyPackType::Travel);
+                record.fields[0] = field(b"PKDT", &[4, 0, 0, 0, 6, 0xcd, 0x45, 0]);
+                record.fields.extend([
+                    field(b"PTDT", &[2, 0, 0, 0, 23, 0, 0, 0, 128, 0, 0, 0]),
+                    field(b"PKPT", &[1]),
+                    field(b"PKDD", &vec![0; dialogue_size]),
+                    field(b"CTDA", &[0; 24]),
+                ]);
+                let report = classify_legacy_pack(&record, source, &interner);
+                assert_eq!(report.status, LegacyPackClassificationStatus::Accepted);
+                let inventory = report.inventory.unwrap();
+                assert_eq!(inventory.pkdt.observed_size, 8);
+                assert_eq!(inventory.pkdt.general_flags, 4);
+                assert_eq!(inventory.pkdt.package_type, LegacyPackType::Travel);
+                assert_eq!(inventory.pkdt.fallout_behavior_flags, 0x45);
+                assert_eq!(inventory.pkdt.type_specific_flags, 0);
+                assert_eq!(inventory.pkdt.unused_1, 0xcd);
+                assert_eq!(inventory.pkdt.unused_2, 0);
+                assert_eq!(inventory.unions[0].observed_size, 12);
+                assert_eq!(inventory.unions[0].radius_or_distance, 128);
+                assert!(!inventory.unions[0].trailing_unknown_nonzero);
+                let patrol = inventory.patrol_data.unwrap();
+                assert!(patrol.repeatable);
+                assert!(!patrol.unused_byte_nonzero);
+                assert_eq!(inventory.conditions[0].observed_size, 24);
+                assert_eq!(
+                    inventory.conditions[0].raw_ctda.as_deref(),
+                    Some(&[0; 24][..])
+                );
+                let dialogue = inventory.type_specific_subrecords.iter()
+                    .find(|row| row.sig == "PKDD")
+                    .unwrap();
+                assert_eq!(dialogue.observed_sizes, [dialogue_size]);
+                assert!(!inventory.support.lowering_supported);
+            }
+        }
+    }
+
+    #[test]
+    fn fnv_pack_partial_legacy_fields_are_still_rejected() {
+        let interner = StringInterner::new();
+        for (sig, sizes) in [
+            (b"PKDT", &[0, 7, 9, 11, 13][..]),
+            (b"PTDT", &[0, 11, 13, 15, 17][..]),
+            (b"PKPT", &[0, 3][..]),
+            (b"PKDD", &[0, 11, 13, 17, 21, 25][..]),
+            (b"CTDA", &[0, 19, 21, 23, 25, 27, 29][..]),
+        ] {
+            for size in sizes {
+                let mut record = base_pack(
+                    &interner,
+                    LegacyPackSourceFamily::Fo3,
+                    LegacyPackType::Travel,
+                );
+                record.fields.retain(|entry| entry.sig.0 != *sig);
+                record.fields.push(field(sig, &vec![0; *size]));
+                let report = classify_legacy_pack(&record, LegacyPackSourceFamily::Fo3, &interner);
+                assert_eq!(
+                    report.status,
+                    LegacyPackClassificationStatus::Rejected,
+                    "{sig:?} {size}"
+                );
+                assert!(report.rejection_reasons.iter().any(|reason| matches!(reason,
+                    LegacyPackRejectionReason::MalformedSubrecord { sig: rejected, observed_size: Some(observed), .. }
+                        if rejected.as_bytes() == sig && observed == size
+                )));
+            }
+        }
     }
 
     #[test]

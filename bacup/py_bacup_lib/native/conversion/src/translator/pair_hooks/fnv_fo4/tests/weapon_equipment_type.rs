@@ -56,9 +56,31 @@ fn fnv_weap_unarmed_equipment_type_becomes_the_fo4_unarmed_equip_slot() {
         etyp_form_key(&record, &interner),
         (
             "Fallout4.esm".to_string(),
-            crate::target_fo4_melee::FO4_UNARMED_WEAPON_EQUIP_LOCAL
+            0x04_334D
         )
     );
+}
+
+#[test]
+fn fnv_thrown_weapons_use_grenade_slot_for_raw_and_structured_dnam() {
+    for animation_type in 10_u32..=13 {
+        for structured in [false, true] {
+            let interner = StringInterner::new();
+            let mut record = weap_with_equipment_type(6, &interner);
+            let dnam = if structured {
+                FieldValue::Struct(vec![(
+                    interner.intern("animation_type"), FieldValue::Uint(u64::from(animation_type)),
+                )])
+            } else {
+                let mut bytes = vec![0; 136];
+                bytes[..4].copy_from_slice(&animation_type.to_le_bytes());
+                FieldValue::Bytes(bytes.into())
+            };
+            push_field(&mut record, "DNAM", dnam);
+            FnvFo4Hook.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+            assert_eq!(etyp_form_key(&record, &interner), ("Fallout4.esm".to_string(), 0x04_6AAC));
+        }
+    }
 }
 
 /// Every remaining `equip_type_enum` ordinal is a two-handed gun class in FO4

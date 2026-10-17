@@ -33,17 +33,17 @@ class AnnotationExtractorTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##annotation_extractor"):
-            _, clicked = draw_path_row("Input", self._input_path)
+            self._input_path, clicked = draw_path_row("Input", self._input_path)
             if clicked:
-                path = pick_folder("Select folder with XML files")
+                path = pick_folder("Select folder with XML files", self._input_path)
                 if not path:
                     path = pick_file("Select XML file", [("XML", "*.xml"), ("All", "*.*")])
                 if path:
                     self._input_path = path
 
-            _, clicked = draw_path_row("Output", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output", self._output_dir)
             if clicked:
-                path = pick_folder("Select output folder")
+                path = pick_folder("Select output folder", self._output_dir)
                 if path:
                     self._output_dir = path
             end_form()

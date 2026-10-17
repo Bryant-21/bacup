@@ -70,6 +70,13 @@ impl Fixup for InjectAnimationNamesFixup {
 }
 
 pub fn inject_animation_names_in_mod_path(mod_path: &Path) -> Result<FixupReport, FixupError> {
+    inject_animation_names_with_cache(mod_path, &mut Default::default())
+}
+
+pub(crate) fn inject_animation_names_with_cache(
+    mod_path: &Path,
+    cache: &mut super::postprocess_scan::BehaviorNamesCache,
+) -> Result<FixupReport, FixupError> {
     let mut changed_files: HashSet<PathBuf> = HashSet::new();
 
     for meshes_root in mesh_roots_for_mod_path(mod_path) {
@@ -103,7 +110,7 @@ pub fn inject_animation_names_in_mod_path(mod_path: &Path) -> Result<FixupReport
 
             let clip_names: HashSet<String> = behavior_dir
                 .as_deref()
-                .map(collect_behavior_clip_names_from_dir)
+                .map(|directory| cache.clips_in(directory))
                 .unwrap_or_default();
 
             let anim_files = select_animation_names(&clip_names, anim_dir.as_deref());
@@ -161,7 +168,7 @@ fn collect_anim_files_recursive(root: &Path, dir: &Path, files: &mut Vec<String>
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if super::postprocess_scan::entry_is_dir(&entry) {
             collect_anim_files_recursive(root, &path, files);
             continue;
         }
@@ -413,7 +420,7 @@ fn collect_character_hkx_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) 
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if super::postprocess_scan::entry_is_dir(&entry) {
             collect_character_hkx_files(&path, files);
         } else if path
             .extension()
@@ -429,12 +436,16 @@ fn collect_character_hkx_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) 
 /// Walk `dir` recursively, calling `f` on every directory named `characters`
 /// (case-insensitive).
 fn find_character_hkx_dirs(dir: &Path, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    find_character_hkx_dirs_in_root(dir, f, dir);
+}
+
+fn find_character_hkx_dirs_in_root(dir: &Path, f: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if super::postprocess_scan::entry_is_dir(&entry) {
             let dname = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -443,7 +454,7 @@ fn find_character_hkx_dirs(dir: &Path, f: &mut impl FnMut(&Path)) {
             if dname == "characters" {
                 f(&path);
             }
-            find_character_hkx_dirs(&path, f);
+            find_character_hkx_dirs_in_root(&path, f, scan_root);
         }
     }
 }

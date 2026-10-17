@@ -9,7 +9,6 @@ from bacup_lib.models import (
     AssetRef,
     DependencyGraph,
     RecordNode,
-    WorkshopSnapPoint,
 )
 from bacup_lib.workflows.asset_phases import (
     _params_for_convert_animations,
@@ -47,6 +46,18 @@ def _orchestrator(*assets: AssetRef):
         _expand_animation_dirs=lambda _root: [],
         _load_target_behavior_paths=lambda: set(),
     )
+
+
+def test_starfield_material_params_include_nifs_for_native_parent_discovery(tmp_path):
+    from bacup_lib.workflows.asset_phases import _params_for_convert_materials
+
+    nif = AssetRef("nif", "Meshes/Weapons/Shotty.nif", str(tmp_path / "shotty.nif"))
+    material = AssetRef("material", "Materials/Weapons/Shotty.mat", str(tmp_path / "shotty.mat"))
+    orchestrator = _orchestrator(nif, material)
+    orchestrator.source_game = "starfield"
+    params = _params_for_convert_materials(orchestrator)
+    assert params["nif_paths"] == [{"source_path": nif.source_path, "resolved_path": nif.resolved_path}]
+    assert params["materials"][0]["source_path"] == material.source_path
 
 
 def _admitted_weapon_receipt(
@@ -102,22 +113,10 @@ def test_params_for_convert_nifs_forwards_asset_fields(tmp_path):
         str(tmp_path / "Generator.nif"),
         workshop_wire_point=(3.5, 15.0, 77.0),
     )
-    snapped = AssetRef(
-        "nif",
-        "Meshes/Workshop/Foundation.nif",
-        str(tmp_path / "Foundation.nif"),
-        workshop_snap_points=(
-            WorkshopSnapPoint(
-                name="P-76-0A7382",
-                translation=(0.0, 128.0, -32.0),
-                rotation=(1.0, 0.0, 0.0, 0.0),
-            ),
-        ),
-    )
-    orch = _orchestrator(plain, wired, snapped)
+    orch = _orchestrator(plain, wired)
     orch._addon_index_map = {78: 760001}
 
-    params = _params_for_convert_nifs(orch, [plain, wired, snapped])
+    params = _params_for_convert_nifs(orch, [plain, wired])
 
     assert params["addon_index_map"] == {"78": 760001}
     assert params["nif_paths"] == [
@@ -127,24 +126,13 @@ def test_params_for_convert_nifs_forwards_asset_fields(tmp_path):
             "resolved_path": str(tmp_path / "Generator.nif"),
             "workshop_wire_point": [3.5, 15.0, 77.0],
         },
-        {
-            "source_path": "Meshes/Workshop/Foundation.nif",
-            "resolved_path": str(tmp_path / "Foundation.nif"),
-            "workshop_snap_points": [
-                {
-                    "name": "P-76-0A7382",
-                    "translation": [0.0, 128.0, -32.0],
-                    "rotation": [1.0, 0.0, 0.0, 0.0],
-                    "scale": 1.0,
-                }
-            ],
-        },
     ]
 
 
 @pytest.mark.parametrize("store_misses", [False, True])
+@pytest.mark.parametrize("source_game", ["fnv", "starfield", "skyrimse"])
 def test_params_for_convert_nifs_resolves_target_skeleton_without_skin_options(
-    tmp_path, store_misses
+    tmp_path, store_misses, source_game
 ):
     """A default legacy regen requests no skin options, and that is exactly the
     run whose translated binds need reposing onto the FO4 rest pose. A store
@@ -161,7 +149,7 @@ def test_params_for_convert_nifs_resolves_target_skeleton_without_skin_options(
 
     asset = AssetRef("nif", "Armor/VaultSuit/M/Outfit.NIF", str(tmp_path / "Outfit.NIF"))
     orch = _orchestrator(asset)
-    orch.source_game = "fnv"
+    orch.source_game = source_game
     orch.target_extracted_dir = str(tmp_path)
     if store_misses:
         orch.target_asset_store = MissingStore()
@@ -169,6 +157,123 @@ def test_params_for_convert_nifs_resolves_target_skeleton_without_skin_options(
     params = _params_for_convert_nifs(orch, [asset])
 
     assert params["target_skeleton"] == str(skeleton)
+
+
+def test_starfield_reused_armor_mesh_gets_distinct_first_person_pose_and_destination(tmp_path):
+    skeleton = tmp_path / "meshes/actors/character/_1stperson/characterassets/skeleton.nif"
+    skeleton.parent.mkdir(parents=True)
+    skeleton.write_bytes(b"")
+    third = _weapon_asset("Meshes/Clothes/Gloves.nif", str(tmp_path / "Gloves.nif"), form_key="000800@Starfield.esm", signature="ARMA")
+    third.provenance.added_by_field = "BipedModels.MOD2"
+    first = _weapon_asset("Meshes/Clothes/Gloves.nif", str(tmp_path / "Gloves.nif"), form_key="000800@Starfield.esm", signature="ARMA")
+    first.provenance.added_by_field = "1stPersons.MOD4"
+    orch = _orchestrator(third)
+    orch.source_game = "starfield"
+    orch.target_extracted_dir = str(tmp_path)
+    orch.base_asset_namespace = "Starfield"
+    orch._forced_asset_output_subpath = lambda _asset: "Meshes/Starfield/Clothes/Gloves.nif"
+    orch.graph.root.assets = [third, first]
+
+    entries = _params_for_convert_nifs(orch)["nif_paths"]
+
+    assert len(entries) == 2
+    assert entries[0]["source_path"] == entries[1]["source_path"]
+    assert entries[1]["target_skeleton"] == str(skeleton)
+    assert entries[1]["output_subpath"] == "Meshes/Starfield/FirstPerson/Clothes/Gloves.nif"
+    assert "target_skeleton" not in entries[0]
+
+
+def test_starfield_first_person_armor_requires_its_target_skeleton(tmp_path):
+    first = _weapon_asset("Meshes/Clothes/Gloves.nif", str(tmp_path / "Gloves.nif"), form_key="000800@Starfield.esm", signature="ARMA")
+    first.provenance.added_by_field = "MOD5"
+    orch = _orchestrator(first)
+    orch.source_game = "starfield"
+    orch.target_extracted_dir = str(tmp_path)
+    with pytest.raises(ValueError, match="first-person skeleton"):
+        _params_for_convert_nifs(orch)
+
+
+@pytest.mark.parametrize(
+    ("source_game", "phase"),
+    [("fnv", "convert_gamebryo_nifs"), ("skyrimse", "convert_nifs_v2")],
+)
+def test_asset_wave_preserves_resolved_target_skeleton(tmp_path, source_game, phase):
+    from bacup_lib.workflows.unified import AssetWaveBuilder, _wave_plan_for
+
+    skeleton = tmp_path / "meshes/actors/character/characterassets/skeleton.nif"
+    skeleton.parent.mkdir(parents=True)
+    skeleton.write_bytes(b"")
+    asset = AssetRef("nif", "Armor/LeatherArmor/M/OutfitM.NIF", str(tmp_path / "OutfitM.NIF"))
+    shim = _orchestrator(asset)
+    shim.source_game = source_game
+    shim.target_extracted_dir = str(tmp_path)
+    shim.mod_path = tmp_path / "FNV_FO3"
+    shim._summary = SimpleNamespace(nifs_total=0)
+    shim._target_has_asset = lambda _asset: False
+    driver = SimpleNamespace(
+        ctx=SimpleNamespace(source_game=source_game, target_game="fo4"),
+        _req=SimpleNamespace(options=SimpleNamespace(exclude_signatures=())),
+    )
+    builder = SimpleNamespace(
+        driver=driver,
+        _wave_plan=_wave_plan_for(source_game, "fo4"),
+        runner=SimpleNamespace(emit_log=lambda *_args: None),
+        runs=SimpleNamespace(nifs=SimpleNamespace(id="test-nifs")),
+    )
+
+    stage = AssetWaveBuilder._build_nif_stage(builder, shim, ())
+
+    assert stage.phase == phase
+    assert stage.params["target_skeleton"] == str(skeleton)
+
+
+@pytest.mark.parametrize("base_signature", ["ARMA", "STAT"])
+def test_skyrim_shared_armor_model_keeps_base_and_first_person_outputs(tmp_path, base_signature):
+    skeleton = tmp_path / "meshes/actors/character/_1stperson/characterassets/skeleton.nif"
+    skeleton.parent.mkdir(parents=True)
+    skeleton.write_bytes(b"")
+    asset = _weapon_asset(
+        "Meshes/Armor/Dragonbone/DragonboneGauntlets_1.nif",
+        str(tmp_path / "DragonboneGauntlets_1.nif"),
+        form_key="000800@Skyrim.esm",
+        signature=base_signature,
+    )
+    asset.provenance.added_by_field = "MOD2" if base_signature == "ARMA" else "MODL"
+    asset.owner_claims = [
+        {"source_record_signature": base_signature, "source_subrecord_sig": asset.provenance.added_by_field},
+        {"source_record_signature": "ARMA", "source_subrecord_sig": "MOD4"},
+    ]
+    orch = _orchestrator(asset)
+    orch.source_game = "skyrimse"
+    orch.target_extracted_dir = str(tmp_path)
+
+    entries = _params_for_convert_nifs(orch)["nif_paths"]
+
+    assert len(entries) == 2
+    assert "output_subpath" not in entries[0]
+    assert "target_skeleton" not in entries[0]
+    assert entries[1]["output_subpath"] == "Meshes/FirstPerson/Armor/Dragonbone/DragonboneGauntlets_1.nif"
+    assert entries[1]["target_skeleton"] == str(skeleton)
+    assert entries[1]["source_path"] == entries[0]["source_path"]
+
+
+def test_skyrim_first_person_only_armor_uses_its_own_skeleton_and_destination(tmp_path):
+    skeleton = tmp_path / "meshes/actors/character/_1stperson/characterassets/skeleton.nif"
+    skeleton.parent.mkdir(parents=True)
+    skeleton.write_bytes(b"")
+    asset = _weapon_asset("Meshes/Armor/Iron/1stPerson.nif", "source.nif", form_key="000800@Skyrim.esm", signature="ARMA")
+    asset.provenance.added_by_field = "1stPersons.MOD5"
+    orch = _orchestrator(asset)
+    orch.source_game = "skyrimse"
+    orch.target_extracted_dir = str(tmp_path)
+    orch.base_asset_namespace = "Skyrim"
+    orch._forced_asset_output_subpath = lambda _asset: "Meshes/Skyrim/Armor/Iron/1stPerson.nif"
+
+    entries = _params_for_convert_nifs(orch)["nif_paths"]
+
+    assert len(entries) == 1
+    assert entries[0]["output_subpath"] == "Meshes/Skyrim/FirstPerson/Armor/Iron/1stPerson.nif"
+    assert entries[0]["target_skeleton"] == str(skeleton)
 
 
 def test_params_for_convert_nifs_marks_exact_skyrim_battleaxe_models_as_melee(
@@ -534,3 +639,45 @@ def test_postprocess_havok_forwards_distinct_source_and_target_roots(tmp_path):
         )
     ]
     assert orchestrator._summary.havok_converted == 2
+
+
+def test_native_overwrite_paths_pass_the_target_collision_filter():
+    from bacup_lib.workflows.asset_phases import ConversionFixups
+
+    fixups = ConversionFixups(
+        SimpleNamespace(
+            use_base_game_assets=True,
+            target_asset_index=SimpleNamespace(has_asset=lambda _asset: True),
+            target_extracted_dir=None,
+            _rust_conversion_run=SimpleNamespace(
+                native_overwrite_paths=lambda: [
+                    "materials/rocks/rock01.bgsm",
+                    "textures/rocks/rock01_d.dds",
+                    "meshes/actors/character/hair01.nif",
+                ]
+            ),
+        )
+    )
+
+    assert not fixups._target_has_asset(AssetRef("material", "Rocks\\Rock01.BGSM"))
+    assert not fixups._target_has_asset(AssetRef("texture", "Textures/Rocks/Rock01_d.dds"))
+    assert fixups._target_has_asset(AssetRef("material", "Rocks/Other.bgsm"))
+    assert fixups._target_has_asset(AssetRef("texture", "Rocks/Rock01_n.dds"))
+    assert fixups._target_has_asset(AssetRef("nif", "Rocks/Rock01.bgsm"))
+    assert not fixups._target_has_asset(AssetRef("nif", "Actors\Character\Hair01.nif"))
+    assert fixups._target_has_asset(AssetRef("nif", "Actors/Character/Hair02.nif"))
+
+
+def test_without_a_native_run_every_collision_still_filters():
+    from bacup_lib.workflows.asset_phases import ConversionFixups
+
+    fixups = ConversionFixups(
+        SimpleNamespace(
+            use_base_game_assets=True,
+            target_asset_index=SimpleNamespace(has_asset=lambda _asset: True),
+            target_extracted_dir=None,
+            _rust_conversion_run=SimpleNamespace(),
+        )
+    )
+
+    assert fixups._target_has_asset(AssetRef("material", "Rocks/Rock01.bgsm"))

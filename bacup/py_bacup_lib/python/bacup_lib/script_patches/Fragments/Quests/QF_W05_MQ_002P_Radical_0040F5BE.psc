@@ -519,6 +519,7 @@ Function Fragment_Stage_1575_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    ; TODO(recipes): FO76 teaches W05_MQ_002P_Radical_workshop_co_CraneRadioTransmitter_PostQuest at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     Actor playerRef = Alias_owningPlayer.GetActorReference()
     If playerRef && W05_MQ_002P_Radical_PlayerCompleted002p
         playerRef.SetValue(W05_MQ_002P_Radical_PlayerCompleted002p, 1.0)

@@ -186,21 +186,21 @@ class ModlistMergerTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##modlist_merger"):
-            _, clicked = draw_path_row("Master", self._master_dir)
+            self._master_dir, clicked = draw_path_row("Master", self._master_dir)
             if clicked:
-                path = pick_folder("Select master profile folder")
+                path = pick_folder("Select master profile folder", self._master_dir)
                 if path:
                     self._master_dir = path
 
-            _, clicked = draw_path_row("Secondary", self._secondary_dir)
+            self._secondary_dir, clicked = draw_path_row("Secondary", self._secondary_dir)
             if clicked:
-                path = pick_folder("Select secondary profile folder")
+                path = pick_folder("Select secondary profile folder", self._secondary_dir)
                 if path:
                     self._secondary_dir = path
 
-            _, clicked = draw_path_row("Output", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output", self._output_dir)
             if clicked:
-                path = pick_folder("Select output folder")
+                path = pick_folder("Select output folder", self._output_dir)
                 if path:
                     self._output_dir = path
             end_form()

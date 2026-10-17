@@ -10,10 +10,145 @@ GetIsID:
   arg_kinds: [formkey]
   return_kind: bool
 
+PlayIdle:
+  papyrus: "({self} as Actor).PlayIdle({arg0} as Idle)"
+  arg_kinds: [formkey]
+  return_kind: bool
+
+StopIdle:
+  papyrus: 'Debug.SendAnimationEvent({self}, "IdleStop")'
+  arg_kinds: []
+  return_kind: void
+
 GetActorValue:
   papyrus: "{self}.GetValue({arg0})"
   arg_kinds: [actor_value]
   return_kind: float
+
+GetAV:
+  papyrus: "{self}.GetValue({arg0})"
+  arg_kinds: [actor_value]
+  return_kind: float
+
+SetActorValue:
+  papyrus: "{self}.SetValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+SetAV:
+  papyrus: "{self}.SetValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+DamageActorValue:
+  papyrus: "{self}.DamageValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+DamageAV:
+  papyrus: "{self}.DamageValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+ModActorValue:
+  papyrus: "{self}.ModValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+ModAV:
+  papyrus: "{self}.ModValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+SetGhost:
+  papyrus: "({self} as Actor).SetGhost({arg0} != 0)"
+  arg_kinds: [int]
+  return_kind: void
+
+GetDistance:
+  papyrus: "{self}.GetDistance({arg0})"
+  arg_kinds: [object_reference]
+  return_kind: float
+
+GetSecondsPassed:
+  papyrus: "B21GameModeDelta"
+  arg_kinds: []
+  return_kind: float
+
+MarkForDelete:
+  papyrus: "{self}.Delete()"
+  arg_kinds: []
+  return_kind: void
+
+AddSpell:
+  papyrus: "({self} as Actor).AddSpell({arg0} as Spell)"
+  arg_kinds: [formkey]
+  return_kind: bool
+
+RemoveSpell:
+  papyrus: "({self} as Actor).RemoveSpell({arg0} as Spell)"
+  arg_kinds: [formkey]
+  return_kind: bool
+
+PlaceAtMe:
+  papyrus: "{self}.PlaceAtMe({arg0})"
+  arg_kinds: [formkey]
+  return_kind: object_reference
+
+RestoreActorValue:
+  papyrus: "{self}.RestoreValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+RestoreAV:
+  papyrus: "{self}.RestoreValue({arg0}, {arg1})"
+  arg_kinds: [actor_value, float]
+  return_kind: void
+
+IsInInterior:
+  papyrus: "{self}.IsInInterior()"
+  arg_kinds: []
+  return_kind: bool
+
+GetHealthPercentage:
+  papyrus: "{self}.GetValuePercentage(Health)"
+  arg_kinds: []
+  return_kind: float
+
+IsLimbGone:
+  papyrus: "B21_ConversionCreature.IsLimbGone({self} as Actor, {arg0})"
+  arg_kinds: [int]
+  return_kind: bool
+
+This:
+  papyrus: "Self"
+  arg_kinds: []
+  return_kind: object_reference
+
+Kill:
+  papyrus: "({self} as Actor).Kill({arg0} as Actor)"
+  arg_kinds: [object_reference]
+  return_kind: void
+
+KillActor:
+  papyrus: "({self} as Actor).Kill({arg0} as Actor)"
+  arg_kinds: [object_reference]
+  return_kind: void
+
+GetItemCount:
+  papyrus: "{self}.GetItemCount({arg0})"
+  arg_kinds: [formkey]
+  return_kind: int
+
+AddItem:
+  papyrus: "{self}.AddItem({arg0}, {arg1})"
+  arg_kinds: [formkey, int]
+  return_kind: void
+
+RemoveItem:
+  papyrus: "{self}.RemoveItem({arg0}, {arg1})"
+  arg_kinds: [formkey, int]
+  return_kind: void
 
 Activate:
   papyrus: "{arg0}.Activate({self}, false)"
@@ -39,6 +174,11 @@ GetStage:
   papyrus: "{arg0}.GetStage()"
   arg_kinds: [quest]
   return_kind: int
+
+GetObjectiveCompleted:
+  papyrus: "{arg0}.IsObjectiveCompleted({arg1})"
+  arg_kinds: [quest, int]
+  return_kind: bool
 
 SetStage:
   papyrus: "{arg0}.SetStage({arg1})"
@@ -84,3 +224,63 @@ GetIsCurrentWeather:
   rewrite: drop_with_warning
   reason: "FO4 weather checks must be rewritten against Weather records"
   strict_failure: true
+
+SetUnconscious:
+  papyrus: "({self} as Actor).SetUnconscious({arg0} != 0)"
+  arg_kinds: [int]
+  return_kind: bool
+
+SetDestroyed:
+  papyrus: "{self}.SetDestroyed({arg0} != 0)"
+  arg_kinds: [int]
+  return_kind: void
+
+StartCombat:
+  papyrus: "({self} as Actor).StartCombat({arg0} as Actor)"
+  arg_kinds: [object_reference]
+  return_kind: void
+
+StopCombat:
+  papyrus: "({self} as Actor).StopCombat()"
+  arg_kinds: []
+  return_kind: void
+
+GetCombatTarget:
+  papyrus: "({self} as Actor).GetCombatTarget()"
+  arg_kinds: []
+  return_kind: actor
+
+PMS:
+  papyrus: "({arg0} as EffectShader).Play({self}, {arg1})"
+  arg_kinds: [formkey, float]
+  return_kind: void
+
+PlayMagicShaderVisuals:
+  papyrus: "({arg0} as EffectShader).Play({self}, {arg1})"
+  arg_kinds: [formkey, float]
+  return_kind: void
+
+SMS:
+  papyrus: "({arg0} as EffectShader).Stop({self})"
+  arg_kinds: [formkey]
+  return_kind: void
+
+StopMagicShaderVisuals:
+  papyrus: "({arg0} as EffectShader).Stop({self})"
+  arg_kinds: [formkey]
+  return_kind: void
+
+PlaySound3D:
+  papyrus: "({arg0} as Sound).Play({self})"
+  arg_kinds: [formkey]
+  return_kind: int
+
+EVP:
+  papyrus: "({self} as Actor).EvaluatePackage()"
+  arg_kinds: []
+  return_kind: void
+
+EvaluatePackage:
+  papyrus: "({self} as Actor).EvaluatePackage()"
+  arg_kinds: []
+  return_kind: void

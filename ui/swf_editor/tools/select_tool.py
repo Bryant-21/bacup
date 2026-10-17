@@ -24,7 +24,6 @@ class SelectTool(BaseTool):
 
         # Hit test: find shape under cursor
         scene = self.app.scene
-        entries = scene.get_visible_entries()
 
         # Simple AABB hit test
         hit_layer = -1
@@ -41,11 +40,8 @@ class SelectTool(BaseTool):
                 if not shape:
                     continue
                 bx, by, bw, bh = shape.bounds_px
-                tx = de.transform.x + bx
-                ty = de.transform.y + by
-                tw = (bw - bx) * de.transform.scale_x
-                th = (bh - by) * de.transform.scale_y
-                if tx <= cx <= tx + tw and ty <= cy <= ty + th:
+                lx, ly = de.transform.inverse(cx, cy)
+                if bx <= lx <= bw and by <= ly <= bh:
                     hit_layer = layer_idx
                     hit_entry = entry_idx
                     break
@@ -104,10 +100,10 @@ class SelectTool(BaseTool):
             bx, by, bw, bh = shape.bounds_px
             # Convert bounds corners to screen space
             corners = [
-                camera.canvas_to_screen(de.transform.x + bx, de.transform.y + by),
-                camera.canvas_to_screen(de.transform.x + bw, de.transform.y + by),
-                camera.canvas_to_screen(de.transform.x + bw, de.transform.y + bh),
-                camera.canvas_to_screen(de.transform.x + bx, de.transform.y + bh),
+                camera.canvas_to_screen(*de.transform.apply(bx, by)),
+                camera.canvas_to_screen(*de.transform.apply(bw, by)),
+                camera.canvas_to_screen(*de.transform.apply(bw, bh)),
+                camera.canvas_to_screen(*de.transform.apply(bx, bh)),
             ]
             color = imgui.get_color_u32(imgui.ImVec4(0.3, 0.6, 1.0, 1.0))
             for i in range(4):

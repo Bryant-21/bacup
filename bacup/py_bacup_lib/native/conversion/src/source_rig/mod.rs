@@ -6,11 +6,17 @@
 
 mod admission;
 mod ancillary_npc;
+pub mod body_parts;
 mod bridge;
 mod corpus;
+pub(crate) mod creature_weapon_runtime;
 mod emit;
 mod execution;
 mod manifest;
+mod property_sequences;
+pub(crate) mod recovery;
+pub use recovery::{SourceRecoveryGraph, SourceRecoveryNode, SourceRecoveryValue, SourceRecoveryVariable};
+mod source_priority;
 mod pack;
 pub mod race_data;
 mod recipe;
@@ -18,11 +24,13 @@ mod record_batch;
 mod record_builder;
 mod records;
 mod runtime_model_closure;
+mod templates;
+pub use templates::{CreatureTemplateProjection, CreatureLeveledNpcProjection, CreatureLeveledNpcEntry};
 mod xml;
 
 pub use admission::{
     ActorActionKind, ActorActionRequirement, BehaviorAdmissionIssue, BehaviorAdmissionReport,
-    BehaviorAdmissionSeverity, CreatureActorActionRecordPlan, CreatureDegradationReceipt,
+    BehaviorAdmissionSeverity, CreatureActorActionRecordPlan, CreatureActorActionWeaponCondition, CreatureActorActionGraphCondition, CreatureDegradationReceipt,
     CreatureFallbackDisposition, actor_action_admission_report, deterministic_standard_event,
     required_actor_action_records,
 };
@@ -42,6 +50,10 @@ pub use emit::{
     ScaffoldArtifact, SourceRigScaffold, emit_capability_scaffold, emit_idle_scaffold,
     emit_mvp_scaffold, emit_mvp_scaffold_with_motion,
 };
+pub(crate) use emit::emit_generator_fragment;
+pub use manifest::CreaturePropertySequence;
+pub use manifest::SourceAnimationClip;
+pub use manifest::SourceCastingObservation;
 pub use execution::{
     PREPARED_SOURCE_RIG_EXECUTION_VERSION, PreparedRecordFamilyIntentReceipt,
     PreparedScaffoldArtifactReceipt, PreparedSourceRigExecution, PreparedSourceRigExecutionReceipt,
@@ -51,21 +63,23 @@ pub use execution::{
     prepare_source_rig_execution_with_runtime_models,
 };
 pub use manifest::{
-    BoneDecl, CapabilityBlenderChild, CapabilityCandidateAttackBinding, CapabilityClipRole,
+    BoneDecl, CapabilityBlenderChild, CapabilityCandidateAttackBinding, CapabilitySourceInertAttack, CapabilityClipRole,
     CapabilityGeneratorAnonymousSourceObject, CapabilityGeneratorBlenderChild,
+    CapabilityGeneratorBoneWeights, CapabilityGeneratorExpressionCondition,
+    CapabilityGeneratorClipTrigger,
     CapabilityGeneratorBlendingTransitionEffect, CapabilityGeneratorEventProperty,
     CapabilityGeneratorEventRef, CapabilityGeneratorExpression, CapabilityGeneratorExpressionArray,
     CapabilityGeneratorExpressionVariableReference, CapabilityGeneratorInterval,
     CapabilityGeneratorNode, CapabilityGeneratorSourceObject, CapabilityGeneratorState,
     CapabilityGeneratorTransition, CapabilityGeneratorTransitionArray,
-    CapabilityGeneratorVariableBinding, CapabilityGraphManifest, CapabilityModifierNode,
-    CapabilityRoleGenerator, CapabilitySourceVariableType, CapabilityVariableBindingType, Capsule,
-    ClipBinding, ClipDecl, ClipMotionPolicy, CreatureClipRole, CreatureControllerDecl,
-    CreatureGraphTemplate, CreatureManifest, EventDecl, EventUsage, GraphDeclarations,
-    MvpGraphManifest, MvpMotionManifest, NoRagdollReason, OverlayClipRole,
-    POWERED_RAGDOLL_INERT_PROOF_SCHEMA, PoweredRagdollInertFieldReceipt, PoweredRagdollSourceField,
-    PoweredRagdollTargetControlPolicy, PropertyDecl, RagdollDisposition, ScaffoldPaths,
-    SkeletonDecl, SourceOwnedPoweredRagdollConfig, SourceOwnedRagdollReceipt,
+    CapabilityGeneratorVariableBinding, CapabilityGraphManifest, CapabilityLocomotionDirection,
+    CapabilityModifierNode, CapabilityRoleGenerator, CapabilitySourceVariableType, SourceIdleOverlay, SourceAttackContract, SourceAttackWindow, SourceMovementClip, SourceMovementKey,
+    CapabilityVariableBindingType, Capsule, ClipBinding, ClipDecl, ClipMotionPolicy,
+    ContinuousAttackPhase, CreatureClipRole, CreatureControllerDecl, CreatureGraphTemplate, CreatureManifest, EventDecl,
+    EventUsage, GraphDeclarations, MvpGraphManifest, MvpMotionManifest, NoRagdollReason,
+    OverlayClipRole, POWERED_RAGDOLL_INERT_PROOF_SCHEMA, PoweredRagdollInertFieldReceipt,
+    PoweredRagdollSourceField, PoweredRagdollTargetControlPolicy, PropertyDecl, RagdollDisposition,
+    ScaffoldPaths, SkeletonDecl, SourceOwnedPoweredRagdollConfig, SourceOwnedRagdollReceipt,
     SourcePoweredRagdollEvidence, SourcePoweredRagdollFeedbackEvidence,
     SourcePoweredRagdollPoseEvidence, ValidationError, ValidationErrors, VariableDecl,
     VariableType, VariableValue,
@@ -101,18 +115,17 @@ pub use record_builder::{
 };
 pub use records::{
     ATTACK_SHOUT_TO_SPELL_PROOF_SCHEMA, ATTACK_STAGGER_OFFSET_ZERO_PROOF_SCHEMA,
-    ATTACK_STAMINA_TO_ACTION_POINTS_PROOF_SCHEMA, ATTACK_TYPE_RUNTIME_INERT_PROOF_SCHEMA,
-    CreatureAttackRecordProjection, CreatureAttackRecordVariant, CreatureAttackSourceDataReceipt,
-    CreatureAttackSpellPolicy, CreatureAttackStaggerOffsetPolicy, CreatureAttackStaminaPolicy,
-    CreatureAttackTargetData, CreatureAttackTypePolicy, CreatureBodyNifRecordPart,
-    CreatureBodyPartProjection, CreatureNpcInventoryEntry, CreatureNpcInventoryOwnership,
-    CreatureNpcRecordVariant, CreatureRecordClosure, CreatureRecordEditorIds, CreatureRecordError,
-    CreatureRecordFormKeys, CreatureRecordManifest, CreatureRecordProfile,
-    CreatureRecordProjectionClosure, CreatureRecordProjectionManifest,
-    CreatureSemanticProofReceipt, CreatureSourceRecordReference, CreatureTargetRecordReference,
-    ProjectedRecordIdentity, RootBodyPartProfile, TargetFormKey,
+    ATTACK_STAMINA_TO_ACTION_POINTS_PROOF_SCHEMA, CreatureAttackRecordProjection,
+    CreatureAttackRecordVariant, CreatureAttackSourceDataReceipt, CreatureAttackSpellPolicy,
+    CreatureAttackStaggerOffsetPolicy, CreatureAttackStaminaPolicy, CreatureAttackTargetData,
+    CreatureAttackTypePolicy, CreatureBodyNifRecordPart, CreatureBodyPartProjection,
+    CreatureEquipmentSlotBinding, CreatureNpcActorData, CreatureNpcFaction, CreatureNpcInventoryEntry, CreatureNpcInventoryOwnership, CreatureNpcPerk, CreatureNpcRecordVariant, CreatureNpcScriptAttachment,
+    CreatureRecordClosure, CreatureRecordEditorIds, CreatureRecordError, CreatureRecordFormKeys,
+    CreatureRecordManifest, CreatureRecordProfile, CreatureRecordProjectionClosure,
+    CreatureRecordProjectionManifest, CreatureSemanticProofReceipt, CreatureSourceRecordReference,
+    CreatureTargetRecordReference, ProjectedRecordIdentity, RootBodyPartProfile, TargetFormKey,
     append_creature_actor_action_records, emit_creature_capability_record_projection,
-    emit_creature_record_closure, emit_creature_record_projection,
+    emit_creature_record_closure, emit_creature_record_projection, skyrim_attack_flags_to_fo4,
 };
 pub use runtime_model_closure::{
     SOURCE_RIG_RUNTIME_MODEL_CLOSURE_VERSION, SourceRigRuntimeModelArtifactKind,

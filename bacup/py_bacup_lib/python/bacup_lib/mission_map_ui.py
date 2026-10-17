@@ -27,6 +27,7 @@ SPRITES = {
                          ("outline-atlanticcity", "Expeditions_fla.DottedLines_", 2)],
     "mapmarkerslibrary.swf": [(f"district-icon-{index}", symbol, 1) for index, symbol in DISTRICT_ICONS.items()]
                             + [("camp", "DefaultCampMarker", 1)],
+    "recentactivity.swf": [("nuke-zone", "NukeDroppedIcon", 1), ("nuke-inbound", "NukeDropIcon", 1)],
 }
 
 

@@ -43,15 +43,15 @@ class MaterialCopierTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##bulk_copier"):
-            _, clicked = draw_path_row("Source", self._input_dir)
+            self._input_dir, clicked = draw_path_row("Source", self._input_dir)
             if clicked:
-                path = pick_folder("Select source directory with BGSM/BGEM files")
+                path = pick_folder("Select source directory with BGSM/BGEM files", self._input_dir)
                 if path:
                     self._input_dir = path
 
-            _, clicked = draw_path_row("Output", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output", self._output_dir)
             if clicked:
-                path = pick_folder("Select output root (optional)")
+                path = pick_folder("Select output root (optional)", self._output_dir)
                 if path:
                     self._output_dir = path
 

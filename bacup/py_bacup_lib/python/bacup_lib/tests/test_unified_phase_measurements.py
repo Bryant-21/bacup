@@ -9,6 +9,7 @@ import pytest
 from bacup_lib.models import PluginPortOptions, PluginPortRequest
 from bacup_lib.timing_report import TimingReport
 from bacup_lib.workflows import unified
+from bacup_lib.tests.native_script_fixtures import native_scripts
 
 
 def _runtime(tmp_path: Path) -> unified._UnifiedRecordRuntime:
@@ -49,63 +50,28 @@ def _event_names(ctx: SimpleNamespace) -> list[str]:
     return [event["name"] for event in ctx.timing_report.events]
 
 
-def test_convert_scripts_emits_ordered_child_measurements(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime = _runtime(tmp_path)
-    ctx = _ctx(tmp_path)
-    runner = _runner()
-    ref = unified._ScriptReference(
-        script_name="MissingScript",
-        variable_name=None,
-        form_key="000001:Source.esm",
-        form_id=1,
-        record_sig="REFR",
-        editor_id="TestRef",
-        kind="vmad",
-    )
-    monkeypatch.setattr(runtime, "_collect_script_references", lambda *_: ([ref], 1))
-    monkeypatch.setattr(unified, "_build_target_pex_index", lambda **_: {})
-    monkeypatch.setattr(unified, "_build_pex_index", lambda _: {})
-    monkeypatch.setattr(unified, "_script_addition_sources", lambda *_: {})
-    monkeypatch.setattr(unified, "_script_patch_inventory", lambda: {})
-    monkeypatch.setattr(
-        unified, "_extend_script_names_with_ancestor_closure", lambda *_, **__: None
-    )
-    monkeypatch.setattr(
-        runtime, "_decompile_source_scripts_for_fo4", lambda *_, **__: []
-    )
-    monkeypatch.setattr(
-        runtime, "_compile_decompiled_scripts_for_fo4", lambda *_, **__: []
-    )
-    monkeypatch.setattr(
-        runtime,
-        "_reconcile_script_references",
-        lambda *_, **__: (0, 0, 0, 0, [], [], [], [], 0, 0, 0),
-    )
-    monkeypatch.setattr(runtime, "_write_script_port_report", lambda *_, **__: None)
-
-    runtime._run_convert_scripts_phase(ctx, runner)
-
-    expected = [
-        "convert_scripts_collect_references",
-        "convert_scripts_target_index",
-        "convert_scripts_authoritative_target_index",
-        "convert_scripts_source_index",
-        "convert_scripts_patch_addition_discovery",
-        "convert_scripts_resolution",
-        "convert_scripts_decompile_port",
-        "convert_scripts_compile",
-        "convert_scripts_reconciliation",
-        "convert_scripts_report",
-        "convert_scripts",
-    ]
-    assert _event_names(ctx) == expected
-    for event in ctx.timing_report.events[:-1]:
-        assert event["scope"] == "detail"
-        assert event["parent"] == "Convert Scripts"
-        assert event["offset_seconds"] >= 0
-        assert event["elapsed_seconds"] >= 0
+def test_convert_scripts_emits_ordered_child_measurements(tmp_path: Path) -> None:
+    with native_scripts(tmp_path, [("MissingScript", "ACTI")]) as fixture:
+        fixture.convert()
+        expected = [
+            "convert_scripts_collect_references",
+            "convert_scripts_target_index",
+            "convert_scripts_source_index",
+            "convert_scripts_patch_addition_discovery",
+            "convert_scripts_resolution",
+            "convert_scripts_decompile_port",
+            "convert_scripts_compile",
+            "convert_scripts_reconciliation",
+            "convert_scripts_report",
+            "convert_scripts",
+        ]
+        assert _event_names(fixture.ctx) == expected
+        for event in fixture.ctx.timing_report.events[:-1]:
+            assert event["scope"] == "detail"
+            assert event["parent"] == "Convert Scripts"
+            assert event["offset_seconds"] >= 0
+            assert event["elapsed_seconds"] >= 0
+        assert "authoritative_entries" in fixture.ctx.timing_report.events[1]
 
 
 def test_quest_inventory_emits_ordered_measurements_and_unchanged_report(
@@ -155,11 +121,19 @@ def _fail_inventory(*_args):
     ("inventory", "failed_stage", "report_text"),
     [
         (_fail_inventory, "quest_runtime_inventory_native", None),
-        (lambda *_args: "not-json", "quest_runtime_inventory_json_decode", "not-json\n"),
+        (
+            lambda *_args: "not-json",
+            "quest_runtime_inventory_json_decode",
+            "not-json\n",
+        ),
     ],
 )
 def test_quest_inventory_failure_records_failed_stage_and_warns(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory, failed_stage, report_text
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inventory,
+    failed_stage,
+    report_text,
 ) -> None:
     runtime = _runtime(tmp_path)
     ctx = _ctx(tmp_path)

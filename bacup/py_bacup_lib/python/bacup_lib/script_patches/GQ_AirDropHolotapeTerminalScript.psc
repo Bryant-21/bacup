@@ -4,17 +4,22 @@ Event OnMenuItemRun(Int auiMenuItemID, ObjectReference akTerminalRef)
 	EndIf
 
 	Actor playerRef = Game.GetPlayer()
-	If playerRef == None || GQ_DropGovt01Holotape == None || playerRef.GetItemCount(GQ_DropGovt01Holotape) == 0
+	GQ_DropGovtScript governmentDrop = Game.GetFormFromFile(0x0000FFE7, "SeventySix.esm") as GQ_DropGovtScript
+	If playerRef == None || GQ_DropGovt01Holotape == None || playerRef.GetItemCount(GQ_DropGovt01Holotape) == 0 || governmentDrop == None
 		If GQ_DropGovtAlreadyInProgress != None
 			GQ_DropGovtAlreadyInProgress.Show()
 		EndIf
 		Return
 	EndIf
 
-	playerRef.RemoveItem(GQ_DropGovt01Holotape, 1, True)
-	If GQ_DropGovt01Keyword != None
-		GQ_DropGovt01Keyword.SendStoryEvent(akLoc = akTerminalRef.GetCurrentLocation(), akRef1 = playerRef, akRef2 = akTerminalRef)
+	; GQ_DropGovtMaster is single-instance here; the holotape is spent only when a drop starts.
+	If !governmentDrop.RequestLocalAirDrop(akTerminalRef.GetCurrentLocation())
+		If GQ_DropGovtAlreadyInProgress != None
+			GQ_DropGovtAlreadyInProgress.Show()
+		EndIf
+		Return
 	EndIf
+	playerRef.RemoveItem(GQ_DropGovt01Holotape, 1, True)
 	If GQ_DropGovtAirDropSuccess != None
 		GQ_DropGovtAirDropSuccess.Show()
 	EndIf

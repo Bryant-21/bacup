@@ -1,15 +1,10 @@
-current: alpha8
+current: alpha9
 # Global per-conversion known issues shown in BACUP under Help > Known Issues.
 # Not tied to a version; edit between releases.
 known_issues_by_conversion:
   "fo76:fo4":
     - Some Objects collisions disabled due to crashing
-    - Some random black on ground textures
-    - Some perk have issues.
-    - Too many events/quests
-    - BTD land unfinished
-    - New Player Start, has some issues
-    - Loading Screens, Unfinished
+    - Turrets/Raid bosses move because havok collision is forcing them
   "skyrimse:fo4": []
   "fnvfo3:fo4": []
   "starfield:fo4": []
@@ -330,6 +325,55 @@ versions:
         - Raids can be started, but still WIP
         - Deaths and Respawning
         - Rename Everything
+      "skyrimse:fo4":
+        - N/A
+      "fnvfo3:fo4":
+        - N/A
+      "starfield:fo4":
+        - N/A
+  - id: alpha9
+    families_by_conversion:
+      "fo76:fo4": [ALL]
+      "fnvfo3:fo4": [ALL]
+      "skyrimse:fo4": [ALL]
+      "starfield:fo4" : [ALL]
+    notes_by_conversion:
+      "fo76:fo4":
+        - Native Materials options, powered by Preview of Fallout 4 Community Shaders. Very early, for the brave only.
+        - Brand new precombines + previs be gone, include in shaders
+        - converting all the "new" swf files
+        - Workshop Menu and Freecam added
+        - Advanced Baked Lighting System, reflection changes, and more. All optional
+        - Upgrade Fo4 textures to PBR (kinda works)
+        - Precombine fixes
+        - Previs fixes
+        - Food spoiling
+        - Disease
+        - SNAP points for workshop items, native port. Dropped old patching, pure F4SE snapping
+        - fo76 conditional leveled lists ported, and can be used by any mod
+        - model swaps for weapons and power armor
+        - All new companion / team system. dynamic portraits, shared perks, healing, and More
+        - death / respawn system fully implemented
+        - weapon and animation fixes
+        - bullet counted reload for single action ported failfully
+        - fixed weapons being given the cant use flag
+        - further hud fixes and conversions
+        - conversion speedups
+        - workshop items script fixes
+        - realtime dynamic icons for workshop menu and others. Very fast.
+        - new hud features, like searching, sorting, and More
+        - pipboy stats panel now scrolls
+        - Pets and stuff
+        - Quests and Events fixes and delays
+        - Weapon Leveling
+        - Full screen map changes, new icons, scaling, and features
+        - Dev tools bug fixes, new console, and other features
+        - Just hundreds of little bug fixes here and there.
+        - honestly tons of ui fixes like missing hud icons
+        - beds count as beds for settlements
+        - defensive items, power, and water all count in settlements
+        - Scrapping should now work for Fo76 items in workshops
+        - Fo76 perk cards shadow grant fo4 perks for crafting, skill checks, etc
       "skyrimse:fo4":
         - N/A
       "fnvfo3:fo4":

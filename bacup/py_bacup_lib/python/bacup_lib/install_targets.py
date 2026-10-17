@@ -69,13 +69,12 @@ def resolve_deploy_and_ini(
 
     if mode == "mo2":
         if not install_path.strip():
-            return InstallTarget(False, None, None, warning="MO2 mod folder not set")
+            return InstallTarget(False, None, None, warning="Install folder not set")
         if not mo2_use_profile_ini:
             # Profile-specific game INI files are off; the game reads the global INI.
             return InstallTarget(True, Path(install_path), docs_custom_ini)
         ini = resolve_mo2_profile_ini(Path(install_path))
-        warning = None if ini else "Could not derive MO2 profile INI: expected a .../mods/<Name> folder"
-        return InstallTarget(True, Path(install_path), ini, warning=warning)
+        return InstallTarget(True, Path(install_path), ini or docs_custom_ini)
 
     if mode == "none":
         return InstallTarget(deploy=False, deploy_data_dir=None, runtime_ini_path=None)

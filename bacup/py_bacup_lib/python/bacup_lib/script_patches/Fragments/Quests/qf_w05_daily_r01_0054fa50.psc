@@ -234,6 +234,7 @@ Function Fragment_Stage_0247_Item_00()
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
+    ; TODO(recipes): FO76 teaches W05_Daily_R01_co_Tinkers_TechRepair at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(200, True)
     SetObjectiveDisplayed(300, True, True)
 EndFunction

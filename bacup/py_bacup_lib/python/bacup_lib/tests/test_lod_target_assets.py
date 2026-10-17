@@ -131,3 +131,31 @@ def test_cross_game_lod_discovers_from_fresh_output_plugin(tmp_path, monkeypatch
     assert worldspaces == ["WastelandNV", "Wasteland"]
     assert "APPALACHIA" not in worldspaces
     assert calls == [(working_esm, "fo4")]
+
+
+def test_btd_lod_uses_the_worlds_dense_sidecar_and_the_outputs_archives(tmp_path):
+    mod_root = tmp_path / "mod"
+    (mod_root / "Terrain").mkdir(parents=True)
+    sidecar = mod_root / "Terrain" / "APPALACHIA.btd4"
+    sidecar.write_bytes(b"BTD4")
+    (mod_root / "data").mkdir()
+    (mod_root / "data" / "Mod - Textures.ba2").write_bytes(b"")
+    (mod_root / "Mod - Main.ba2").write_bytes(b"")
+    logs = []
+
+    settings = {"terrain": {"source": "btd", "btd_path": "Appalachia.btd"}}
+    regen_pipeline._resolve_world_btd(settings, "Appalachia", None, None, lambda *a: logs.append(a), mod_root=mod_root)
+    assert settings["terrain"]["btd4_path"] == str(sidecar)
+
+    land = {"terrain": {"source": "land"}}
+    regen_pipeline._resolve_world_btd(land, "Appalachia", None, None, lambda *a: logs.append(a), mod_root=mod_root)
+    assert "btd4_path" not in land["terrain"]
+
+    other = {"terrain": {"source": "btd", "btd_path": "x.btd"}}
+    regen_pipeline._resolve_world_btd(other, "TheWorld", None, None, lambda *a: logs.append(a), mod_root=mod_root)
+    assert "btd4_path" not in other["terrain"], "no sidecar for this world: lodgen warns and uses LAND textures"
+
+    assert regen_pipeline._output_lod_archives(mod_root) == [
+        str(mod_root / "data" / "Mod - Textures.ba2"),
+        str(mod_root / "Mod - Main.ba2"),
+    ]

@@ -5,11 +5,13 @@ import struct
 
 from bacup_lib.legendary_perks_ui import remap_menu_fonts, swf_tags
 from bacup_lib.quest_area_ui import closure, symbol_ids, tag
+from bacup_lib.reward_hud_source import bitmap_dependencies
 from bacup_lib.status_hud_source import (inject_art, placement, replace_tags, select_children, sprite_tags, states,
                                          transform)
 from bacup_lib.ui_contract import resolve_numbered_name
 from creation_lib.swf import native_runtime
-from creation_lib.swf.tags import PlaceObject2Tag
+from creation_lib.swf.tags import DefineShapeTag, PlaceObject2Tag
+from creation_lib.swf.svg_io import svg_to_shapes
 from creation_lib.swf.types import MATRIX
 
 
@@ -29,6 +31,7 @@ def import_art(source: bytes, host: bytes, wanted: dict[int, str], prefix: str,
     selected = set()
     for cid, name in wanted.items():
         selected.update(closure(tags, cid, name))
+    selected |= bitmap_dependencies(tags, selected)
     art = [entry for entry in tags if entry in selected]
     classes = dict(wanted)
     for c, p in art:
@@ -170,20 +173,78 @@ def entry_art(source_menu: bytes, source_list: bytes, host: bytes) -> tuple[byte
     host = import_art(source_list, host, {hover: 'B21_ListBanner'}, 'B21_ListArt')
     host = import_art(source_menu, host, {row['border']: 'B21_OptionBanner', backing[0]: 'B21_OptionRowBG'},
                       'B21_OptionArt')
+    preview = {item.name: item.character_id for item in children
+               if item.name in ('ColorPreview_mc', 'ColorPreviewBG_mc')}
+    host = import_art(source_menu, host, {preview['ColorPreview_mc']: 'B21_ColorFace',
+                                       preview['ColorPreviewBG_mc']: 'B21_ColorBG'}, 'B21_ColorArt')
+    source_slider = {item.name: item for item in _frame_children(menu_tags, symbol_ids(menu_tags)['Option_Scrollbar'])}
+    host = import_art(source_menu, host, {source_slider['Track_mc'].character_id: 'B21_SliderTrack',
+                                       source_slider['Thumb_mc'].character_id: 'B21_SliderThumb'}, 'B21_SliderArt')
     tags = swf_tags(host)
     ids = symbol_ids(tags)
-    entries = {ids[name]: name for name in LIST_ENTRIES + OPTION_ENTRIES}
+    # OG has no Installed Content screen, so its host lacks that row class.
+    entries = {ids[name]: name for name in LIST_ENTRIES + OPTION_ENTRIES
+               if name in ids or name != 'MainMenuInstalledContentListEntry'}
     for c, p in tags:
         if c == 39 and struct.unpack_from('<H', p)[0] not in entries:
             for item in _frame_children(tags, struct.unpack_from('<H', p)[0]):
                 if item.character_id in entries:
                     raise ValueError(f'{entries[item.character_id]} is placed on a timeline')
     rebuilt, widths, heights = {}, {}, {}
+    reference = source_layout(host, 'MainMenu')['ColorReference_mc'].character_id
+    payload = _definition(tags, reference)[1]
+    reference_tags = []
+    for code, body in sprite_tags(payload):
+        item = placement(code, body)
+        if item is not None and item.name == 'ColorSwatch_mc':
+            # Preserve the native onPipboyColorUpdate target so the sample uses the actual game color.
+            reference_tags.append(tag(26, PlaceObject2Tag(depth=item.depth, character_id=ids['B21_ColorBG'],
+                                                        matrix=MATRIX()).to_bytes()))
+            item.depth += 1
+            item.character_id = ids['B21_ColorFace']
+            item.matrix = _fit(_bounds(tags, item.character_id), (18, 78, 10, 87))
+            reference_tags.append(tag(code, item.to_bytes()))
+        elif item is not None and item.name == 'ColorText_tf':
+            # The selection handler still writes to this field; retain the binding without drawing it.
+            item.depth += 1
+            item.matrix = MATRIX(scale_x=0, scale_y=0)
+            reference_tags.append(tag(code, item.to_bytes()))
+        else:
+            reference_tags.append(tag(code, body))
+    rebuilt[reference] = payload[:4] + b''.join(reference_tags)
+    option_box = _bounds(tags, ids['SettingsOptionItem'])
+    row_ratio = (art['B21_OptionBanner'][3] - art['B21_OptionBanner'][2]) / (option_box[3] - option_box[2])
+    category = source_layout(source_menu, resolve_numbered_name(
+        symbol_ids(menu_tags), 'SeventySixMenu_fla.SubListAnimation_', 'settings category list'))['SubList']
+    category_x = transform(source_layout(source_menu, 'SeventySixMenu')['SubListAnimation'])[4] + transform(category)[4]
+    slider = ids['Option_Scrollbar']
+    payload = _definition(tags, slider)[1]
+    slider_tags = []
+    for code, body in sprite_tags(payload):
+        item = placement(code, body)
+        if item is not None and item.name in ('Track_mc', 'Thumb_mc'):
+            box = _placed_box(tags, item)
+            source_box = _placed_box(menu_tags, source_slider[item.name])
+            height = (source_box[3] - source_box[2]) / row_ratio
+            middle = (box[2] + box[3]) / 2
+            width = box[1] - box[0] if item.name == 'Track_mc' else (source_box[1] - source_box[0]) / row_ratio
+            item.character_id = ids['B21_SliderTrack' if item.name == 'Track_mc' else 'B21_SliderThumb']
+            item.matrix = _fit(_bounds(tags, item.character_id), (box[0], box[0] + width, middle - height / 2, middle + height / 2))
+            slider_tags.append(tag(code, item.to_bytes()))
+        elif item is not None and item.name in ('LeftArrow_mc', 'RightArrow_mc'):
+            item.matrix = MATRIX(scale_x=0, scale_y=0)
+            slider_tags.append(tag(code, item.to_bytes()))
+        else:
+            slider_tags.append(tag(code, body))
+    rebuilt[slider] = payload[:4] + b''.join(slider_tags)
     for cid, name in entries.items():
         payload = next(p for c, p in tags if c == 39 and struct.unpack_from('<H', p)[0] == cid)
         border = next(item for item in _frame_children(tags, cid) if item.name == 'border')
         depths = {item.depth for item in _frame_children(tags, cid)}
         box = _placed_box(tags, border)
+        if name in OPTION_ENTRIES:
+            full_box = _bounds(tags, cid)
+            box = (box[0], box[1], full_box[2], full_box[3])
         heights[name] = box[3] - box[2]
         if name in OPTION_ENTRIES:
             # FO76's option rows are much wider. The stock control stays at the fixed x the class gives it,
@@ -191,6 +252,8 @@ def entry_art(source_menu: bytes, source_list: bytes, host: bytes) -> tuple[byte
             art_box = art['B21_OptionBanner']
             widths[name] = (box[3] - box[2]) * (art_box[1] - art_box[0]) / (art_box[3] - art_box[2]) - (box[1] - box[0])
             box = (box[0] - widths[name], box[1], box[2], box[3])
+        elif name in ('MainMenuListEntry', 'SettingsCategoryListEntry'):
+            box = (-category_x / row_ratio, art['B21_ListBanner'][1] / row_ratio, box[2], box[3])
         elif name == 'SaveLoadListEntry':
             # The play time is right-aligned to the stock row, and FO76's banner tapers over its last
             # part, cutting the text; extend it until the full-height part reaches the row's end.
@@ -247,15 +310,28 @@ def entry_art(source_menu: bytes, source_list: bytes, host: bytes) -> tuple[byte
     return replace_tags(host, kept), (row[3] - row[2]) / heights['SettingsOptionItem']
 
 
-def loading_art(source: bytes, host: bytes) -> tuple[bytes, dict]:
-    root = source_layout(source, 'LoadingMenu')
-    names = {'Box_mc': 'B21_LoadingBox', 'LeftText_mc': 'B21_LoadingText'}
-    # The event-details panel has no equivalent FO4 loading data. Keep the actual tip/level presentation.
-    left = root['LeftText_mc'].character_id
-    host = import_art(source, host, {root[n].character_id: cls for n, cls in names.items()}, 'B21_LoadingArt', {
-        left: {'LoadScreenText_tf', 'LevelText_tf', 'PlayerLevelMeter_mc', 'LoadingArea_tf', 'Dots_mc'},
-    })
-    return host, {n: transform(root[n]) for n in names}
+def loading_logo(source: bytes, numeral_svg: str) -> tuple[bytes, int]:
+    tags = swf_tags(source)
+    logo = source_layout(source, 'LoadingMenu')['VaultTecLogo_mc'].character_id
+    spinner = _frame_children(tags, logo)[0].character_id
+    _, timeline = _definition(tags, spinner)
+    updates = {item.depth for code, body in sprite_tags(timeline)
+               if (item := placement(code, body)) is not None and item.character_id is None}
+    fixed = [item for item in _frame_children(tags, spinner) if item.depth not in updates]
+    if len(fixed) != 1:
+        raise ValueError('FO76 vault logo must have one stationary numeral')
+    children = _frame_children(tags, fixed[0].character_id)
+    if len(children) != 1:
+        raise ValueError('FO76 vault numeral must contain one vector shape')
+    shape_id = children[0].character_id
+    code, original = _definition(tags, shape_id)
+    old = DefineShapeTag.parse(original, code).shape
+    shape = svg_to_shapes(numeral_svg)[0]
+    shape.shape_id, shape.shape_version = shape_id, old.shape_version
+    shape.edge_bounds = shape.bounds if old.edge_bounds else None
+    replacement = DefineShapeTag(shape, code).to_bytes()
+    return replace_tags(source, [(c, replacement if c == code and p == original else p)
+                                 for c, p in tags]), shape_id
 
 
 def layout_script(main: dict, loading: dict) -> str:

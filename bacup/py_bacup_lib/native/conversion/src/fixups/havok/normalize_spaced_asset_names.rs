@@ -118,23 +118,17 @@ fn is_project_hkx(path: &Path) -> bool {
 }
 
 fn collect_candidates(dir: &Path, spaced_files: &mut Vec<PathBuf>, projects: &mut BTreeSet<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    collect_candidates_in_root(dir, spaced_files, projects, dir);
+}
+
+fn collect_candidates_in_root(dir: &Path, spaced_files: &mut Vec<PathBuf>, projects: &mut BTreeSet<PathBuf>, scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_dir = entry
-            .file_type()
-            .map(|kind| {
-                if kind.is_symlink() {
-                    path.is_dir()
-                } else {
-                    kind.is_dir()
-                }
-            })
-            .unwrap_or_else(|_| path.is_dir());
-        if is_dir {
-            collect_candidates(&path, spaced_files, projects);
+        if super::postprocess_scan::entry_is_dir(&entry) {
+            collect_candidates_in_root(&path, spaced_files, projects, scan_root);
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {

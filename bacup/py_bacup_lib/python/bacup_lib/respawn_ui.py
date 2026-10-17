@@ -11,11 +11,18 @@ from bacup_lib.translations import PACKAGED_TALES_RESOURCE, merge_ui_translation
 CATALOG = Path("F4SE/Plugins/B21_TalesFromAppalachia/respawn.json")
 SOURCE_BAG = "Lootbag_Dropped_PaperBag"
 BAG_MODEL = "SetDressing/BrownBag01/BrownBag01.nif"
-BAG_ASSETS = (
-    "Meshes/" + BAG_MODEL,
-    "Materials/SetDressing/BrownBag01/BrownBag01.bgsm",
-    *(f"Textures/SetDressing/BrownBag01/BrownBag01_{channel}.dds" for channel in ("d", "n", "s")),
-)
+BAG_MATERIAL = "Materials/SetDressing/BrownBag01/BrownBag01.bgsm"
+
+
+def material_textures(material: Path) -> list[str]:
+    from bacup_lib.workflows.asset_phases import _read_raw_material_texture_refs
+
+    # Native assets keep FO76's d/n/r/l set and legacy conversion writes d/n/s, so the
+    # converted material, not a fixed channel list, says which textures the bag needs.
+    refs = _read_raw_material_texture_refs(str(material))
+    if not refs:
+        raise ValueError(f"Death bag material names no textures: {material}")
+    return ["Textures/" + ref.replace("\\", "/").lstrip("/") for _, ref in refs]
 
 
 def bag_record(source_plugin: Path, converted_plugin: Path) -> dict:
@@ -47,8 +54,12 @@ def convert_respawn_ui(source_root: Path, output_mod: Path, *, source_plugin: Pa
     bag = bag_record(Path(source_plugin), Path(converted_plugin))
     # The normal record/mesh/material/texture phases own these assets. A UI-only
     # conversion must not advertise a bag whose native conversion is incomplete.
+    material = output_mod / "data" / BAG_MATERIAL
+    if not material.is_file():
+        raise FileNotFoundError(f"Death bag requires native-converted asset: {material}")
+    bag_assets = ["Meshes/" + BAG_MODEL, BAG_MATERIAL, *material_textures(material)]
     assets = []
-    for relative in BAG_ASSETS:
+    for relative in bag_assets:
         path = output_mod / "data" / relative
         if not path.is_file() or not path.stat().st_size:
             raise FileNotFoundError(f"Death bag requires native-converted asset: {path}")
@@ -64,7 +75,7 @@ def convert_respawn_ui(source_root: Path, output_mod: Path, *, source_plugin: Pa
                 "assets": assets, "source_mesh_sha256": hashlib.sha256(source_mesh.read_bytes()).hexdigest()}
     catalog = output_mod / CATALOG
     catalog.parent.mkdir(parents=True, exist_ok=True)
-    catalog.write_text(json.dumps({"version": 1, **bag, "assets": list(BAG_ASSETS), "labels": labels,
+    catalog.write_text(json.dumps({"version": 1, **bag, "assets": bag_assets, "labels": labels,
                                   "map_contract": {"version": 1, "transport": "F4SE", "message_type": "42325444"}},
                                  indent=2) + "\n", encoding="utf-8")
     manifest["files"].append({"path": CATALOG.as_posix(), "sha256": hashlib.sha256(catalog.read_bytes()).hexdigest()})

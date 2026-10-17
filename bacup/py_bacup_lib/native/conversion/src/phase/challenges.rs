@@ -338,6 +338,8 @@ fn stat_kind(stat: &str) -> Result<(&str, Option<(&str, &str, &str)>), String> {
             "Locks Picked" => "lock",
             "Computers Hacked" => "hack",
             "Workshops Claimed" => "claim",
+            // Only accepted where build_catalog knows the script's trigger form.
+            "Script" => "script",
             _ => {
                 return Err(format!(
                     "unsupported stat '{}'",
@@ -438,6 +440,54 @@ fn parse_challenge(
         json!({"eid":eid,"name":name,"frequency":frequency,"category":category,"count":count as u64,"stat":stat,
         "conditions":group_conditions(conditions),"prerequisites":values(fields,"Challenge").iter().filter_map(reference_id).collect::<Vec<_>>(),"sub_list":sub_list}),
     )
+}
+
+/// The Pioneer Scout exam terminal. Its `AllExams` rows pair each exam's
+/// script-tracked CHAL with the subterminal that starts the exam; the
+/// recovered exam scripts report a pass with that subterminal as the trigger.
+const EXAM_TERMINAL: u32 = 0x46B675;
+const EXAM_TERMINAL_SCRIPT: &str = "Quests:U01C_Scouts:ExamTerminalMain";
+
+fn object_id(member: &Value) -> Option<u32> {
+    reference_id(&member["Value"]["FormID"]).filter(|id| *id != 0)
+}
+
+fn exam_triggers(reader: &mut dyn Reader) -> HashMap<u32, u32> {
+    let Ok((sig, _, fields)) = reader.fields(EXAM_TERMINAL) else {
+        return HashMap::new();
+    };
+    if sig != "TERM" {
+        return HashMap::new();
+    }
+    let mut triggers = HashMap::new();
+    for vmad in values(&fields, "VirtualMachineAdapter") {
+        let scripts = vmad["Scripts"].as_array().into_iter().flatten();
+        for script in scripts.filter(|script| {
+            text(&script["ScriptName"]).eq_ignore_ascii_case(EXAM_TERMINAL_SCRIPT)
+        }) {
+            let exams = script["Properties"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|property| property["propertyName"] == "AllExams")
+                .flat_map(|property| property["Value"].as_array().into_iter().flatten());
+            for exam in exams {
+                let member = |name: &str| {
+                    exam.as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|member| member["memberName"] == name)
+                        .and_then(object_id)
+                };
+                if let (Some(challenge), Some(terminal)) =
+                    (member("ChallengeToComplete"), member("StartTerminal"))
+                {
+                    triggers.insert(challenge, terminal);
+                }
+            }
+        }
+    }
+    triggers
 }
 
 fn reward(frequency: &str, count: u64, parent: bool) -> Value {
@@ -602,6 +652,39 @@ impl Builder<'_> {
         }
         Ok(packs)
     }
+
+    /// The single badge item a FO76 reward hands out as quest-reward currency.
+    fn badge_reward(
+        &mut self,
+        fields: &Fields,
+        globals: &HashMap<u32, f64>,
+    ) -> Result<Option<String>, String> {
+        let reference = first(fields, "RewardRecord");
+        if reference_id(reference).is_none() {
+            return Ok(None);
+        }
+        let (sig, _, reward) = self
+            .reader
+            .fields(self.source_id(&reference["reference"])?)?;
+        let item = first(&reward, "QuestRewardCurrencyObject");
+        if sig != "GMRW" || reference_id(item).is_none() {
+            return Ok(None);
+        }
+        let amount = reference_id(first(&reward, "CurrencyAmountGlobal"))
+            .and_then(|id| globals.get(&id).copied());
+        if amount != Some(1.0) {
+            return Err("unsupported badge reward amount".into());
+        }
+        let id = self.source_id(&item["reference"])?;
+        let (item_sig, eid, _) = self.reader.fields(id)?;
+        // FO4 has no CNCY; conversion carries badge currencies over as MISC.
+        if !matches!(item_sig.as_str(), "CNCY" | "MISC") || eid.is_empty() {
+            return Err(format!("unsupported badge reward {item_sig}"));
+        }
+        let target = (self.resolver)("MISC", &eid)
+            .ok_or_else(|| format!("unresolved badge reward {id:06X}"))?;
+        Ok(Some(target))
+    }
 }
 
 fn ids(entry: &Value, field: &str) -> Vec<u32> {
@@ -701,6 +784,7 @@ fn build_catalog(
             }
         }
     }
+    let exam_triggers = exam_triggers(reader);
     let mut builder = Builder {
         reader,
         resolver,
@@ -738,6 +822,17 @@ fn build_catalog(
                     json!([{"fn":function,"on":"target","op":"==","value":1.0,"params":[target]}]),
                 );
             }
+            if kind == "script" {
+                let terminal = exam_triggers
+                    .get(id)
+                    .ok_or_else(|| format!("unsupported stat '{stat}'"))?;
+                let target = builder.resolve(
+                    &json!({"plugin":source,"object_id":format!("{terminal:06X}")}),
+                )?;
+                entry["conditions"].as_array_mut().unwrap().push(
+                    json!([{"fn":"GetIsID","on":"target","op":"==","value":1.0,"params":[target]}]),
+                );
+            }
             let mut subs = BTreeSet::new();
             if let Some(sub_list) = sub_list {
                 let (sig, _, fields) = builder.reader.fields(sub_list)?;
@@ -745,6 +840,9 @@ fn build_catalog(
                     return Err(format!("sub-challenge list {sub_list:06X} is a {sig}"));
                 }
                 subs.extend(values(&fields, "FormID").iter().filter_map(reference_id));
+            }
+            if subs.iter().any(|sub| exam_triggers.contains_key(sub)) {
+                entry["reward_item"] = json!(builder.badge_reward(&fields, &globals)?);
             }
             entry["subs"] = json!(subs);
             Ok(entry)
@@ -769,6 +867,9 @@ fn build_catalog(
         );
         if entry["perk_card_packs"].as_u64().unwrap_or(0) > 0 {
             rewards["perkCardPacks"] = entry["perk_card_packs"].clone();
+        }
+        if entry["reward_item"].is_string() {
+            rewards["item"] = entry["reward_item"].clone();
         }
         challenges.push(json!({"id":format!("{id:06X}"),"eid":entry["eid"],"name":entry["name"],
             "frequency":entry["frequency"],"category":entry["category"],"kind":entry["kind"],"count":entry["count"],"conditions":entry["conditions"],

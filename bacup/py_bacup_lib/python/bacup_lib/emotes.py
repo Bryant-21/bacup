@@ -9,13 +9,15 @@ import zlib
 from pathlib import Path
 
 from bacup_lib.inspect_ui import empty_hud_timeline, fo4_stage, rebuild, sprite_children
+from bacup_lib.plugin_catalog import form_key, write_document
 from bacup_lib.legendary_perks_ui import imports, remap_menu_fonts, swf_tags
 from bacup_lib.ui_contract import resolve_numbered_name
 from bacup_lib.translations import merge_ui_translations, packaged_tales_lines
 
 RESOURCES = Path(__file__).with_name("resources") / "emotes"
 OUTPUT = Path("Interface/B21/TalesFromAppalachia/Emotes")
-CATALOG = Path("F4SE/Plugins/B21_TalesFromAppalachia/emotes.json")
+FEATURE = "Emotes"
+PLUGIN = "SeventySix.esm"
 SCHEMA_VERSION = 2
 BRIDGE_VERSION = 3
 EVENT = "dyn_ActivationCullWeapons"
@@ -141,25 +143,6 @@ def power_armor_route(root_xml: str, weapon_route: dict) -> dict:
             "subgraph_state": weapon_route["state_name"], "dynamic_generator": weapon_route["dynamic_generator"]}
 
 
-def animation_metadata(xml: str, tracks_expected: int = HUMAN_TRACKS) -> dict:
-    root = ET.fromstring(xml)
-    animations = [o for o in root.findall(".//hkobject") if o.get("class") in
-                  ("hkaSplineCompressedAnimation", "hkaInterleavedUncompressedAnimation")]
-    if len(animations) != 1:
-        raise ValueError("Expected one emote animation")
-    anim = animations[0]
-    duration = float(anim.find("hkparam[@name='duration']").text)
-    tracks = int(anim.find("hkparam[@name='numberOfTransformTracks']").text)
-    binding = root.find(".//hkobject[@class='hkaAnimationBinding']")
-    indices = [int(i) for i in binding.find("hkparam[@name='transformTrackToBoneIndices']").text.split()]
-    annotations = [p.text for p in anim.findall(".//hkparam[@name='text']")]
-    # A clip may leave trailing bones unanimated (MothmanWorship binds 94 of 95); What a Drag runs 69 s.
-    if not 0 < duration <= 120 or not 0 < tracks <= tracks_expected or indices != list(range(tracks)):
-        raise ValueError(f"Emote did not produce an FO4 {tracks_expected}-bone binding "
-                         f"({tracks} tracks, {len(indices)} bound, {duration} s)")
-    return {"duration": duration, "tracks": tracks, "annotations": annotations}
-
-
 def skeleton_bones(havok, data: bytes) -> list[str]:
     try:
         xml = havok.hkx_to_xml(data)
@@ -169,33 +152,6 @@ def skeleton_bones(havok, data: bytes) -> list[str]:
     if len(rigs) != 1:
         raise ValueError("Expected one Root skeleton")
     return [text(bone, "name") for bone in rigs[0].find("hkparam[@name='bones']")]
-
-
-def trim_power_armor(xml: str, bones: list[str]) -> str:
-    """Drop FO76's trailing PA-only tracks (AimSource) so the clip binds FO4's PA skeleton."""
-    from creation_lib.havok.native_runtime import extract_clip_native, write_animation_xml_native
-
-    clip = extract_clip_native(xml)
-    if clip["warnings"]:
-        raise ValueError(f"PA clip decode warnings: {clip['warnings']}")
-    count = len(bones)
-    if clip["track_to_bone_indices"][:count] != list(range(count)):
-        raise ValueError("PA clip tracks do not start with the FO4 PA skeleton order")
-    clip["channels"] = clip["channels"][:count]
-    clip["track_to_bone_indices"] = list(range(count))
-    replacement = ET.fromstring(write_animation_xml_native(clip, bones)).find(".//hkobject[@name='#animation']")
-    root = ET.fromstring(xml)
-    section = root.find("hksection")
-    original = next(o for o in section if o.get("class") in
-                    ("hkaSplineCompressedAnimation", "hkaInterleavedUncompressedAnimation"))
-    replacement.set("name", original.get("name"))
-    replacement.find("hkparam[@name='extractedMotion']").text = text(original, "extractedMotion") or "null"
-    section[list(section).index(original)] = replacement
-    binding = section.find("hkobject[@class='hkaAnimationBinding']")
-    indices = binding.find("hkparam[@name='transformTrackToBoneIndices']")
-    indices.text = " ".join(map(str, range(count)))
-    indices.set("numelements", str(count))
-    return ET.tostring(root, encoding="unicode")
 
 
 def sprite_tags(payload: bytes) -> list[tuple[int, bytes]]:
@@ -384,6 +340,9 @@ def convert_ui(source_root: Path, icons: list[str]) -> tuple[bytes, dict, bytes]
              b"B21/TalesFromAppalachia/Emotes/fonts_en.swf", 1)) if code in (57, 71) else (code, payload)
             for code, payload in swf_tags(movie)]
     movie = rebuild(movie, tags)
+    # A fill naming a non-bitmap draws with a null image and crashes FO4 (ImSelling1, 2026-10-04).
+    if dangling := swf.dangling_bitmap_fills(movie):
+        raise ValueError(f"Emote shapes fill from non-bitmap characters (shape, id): {dangling}")
     return movie, {"bridge_version": BRIDGE_VERSION, "menu": (OUTPUT / "menu.swf").as_posix(),
                    "radial_sha256": sha(radial), "library_sha256": sha(library),
                    "symbols": selected + icons, "classes": "B21Emotes",
@@ -405,7 +364,6 @@ def source_clip(source_root: Path, directories: tuple[str, ...], stem: str) -> s
 
 class ClipConverter:
     def __init__(self, havok, source_root: Path, target_root: Path):
-        self.havok = havok
         self.source_root = source_root
         self.pa_bones = skeleton_bones(havok, (target_root / POWER_ARMOR_SKELETON).read_bytes())
         source_bones = skeleton_bones(havok, (source_root / POWER_ARMOR_SKELETON).read_bytes())
@@ -415,14 +373,15 @@ class ClipConverter:
         self.done: dict[str, tuple] = {}
 
     def convert(self, source: str, power_armor: bool) -> tuple[bytes, bytes, dict]:
+        from bacup_lib.native_runtime import load_native_module
+
         if source not in self.done:
             original = (self.source_root / source).read_bytes()
-            converted = bytes(self.havok.havok_convert_bytes(original, "hk_2014.1.0-r1"))
-            if power_armor:
-                converted = bytes(self.havok.xml_to_hkx(trim_power_armor(self.havok.hkx_to_xml(converted), self.pa_bones)))
-                metadata = animation_metadata(self.havok.hkx_to_xml(converted), len(self.pa_bones))
-            else:
-                metadata = animation_metadata(self.havok.hkx_to_xml(converted))
+            converted, metadata_json = load_native_module().convert_ui_animation(
+                original, self.pa_bones if power_armor else None,
+                len(self.pa_bones) if power_armor else HUMAN_TRACKS,
+            )
+            metadata = json.loads(metadata_json)
             self.done[source] = (original, converted, metadata)
         return self.done[source]
 
@@ -431,6 +390,25 @@ def classify(editor_id: str, data: dict) -> str:
     if PET_EDITOR_ID.search(editor_id):
         return "pet"
     return "human" if "Animation" in data else "icon"
+
+
+def to_document(manifest: dict, plugin: str = PLUGIN) -> dict:
+    """Tales layout: contract and diagnostics in `settings`; categories (key id) and entries (key form) as sections."""
+
+    def key(value):
+        return form_key(plugin, int(value, 16)) if value else value
+
+    categories = [dict(row, id=key(row["id"])) for row in manifest["categories"]]
+    entries = []
+    for row in manifest["entries"]:
+        row = dict(row, category_id=key(row["category_id"]), idle_id=key(row["idle_id"]),
+                   sound_ids=[key(value) for value in row["sound_ids"]])
+        entries.append({"form": key(row.pop("source_id")), **row})
+    settings = {name: manifest[name] for name in ("event_name", "source_plugin", "source_plugin_sha256", "playback_route", "ui",
+                                                 "power_armor_dropped_tracks", "files")}
+    settings["skipped"] = [dict(row, source_id=key(row["source_id"])) for row in manifest["skipped"]]
+    settings["excluded"] = [dict(row, source_id=key(row["source_id"])) for row in manifest["excluded"]]
+    return {"version": 1, "settings": settings, "categories": categories, "entries": entries}
 
 
 def convert_emotes(source_root: Path, output_mod: Path, *, source_plugin: Path, target_root: Path) -> dict:
@@ -575,9 +553,7 @@ def convert_emotes(source_root: Path, output_mod: Path, *, source_plugin: Path, 
         target.write_bytes(data)
         manifest["files"].append({"path": relative.as_posix(), "sha256": sha(data),
                                   "source": source, "source_sha256": sha(original) if original else None})
-    catalog = output_mod / CATALOG
-    catalog.parent.mkdir(parents=True, exist_ok=True)
-    catalog.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    write_document(FEATURE, PLUGIN, to_document(manifest), output_mod)
     lines = [line for line in packaged_tales_lines() if line.startswith(("$B21_TFA_Emote", "$B21_TFA_PromptSelect\t"))]
     merge_ui_translations(output_mod / "data", lines)
     return manifest

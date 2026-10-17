@@ -506,3 +506,57 @@ Function TryStartDailyQuest(Location akPlayerLocation, Keyword akStoryKeyword)
 		Debug.Trace("[B21 Daily] SQ_Master found no matching region for location=" + akPlayerLocation as String, 0)
 	EndIf
 EndFunction
+
+; Lore pointers: terminals and notes pass a pointer ID that GQ_MiscRegionPointers
+; (SMQN 36A07F) matches against GetEventData V1. Only these nine IDs have a pointer
+; quest in the FO76 source and in the conversion; IDs 2, 3 and 6 (Dolly Sods flyer,
+; Hayley Porter's cut CUT_FF15_Lockdown) have none, so they send nothing.
+Quest Function GetMiscRegionPointerQuest(Int aiPointerID)
+	Int pointerFormID = 0
+	If aiPointerID == 1
+		pointerFormID = 0x00378415
+	ElseIf aiPointerID == 4
+		pointerFormID = 0x0037B036
+	ElseIf aiPointerID == 5
+		pointerFormID = 0x0037FEE2
+	ElseIf aiPointerID == 7
+		pointerFormID = 0x00382261
+	ElseIf aiPointerID == 8
+		pointerFormID = 0x00389CC0
+	ElseIf aiPointerID == 9
+		pointerFormID = 0x00389CC3
+	ElseIf aiPointerID == 10
+		pointerFormID = 0x00389CC4
+	ElseIf aiPointerID == 11
+		pointerFormID = 0x00389CC5
+	ElseIf aiPointerID == 12
+		pointerFormID = 0x0038F52B
+	EndIf
+	If pointerFormID == 0
+		Return None
+	EndIf
+	Return Game.GetFormFromFile(pointerFormID, "SeventySix.esm") as Quest
+EndFunction
+
+; The pointer quests gate on GetQuestCompleted (self and the advertised quest) and on
+; the advertised quest's QuestActiveKeyword. Mirror those gates before sending: an
+; event no node consumes walks on to the conditionless Moon_SQ06_Vera_Branch 6A9F35.
+Function StartMiscRegionPointer(Int aiPointerID, ObjectReference akSource = None)
+	Quest pointerQuest = GetMiscRegionPointerQuest(aiPointerID)
+	If pointerQuest == None || GQ_MiscRegionPointerKeyword == None
+		Return
+	EndIf
+	If pointerQuest.IsRunning() || pointerQuest.IsCompleted()
+		Return
+	EndIf
+	Quest[] advertisedQuests = (pointerQuest as GQ_MiscRegionPointerScript).CompletionQuests
+	Int index = 0
+	While advertisedQuests != None && index < advertisedQuests.Length
+		Quest advertised = advertisedQuests[index]
+		If advertised != None && (advertised.IsRunning() || advertised.IsCompleted())
+			Return
+		EndIf
+		index += 1
+	EndWhile
+	GQ_MiscRegionPointerKeyword.SendStoryEvent(None, Game.GetPlayer(), akSource, aiPointerID, 0)
+EndFunction

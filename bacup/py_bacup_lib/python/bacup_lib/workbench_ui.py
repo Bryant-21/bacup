@@ -15,6 +15,11 @@ def build_workbench_ui(stock: bytes, output_data: Path) -> dict:
 
     bridge = BRIDGE.read_text(encoding="utf-8")
     movie = native.augment_as3_classes(stock, {"ExamineMenu": bridge})
+    movie = native.patch_as3_method(movie, "ExamineMenu", "onItemPressed",
+        [["getlocal", 0], ["callpropvoid", "onModButton", 0]],
+        [["keep", 0], ["callpropvoid", "B21OnItemPressed", 0]])
+    movie = native.patch_as3_method(movie, "ExamineMenu", "ProcessUserEvent",
+        [["callpropvoid", "onModButton", 0]], [["callpropvoid", "B21OnItemPressed", 0]])
     verify_script_only(stock, movie)
     output = Path(output_data) / MENU
     output.parent.mkdir(parents=True, exist_ok=True)

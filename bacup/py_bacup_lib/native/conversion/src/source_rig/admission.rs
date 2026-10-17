@@ -132,6 +132,14 @@ pub fn deterministic_standard_event(
         CreatureClipRole::GroundForward => "moveStart".to_string(),
         CreatureClipRole::TurnLeft90 => "TurnLeft90".to_string(),
         CreatureClipRole::TurnRight90 => "TurnRight90".to_string(),
+        CreatureClipRole::TurnLeft => "TurnLeft".to_string(),
+        CreatureClipRole::TurnRight => "TurnRight".to_string(),
+        CreatureClipRole::Hurt => "staggerStart".to_string(),
+        CreatureClipRole::Death => "Death".to_string(),
+        CreatureClipRole::GetUp => "GetUpBegin".to_string(),
+        CreatureClipRole::WeaponAim => format!("B21_WeaponAim_{family_fragment}_{ordinal:02}"),
+        CreatureClipRole::ScriptedAction => format!("B21_ScriptedAction_{family_fragment}_{ordinal:02}"),
+        CreatureClipRole::ScriptedLoop => format!("B21_ScriptedLoop_{family_fragment}_{ordinal:02}"),
         CreatureClipRole::MeleeAttack => {
             format!("melee_{family_fragment}_{ordinal:02}")
         }
@@ -156,11 +164,19 @@ pub enum ActorActionKind {
     Idle,
     MoveStart,
     MoveStop,
+    SprintStart,
+    SprintStop,
+    TurnLeft,
+    TurnRight,
+    TurnStop,
+    Stagger,
     Death,
+    GetUp,
     RagdollInstant,
     Melee,
     FireSingle,
     FireAuto,
+    Throw,
     FireStop,
     Draw,
     Sheath,
@@ -191,6 +207,24 @@ pub struct CreatureActorActionRecordPlan {
     pub requirement: ActorActionRequirement,
     pub form_key: TargetFormKey,
     pub editor_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon_condition: Option<CreatureActorActionWeaponCondition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weapon_exclusions: Vec<TargetFormKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_condition: Option<CreatureActorActionGraphCondition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CreatureActorActionGraphCondition {
+    pub name: String,
+    pub value: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CreatureActorActionWeaponCondition {
+    pub weapon: TargetFormKey,
+    pub equipment_index: Option<u8>,
 }
 
 pub fn required_actor_action_records(
@@ -210,9 +244,59 @@ pub fn required_actor_action_records(
             parent_editor_id: "ActionDeath".to_string(),
             parent_form_id: 0x0489ED,
             behavior_path: root_behavior_path.to_string(),
-            animation_event: "Ragdoll".to_string(),
+            animation_event: graph
+                .roles
+                .iter()
+                .find(|role| role.role == CreatureClipRole::Death)
+                .and_then(|role| role.trigger_event.clone())
+                .unwrap_or_else(|| "Ragdoll".to_string()),
         },
     ];
+    for (role, kind, editor_id, form_id) in [
+        (CreatureClipRole::GetUp, ActorActionKind::GetUp, "ActionGetUp", 0x0D1FDD),
+        (
+            CreatureClipRole::TurnLeft,
+            ActorActionKind::TurnLeft,
+            "ActionTurnLeft",
+            0x0959FD,
+        ),
+        (
+            CreatureClipRole::TurnRight,
+            ActorActionKind::TurnRight,
+            "ActionTurnRight",
+            0x0959FC,
+        ),
+        (
+            CreatureClipRole::Hurt,
+            ActorActionKind::Stagger,
+            "ActionStaggerStart",
+            0x0138D2,
+        ),
+    ] {
+        extend_role_events(
+            &mut requirements,
+            graph,
+            root_behavior_path,
+            role,
+            kind,
+            editor_id,
+            form_id,
+        );
+    }
+    if graph.roles.iter().any(|role| {
+        matches!(
+            role.role,
+            CreatureClipRole::TurnLeft | CreatureClipRole::TurnRight
+        )
+    }) {
+        requirements.push(ActorActionRequirement {
+            kind: ActorActionKind::TurnStop,
+            parent_editor_id: "ActionTurnStop".to_string(),
+            parent_form_id: 0x0959FE,
+            behavior_path: root_behavior_path.to_string(),
+            animation_event: graph.idle_event.clone(),
+        });
+    }
     extend_role_events(
         &mut requirements,
         graph,
@@ -234,6 +318,22 @@ pub fn required_actor_action_records(
             behavior_path: root_behavior_path.to_string(),
             animation_event: graph.idle_event.clone(),
         });
+    }
+    if graph.roles.iter().any(|role| matches!(role.generator, super::CapabilityRoleGenerator::MountSynchronization { .. })) {
+        for (kind, editor_id, form_id, event) in [
+            (ActorActionKind::SprintStart, "ActionSprintStart", 0x03B4A7, "SprintStart"),
+            (ActorActionKind::SprintStop, "ActionSprintStop", 0x013219, "SprintStop"),
+        ] {
+            if graph.explicit_events.iter().any(|declaration| declaration.name == event) {
+                requirements.push(ActorActionRequirement {
+                    kind,
+                    parent_editor_id: editor_id.into(),
+                    parent_form_id: form_id,
+                    behavior_path: root_behavior_path.into(),
+                    animation_event: event.into(),
+                });
+            }
+        }
     }
     extend_role_events(
         &mut requirements,
@@ -326,6 +426,7 @@ pub fn required_actor_action_records(
                 "forceequip" | "g_weapforceequip" => {
                     (ActorActionKind::ForceEquip, "ActionForceEquip", 0x02ADF1)
                 }
+                "attackrelease" => (ActorActionKind::FireStop, "ActionRightRelease", 0x013454),
                 "ragdollinstant" => (
                     ActorActionKind::RagdollInstant,
                     "ActionRagdollInstant",
@@ -356,6 +457,20 @@ fn extend_role_events(
     parent_form_id: u32,
 ) {
     for declaration in graph.roles.iter().filter(|entry| entry.role == role) {
+        let (kind, parent_editor_id, parent_form_id) = if matches!(kind, ActorActionKind::FireSingle | ActorActionKind::FireAuto) {
+            if !declaration.generator.is_attack_entry() {
+                continue;
+            }
+            if matches!(declaration.generator.base_generator(), super::CapabilityRoleGenerator::ThrownAttack) {
+                (ActorActionKind::Throw, "ActionThrow", 0x004E32)
+            } else if matches!(declaration.generator.base_generator(), super::CapabilityRoleGenerator::ContinuousAttackPhase { .. }) {
+                (ActorActionKind::FireAuto, "ActionFireAuto", 0x004A5C)
+            } else {
+                (kind, parent_editor_id, parent_form_id)
+            }
+        } else {
+            (kind, parent_editor_id, parent_form_id)
+        };
         for event in declaration
             .trigger_event
             .iter()
@@ -469,8 +584,10 @@ mod tests {
     #[test]
     fn absent_actor_action_idles_are_explicit_fatal_integration_gaps() {
         let graph = CapabilityGraphManifest {
+            source_channels: Vec::new(),
             template: super::super::CreatureGraphTemplate::GroundMelee,
             roles: vec![super::super::CapabilityClipRole {
+                equipment_index: None,
                 role: CreatureClipRole::MeleeAttack,
                 state_name: "MeleeAttack1".to_string(),
                 clip_name: "attack".to_string(),
@@ -480,6 +597,7 @@ mod tests {
                 motion: super::super::ClipMotionPolicy::default(),
             }],
             candidate_attack_bindings: Vec::new(),
+            source_inert_attack_receipts: Vec::new(),
             idle_event: "Idle".to_string(),
             explicit_events: Vec::new(),
             overlays: Vec::new(),
@@ -496,6 +614,7 @@ mod tests {
     #[test]
     fn actor_action_requirements_cover_graph_motion_combat_and_equipment_events() {
         let role = |role, event: &str| super::super::CapabilityClipRole {
+            equipment_index: None,
             role,
             state_name: format!("{role:?}"),
             clip_name: format!("{role:?}_clip"),
@@ -507,6 +626,7 @@ mod tests {
         let mut ground = role(CreatureClipRole::GroundForward, "moveStart");
         ground.trigger_aliases.push("moveFast".to_string());
         let graph = CapabilityGraphManifest {
+            source_channels: Vec::new(),
             template: super::super::CreatureGraphTemplate::GroundMelee,
             roles: vec![
                 ground,
@@ -518,6 +638,7 @@ mod tests {
                 role(CreatureClipRole::FlyForward, "flyStart"),
             ],
             candidate_attack_bindings: Vec::new(),
+            source_inert_attack_receipts: Vec::new(),
             idle_event: "Idle".to_string(),
             explicit_events: [
                 "weaponDraw",

@@ -521,7 +521,18 @@ EndFunction
 
 Bool Function WaveUsesCatalog(Int aiWaveIndex)
     B21:EncounterWaveCatalog catalog = (Self as Quest) as B21:EncounterWaveCatalog
-    Return catalog != None && catalog.VariantCount(aiWaveIndex) > 0
+    If catalog == None
+        Return False
+    EndIf
+    Return catalog.VariantCount(aiWaveIndex) > 0 || catalog.KeywordVariantCount(WaveKeyword(aiWaveIndex)) > 0
+EndFunction
+
+; Roaming encounters set EncounterTypeKeyword at runtime; their catalog carries a keyword pool for it.
+Keyword Function WaveKeyword(Int aiWaveIndex)
+    If !EncounterWaves || aiWaveIndex < 0 || aiWaveIndex >= EncounterWaves.Length
+        Return None
+    EndIf
+    Return EncounterWaves[aiWaveIndex].EncounterTypeKeyword
 EndFunction
 
 Var[] Function WaveEventArgs(Int aiWaveIndex)
@@ -694,8 +705,15 @@ Function SpawnEncounterSubwave(Int aiWaveIndex)
     B21:EncounterWaveCatalog catalog = (Self as Quest) as B21:EncounterWaveCatalog
     ObjectReference spawnPoint = ResolveWaveSpawnPoint(waveData)
     Int variants = 0
+    Keyword poolKeyword = None
     If catalog != None
         variants = catalog.VariantCount(aiWaveIndex)
+        If variants <= 0
+            variants = catalog.KeywordVariantCount(waveData.EncounterTypeKeyword)
+            If variants > 0
+                poolKeyword = waveData.EncounterTypeKeyword
+            EndIf
+        EndIf
     EndIf
     Int spawnCount = SubwaveActorCount(waveData)
     Int capacity = WaveLiveActorCap(waveData) - CountWaveActorsTowardCap(aiWaveIndex, waveData)
@@ -711,7 +729,12 @@ Function SpawnEncounterSubwave(Int aiWaveIndex)
         Int variant = Utility.RandomInt(0, variants - 1)
         Int actorIndex = 0
         While actorIndex < spawnCount && !QuestShuttingDown && IsEncounterWaveSpawning(aiWaveIndex)
-            Form spawnForm = catalog.PickCandidate(aiWaveIndex, variant, actorIndex)
+            Form spawnForm
+            If poolKeyword != None
+                spawnForm = catalog.PickKeywordCandidate(poolKeyword, variant, actorIndex)
+            Else
+                spawnForm = catalog.PickCandidate(aiWaveIndex, variant, actorIndex)
+            EndIf
             Actor waveActor = None
             If spawnForm != None
                 waveActor = spawnPoint.PlaceAtMe(spawnForm, 1, False, True, False) as Actor

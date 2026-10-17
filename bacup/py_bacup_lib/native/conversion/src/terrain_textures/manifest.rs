@@ -7,6 +7,8 @@ pub struct TerrainTextureJob {
     pub reflectivity_path: String,
     pub lighting_path: String,
     pub output_prefix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_source_prefix: Option<String>,
 }
 
 /// Serializable mirror of `terrain_native::texture_bridge::TextureBundle`.
@@ -15,6 +17,28 @@ pub struct TerrainTextureJob {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TextureManifest {
     pub textures: Vec<TextureBundle>,
+    /// FO76 BTD sources with a `.btd4`: every GCVR in the BTD's table, for the v5 grass points.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ground_covers: Vec<GroundCoverManifest>,
+}
+
+/// One FO76 GCVR as `BGSGroundCover::Load` keeps it (mirrors the bridge's `GroundCoverManifest`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct GroundCoverManifest {
+    pub form_key: String,
+    pub editor_id: String,
+    /// Texture-weight threshold, unclamped; 0.286 when the record has no YNAM.
+    pub ynam: f32,
+    pub ltex_form_keys: Vec<String>,
+    /// GNAMs followed by a DNAM, in file order; a repeated GNAM keeps its first entry.
+    pub grasses: Vec<GroundCoverGrass>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GroundCoverGrass {
+    pub form_key: String,
+    /// Density percent, or 0xFFFF for the GRAS DNAM density byte.
+    pub dnam: u16,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -32,6 +56,13 @@ pub struct TextureBundle {
     pub reflectivity_path: String,
     pub lighting_path: String,
     pub output_prefix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_source_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_material_rows: Option<[[f32; 4]; 3]>,
+    /// Delivered for the .btd4 raw source bank only; never emitted as LTEX/TXST/GRAS records.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw_bank_only: bool,
     pub output_material_path: Option<String>,
     /// Original BGSM relative path from the LTEX record (e.g. "Landscape\\Ground\\ForestGrass01.BGSM").
     /// Empty for TXST-branch bundles.
@@ -56,6 +87,7 @@ impl From<&TextureBundle> for TerrainTextureJob {
             reflectivity_path: bundle.reflectivity_path.clone(),
             lighting_path: bundle.lighting_path.clone(),
             output_prefix: bundle.output_prefix.clone(),
+            raw_source_prefix: bundle.raw_source_prefix.clone(),
         }
     }
 }
@@ -86,6 +118,10 @@ pub struct GrassEntry {
     /// drops the emitted GRAS for it, so the `.btd4` sidecar must reference this record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_form_key: Option<String>,
+    /// FO76 sources only: the raw GRAS DNAM, which places the `.btd4` v5 grass points.
+    /// The emitted GRAS record keeps its own converted density and ranges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fo76_dnam: Option<terrain_native::fo76_grass::GrassDnam>,
     /// Populated by grass-asset conversion; ignored by terrain_native bridge.
     #[serde(default)]
     pub assets: Vec<GrassAsset>,

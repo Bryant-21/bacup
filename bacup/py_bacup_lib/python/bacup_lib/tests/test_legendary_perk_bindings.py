@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from bacup_lib import legendary_perk_bindings as bindings
+from bacup_lib.tests.catalog_schema_validation import validate_catalog
 
 
 def test_catalog_uses_local_ids_and_ignores_non_runtime_helpers():
@@ -12,10 +13,11 @@ def test_catalog_uses_local_ids_and_ignores_non_runtime_helpers():
         (0x01B04580, "SPEL", "B21_Legendary_LegendaryAgility_1_Ability", None),
         (0x01000800, "PERK", "LGN_LegendaryAgility_Perk01", None),
     ])
-    assert result == {"schema_version": 1, "plugin": "Converted.esm", "forms": {
-        "B21_Legendary_AmmoFactory_1": 0xB04579,
-        "B21_Legendary_AmmoFactory_1_Value": 0xB04578,
+    assert result == {"version": 1, "plugin": "Converted.esm", "forms": {
+        "B21_Legendary_AmmoFactory_1": "Converted.esm:B04579",
+        "B21_Legendary_AmmoFactory_1_Value": "Converted.esm:B04578",
     }}
+    validate_catalog("LegendaryPerks", bindings.to_document(result))
 
 
 @pytest.mark.parametrize("records", [
@@ -40,8 +42,8 @@ def test_emitter_owns_and_closes_its_native_handle(tmp_path, monkeypatch):
     monkeypatch.setattr(bindings, "load_esp_native", lambda: native)
     output = tmp_path / "converted"
     result = bindings.emit_legendary_perk_bindings(tmp_path / "Converted.esm", output)
-    assert result["forms"]["B21_Legendary_AmmoFactory_1"] == 0xB04579
-    assert (output / bindings.OUTPUT).is_file()
+    assert result["forms"]["B21_Legendary_AmmoFactory_1"] == "Converted.esm:B04579"
+    assert (output / "F4SE/Plugins/B21_TalesFromAppalachia/LegendaryPerks/Converted.esm.json").is_file()
     assert calls == [(123, "B21_Legendary_*", {"signatures": ["PERK", "GLOB"], "case_sensitive": True})]
     assert closed == [123]
     native.plugin_handle_search_records = lambda *a, **kw: [(0, "PERK", "B21_Legendary_AmmoFactory_1", None)]

@@ -6,6 +6,10 @@ from bacup_lib.reputation_ui import TRANSLATION_KEYS
 from bacup_lib.translations import translation_path
 
 
+TEXTURES = [f"Textures/SetDressing/BrownBag01/BrownBag01_{channel}.dds" for channel in "dnrl"]
+BAG_ASSETS = ["Meshes/" + ui.BAG_MODEL, ui.BAG_MATERIAL, *TEXTURES]
+
+
 def fixtures(tmp_path):
     source = tmp_path / "source"
     interface = source / "interface"
@@ -18,7 +22,7 @@ def fixtures(tmp_path):
     mesh.parent.mkdir(parents=True)
     mesh.write_bytes(b"installed FO76 source mesh")
     output = tmp_path / "converted"
-    for asset in ui.BAG_ASSETS:
+    for asset in BAG_ASSETS:
         path = output / "data" / asset
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"converted {asset}".encode())
@@ -27,6 +31,7 @@ def fixtures(tmp_path):
 
 def test_conversion_emits_versioned_bridge_and_only_references_native_assets(tmp_path, monkeypatch):
     source, output = fixtures(tmp_path)
+    monkeypatch.setattr(ui, "material_textures", lambda _: TEXTURES)
     monkeypatch.setattr(ui, "bag_record", lambda *_: {
         "source": "SeventySix.esm:365BCC",
         "converted": "SeventySix.esm:365BCC",
@@ -47,7 +52,7 @@ def test_conversion_emits_versioned_bridge_and_only_references_native_assets(tmp
         (source / "Meshes" / ui.BAG_MODEL).read_bytes()
     ).hexdigest()
     catalog = json.loads((output / ui.CATALOG).read_text(encoding="utf-8"))
-    assert catalog["assets"] == list(ui.BAG_ASSETS)
+    assert catalog["assets"] == BAG_ASSETS
     assert catalog["converted"] == "SeventySix.esm:365BCC"
     assert catalog["labels"]["$B21_RespawnTitle"] == "Respawn"
     assert catalog["map_contract"] == {"version": 1, "transport": "F4SE", "message_type": "42325444"}

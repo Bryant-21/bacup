@@ -195,6 +195,19 @@ const ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS: &[u16] = &[
     808, 809, 810, 835, 836, 863, 920,
 ];
 
+/// Whether a CTDA's alias (0x02) or package-data (0x08) flag can reinterpret one
+/// of this function's parameters; on any other function the flags do nothing.
+pub(crate) fn fo76_condition_has_reference_parameter(function_id: u16) -> bool {
+    [
+        FO76_CTDA_PARAM1_FORMID_FUNCTIONS,
+        FO76_CTDA_PARAM2_FORMID_FUNCTIONS,
+        QUEST_ALIAS_PARAMETER_1_FUNCTION_IDS,
+        ALIAS_INDEX_PARAMETER_1_FUNCTION_IDS,
+    ]
+    .iter()
+    .any(|functions| functions.contains(&function_id))
+}
+
 /// xEdit's one exception: `GetIsCurrentPackage` run on a quest alias keeps a
 /// package FormID in Parameter #1 (the alias moves to Parameter #3).
 const GET_IS_CURRENT_PACKAGE_FUNCTION_ID: u16 = 161;
@@ -2791,7 +2804,7 @@ fn rewrite_raw_condition_record(
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum RawConditionRewrite {
+pub(crate) enum RawConditionRewrite {
     Unchanged,
     Changed,
     Drop,
@@ -2870,7 +2883,7 @@ pub(crate) fn fo76_condition_reference_offsets(bytes: &[u8]) -> Vec<usize> {
     offsets
 }
 
-fn rewrite_raw_condition_bytes(
+pub(crate) fn rewrite_raw_condition_bytes(
     bytes: &mut [u8],
     encoded_targets: &FxHashMap<u32, u32>,
     is_valid_target_master_formid: &mut dyn FnMut(u32) -> bool,

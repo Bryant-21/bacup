@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 
 const FO4_DAMAGE_TYPE_ROW_LEN: usize = 8;
 /// FO4 has no item levels; converted armor gets FO76's level-50 (max drop level) resistances.
-const ARMOR_CURVE_LEVEL: u16 = 50;
+pub(crate) const ARMOR_CURVE_LEVEL: u16 = 50;
 
 /// FO76 armor authors every resistance as 0 plus a curve table in the third DAMA
 /// column; FO4 rows have no curve column, so relayout leaves armor with no

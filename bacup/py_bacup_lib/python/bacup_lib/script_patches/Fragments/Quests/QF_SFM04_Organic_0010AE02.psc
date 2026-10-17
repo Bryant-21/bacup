@@ -9,6 +9,7 @@ Function Fragment_Stage_0100_Item_00()
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
+    ; TODO(recipes): FO76 teaches SFM04_Organic_co_chem_RadShield at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(100, True)
     SetObjectiveDisplayed(200, True)
 EndFunction

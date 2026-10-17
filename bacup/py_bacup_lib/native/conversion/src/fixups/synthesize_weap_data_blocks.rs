@@ -99,7 +99,7 @@ use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record};
 use crate::session::PluginSession;
 use crate::sym::{StringInterner, Sym};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ const FO4_DNAM_DAMAGE_SECONDARY_OFFSET: usize = 55;
 const FO4_DNAM_FULL_POWER_SECONDS_OFFSET: usize = 116;
 const FO4_DNAM_MIN_POWER_PER_SHOT_OFFSET: usize = 120;
 const FO4_DNAM_STAGGER_OFFSET: usize = 124;
-const FO76_TO_FO4_MIN_POWER_PER_SHOT_SCALE: f32 = 0.1;
+pub(crate) const FO76_TO_FO4_MIN_POWER_PER_SHOT_SCALE: f32 = 0.1;
 const FO4_DNAM_SPEED_OFFSET: usize = 4;
 const FO4_DNAM_REACH_OFFSET: usize = 12;
 const FO4_DNAM_MIN_RANGE_OFFSET: usize = 16;
@@ -191,6 +191,7 @@ const FO76_RGW3_RUMBLE_LEFT_MOTOR_STRENGTH_OFFSET: usize = 8;
 const FO76_RGW3_RUMBLE_RIGHT_MOTOR_STRENGTH_OFFSET: usize = 12;
 const FO76_RGW3_RUMBLE_DURATION_OFFSET: usize = 16;
 const FO76_RGW3_ANIMATION_RELOAD_SECONDS_OFFSET: usize = 20;
+const FO76_RGW3_BOLT_CHARGE_SECONDS_OFFSET: usize = 24;
 const FO76_RGW3_PROJECTILES_OFFSET: usize = 52;
 
 const FO4_FNAM_ANIMATION_FIRE_SECONDS_OFFSET: usize = 0;
@@ -198,6 +199,9 @@ const FO4_FNAM_RUMBLE_LEFT_MOTOR_STRENGTH_OFFSET: usize = 4;
 const FO4_FNAM_RUMBLE_RIGHT_MOTOR_STRENGTH_OFFSET: usize = 8;
 const FO4_FNAM_RUMBLE_DURATION_OFFSET: usize = 12;
 const FO4_FNAM_ANIMATION_RELOAD_SECONDS_OFFSET: usize = 16;
+/// The player's refire timer on BoltAction weapons (`AttackBlockHandler::UpdateAttackTimer`);
+/// the 3P gun graph re-fires on any `attackStart`, so 0 lets third person fire unchecked.
+const FO4_FNAM_BOLT_CHARGE_SECONDS_OFFSET: usize = 20;
 const FO4_FNAM_PROJECTILES_OFFSET: usize = 28;
 const FO4_FNAM_OVERRIDE_PROJECTILE_OFFSET: usize = 29;
 const FO4_FNAM_PATTERN_OFFSET: usize = 33;
@@ -394,6 +398,7 @@ pub struct SourceWeapFields {
     pub rumble_right_motor_strength: Option<f32>,
     pub rumble_duration: Option<f32>,
     pub animation_reload_seconds: Option<f32>,
+    pub bolt_charge_seconds: Option<f32>,
     pub projectiles: Option<u8>,
     pub rumble_pattern: Option<u32>,
     pub rumble_period_ms: Option<u32>,
@@ -598,6 +603,10 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
                 .source_slot_opt()
                 .and_then(|slot| slot.parsed.game.as_deref()),
         );
+        let has_stat_first_person_models = source_family == SourceWeapFamily::LegacyFallout
+            || session
+                .source_slot_opt()
+                .is_some_and(|slot| slot.parsed.game.as_deref() == Some("skyrimse"));
         let source_plugin_info = session.source_slot_opt().map(|slot| {
             (
                 slot.parsed.header.masters.clone(),
@@ -622,6 +631,10 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
             .map_err(|e| FixupError::HandleError(e.to_string()))?;
 
         for fk in fks {
+            // Template bridges create master overrides whose weapon data is already FO4-native.
+            if fk.plugin != target_plugin_sym {
+                continue;
+            }
             let mut record = match session.record_decoded(&fk, target_schema, mapper.interner) {
                 Ok(r) => r,
                 Err(e) => {
@@ -643,6 +656,7 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
             let dnam_default = choose_dnam_default(is_creature_weapon, &eid_str);
             let mut source_fields = None;
             let mut source_raw_dnam = None;
+            let mut source_links_changed = false;
             let mut resolved_damage_types = Vec::new();
             let source_fk = source_plugin_info
                 .as_ref()
@@ -656,11 +670,47 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
                 });
             if let (Some(schema), Some(source_fk), Some(source_plugin_info)) =
                 (source_schema, source_fk, source_plugin_info.as_ref())
-                && let Ok(source_record) =
+                && let Ok(mut source_record) =
                     session.source_record_decoded(&source_fk, schema, mapper.interner)
             {
                 let (source_masters, source_plugin_name, source_plugin_sym) = source_plugin_info;
-                let (mut fields, reference_warnings) = extract_source_weap_fields(
+                if source_family == SourceWeapFamily::LegacyFallout {
+                    source_links_changed |= apply_legacy_gun_animation_keywords(
+                        &mut record,
+                        &source_record,
+                        mapper.interner,
+                    );
+                }
+                if has_stat_first_person_models {
+                    if !record.fields.iter().any(|entry| entry.sig.0 == *b"MOD4")
+                        && let Some(model) = legacy_weapon_first_person_model(
+                            &source_record,
+                            session,
+                            schema,
+                            source_masters,
+                            source_plugin_name,
+                            mapper.interner,
+                        )
+                    {
+                        record.fields.push(FieldEntry {
+                            sig: SubrecordSig(*b"MOD4"),
+                            value: model,
+                        });
+                        source_links_changed = true;
+                    }
+                }
+                if source_family == SourceWeapFamily::LegacyFallout {
+                    resolve_legacy_weapon_ammo(
+                        &mut source_record,
+                        session,
+                        schema,
+                        source_masters,
+                        source_plugin_name,
+                        mapper,
+                        &target_masters,
+                    );
+                }
+                let (mut fields, mut reference_warnings) = extract_source_weap_fields(
                     &source_record,
                     source_family,
                     source_masters,
@@ -669,6 +719,18 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
                     mapper,
                     &target_masters,
                 );
+                if source_family == SourceWeapFamily::LegacyFallout {
+                    source_links_changed |= apply_legacy_critical_data(
+                        &mut record,
+                        &source_record,
+                        &mut fields,
+                        source_masters,
+                        source_plugin_name,
+                        mapper,
+                        &target_masters,
+                        &mut reference_warnings,
+                    );
+                }
                 for warning in reference_warnings {
                     report.warnings.push(
                         mapper
@@ -720,6 +782,7 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
                 Some(mapper.interner),
                 source_raw_dnam.as_deref(),
             );
+            changed |= source_links_changed;
             changed |= apply_resolved_damage_types(&mut record, &resolved_damage_types);
 
             if changed {
@@ -745,6 +808,248 @@ impl Fixup for SynthesizeWeapDataBlocksFixup {
 // ---------------------------------------------------------------------------
 // Classification helpers
 // ---------------------------------------------------------------------------
+
+fn apply_legacy_critical_data(
+    target: &mut Record,
+    source: &Record,
+    fields: &mut SourceWeapFields,
+    source_masters: &[String],
+    source_plugin_name: &str,
+    mapper: &FormKeyMapper,
+    target_masters: &[String],
+    warnings: &mut Vec<String>,
+) -> bool {
+    let Some(critical) = source.fields.iter().find(|entry| entry.sig.0 == *b"CRDT") else {
+        return false;
+    };
+    let (damage, chance, flags, effect) = match &critical.value {
+        FieldValue::Bytes(bytes) if bytes.len() == 16 => (
+            u16::from_le_bytes(bytes[0..2].try_into().unwrap()),
+            read_f32(bytes, 4).unwrap(),
+            bytes[8],
+            FieldValue::Bytes(smallvec::SmallVec::from_slice(&bytes[12..16])),
+        ),
+        value @ FieldValue::Struct(_) => {
+            let Some(effect) = find_named_value(value, "effect", mapper.interner) else {
+                return false;
+            };
+            (
+                find_named_u32(value, "critical_damage", mapper.interner).unwrap_or(0) as u16,
+                find_named_f32(value, "crit_mult", mapper.interner).unwrap_or(0.0),
+                find_named_u8(value, "flags", mapper.interner).unwrap_or(0),
+                effect.clone(),
+            )
+        }
+        _ => return false,
+    };
+    let mut effect_raw = None;
+    apply_legacy_reference_resolution(
+        &mut effect_raw,
+        resolve_legacy_reference_from_value(
+            &effect,
+            "effect",
+            source_masters,
+            source_plugin_name,
+            mapper,
+            target_masters,
+        ),
+        "critical_effect",
+        warnings,
+        mapper.interner,
+    );
+    if flags & 1 != 0 {
+        fields.flags = Some(fields.flags.unwrap_or(0) | FLAG_CRIT_EFFECT_ON_DEATH);
+    }
+    if damage != 0 {
+        warnings.push("legacy_absolute_critical_damage_uses_fo4_baseline".into());
+    }
+    if chance != 0.0 && chance != 1.0 {
+        warnings.push("legacy_random_critical_chance_not_ported".into());
+    }
+    // FNV's absolute bonus damage and random chance are not FO4 multipliers.
+    // Use the vanilla FO4 10mm baseline while retaining the resolved effect.
+    let mut bytes = Vec::with_capacity(12);
+    bytes.extend_from_slice(&2.0_f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+    bytes.extend_from_slice(&effect_raw.unwrap_or(0).to_le_bytes());
+    let value = FieldValue::Bytes(smallvec::SmallVec::from_slice(&bytes));
+    if let Some(entry) = target
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"CRDT")
+    {
+        if entry.value == value {
+            return false;
+        }
+        entry.value = value;
+    } else {
+        target.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"CRDT"),
+            value,
+        });
+    }
+    true
+}
+
+fn legacy_weapon_first_person_model(
+    record: &Record,
+    session: &mut PluginSession,
+    schema: &crate::schema::AuthoringSchema,
+    source_masters: &[String],
+    source_plugin_name: &str,
+    interner: &StringInterner,
+) -> Option<FieldValue> {
+    let entry = record.fields.iter().find(|entry| entry.sig.0 == *b"WNAM")?;
+    let key = source_form_key_from_value(
+        &entry.value,
+        "first_person_model",
+        source_masters,
+        source_plugin_name,
+        interner,
+    )?;
+    let model = session.source_record_decoded(&key, schema, interner).ok()?;
+    if model.sig.0 != *b"STAT" {
+        return None;
+    }
+    model.fields.iter().find_map(|entry| {
+        (entry.sig.0 == *b"MODL" && matches!(entry.value, FieldValue::String(_)))
+            .then(|| entry.value.clone())
+    })
+}
+
+fn apply_legacy_gun_animation_keywords(
+    target: &mut Record,
+    source: &Record,
+    interner: &StringInterner,
+) -> bool {
+    let Some(dnam) = source.fields.iter().find(|entry| entry.sig.0 == *b"DNAM") else {
+        return false;
+    };
+    let animation_type = match &dnam.value {
+        FieldValue::Bytes(bytes) => read_u32(bytes, 0),
+        value => find_named_u32(value, "animation_type", interner),
+    };
+    // Legacy gun enums do not select FO4's player/NPC animation subgraphs.
+    let keywords: &[u32] = match animation_type {
+        Some(3 | 4) => &[0x01F948, 0x04C7EA, 0x03ADB3, 0x04A0A0, 0x0F4AEA, 0x10C485],
+        Some(5..=7) => &[0x0464EF, 0x1B4687, 0x03ADB4, 0x04A0A1, 0x0F4AEA, 0x10C485],
+        _ => return false,
+    };
+    let plugin = interner.intern("Fallout4.esm");
+    let existing = target
+        .fields
+        .iter()
+        .position(|entry| entry.sig.0 == *b"KWDA");
+    let mut values = match existing.map(|index| &target.fields[index].value) {
+        Some(FieldValue::List(values)) => values.clone(),
+        None => Vec::new(),
+        _ => return false,
+    };
+    let initial_len = values.len();
+    for local in keywords {
+        let value = FieldValue::FormKey(FormKey {
+            local: *local,
+            plugin,
+        });
+        if !values.contains(&value) {
+            values.push(value);
+        }
+    }
+    if values.len() == initial_len {
+        return false;
+    }
+    let count = values.len() as u64;
+    if let Some(index) = existing {
+        target.fields[index].value = FieldValue::List(values);
+    } else {
+        target.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"KWDA"),
+            value: FieldValue::List(values),
+        });
+    }
+    if let Some(entry) = target
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"KSIZ")
+    {
+        entry.value = FieldValue::Uint(count);
+    } else {
+        target.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"KSIZ"),
+            value: FieldValue::Uint(count),
+        });
+    }
+    if animation_type.is_some_and(|value| matches!(value, 3 | 4)) {
+        for entry in &mut target.fields {
+            if entry.sig.0 == *b"ETYP" {
+                entry.value = FieldValue::FormKey(FormKey {
+                    local: 0x04334D,
+                    plugin,
+                });
+            }
+        }
+    }
+    true
+}
+
+fn resolve_legacy_weapon_ammo(
+    record: &mut Record,
+    session: &mut PluginSession,
+    schema: &crate::schema::AuthoringSchema,
+    source_masters: &[String],
+    source_plugin_name: &str,
+    mapper: &FormKeyMapper,
+    target_masters: &[String],
+) {
+    let Some(entry) = record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"NAM0")
+    else {
+        return;
+    };
+    let Some(source_key) = source_form_key_from_value(
+        &entry.value,
+        "ammo",
+        source_masters,
+        source_plugin_name,
+        mapper.interner,
+    ) else {
+        return;
+    };
+    // FNV NAM0 accepts an ordered ammunition list; FO4 DNAM accepts only AMMO.
+    let mut pending = vec![source_key];
+    let mut visited = FxHashSet::default();
+    while let Some(candidate) = pending.pop() {
+        if !visited.insert(candidate) {
+            continue;
+        }
+        let Ok(ammo) = session.source_record_decoded(&candidate, schema, mapper.interner) else {
+            continue;
+        };
+        if ammo.sig.0 == *b"AMMO" {
+            if resolve_mapped_source_fk_to_target_raw(candidate, mapper, target_masters).is_some() {
+                entry.value = FieldValue::FormKey(candidate);
+                return;
+            }
+        } else if ammo.sig.0 == *b"FLST" {
+            pending.extend(ammo.fields.iter().rev().filter_map(|field| {
+                (field.sig.0 == *b"LNAM")
+                    .then(|| {
+                        source_form_key_from_value(
+                            &field.value,
+                            "form_id",
+                            source_masters,
+                            source_plugin_name,
+                            mapper.interner,
+                        )
+                    })
+                    .flatten()
+            }));
+        }
+    }
+    entry.value = FieldValue::None;
+}
 
 /// True for creature root types (NPC_ or LVLN).
 pub(crate) fn is_creature_root_sig(sig: SigCode) -> bool {
@@ -966,6 +1271,9 @@ fn apply_source_fnam_fields(fnam: &mut [u8; 41], fields: SourceWeapFields) {
     }
     if let Some(value) = fields.animation_reload_seconds {
         write_f32_41(fnam, FO4_FNAM_ANIMATION_RELOAD_SECONDS_OFFSET, value);
+    }
+    if let Some(value) = fields.bolt_charge_seconds {
+        write_f32_41(fnam, FO4_FNAM_BOLT_CHARGE_SECONDS_OFFSET, value);
     }
     if let Some(value) = fields.projectiles {
         write_u8_41(fnam, FO4_FNAM_PROJECTILES_OFFSET, value);
@@ -1332,7 +1640,7 @@ fn resolve_source_curve_damage(
             mapper.interner,
             curve_cache,
         ) {
-            Ok(damage) => damage_base = Some(damage.min(u32::from(u16::MAX)) as u16),
+            Ok(damage) => damage_base = Some(curve_damage_base(damage)),
             Err(error) => warnings.push(format!("primary:{error}")),
         }
     }
@@ -1389,6 +1697,11 @@ fn resolve_source_curve_damage(
     }
 
     (damage_base, damage_types, warnings)
+}
+
+/// The DNAM damage base written for a `CVT0` curve mean; DNAM stores it as a u16.
+pub(crate) fn curve_damage_base(mean: u32) -> u16 {
+    mean.min(u32::from(u16::MAX)) as u16
 }
 
 pub(crate) fn source_damage_type_rows(
@@ -1621,7 +1934,7 @@ fn extract_structured_legacy_dnam_fields(
         find_named_f32(value, "rumble_wavelength", interner).and_then(rumble_seconds_to_period_ms);
 }
 
-fn legacy_animation_type(value: u32) -> u8 {
+pub(crate) fn legacy_animation_type(value: u32) -> u8 {
     match value {
         0 => 0,
         1 => 1,
@@ -1696,6 +2009,7 @@ fn extract_raw_rgw3_fnam_fields(fields: &mut SourceWeapFields, data: &[u8]) {
         read_f32(data, FO76_RGW3_RUMBLE_RIGHT_MOTOR_STRENGTH_OFFSET);
     fields.rumble_duration = read_f32(data, FO76_RGW3_RUMBLE_DURATION_OFFSET);
     fields.animation_reload_seconds = read_f32(data, FO76_RGW3_ANIMATION_RELOAD_SECONDS_OFFSET);
+    fields.bolt_charge_seconds = read_f32(data, FO76_RGW3_BOLT_CHARGE_SECONDS_OFFSET);
     fields.projectiles = data.get(FO76_RGW3_PROJECTILES_OFFSET).copied();
 }
 
@@ -1710,6 +2024,8 @@ fn extract_structured_rgw3_fnam_fields(
         find_named_f32(value, "rumble_right_motor_strength", interner);
     fields.rumble_duration = find_named_f32(value, "rumble_duration", interner);
     fields.animation_reload_seconds = find_named_f32(value, "animation_reload_seconds", interner);
+    // FO76's schema names FO4's bolt-charge seconds `bolt_draw_speed`.
+    fields.bolt_charge_seconds = find_named_f32(value, "bolt_draw_speed", interner);
     fields.projectiles = find_named_u8(value, "projectiles", interner);
 }
 
@@ -1965,11 +2281,136 @@ mod tests {
     use crate::formkey_mapper::{FormKeyMapper, MapperOptions, MapperState};
     use crate::ids::{FormKey, SigCode, SubrecordSig};
     use crate::record::{FieldEntry, FieldValue, Record, RecordFlags};
+    use crate::session::open_session;
     use crate::sym::StringInterner;
     use crate::translator::Game;
+    use esp_authoring_core::plugin_runtime::{
+        plugin_handle_add_master_native, plugin_handle_close_native, plugin_handle_new_native,
+    };
 
     const FLAG_AUTOMATIC: u32 = 32_768;
     const FLAG_HOLD_INPUT_TO_POWER: u32 = 2_048;
+
+    #[test]
+    fn master_weapon_overrides_preserve_fo4_data_in_fo76_conversion() {
+        let interner = StringInterner::new();
+        let output_plugin = interner.intern("SeventySix.esm");
+        let master_plugin = interner.intern("Fallout4.esm");
+        let source_handle = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
+        let target_handle = plugin_handle_new_native("SeventySix.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+        let restricted_flags = FLAG_CRIT_EFFECT_ON_DEATH | FLAG_CANT_DROP | FLAG_NOT_PLAYABLE;
+        let mut source_dnam = vec![0u8; 170];
+        source_dnam[60..64].copy_from_slice(&restricted_flags.to_le_bytes());
+        let weapons = [
+            (0x01DACF, 0x01DACF, FLAG_CRIT_EFFECT_ON_DEATH | 8, true),
+            (0x7AC6D1, 0x0FC9C3, FLAG_CRIT_EFFECT_ON_DEATH, false),
+            (0x800, 0x800, 0, false),
+        ];
+        let source_schema = {
+            let mut source_session = open_session(source_handle, None).unwrap();
+            let schema = source_session.schema().unwrap();
+            for (local, _, _, _) in weapons {
+                let mut record = make_weap(&interner);
+                record.form_key = FormKey {
+                    local,
+                    plugin: output_plugin,
+                };
+                push_raw_dnam(&mut record, &source_dnam);
+                source_session
+                    .add_record(record, &schema, &interner)
+                    .unwrap();
+            }
+            schema
+        };
+        let mut session = open_session(target_handle, Some(source_handle)).unwrap();
+        let target_schema = session.schema().unwrap();
+        let mut state = MapperState::new(
+            std::iter::empty(),
+            MapperOptions {
+                output_plugin_name: "SeventySix.esm".into(),
+                ..Default::default()
+            },
+        );
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        let mut overrides = Vec::new();
+
+        for (source_local, target_local, vanilla_flags, has_fnam) in weapons {
+            let source_fk = FormKey {
+                local: source_local,
+                plugin: output_plugin,
+            };
+            let target_fk = FormKey {
+                local: target_local,
+                plugin: if target_local == 0x800 {
+                    output_plugin
+                } else {
+                    master_plugin
+                },
+            };
+            mapper.add_mapping(source_fk, target_fk);
+
+            let mut target_record = make_weap(&interner);
+            target_record.form_key = target_fk;
+            if target_fk.plugin == master_plugin {
+                let mut vanilla_dnam = fo4_default_dnam();
+                write_u32(&mut vanilla_dnam, 48, vanilla_flags);
+                push_raw_dnam(&mut target_record, &vanilla_dnam);
+                if has_fnam {
+                    push_raw_field(&mut target_record, "FNAM", &default_fnam());
+                }
+                push_raw_field(&mut target_record, "OBTE", &1u32.to_le_bytes());
+                push_raw_field(&mut target_record, "OBTS", &[0; 18]);
+                push_raw_field(&mut target_record, "STOP", &[]);
+            } else {
+                push_raw_dnam(&mut target_record, &source_dnam);
+            }
+            session
+                .add_record(target_record, &target_schema, &interner)
+                .unwrap();
+            if target_fk.plugin == master_plugin {
+                let before = session
+                    .record_decoded(&target_fk, &target_schema, &interner)
+                    .unwrap();
+                overrides.push((target_fk, before.fields));
+            }
+        }
+
+        let config = FixupConfig {
+            target_schema: Some(target_schema.clone()),
+            source_schema: Some(source_schema),
+            is_whole_plugin: true,
+            ..Default::default()
+        };
+        let report = SynthesizeWeapDataBlocksFixup
+            .run_with_session(&mut session, &mut mapper, &config)
+            .unwrap();
+        assert_eq!(report.records_changed, 1);
+        for (fk, before) in overrides {
+            let after = session
+                .record_decoded(&fk, &target_schema, &interner)
+                .unwrap();
+            assert_eq!(after.fields, before, "master override {:06X}", fk.local);
+        }
+        let converted = session
+            .record_decoded(
+                &FormKey {
+                    local: 0x800,
+                    plugin: output_plugin,
+                },
+                &target_schema,
+                &interner,
+            )
+            .unwrap();
+        assert_eq!(
+            read_u32(&field_bytes(&converted, "DNAM"), 48),
+            Some(restricted_flags)
+        );
+        assert!(has_sig(&converted, "FNAM"));
+        drop(session);
+        assert!(plugin_handle_close_native(target_handle));
+        assert!(plugin_handle_close_native(source_handle));
+    }
 
     fn make_weap(interner: &StringInterner) -> Record {
         let sig = SigCode::from_str("WEAP").unwrap();
@@ -2026,6 +2467,249 @@ mod tests {
                 ..MapperOptions::default()
             },
         )
+    }
+
+    #[test]
+    fn legacy_critical_flags_are_not_decoded_as_a_target_effect() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("FalloutNV.esm");
+        let fallout4 = interner.intern("Fallout4.esm");
+        let mut state = legacy_mapper_state();
+        state.source_to_target.insert(
+            FormKey {
+                local: 0x900,
+                plugin: source_plugin,
+            },
+            FormKey {
+                local: 0x123456,
+                plugin: fallout4,
+            },
+        );
+        let mapper = FormKeyMapper::from_state(&mut state, &interner);
+        for (source_effect, expected_effect) in [(0, 0), (0x900u32, 0x123456)] {
+            let mut source = make_weap(&interner);
+            let mut critical = [0; 16];
+            critical[0..2].copy_from_slice(&16u16.to_le_bytes());
+            critical[4..8].copy_from_slice(&1.5f32.to_le_bytes());
+            critical[8] = 1;
+            critical[12..16].copy_from_slice(&source_effect.to_le_bytes());
+            push_raw_field(&mut source, "CRDT", &critical);
+            let mut target = make_weap(&interner);
+            push_raw_field(&mut target, "CRDT", &critical[..12]);
+            let mut fields = SourceWeapFields::default();
+            let mut warnings = Vec::new();
+            assert!(apply_legacy_critical_data(
+                &mut target,
+                &source,
+                &mut fields,
+                &[],
+                "FalloutNV.esm",
+                &mapper,
+                &["Fallout4.esm".into()],
+                &mut warnings,
+            ));
+            let bytes = field_bytes(&target, "CRDT");
+            assert_eq!(bytes.len(), 12);
+            assert_eq!(read_f32(&bytes, 0), Some(2.0));
+            assert_eq!(read_f32(&bytes, 4), Some(1.0));
+            assert_eq!(read_u32(&bytes, 8), Some(expected_effect));
+            assert_eq!(fields.flags, Some(FLAG_CRIT_EFFECT_ON_DEATH));
+            assert_eq!(
+                warnings,
+                [
+                    "legacy_absolute_critical_damage_uses_fo4_baseline",
+                    "legacy_random_critical_chance_not_ported",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_weapon_ammo_list_resolves_first_mapped_ammo_through_nested_cycles() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("FalloutNV.esm");
+        let target_plugin = interner.intern("Converted.esp");
+        let source_key = |local| FormKey {
+            local,
+            plugin: source_plugin,
+        };
+        let target_key = |local| FormKey {
+            local,
+            plugin: target_plugin,
+        };
+        let source_handle = plugin_handle_new_native("FalloutNV.esm", Some("fnv")).unwrap();
+        let target_handle = plugin_handle_new_native("Converted.esp", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+        let source_schema = {
+            let mut session = open_session(source_handle, None).unwrap();
+            let schema = session.schema().unwrap();
+            for (local, sig, members) in [
+                (0x900, "FLST", vec![0x901, 0x904]),
+                (0x901, "FLST", vec![0x900, 0x902, 0x903]),
+                (0x902, "AMMO", vec![]),
+                (0x903, "AMMO", vec![]),
+                (0x904, "AMMO", vec![]),
+            ] {
+                let mut record = Record::new(SigCode::from_str(sig).unwrap(), source_key(local));
+                for member in members {
+                    record.fields.push(FieldEntry {
+                        sig: SubrecordSig(*b"LNAM"),
+                        value: FieldValue::FormKey(source_key(member)),
+                    });
+                }
+                session.add_record(record, &schema, &interner).unwrap();
+            }
+            let mut first_person = Record::new(SigCode(*b"STAT"), source_key(0x905));
+            first_person.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"MODL"),
+                value: FieldValue::String(
+                    interner.intern("weapons\\1handpistol\\1stperson9mm.nif"),
+                ),
+            });
+            session
+                .add_record(first_person, &schema, &interner)
+                .unwrap();
+            let mut weapon = make_weap(&interner);
+            weapon.form_key = source_key(0x800);
+            let mut dnam = vec![0; LEGACY_DNAM_MIN_LEN];
+            dnam[0..4].copy_from_slice(&3u32.to_le_bytes());
+            push_raw_dnam(&mut weapon, &dnam);
+            push_raw_field(&mut weapon, "NAM0", &0x900u32.to_le_bytes());
+            push_raw_field(&mut weapon, "WNAM", &0x905u32.to_le_bytes());
+            session.add_record(weapon, &schema, &interner).unwrap();
+            schema
+        };
+        let mut state = legacy_mapper_state();
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        for local in [0x800, 0x900, 0x901, 0x903, 0x904] {
+            mapper.add_mapping(source_key(local), target_key(local));
+        }
+        let mut session = open_session(target_handle, Some(source_handle)).unwrap();
+        let target_schema = session.schema().unwrap();
+        let mut weapon = make_weap(&interner);
+        weapon.form_key = target_key(0x800);
+        push_raw_dnam(&mut weapon, &fo4_default_dnam());
+        weapon.fields.push(FieldEntry {
+            sig: SubrecordSig(*b"ETYP"),
+            value: FieldValue::FormKey(FormKey {
+                local: 0x013F45,
+                plugin: interner.intern("Fallout4.esm"),
+            }),
+        });
+        session
+            .add_record(weapon, &target_schema, &interner)
+            .unwrap();
+        let report = SynthesizeWeapDataBlocksFixup
+            .run_with_session(
+                &mut session,
+                &mut mapper,
+                &FixupConfig {
+                    source_schema: Some(source_schema),
+                    target_schema: Some(target_schema.clone()),
+                    is_whole_plugin: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(report.records_changed, 1);
+        let converted = session
+            .record_decoded(&target_key(0x800), &target_schema, &interner)
+            .unwrap();
+        assert_eq!(
+            read_u32(&field_bytes(&converted, "DNAM"), 0),
+            Some(0x01000903)
+        );
+        assert!(converted.fields.iter().any(|entry| entry.sig.0 == *b"MOD4"
+            && entry.value
+                == FieldValue::String(interner.intern("weapons\\1handpistol\\1stperson9mm.nif"))));
+        assert!(converted.fields.iter().any(|entry| entry.sig.0 == *b"ETYP"
+            && entry.value
+                == FieldValue::FormKey(FormKey {
+                    local: 0x04334D,
+                    plugin: interner.intern("Fallout4.esm")
+                })));
+        let keywords = converted
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"KWDA")
+            .unwrap();
+        assert!(matches!(&keywords.value, FieldValue::List(values)
+        if values.len() == 6 && values.contains(&FieldValue::FormKey(FormKey {
+            local: 0x04C7EA, plugin: interner.intern("Fallout4.esm"),
+        }))));
+        drop(session);
+        assert!(plugin_handle_close_native(target_handle));
+        assert!(plugin_handle_close_native(source_handle));
+    }
+
+    #[test]
+    fn skyrim_first_person_stat_model_is_resolved_without_replacing_target_data() {
+        let interner = StringInterner::new();
+        let source_plugin = interner.intern("Skyrim.esm");
+        let target_plugin = interner.intern("Converted.esp");
+        let source_key = |local| FormKey {
+            local,
+            plugin: source_plugin,
+        };
+        let target_key = |local| FormKey {
+            local,
+            plugin: target_plugin,
+        };
+        let source_handle = plugin_handle_new_native("Skyrim.esm", Some("skyrimse")).unwrap();
+        let target_handle = plugin_handle_new_native("Converted.esp", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+        let first_person_model = interner.intern("Weapons\\Steel\\1stPersonSteelBow.nif");
+        let source_schema = {
+            let mut source = open_session(source_handle, None).unwrap();
+            let schema = source.schema().unwrap();
+            let mut model = Record::new(SigCode(*b"STAT"), source_key(0x023B5A));
+            model.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"MODL"),
+                value: FieldValue::String(first_person_model),
+            });
+            source.add_record(model, &schema, &interner).unwrap();
+            let mut weapon = Record::new(SigCode(*b"WEAP"), source_key(0x013985));
+            weapon.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"WNAM"),
+                value: FieldValue::FormKey(source_key(0x023B5A)),
+            });
+            source.add_record(weapon, &schema, &interner).unwrap();
+            schema
+        };
+        let mut state = legacy_mapper_state();
+        let mut mapper = FormKeyMapper::from_state(&mut state, &interner);
+        mapper.add_mapping(source_key(0x013985), target_key(0x013985));
+        let mut session = open_session(target_handle, Some(source_handle)).unwrap();
+        let target_schema = session.schema().unwrap();
+        let mut weapon = Record::new(SigCode(*b"WEAP"), target_key(0x013985));
+        let mut original_dnam = fo4_default_dnam();
+        original_dnam[54] = 7;
+        push_raw_dnam(&mut weapon, &original_dnam);
+        session
+            .add_record(weapon, &target_schema, &interner)
+            .unwrap();
+        let report = SynthesizeWeapDataBlocksFixup
+            .run_with_session(
+                &mut session,
+                &mut mapper,
+                &FixupConfig {
+                    source_schema: Some(source_schema),
+                    target_schema: Some(target_schema.clone()),
+                    is_whole_plugin: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(report.records_changed, 1);
+        let converted = session
+            .record_decoded(&target_key(0x013985), &target_schema, &interner)
+            .unwrap();
+        assert!(converted.fields.iter().any(|entry| entry.sig.0 == *b"MOD4"
+            && entry.value == FieldValue::String(first_person_model)));
+        assert_eq!(field_bytes(&converted, "DNAM"), original_dnam);
+        drop(session);
+        assert!(plugin_handle_close_native(target_handle));
+        assert!(plugin_handle_close_native(source_handle));
     }
 
     fn legacy_golden_fields(dnam_len: usize) -> SourceWeapFields {
@@ -2816,6 +3500,7 @@ mod tests {
                 rumble_right_motor_strength: Some(0.9),
                 rumble_duration: Some(0.4),
                 animation_reload_seconds: Some(4.1),
+                bolt_charge_seconds: Some(0.9333),
                 projectiles: Some(2),
                 ..SourceWeapFields::default()
             }),
@@ -2823,6 +3508,7 @@ mod tests {
         assert!(changed);
 
         let fnam = field_bytes(&record, "FNAM");
+        assert_eq!(read_f32(&fnam, 20), Some(0.9333));
         let rumble_left = f32::from_le_bytes(fnam[4..8].try_into().unwrap());
         assert!(
             (rumble_left - 0.8).abs() < 1e-6,
@@ -3017,6 +3703,10 @@ mod tests {
                 interner.intern("animation_reload_seconds"),
                 FieldValue::Float(4.1),
             ),
+            (
+                interner.intern("bolt_draw_speed"),
+                FieldValue::Float(0.9333),
+            ),
             (interner.intern("projectiles"), FieldValue::Uint(2)),
         ]);
 
@@ -3026,7 +3716,18 @@ mod tests {
         assert_eq!(fields.rumble_right_motor_strength, Some(0.9));
         assert_eq!(fields.rumble_duration, Some(0.4));
         assert_eq!(fields.animation_reload_seconds, Some(4.1));
+        assert_eq!(fields.bolt_charge_seconds, Some(0.9333));
         assert_eq!(fields.projectiles, Some(2));
+
+        // SingleActionRevolver's RGW3: the bolt time sits between reload and sighted seconds.
+        let mut fields = SourceWeapFields::default();
+        let mut raw = vec![0u8; 53];
+        for (offset, value) in [(20, 3.0f32), (24, 0.9333), (28, 0.12)] {
+            raw[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        extract_raw_rgw3_fnam_fields(&mut fields, &raw);
+        assert_eq!(fields.animation_reload_seconds, Some(3.0));
+        assert_eq!(fields.bolt_charge_seconds, Some(0.9333));
 
         let mut fields = SourceWeapFields::default();
         let mut raw = vec![0u8; 170];

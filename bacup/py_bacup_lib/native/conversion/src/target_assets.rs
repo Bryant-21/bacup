@@ -804,8 +804,7 @@ fn load_dependencies(
              JOIN assets sa ON sa.id = dep.source_asset_id
              JOIN directories sd ON sd.id = sa.directory_id
              JOIN assets ta ON ta.id = dep.target_asset_id
-             JOIN directories td ON td.id = ta.directory_id
-             ORDER BY dep.source_asset_id, dep.target_asset_id",
+             JOIN directories td ON td.id = ta.directory_id",
         )
         .map_err(|error| format!("prepare target dependency query: {error}"))?;
     let rows = statement
@@ -1702,6 +1701,12 @@ impl PyTargetAssetStore {
         self.inner.has_asset(path)
     }
 
+    fn has_asset_for_type(&self, path: &str, asset_type: &str) -> bool {
+        crate::target_preflight::asset_candidates(path, asset_type)
+            .iter()
+            .any(|key| self.inner.has_asset(key))
+    }
+
     #[pyo3(signature = (prefix="", suffix=""))]
     fn list_assets(&self, prefix: &str, suffix: &str) -> Vec<String> {
         self.inner.list_assets(prefix, suffix)
@@ -1847,6 +1852,34 @@ pub fn build_catalog_py(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dependency_rows_keep_sorted_unique_targets_and_active_catalog_sources() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE directories(id INTEGER PRIMARY KEY, path_key TEXT);
+             CREATE TABLE assets(id INTEGER PRIMARY KEY, directory_id INTEGER, name_key TEXT);
+             CREATE TABLE asset_dependencies(source_asset_id INTEGER, target_asset_id INTEGER);
+             INSERT INTO directories VALUES (1, 'meshes'), (2, 'textures'), (3, '');
+             INSERT INTO assets VALUES (1, 1, 'a.nif'), (2, 1, 'changed.nif'),
+                 (3, 2, 'z.dds'), (4, 2, 'a.dds'), (5, 3, 'root.dds'), (6, 1, 'missing.nif');
+             INSERT INTO asset_dependencies VALUES (1, 3), (1, 4), (1, 3),
+                 (2, 4), (6, 4), (1, 5);",
+        ).unwrap();
+        let asset = |valid| AssetEntry {
+            canonical_path: String::new(),
+            archive_path: PathBuf::new(),
+            priority: 0,
+            catalog_dependencies_valid: valid,
+        };
+        let assets = HashMap::from([
+            ("meshes/a.nif".into(), asset(true)),
+            ("meshes/changed.nif".into(), asset(false)),
+        ]);
+        assert_eq!(load_dependencies(&db, &assets).unwrap(), HashMap::from([
+            ("meshes/a.nif".into(), vec!["root.dds".into(), "textures/a.dds".into(), "textures/z.dds".into()]),
+        ]));
+    }
 
     fn test_store(root: &Path, overlay_files: HashMap<String, PathBuf>) -> TargetAssetStore {
         TargetAssetStore {

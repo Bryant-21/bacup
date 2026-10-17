@@ -68,6 +68,7 @@ const WEAP_ANIM_TYPE_MELEE: u8 = 1;
 const WEAP_ANIM_TYPE_GUN: u8 = 9;
 
 const WEAP_FLAG_NPCS_USE_AMMO: u32 = 0x0000_0002;
+const WEAP_FLAG_AUTOMATIC: u32 = 0x0000_8000;
 const WEAP_FLAG_EMBEDDED_WEAPON: u32 = 0x0008_0000;
 
 /// Threshold above which `AttackDelay` is treated as FO76-noise on melee.
@@ -414,7 +415,15 @@ pub fn apply_weap(
     }
 
     if let Some(flags) = read_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET) {
-        let repaired = flags & !WEAP_FLAG_NPCS_USE_AMMO;
+        let mut repaired = flags & !WEAP_FLAG_NPCS_USE_AMMO;
+        if matches!(
+            eid_lower.as_str(),
+            "crrd01_enc01_guardianbot_leftshoulderlauncher"
+                | "crrd01_enc01_guardianbot_rightshoulderlauncher"
+        ) {
+            // FO4 loops the twenty-shot automatic clip; its shoulder launchers use the finite single-fire clip.
+            repaired &= !WEAP_FLAG_AUTOMATIC;
+        }
         if repaired != flags && write_dnam_u32(record, WEAP_DNAM_FLAGS_OFFSET, repaired) {
             changed = true;
         }
@@ -1391,6 +1400,34 @@ mod tests {
         };
         assert_eq!(keywords.len(), 2);
         assert!(!apply_weap(&mut record, 1, &interner));
+    }
+
+    #[test]
+    fn guardian_launchers_use_finite_attacks_without_changing_other_weapon_data() {
+        for eid in [
+            "crRD01_Enc01_GuardianBot_LeftShoulderLauncher",
+            "crRD01_Enc01_GuardianBot_RightShoulderLauncher",
+            "crRD01_Enc01_GuardianBot_LeftAutoLaser",
+            "crRD01_Enc01_GuardianBot_RightAutoLaser",
+            "crSentryBot_LeftShoulderLauncher",
+        ] {
+            let interner = StringInterner::new();
+            let mut record = make_record("WEAP", 0x774596, "Output.esp", Some(eid), &interner);
+            let mut dnam = make_dnam_bytes(WEAP_ANIM_TYPE_GUN, 3.0, 10, 100, 20.0);
+            let flags: u32 = 0x8000 | WEAP_FLAG_EMBEDDED_WEAPON | 0x100;
+            dnam[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
+                .copy_from_slice(&flags.to_le_bytes());
+            let mut expected = dnam.clone();
+            if eid.starts_with("crRD01_") && eid.ends_with("ShoulderLauncher") {
+                expected[WEAP_DNAM_FLAGS_OFFSET..WEAP_DNAM_FLAGS_OFFSET + 4]
+                    .copy_from_slice(&(flags & !0x8000).to_le_bytes());
+            }
+            push_bytes(&mut record, "DNAM", dnam);
+            apply_weap(&mut record, 1, &interner);
+            let actual = record.fields.iter().find(|f| f.sig.as_str() == "DNAM").unwrap();
+            assert_eq!(actual.value, FieldValue::Bytes(expected.into()), "{eid}");
+            assert!(!apply_weap(&mut record, 1, &interner), "{eid}");
+        }
     }
 
     #[test]

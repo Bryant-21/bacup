@@ -19,13 +19,43 @@ const SYNTHETIC_RECIPE_PLUGIN: &str = "B21_FO76WorkshopSynthetic";
 const RECIPE_PRIORITY_STRIDE: u32 = 192;
 
 const FO4_WORKSHOP_WORKBENCH_EXTERIOR: u32 = 0x05A0C8;
-const FO4_WORKSHOP_WORKBENCH_FURNITURE: u32 = 0x05B5E3;
+pub(crate) const FO4_WORKSHOP_WORKBENCH_FURNITURE: u32 = 0x05B5E3;
 const FO4_WORKSHOP_WORKBENCH_DECORATIONS: u32 = 0x08280B;
 const FO4_WORKSHOP_WORKBENCH_POWER: u32 = 0x05A0CA;
 const FO4_WORKSHOP_WORKBENCH_CRAFTING: u32 = 0x12E2C8;
 const FO4_WORKSHOP_WORKBENCH_SETTLEMENT: u32 = 0x246F85;
+pub(crate) const FO4_WORKSHOP_WORKBENCHES: [u32; 6] = [
+    FO4_WORKSHOP_WORKBENCH_EXTERIOR,
+    FO4_WORKSHOP_WORKBENCH_FURNITURE,
+    FO4_WORKSHOP_WORKBENCH_DECORATIONS,
+    FO4_WORKSHOP_WORKBENCH_POWER,
+    FO4_WORKSHOP_WORKBENCH_CRAFTING,
+    FO4_WORKSHOP_WORKBENCH_SETTLEMENT,
+];
 const FO4_WORKSHOP_CRAFTING_CHEMS_RECIPE: u32 = 0x134438;
 const FO4_WORKSHOP_CRAFTING_POWER_ARMOR_RECIPE: u32 = 0x1649A7;
+
+/// FO4 cannot build a PKIN, so these recipes build the pack-in's one functional
+/// member instead: `(recipe, pack-in, member base, member signature)`. The Ammo
+/// Converter pack-in (storage cell 5C8AE1) holds the trade terminal, a spinning
+/// display activator and two markers; only the terminal carries the trade menus.
+const FUNCTIONAL_PACKIN_MEMBERS: &[(u32, u32, u32, &[u8; 4])] =
+    &[(0x5C8AE2, 0x5C8B33, 0x5C8B3B, b"TERM")];
+
+fn functional_packin_member(recipe_id: u32, created_object: FormKey) -> Option<(FormKey, SigCode)> {
+    FUNCTIONAL_PACKIN_MEMBERS
+        .iter()
+        .find(|(recipe, packin, _, _)| *recipe == recipe_id && *packin == created_object.local)
+        .map(|(_, _, member, sig)| {
+            (
+                FormKey {
+                    local: *member,
+                    plugin: created_object.plugin,
+                },
+                SigCode(**sig),
+            )
+        })
+}
 
 pub struct ApplyFo76WorkshopCatalogFixup;
 
@@ -190,6 +220,18 @@ impl Fixup for ApplyFo76WorkshopCatalogFixup {
                         .filter(|fk| fk.local != 0)
                     else {
                         continue;
+                    };
+                    let created_object = match functional_packin_member(recipe_id, created_object)
+                    {
+                        Some((member, sig))
+                            if created_object.plugin == output_plugin
+                                && session
+                                    .record_decoded(&member, target_schema, mapper.interner)
+                                    .is_ok_and(|record| record.sig == sig) =>
+                        {
+                            member
+                        }
+                        _ => created_object,
                     };
                     let mut visiting = FxHashSet::default();
                     let resolution = resolve_created_object(
@@ -716,7 +758,7 @@ fn set_unsigned_value(value: &mut FieldValue, replacement: u32) -> bool {
     }
 }
 
-fn first_form_key(value: &FieldValue) -> Option<FormKey> {
+pub(crate) fn first_form_key(value: &FieldValue) -> Option<FormKey> {
     match value {
         FieldValue::FormKey(fk) => Some(*fk),
         FieldValue::List(values) => values.iter().find_map(first_form_key),
@@ -1067,5 +1109,29 @@ mod tests {
                 plugin: output,
             },
         );
+    }
+
+    #[test]
+    fn ammo_converter_recipe_builds_its_trade_terminal_instead_of_the_packin() {
+        let interner = StringInterner::new();
+        let packin = fk(0x5C8B33, "SeventySix.esm", &interner);
+
+        let (member, sig) = functional_packin_member(0x5C8AE2, packin).unwrap();
+        assert_eq!(member, fk(0x5C8B3B, "SeventySix.esm", &interner));
+        assert_eq!(sig, SigCode::from_str("TERM").unwrap());
+
+        assert!(functional_packin_member(0x5C8AE3, packin).is_none());
+        assert!(
+            functional_packin_member(0x5C8AE2, fk(0x5C8B34, "SeventySix.esm", &interner))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fo4_recipes_may_create_terminals() {
+        let compiled = compiled_schema_for_game("fo4").unwrap();
+        let targets = compiled.allowed_targets("COBJ", "CNAM").unwrap();
+        assert!(targets.allows_target("TERM"));
+        assert!(!targets.allows_target("PKIN"));
     }
 }

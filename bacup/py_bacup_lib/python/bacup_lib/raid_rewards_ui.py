@@ -31,7 +31,10 @@ def menu_translations(interface: Path) -> dict[str, str]:
 
 
 def convert_raid_rewards_ui(source_root: Path, output_data: Path) -> dict:
-    from creation_lib.swf.native_runtime import replace_as3_classes
+    from creation_lib.swf import native_runtime as native
+    from bacup_lib.inspect_ui import rebuild
+    from bacup_lib.legendary_perks_ui import swf_tags
+    from bacup_lib.workshop_ui import uncompressed
 
     interface = Path(source_root) / "interface"
     translations = menu_translations(interface)
@@ -54,8 +57,18 @@ def convert_raid_rewards_ui(source_root: Path, output_data: Path) -> dict:
     bridge = BRIDGE.read_text(encoding="utf-8").replace(
         "__RAID_TRANSLATIONS__", json.dumps(translations, ensure_ascii=False, separators=(",", ":")),
     )
-    converted = verify_script_only(source, replace_as3_classes(
-        source, {"UniversalRewardsMenu": bridge}, list(closure.values())))
+    helper = native.compile_as3_do_abc([(BRIDGE.parent.parent / "shared/B21RewardStars.as").read_text(encoding="utf-8")])
+    tags = list(swf_tags(uncompressed(source)))
+    tags.insert(next(i for i, (code, _) in enumerate(tags) if code == 82), (82, helper))
+    converted = native.replace_as3_classes(
+        rebuild(uncompressed(source), tags), {"UniversalRewardsMenu": bridge}, list(closure.values()))
+    converted = native.augment_as3_classes(converted, {
+        "ItemRewardListEntry": BRIDGE.with_name("ItemRewardListEntry.as").read_text(encoding="utf-8")})
+    converted = native.patch_as3_method(converted, "ItemRewardListEntry", "SetEntryText",
+        [["getlocal", 0], ["getproperty", "RewardName_mc"], ["getproperty", "Name_tf"],
+         ["getlocal", 1], ["getproperty", "name"], ["setproperty", "text"]],
+        [["getlocal", 0], ["getlocal", 1], ["getproperty", "name"], ["callpropvoid", "B21SetRewardName", 1]])
+    verify_script_only(source, converted)
     output = Path(output_data) / OUTPUT
     output.mkdir(parents=True, exist_ok=True)
     manifest = {

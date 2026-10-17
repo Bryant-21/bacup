@@ -6,7 +6,7 @@
 ;   neither                                 -> shielded, only the HeatShield part (PerceptionCondition) drains
 ; PerceptionCondition reaching 0 (OnCripple) opens the vulnerable window. A stagger component
 ; (alias 26 circuit) counts as broken once its ref is disabled; the shield restore re-enables it.
-; Extra timer ids: 13 combat tick, 14 outro.
+; Extra timer ids: 13 combat tick, 14 outro, 15 deferred startup.
 
 Event OnQuestShutdown()
 	CleanupSpawned()
@@ -14,6 +14,11 @@ EndEvent
 
 Function StartEncounter()
 	CleanupSpawned()
+	Phase = -1
+	StartTimer(0.1, 15)
+EndFunction
+
+Function BeginEncounter()
 	BossActor = Alias_Actor_Boss.GetActorReference()
 	GunBase = Alias_Static_Gun_Base.GetReference()
 	OuterLights = Alias_EnableMarker_OuterLights.GetReference()
@@ -24,43 +29,67 @@ Function StartEncounter()
 	Phase = 1
 	LocalShieldNodeSets = CopyShieldNodes()
 
+	If BossActor != None
+		BossActor.AddKeyword(RD01_Enc01_IgnoreCombat_Keyword)
+		BossActor.SetValue(AmbushRelease, 0.0)
+		BossActor.Enable()
+		If !BossActor.WaitFor3DLoad()
+			Return
+		EndIf
+		If Phase != 1 || !IsRunning() || IsStageDone(9000) || BossActor.IsDead() || BossActor.IsDisabled()
+			Return
+		EndIf
+		BossActor.EvaluatePackage()
+		RegisterForRemoteEvent(BossActor, "OnCripple")
+	EndIf
 	IntroTrack.Add()
 	EncounterStartScene.Start()
 	If OuterLights != None
 		OuterLights.Enable()
 		LightTurnOnSound.Play(OuterLights)
 	EndIf
-	Raids:RD01:Enc01:PlatformGunAnimationsScript gunAnimations = GunBase as Raids:RD01:Enc01:PlatformGunAnimationsScript
-	If gunAnimations != None
-		gunAnimations.AnimateOpenUpAmbush()
-	EndIf
-	If BossActor != None
-		BossActor.AddKeyword(RD01_Enc01_IgnoreCombat_Keyword)
-		BossActor.SetValue(AmbushRelease, 0.0)
-		BossActor.Enable()
-		BossActor.EvaluatePackage()
-		RegisterForRemoteEvent(BossActor, "OnCripple")
-	EndIf
-
 	Float ambushTime = AmbushFurnTime
 	If ambushTime <= 0.0
 		ambushTime = 16.0
 	EndIf
 	StartTimer(ambushTime, IntroAmbushFurnTimerID)
+	Debug.Trace("[B21 Raids] Guardian intro armed seconds=" + ambushTime)
+	; AnimateOpenUpAmbush waits for Done in OnBeginState; the intro timer must run alongside it.
+	Raids:RD01:Enc01:PlatformGunAnimationsScript gunAnimations = GunBase as Raids:RD01:Enc01:PlatformGunAnimationsScript
+	If gunAnimations != None
+		gunAnimations.AnimateOpenUpAmbush()
+	EndIf
 EndFunction
 
 Function ReleaseBoss()
+	If Phase <= 0 || !IsRunning() || IsStageDone(9000) || BossActor == None || BossActor.IsDead() || BossActor.IsDisabled()
+		Return
+	EndIf
+	If !BossActor.WaitFor3DLoad()
+		Return
+	EndIf
+	If Phase <= 0 || !IsRunning() || IsStageDone(9000) || BossActor.IsDead() || BossActor.IsDisabled() || BossActor.GetValue(AmbushRelease) > 0.0
+		Return
+	EndIf
 	Actor player = Game.GetPlayer()
 	IntroTrack.Remove()
+	; The rise plays once the base has opened; starting it with the base hides it inside the closed pedestal.
+	; Furniture is the active actor graph, not a child manager addressed by PlaySubGraphAnimation.
+	Action exitAction = Game.GetFormFromFile(0x02248D, "Fallout4.esm") as Action
+	Bool exitStarted = BossActor.PlayIdleAction(exitAction)
+	Debug.Trace("[B21 Raids] Guardian exit accepted=" + exitStarted + " sleep=" + BossActor.GetSleepState() + " z=" + BossActor.GetPositionZ())
+	BossActor.SetValue(AmbushRelease, 1.0)
+	BossActor.EnableAI(True)
+	BossActor.RemoveKeyword(RD01_Enc01_IgnoreCombat_Keyword)
+	BossActor.EvaluatePackage()
+	BossActor.StartCombat(player)
+	Debug.Trace("[B21 Raids] Guardian released; AI=" + BossActor.IsAIEnabled() + " sleep=" + BossActor.GetSleepState() + " z=" + BossActor.GetPositionZ())
 	EnterShielded()
+	If Phase <= 0 || !IsRunning() || IsStageDone(9000) || BossActor.IsDead() || BossActor.IsDisabled()
+		Return
+	EndIf
 	(Alias_Triggers_PlatformSurface as Raids:RD01:Enc01:DamagingFloorTriggerScript).SetTriggersEnabled(True)
 	SetFloorsFx("GoToFog")
-	If BossActor != None
-		BossActor.SetValue(AmbushRelease, 1.0)
-		BossActor.RemoveKeyword(RD01_Enc01_IgnoreCombat_Keyword)
-		BossActor.EvaluatePackage()
-		BossActor.StartCombat(player)
-	EndIf
 	StartTimer(GlobalOr(EnrageTime, 7200.0), EnrageTimerID)
 	StartTimer(GlobalOr(DamagingFloorTimeUntilNextTelegraphDuration, 10.5), DamagingFloorTimeUntilNextTelegraphID)
 	StartTimer(1.0, 13)
@@ -297,6 +326,7 @@ EndFunction
 Function StartFloorTelegraph()
 	DamagingFloorsChosen = ChooseFloors()
 	NumFloorsChosen = DamagingFloorsChosen.Length
+	Debug.Trace("[B21 Raids] Guardian floor telegraph count=" + NumFloorsChosen)
 	Int index = 0
 	While index < NumFloorsChosen
 		ObjectReference fx = DamagingFloorsChosen[index].GetLinkedRef(LinkCustom01)
@@ -313,6 +343,7 @@ Function StartFloorTelegraph()
 EndFunction
 
 Function StartFloorDamage()
+	Debug.Trace("[B21 Raids] Guardian floor damage count=" + NumFloorsChosen)
 	Int index = 0
 	While index < NumFloorsChosen
 		ObjectReference floorTrigger = DamagingFloorsChosen[index]
@@ -526,6 +557,7 @@ Function SetKlaxon(ObjectReference akKlaxon, Int aiState)
 EndFunction
 
 Function CancelEncounterTimers()
+	CancelTimer(15)
 	CancelTimer(DamageStateTimerID)
 	CancelTimer(GetToShieldTimerID)
 	CancelTimer(DamagingFloorTelegraphTimerID)
@@ -549,6 +581,16 @@ Function StopMusic()
 EndFunction
 
 Event OnTimer(Int aiTimerID)
+	If aiTimerID == 15
+		If Phase == -1
+			If IsStarting()
+				StartTimer(0.1, 15)
+			ElseIf IsRunning() && !IsStageDone(9000)
+				BeginEncounter()
+			EndIf
+		EndIf
+		Return
+	EndIf
 	If aiTimerID == 14
 		SuccessTrack.Remove()
 		Return

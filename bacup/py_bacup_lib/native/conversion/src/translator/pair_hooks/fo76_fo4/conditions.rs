@@ -56,6 +56,13 @@ const WAYWARD_PLAYER_GENDER_INFO_FORM_IDS: [u32; 4] = [0x56_A169, 0x56_A16A, 0x5
 pub(super) const FO76_GET_IS_PLAYER_CONDITION_FUNCTION_ID: u16 = 828;
 pub(super) const FO4_GET_IS_ID_CONDITION_FUNCTION_ID: u16 = 72;
 pub(super) const FO4_PLAYER_ACTOR_FORM_ID: u32 = 0x0000_0007;
+/// FO76 currency-count predicate (852, > FO4's 817 max): Parameter #1 is a CNCY.
+/// FO76 caps are the hardcoded CNCY 00000F, which is FO4's Caps001 MISC, so a
+/// caps count is FO4 `GetItemCount` (47) on the same id. Other currencies stay
+/// untranslatable: their converted MISC is not what the player holds.
+pub(super) const FO76_GET_CURRENCY_COUNT_CONDITION_FUNCTION_ID: u16 = 852;
+pub(super) const FO4_GET_ITEM_COUNT_CONDITION_FUNCTION_ID: u16 = 47;
+pub(super) const CAPS_FORM_ID: u32 = 0x0000_000F;
 /// Every FO76-only condition-function id that `normalize_fo76_raw_condition_functions`
 /// rewrites to an FO4 equivalent. Consumed by the
 /// `drop_untranslatable_loadscreen_records` fixup so it does NOT treat a
@@ -111,6 +118,12 @@ pub(super) const CTDA_COMPARISON_GLOBAL_FLAG: u8 = 0x04;
 /// known condition-function id (817), or it is a FO76-only id that falls under
 /// that max but is still a blank slot in FO4. Keeping such a condition makes the
 /// FO4 CK index a non-existent function-table entry and crash while loading.
+/// The translator's FO76→FO4 condition-function rewrites, for raw source rows that
+/// a fixup reads straight from the source plugin.
+pub(crate) fn normalize_fo76_raw_condition_rows(record: &mut Record) {
+    Fo76Fo4Hook::normalize_fo76_raw_condition_functions(record);
+}
+
 pub(crate) fn is_fo4_incompatible_condition_function_id(function_id: u16) -> bool {
     function_id > FO4_MAX_KNOWN_CONDITION_FUNCTION_ID
         || FO76_ONLY_CONDITION_FUNCTION_IDS_UNDER_FO4_MAX.contains(&function_id)
@@ -543,6 +556,36 @@ impl Fo76Fo4Hook {
         }
     }
 
+    /// A quest's own conditions read the same FO76 player event-data members
+    /// (58 converted quests: W05 post-quest dialogue, region pointers, RSVP,
+    /// ally visitor conversations). Inside a quest Subject is the speaker, so
+    /// these run on the player reference instead.
+    pub(super) fn normalize_fo76_quest_player_event_data_run_on(record: &mut Record) {
+        if record.sig.0 != *b"QUST" {
+            return;
+        }
+        for entry in &mut record.fields {
+            if !matches!(&entry.sig.0, b"CTDA" | b"CTDT") {
+                continue;
+            }
+            let FieldValue::Bytes(bytes) = &mut entry.value else {
+                continue;
+            };
+            if Self::raw_condition_run_on(bytes) != Some(CTDA_RUN_ON_EVENT_DATA) {
+                continue;
+            }
+            let Some(member) = Self::raw_condition_parameter_3(bytes) else {
+                continue;
+            };
+            if !Self::FO76_STORY_MANAGER_PLAYER_EVENT_MEMBERS.contains(&member) {
+                continue;
+            }
+            Self::set_raw_condition_run_on(bytes, CTDA_RUN_ON_REFERENCE);
+            Self::set_raw_condition_reference(bytes, FO4_PLAYER_REF_FORM_ID);
+            Self::set_raw_condition_parameter_3(bytes, u32::MAX);
+        }
+    }
+
     pub(super) fn normalize_fo76_story_manager_level_event_data(record: &mut Record) {
         if record.sig.0 != *b"SMQN" {
             return;
@@ -576,6 +619,12 @@ impl Fo76Fo4Hook {
             bytes[10..12].fill(0);
             Self::set_raw_condition_parameter_1(bytes, 0);
             Self::normalize_story_manager_quest_condition(bytes);
+            // FO76 re-checked these gates on every connect; FO4 only sees level-up
+            // events, so `== N` strands anyone who passes N without landing on it
+            // (player.setlevel, saves that predate the gate).
+            if Self::raw_condition_operator(bytes) == Some(0) {
+                bytes[0] |= 3 << 5;
+            }
         }
     }
 
@@ -586,6 +635,7 @@ impl Fo76Fo4Hook {
         Self::normalize_fo76_quest_completion_conditions(record);
         Self::normalize_fo76_story_manager_level_event_data(record);
         Self::normalize_fo76_story_manager_event_data_run_on(record);
+        Self::normalize_fo76_quest_player_event_data_run_on(record);
         let is_music_track = record.sig.0 == *b"MUST";
         for entry in &mut record.fields {
             if !matches!(&entry.sig.0, b"CTDA" | b"CTDT") {
@@ -607,6 +657,13 @@ impl Fo76Fo4Hook {
             } else if function_id == 10016 && bytes.len() >= 32 {
                 Self::set_raw_condition_function_id(bytes, 682);
                 bytes[10..12].fill(0);
+            } else if function_id == FO76_GET_CURRENCY_COUNT_CONDITION_FUNCTION_ID
+                && Self::raw_condition_parameter_1(bytes) == Some(CAPS_FORM_ID)
+            {
+                Self::set_raw_condition_function_id(
+                    bytes,
+                    FO4_GET_ITEM_COUNT_CONDITION_FUNCTION_ID,
+                );
             } else if function_id == FO76_GET_STAGE_DONE_PLAYER_INSTANCE_CONDITION_FUNCTION_ID {
                 Self::set_raw_condition_function_id(
                     bytes,

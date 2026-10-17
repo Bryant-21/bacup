@@ -4,7 +4,7 @@ pub(super) const TESLA_CANNON_BASE_MODEL: &str = "weapons/teslacannon/weapon_tes
 pub(super) const POWER_ARMOR_MODEL_PREFIX: &str = "actors/powerarmor/";
 
 #[derive(Clone, Copy)]
-pub(super) enum ObjectModPropertyTarget {
+pub(crate) enum ObjectModPropertyTarget {
     Weapon,
     Armor,
     Actor,
@@ -36,7 +36,7 @@ pub(super) const FO4_AP_BOT_ARMOR_SLOT1_OBJECT_ID: u32 = 0x000C_3666;
 /// "Paint" and carries the piece's paint OMOD; in FO4 each is an unnamed
 /// structural root carrying the chassis OMOD, which in turn grants
 /// `ap_PowerArmor_Paint`.
-pub(super) const FO76_POWER_ARMOR_PART_ATTACH_POINT_OBJECT_IDS: [u32; 6] = [
+pub(crate) const FO76_POWER_ARMOR_PART_ATTACH_POINT_OBJECT_IDS: [u32; 6] = [
     0x0003_DAFC, // ap_PowerArmor_HeadMod
     0x0005_5F8C, // ap_PowerArmor_BodyMod
     0x0005_5F8D, // ap_PowerArmor_LArmMod
@@ -267,10 +267,14 @@ pub(super) fn omod_attaches_at_structural_point(
     })
 }
 
+/// Any model on an OMOD that sits on a power armor part root is that piece's mesh, whatever its
+/// path: Atomic Shop chassis skins keep theirs under `atx/actors/powerarmor/` or `atx/armor/`.
 pub(super) fn omod_has_power_armor_model(
     interner: &crate::sym::StringInterner,
     record: &Record,
 ) -> bool {
+    let on_part_root = omod_attach_point_raw(interner, record)
+        .is_some_and(is_fo76_power_armor_part_attach_point);
     record.fields.iter().any(|entry| {
         if entry.sig.0 != *b"MODL" {
             return false;
@@ -281,10 +285,8 @@ pub(super) fn omod_has_power_armor_model(
             _ => None,
         };
         path.is_some_and(|path| {
-            path.trim_end_matches('\0')
-                .replace('\\', "/")
-                .to_ascii_lowercase()
-                .starts_with(POWER_ARMOR_MODEL_PREFIX)
+            let path = path.trim_end_matches('\0').replace('\\', "/").to_ascii_lowercase();
+            !path.is_empty() && (on_part_root || path.starts_with(POWER_ARMOR_MODEL_PREFIX))
         })
     })
 }
@@ -315,7 +317,7 @@ pub(super) fn omod_data_form_type(
     }
 }
 
-pub(super) fn omod_property_target(
+pub(crate) fn omod_property_target(
     value: &FieldValue,
     interner: &crate::sym::StringInterner,
 ) -> ObjectModPropertyTarget {
@@ -796,7 +798,7 @@ pub(super) fn property_id_from_row(
     }
 }
 
-pub(super) fn valid_object_mod_property(target: ObjectModPropertyTarget, property_id: u16) -> bool {
+pub(crate) fn valid_object_mod_property(target: ObjectModPropertyTarget, property_id: u16) -> bool {
     match target {
         ObjectModPropertyTarget::Weapon => property_id <= 94,
         ObjectModPropertyTarget::Armor => property_id <= 13,
@@ -988,8 +990,9 @@ impl Fo76Fo4Hook {
     /// uses those same EditorIDs for unnamed structural roots and puts paints
     /// on `ap_PowerArmor_Paint` ("Material"), which the chassis OMOD grants.
     /// Because the EditorIDs match, the remap maps the FO76 slot onto FO4's
-    /// root, so every paint lands on a slot the workbench renders no category
-    /// for and no power armor can be repainted. `expose_power_armor_paint_slot`
+    /// root. `bridge_fo76_power_armor_paint_slots` gives that root FO76's
+    /// "Paint" name, but a paint with no mesh of its own would still evict the
+    /// piece's mesh there, so it moves to the paint slot. `expose_power_armor_paint_slot`
     /// does the matching `ARMO` side; the paint keeps its own
     /// `AttachParentSlots`, so lining/misc/headlamp stay reachable through it.
     ///

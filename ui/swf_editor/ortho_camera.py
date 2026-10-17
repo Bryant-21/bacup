@@ -10,6 +10,19 @@ from dataclasses import dataclass
 import glm
 
 
+class OverlayCamera:
+    """Tool overlays use window coordinates; tools still receive local input."""
+    def __init__(self, camera, x, y):
+        self.camera, self.x, self.y = camera, x, y
+
+    def canvas_to_screen(self, x, y):
+        sx, sy = self.camera.canvas_to_screen(x, y)
+        return sx + self.x, sy + self.y
+
+    def __getattr__(self, name):
+        return getattr(self.camera, name)
+
+
 @dataclass
 class OrthoCamera:
     """2D pan/zoom camera for the SWF editor canvas."""

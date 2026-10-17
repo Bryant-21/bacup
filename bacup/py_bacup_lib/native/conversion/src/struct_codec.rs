@@ -321,7 +321,7 @@ mod tests {
         );
     }
 
-    /// Decode RACE.ATKD (Attack Data) — `struct:f,f,I,I,f,f,f,f,f,f,i`,
+    /// Decode RACE.ATKD (Attack Data) — `struct:f,f,I,I,f,f,I,f,f,f,i`,
     /// 44 bytes. Verifies an 11-field struct mixing float / formid /
     /// enum_ref'd uint / signed int.
     #[test]
@@ -338,7 +338,7 @@ mod tests {
         data[12..16].copy_from_slice(&0x40u32.to_le_bytes()); // attack_flags (FO76 0x40)
         data[16..20].copy_from_slice(&90.0_f32.to_le_bytes()); // attack_angle
         data[20..24].copy_from_slice(&60.0_f32.to_le_bytes()); // strike_angle
-        data[24..28].copy_from_slice(&0.5_f32.to_le_bytes()); // stagger
+        data[24..28].copy_from_slice(&0x1234_u32.to_le_bytes()); // attack_type
         data[28..32].copy_from_slice(&0.1_f32.to_le_bytes()); // knockdown
         data[32..36].copy_from_slice(&1.0_f32.to_le_bytes()); // recovery_time
         data[36..40].copy_from_slice(&1.0_f32.to_le_bytes()); // action_points_mult
@@ -366,6 +366,17 @@ mod tests {
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| panic!("StaggerOffset missing/not-int: {map:?}"));
         assert_eq!(stagger_offset, -3, "StaggerOffset should round-trip as -3");
+        assert_eq!(map["AttackType"]["reference"]["object_id"], "001234");
+        assert!(!map.contains_key("Stagger"));
+        let npc = decoded_field_object(decode_subrecord(
+            handle_id, SigCode::from_str("NPC_").unwrap(), subrec_sig, &data,
+        ).unwrap()).unwrap();
+        assert_eq!(npc["AttackType"], map["AttackType"]);
+        data[24..28].fill(0);
+        let null_attack_type = decoded_field_object(decode_subrecord(
+            handle_id, record_sig, subrec_sig, &data,
+        ).unwrap()).unwrap();
+        assert!(!null_attack_type.contains_key("AttackType"));
         // AttackFlags is enum_ref'd → decoded as an array of token-strings.
         // For our 0x40 bit, the schema generator labels the token "Unknown6"
         // (FO76-only bit with no FO4 name). Just confirm the field exists

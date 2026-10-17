@@ -31,7 +31,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		RebuildLocalItemFilters()
 		PrepareLocalItemSets()
 	EndIf
@@ -79,21 +79,18 @@ Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akAct
 EndEvent
 
 Function InitializeLocalGatherStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 	SetObjectiveDisplayed(300, True)
 EndFunction
 
 Function PrepareLocalItemSets()
-	If IsStageDone(CompleteStage) || ItemsToDepositStructArray == None
+	If IsStageDone(GetCompleteStage()) || ItemsToDepositStructArray == None
 		Return
 	EndIf
 
@@ -140,7 +137,7 @@ Function PrepareLocalItemSets()
 EndFunction
 
 Function ReconcileLocalItemCounts(Form changedItem)
-	If IsStageDone(CompleteStage) || ItemsToDepositStructArray == None
+	If IsStageDone(GetCompleteStage()) || ItemsToDepositStructArray == None
 		Return
 	EndIf
 	Actor playerRef = Game.GetPlayer()
@@ -178,7 +175,7 @@ Function ReconcileLocalItemCounts(Form changedItem)
 EndFunction
 
 Function DepositLocalItems(ObjectReference depositPoint)
-	If IsStageDone(CompleteStage) || depositPoint == None || ItemsToDepositStructArray == None
+	If IsStageDone(GetCompleteStage()) || depositPoint == None || ItemsToDepositStructArray == None
 		Return
 	EndIf
 	Actor playerRef = Game.GetPlayer()
@@ -207,7 +204,7 @@ Function DepositLocalItems(ObjectReference depositPoint)
 			EndIf
 			If ItemDepositsCompleted >= CountLocalItemSets()
 				SetObjectiveCompleted(300, True)
-				SetStage(CompleteStage)
+				SetStage(GetCompleteStage())
 			EndIf
 			Return
 		EndIf

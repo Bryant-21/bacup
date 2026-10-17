@@ -301,6 +301,7 @@ pub(crate) fn adapt_canonical_gecko(
         character_properties: Vec::new(),
     };
     let rig = CreatureManifest {
+        property_sequences: Vec::new(),
         creature_name: creature_name.clone(),
         visual_skeleton_nif: format!("{runtime_root}\\CharacterAssets\\Skeleton.nif"),
         animation_skeleton: SkeletonDecl {

@@ -1,0 +1,57 @@
+scn V22KochScript
+
+int Ghosted
+int RepairedState
+int Button
+int TalkedToPlayer
+
+begin onLoad
+
+	; Ghosting Koch when he first loads so you can blow him to pieces
+	if Ghosted == 0
+		SetGhost 1
+		set Ghosted to 1
+	endif
+
+end
+
+;----------------------------------------------------------------------------------------------------------------------
+
+begin onActivate
+
+	if RepairedState == 0
+
+		; If Koch's still broken, show a message allowing the player to fix her
+		if player.getav Repair >= 60
+			ShowMessage V22KochBrokenMsg
+		else
+			ShowMessage V22KochBrokenNoSkillMsg
+		endif
+	else
+		Activate
+	endif
+
+end
+
+;---------------------------------------------------------------------------------------------------------------------------------------------------
+
+begin GameMode
+
+	Set Button  to GetButtonPressed
+	
+	if Button == 0								; Normally, do nothing
+		
+	elseif Button == 1							; Fix Koch
+			ShowMessage V22KochFixedMsg
+			V22KochREF.resurrect 1
+			V22KochREF.SetActorFullName V22KochNameMsg
+			V22KochREF.setav Health 500
+		
+			set RepairedState to 1
+			V22KochREF.evp
+			;StartConversation player V22KochGreeting
+
+		endif
+	endif
+
+end

@@ -23,7 +23,8 @@ FRAMES = ("textures/interface/photomode/frame/photomode_photograph01_d.dds",
           "textures/interface/photomode/frame/photomode_photograph02_d.dds")
 
 
-def convert_photo_mode_ui(source_root: Path, output_data: Path) -> dict:
+def convert_photo_mode_ui(source_root: Path, output_data: Path, *, source_plugin: Path | None = None,
+                          target_root: Path | None = None) -> dict:
     source_root, output_data = Path(source_root), Path(output_data)
     interface = source_root / "interface"
     closure = {}
@@ -89,10 +90,9 @@ def convert_photo_mode_ui(source_root: Path, output_data: Path) -> dict:
     outputs = {OUTPUT / name: remap_menu_fonts(movie if name == MENU else data)
                for name, data in closure.items()}
     outputs.update({Path(path): data for path, data in assets.items()})
-    manifest = {"schema_version": 1, "bridge_version": 2, "menu": (OUTPUT / MENU).as_posix(), "controls": CONTROLS,
+    manifest = {"schema_version": 1, "bridge_version": 3, "menu": (OUTPUT / MENU).as_posix(), "controls": CONTROLS,
                 "source_sha256": hashlib.sha256(source).hexdigest(), "frames": list(FRAMES),
-                "unsupported": ["Expression", "Vanity Light Style", "Vanity Light Strength",
-                                "FO76 dynamic poses", "unconverted PMFT frames and textures"],
+                "unsupported": [],
                 "files": [{"path": path.as_posix(), "sha256": hashlib.sha256(data).hexdigest()}
                           for path, data in outputs.items()]}
     for path, data in outputs.items():
@@ -101,6 +101,14 @@ def convert_photo_mode_ui(source_root: Path, output_data: Path) -> dict:
         destination.write_bytes(data)
     (output_data / OUTPUT / "conversion.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     merge_ui_translations(output_data, translations)
+    if source_plugin is not None:
+        if target_root is None:
+            raise ValueError("Photo-mode poses require extracted Fallout 4 behavior graphs")
+        from bacup_lib.photo_mode_catalog import convert_catalog
+        catalog = convert_catalog(source_root, output_data, Path(source_plugin), Path(target_root))
+        manifest["catalog"] = "F4SE/Plugins/B21_TalesFromAppalachia/photo-mode.json"
+        manifest["files"].extend(catalog["files"])
+        (output_data / OUTPUT / "conversion.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
 
 
@@ -109,5 +117,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("source_root", type=Path)
     parser.add_argument("output_data", type=Path)
+    parser.add_argument("--source-plugin", type=Path)
+    parser.add_argument("--target-root", type=Path)
     args = parser.parse_args()
-    print(json.dumps(convert_photo_mode_ui(args.source_root, args.output_data), indent=2))
+    print(json.dumps(convert_photo_mode_ui(args.source_root, args.output_data, source_plugin=args.source_plugin,
+                                           target_root=args.target_root), indent=2))

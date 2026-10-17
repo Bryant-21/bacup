@@ -227,12 +227,12 @@ Function Fragment_Stage_3100_Item_00()
 EndFunction
 
 Function Fragment_Stage_3110_Item_00()
-	EnableLocalAlias(Alias_SoundMarker_SanctumOrganBattle)
-	DisableLocalAlias(Alias_SoundMarker_SanctumOrgan)
+	EnableLocalAlias(((Self as Quest) as Expeditions:XPD_Pitt02:QuestScript).Alias_SoundMarker_SanctumOrganBattle)
+	DisableLocalAlias(((Self as Quest) as Expeditions:XPD_Pitt02:QuestScript).Alias_SoundMarker_SanctumOrgan)
 EndFunction
 
 Function Fragment_Stage_3120_Item_00()
-	DisableLocalAlias(Alias_SoundMarker_SanctumOrganBattle)
+	DisableLocalAlias(((Self as Quest) as Expeditions:XPD_Pitt02:QuestScript).Alias_SoundMarker_SanctumOrganBattle)
 EndFunction
 
 Function Fragment_Stage_3200_Item_00()

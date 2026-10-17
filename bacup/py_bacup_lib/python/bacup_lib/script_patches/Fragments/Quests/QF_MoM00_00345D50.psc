@@ -35,3 +35,8 @@ EndFunction
 Function Fragment_Stage_0255_Item_00()
     Stop()
 EndFunction
+
+Function Fragment_Stage_0030_Item_00()
+    SetObjectiveCompleted(20, True)
+    SetObjectiveDisplayed(30, True)
+EndFunction

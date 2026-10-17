@@ -53,6 +53,7 @@ EndEvent
 
 Event OnStageSet(Int auiStageID, Int auiItemID)
     If auiStageID == 200
+        SetObjectiveCompleted(100, True)
         CancelTimer(1165321)
         StartTimer(20.0, 1165321)
     EndIf

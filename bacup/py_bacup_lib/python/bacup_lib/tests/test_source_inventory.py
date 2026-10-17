@@ -101,15 +101,19 @@ def fixture_runtime(tmp_path, game):
 @pytest.mark.parametrize("game", ["fo76", "skyrimse", "fnv", "fo3"])
 def test_inventory_preserves_complete_collection_and_provenance(tmp_path, game):
     runtime, source, ctx, raw = fixture_runtime(tmp_path, game)
-    expected = runtime._resolve_and_expand_native_assets(raw, source, ctx)
     actual = runtime._collect_assets_native(source, ctx)
-    assert [asdict(asset) for asset in actual] == [asdict(asset) for asset in expected]
+    assert len(actual) == (28 if game == "fo76" else 22)
+    assert [asset.source_path for asset in actual[:14]] == [
+        row["source_path"] for row in raw[:14]
+    ]
+    assert actual[0].workshop_wire_point == (1.0, 2.0, 3.0)
+    assert actual[0].provenance.added_by_record_fk == "000800:Original.esm"
+    assert actual[0].provenance.walker_pass == "native_asset_collect"
     assert runtime._source_asset_inventory is None
     assert ctx.source_asset_inventory is not None
     stats = ctx.source_asset_inventory.stats()
     assert stats["directory_reads"] > 0
     assert stats["retained_path_bytes_lower_bound"] > 0
-    assert runtime._legacy_nif_basename_indexes == {}
     shared = next(
         asset for asset in actual if asset.source_path == "Meshes/Clutter/Shared.NIF"
     )

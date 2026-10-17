@@ -1,4 +1,5 @@
 import struct
+import zlib
 
 from creation_lib.swf import native_runtime
 
@@ -48,3 +49,20 @@ def test_dependency_closure_and_translation_preservation(tmp_path, monkeypatch):
     assert "$LegendaryPerks\tPerks" in text
     assert "$Unused" not in text
     assert (output / ui.OUTPUT / "icons.swf").read_bytes() == (interface / "icons.swf").read_bytes()
+
+
+def test_radio_bitmap_fills_keep_their_image_resources():
+    bitmap = struct.pack("<HBHH", 3, 5, 1, 1) + zlib.compress(b"\xff\xff\xff\xff")
+    shape = struct.pack("<H", 2) + b"\x08\x00\x01\x41\x03\x00\x00\x00\x10\x00"
+    placement = b"\x22\x01\x00\x02\x00DOVOWaveForm_mc\x00"
+    panel = b"\x22\x02\x00\x02\x00DOVOFlyoutGraphic_mc\x00"
+    sprite = struct.pack("<HH", 1, 1) + ui.tag(26, placement) + ui.tag(26, panel) + ui.tag(1, b"") + ui.tag(0, b"")
+    symbols = b"\x01\x00\x01\x00VOFlyoutManager\x00"
+    body = b"\x08\x00\x00\x1e\x01\x00" + b"".join(
+        ui.tag(code, payload) for code, payload in ((36, bitmap), (32, shape), (39, sprite),
+                                                   (76, symbols), (1, b""), (0, b"")))
+    source = b"FWS\x11" + struct.pack("<I", len(body) + 8) + body
+
+    converted = ui.build_radio_movie(source)
+
+    assert (36, bitmap) in ui.swf_tags(converted)

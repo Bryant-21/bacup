@@ -15,9 +15,9 @@ EndFunction
 
 Function Fragment_Stage_0020_Item_00()
     If HeadSacRef != None
-        ObjectReference settlerRef = SettlerRef.GetReference()
-        If settlerRef != None
-            settlerRef.RemoveItem(HeadSacRef, 1, true)
+        ObjectReference settlerObject = SettlerRef.GetReference()
+        If settlerObject != None
+            settlerObject.RemoveItem(HeadSacRef, 1, true)
         EndIf
     EndIf
 EndFunction

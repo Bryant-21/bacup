@@ -63,7 +63,7 @@ use rustc_hash::FxHashMap;
 // |  12    |  4   | attack_flags       | u32  |
 // |  16    |  4   | attack_angle       | f32  |
 // |  20    |  4   | strike_angle       | f32  |
-// |  24    |  4   | stagger            | f32  |
+// |  24    |  4   | attack_type        | u32  |
 // |  28    |  4   | knockdown          | f32  |
 // |  32    |  4   | recovery_time      | f32  |
 // |  36    |  4   | action_points_mult | f32  |

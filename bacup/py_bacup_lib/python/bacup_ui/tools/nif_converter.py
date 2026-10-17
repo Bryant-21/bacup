@@ -449,16 +449,18 @@ class NifConverterTool(BaseTool):
     def draw_content(self) -> None:
         # --- Form ---
         if begin_form("##nif_converter_form"):
-            _, clicked = draw_path_row("Source Folder", self._src_dir)
+            self._src_dir, clicked = draw_path_row("Source Folder", self._src_dir)
             if clicked:
-                path = pick_folder("Select folder with NIF files")
+                path = pick_folder("Select folder with NIF files", self._src_dir)
                 if path:
                     self._src_dir = path
 
             display_out = self._out_dir or "(auto: <source folder>_converted)"
-            _, clicked = draw_path_row("Output Folder", display_out)
+            path, clicked = draw_path_row("Output Folder", display_out)
+            if path != display_out:
+                self._out_dir = path
             if clicked:
-                path = pick_folder("Select output folder (optional)")
+                path = pick_folder("Select output folder (optional)", self._out_dir)
                 if path:
                     self._out_dir = path
 

@@ -1,6 +1,7 @@
 //! StarfieldFo4Hook: starfield→fo4 pair-level record hook (world records only).
 
 pub(crate) mod book_and_art;
+pub(crate) mod armor;
 pub(crate) mod consumable;
 pub(crate) mod explosion;
 pub(crate) mod grass;
@@ -11,6 +12,7 @@ pub(crate) mod magic_effect;
 pub(crate) mod object_properties;
 pub(crate) mod placed_reference;
 pub(crate) mod sound_and_image_space;
+pub(crate) mod weapon;
 
 use super::fo4_layouts::{self, SourceFamily};
 use super::model_paths;
@@ -85,6 +87,7 @@ impl PairHook for StarfieldFo4Hook {
         light::normalize(record, ctx.interner);
         grass::normalize(record, ctx.interner);
         sound_and_image_space::normalize(record, ctx.interner);
+        armor::normalize(record, ctx.interner);
         // Shared FO4 target contracts, wired the same way as the fnv_fo4 and
         // skyrimse_fo4 hooks. REFR.XLOC must end up 16 bytes (FO4's schema
         // codec is 12 plus a separate `bytes_9` tail field), and EFSH must
@@ -103,6 +106,7 @@ impl PairHook for StarfieldFo4Hook {
     fn post_translate(&self, ctx: &mut PairCtx<'_>, record: &mut Record) -> HookResult {
         Self::sanitize_cell_metadata(record);
         model_paths::normalize_model_paths(ctx.interner, record);
+        armor::post_normalize(record, ctx.interner);
         Ok(())
     }
 

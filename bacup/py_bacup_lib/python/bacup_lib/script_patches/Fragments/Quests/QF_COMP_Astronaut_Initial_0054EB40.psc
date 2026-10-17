@@ -165,6 +165,7 @@ Function Fragment_Stage_2000_Item_00()
 EndFunction
 
 Function Fragment_Stage_3000_Item_00()
+    ; TODO(recipes): FO76 teaches RecipeAstronaut at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     CompleteObjectiveOnce(2000)
     CompleteObjectiveOnce(2001)
     DisplayObjectiveOnce(3000)

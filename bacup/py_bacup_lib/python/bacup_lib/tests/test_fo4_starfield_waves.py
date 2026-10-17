@@ -119,15 +119,8 @@ def test_mesh_entries_strip_meshes_prefix_and_material_entries_keep_theirs() -> 
 
 
 @pytest.fixture
-def fake_bgsm(monkeypatch, tmp_path):
-    """Stub `read_bgsm` so the set builder is tested, not the BGSM binary codec.
-
-    `starfield_texture_sets` imports `read_bgsm` inside the function body, so
-    patching the module attribute is enough.
-    """
+def make_bgsm(tmp_path):
     from creation_lib.material_tools import bgsm_bin
-
-    materials: dict[str, SimpleNamespace] = {}
 
     def make(
         rel: str,
@@ -140,30 +133,28 @@ def fake_bgsm(monkeypatch, tmp_path):
     ):
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"BGSM")
-        materials[str(path)] = SimpleNamespace(
-            header=SimpleNamespace(env_mapping=env_mapping),
-            DiffuseTexture=diffuse,
-            NormalTexture=normal,
-            SmoothSpecTexture=spec,
-            GlowTexture=glow,
-        )
+        with (Path(__file__).parent / "fixtures/fo76/materials/sample_v22.bgsm").open("rb") as handle:
+            material = bgsm_bin.read_bgsm(handle)
+        material.header.version = 2
+        material.header.env_mapping = env_mapping
+        material.DiffuseTexture = diffuse
+        material.NormalTexture = normal
+        material.SmoothSpecTexture = spec
+        material.GlowTexture = glow
+        with path.open("wb") as handle:
+            material.write(handle)
         return _asset(rel.replace("\\", "/"), str(path), "material")
 
-    def _read(handle):
-        return materials[str(Path(handle.name))]
-
-    monkeypatch.setattr(bgsm_bin, "read_bgsm", _read)
     return make
 
 
-def test_texture_sets_are_named_from_the_diffuse_reference(fake_bgsm) -> None:
-    asset = fake_bgsm(
+def test_texture_sets_are_named_from_the_diffuse_reference(make_bgsm) -> None:
+    asset = make_bgsm(
         "Materials/Architecture/wall01.bgsm",
         diffuse="Architecture\\wall01_d.dds",
         normal="Architecture\\wall01_n.dds",
     )
-    metal = fake_bgsm(
+    metal = make_bgsm(
         "Materials/Weapons/gun01.bgsm",
         diffuse="Weapons\\gun01_d.dds",
         spec="Weapons\\gun01_s.dds",
@@ -189,11 +180,36 @@ def test_texture_sets_are_named_from_the_diffuse_reference(fake_bgsm) -> None:
     assert sets[1]["spec_gloss"] == "Textures/Weapons/gun01_s.dds"
 
 
-def test_texture_sets_dedupe_two_bgsms_sharing_one_texture_family(fake_bgsm) -> None:
-    first = fake_bgsm("Materials/A/shared.bgsm", diffuse="Shared\\rock_d.dds")
-    second = fake_bgsm("Materials/B/shared.bgsm", diffuse="Shared\\rock_d.dds")
+def test_texture_sets_dedupe_two_bgsms_sharing_one_texture_family(make_bgsm) -> None:
+    first = make_bgsm("Materials/A/shared.bgsm", diffuse="Shared\\rock_d.dds")
+    second = make_bgsm("Materials/B/shared.bgsm", diffuse="shared\\ROCK_D.dds")
     sets, _ = unified.starfield_texture_sets([first, second], {})
     assert len(sets) == 1
+
+
+def test_texture_sets_resolve_paths_report_mismatches_and_skip_bad_materials(make_bgsm, tmp_path) -> None:
+    missing_diffuse = make_bgsm("Materials/no_diffuse.bgsm", diffuse="")
+    good = make_bgsm(
+        "Materials/rock.bgsm",
+        diffuse=" \0Textures\\Rocks\\rock_D.dds\0 ",
+        normal="Elsewhere/rock_n.dds",
+        glow="Rocks/rock_g.dds",
+    )
+    broken = _asset("Materials/broken.bgsm", str(tmp_path / "missing.bgsm"), "material")
+    sets, warnings = unified.starfield_texture_sets(
+        [missing_diffuse, good, broken],
+        {"textures/rocks/rock_d.dds": "X:/extracted/rock_D.dds"},
+    )
+    assert sets == [{
+        "base_name": "rock", "output_subdir": "Rocks", "environment_mapping": False,
+        "color": "X:/extracted/rock_D.dds", "normal": "Textures/Elsewhere/rock_n.dds",
+        "emissive": "Textures/Rocks/rock_g.dds",
+    }]
+    assert warnings[:2] == [
+        "Materials/no_diffuse.bgsm: no DiffuseTexture; no Starfield texture set",
+        "Materials/rock.bgsm: normal map Elsewhere/rock_n.dds does not share the diffuse set's directory/stem (Rocks/rock); the .mat will name it under the diffuse set",
+    ]
+    assert warnings[2].startswith("Materials/broken.bgsm: cannot read BGSM (")
 
 
 # ---------------------------------------------------------------------------

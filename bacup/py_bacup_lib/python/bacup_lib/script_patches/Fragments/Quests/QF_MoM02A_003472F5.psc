@@ -69,6 +69,7 @@ Function Fragment_Stage_0047_Item_00()
 EndFunction
 
 Function Fragment_Stage_0050_Item_00()
+    ; TODO(recipes): FO76 teaches co_MoM_PhantomDevice at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(41)
     SetObjectiveCompleted(42)
     SetObjectiveCompleted(45)

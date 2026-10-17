@@ -1389,6 +1389,24 @@ mod tests {
     }
 
     #[test]
+    fn engine_actor_values_survive_vmad_cleanup_without_plugin_rows() {
+        let resolver = resolver_for_target(
+            &[],
+            &[&[], &[]],
+            Some("fo4"),
+            &["Other.esm", "Fallout4.esm"],
+        );
+        let values: Vec<u32> = (0x2BB..=0x38A).map(|local| 0x01000000 | local).collect();
+        let (mut data, offsets) = vmad_objfmt2(&values);
+        assert!(null_dangling_in_vmad_blob(&mut data, &resolver, b"MGEF"));
+        for (raw, offset) in values.iter().zip(offsets) {
+            let local = raw & 0xFFFFFF;
+            let registered = (0x2BC..=0x389).contains(&local) && local != 0x2C0 && local != 0x34C;
+            assert_eq!(raw_at(&data, offset), if registered { *raw } else { 0 });
+        }
+    }
+
+    #[test]
     fn keeps_fo4_intrinsic_aggression_in_both_formats_but_nulls_absent_neighbour() {
         let r = resolver_for_target(&[0x111111], &[&[]], Some("fo4"), &["Fallout4.esm"]);
 

@@ -19,6 +19,7 @@ package Shared.AS3 {
         public var LevelUpButton:Object = {};
         public var OpenCardPackButton:Object = {};
         public var ShareButton:Object = {};
+        public var ScrapButton:Object = {};
         public var LevelBoostPurchaseButton:Object = {};
         public var _SPECIALToLevel:int = -1;
         public var PickSpecial_mc:MovieClip = new MovieClip();

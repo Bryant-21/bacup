@@ -23,7 +23,12 @@ class TimelinePanel:
             imgui.end()
             return
 
+        if self.app.document.mode == 'binary':
+            self.app.stage_panel.draw_timeline()
+            imgui.end()
+            return
         scene = self.app.scene
+        imgui.begin_disabled(self.app.document.mode != "visual")
         total = max(scene.total_frames, 1)
 
         # Playback controls
@@ -60,6 +65,34 @@ class TimelinePanel:
             scene.playing = False
 
         imgui.separator()
+
+        if imgui.button("Append frame"):
+            self.app.push_undo("Append keyframe")
+            scene.current_frame = total
+            scene.insert_keyframe(total)
+        imgui.same_line()
+        if imgui.button("Insert keyframe"):
+            self.app.push_undo("Insert keyframe")
+            scene.insert_keyframe(scene.current_frame)
+        imgui.same_line()
+        if imgui.button("Blank keyframe"):
+            self.app.push_undo("Blank keyframe")
+            scene.insert_keyframe(scene.current_frame, blank=True)
+        layer = scene.layers[scene.active_layer_index]
+        kf = layer.keyframe_at(scene.current_frame)
+        if kf:
+            changed, duration = imgui.slider_int("Hold frames##swf", kf.duration, 1, 600)
+            if changed:
+                self.app.push_undo("Keyframe duration")
+                delta = duration - kf.duration
+                kf.duration = duration
+                for following in layer.keyframes:
+                    if following.frame > kf.frame:
+                        following.frame += delta
+            changed, label = imgui.input_text("Frame label##swf", kf.label)
+            if changed:
+                self.app.push_undo("Frame label")
+                kf.label = label
 
         # Onion skin toggle
         _, self.onion_skin = imgui.checkbox("Onion Skin##swf", self.onion_skin)
@@ -105,4 +138,5 @@ class TimelinePanel:
         # Reserve space for the grid
         imgui.dummy(imgui.ImVec2(80 * cell_w, len(scene.layers) * (cell_h + 2)))
 
+        imgui.end_disabled()
         imgui.end()

@@ -135,6 +135,9 @@ fn run_convert_btos(
                     strip_cloth: false,
                     source_material_dir: None,
                     material_source_overrides: Default::default(),
+                    keep_fo76_materials: false,
+                    keep_starfield_materials: false,
+                    cloth_companions: Vec::new(),
                 };
                 let dst = bto_output_path(mod_path, &entry.source_path);
 

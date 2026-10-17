@@ -7,7 +7,8 @@ package {
             for each (var control:Object in Controls) {
                 var bounds:Object = control.getBounds(root);
                 controls.push({name:control.B21ControlName(),active:control.active,
-                    x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,hit:control.B21PreviewBounds(root)});
+                    x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,hit:control.B21PreviewBounds(root),
+                    options:control.isSlider ? null : control.B21PreviewOptions()});
             }
             return {selected:SelectedControl,controls:controls};
         }

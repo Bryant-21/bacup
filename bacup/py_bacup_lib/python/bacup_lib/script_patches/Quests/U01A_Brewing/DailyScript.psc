@@ -13,6 +13,44 @@ Event OnQuestInit()
 	ElseIf D01A_Tipsy != None && GetFormID() == D01A_Tipsy.GetFormID()
 		InitializeTipsyQuest()
 	EndIf
+	RegisterTurnInActivator()
+EndEvent
+
+; FO76 set 400 (Wasted) / 9000 (Tipsy) from the end of Biv's turn-in topic; those INFO
+; fragments do not exist in FO4, so the stage is set a few seconds after the player talks to him.
+Function RegisterTurnInActivator()
+	ReferenceAlias bivAlias = GetAlias(1) as ReferenceAlias
+	If bivAlias != None && bivAlias.GetReference() != None
+		RegisterForRemoteEvent(bivAlias.GetReference(), "OnActivate")
+	EndIf
+EndFunction
+
+Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akActionRef)
+	If akActionRef != Game.GetPlayer()
+		Return
+	EndIf
+	If D01A_Wasted != None && GetFormID() == D01A_Wasted.GetFormID()
+		If HasAlcohol && IsStageDone(100) && !IsStageDone(400)
+			StartTimer(8.0, 4001)
+		EndIf
+	ElseIf D01A_Tipsy != None && GetFormID() == D01A_Tipsy.GetFormID()
+		If IsStageDone(8000) && !IsStageDone(9000)
+			StartTimer(8.0, 9001)
+		EndIf
+	EndIf
+EndEvent
+
+Event OnTimer(Int aiTimerID)
+	If aiTimerID == 4001
+		If IsRunning() && !IsStageDone(400)
+			SetStage(400)
+			StartTimer(4.0, 9001)
+		EndIf
+	ElseIf aiTimerID == 9001
+		If IsRunning() && !IsStageDone(9000)
+			SetStage(9000)
+		EndIf
+	EndIf
 EndEvent
 
 Bool Function HasAvailableWastedRecipe(Actor akPlayer)

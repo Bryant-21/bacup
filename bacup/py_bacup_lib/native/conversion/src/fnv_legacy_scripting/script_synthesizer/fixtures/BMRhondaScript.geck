@@ -1,0 +1,89 @@
+scn BMRhondaScript
+
+int RepairedState							; 0 = Not repaired, 1 = Repaired
+int Examined								; 0 = Not examined, 1 = Examined
+int Following								; 0 = Not following one
+												; 1 = Following player
+												; 2 = Leading Tabitha away
+
+int InMourning								; 0 = Default, 1 = Taken to Tabitha's body
+float Timer
+
+int Button
+int ScreenNumber							; 0 = Default screen
+												; 1 = Examine screen
+												; 2 = Repair Examine
+												; 3 = Science Examine
+
+int TalkedToPlayer						; 0 = Didn't talk to player
+												; 1 = Talked to player
+
+int HatesPlayer							; 0 = Doesn't hate
+												; 1 = Hater
+
+
+;---------------------------------------------------------------------------------------------------------------------------------------------------
+
+begin onActivate
+
+	if RepairedState == 0
+
+		; If Rhonda's still broken, show a message allowing the player to fix her
+		if player.getav Science >= 60
+			ShowMessage BMRhondaBrokenMsg
+		else
+			ShowMessage BMRhondaBrokenNoSkillMsg
+		endif
+	else
+
+		if GetDead
+			Activate
+		elseif Following < 2 && HatesPlayer == 0
+			; If Rhonda's repaired, she talks to you when you activate her
+			StartConversation player BMRhondaGreeting
+		elseif Following == 2 && HatesPlayer == 0
+			RhondaREF.SayTo player BMRhondaGreeting
+		endif
+	endif
+
+end
+
+;---------------------------------------------------------------------------------------------------------------------------------------------------
+
+begin GameMode
+
+	Set Button  to GetButtonPressed
+	
+	if Button == 0								; Normally, do nothing
+		if ScreenNumber == 1						; If player fixed robot, make it happen
+			RhondaREF.resurrect 0
+			RhondaREF.SetActorFullName BMRhondaNameMsg
+			RhondaREF.MoveTo RhondaResMarker
+			RhondaREF.setav Health 500
+
+			set RhondaREF.RepairedState to 1
+
+		endif			
+
+		set ScreenNumber to 0
+	elseif Button == 1							; Fix Rhonda button
+		set ScreenNumber to 1
+		ShowMessage BMRhondaFixMsg
+	endif
+
+	; Make Rhonda go to Tabitha's body if she's dead and nearby
+	if InMourning == 0
+		if TabithaREF.GetDead == 1 && GetDistance TabithaREF <= 200
+			set InMourning to 1
+			RhondaREF.evp
+			;RhondaREF.say BMRhondaBadReunion
+		endif
+	elseif InMourning == 1
+		set Timer to Timer + GetSecondsPassed
+		if Timer > 10.0
+			RhondaREF.say BMRhondaBadReunion
+			set Timer to 0.0
+		endif
+	endif
+
+end

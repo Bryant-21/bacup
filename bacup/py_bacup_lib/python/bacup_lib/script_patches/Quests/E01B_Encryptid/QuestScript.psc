@@ -229,6 +229,46 @@ Function ApplyConduit(Actor akPlayer)
     If PlayerConduitPerk != None && !akPlayer.HasPerk(PlayerConduitPerk)
         akPlayer.AddPerk(PlayerConduitPerk)
     EndIf
+    SetConduitFX(akPlayer, True)
+EndFunction
+
+; FO76's Quests:E01B_Encryptid:PlayerScript (Player NPC_ VMAD, no FO4 carrier) played
+; these in its active/inactive states; its forms are E01B_Encryptid_ConduitPlayer,
+; CSPlayerAlteredStateConduit and E01B_Encryptid_PlayerPylonVFX.
+Function SetConduitFX(Actor akPlayer, Bool abActive)
+    Sound conduitSound = Game.GetFormFromFile(0x004120A0, "SeventySix.esm") as Sound
+    SoundCategorySnapshot conduitSnapshot = Game.GetFormFromFile(0x00417690, "SeventySix.esm") as SoundCategorySnapshot
+    VisualEffect conduitEffect = Game.GetFormFromFile(0x0041827A, "SeventySix.esm") as VisualEffect
+    If abActive
+        If B21ConduitSoundID != 0
+            Return
+        EndIf
+        If conduitSound != None
+            B21ConduitSoundID = conduitSound.Play(akPlayer)
+        Else
+            B21ConduitSoundID = -1
+        EndIf
+        If conduitSnapshot != None
+            conduitSnapshot.Push(1.0)
+        EndIf
+        If conduitEffect != None
+            conduitEffect.Play(akPlayer, -1.0, None)
+        EndIf
+    Else
+        If B21ConduitSoundID == 0
+            Return
+        EndIf
+        If B21ConduitSoundID > 0
+            Sound.StopInstance(B21ConduitSoundID)
+        EndIf
+        B21ConduitSoundID = 0
+        If conduitSnapshot != None
+            conduitSnapshot.Remove()
+        EndIf
+        If conduitEffect != None
+            conduitEffect.Stop(akPlayer)
+        EndIf
+    EndIf
 EndFunction
 
 Function ReleaseConduits()
@@ -241,6 +281,7 @@ Function ReleaseConduits()
     If playerRef == None
         Return
     EndIf
+    SetConduitFX(playerRef, False)
     If E01B_Encryptid_PylonConduitSpell != None
         playerRef.RemoveSpell(E01B_Encryptid_PylonConduitSpell)
     EndIf

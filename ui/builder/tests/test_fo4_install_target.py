@@ -91,6 +91,8 @@ def test_resolve_fo4_deploy_data_uses_mo2_virtual_data_folder(tmp_path):
         {"deploy_to_mo2": True, "mo2_deploy_dir": str(mo2_dir)},
     )
     app = _app(settings)
+    app._deploy_to_mo2 = True
+    app._mo2_deploy_dir = str(mo2_dir)
 
     assert app._resolve_game_data_path("fo4") == tmp_path / "FO4" / "Data"
     assert app._resolve_deploy_data_path("fo4") == mo2_dir

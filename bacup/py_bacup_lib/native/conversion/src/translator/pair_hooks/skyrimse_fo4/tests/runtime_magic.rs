@@ -21,22 +21,22 @@ fn classifies_jzargo_fixture_by_magic_shape_without_identity() {
         ),
         (
             jzargo_outer_spell_source(&interner),
-            MagicComponent::Spell,
+            MagicComponent::NativeSpell,
             true,
         ),
         (
             jzargo_inner_spell_source(&interner),
-            MagicComponent::Spell,
+            MagicComponent::NativeSpell,
             true,
         ),
         (
             jzargo_outer_effect_source(&interner),
-            MagicComponent::CloakEffect,
+            MagicComponent::NativeEffect,
             true,
         ),
         (
             jzargo_inner_effect_source(&interner),
-            MagicComponent::AimedFireDamageEffect,
+            MagicComponent::NativeEffect,
             false,
         ),
     ];
@@ -137,20 +137,12 @@ fn generic_lowering_preserves_cast_delivery_effect_rows_and_vmad() {
     );
     jzargo_assert_form(
         jzargo_named(&damage, *b"DATA", "Projectile", &interner),
-        0x204172,
-        "Fallout4.esm",
+        0x012FCF,
+        "Skyrim.esm",
         &interner,
     );
     assert_eq!(receipt.preserved_vmad_fields, 1);
-    assert_eq!(
-        receipt.donor_roles,
-        vec![
-            MagicDonorRole::HealthActorValue,
-            MagicDonorRole::EnergyResistance,
-            MagicDonorRole::FireHitShader,
-            MagicDonorRole::AimedFlameProjectile,
-        ]
-    );
+    assert!(receipt.donor_roles.is_empty());
     assert!(damage.fields.iter().any(|field| field.sig.0 == *b"VMAD"));
 }
 
@@ -174,10 +166,11 @@ fn rejects_shapes_outside_the_bounded_magic_capability() {
         .unwrap()
         .1 = FieldValue::String(interner.intern("Touch"));
     assert_eq!(
-        classify_magic_component(&touch_spell, &interner),
-        MagicSupport::Unsupported {
-            reason: MagicUnsupportedReason::CastDelivery,
-        }
+        classify_magic_component(&touch_spell, &interner)
+            .plan()
+            .unwrap()
+            .component,
+        MagicComponent::NativeSpell
     );
 
     let mut frost_effect = jzargo_inner_effect_source(&interner);
@@ -195,11 +188,12 @@ fn rejects_shapes_outside_the_bounded_magic_capability() {
         .find(|(name, _)| interner.resolve(*name) == Some("ResistValue"))
         .unwrap()
         .1 = FieldValue::String(interner.intern("ResistFrost"));
-    assert_eq!(
-        classify_magic_component(&frost_effect, &interner),
-        MagicSupport::Unsupported {
-            reason: MagicUnsupportedReason::Resistance,
-        }
+    runtime_magic_lower(&mut frost_effect, &interner);
+    jzargo_assert_form(
+        jzargo_named(&frost_effect, *b"DATA", "ResistValue", &interner),
+        0x2E7,
+        "Fallout4.esm",
+        &interner,
     );
 
     let mut multi_effect = jzargo_inner_spell_source(&interner);

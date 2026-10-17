@@ -1,6 +1,7 @@
 import json
 import struct
 import zlib
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
@@ -9,158 +10,81 @@ from bacup_lib import infestations as inf
 from creation_lib.swf.types import MATRIX, BitWriter
 
 
-def ref(object_id: int):
-    return {"reference": {"plugin": "SeventySix.esm", "object_id": f"{object_id:06X}"}}
+def catalog_plugins(tmp_path, *, missing_owned_quest=False, center_data=None):
+    from creation_lib.esp import Plugin
+    from bacup_lib.tests.test_vmad_codec import _prop, _script, _vmad
+
+    fixture = Path(__file__).resolve().parents[3] / "native/conversion/src/test_fixtures/infestations/catalog.json"
+    data = json.loads(fixture.read_text())
+    source = tmp_path / "source" / "SeventySix.esm"
+    target = tmp_path / "converted" / "SeventySix.esm"
+    source.parent.mkdir()
+    target.parent.mkdir()
+
+    def form(value):
+        return int(value["reference"]["object_id"], 16)
+
+    with Plugin.new(source.name, game="fo76") as plugin:
+        for raw, row in data["records"].items():
+            record = plugin.new_record(row["signature"], form_id=int(raw))
+            record.editor_id = row["editor_id"]
+            for field in row["value"]["fields"]:
+                for key, value in field.items():
+                    if key == "VirtualMachineAdapter":
+                        scripts = [_script(script["ScriptName"], [
+                            _prop(prop["propertyName"], 4, struct.pack("<f", prop["Value"]))
+                            for prop in script["Properties"]]) for script in value["Scripts"]]
+                        record.add_subrecord("VMAD", _vmad(scripts))
+                    elif key == "Value":
+                        record.add_subrecord("FLTV", struct.pack("<f", value))
+                    elif key == "ParentLocation":
+                        record.add_subrecord("PNAM", struct.pack("<I", form(value)))
+                    elif key == "FormID":
+                        record.add_subrecord("LNAM", struct.pack("<I", form(value)))
+                    elif key == "MasterSpecialReferences":
+                        record.add_subrecord("LCSR", b"".join(struct.pack("<IIIhh",
+                            form(ref["MasterSpecialReferencesLocRefType"]),
+                            form(ref["MasterSpecialReferencesRef"]),
+                            form(ref["MasterSpecialReferencesWorldCell"]), 0, 0) for ref in value))
+                    else:
+                        raise AssertionError(key)
+            plugin.add_record(record)
+        plugin.save(source)
+    with Plugin.new(target.name, game="fo4") as plugin:
+        plugin.add_master("Fallout4.esm")
+        for raw, row in data["converted"].items():
+            if missing_owned_quest and int(raw) == 0x865FA8:
+                continue
+            record = plugin.new_record(row["signature"], form_id=0x01000000 | int(raw))
+            if row["position"] is not None:
+                data_bytes = center_data if center_data is not None and int(raw) == 0x700000 else struct.pack("<6f", *row["position"], 0, 0, 0)
+                record.add_subrecord("DATA", data_bytes)
+            if row["has_entries"]:
+                record.add_subrecord("LVLO", struct.pack("<HHIHH", 1, 0, 0x1234, 1, 0))
+            plugin.add_record(record)
+        plugin.add_record(plugin.new_record("QUST", form_id=0x865FA8))
+        plugin.save(target)
+    return source, target, data["expected"]
 
 
-class Source:
-    def __init__(self):
-        self.records, self.by_name = {}, {}
-
-    def add(self, object_id, signature, editor_id, **fields):
-        grouped = {key: value if isinstance(value, list) else [value] for key, value in fields.items()}
-        self.records[object_id] = (signature, editor_id, grouped)
-        self.by_name[(signature, editor_id)] = object_id
-
-    def lookup(self, signature, editor_id):
-        object_id = self.by_name[(signature, editor_id)]
-        return object_id, self.records[object_id][2]
-
-    def fields(self, object_id):
-        return self.records[object_id]
-
-    def ids(self, signature):
-        return [object_id for object_id, record in self.records.items() if record[0] == signature]
+def test_native_catalog_reads_plugins_and_matches_previous_catalog(tmp_path):
+    source, target, expected = catalog_plugins(tmp_path)
+    actual = inf.build_catalog(source, target, "1.7.26.13")
+    assert actual == expected
+    assert json.dumps(actual) == json.dumps(expected)
 
 
-class Converted:
-    def __init__(self, source: Source, missing=(), positions=None):
-        self.source, self.missing, self.positions = source, set(missing), positions or {}
-
-    def record(self, object_id):
-        if object_id in self.missing:
-            return None
-        if object_id in self.positions:
-            x, y, z = self.positions[object_id]
-            return "REFR", {"DATA": [{"PositionRotationPositionX": x, "PositionRotationPositionY": y,
-                                      "PositionRotationPositionZ": z}]}
-        if object_id not in self.source.records:
-            return ("REFR", {}) if object_id >= 0x700000 else None
-        signature, _, fields = self.source.records[object_id]
-        signature = "MISC" if signature == "CNCY" else signature
-        return signature, {"LVLO": [{}]} if signature == "LVLN" else fields
+def test_native_catalog_does_not_accept_a_master_record_as_converted(tmp_path):
+    source, target, _ = catalog_plugins(tmp_path, missing_owned_quest=True)
+    with pytest.raises(ValueError, match="Converted QUST 865FA8 is missing"):
+        inf.build_catalog(source, target)
 
 
-LCRT = {"LocationCenterMarker": 0x01F40F, "MapMarkerRefType": 0x02271F, "Boss": 0x358545,
-        "LocationClearActor": 0x003956}
-WORLD, OTHER_WORLD = 0x25DA15, 0x000100
-
-
-def special(kind: str, ref_id: int, world: int = WORLD):
-    return {"MasterSpecialReferencesLocRefType": ref(LCRT[kind]), "MasterSpecialReferencesRef": ref(ref_id),
-            "MasterSpecialReferencesWorldCell": ref(world)}
-
-
-def location_refs(base: int, clear: int = 4, world: int = WORLD, boss: bool = True):
-    rows = [special("LocationCenterMarker", base, world), special("MapMarkerRefType", base + 1, world)]
-    if boss:
-        rows.append(special("Boss", base + 2, world))
-    rows += [special("LocationClearActor", base + 10 + index, world) for index in range(clear)]
-    return rows
-
-
-def source_data():
-    source = Source()
-    source.add(0x865FA8, "QUST", inf.QUEST, VirtualMachineAdapter={"Scripts": [{
-        "ScriptName": inf.MASTER_SCRIPT, "Properties": [
-            {"propertyName": "MobKillPercentToSpawnBoss", "Value": 0.8},
-            {"propertyName": "MobKillPercentToShowRemainingObjective", "Value": 0.5}]}]})
-    for offset, (key, name) in enumerate(inf.TUNING_GLOBALS.items()):
-        source.add(0x8A5600 + offset, "GLOB", name, Value={"expire_seconds": 18000.0}.get(key, 35000.0))
-    for offset, (signature, name) in enumerate([*inf.FORMS.values(), *inf.REWARD.values()]):
-        source.add(0x890000 + offset, signature, name)
-    for name, object_id in LCRT.items():
-        source.add(object_id, "LCRT", name)
-    source.add(WORLD, "WRLD", inf.WORLD)
-    regions = []
-    for offset, (_, location, toggle) in enumerate(inf.REGIONS):
-        source.add(0x010000 + offset, "LCTN", location)
-        source.add(0x8A5FA1 + offset, "GLOB", toggle)
-        regions.append(0x010000 + offset)
-    keywords = []
-    for offset, keyword in enumerate(("HTO_FactionSelection_Scorched", "SDOW_HTO_FactionSelection_SlasherShadow")):
-        source.add(0x8A4150 + offset, "KYWD", keyword)
-        mob, boss = inf.faction_lists(keyword)
-        source.add(0x85A300 + offset * 2, "LVLN", mob)
-        source.add(0x85A301 + offset * 2, "LVLN", boss)
-        keywords.append(ref(0x8A4150 + offset))
-    source.add(0x8A4152, "FLST", inf.FACTION_LIST, FormID=keywords)
-    source.add(0x5C6BE9, "SPEL", "Mutation_A")
-    source.add(0x5C6BEA, "SPEL", "Mutation_Missing")
-    source.add(0x897400, "FLST", inf.MUTATION_LIST, FormID=[ref(0x5C6BE9), ref(0x5C6BEA)])
-    # A parent chain: the site sits under a sub-location of the Forest region.
-    source.add(0x020000, "LCTN", "ForestSubRegion", ParentLocation=ref(regions[0]))
-    source.add(0x030000, "LCTN", "GoodSite", ParentLocation=ref(0x020000),
-               MasterSpecialReferences=[location_refs(0x700000, clear=5)])
-    source.add(0x030001, "LCTN", "FewActors", ParentLocation=ref(regions[1]),
-               MasterSpecialReferences=[location_refs(0x710000, clear=3)])
-    source.add(0x030002, "LCTN", "OtherWorld", ParentLocation=ref(regions[1]),
-               MasterSpecialReferences=[location_refs(0x720000, world=OTHER_WORLD)])
-    source.add(0x030003, "LCTN", "NoBoss", ParentLocation=ref(regions[2]),
-               MasterSpecialReferences=[location_refs(0x730000, boss=False)])
-    source.add(0x030004, "LCTN", "Unconverted", ParentLocation=ref(regions[3]),
-               MasterSpecialReferences=[location_refs(0x740000)])
-    source.add(0x030005, "LCTN", "NoRegion", MasterSpecialReferences=[location_refs(0x750000)])
-    return source
-
-
-def converted_data(source):
-    positions = {0x700000: (100.0, -200.0, 5.0), 0x740000: (1.0, 2.0, 3.0)}
-    # The converter drops two clear actors of the unconverted site, leaving three.
-    return Converted(source, missing={0x5C6BEA, 0x74000A, 0x74000B}, positions=positions)
-
-
-def test_catalog_selects_only_eligible_converted_sites():
-    source = source_data()
-    catalog = inf.build_catalog(source, converted_data(source), "1.7.26.13")
-
-    assert catalog["source"] == {"quest": "865FA8", "data_version": "1.7.26.13"}
-    assert catalog["tuning"]["boss_kill_fraction"] == 0.8
-    assert catalog["tuning"]["remaining_fraction"] == 0.5
-    assert catalog["tuning"]["expire_seconds"] == 18000.0
-    assert catalog["reward"]["boss_rank"] == 4
-    assert catalog["mutations"] == ["5C6BE9"]
-    assert [row["key"] for row in catalog["regions"]] == [key for key, _, _ in inf.REGIONS]
-    assert [site["editor_id"] for site in catalog["sites"]] == ["GoodSite"]
-    site = catalog["sites"][0]
-    assert site["region"] == "010000" and site["world"] == "25DA15"
-    assert site["center"] == [100.0, -200.0, 5.0]
-    assert site["marker"] == "700001" and site["boss"] == ["700002"]
-    assert site["clear"] == [f"{0x70000A + index:06X}" for index in range(5)]
-    assert catalog["skipped"] == {"few_clear_actors": 1, "no_boss": 1, "not_converted": 1, "outside_world": 2}
-    assert catalog["factions"] == [
-        {"key": "Scorched", "keyword": "8A4150", "mob": "85A300", "boss": "85A301"},
-        {"key": "SlasherShadow", "keyword": "8A4151", "mob": "85A302", "boss": "85A303"}]
-    assert inf.faction_lists("SDOW_HTO_FactionSelection_SlasherShadow") == (
-        "SDOW_HTO_LChar_Faction_Slasher", "SDOW_HTO_LChar_Faction_Slasher_Boss")
-
-
-def test_catalog_rejects_missing_quest_empty_faction_list_and_bad_kill_fraction():
-    source = source_data()
-    with pytest.raises(ValueError, match="865FA8"):
-        inf.build_catalog(source, Converted(source, missing={0x865FA8}))
-
-    class EmptyLists(Converted):
-        def record(self, object_id):
-            found = super().record(object_id)
-            return ("LVLN", {}) if found and found[0] == "LVLN" else found
-
-    with pytest.raises(ValueError, match="empty"):
-        inf.build_catalog(source, EmptyLists(source, positions={0x700000: (0.0, 0.0, 0.0)}))
-
-    source.records[0x865FA8][2]["VirtualMachineAdapter"][0]["Scripts"][0]["Properties"][0]["Value"] = 1.5
-    with pytest.raises(ValueError, match="kill fraction"):
-        inf.build_catalog(source, converted_data(source))
+@pytest.mark.parametrize("center_data", [struct.pack("<3f", 1, 2, 3), struct.pack("<6f", float("nan"), 2, 3, 0, 0, 0)])
+def test_native_catalog_rejects_incomplete_or_nonfinite_centers(tmp_path, center_data):
+    source, target, _ = catalog_plugins(tmp_path, center_data=center_data)
+    with pytest.raises(ValueError, match="No FO76 location qualifies"):
+        inf.build_catalog(source, target)
 
 
 def lossless(character: int, width: int, height: int, argb: bytes) -> bytes:
@@ -267,18 +191,37 @@ def test_fog_layers_follow_the_symbol_and_require_the_radius_clip():
         inf.fog_layers(doc, {82: b""})
 
 
-def test_bundle_writes_catalog_art_and_extension(tmp_path):
+def test_bundle_writes_native_dds_and_removes_only_its_legacy_files(tmp_path):
+    import hashlib
+    import io
+    from PIL import Image
+
     catalog = {"version": inf.SCHEMA_VERSION, "sites": []}
     fog = {"symbol": inf.FOG_SYMBOL, "layers": [{"file": "fog0.png", "scale": 1.0, "period": 2.0}]}
-    manifest = inf.write_bundle(tmp_path, catalog, fog, {"fog0.png": b"png"})
+    pixels = io.BytesIO()
+    Image.new("RGBA", (4, 4), (20, 18, 16, 128)).save(pixels, format="PNG")
+    legacy = tmp_path / "PrismaUI_F4/views/B21_FullScreenMap/tales/infestations"
+    legacy.mkdir(parents=True)
+    for name in ("fog0.png", "fog1.png", "fog2.png", "presentation.json", "map-extension.js"):
+        (legacy / name).write_text("stale", encoding="utf-8")
+    (legacy / "unrelated.txt").write_text("keep", encoding="utf-8")
+    manifest = inf.write_bundle(tmp_path, catalog, fog, {"fog0.png": pixels.getvalue()})
     bundle = tmp_path / inf.OUTPUT
-    assert (bundle / "fog0.png").read_bytes() == b"png"
-    assert (bundle / "map-extension.js").read_text(encoding="utf-8").startswith("(function")
+    assert inf.OUTPUT.as_posix() == "F4SE/Plugins/B21_FullScreenMap/infestations"
+    dds = (bundle / "fog0.dds").read_bytes()
+    assert dds[:4] == b"DDS "
+    assert struct.unpack_from("<I", dds, 128)[0] == 98  # DXGI_FORMAT_BC7_UNORM
+    assert not (bundle / "map-extension.js").exists()
     assert json.loads((bundle / "presentation.json").read_text(encoding="utf-8")) == manifest
-    assert manifest["version"] == 1 and manifest["fog"] == fog
-    assert [row["path"] for row in manifest["files"]] == [
-        f"{inf.OUTPUT.as_posix()}/fog0.png", f"{inf.OUTPUT.as_posix()}/map-extension.js"]
-    assert json.loads((tmp_path / inf.CATALOG).read_text(encoding="utf-8")) == catalog
+    assert manifest["version"] == 1
+    assert manifest["fog"]["layers"][0]["file"] == "fog0.dds"
+    assert manifest["fog"]["layers"][0]["scale"] == 1.0
+    assert manifest["fog"]["layers"][0]["period"] == 2.0
+    assert manifest["fog"]["layers"][0]["sha256"] == hashlib.sha256(dds).hexdigest()
+    assert manifest["files"] == [{"path": f"{inf.OUTPUT.as_posix()}/fog0.dds", "sha256": hashlib.sha256(dds).hexdigest()}]
+    assert json.loads((tmp_path / inf.CATALOG).read_text(encoding="utf-8")) == inf.to_document(catalog)
+    assert inf.CATALOG.as_posix() == "F4SE/Plugins/B21_TalesFromAppalachia/Infestations/SeventySix.esm.json"
+    assert list(legacy.iterdir()) == [legacy / "unrelated.txt"]
 
 
 def test_workflow_phase_passes_plugins_and_skips_softly(tmp_path, monkeypatch):
@@ -300,7 +243,7 @@ def test_workflow_phase_passes_plugins_and_skips_softly(tmp_path, monkeypatch):
     assert calls == [(ctx.source_data_dir, mod, {
         "source_plugin": ctx.source_plugin_path, "converted_plugin": mod / "SeventySix.esm"})]
 
-    stale = [mod / inf.CATALOG, mod / inf.OUTPUT / "presentation.json"]
+    stale = [mod / inf.CATALOG, mod / inf.OUTPUT / "presentation.json", mod / inf.LEGACY_OUTPUT / "presentation.json"]
     for path in stale:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}", encoding="utf-8")
@@ -314,3 +257,23 @@ def test_workflow_phase_passes_plugins_and_skips_softly(tmp_path, monkeypatch):
     request.source_game = "skyrimse"
     assert _convert_fo76_infestations(request, ctx) == 0
     assert len(calls) == 1
+
+
+def test_document_uses_formkeys_and_validates_against_its_schema():
+    from bacup_lib.tests.catalog_schema_validation import validate_catalog
+
+    catalog = {"version": 1, "plugin": "SeventySix.esm", "source": {"quest": "865FA8", "data_version": "1.7"},
+               "tuning": {"expire_seconds": 18000.0, "marker_radius": 1.0, "boss_kill_fraction": 0.8, "remaining_fraction": 0.5},
+               "forms": {"quest": "865FA8", "started_message": "90B5EB"},
+               "reward": {"xp_global": "888541", "boss_rank": 4}, "mutations": ["5C6BE9"],
+               "factions": [{"key": "Cultist", "keyword": "8A4151", "mob": "85A38B", "boss": "85A38C"}],
+               "regions": [{"key": "Forest", "location": "095004", "toggle": "8A5FA4"}],
+               "sites": [{"location": "004142", "editor_id": "Loc", "region": "095004", "world": "25DA15",
+                          "center": [1.0, 2.0, 3.0], "marker": "00415D", "clear": ["0563A9"], "boss": ["29E9AA"]}],
+               "skipped": {"no_boss": 1}, "fog_sha256": ["ab"]}
+    document = inf.to_document(catalog)
+    assert document["sites"][0]["location"] == "SeventySix.esm:004142"
+    assert document["sites"][0]["clear"] == ["SeventySix.esm:0563A9"]
+    assert document["settings"]["reward"]["boss_rank"] == 4
+    assert document["mutations"] == [{"form": "SeventySix.esm:5C6BE9"}]
+    validate_catalog("Infestations", document)

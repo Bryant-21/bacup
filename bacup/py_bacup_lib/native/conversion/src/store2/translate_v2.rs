@@ -6,7 +6,7 @@
 //!   F (parallel): post hooks → class-A → normalizer → namespacing → snapshot
 //!   E (serial):   add_record_in_slot (encode + insert; lstring ids in order)
 //! Serial passes preserve legacy determinism (FormKey + lstring allocation
-//! order). FO76/FNV/FO3→FO4 first preallocates every eligible translated FormKey
+//! order). FO76/FNV/FO3/Skyrim→FO4 first preallocates every eligible translated FormKey
 //! so raw VMAD and legacy magic references are independent of signature order.
 //! Tail (structured dialogue + worldspace rebuild) reuses the legacy methods.
 //! No Python contact.
@@ -79,6 +79,9 @@ struct Candidate {
     fnv_scri_target: Option<String>,
     lowered_acre: bool,
     collision_donor: Option<FormKey>,
+    starfield_weapon_instance_metadata:
+        Option<crate::phase::animations::starfield_weapons::SourceWeaponInstanceMetadata>,
+    starfield_weapon_fatal_error: Option<String>,
     /// Final disposition for the stat merge.
     disposition: Disposition,
     /// Warnings in intra-record order (P, then A, then F, then E).
@@ -129,6 +132,8 @@ impl Candidate {
             fnv_scri_target: None,
             lowered_acre: false,
             collision_donor: None,
+            starfield_weapon_instance_metadata: None,
+            starfield_weapon_fatal_error: None,
             disposition: Disposition::Failed,
             warnings: Vec::new(),
             decisions: Vec::new(),
@@ -392,7 +397,7 @@ pub fn translate_all_v2(
     let excluded_scan = excluded_scan_started.elapsed();
 
     let preallocation_started = Instant::now();
-    if matches!(run.source, Game::Fo76 | Game::Fnv | Game::Fo3) && run.target == Game::Fo4 {
+    if matches!(run.source, Game::Fo76 | Game::Fnv | Game::Fo3 | Game::SkyrimSe) && run.target == Game::Fo4 {
         preallocate_legacy_form_keys(
             run,
             &esm,
@@ -1013,7 +1018,37 @@ fn run_pass_p(
                 return candidate;
             }
 
-            // pre_translate (errors → warning, record continues).
+            let starfield_weapon_instance_metadata = if source == Game::Starfield
+                && target == Game::Fo4
+                && !translator.maps.skip_records.contains(source_sig.as_str())
+            {
+                let prepared = match run.starfield_weapon_source_contracts.as_ref() {
+                    Some(contracts) => contracts
+                        .capture_instance_metadata(source_fk, &src_record)
+                        .and_then(|metadata| {
+                            contracts.strip_instance_fields(source_fk, &mut src_record)?;
+                            Ok(metadata)
+                        }),
+                    None if matches!(source_sig.as_str(), "WEAP" | "AMMO" | "PROJ") => {
+                        Err("Starfield weapon/ballistic source contracts were not planned".into())
+                    }
+                    None => Ok(None),
+                };
+                match prepared {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        let mut candidate = Candidate::from_pass_p(
+                            source_fk, source_sig, PassPOutcome::ReadFailed,
+                        );
+                        candidate.starfield_weapon_fatal_error = Some(error);
+                        return candidate;
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Weapon/ammo layouts cannot fall back to incompatible source bytes.
             {
                 let warning_start = src_record.warnings.len();
                 let mut ctx = crate::translator::pair_hook::PairCtx::with_source_and_target(
@@ -1023,8 +1058,25 @@ fn run_pass_p(
                     &run.config.target_master_names,
                 )
                 .with_source_global_values(esm.global_values());
+                if let Err(error) = run.lower_admitted_creature_idle(&mut src_record, &ctx) {
+                    let mut candidate = Candidate::from_pass_p(source_fk, source_sig, PassPOutcome::ReadFailed);
+                    candidate.warnings.push(format!("source_creature_idle:{error}"));
+                    return candidate;
+                }
                 if let Err(e) = translator.pre_translate(&mut ctx, &mut src_record) {
                     pass_p_warnings.push(format!("pre_translate:{e}"));
+                    if source == Game::SkyrimSe
+                        && target == Game::Fo4
+                        && matches!(source_sig.as_str(), "AMMO" | "WEAP")
+                    {
+                        let mut candidate = Candidate::from_pass_p(
+                            source_fk,
+                            source_sig,
+                            PassPOutcome::ReadFailed,
+                        );
+                        candidate.warnings = pass_p_warnings;
+                        return candidate;
+                    }
                 }
                 pass_p_warnings.extend(
                     src_record.warnings[warning_start..]
@@ -1069,6 +1121,7 @@ fn run_pass_p(
                             record: src_record,
                         },
                     );
+                    c.fnv_scri_target = fnv_scri_target;
                     c.warnings = pass_p_warnings;
                     return c;
                 }
@@ -1135,6 +1188,7 @@ fn run_pass_p(
                 },
             );
             c.collision_donor = collision_donor;
+            c.starfield_weapon_instance_metadata = starfield_weapon_instance_metadata;
             c.creature_race_event = creature_race_event;
             c.warnings = pass_p_warnings;
             c
@@ -1192,6 +1246,11 @@ fn enforce_creature_dependency_terminals(
         if !run.is_admitted_creature_dependency(candidate.source_fk, candidate.source_sig) {
             continue;
         }
+        if matches!(candidate.disposition, Disposition::Deferred)
+            && run.is_deferred_creature_script_dependency(candidate.source_fk, candidate.source_sig)
+            && candidate.deferred.iter().any(|(_, kind)| matches!(kind, DeferredKind::FnvLegacyScripting)) {
+            continue;
+        }
         let disposition = match candidate.disposition {
             Disposition::Translated => continue,
             Disposition::Dropped => "dropped",
@@ -1215,6 +1274,9 @@ fn enforce_creature_dependency_post_translate_terminals(
 ) -> Result<(), RunError> {
     for candidate in candidates {
         if !run.is_admitted_creature_dependency(candidate.source_fk, candidate.source_sig)
+            || (matches!(candidate.disposition, Disposition::Deferred)
+                && run.is_deferred_creature_script_dependency(candidate.source_fk, candidate.source_sig)
+                && candidate.deferred.iter().any(|(_, kind)| matches!(kind, DeferredKind::FnvLegacyScripting)))
             || matches!(
                 candidate.disposition,
                 Disposition::Translated | Disposition::VanillaRemapped
@@ -1323,6 +1385,7 @@ fn run_pass_a(
     let event_tx = run.event_tx.clone();
     let serial_normalization = &mut run.legacy_serial_normalization;
     let placed_actor_aliases = &mut run.legacy_placed_actor_aliases;
+    let starfield_weapon_contracts = run.starfield_weapon_source_contracts.as_ref();
     let state = run
         .mapper_state
         .as_mut()
@@ -1330,6 +1393,18 @@ fn run_pass_a(
     let mut mapper = FormKeyMapper::from_state(state, interner);
 
     for c in candidates.iter_mut() {
+        if let Some(error) = c.starfield_weapon_fatal_error.as_ref() {
+            return Err(RunError::InvalidConfig(format!(
+                "starfield_weapon_instance:{error}"
+            )));
+        }
+        if matches!(c.disposition, Disposition::Deferred)
+            && let Some(source_scpt) = c.fnv_scri_target.take()
+        {
+            let target_fk = mapper.lookup(c.source_fk).ok_or_else(|| RunError::InvalidConfig(format!("deferred FNV SCRI owner {:06X} has no preallocated identity", c.source_fk.local)))?;
+            crate::run::append_fnv_scri_link(&mut c.fnv_scri_links, target_fk, &source_scpt, interner)
+                .map_err(|error| RunError::InvalidConfig(format!("deferred FNV SCRI attachment: {error}")))?;
+        }
         if !matches!(c.disposition, Disposition::Translated) {
             continue;
         }
@@ -1442,6 +1517,23 @@ fn run_pass_a(
         match mapper.rewrite_record_with_report(record) {
             Ok(report) => c.unresolved_source_refs = report.unresolved_form_keys,
             Err(e) => c.warnings.push(format!("rewrite_record:{e}")),
+        }
+        if source == Game::Starfield
+            && target == Game::Fo4
+            && let Some(contracts) = starfield_weapon_contracts
+        {
+            contracts.restore_instance_fields(
+                c.source_fk, record, &mut mapper,
+                c.starfield_weapon_instance_metadata.as_ref(),
+            ).map_err(|error| RunError::InvalidConfig(format!("starfield_weapon_instance:{error}")))?;
+        }
+        if source == Game::SkyrimSe && target == Game::Fo4 {
+            if let Err(error) = crate::skyrimse_fo4_runtime::creature_attack_scripts::bind_attack_script_actor_values(record, &mapper, interner) {
+                c.warnings.push(format!("skyrim_creature_script_actor_values:{error}"));
+                c.disposition = Disposition::Failed;
+                c.record = None;
+                continue;
+            }
         }
 
         if is_target_master_remap(target_fk, target_master_syms) {
@@ -1557,7 +1649,16 @@ fn run_pass_f(run: &mut ConversionRun, source_ctx: &SourceCtx, candidates: &mut 
         };
         // Base-asset model-path namespacing.
         namespace_base_asset_model_paths(&mut record, relocation_members, namespace, interner);
+        crate::relocation::namespace_legacy_texture_set_paths(
+            &mut record, relocation_members, namespace, source, target, interner,
+        );
         crate::run::namespace_base_asset_decal_material_path(
+            &mut record,
+            relocation_members,
+            namespace,
+            interner,
+        );
+        crate::run::namespace_imagespace_lut_path(
             &mut record,
             relocation_members,
             namespace,
@@ -1720,6 +1821,9 @@ fn merge_chunk(run: &mut ConversionRun, stats: &mut TranslateStats, candidates: 
 
 #[cfg(test)]
 mod equivalence_tests {
+    mod skyrim_weapon_layout;
+    mod skyrim_forward_vmad;
+    mod fnv_creature_scripts;
     use super::*;
     use crate::legacy_pack_preflight::{
         LegacyPackExpectedCounts, LegacyPackOriginRow, LegacyPackPreflightReport,
@@ -1738,6 +1842,64 @@ mod equivalence_tests {
         ParsedItem, ParsedRecord, parse_plugin_file, plugin_handle_add_master_native,
         plugin_handle_close_native, plugin_handle_new_native, plugin_handle_store_ref,
     };
+
+    #[test]
+    fn starfield_fenced_weapon_and_ballistics_with_failed_source_contracts_are_dropped_in_both_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("Starfield.esm");
+        let weapon = record(b"WEAP", 0x476c4, 0, &subrecord(b"EDID", b"IncompleteEon\0"));
+        let ammo = record(b"AMMO", 0x4ad3e, 0, &subrecord(b"EDID", b"IncompleteAmmo\0"));
+        let projectile = record(b"PROJ", 0x481f, 0, &subrecord(b"EDID", b"IncompleteProjectile\0"));
+        std::fs::write(&source_path, plugin(&[], &[
+            group(b"WEAP", 0, &[weapon]),
+            group(b"AMMO", 0, &[ammo]),
+            group(b"PROJ", 0, &[projectile]),
+        ])).unwrap();
+        for use_v2 in [false, true] {
+            let source = load_source_handle(&source_path, "starfield");
+            let target = fresh_target_handle();
+            let id = create_run(RunParams {
+                source: Game::Starfield,
+                target: Game::Fo4,
+                source_handle_id: source,
+                target_handle_id: target,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    output_plugin_name: "Out.esm".into(),
+                    skip_record_signatures: vec!["WEAP".into(), "AMMO".into(), "PROJ".into()],
+                    ..Default::default()
+                },
+            }).unwrap();
+            let stats = with_run(id, |run| {
+                let mut session = crate::session::open_session(target, Some(source))
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let scan = session.handle_raw_scan(source)
+                    .map_err(|error| RunError::InvalidConfig(error.to_string()))?;
+                let contracts = crate::phase::animations::starfield_weapons::collect_source_weapon_contracts(
+                    &scan, &run.interner, temp.path(),
+                );
+                let key = FormKey { local: 0x476c4, plugin: run.interner.intern("Starfield.esm") };
+                assert!(!contracts.weapon(key).unwrap().source_errors.is_empty());
+                for local in [0x4ad3e, 0x481f] {
+                    let key = FormKey { local, plugin: key.plugin };
+                    assert!(!contracts.ballistic(key).unwrap().source_errors.is_empty());
+                }
+                drop(scan);
+                drop(session);
+                run.starfield_weapon_source_contracts = Some(contracts);
+                if use_v2 { run.translate_all_v2(&source_path) } else { run.translate_all() }
+            }).unwrap();
+            assert_eq!(stats.records_translated, 0, "v2={use_v2}");
+            assert_eq!(stats.records_dropped, 3, "v2={use_v2}");
+            assert_eq!(stats.records_failed, 0, "v2={use_v2}");
+            assert!(!handle_records(target).iter().any(|record| {
+                matches!(record.signature.as_str(), "WEAP" | "AMMO" | "PROJ")
+            }));
+            drop_run(id).unwrap();
+            plugin_handle_close_native(source);
+            plugin_handle_close_native(target);
+        }
+    }
 
     #[test]
     fn fnv_legacy_deferred_records_are_preallocation_eligible() {
@@ -2446,6 +2608,7 @@ mod equivalence_tests {
                 },
                 source_signature: SigCode::from_str("MGEF").unwrap(),
                 owner_family_ids: vec!["family-a".to_string()],
+                legacy_idle: None,
             }])?;
             run.translate_all_v2(&source_path)
         })
@@ -2531,6 +2694,7 @@ mod equivalence_tests {
                 },
                 source_signature: SigCode::from_str("LVLC").unwrap(),
                 owner_family_ids: vec!["family-a".to_string()],
+                legacy_idle: None,
             }])?;
             run.translate_all_v2(&source_path)
         });
@@ -3855,6 +4019,7 @@ mod equivalence_tests {
     ) -> (u64, TranslateStats, Vec<String>) {
         let source_handle = load_source_handle(source_path, "fnv");
         let target_handle = plugin_handle_new_native(output_plugin_name, Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
         let id = create_run(RunParams {
             source: Game::Fnv,
             target: Game::Fo4,
@@ -4283,7 +4448,7 @@ mod equivalence_tests {
             raw_u32(data, 36) & 0x00FF_FFFF,
             shader.form_id & 0x00FF_FFFF
         );
-        assert_eq!(raw_u32(data, 68), 0xF400_02BC);
+        assert_eq!(raw_u32(data, 68), 0x0000_02BC);
 
         for (editor_id, metadata_sig, metadata_len) in [
             ("ForwardPotion", "ENIT", 20),

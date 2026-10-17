@@ -39,6 +39,11 @@ Function ApplyRadiantQuestStageDatum(Actor player, RQDatum currentDatum)
 	If currentDatum.IgnoreOnPlayerActorValue && player.GetValue(currentDatum.IgnoreOnPlayerActorValue) == currentDatum.IgnoreOnValue
 		Return
 	EndIf
+	; Every later radiant quest re-matches the lower milestones; a visitor conversation
+	; moves the value past its milestone, so never move it back.
+	If player.GetValue(currentDatum.PlayerActorValueToSet) >= currentDatum.ValueToSet
+		Return
+	EndIf
 
 	player.SetValue(currentDatum.PlayerActorValueToSet, currentDatum.ValueToSet)
 EndFunction

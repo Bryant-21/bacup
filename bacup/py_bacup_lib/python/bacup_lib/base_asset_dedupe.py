@@ -2,30 +2,16 @@
 from __future__ import annotations
 
 from bacup_lib.models import AssetRef
-
-DEFAULT_FO76_FO4_RELOCATION_MESH_ROOTS = ("meshes/landscape",)
-DEFAULT_FO76_FO4_NAMESPACE = "FO76"
-DEFAULT_SKYRIMSE_FO4_RELOCATION_MESH_ROOTS = ("meshes/landscape",)
-DEFAULT_SKYRIMSE_FO4_NAMESPACE = "Skyrim"
-
-
-def _normalize_mesh_root(value) -> str:
-    return str(value or "").replace("\\", "/").strip().strip("/").lower()
-
+from bacup_lib.native_runtime import load_native_module
 
 def resolve_base_asset_relocation_mesh_roots(
     source_game: str,
     target_game: str,
     configured,
 ) -> tuple[str, ...]:
-    roots = tuple(r for r in (_normalize_mesh_root(v) for v in (configured or ())) if r)
-    if roots:
-        return roots
-    if source_game.lower() == "fo76" and target_game.lower() == "fo4":
-        return DEFAULT_FO76_FO4_RELOCATION_MESH_ROOTS
-    if source_game.lower() == "skyrimse" and target_game.lower() == "fo4":
-        return DEFAULT_SKYRIMSE_FO4_RELOCATION_MESH_ROOTS
-    return ()
+    return tuple(load_native_module().conversion_setup_relocation_roots(
+        source_game, target_game, [str(value or "") for value in (configured or ())]
+    ))
 
 
 def resolve_base_asset_namespace(
@@ -33,14 +19,9 @@ def resolve_base_asset_namespace(
     target_game: str,
     configured: str | None,
 ) -> str:
-    namespace = str(configured or "").strip().strip("/\\")
-    if namespace:
-        return namespace
-    if source_game.lower() == "fo76" and target_game.lower() == "fo4":
-        return DEFAULT_FO76_FO4_NAMESPACE
-    if source_game.lower() == "skyrimse" and target_game.lower() == "fo4":
-        return DEFAULT_SKYRIMSE_FO4_NAMESPACE
-    return ""
+    return str(load_native_module().conversion_setup_relocation_namespace(
+        source_game, target_game, str(configured or "")
+    ))
 
 
 def asset_owner_signature(asset: AssetRef) -> str:

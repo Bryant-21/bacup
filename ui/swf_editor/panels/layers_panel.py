@@ -21,7 +21,12 @@ class LayersPanel:
             imgui.end()
             return
 
+        if self.app.document.mode == 'binary':
+            self.app.stage_panel.draw_hierarchy()
+            imgui.end()
+            return
         scene = self.app.scene
+        imgui.begin_disabled(self.app.document.mode != "visual")
 
         # Add/Remove buttons
         if imgui.button("+##add_layer"):
@@ -40,13 +45,17 @@ class LayersPanel:
             is_active = i == scene.active_layer_index
 
             # Visibility toggle
-            changed, layer.visible = imgui.checkbox(f"##vis_{i}", layer.visible)
+            changed, visible = imgui.checkbox(f"##vis_{i}", layer.visible)
+            if changed:
+                self.app.push_undo("Layer visibility")
+                layer.visible = visible
 
             imgui.same_line()
 
             # Lock toggle
             lock_label = "L" if layer.locked else "U"
             if imgui.small_button(f"{lock_label}##lock_{i}"):
+                self.app.push_undo("Lock layer")
                 layer.locked = not layer.locked
 
             imgui.same_line()
@@ -64,9 +73,12 @@ class LayersPanel:
 
             # Opacity slider
             if is_active:
-                changed, layer.opacity = imgui.slider_float(
+                changed, opacity = imgui.slider_float(
                     f"Opacity##layer_op_{i}", layer.opacity, 0.0, 1.0
                 )
+                if changed:
+                    self.app.push_undo("Layer opacity")
+                    layer.opacity = opacity
 
             # Context menu
             if imgui.begin_popup_context_item(f"layer_ctx_{i}"):
@@ -79,6 +91,17 @@ class LayersPanel:
                 if imgui.menu_item("Delete")[0] and len(scene.layers) > 1:
                     self.app.push_undo("Delete Layer")
                     scene.remove_layer(i)
+                if imgui.menu_item("Move up", "", False, i < len(scene.layers) - 1)[0]:
+                    self.app.push_undo("Reorder layer")
+                    scene.layers[i], scene.layers[i + 1] = scene.layers[i + 1], scene.layers[i]
+                    scene.active_layer_index = i + 1
+                    scene.selection.clear()
+                if imgui.menu_item("Move down", "", False, i > 0)[0]:
+                    self.app.push_undo("Reorder layer")
+                    scene.layers[i], scene.layers[i - 1] = scene.layers[i - 1], scene.layers[i]
+                    scene.active_layer_index = i - 1
+                    scene.selection.clear()
                 imgui.end_popup()
 
+        imgui.end_disabled()
         imgui.end()

@@ -4,10 +4,11 @@ import hashlib
 import json
 import re
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
-from bacup_lib.legendary_perks_ui import swf_tags
-from bacup_lib.menu_presentation_art import main_art, loading_art, layout_script
+from bacup_lib.legendary_perks_ui import remap_menu_fonts, swf_tags, verify_script_only
+from bacup_lib.menu_presentation_art import main_art, loading_logo, source_layout, transform, layout_script
 from bacup_lib.menu_presentation_deploy import write_always_loose
 from bacup_lib.status_hud_source import replace_tags
 from bacup_lib.translations import merge_ui_translations, read_table
@@ -67,16 +68,37 @@ def main_host_family(movie: bytes) -> str:
     return 'AE' if 'INSTALLED_CONTENT_INDEX' in traits else 'NG' if 'PS5TRANSFERSAVE_INDEX' in traits else 'OG'
 
 
+def build_loading_host(source_interface: Path) -> tuple[bytes, dict]:
+    source = (source_interface / 'loadingmenu.swf').read_bytes()
+    source, numeral = loading_logo(source, (RESOURCES / 'Vault4.svg').read_text(encoding='utf-8'))
+    root = source_layout(source, 'LoadingMenu')
+    layout = {name: transform(item) for name, item in root.items()}
+    layout['source'] = 'loadingmenu.swf'
+    layout['vault_number_shape'] = numeral
+    bridge = (RESOURCES / 'LoadingMenu.as').read_text(encoding='utf-8')
+    movie = verify_script_only(source, native_runtime.replace_as3_classes(source, {'LoadingMenu': bridge}))
+    entries = swf_tags(movie)
+    entries.insert(next(i for i, (code, _) in enumerate(entries) if code == 76),
+                   (82, native_runtime.compile_as3_do_abc([layout_script({}, layout)])))
+    movie = native_runtime.rename_as3_classes(replace_tags(movie, entries), 'B21_Loading', ['scaleform.gfx'])
+    movie = remap_menu_fonts(movie)
+    if native_runtime.unbacked_symbol_classes(movie):
+        raise ValueError('Unbacked converted FO76 loading classes')
+    return movie, layout
+
+
 def build_hosts(source_interface: Path, target_interface: Path,
-                target_data_dir: Path | None = None) -> tuple[dict[Path, bytes], dict]:
+                target_data_dir: Path | None = None,
+                extra_hosts: Sequence[Path] = ()) -> tuple[dict[Path, bytes], dict]:
     hosts = {}
-    for path in (target_interface / 'mainmenu.swf', host_file(target_interface, 'mainmenu.swf', target_data_dir)):
+    # Other installs sharing this converted mod (e.g. a downgraded OG beside AE) need a host of their
+    # own family; the target install's movies come last so they define its family.
+    for path in (*map(Path, extra_hosts), target_interface / 'mainmenu.swf',
+                 host_file(target_interface, 'mainmenu.swf', target_data_dir)):
         movie = path.read_bytes()
         hosts['MainMenu_' + main_host_family(movie)] = movie
-    hosts['LoadingMenu'] = host_file(target_interface, 'loadingmenu.swf', target_data_dir).read_bytes()
-    loading, loading_layout = loading_art((source_interface / 'loadingmenu.swf').read_bytes(),
-                                         hosts['LoadingMenu'])
-    outputs = {}
+    loading, loading_layout = build_loading_host(source_interface)
+    outputs = {Path('Interface/B21_TFALoadingMenu.swf'): loading}
     main_layout = {}
     for host_name, original in hosts.items():
         name = host_name.split('_')[0]
@@ -102,9 +124,9 @@ def build_hosts(source_interface: Path, target_interface: Path,
             movie = native_runtime.patch_as3_method(movie, name, 'RequestOptions',
                 [['callpropvoid', 'RequestDisplayOptions', 1]],
                 [['keep', 0], ['getlocal', 0], ['getlocal', 2], ['callpropvoid', 'B21AppendDisplayOptions', 1]])
-        if name == 'LoadingMenu':
-            movie = native_runtime.patch_as3_method(movie, name, 'SetLevel', [['callpropvoid', 'SetMeter', 3]],
-                [['keep', 0], ['getlocal', 0], ['getlocal', 2], ['callpropvoid', 'B21LevelChanged', 1]])
+            movie = native_runtime.patch_as3_method(movie, name, 'ResetSettingsToDefaults',
+                [['callpropvoid', 'onPipboyColorUpdate', 0]],
+                [['keep', 0], ['getlocal', 0], ['callpropvoid', 'B21ResetFeatureSettings', 0]])
         if native_runtime.unbacked_symbol_classes(movie):
             raise ValueError(f'Unbacked converted {name} classes')
         outputs[Path('Interface/B21_TFA' + host_name + '.swf')] = movie
@@ -113,7 +135,8 @@ def build_hosts(source_interface: Path, target_interface: Path,
 
 
 def convert_menu_presentation(source_root: Path, source_game: Path, output_data: Path,
-                              target_root: Path | None = None, target_data_dir: Path | None = None) -> dict:
+                              target_root: Path | None = None, target_data_dir: Path | None = None,
+                              extra_hosts: Sequence[Path] = ()) -> dict:
     source_root, source_game, output_data = map(Path, (source_root, source_game, output_data))
     source_interface = source_root / "interface"
     closure = {name: (source_interface / name).read_bytes() for name in MENUS}
@@ -149,7 +172,7 @@ def convert_menu_presentation(source_root: Path, source_game: Path, output_data:
 
     outputs, layout = {}, {}
     if target_root is not None:
-        outputs, layout = build_hosts(source_interface, Path(target_root) / 'interface', target_data_dir)
+        outputs, layout = build_hosts(source_interface, Path(target_root) / 'interface', target_data_dir, extra_hosts)
     pairs = [{
         "id": name,
         "loop": (LOOSE_MEDIA / "Video/MainMenuLoop.bk2").as_posix(),
@@ -173,7 +196,7 @@ def convert_menu_presentation(source_root: Path, source_game: Path, output_data:
                   for path, source in sorted(media.items())],
     }
     translations = [line for line in read_table(source_interface / "translate_en.txt")
-                    if line.split("\t", 1)[0].startswith(("$MainMenu", "$Loading", "$VDSG"))]
+                    if line.split("\t", 1)[0].startswith(("$MainMenu", "$Loading", "$LOADING", "$VDSG"))]
     previous_manifest = output_data / OUTPUT / 'conversion.json'
     if previous_manifest.is_file():
         previous = json.loads(previous_manifest.read_text(encoding='utf-8'))

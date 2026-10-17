@@ -49,6 +49,12 @@ use crate::translator::pair_hooks::fnv_fo4::creature_race_data as fnv_race_data;
 use crate::translator::pair_hooks::fnv_fo4::creature_recipe as fnv_recipe;
 use crate::translator::pair_hooks::fnv_fo4::gecko_creature::canonical_gecko_asset_evidence;
 
+#[path = "creature_weapon_publication.rs"]
+pub(crate) mod weapon_publication;
+
+#[path = "creature_property_publication.rs"]
+mod property_publication;
+
 const PLAN_VERSION: u32 = 1;
 const DEFAULT_DEBUG_DIR: &str = "debug/creature_corpus";
 const PLAN_FILE: &str = "plan.json";
@@ -468,6 +474,8 @@ pub struct CreatureCorpusJob {
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct PlannedCandidateRecipe {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_root_key: Option<String>,
     pub source_key: String,
     pub recipe_source_root: ArtifactSourceRoot,
     pub recipe_path: String,
@@ -500,8 +508,23 @@ pub struct PlannedConvertedArtifact {
 }
 
 impl PlannedCandidateRecipe {
+    fn corpus_source_key(&self) -> Result<&str, PhaseError> {
+        let Some(root) = self.source_root_key.as_deref() else { return Ok(&self.source_key); };
+        let source_parts = self.source_key.split('|').collect::<Vec<_>>();
+        let root_parts = root.split('|').collect::<Vec<_>>();
+        if source_parts.len() != 3 || root_parts.len() != 3
+            || !source_parts[0].eq_ignore_ascii_case(root_parts[0])
+            || !source_parts[2].eq_ignore_ascii_case(root_parts[2])
+            || !source_parts[1].to_ascii_lowercase().strip_prefix("b21_legacytemplate_")
+                .and_then(|plugin| plugin.strip_suffix(".esm")).is_some_and(is_blake3_hex) {
+            return Err(PhaseError::BadParams("generated creature source origin is malformed or crosses a source boundary".into()));
+        }
+        Ok(root)
+    }
+
     fn from_asset_recipe(recipe: &PlannedExecutableRecipe) -> Self {
         Self {
+            source_root_key: None,
             source_key: recipe.source_key.clone(),
             recipe_source_root: recipe.recipe_source_root,
             recipe_path: recipe.recipe_path.clone(),
@@ -711,10 +734,14 @@ fn plan_skyrim_creature_dependencies(
         skyrim_dependencies::required_skyrim_creature_dependency_signatures(),
     )?;
     let catalog = skyrim_catalog::build_creature_corpus_plan(&records, &ctx.run.interner);
-    let dependency = skyrim_dependencies::build_skyrim_creature_dependency_ledger(
+    let (source_plugin, source_masters) = crate::source_read::plugin_context_for_handle(ctx.run.source_handle_id)
+        .map_err(|error| PhaseError::Internal(error.to_string()))?;
+    let dependency = skyrim_dependencies::build_skyrim_creature_dependency_ledger_with_context(
         &records,
         &catalog,
         &ctx.run.interner,
+        &source_plugin,
+        &source_masters,
     )
     .map_err(|error| PhaseError::Internal(error.to_string()))?;
 
@@ -773,6 +800,7 @@ fn plan_skyrim_creature_dependencies(
             source_form_key: record.source.form_key,
             source_signature,
             owner_family_ids: owner_family_ids.clone(),
+            legacy_idle: None,
         });
         ledger_admissions.push(CreatureDependencyAdmissionLedgerEntry {
             source_key,
@@ -1108,9 +1136,11 @@ fn plan_legacy_creature_dependencies(
     let mut admissions = Vec::new();
     let mut ledger_admissions = Vec::new();
     for record in &dependency.records {
-        let fnv_dependencies::PairRecordLoweringDisposition::Ready { mechanism } = &record.lowering
-        else {
-            continue;
+        let mechanism = match &record.lowering {
+            fnv_dependencies::PairRecordLoweringDisposition::Ready { mechanism } => mechanism,
+            fnv_dependencies::PairRecordLoweringDisposition::Consumed { mechanism }
+                if record.signature == "SCPT" && mechanism == "fnv_legacy_scripting_bridge" => mechanism,
+            _ => continue,
         };
         if mechanism == "source_rig_creature_projection" {
             continue;
@@ -1128,6 +1158,7 @@ fn plan_legacy_creature_dependencies(
             source_form_key,
             source_signature,
             owner_family_ids: owner_family_ids.clone(),
+            legacy_idle: None,
         });
         ledger_admissions.push(CreatureDependencyAdmissionLedgerEntry {
             source_key: record.source.to_string(),
@@ -1135,6 +1166,45 @@ fn plan_legacy_creature_dependencies(
             mechanism: mechanism.clone(),
             owner_family_ids,
         });
+    }
+    if !excluded_signatures.contains("IDLE") {
+        let source_data_root = legacy_namespaced_source_data_root(ctx.source_extracted_dir)?;
+        let evidence = fnv_live_builder::build_live_fnv_fo3_creature_recipe_evidence(
+            fnv_live_builder::FnvFo3LiveRecipeBuildInput {
+                winning_records: &sources,
+                dependency_ledger: &dependency,
+                source_data_root: &source_data_root,
+                expected_creature_winners: (ctx.run.source == Game::Fnv)
+                    .then_some(fnv_catalog::EXPECTED_FULL_MERGED_CREA_WINNERS),
+            },
+            &ctx.run.interner,
+        ).map_err(|error| PhaseError::Internal(format!("source creature IDLE admission evidence: {error}")))?;
+        let routes = evidence.recipe_ledger.families.iter()
+            .filter(|family| matches!(family.disposition, crate::translator::pair_hooks::fnv_fo4::creature_recipe::FamilyRecipeDisposition::Ready))
+            .flat_map(|family| crate::translator::pair_hooks::fnv_fo4::creature_source_idles::selected_source_idle_routes(family)
+                .into_iter().map(|(source, path)| (family.rig.clone(), source, path)))
+            .collect::<Vec<_>>();
+        let bindings = crate::translator::pair_hooks::fnv_fo4::creature_idle_projection::source_idle_bindings(&sources, &routes, &source_load_orders, &ctx.run.interner)
+            .map_err(PhaseError::Internal)?;
+        let mut bindings = bindings.into_iter().collect::<Vec<_>>();
+        bindings.sort_by_key(|(key, _)| (ctx.run.interner.resolve(key.plugin).unwrap_or(""), key.local));
+        for (source_form_key, binding) in bindings {
+            let owner_family_ids = binding.rigs.iter()
+                .map(crate::translator::pair_hooks::fnv_fo4::source_rig_bridge::canonical_fnv_fo3_family_id)
+                .collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+            admissions.push(CreatureDependencyAdmission {
+                source_form_key,
+                source_signature: SigCode::from_str("IDLE").unwrap(),
+                owner_family_ids: owner_family_ids.clone(),
+                legacy_idle: Some(binding),
+            });
+            ledger_admissions.push(CreatureDependencyAdmissionLedgerEntry {
+                source_key: format!("{:06X}@{}", source_form_key.local, ctx.run.interner.resolve(source_form_key.plugin).unwrap_or("")),
+                signature: "IDLE".into(),
+                mechanism: "source_creature_idle_to_generated_behavior_event".into(),
+                owner_family_ids,
+            });
+        }
     }
     sort_dependency_admissions(&mut admissions, &ctx.run.interner)?;
     ledger_admissions.sort_by(|left, right| {
@@ -1619,6 +1689,19 @@ impl Phase for ExecuteCreatureCorpusPhase {
         let plan: CreatureCorpusExecutionPlan = read_json(&plan_path)?;
         validate_execution_plan(&plan)?;
 
+        if plan.native_catalog.catalog == "fnv_fo3_creature_catalog"
+            && ctx.run.source == Game::Fnv
+            && plan.jobs.iter().any(|job| job.executable_recipe.is_some()) {
+            crate::fnv_legacy_scripting::creature_publication::validate(ctx.mod_path, &ctx.mod_path.join(path_from_canonical(&plan.debug_dir)).join("fnv_scripts.json")).map_err(PhaseError::Internal)?;
+        }
+        if plan.native_catalog.catalog == "skyrim_creature_catalog"
+            && plan.jobs.iter().any(|job| job.executable_recipe.is_some()) {
+            crate::skyrimse_fo4_runtime::creature_attack_scripts::validate_attack_script_publication(
+                &ctx.mod_path.join(path_from_canonical(&plan.debug_dir)).join(LIVE_PREPARED_DIR).join("attack_scripts"),
+                ctx.mod_path,
+            ).map_err(PhaseError::Internal)?;
+        }
+
         let roots = SourceRoots::from_ctx(ctx);
         let mut ledger = if plan.jobs.iter().any(|job| job.executable_recipe.is_some()) {
             execute_evidence_bound_batch(&plan, params.mode, ctx.mod_path, ctx.run, &roots)?
@@ -1639,7 +1722,7 @@ impl Phase for ExecuteCreatureCorpusPhase {
             .join(EXECUTION_LEDGER_FILE);
         write_json(&ledger_path, &ledger)?;
 
-        let assets_written = ledger
+        let mut assets_written = ledger
             .families
             .iter()
             .map(|family| family.assets_published)
@@ -1660,6 +1743,21 @@ impl Phase for ExecuteCreatureCorpusPhase {
                 "strict creature corpus batch aborted; see {}",
                 ledger_path.display()
             )));
+        }
+
+        if failures == 0 && plan.native_catalog.catalog == "skyrim_creature_catalog"
+            && plan.jobs.iter().any(|job| job.executable_recipe.is_some()) {
+            super::skyrim_magic_runtime::publish_creature_cast_catalog(
+                ctx.run,
+                &ctx.mod_path.join(path_from_canonical(&plan.debug_dir))
+                    .join(LIVE_PREPARED_DIR).join("creature_casts.json"),
+                ctx.mod_path,
+            ).map_err(PhaseError::Internal)?;
+            assets_written += 1;
+        }
+        if failures == 0 && matches!(ctx.run.source, Game::Fnv | Game::Fo3)
+            && plan.jobs.iter().all(|job| job.executable_recipe.is_none()) {
+            property_publication::publish(ctx.run, &[], ctx.mod_path).map_err(PhaseError::Internal)?;
         }
 
         Ok(PhaseReport {
@@ -1795,6 +1893,7 @@ impl LegacyBridgeAdapters {
                     rig: family.key.clone(),
                     referenced_kfs: family.recursive_kf_paths.clone(),
                     kf_evidence,
+                    weapon_attacks: Vec::new(),
                     creature_traits: Vec::new(),
                 }
             })
@@ -2932,10 +3031,14 @@ fn discover_skyrim_corpus(
     )?;
     bridge.motion = motion_bridge;
     validate_native_bridge(&bridge, &corpus)?;
-    let dependency = skyrim_dependencies::build_skyrim_creature_dependency_ledger(
+    let (source_plugin, source_masters) = crate::source_read::plugin_context_for_handle(ctx.run.source_handle_id)
+        .map_err(|error| PhaseError::Internal(error.to_string()))?;
+    let dependency = skyrim_dependencies::build_skyrim_creature_dependency_ledger_with_context(
         &records,
         &native,
         &ctx.run.interner,
+        &source_plugin,
+        &source_masters,
     )
     .map_err(|error| PhaseError::Internal(error.to_string()))?;
     let race_data_policy_receipt =
@@ -3021,6 +3124,11 @@ fn prepare_live_skyrim_jobs(
     let output_dir = ctx.mod_path.join(path_from_canonical(debug_dir));
     let work_root = output_dir.join(LIVE_PREPARED_WORK_DIR);
     reset_live_preparation_work_root(&work_root)?;
+    if let Err(error) = prepare_skyrim_attack_scripts(ctx, records, dependency, &work_root) {
+        cleanup_live_preparation_work_root(&work_root)?;
+        return Err(error);
+    }
+    let dependency_models = skyrim_dependency_model_paths(ctx, records, dependency)?;
     let result = skyrim_live::build_live_skyrim_creature_mvp_families(
         skyrim_live::SkyrimCreatureLiveMvpPreparationBuildInput {
             winning_records: records,
@@ -3030,6 +3138,7 @@ fn prepare_live_skyrim_jobs(
             dependency,
             source_data_root: ctx.source_extracted_dir,
             private_staging_root: &work_root,
+            dependency_models: &dependency_models,
             reservations: ctx.run.skyrim_creature_record_reservations(),
             ancillary_reservations: ctx.run.skyrim_creature_ancillary_reservations(),
             actor_action_reservations: ctx.run.creature_actor_action_reservations(),
@@ -3053,6 +3162,19 @@ fn prepare_live_skyrim_jobs(
         return Ok((Vec::new(), preparation));
     }
 
+    if let Err(error) = super::creature_rider::stage(ctx, &prepared, motion, &work_root) {
+        cleanup_live_preparation_work_root(&work_root)?;
+        return Err(error);
+    }
+    write_json(&work_root.join("creature_casts.json"), &prepared.casting_catalog)?;
+
+    if let Err(error) = crate::skyrimse_fo4_runtime::creature_attack_scripts::publish_attack_scripts(
+        &work_root.join("attack_scripts"), ctx.mod_path,
+    ) {
+        cleanup_live_preparation_work_root(&work_root)?;
+        return Err(PhaseError::Internal(error));
+    }
+
     let final_root = output_dir.join(LIVE_PREPARED_DIR);
     let bundles = skyrim_ready_family_bundles(&prepared)?;
     let jobs =
@@ -3069,6 +3191,65 @@ fn prepare_live_skyrim_jobs(
         return Err(error);
     }
     Ok((jobs, preparation))
+}
+
+fn skyrim_dependency_model_paths(
+    ctx: &PhaseCtx<'_>,
+    records: &[Record],
+    dependency: &skyrim_dependencies::SkyrimCreatureDependencyLedger,
+) -> Result<HashMap<FormKey, Vec<(String, String)>>, PhaseError> {
+    let closure: HashSet<_> = dependency.families.iter().flat_map(|family| family.closure.iter().copied()).collect();
+    let mapper = ctx.run.mapper_state.as_ref().ok_or_else(|| PhaseError::Internal("creature dependency models require mapper state".into()))?;
+    let output_plugin = crate::source_read::plugin_name_for_handle(ctx.run.target_handle_id).map_err(|error| PhaseError::Internal(error.to_string()))?;
+    let mut result = HashMap::new();
+    for source in records.iter().filter(|record| closure.contains(&record.form_key) && matches!(record.sig.as_str(), "DEBR" | "EXPL" | "ARTO" | "RFCT")) {
+        if crate::skyrimse_fo4_runtime::creature_dependency_models::model_paths(source, &ctx.run.interner).map_err(PhaseError::Internal)?.is_empty() {
+            continue;
+        }
+        let mut key = *mapper.source_to_target.get(&source.form_key).ok_or_else(|| PhaseError::Internal(format!("creature dependency {} has no target mapping", source.form_key.format(&ctx.run.interner))))?;
+        if key.plugin == source.form_key.plugin {
+            key.plugin = ctx.run.interner.intern(&output_plugin);
+        }
+        let target = crate::source_read::read_record_relayout_by_form_key(ctx.run.target_handle_id, &key, &ctx.run.schema_target, &ctx.run.interner, None).map_err(|error| PhaseError::Internal(format!("read creature dependency model target: {error}")))?;
+        let paths = crate::skyrimse_fo4_runtime::creature_dependency_models::paired_model_paths(source, &target, &ctx.run.interner).map_err(PhaseError::Internal)?;
+        result.insert(source.form_key, paths);
+    }
+    Ok(result)
+}
+
+fn prepare_skyrim_attack_scripts(
+    ctx: &PhaseCtx<'_>,
+    records: &[Record],
+    dependency: &skyrim_dependencies::SkyrimCreatureDependencyLedger,
+    work_root: &Path,
+) -> Result<(), PhaseError> {
+    use crate::skyrimse_fo4_runtime::creature_attack_scripts;
+    let closure: HashSet<_> = dependency.families.iter().flat_map(|family| family.closure.iter().copied()).collect();
+    let mut names = BTreeSet::new();
+    for record in records.iter().filter(|record| closure.contains(&record.form_key)) {
+        names.extend(creature_attack_scripts::required_attack_scripts(record).map_err(PhaseError::Internal)?);
+    }
+    let staging_root = work_root.join("attack_scripts");
+    let headers = if names.is_empty() {
+        crate::script_headers::HeaderPreparation::default()
+    } else {
+        crate::script_headers::prepare_headers(
+            ctx.target_extracted_dir,
+            ctx.target_data_dir,
+            &staging_root,
+            ctx.params.get("bundled_corpus_root").and_then(serde_json::Value::as_str).map(Path::new),
+            ctx.run.target_assets.as_deref(),
+            "fo4",
+        ).map_err(PhaseError::Internal)?
+    };
+    if !names.is_empty() && headers.import_roots.is_empty() {
+        return Err(PhaseError::Internal("creature attack script conversion requires the Fallout 4 Papyrus type universe".to_string()));
+    }
+    let imports = headers.import_roots.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+    let flags = headers.flags_file.as_ref().map(|path| path.to_string_lossy().into_owned());
+    creature_attack_scripts::stage_attack_scripts(&names, ctx.source_extracted_dir, &staging_root, &imports, flags.as_deref())
+        .map_err(PhaseError::Internal)?;
+    Ok(())
 }
 
 fn skyrim_ready_family_bundles(
@@ -3273,6 +3454,12 @@ fn promote_live_preparation_root(work_root: &Path, final_root: &Path) -> Result<
     Ok(())
 }
 
+fn recipe_source_root_key(recipe: &crate::source_rig::SourceRigExecutableRecipe) -> Option<String> {
+    recipe.bridge_receipt.as_ref().and_then(|receipt| receipt.source_root_identity.as_ref())
+        .filter(|root| root.stable_key() != recipe.projection.source_primary_identity.stable_key())
+        .map(SourceCreatureIdentity::stable_key)
+}
+
 fn materialize_live_family_jobs(
     corpus: &CreatureCorpusPlan,
     prepared: &[LivePreparedFamilyBundle],
@@ -3322,6 +3509,7 @@ fn materialize_live_family_jobs(
             );
             write_canonical_recipe(&work_family_dir.join(&filename), recipe)?;
             planned_candidates.push(PlannedCandidateRecipe {
+                source_root_key: recipe_source_root_key(recipe),
                 source_key: source_key.clone(),
                 recipe_source_root: ArtifactSourceRoot::Mod,
                 recipe_path: mod_relative_path(mod_root, &final_family_dir.join(&filename))?,
@@ -3404,7 +3592,7 @@ fn materialize_live_family_jobs(
         graph_paths.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
         let source_key = asset_recipe.projection.source_primary_identity.stable_key();
         let output_slug = output_slugs
-            .get(&source_key.to_ascii_lowercase())
+            .get(&recipe_source_root_key(asset_recipe).unwrap_or_else(|| source_key.clone()).to_ascii_lowercase())
             .cloned()
             .ok_or_else(|| {
                 PhaseError::Internal(format!(
@@ -3500,6 +3688,10 @@ fn discover_legacy_live_corpus(
     ctx: &mut PhaseCtx<'_>,
     debug_dir: &str,
 ) -> Result<LiveCorpusDiscovery, PhaseError> {
+    ctx.run.validate_creature_dependency_publication().map_err(|error| PhaseError::Internal(error.to_string()))?;
+    if ctx.run.source == Game::Fnv {
+        ctx.run.write_fnv_creature_script_publication(ctx.mod_path, &ctx.mod_path.join(path_from_canonical(debug_dir)).join("fnv_scripts.json")).map_err(|error| PhaseError::Internal(error.to_string()))?;
+    }
     let loaded = load_live_legacy_plugin_records(ctx)?;
     let sources = loaded_legacy_record_sources(&loaded);
     let source_load_orders = loaded_legacy_source_load_orders(&loaded);
@@ -3571,6 +3763,7 @@ fn discover_legacy_live_corpus(
     let actor_action_evidence = fnv_live_builder::build_live_fnv_fo3_creature_recipe_evidence(
         fnv_live_builder::FnvFo3LiveRecipeBuildInput {
             winning_records: &sources,
+            dependency_ledger: &dependency,
             source_data_root: &source_data_root,
             expected_creature_winners: (ctx.run.source == Game::Fnv)
                 .then_some(fnv_catalog::EXPECTED_FULL_MERGED_CREA_WINNERS),
@@ -3627,6 +3820,7 @@ fn discover_legacy_live_corpus(
             target_data_root,
             private_staging_root: &work_root,
             mapper_state,
+            compiled_script: &|source, target| ctx.run.compiled_fnv_creature_script_attachment(source, target).map_err(|error| error.to_string()),
             ancillary_npc_reservations: ctx.run.creature_ancillary_npc_reservations(),
             actor_action_reservations: ctx.run.creature_actor_action_reservations(),
             destinations: &destinations,
@@ -3719,7 +3913,7 @@ fn fnv_live_preparation_ledger(
                 blockers: Vec::new(),
                 warnings: Vec::new(),
             });
-        terminal.member_source_keys.push(source_key);
+        terminal.member_source_keys.push(source_key.clone());
         terminal.warnings.extend(
             candidate
                 .dependency_records
@@ -3743,6 +3937,19 @@ fn fnv_live_preparation_ledger(
                         detail: format!("{}: {reason:?}", candidate.source),
                     }
                 }));
+            }
+        }
+    }
+    for candidate in &prepared.candidates {
+        if let fnv_mvp::FnvFo3MvpCandidateDisposition::Ready { additional_branches, .. } = &candidate.disposition {
+            for branch in additional_branches {
+                let terminal = terminals_by_family.entry(branch.family_id.clone()).or_insert_with(|| CreatureLiveFamilyTerminal {
+                    family_id: branch.family_id.clone(), member_source_keys: Vec::new(),
+                    disposition: "ready".into(), blockers: Vec::new(), warnings: Vec::new(),
+                });
+                terminal.member_source_keys.push(legacy_candidate_source_key(candidate));
+                terminal.warnings.extend(candidate.dependency_records.iter()
+                    .flat_map(|record| record.degradations.iter().cloned()));
             }
         }
     }
@@ -3866,6 +4073,7 @@ fn fnv_ready_family_bundles(
     >::new();
     for candidate in &prepared.candidates {
         let fnv_mvp::FnvFo3MvpCandidateDisposition::Ready {
+            additional_branches,
             recipe,
             closure,
             closure_staged_data_root,
@@ -3884,6 +4092,12 @@ fn fnv_ready_family_bundles(
                 closure_staged_data_root.clone(),
                 converted_artifacts.clone(),
             ));
+        for branch in additional_branches {
+            candidates_by_family.entry(branch.family_id.clone()).or_default().push((
+                branch.recipe.projection.source_primary_identity.stable_key(), branch.recipe.clone(),
+                branch.closure.clone(), branch.closure_staged_data_root.clone(), branch.converted_artifacts.clone(),
+            ));
+        }
     }
     let mut bundles = Vec::with_capacity(candidates_by_family.len());
     for (family_id, mut candidates) in candidates_by_family {
@@ -4884,7 +5098,7 @@ fn legacy_family_id(key: &fnv_catalog::RigFamilyKey) -> String {
     format!("{game}-rig-{}", &digest[..12])
 }
 
-fn extracted_mesh_root(root: &Path) -> PathBuf {
+pub(super) fn extracted_mesh_root(root: &Path) -> PathBuf {
     for name in ["Meshes", "meshes"] {
         let candidate = root.join(name);
         if candidate.is_dir() {
@@ -5623,6 +5837,7 @@ fn stable_family_bundle_hash(job: &CreatureCorpusJob) -> String {
     }
     for recipe in effective_candidate_recipes(job) {
         update(&mut hasher, &recipe.source_key);
+        if let Some(root) = &recipe.source_root_key { update(&mut hasher, root); }
         update(&mut hasher, &recipe.recipe_path);
         update(&mut hasher, &recipe.recipe_blake3);
     }
@@ -5705,7 +5920,9 @@ fn validate_execution_plan(plan: &CreatureCorpusExecutionPlan) -> Result<(), Pha
                 job.source_key
             )));
         }
-        let source_key = job.source_key.to_ascii_lowercase();
+        let candidate_recipes = effective_candidate_recipes(job);
+        let source_key = candidate_recipes.iter().find(|recipe| recipe.source_key.eq_ignore_ascii_case(&job.source_key))
+            .map(PlannedCandidateRecipe::corpus_source_key).transpose()?.unwrap_or(&job.source_key).to_ascii_lowercase();
         if let Some(planned) = planned_by_source.get(&source_key) {
             if planned.output_slug != job.output_slug
                 || (!family_bundle_plan && planned.rig_family.id != job.family_id)
@@ -5733,7 +5950,7 @@ fn validate_execution_plan(plan: &CreatureCorpusExecutionPlan) -> Result<(), Pha
                 ))
             })?;
             if rejected.output_slug != job.output_slug
-                || executable.source_key != rejected.source_key
+                || (!family_bundle_plan && executable.source_key != rejected.source_key)
                 || (!family_bundle_plan
                     && executable.source_key != rejected.primary_record_identity.stable_key())
                 || executable.family_id != job.family_id
@@ -5756,8 +5973,10 @@ fn validate_execution_plan(plan: &CreatureCorpusExecutionPlan) -> Result<(), Pha
                 .map(|source| source.to_ascii_lowercase())
                 .collect::<BTreeSet<_>>();
             for source in &local_members {
-                let known = planned_by_source.contains_key(source)
-                    || rejected_by_source.get(source).is_some_and(|rejected| {
+                let origin = candidate_recipes.iter().find(|recipe| recipe.source_key.eq_ignore_ascii_case(source))
+                    .map(PlannedCandidateRecipe::corpus_source_key).transpose()?.unwrap_or(source).to_ascii_lowercase();
+                let known = planned_by_source.contains_key(&origin)
+                    || rejected_by_source.get(&origin).is_some_and(|rejected| {
                         !rejected.reasons.iter().any(|reason| {
                             matches!(reason, CreatureRejectionReason::CuratedExclusion { .. })
                         })
@@ -6348,6 +6567,11 @@ fn execute_evidence_bound_batch(
         }
     }
     if prepared.is_empty() {
+        if matches!(run.source, Game::Fnv | Game::Fo3) {
+            weapon_publication::publish_creature_weapon_catalog(run, &[], mod_root)
+                .map_err(PhaseError::Internal)?;
+            property_publication::publish(run, &[], mod_root).map_err(PhaseError::Internal)?;
+        }
         fs::remove_dir_all(&staging_parent)
             .map_err(|error| PhaseError::Internal(error.to_string()))?;
         return Ok(BatchExecutionLedger {
@@ -6364,6 +6588,14 @@ fn execute_evidence_bound_batch(
         });
     }
 
+    let rider_staged = if run.source == Game::SkyrimSe {
+        super::creature_rider::read_staged(mod_root, &plan.debug_dir)?
+    } else {
+        None
+    };
+    if run.source == Game::SkyrimSe && prepared.iter().any(|family| family.family_id == "horse") && rider_staged.is_none() {
+        return Err(PhaseError::Internal("validated horse family has no staged rider assets".into()));
+    }
     let mut registrations = BTreeMap::new();
     for family in &prepared {
         for (relative, staged) in &family.data_files {
@@ -6384,8 +6616,26 @@ fn execute_evidence_bound_batch(
             }
         }
     }
+    if let Some((_, files)) = &rider_staged {
+        for (relative, staged) in files {
+            register_prepared_data_file(
+                &mut registrations,
+                relative.clone(),
+                staged.clone(),
+                mod_root.join("data").join(relative),
+                run.config.overwrite_existing,
+            ).map_err(PhaseError::Internal)?;
+        }
+    }
     let registrations = registrations.into_values().collect::<Vec<_>>();
 
+    let mut session = crate::session::open_session(run.target_handle_id, None)
+        .map_err(|error| PhaseError::Internal(format!("open creature record session: {error}")))?;
+    let rider_registration = if rider_staged.is_some() {
+        Some(super::creature_rider::prepare_records(run, &mut session, roots.target_extracted)?)
+    } else {
+        None
+    };
     let prepared_sink = if let Some(sink) = run.output_sink.as_deref() {
         let borrowed = registrations
             .iter()
@@ -6413,8 +6663,6 @@ fn execute_evidence_bound_batch(
             "evidence-bound creature execution requires initialized mapper state".to_string(),
         )
     })?;
-    let mut session = crate::session::open_session(run.target_handle_id, None)
-        .map_err(|error| PhaseError::Internal(format!("open creature record session: {error}")))?;
     let mut recipes = prepared
         .iter()
         .flat_map(|family| family.candidate_recipes.iter().cloned())
@@ -6488,6 +6736,15 @@ fn execute_evidence_bound_batch(
             ));
         }
     };
+
+    let bow_stagger_races = if run.source == Game::SkyrimSe {
+        match prepare_bow_stagger_rows(&recipes, &run.skyrim_bow_stagger_races, prepared_records.receipt()) {
+            Ok(rows) => Some(rows),
+            Err(error) => return Ok(failed_evidence_bound_ledger_with_cleanup(
+                plan, &prepared[0].family_id, format!("prepare creature BowStagger runtime data: {error}"), &staging_parent,
+            )),
+        }
+    } else { None };
 
     let mut promoted = Vec::new();
     for (relative, staged, destination) in &registrations {
@@ -6580,6 +6837,20 @@ fn execute_evidence_bound_batch(
     }
 
     let committed = prepared_records.commit();
+    if let Some(rows) = bow_stagger_races {
+        run.skyrim_bow_stagger_races = rows;
+    }
+    if matches!(run.source, Game::Fnv | Game::Fo3) {
+        weapon_publication::publish_creature_weapon_catalog(run, &recipes, mod_root)
+            .map_err(|error| PhaseError::Internal(format!(
+                "creature target records committed but weapon catalog publication failed: {error}"
+            )))?;
+        property_publication::publish(run, &prepared, mod_root)
+            .map_err(|error| PhaseError::Internal(format!("creature target records committed but property runtime receipt publication failed: {error}")))?;
+    }
+    if let (Some(registration), Some((stage, _))) = (rider_registration, rider_staged) {
+        super::creature_rider::commit_records(run, &mut session, registration, stage, mod_root)?;
+    }
     if let Err(error) = crate::source_rig::stage_creature_record_commit_ledger(
         mod_root,
         &committed,
@@ -6872,6 +7143,7 @@ fn load_candidate_recipe(
         .stable_hash_blake3()
         .map_err(|error| error.to_string())?;
     if hash != planned.recipe_blake3
+        || recipe_source_root_key(&recipe) != planned.source_root_key
         || !recipe
             .projection
             .source_primary_identity
@@ -7037,6 +7309,56 @@ fn rollback_replaced_recipe_files(promoted: &[(PathBuf, PathBuf, Option<PathBuf>
     errors
 }
 
+pub(crate) fn project_recipe_stagger(
+    recipe: &crate::source_rig::SourceRigExecutableRecipe,
+) -> Result<crate::skyrimse_fo4_runtime::bow_stagger::ProjectedRaceStagger, String> {
+    use crate::skyrimse_fo4_runtime::bow_stagger::{ProjectedAttackStagger, ProjectedRaceStagger};
+    if !recipe.projection.source_primary_identity.namespace.eq_ignore_ascii_case("skyrimse") {
+        return Err("BowStagger source creature is not Skyrim".into());
+    }
+    let race = recipe.projection.base.form_keys.race.clone();
+    if !race.plugin.eq_ignore_ascii_case(&recipe.projection.base.target_plugin) {
+        return Err("BowStagger race is outside the converted output plugin".into());
+    }
+    let mut attacks = Vec::new();
+    let mut events = BTreeSet::new();
+    for attack in &recipe.projection.attacks {
+        let Some(source) = &attack.target_data.source_atkd else { continue };
+        let stagger = f32::from_bits(source.stagger_bits);
+        if source.schema_id != "skyrimse-race-atkd-v1" || !stagger.is_finite()
+            || attack.event.is_empty() || source.event.is_empty() || !events.insert(attack.event.to_ascii_lowercase()) {
+            return Err("BowStagger attack has invalid source ATKD evidence or duplicate target event".into());
+        }
+        attacks.push(ProjectedAttackStagger { event: attack.event.clone(), source_event: source.event.clone(), stagger });
+    }
+    attacks.sort_by_key(|attack| attack.event.to_ascii_lowercase());
+    Ok(ProjectedRaceStagger { race, attacks })
+}
+
+pub(crate) fn prepare_bow_stagger_rows(
+    recipes: &[crate::source_rig::SourceRigExecutableRecipe],
+    current: &[crate::skyrimse_fo4_runtime::bow_stagger::ProjectedRaceStagger],
+    receipt: &crate::source_rig::CreatureRecordBatchReceipt,
+) -> Result<Vec<crate::skyrimse_fo4_runtime::bow_stagger::ProjectedRaceStagger>, String> {
+    let mut rows = BTreeMap::new();
+    for row in current.iter().cloned().chain(recipes.iter().map(project_recipe_stagger).collect::<Result<Vec<_>, _>>()?) {
+        let key = (row.race.plugin.to_ascii_lowercase(), row.race.local);
+        if let Some(previous) = rows.insert(key, row.clone()) {
+            if previous != row { return Err("conflicting BowStagger source attacks for one target race".into()); }
+        }
+    }
+    for recipe in recipes {
+        let row = &rows[&(recipe.projection.base.form_keys.race.plugin.to_ascii_lowercase(), recipe.projection.base.form_keys.race.local)];
+        let race = receipt.families.iter().flat_map(|family| &family.races).find(|race|
+            race.form_key.local == row.race.local && race.form_key.plugin.eq_ignore_ascii_case(&row.race.plugin))
+            .ok_or("BowStagger race is absent from the atomic creature record batch")?;
+        if row.attacks.iter().any(|attack| !race.attack_events.iter().any(|event| event.eq_ignore_ascii_case(&attack.event))) {
+            return Err("BowStagger target attack event is absent from the emitted RACE".into());
+        }
+    }
+    Ok(rows.into_values().collect())
+}
+
 fn candidate_execution_ledgers(
     plan: &CreatureCorpusExecutionPlan,
     families: &[FamilyExecutionLedger],
@@ -7045,7 +7367,7 @@ fn candidate_execution_ledgers(
         .iter()
         .map(|family| (family.family_id.to_ascii_lowercase(), family))
         .collect::<BTreeMap<_, _>>();
-    let mut candidates = Vec::new();
+    let mut candidates = BTreeMap::<String, CandidateExecutionLedger>::new();
     for job in &plan.jobs {
         let family = dispositions
             .get(&job.family_id.to_ascii_lowercase())
@@ -7053,24 +7375,25 @@ fn candidate_execution_ledgers(
         let source_keys = if job.executable_recipe.is_some() {
             effective_candidate_recipes(job)
                 .into_iter()
-                .map(|recipe| recipe.source_key)
+                .map(|recipe| recipe.source_root_key.unwrap_or(recipe.source_key))
                 .collect::<Vec<_>>()
         } else {
             vec![job.source_key.clone()]
         };
-        candidates.extend(
-            source_keys
-                .into_iter()
-                .map(|source_key| CandidateExecutionLedger {
-                    source_key,
-                    owner_family_id: job.family_id.clone(),
-                    disposition: family.disposition,
-                    message: family.message.clone(),
-                }),
-        );
+        for source_key in source_keys {
+            let candidate = CandidateExecutionLedger {
+                source_key: source_key.clone(), owner_family_id: job.family_id.clone(),
+                disposition: family.disposition, message: family.message.clone(),
+            };
+            let entry = candidates.entry(source_key.to_ascii_lowercase()).or_insert_with(|| candidate.clone());
+            let severity = |disposition| match disposition {
+                TerminalDisposition::Published => 0, TerminalDisposition::AbortedStrict => 1,
+                TerminalDisposition::UnsupportedCapability => 2, TerminalDisposition::Failed => 3,
+            };
+            if severity(candidate.disposition) > severity(entry.disposition) { *entry = candidate; }
+        }
     }
-    candidates.sort_by_key(|candidate| candidate.source_key.to_ascii_lowercase());
-    candidates
+    candidates.into_values().collect()
 }
 
 fn failed_evidence_bound_ledger(
@@ -7731,10 +8054,15 @@ fn stage_fnv_kf(
                 ordered_bone_names: &skeleton.ordered_bone_names,
                 ordered_float_slot_names: &skeleton.float_slot_names,
             },
+            reference_skeleton_hkx: &skeleton.hkx_bytes,
             original_skeleton_name: &skeleton.skeleton_name,
             event_map: &event_map,
             target_sample_rate_hz: artifact.target_sample_rate_hz,
             extracted_motion_policy,
+            attack_kind: None,
+            automatic_attack: None,
+            attack_playback_speed: None,
+            equipment_index: None,
         },
     )
     .map_err(|error| FamilyFailure {
@@ -8279,7 +8607,7 @@ fn increment(counts: &mut BTreeMap<String, usize>, key: String) {
     *counts.entry(key).or_default() += 1;
 }
 
-fn write_json(path: &Path, value: &impl Serialize) -> Result<(), PhaseError> {
+pub(super) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), PhaseError> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| PhaseError::Internal(error.to_string()))?;
     if let Some(parent) = path.parent() {
@@ -9375,6 +9703,7 @@ mod tests {
         let source_key = bundle.jobs[0].source_key.clone();
         bundle.jobs[0].member_source_keys = vec![source_key.clone()];
         bundle.jobs[0].candidate_recipes = vec![PlannedCandidateRecipe {
+            source_root_key: None,
             source_key,
             recipe_source_root: ArtifactSourceRoot::Mod,
             recipe_path: "debug/creature_corpus/prepared/gecko/candidate.json".to_string(),
@@ -9383,6 +9712,43 @@ mod tests {
         bundle.jobs[0].family_bundle_blake3 = Some(stable_family_bundle_hash(&bundle.jobs[0]));
         validate_execution_plan(&bundle)
             .expect("family bundle ownership follows the candidate source identity");
+        let mut branch = bundle.clone();
+        let original_key = branch.jobs[0].source_key.clone();
+        let generated_key = SourceCreatureIdentity {
+            namespace: "fnv".into(), plugin: format!("B21_LegacyTemplate_{}.esm", "ab".repeat(32)),
+            local_form_id: identity.local_form_id,
+        }.stable_key();
+        branch.jobs[0].source_key = generated_key.clone();
+        branch.jobs[0].executable_recipe.as_mut().unwrap().source_key = generated_key.clone();
+        branch.jobs[0].member_source_keys = vec![generated_key.clone()];
+        branch.jobs[0].candidate_recipes[0].source_key = generated_key;
+        branch.jobs[0].candidate_recipes[0].source_root_key = Some(original_key.clone());
+        branch.jobs[0].job_id = stable_job_id(&branch.jobs[0].source_key, &branch.jobs[0].family_id, &branch.jobs[0].output_slug);
+        branch.jobs[0].family_bundle_blake3 = Some(stable_family_bundle_hash(&branch.jobs[0]));
+        validate_execution_plan(&branch).expect("generated branch resolves its real source corpus boundary");
+        for invalid_root in [original_key.replace("fnv|", "fo3|"), original_key.replace("falloutnv.esm", "unknown.esm")] {
+            let mut invalid = branch.clone();
+            invalid.jobs[0].candidate_recipes[0].source_root_key = Some(invalid_root);
+            invalid.jobs[0].family_bundle_blake3 = Some(stable_family_bundle_hash(&invalid.jobs[0]));
+            assert!(validate_execution_plan(&invalid).is_err());
+        }
+        let mut missing_origin = branch.clone();
+        missing_origin.jobs[0].candidate_recipes[0].source_root_key = None;
+        missing_origin.jobs[0].family_bundle_blake3 = Some(stable_family_bundle_hash(&missing_origin.jobs[0]));
+        assert!(validate_execution_plan(&missing_origin).is_err());
+        let mut both = bundle.clone();
+        both.jobs.extend(branch.jobs.clone());
+        both.jobs[1].family_id = "other-branch-family".into();
+        let outcomes = both.jobs.iter().enumerate().map(|(index, job)| FamilyExecutionLedger {
+            family_id: job.family_id.clone(), staging_dir: String::new(), publish_root: job.publish_root.clone(),
+            disposition: if index == 0 { TerminalDisposition::Published } else { TerminalDisposition::Failed },
+            job_ids: vec![job.job_id.clone()], assets_published: 0, records_deferred: 0,
+            message: (index == 1).then(|| "branch failed".into()),
+        }).collect::<Vec<_>>();
+        let outcomes = candidate_execution_ledgers(&both, &outcomes);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].source_key, original_key);
+        assert_eq!(outcomes[0].disposition, TerminalDisposition::Failed);
         let mut curated = plan.clone();
         curated.corpus.rejected[0].reasons = vec![CreatureRejectionReason::CuratedExclusion {
             policy: "synthetic-curated-exclusion".to_string(),
@@ -9498,6 +9864,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, source_key)| PlannedCandidateRecipe {
+                source_root_key: None,
                 source_key: source_key.clone(),
                 recipe_source_root: ArtifactSourceRoot::Mod,
                 recipe_path: format!("debug/creature_corpus/live/family/candidate-{index}.json"),
@@ -9716,6 +10083,7 @@ mod tests {
                 .map(|entry| entry.source_kf.clone())
                 .collect(),
             kf_evidence: evidence,
+            weapon_attacks: Vec::new(),
             creature_traits: vec![fnv_motion::CreatureTraitEvidence {
                 motion_trait: fnv_motion::CreatureMotionTrait::Walks,
                 source_creature: fnv_catalog::StableFormKey {
@@ -9770,6 +10138,8 @@ mod tests {
                         controller_types: vec!["NiTransformController".to_string()],
                         interpolator_types: vec!["NiTransformInterpolator".to_string()],
                         target_names: targets.iter().map(|target| (*target).to_string()).collect(),
+                        transform_priorities: Default::default(),
+                        transform_components: Default::default(),
                         required_float_slots: Vec::new(),
                         compatibility: fnv_motion::BindingCompatibility::Verified,
                         compatibility_detail: None,

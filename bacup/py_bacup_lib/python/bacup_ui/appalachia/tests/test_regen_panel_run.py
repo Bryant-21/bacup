@@ -96,6 +96,7 @@ def _panel():
         _runner=None,
     )
     panel = RegenPanel(ws)
+    panel.install_location = "game"
     panel._store_install_cache = {
         "fo4": ("C:/FO4", _ok_store_install()),
         "fo76": (
@@ -121,6 +122,7 @@ def _fake_runner(captured):
 
         def emit_complete(self, mod_path, summary):
             captured["complete"] = (mod_path, summary)
+            captured.setdefault("completes", []).append(summary)
 
         def emit_log(self, *a):
             pass
@@ -209,6 +211,38 @@ def test_start_conversion_invokes_run_full_regen_with_built_args():
     assert captured["paths"].diagnostics_root == diagnostics_root
     assert captured["logging_root"] == diagnostics_root
     assert Path(captured["complete"][0]) == Path("X:/app/mods/SeventySix")
+
+
+@pytest.mark.parametrize("start_method, pipeline_fn", [
+    ("start_conversion", "run_full_regen"),
+    ("start_resume_from_phase", "run_resume_from_phase"),
+])
+def test_completion_waits_for_deployment(start_method, pipeline_fn):
+    panel, _ = _panel()
+    panel.recovery_phase = "lodgen"
+    captured = {}
+
+    def fake_pipeline(paths, *args, runner, **kw):
+        # run_unified reports completion once its archives are packed, before deployment.
+        runner.emit_complete(str(paths.output_root), {"records": 1})
+        return _regen_result(deployed=True)
+
+    with patch("bacup_ui.conversion.panels.regen_panel.ConversionRunner", _fake_runner(captured)), patch(
+        f"bacup_lib.regen_pipeline.{pipeline_fn}", fake_pipeline
+    ), patch(
+        "bacup_ui.conversion.panels.regen_panel.RegenPanel.load_lod_settings",
+        _fake_lod_settings,
+    ), patch(
+        "bacup_ui.conversion.panels.regen_panel.RegenPanel._deploy_companion_mod",
+        lambda self, paths, runner: [],
+    ), patch("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app")), patch(
+        "bacup_ui.conversion.panels.regen_panel.scan_conversion_inputs",
+        lambda *_a, **_k: InputPreflightReport(),
+    ):
+        getattr(panel, start_method)()
+
+    assert len(captured["completes"]) == 1
+    assert captured["completes"][0]["deployed"] is True
 
 
 @pytest.mark.parametrize("start_method, pipeline_fn, summary_key, summary_value", [

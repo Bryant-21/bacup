@@ -162,6 +162,15 @@ pub fn emit_psc_files(
     if !report.package_data_aliases.is_empty() {
         write_package_data_alias_manifest(&out_dir, &mut report);
     }
+    let deferred = scripts.iter().filter_map(|script| script.deferred_creature_quest.as_ref()).collect::<Vec<_>>();
+    if !deferred.is_empty() {
+        let path = out_dir.join("fnv_deferred_creature_quests.json");
+        let result = serde_json::to_vec_pretty(&deferred).map_err(|error| error.to_string())
+            .and_then(|bytes| std::fs::write(&path, bytes).map_err(|error| error.to_string()));
+        if let Err(error) = result {
+            report.errors.push(format!("write deferred creature quest audit {}: {error}", path.display()));
+        }
+    }
 
     report
 }
@@ -326,6 +335,7 @@ mod tests {
             properties: Vec::new(),
             package_data_aliases: Vec::new(),
             dedicated_topics: Vec::new(),
+            deferred_creature_quest: None,
             compile_status: super::super::script_synthesizer::ScriptCompileStatus::SourceGeneratedPendingCompile,
             terminal_status: super::super::script_synthesizer::ScriptTerminalStatus::SourceGeneratedPendingCompile,
         }

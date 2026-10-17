@@ -11,6 +11,9 @@ from bacup_lib.quest_area_ui import closure, symbol_ids, tag
 from bacup_lib.status_hud_source import select_children, sprite_tags, states
 from bacup_lib.translations import merge_ui_translations, packaged_tales_lines
 
+MENU_SOURCES = (Path("interface/newpipboymenu.swf"), Path("interface/pipboymenu.swf"))
+MENU_SYMBOLS = ("NewPipBoyMenu", "PipboyMenu")
+
 OUTPUT = Path("Interface/B21/TalesFromAppalachia/QuickBoy.swf")
 SCREEN_SOURCE = Path("meshes/interface/objects/screen.nif")
 SCREEN_OUTPUT = Path("Meshes/B21/TalesFromAppalachia/QuickBoyScreen.nif")
@@ -24,16 +27,20 @@ def build_movie(source: bytes) -> tuple[bytes, dict]:
 
     tags = swf_tags(source)
     symbols = symbol_ids(tags)
-    if "PipboyMenu" not in symbols:
-        raise ValueError("Quick-Boy requires the source PipboyMenu symbol")
-    root = symbols["PipboyMenu"]
+    symbol = next((name for name in MENU_SYMBOLS if name in symbols), None)
+    if symbol is None:
+        raise ValueError("Quick-Boy requires the source NewPipBoyMenu or PipboyMenu symbol")
+    root = symbols[symbol]
     sprites = {struct.unpack_from("<H", payload)[0]: payload for code, payload in tags if code == 39}
-    layout = states(sprite_tags(sprites[root]))[0]
+    if root not in sprites:
+        raise ValueError(f"Quick-Boy requires a sprite-backed {symbol} symbol")
+    frames = states(sprite_tags(sprites[root]))
+    layout = frames[0] if frames else {}
     if "MainBackground_mc" not in layout:
-        raise ValueError("Quick-Boy requires PipboyMenu.MainBackground_mc")
+        raise ValueError(f"Quick-Boy requires {symbol}.MainBackground_mc")
     selected = select_children(sprites[root], {"MainBackground_mc"})
     art = closure([(c, selected if c == 39 and p == sprites[root] else p) for c, p in tags],
-                  root, "PipboyMenu.MainBackground_mc")
+                  root, f"{symbol}.MainBackground_mc")
     # Only the source background display list crosses the game boundary. Its
     # inventory code and same-named FO4 classes must never enter the host domain.
     scripts = [SCRIPT.read_text(encoding="utf-8"),
@@ -51,7 +58,7 @@ def build_movie(source: bytes) -> tuple[bytes, dict]:
     movie = b"FWS" + source[3:4] + struct.pack("<I", len(output) + 8) + output
     if unbacked_symbol_classes(movie):
         raise ValueError("Unbound Quick-Boy artwork")
-    return movie, {"schema_version": 1, "source_member": "PipboyMenu.MainBackground_mc",
+    return movie, {"schema_version": 1, "source_member": f"{symbol}.MainBackground_mc",
                    "source_canvas": [(xmax - xmin) // 20, (ymax - ymin) // 20],
                    "art_tags": len(art), "imports": []}
 
@@ -63,7 +70,11 @@ def convert_quick_boy_ui(source_root: Path, output_data: Path) -> dict:
     if not screen_source.is_file():
         raise FileNotFoundError(f"Quick-Boy requires the installed FO76 screen geometry: {screen_source}")
     backdrop_texture = (Path(source_root) / BACKDROP_TEXTURE).read_bytes()
-    source = (Path(source_root) / "interface/pipboymenu.swf").read_bytes()
+    source_path = next((Path(source_root) / member for member in MENU_SOURCES
+                        if (Path(source_root) / member).is_file()), None)
+    if source_path is None:
+        raise FileNotFoundError("Quick-Boy requires interface/newpipboymenu.swf or interface/pipboymenu.swf")
+    source = source_path.read_bytes()
     movie, report = build_movie(source)
     screen = Path(output_data) / SCREEN_OUTPUT
     screen.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +88,8 @@ def convert_quick_boy_ui(source_root: Path, output_data: Path) -> dict:
     texture = Path(output_data) / BACKDROP_TEXTURE
     texture.parent.mkdir(parents=True, exist_ok=True)
     texture.write_bytes(backdrop_texture)
-    report.update(source_sha256=hashlib.sha256(source).hexdigest(),
+    report.update(source_movie=source_path.relative_to(source_root).as_posix(),
+                  source_sha256=hashlib.sha256(source).hexdigest(),
                   screen_source=SCREEN_SOURCE.as_posix(),
                   screen_source_sha256=hashlib.sha256(screen_source.read_bytes()).hexdigest(),
                   bridge_sha256=hashlib.sha256(SCRIPT.read_bytes()).hexdigest(),

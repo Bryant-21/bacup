@@ -8,8 +8,25 @@ use super::manifest::{
 use super::pack::pack_capability_scaffold;
 use super::race_data::*;
 use super::*;
+
+#[path = "template_tests.rs"]
+mod template_tests;
+#[path = "bow_stagger_commit_tests.rs"]
+mod bow_stagger_commit_tests;
+
+#[path = "capacity_tests.rs"]
+mod capacity_tests;
+#[path = "source_cast_tests.rs"]
+mod source_cast_tests;
+#[path = "source_recovery_tests.rs"]
+mod source_recovery_tests;
 use crate::ids::FormKey;
 use crate::record::FieldValue;
+
+#[path = "actor_action_weapon_tests.rs"]
+mod actor_action_weapon_tests;
+#[path = "creature_weapon_runtime_tests.rs"]
+mod creature_weapon_runtime_tests;
 
 fn controller_decl() -> CreatureControllerDecl {
     CreatureControllerDecl {
@@ -73,6 +90,7 @@ fn wolf_manifest() -> CreatureManifest {
         }],
     };
     CreatureManifest {
+        property_sequences: Vec::new(),
         creature_name: "SourceWolf".to_string(),
         visual_skeleton_nif: "CharacterAssets\\Skeleton.nif".to_string(),
         animation_skeleton: SkeletonDecl {
@@ -182,6 +200,7 @@ fn wolf_mvp() -> (CreatureManifest, MvpGraphManifest) {
         character_properties: Vec::new(),
     };
     let manifest = CreatureManifest {
+        property_sequences: Vec::new(),
         creature_name: "B21_SkyrimWolf".to_string(),
         visual_skeleton_nif: "Actors\\B21_SkyrimWolf\\CharacterAssets\\Skeleton.nif".to_string(),
         animation_skeleton: SkeletonDecl {
@@ -342,6 +361,7 @@ fn ranged_capability() -> (CreatureManifest, CapabilityGraphManifest) {
     let (manifest, _) = wolf_mvp();
     let role =
         |role, state_name: &str, clip_name: &str, trigger_event: Option<&str>| CapabilityClipRole {
+            equipment_index: None,
             role,
             state_name: state_name.to_string(),
             clip_name: clip_name.to_string(),
@@ -356,6 +376,7 @@ fn ranged_capability() -> (CreatureManifest, CapabilityGraphManifest) {
         flags: 0,
     };
     let graph = CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template: CreatureGraphTemplate::GroundRangedProjectile,
         roles: vec![
             role(CreatureClipRole::Idle, "Rest", "mt_idle_wolf", None),
@@ -385,6 +406,7 @@ fn ranged_capability() -> (CreatureManifest, CapabilityGraphManifest) {
             ),
         ],
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         idle_event: "Idle".to_string(),
         explicit_events: ["Idle", "beginStride", "rotatePort", "spitBolt", "spitAcid"]
             .map(event)
@@ -397,6 +419,7 @@ fn ranged_capability() -> (CreatureManifest, CapabilityGraphManifest) {
 fn passive_ground_capability() -> (CreatureManifest, CapabilityGraphManifest) {
     let (manifest, _) = wolf_mvp();
     let graph = CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template: CreatureGraphTemplate::PassiveGround,
         roles: vec![
             capability_role(CreatureClipRole::Idle, "Rest", "mt_idle_wolf", None),
@@ -408,6 +431,7 @@ fn passive_ground_capability() -> (CreatureManifest, CapabilityGraphManifest) {
             ),
         ],
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         idle_event: "Idle".to_string(),
         explicit_events: ["Idle", "startWalk"].map(generic_event).to_vec(),
         overlays: Vec::new(),
@@ -422,6 +446,7 @@ fn capability_role(
     trigger_event: Option<&str>,
 ) -> CapabilityClipRole {
     CapabilityClipRole {
+        equipment_index: None,
         role,
         state_name: state_name.to_string(),
         clip_name: clip_name.to_string(),
@@ -443,6 +468,7 @@ fn generic_event(name: &str) -> EventDecl {
 fn swim_capability() -> (CreatureManifest, CapabilityGraphManifest) {
     let (manifest, _) = wolf_mvp();
     let graph = CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template: CreatureGraphTemplate::Swim,
         roles: vec![
             capability_role(CreatureClipRole::SwimIdle, "SwimIdle", "mt_idle_wolf", None),
@@ -454,6 +480,7 @@ fn swim_capability() -> (CreatureManifest, CapabilityGraphManifest) {
             ),
         ],
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         idle_event: "moveStop".to_string(),
         explicit_events: ["moveStop", "moveStart"].map(generic_event).to_vec(),
         overlays: Vec::new(),
@@ -464,6 +491,7 @@ fn swim_capability() -> (CreatureManifest, CapabilityGraphManifest) {
 fn fly_capability() -> (CreatureManifest, CapabilityGraphManifest) {
     let (manifest, _) = wolf_mvp();
     let graph = CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template: CreatureGraphTemplate::Fly,
         roles: vec![
             capability_role(
@@ -480,6 +508,7 @@ fn fly_capability() -> (CreatureManifest, CapabilityGraphManifest) {
             ),
         ],
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         idle_event: "moveStop".to_string(),
         explicit_events: ["moveStop", "moveStart"].map(generic_event).to_vec(),
         overlays: Vec::new(),
@@ -532,6 +561,7 @@ fn multimodal_capability(
             ),
         };
     let graph = CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template,
         roles: vec![
             capability_role(CreatureClipRole::Idle, "GroundIdle", "mt_idle_wolf", None),
@@ -567,6 +597,7 @@ fn multimodal_capability(
             ),
         ],
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         idle_event: "Idle".to_string(),
         explicit_events: vec![
             generic_event("Idle"),
@@ -655,6 +686,7 @@ fn stationary_turret_capability() -> (CreatureManifest, CapabilityGraphManifest)
     manifest.core.character_properties.extend(aim_properties);
     manifest.root = manifest.core.clone();
     let graph = CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template: CreatureGraphTemplate::StationaryTurret,
         roles: vec![
             capability_role(
@@ -671,6 +703,7 @@ fn stationary_turret_capability() -> (CreatureManifest, CapabilityGraphManifest)
             ),
         ],
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         idle_event: "g_defaultState".to_string(),
         explicit_events: ["g_defaultState", "attackStart", "weaponFire"]
             .map(generic_event)
@@ -683,6 +716,7 @@ fn stationary_turret_capability() -> (CreatureManifest, CapabilityGraphManifest)
 fn robot_continuous_attack_capability() -> (CreatureManifest, CapabilityGraphManifest) {
     let (manifest, _) = wolf_mvp();
     let graph = CapabilityGraphManifest {
+        source_channels: Vec::new(),
         template: CreatureGraphTemplate::RobotContinuousAttack,
         roles: vec![
             capability_role(CreatureClipRole::Idle, "RobotIdle", "mt_idle_wolf", None),
@@ -706,6 +740,7 @@ fn robot_continuous_attack_capability() -> (CreatureManifest, CapabilityGraphMan
             ),
         ],
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         idle_event: "g_defaultState".to_string(),
         explicit_events: [
             "g_defaultState",
@@ -1446,6 +1481,91 @@ fn mvp_validation_fails_closed_on_names_bindings_modes_events_and_motion() {
 }
 
 #[test]
+fn ranged_attack_state_notifications_survive_pack_with_payloads() {
+    for equipment_index in [None, Some(3)] {
+    let (manifest, mut graph) = ranged_capability();
+    let handler = equipment_index.map(|index| format!("attackState{index}"))
+        .unwrap_or_else(|| "attackState".to_string());
+    for role in &mut graph.roles {
+        if matches!(role.role, CreatureClipRole::ProjectileAttack | CreatureClipRole::ContinuousAttackStart | CreatureClipRole::ContinuousAttackLoop | CreatureClipRole::ContinuousAttackStop) {
+            role.equipment_index = equipment_index;
+        }
+    }
+    graph.explicit_events.push(generic_event(&handler));
+    graph.explicit_events.push(generic_event("weaponFire"));
+    let output = tempfile::tempdir().unwrap();
+    let report = pack_capability_scaffold(&manifest, &graph, output.path()).unwrap();
+    let xml = reread_packed_xml(&report, &manifest.paths.core_behavior);
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let event_names = document.descendants().find(|node| node.attribute("name") == Some("eventNames")).unwrap();
+    let event_index = event_names.children().filter(|node| node.has_tag_name("hkcstring"))
+        .position(|node| node.text() == Some(handler.as_str())).unwrap();
+    let parameter = |node: roxmltree::Node<'_, '_>, name: &str| {
+        node.children().find(|child| child.attribute("name") == Some(name))
+            .and_then(|child| child.text()).unwrap_or("").to_string()
+    };
+    let object = |id: &str| document.descendants().find(|node| {
+        node.has_tag_name("hkobject") && node.attribute("name") == Some(id)
+    }).unwrap();
+    let states = document.descendants().filter(|node| {
+        node.attribute("class") == Some("hkbStateMachineStateInfo")
+    }).collect::<Vec<_>>();
+    for name in ["SpitBolt", "SpitAcid"] {
+        let state = states.iter().copied().find(|state| parameter(*state, "name") == name).unwrap();
+        for (notification, expected) in [("enterNotifyEvents", "Enter"), ("exitNotifyEvents", "Exit")] {
+            let array = object(&parameter(state, notification));
+            let actual_id = array.descendants().find(|node| node.attribute("name") == Some("id"))
+                .and_then(|node| node.text()).unwrap().parse::<usize>().unwrap();
+            assert_eq!(actual_id, event_index);
+            let payload = array.descendants().find(|node| node.attribute("name") == Some("payload"))
+                .and_then(|node| node.text()).unwrap();
+            assert_eq!(parameter(object(payload), "data"), expected);
+        }
+    }
+    let idle = states.iter().copied().find(|state| parameter(*state, "name") == "Rest").unwrap();
+    assert_eq!(parameter(idle, "enterNotifyEvents"), "null");
+    assert_eq!(parameter(idle, "exitNotifyEvents"), "null");
+    }
+}
+
+#[test]
+fn thrown_attack_slot_attach_and_cleanup_survive_pack() {
+    let (manifest, mut graph) = ranged_capability();
+    let role = graph.roles.iter_mut().find(|role| role.state_name == "SpitBolt").unwrap();
+    role.equipment_index = Some(2);
+    role.generator = CapabilityRoleGenerator::ThrownAttack;
+    graph.explicit_events.extend(["attackState2", "weaponFire", "weaponAttach", "weaponDetach"].map(generic_event));
+    let output = tempfile::tempdir().unwrap();
+    let report = pack_capability_scaffold(&manifest, &graph, output.path()).unwrap();
+    let xml = reread_packed_xml(&report, &manifest.paths.core_behavior);
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let names = document.descendants().find(|node| node.attribute("name") == Some("eventNames")).unwrap()
+        .children().filter(|node| node.has_tag_name("hkcstring")).map(|node| node.text().unwrap()).collect::<Vec<_>>();
+    let parameter = |node: roxmltree::Node<'_, '_>, name: &str| {
+        node.children().find(|child| child.attribute("name") == Some(name))
+            .and_then(|child| child.text()).unwrap_or("").to_string()
+    };
+    let object = |id: &str| document.descendants().find(|node| {
+        node.has_tag_name("hkobject") && node.attribute("name") == Some(id)
+    }).unwrap();
+    let state = document.descendants().find(|node| {
+        node.attribute("class") == Some("hkbStateMachineStateInfo") && parameter(*node, "name") == "SpitBolt"
+    }).unwrap();
+    for (notification, expected) in [
+        ("enterNotifyEvents", [("attackState2", "Enter"), ("weaponAttach", "2")]),
+        ("exitNotifyEvents", [("weaponDetach", "2"), ("attackState2", "Exit")]),
+    ] {
+        let array = object(&parameter(state, notification));
+        let actual = array.descendants().filter(|node| node.has_tag_name("hkobject") && node.attribute("class").is_none()).map(|event| {
+            let id = parameter(event, "id").parse::<usize>().unwrap();
+            let payload = object(&parameter(event, "payload"));
+            (names[id].to_string(), parameter(payload, "data"))
+        }).collect::<Vec<_>>();
+        assert_eq!(actual, expected.map(|(name, payload)| (name.to_string(), payload.to_string())));
+    }
+}
+
+#[test]
 fn capability_graph_supports_optional_turns_projectiles_and_trigger_aliases() {
     {
         let (manifest, graph) = ranged_capability();
@@ -1872,6 +1992,14 @@ fn recursive_clip(object_index: u32, clip_name: &str) -> CapabilityGeneratorNode
     }
 }
 
+fn recursive_anonymous_source(object_index: u32, class_name: &str) -> CapabilityGeneratorAnonymousSourceObject {
+    CapabilityGeneratorAnonymousSourceObject {
+        behavior_path: "Actors\\B21_SkyrimWolf\\Behaviors\\WolfBehavior.hkx".to_string(),
+        object_index,
+        class_name: class_name.to_string(),
+    }
+}
+
 fn no_generator_event() -> CapabilityGeneratorEventRef {
     CapabilityGeneratorEventRef {
         source_id: -1,
@@ -2224,10 +2352,9 @@ fn recursive_state_machine_preserves_start_binding_and_blending_transition_effec
     let mut second_transition = transition.clone();
     second_transition.priority = 1;
     let transitions = CapabilityGeneratorTransitionArray {
-        source: recursive_source_object(
+        source: recursive_anonymous_source(
             705,
             "hkbStateMachineTransitionInfoArray",
-            "ForwardTransitions",
         ),
         has_eventless_transitions: Some(true),
         has_time_bounded_transitions: Some(false),
@@ -2367,10 +2494,9 @@ fn recursive_tree_rejects_unlowered_policy_objects_and_missing_variable_evidence
                 enter_notify_events: Vec::new(),
                 exit_notify_events: Vec::new(),
                 transitions: Some(CapabilityGeneratorTransitionArray {
-                    source: recursive_source_object(
+                    source: recursive_anonymous_source(
                         502,
                         "hkbStateMachineTransitionInfoArray",
-                        "IdleTransitions",
                     ),
                     has_eventless_transitions: None,
                     has_time_bounded_transitions: None,
@@ -2403,11 +2529,11 @@ fn recursive_tree_rejects_unlowered_policy_objects_and_missing_variable_evidence
                             blend_curve: 0,
                             alignment_bone: 0,
                         }),
-                        condition: Some(recursive_source_object(
-                            592,
-                            "hkbCondition",
-                            "IdleCondition",
-                        )),
+                        condition: Some(CapabilityGeneratorExpressionCondition {
+                            source: recursive_anonymous_source(592, "hkbCondition"),
+                            expression: "true".into(),
+                            referenced_variables: Vec::new(),
+                        }),
                         event: no_generator_event(),
                         to_state_id: 1,
                         from_nested_state_id: 0,
@@ -2469,7 +2595,7 @@ fn recursive_tree_rejects_unlowered_policy_objects_and_missing_variable_evidence
 
     let codes = error_codes(manifest.validate_capability_graph(&graph));
     assert!(codes.contains(&"capability_generator_event_payload_unlowered"));
-    assert!(codes.contains(&"capability_generator_transition_object_unlowered"));
+    assert!(codes.contains(&"capability_expression_condition_class"));
     assert!(codes.contains(&"manual_selector_unlowered_policy_object"));
     assert!(codes.contains(&"capability_generator_missing_initial_value"));
 }
@@ -3152,7 +3278,7 @@ fn grounded_race_data() -> Fo4RaceDataTarget {
     }
 }
 
-fn executable_recipe_fixture(
+pub(super) fn executable_recipe_fixture(
     namespace: &str,
     plugin: &str,
     source_game: &str,
@@ -3162,12 +3288,16 @@ fn executable_recipe_fixture(
     let base = record_manifest(&rig.creature_name, "B21_CreatureRecipe.esp", 0xD00);
     let source = source_identity(namespace, plugin, 0x12_3456);
     let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: source.clone(),
         race_data: grounded_race_data(),
         body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
         body_nif_parts: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: source.clone(),
             form_key: base.form_keys.npc.clone(),
             editor_id: base.editor_ids.npc.clone(),
@@ -3179,6 +3309,7 @@ fn executable_recipe_fixture(
             npc_inventory: None,
             npc_equipment: None,
             npc_spells: None,
+            npc_perks: Vec::new(),
             npc_death_item: None,
         }],
         npc_inventory: Vec::new(),
@@ -3304,6 +3435,9 @@ fn actor_action_idles_are_recipe_bound_and_emitted_with_exact_parent_dependencie
                 "B21_CreatureRecipe.esp",
             ),
             editor_id: format!("B21_RecipeAction{index:02}"),
+            weapon_condition: None,
+            weapon_exclusions: Vec::new(),
+            graph_condition: None,
         })
         .collect::<Vec<_>>();
     let batch_intent = base
@@ -4099,6 +4233,7 @@ fn bind_execution_recipe(
         )
         .collect();
     recipe.bridge_receipt = Some(SourceRigRecipeBridgeReceipt {
+        source_root_identity: None,
         version: SOURCE_RIG_BRIDGE_VERSION,
         ledger_schema: "execution_fixture_ledger_v1".to_string(),
         ledger_blake3: blake3::hash(b"execution-fixture-ledger")
@@ -4310,6 +4445,9 @@ fn bridged_recipe_input(
                     base.projection.base.target_plugin.clone(),
                 ),
                 editor_id: format!("B21_BridgeActorAction{index:02}"),
+                weapon_condition: None,
+                weapon_exclusions: Vec::new(),
+                graph_condition: None,
             })
             .collect::<Vec<_>>();
     let batch_intent = base
@@ -4318,6 +4456,7 @@ fn bridged_recipe_input(
         .with_actor_action_dependencies(&actor_action_records);
     let mut input = SourceRigRecipeBridgeInput {
         pair_ledger: SourceRigPairLedgerEvidence {
+            source_root_identity: None,
             schema: ledger_schema.to_string(),
             canonical_json: ledger_json.clone(),
             ledger_blake3: blake3::hash(format!("strict-{ledger_schema}").as_bytes())
@@ -5096,7 +5235,7 @@ fn executable_recipe_rejects_missing_receipts_and_requires_root_bone_segment_32(
         let mut invalid = recipe;
         let CreatureBodyPartProjection::RootOnly32 {
             node, vats_target, ..
-        } = &mut invalid.projection.body_parts;
+        } = &mut invalid.projection.body_parts else { panic!("expected root-only fixture") };
         *node = "Actors\\Creature\\skeleton.nif".to_string();
         *vats_target = node.clone();
         invalid.rig.animation_skeleton.bones.push(BoneDecl {
@@ -5115,7 +5254,7 @@ fn executable_recipe_rejects_missing_receipts_and_requires_root_bone_segment_32(
         let child_name = child.rig.animation_skeleton.bones[1].name.clone();
         let CreatureBodyPartProjection::RootOnly32 {
             node, vats_target, ..
-        } = &mut child.projection.body_parts;
+        } = &mut child.projection.body_parts else { panic!("expected root-only fixture") };
         *node = child_name.clone();
         *vats_target = child_name;
         assert!(matches!(
@@ -5433,6 +5572,7 @@ fn record_projection_preserves_primary_identity_variants_attacks_and_race_data()
     let mut graph = CapabilityGraphManifest::from_mvp(&mvp, &MvpMotionManifest::default());
     graph.explicit_events.push(second_event);
     graph.roles.push(CapabilityClipRole {
+        equipment_index: None,
         role: CreatureClipRole::MeleeAttack,
         state_name: "Attack2".to_string(),
         clip_name: "attack2".to_string(),
@@ -5444,6 +5584,9 @@ fn record_projection_preserves_primary_identity_variants_attacks_and_race_data()
     let base = record_manifest(&rig.creature_name, "B21_CreatureMVP.esp", 0xA00);
     let primary_source = source_identity("skyrimse", "Skyrim.esm", 0x01_1234);
     let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: primary_source.clone(),
         race_data: grounded_race_data(),
@@ -5451,6 +5594,7 @@ fn record_projection_preserves_primary_identity_variants_attacks_and_race_data()
         body_nif_parts: Vec::new(),
         variants: vec![
             CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: primary_source.clone(),
                 form_key: base.form_keys.npc.clone(),
                 editor_id: base.editor_ids.npc.clone(),
@@ -5462,9 +5606,11 @@ fn record_projection_preserves_primary_identity_variants_attacks_and_race_data()
                 npc_inventory: None,
                 npc_equipment: None,
                 npc_spells: None,
+                npc_perks: Vec::new(),
                 npc_death_item: None,
             },
             CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: source_identity("skyrimse", "Skyrim.esm", 0x01_1235),
                 form_key: TargetFormKey::new(0xA06, "B21_CreatureMVP.esp"),
                 editor_id: "B21_SkyrimWolfAlphaNPC".to_string(),
@@ -5476,6 +5622,7 @@ fn record_projection_preserves_primary_identity_variants_attacks_and_race_data()
                 npc_inventory: None,
                 npc_equipment: None,
                 npc_spells: None,
+                npc_perks: Vec::new(),
                 npc_death_item: None,
             },
         ],
@@ -5533,6 +5680,13 @@ fn record_projection_preserves_primary_identity_variants_attacks_and_race_data()
         record_string_values(emitted.closure.record("RACE").unwrap(), "ATKE", &interner),
         ["meleeWolfAttack1", "meleeWolfAttack2"]
     );
+    let race = emitted.closure.record("RACE").unwrap();
+    let equipment_slots = race.fields.iter().filter(|field| field.sig.as_str() == "QNAM").map(|field| match field.value {
+        FieldValue::FormKey(key) => key.local,
+        ref value => panic!("unexpected RACE equipment slot {value:?}"),
+    }).collect::<Vec<_>>();
+    assert_eq!(equipment_slots, [0x013F42, 0x013F43]);
+    assert_eq!(race.fields.iter().filter(|field| field.sig.as_str() == "ATKW").count(), 2);
     assert_eq!(
         emitted
             .closure
@@ -5560,12 +5714,16 @@ fn passive_ground_projection_emits_no_attack_artifacts() {
     base.form_keys.unarmed_weapon = TargetFormKey::new(0, "B21_CreaturePassive.esp");
     let primary_source = source_identity("skyrimse", "Skyrim.esm", 0x02_3456);
     let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: primary_source.clone(),
         race_data: grounded_race_data(),
         body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
         body_nif_parts: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: primary_source,
             form_key: base.form_keys.npc.clone(),
             editor_id: base.editor_ids.npc.clone(),
@@ -5577,6 +5735,7 @@ fn passive_ground_projection_emits_no_attack_artifacts() {
             npc_inventory: None,
             npc_equipment: None,
             npc_spells: None,
+            npc_perks: Vec::new(),
             npc_death_item: None,
         }],
         npc_inventory: Vec::new(),
@@ -5616,12 +5775,16 @@ fn passive_npc_spells_preserve_exact_order_without_attack_inference() {
         form_key: TargetFormKey::new(local, "B21_CreatureSpells.esp"),
     });
     let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: primary_source.clone(),
         race_data: grounded_race_data(),
         body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
         body_nif_parts: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: primary_source,
             form_key: base.form_keys.npc.clone(),
             editor_id: base.editor_ids.npc.clone(),
@@ -5633,6 +5796,7 @@ fn passive_npc_spells_preserve_exact_order_without_attack_inference() {
             npc_inventory: None,
             npc_equipment: None,
             npc_spells: None,
+            npc_perks: Vec::new(),
             npc_death_item: None,
         }],
         npc_inventory: Vec::new(),
@@ -5693,6 +5857,9 @@ fn npc_variant_loadouts_preserve_differences_and_validate_common_sets() {
     let primary_death_item = reference("LVLI", 0xD64);
     let common_death_item = reference("LVLI", 0xD65);
     let mut projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: primary_source.clone(),
         race_data: grounded_race_data(),
@@ -5700,6 +5867,7 @@ fn npc_variant_loadouts_preserve_differences_and_validate_common_sets() {
         body_nif_parts: Vec::new(),
         variants: vec![
             CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: primary_source,
                 form_key: base.form_keys.npc.clone(),
                 editor_id: base.editor_ids.npc.clone(),
@@ -5711,9 +5879,11 @@ fn npc_variant_loadouts_preserve_differences_and_validate_common_sets() {
                 npc_inventory: None,
                 npc_equipment: Some(vec![primary_equipment.clone()]),
                 npc_spells: Some(vec![primary_spell.clone()]),
+                npc_perks: Vec::new(),
                 npc_death_item: Some(Some(primary_death_item.clone())),
             },
             CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: source_identity("skyrimse", "Skyrim.esm", 0x02_7001),
                 form_key: TargetFormKey::new(0xD46, "B21_CreatureLoadouts.esp"),
                 editor_id: "B21_SkyrimWolfSecondaryNPC".to_string(),
@@ -5725,6 +5895,7 @@ fn npc_variant_loadouts_preserve_differences_and_validate_common_sets() {
                 npc_inventory: None,
                 npc_equipment: Some(vec![secondary_equipment.clone()]),
                 npc_spells: Some(vec![secondary_spell.clone()]),
+                npc_perks: Vec::new(),
                 npc_death_item: Some(None),
             },
         ],
@@ -5911,12 +6082,16 @@ fn npc_inventory_preserves_mixed_counts_and_typed_coed_rows() {
     ];
     let source = source_identity("skyrimse", "Skyrim.esm", 0x02_7100);
     let mut projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: source.clone(),
         race_data: grounded_race_data(),
         body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
         body_nif_parts: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: source,
             form_key: base.form_keys.npc.clone(),
             editor_id: base.editor_ids.npc.clone(),
@@ -5928,6 +6103,7 @@ fn npc_inventory_preserves_mixed_counts_and_typed_coed_rows() {
             npc_inventory: Some(inventory.clone()),
             npc_equipment: Some(Vec::new()),
             npc_spells: Some(Vec::new()),
+            npc_perks: Vec::new(),
             npc_death_item: None,
         }],
         npc_inventory: Vec::new(),
@@ -6044,6 +6220,7 @@ fn npc_inventory_preserves_mixed_counts_and_typed_coed_rows() {
     projection.npc_inventory = inventory.clone();
     projection.variants[0].npc_inventory = None;
     projection.variants.push(CreatureNpcRecordVariant {
+        actor_data: None,
         source_identity: source_identity("skyrimse", "Skyrim.esm", 0x02_7101),
         form_key: TargetFormKey::new(0xD76, "B21_CreatureInventory.esp"),
         editor_id: "B21_InventorySecondaryNPC".to_string(),
@@ -6055,6 +6232,7 @@ fn npc_inventory_preserves_mixed_counts_and_typed_coed_rows() {
         npc_inventory: None,
         npc_equipment: Some(Vec::new()),
         npc_spells: Some(Vec::new()),
+        npc_perks: Vec::new(),
         npc_death_item: None,
     });
     emit_creature_capability_record_projection(&rig, &graph, &projection, &interner).unwrap();
@@ -6127,6 +6305,78 @@ fn npc_inventory_preserves_mixed_counts_and_typed_coed_rows() {
 }
 
 #[test]
+fn melee_contact_spell_and_attack_type_survive_fo4_plugin_roundtrip() {
+    use esp_authoring_core::plugin_runtime::{
+        plugin_handle_close_native, plugin_handle_load_no_py, plugin_handle_new_no_py,
+        plugin_handle_read_raw_subrecords_no_py, plugin_handle_save_no_py,
+    };
+
+    let mut recipe = executable_recipe_fixture("skyrimse", "Skyrim.esm", "skyrim_special_edition");
+    let plugin = recipe.projection.base.target_plugin.clone();
+    let contact_spell = CreatureTargetRecordReference {
+        signature: "SPEL".to_string(),
+        form_key: TargetFormKey::new(0xD20, &plugin),
+    };
+    let attack_type = CreatureTargetRecordReference {
+        signature: "KYWD".to_string(),
+        form_key: TargetFormKey::new(0xD21, &plugin),
+    };
+    let spell_list = CreatureTargetRecordReference {
+        signature: "LVSP".to_string(),
+        form_key: TargetFormKey::new(0xD22, &plugin),
+    };
+    let perk = CreatureTargetRecordReference::new("PERK", TargetFormKey::new(0xD23, &plugin));
+    recipe.projection.attacks[0].target_data.contact_spell = Some(contact_spell.clone());
+    recipe.projection.attacks[0].target_data.attack_type = Some(attack_type.clone());
+    recipe.projection.variants[0].npc_spells = Some(vec![spell_list.clone()]);
+    recipe.projection.variants[0].npc_perks = vec![CreatureNpcPerk { perk: perk.clone(), rank: 2 }];
+    let interner = crate::sym::StringInterner::new();
+    let emitted = emit_creature_capability_record_projection(
+        &recipe.rig,
+        &recipe.graph,
+        &recipe.projection,
+        &interner,
+    )
+    .unwrap();
+    assert_eq!(emitted.required_target_records, [contact_spell, attack_type, spell_list, perk]);
+    assert!(emitted.closure.records.iter().any(|record| record.sig.as_str() == "WEAP"));
+    assert!(recipe.graph.roles.iter().any(|role| {
+        role.role == CreatureClipRole::MeleeAttack
+            && role.trigger_event.as_deref() == Some(recipe.projection.attacks[0].event.as_str())
+    }));
+
+    let schema = crate::schema::AuthoringSchema::for_game("fo4").unwrap();
+    let handle = plugin_handle_new_no_py(&plugin, Some("fo4"));
+    for record in emitted.closure.records {
+        crate::target_write::add_record_native(handle, record, &schema, &interner).unwrap();
+    }
+    let output = tempfile::tempdir().unwrap();
+    let path = output.path().join(&plugin);
+    plugin_handle_save_no_py(handle, path.to_str().unwrap()).unwrap();
+    plugin_handle_close_native(handle);
+    let reloaded = plugin_handle_load_no_py(path.to_str().unwrap(), Some("fo4"), None, None, true)
+        .unwrap();
+    let race_key = format!("{plugin}:{:06X}", recipe.projection.base.form_keys.race.local);
+    let atkd = plugin_handle_read_raw_subrecords_no_py(reloaded, &race_key, "ATKD").unwrap();
+    let atke = plugin_handle_read_raw_subrecords_no_py(reloaded, &race_key, "ATKE").unwrap();
+    let unwp = plugin_handle_read_raw_subrecords_no_py(reloaded, &race_key, "UNWP").unwrap();
+    let npc_key = format!("{plugin}:{:06X}", recipe.projection.base.form_keys.npc.local);
+    let splo = plugin_handle_read_raw_subrecords_no_py(reloaded, &npc_key, "SPLO").unwrap();
+    let perks = plugin_handle_read_raw_subrecords_no_py(reloaded, &npc_key, "PRKR").unwrap();
+    let perk_count = plugin_handle_read_raw_subrecords_no_py(reloaded, &npc_key, "PRKZ").unwrap();
+    plugin_handle_close_native(reloaded);
+    assert_eq!(atkd.len(), 1);
+    assert_eq!(atkd[0].len(), 44);
+    assert_eq!(&atkd[0][8..12], &0xD20_u32.to_le_bytes());
+    assert_eq!(&atkd[0][24..28], &0xD21_u32.to_le_bytes());
+    assert_eq!(atke, [format!("{}\0", recipe.projection.attacks[0].event).into_bytes()]);
+    assert_eq!(unwp, [recipe.projection.base.form_keys.unarmed_weapon.local.to_le_bytes().to_vec()]);
+    assert_eq!(splo, [0xD22_u32.to_le_bytes().to_vec()]);
+    assert_eq!(perks, [vec![0x23, 0x0D, 0, 0, 2]]);
+    assert_eq!(perk_count, [1u32.to_le_bytes().to_vec()]);
+}
+
+#[test]
 fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon() {
     let (mut rig, mvp) = wolf_mvp();
     let fire_event = "fireProjectile";
@@ -6166,6 +6416,7 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
     let attack_spell = reference("SPEL", 0xC20);
     let projectile = reference("PROJ", 0xC21);
     let equipment = reference("WEAP", 0xC22);
+    let attack_type = reference("KYWD", 0xC23);
     let source_attack_spell = CreatureSourceRecordReference {
         source_identity: source_identity("skyrimse", "Skyrim.esm", 0x12_3456),
         signature: "SHOU".to_string(),
@@ -6175,12 +6426,16 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
         signature: "KYWD".to_string(),
     };
     let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: primary_source.clone(),
         race_data: grounded_race_data(),
         body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
         body_nif_parts: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: primary_source,
             form_key: base.form_keys.npc.clone(),
             editor_id: base.editor_ids.npc.clone(),
@@ -6192,6 +6447,7 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
             npc_inventory: None,
             npc_equipment: None,
             npc_spells: None,
+            npc_perks: Vec::new(),
             npc_death_item: None,
         }],
         npc_inventory: Vec::new(),
@@ -6214,7 +6470,9 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
             target_data: CreatureAttackTargetData {
                 attack_flags: 0x12,
                 attack_angle: 0.25,
-                stagger: 0.4,
+                attack_type: Some(attack_type.clone()),
+                contact_spell: None,
+                animation_cast: false,
                 knockdown: 0.5,
                 recovery_time: 0.6,
                 action_points_multiplier: 2.0,
@@ -6224,7 +6482,7 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
                     damage_multiplier_bits: 1.0_f32.to_bits(),
                     chance_bits: 1.0_f32.to_bits(),
                     attack_spell: Some(source_attack_spell),
-                    attack_flags: 0x12,
+                    attack_flags: 0x1a,
                     attack_angle_bits: 0.25_f32.to_bits(),
                     strike_angle_bits: 35.0_f32.to_bits(),
                     stagger_bits: 0.4_f32.to_bits(),
@@ -6234,17 +6492,7 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
                     stamina_multiplier_bits: 2.0_f32.to_bits(),
                     event: fire_event.to_string(),
                     ordinal: 4,
-                    attack_type_policy: CreatureAttackTypePolicy::RuntimeInertKeyword {
-                        proof: semantic_proof(
-                            ATTACK_TYPE_RUNTIME_INERT_PROOF_SCHEMA,
-                            serde_json::json!({
-                                "evidence_blake3": blake3::hash(b"runtime-inert-keyword-evidence").to_hex().to_string(),
-                                "field": "attack_type",
-                                "policy": "runtime_inert_keyword",
-                                "source_signature": "KYWD",
-                            }),
-                        ),
-                    },
+                    attack_type_policy: CreatureAttackTypePolicy::DirectKeyword,
                     attack_spell_policy: CreatureAttackSpellPolicy::LowerShoutToSpell {
                         proof: semantic_proof(
                             ATTACK_SHOUT_TO_SPELL_PROOF_SCHEMA,
@@ -6325,8 +6573,8 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
             FieldValue::Bytes(smallvec::SmallVec::from_slice(&0.25_f32.to_le_bytes())),
         ),
         (
-            "stagger",
-            FieldValue::Bytes(smallvec::SmallVec::from_slice(&0.4_f32.to_le_bytes())),
+            "attack_type",
+            FieldValue::FormKey(attack_type.form_key.intern(&interner)),
         ),
         (
             "knockdown",
@@ -6366,8 +6614,43 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
     }));
     assert_eq!(
         emitted.required_target_records,
-        vec![attack_spell, projectile, equipment]
+        vec![attack_spell, projectile, equipment, attack_type]
     );
+    let mut animated_cast = projection.clone();
+    animated_cast.attacks[0].projection = CreatureAttackRecordProjection::SpellAbility {
+        spell: match &projection.attacks[0].projection {
+            CreatureAttackRecordProjection::RangedProjectile { attack_spell, .. } => attack_spell.clone(),
+            _ => unreachable!(),
+        },
+    };
+    animated_cast.attacks[0].target_data.animation_cast = true;
+    let animated = emit_creature_capability_record_projection(&rig, &graph, &animated_cast, &interner).unwrap();
+    assert_eq!(animated.required_target_records, emitted.required_target_records.iter()
+        .filter(|reference| matches!(reference.signature.as_str(), "SPEL" | "KYWD"))
+        .cloned().collect::<Vec<_>>());
+    assert!(animated.closure.record("RACE").unwrap().fields.iter().any(|field|
+        field.sig.as_str() == "ATKD" && matches!(&field.value, FieldValue::Struct(fields) if fields.iter().any(|(name, value)|
+            interner.resolve(*name) == Some("attack_spell") && is_null_form_reference(value)))));
+    let mut spell_slots = animated_cast.clone();
+    spell_slots.equipment_slots = [0x013F43, 0x035698].into_iter().map(|local| CreatureEquipmentSlotBinding {
+        equip_slot: CreatureTargetRecordReference::new("EQUP", TargetFormKey::new(local, "Fallout4.esm")),
+        node: String::new(), weapon_types: 0x1000, preserve_weapon_slots: true, weapons: Vec::new(),
+    }).collect();
+    let slotted = emit_creature_capability_record_projection(&rig, &graph, &spell_slots, &interner).unwrap();
+    let race = slotted.closure.record("RACE").unwrap();
+    assert!(!race.fields.iter().any(|field| field.sig.0 == *b"UNWP"));
+    assert!(race.fields.iter().any(|field| field.sig.0 == *b"VNAM" && match &field.value {
+        FieldValue::Uint(value) => *value == 0x1000,
+        FieldValue::Bytes(bytes) => bytes.as_slice() == 0x1000u32.to_le_bytes(),
+        _ => false,
+    }));
+    let slots = race.fields.iter().enumerate().filter(|(_, field)| field.sig.0 == *b"QNAM").map(|(index, field)| {
+        assert_eq!(race.fields[index + 1].sig.0, *b"ZNAM");
+        let FieldValue::FormKey(key) = field.value else { panic!("unresolved equipment slot") };
+        assert_eq!(interner.resolve(key.plugin), Some("Fallout4.esm"));
+        key.local
+    }).collect::<Vec<_>>();
+    assert_eq!(slots, [0x013F43, 0x035698]);
     let field_receipts =
         SourceRigExecutableRecipe::required_field_receipts_from_source(&projection, "skyrimse");
     assert!(
@@ -6377,20 +6660,21 @@ fn ranged_projection_emits_race_spell_and_npc_equipment_without_unarmed_weapon()
     );
 
     let mut arbitrary_schema = projection.clone();
-    let CreatureAttackTypePolicy::RuntimeInertKeyword { proof } = &mut arbitrary_schema.attacks[0]
-        .target_data
-        .source_atkd
-        .as_mut()
-        .unwrap()
-        .attack_type_policy
-    else {
-        unreachable!()
-    };
-    proof.schema = "adapter-asserted-inert-v1".to_string();
+    arbitrary_schema.attacks[0].target_data.attack_type = None;
     assert!(matches!(
         emit_creature_capability_record_projection(&rig, &graph, &arbitrary_schema, &interner),
         Err(CreatureRecordError::InvalidManifest {
-            code: "attack_semantic_proof",
+            code: "attack_type_policy",
+            ..
+        })
+    ));
+
+    let mut copied_source_flags = projection.clone();
+    copied_source_flags.attacks[0].target_data.attack_flags = 0x1a;
+    assert!(matches!(
+        emit_creature_capability_record_projection(&rig, &graph, &copied_source_flags, &interner),
+        Err(CreatureRecordError::InvalidManifest {
+            code: "attack_source_flags",
             ..
         })
     ));
@@ -6464,12 +6748,16 @@ fn non_melee_equipment_projections_emit_no_phantom_spell_or_weapon() {
         let projectile = reference("PROJ", 0xC81);
         let ammunition = reference("AMMO", 0xC82);
         let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+            templates: None,
+            equipment_slots: Vec::new(),
             base: base.clone(),
             source_primary_identity: primary_source.clone(),
             race_data: grounded_race_data(),
             body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
             body_nif_parts: Vec::new(),
             variants: vec![CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: primary_source,
                 form_key: base.form_keys.npc.clone(),
                 editor_id: base.editor_ids.npc.clone(),
@@ -6481,6 +6769,7 @@ fn non_melee_equipment_projections_emit_no_phantom_spell_or_weapon() {
                 npc_inventory: None,
                 npc_equipment: None,
                 npc_spells: None,
+                npc_perks: Vec::new(),
                 npc_death_item: None,
             }],
             npc_inventory: Vec::new(),
@@ -6553,12 +6842,16 @@ fn non_melee_equipment_projections_emit_no_phantom_spell_or_weapon() {
             form_key: TargetFormKey::new(0xCE1, "B21_CreatureTurret.esp"),
         };
         let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+            templates: None,
+            equipment_slots: Vec::new(),
             base: base.clone(),
             source_primary_identity: primary_source.clone(),
             race_data: grounded_race_data(),
             body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
             body_nif_parts: Vec::new(),
             variants: vec![CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: primary_source,
                 form_key: base.form_keys.npc.clone(),
                 editor_id: base.editor_ids.npc.clone(),
@@ -6570,6 +6863,7 @@ fn non_melee_equipment_projections_emit_no_phantom_spell_or_weapon() {
                 npc_inventory: None,
                 npc_equipment: None,
                 npc_spells: None,
+                npc_perks: Vec::new(),
                 npc_death_item: None,
             }],
             npc_inventory: Vec::new(),
@@ -6629,12 +6923,16 @@ fn non_melee_equipment_projections_emit_no_phantom_spell_or_weapon() {
             form_key: TargetFormKey::new(0xD21, "B21_CreatureRobot.esp"),
         };
         let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+            templates: None,
+            equipment_slots: Vec::new(),
             base: base.clone(),
             source_primary_identity: primary_source.clone(),
             race_data: grounded_race_data(),
             body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
             body_nif_parts: Vec::new(),
             variants: vec![CreatureNpcRecordVariant {
+                actor_data: None,
                 source_identity: primary_source,
                 form_key: base.form_keys.npc.clone(),
                 editor_id: base.editor_ids.npc.clone(),
@@ -6646,6 +6944,7 @@ fn non_melee_equipment_projections_emit_no_phantom_spell_or_weapon() {
                 npc_inventory: None,
                 npc_equipment: None,
                 npc_spells: None,
+                npc_perks: Vec::new(),
                 npc_death_item: None,
             }],
             npc_inventory: Vec::new(),
@@ -6719,12 +7018,16 @@ fn melee_equipment_projection_preserves_all_source_weapons_without_generated_una
     let attack_equipment = [reference(0xCB1), reference(0xCB0)];
     let inventory_equipment = reference(0xCB2);
     let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: primary_source.clone(),
         race_data: grounded_race_data(),
         body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
         body_nif_parts: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: primary_source,
             form_key: base.form_keys.npc.clone(),
             editor_id: base.editor_ids.npc.clone(),
@@ -6736,6 +7039,7 @@ fn melee_equipment_projection_preserves_all_source_weapons_without_generated_una
             npc_inventory: None,
             npc_equipment: None,
             npc_spells: None,
+            npc_perks: Vec::new(),
             npc_death_item: None,
         }],
         npc_inventory: Vec::new(),
@@ -6803,6 +7107,42 @@ fn melee_equipment_projection_preserves_all_source_weapons_without_generated_una
             inventory_equipment,
         ]
     );
+    let mut projection = projection;
+    let slot = |local| CreatureTargetRecordReference {
+        signature: "EQUP".to_string(),
+        form_key: TargetFormKey::new(local, "B21_CreatureMeleeEquip.esp"),
+    };
+    projection.equipment_slots = vec![
+        CreatureEquipmentSlotBinding {
+            equip_slot: slot(0xCC0),
+            node: "Weapon".to_string(),
+            weapon_types: 1 << 1,
+            preserve_weapon_slots: false,
+            weapons: attack_equipment.to_vec(),
+        },
+        CreatureEquipmentSlotBinding {
+            equip_slot: slot(0xCC1),
+            node: "ProjectileNode".to_string(),
+            weapon_types: 1 << 9,
+            preserve_weapon_slots: false,
+            weapons: vec![reference(0xCB2)],
+        },
+    ];
+    let mixed = emit_creature_capability_record_projection(&rig, &graph, &projection, &interner).unwrap();
+    let race = mixed.closure.record("RACE").unwrap();
+    let weapon_types = match &race.fields.iter().find(|field| field.sig.as_str() == "VNAM").unwrap().value {
+        FieldValue::Uint(value) => *value,
+        FieldValue::Bytes(bytes) if bytes.len() == 4 => u64::from(u32::from_le_bytes(bytes.as_slice().try_into().unwrap())),
+        value => panic!("unexpected normalized VNAM: {value:?}"),
+    };
+    assert_eq!(weapon_types, (1 << 1) | (1 << 9));
+    let attack_slot = race.fields.iter().position(|field| field.sig.as_str() == "ATKW").unwrap();
+    assert_eq!(race.fields[attack_slot - 1].sig.as_str(), "ATKE");
+    assert_eq!(race.fields[attack_slot].value, FieldValue::FormKey(slot(0xCC0).form_key.intern(&interner)));
+    let split_weapon = projection.equipment_slots[0].weapons.pop().unwrap();
+    projection.equipment_slots[1].weapons.push(split_weapon);
+    let error = emit_creature_capability_record_projection(&rig, &graph, &projection, &interner).unwrap_err();
+    assert!(error.to_string().contains("spans multiple weapon slots"));
 }
 
 #[test]
@@ -6813,12 +7153,16 @@ fn record_projection_rejects_missing_derived_race_data_values() {
     let mut race_data = grounded_race_data();
     race_data.male_height = 0.0;
     let projection = CreatureRecordProjectionManifest {
+        race_keywords: Vec::new(),
+        templates: None,
+        equipment_slots: Vec::new(),
         base: base.clone(),
         source_primary_identity: primary_source.clone(),
         race_data,
         body_parts: CreatureBodyPartProjection::root_only_32("NPC Root [Root]"),
         body_nif_parts: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: primary_source,
             form_key: base.form_keys.npc.clone(),
             editor_id: base.editor_ids.npc.clone(),
@@ -6830,6 +7174,7 @@ fn record_projection_rejects_missing_derived_race_data_values() {
             npc_inventory: None,
             npc_equipment: None,
             npc_spells: None,
+            npc_perks: Vec::new(),
             npc_death_item: None,
         }],
         npc_inventory: Vec::new(),

@@ -10,6 +10,7 @@ from bacup_lib.translations import TRANSLATIONS, merge_ui_translations, translat
 
 OUTPUT = Path("Interface/B21/TalesFromAppalachia/Fishing")
 BRIDGE = Path(__file__).with_name("resources") / "fishing/Bridge.as"
+DIAL_BRIDGE = BRIDGE.with_name("MinigameDial.as")
 
 
 def convert_fishing_ui(source_root: Path, output_data: Path) -> dict:
@@ -39,7 +40,8 @@ def convert_fishing_ui(source_root: Path, output_data: Path) -> dict:
 
     from creation_lib.swf.native_runtime import augment_as3_classes, patch_as3_method
     movie = augment_as3_classes(closure["fishingmenu.swf"],
-        {"FishingMenu": BRIDGE.read_text(encoding="utf-8")}, list(closure.values()))
+        {"FishingMenu": BRIDGE.read_text(encoding="utf-8"),
+         "MinigameDial": DIAL_BRIDGE.read_text(encoding="utf-8")}, list(closure.values()))
     movie = patch_as3_method(movie, "FishingMenu", "$constructor",
         [["getlocal", 0], ["getlex", "GAME_STATE_WAITING"], ["callpropvoid", "setGameState", 1]],
         [["getlocal", 0], ["callpropvoid", "B21Initialize", 0], ["keep", 0], ["keep", 1], ["keep", 2]])
@@ -48,11 +50,15 @@ def convert_fishing_ui(source_root: Path, output_data: Path) -> dict:
          ["getproperty", "FishingData"], ["getproperty", "selectedBaitIndex"],
          ["getproperty", "*"], ["iffalse", None]],
         [["getlocal", 0], ["callproperty", "B21HasSelectedBait", 0], ["keep", 6]])
+    movie = patch_as3_method(movie, "MinigameDial", "updateFishPosition",
+        [["getlex", "Shared.GlobalFunc"], ["getproperty", "COLOR_TEXT_BODY"]],
+        [["getlocal", 0], ["callproperty", "B21SliceColor", 0]])
     verify_script_only(closure["fishingmenu.swf"], movie)
 
     output = Path(output_data) / OUTPUT
     output.mkdir(parents=True, exist_ok=True)
     manifest = {"schema_version": 1, "bridge_sha256": hashlib.sha256(BRIDGE.read_bytes()).hexdigest(),
+                "dial_bridge_sha256": hashlib.sha256(DIAL_BRIDGE.read_bytes()).hexdigest(),
                 "menu": (OUTPUT / "fishingmenu.swf").as_posix(), "files": []}
     for name, source in sorted(closure.items()):
         converted = remap_menu_fonts(movie if name == "fishingmenu.swf" else source)

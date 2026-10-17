@@ -131,16 +131,6 @@ fn is_gamebryo_source(source_game: &str) -> bool {
     )
 }
 
-/// FO4 `_s.G` baseline from each source game's vanilla `Glossiness` default.
-/// Skyrim: `BSLightingShaderProperty.Glossiness` 80.0 / 100 (nif.xml:7773).
-/// FNV/FO3: `NiMaterialProperty.Glossiness` 10.0 / 100 (nif.xml:4906).
-fn legacy_gloss_baseline(source_game: &str) -> f32 {
-    match source_game.to_ascii_lowercase().as_str() {
-        "skyrim" | "skyrimse" => 0.8,
-        _ => 0.1,
-    }
-}
-
 /// Role → output-role for Gamebryo sources. `envmask` is deliberately absent:
 /// it is consumed into `_s.R` by LegacySpecGloss and has no FO4 slot.
 fn mapped_legacy_output_role(role: &str) -> Option<&'static str> {
@@ -400,7 +390,9 @@ fn triage_request_impl(
                 envmask: find_input(request, "envmask").cloned(),
                 out_normal: find_output(request, "normal").cloned(),
                 out_specular: out_specular.clone(),
-                gloss_baseline: legacy_gloss_baseline(&request.source_game),
+                // BGSM carries the converted exponent. A second gloss factor
+                // here would change it again; terrain gets dedicated maps.
+                gloss_baseline: 1.0,
             });
         }
         for input in &request.inputs {

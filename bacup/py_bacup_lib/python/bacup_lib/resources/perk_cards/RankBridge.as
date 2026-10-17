@@ -5,7 +5,7 @@ package {
         public function B21SetData(target:Object, consume:Object):void {
             this.SetData(target, consume);
             var result:Object = this.ProducedCard_mc.dataObj;
-            result.isAnimatedPerk = target.isAnimatedPerk;
+            result.isAnimatedPerk = target.isAnimatedPerk || consume.isAnimatedPerk;
             this.ProducedCard_mc.dataObj = result;
         }
     }

@@ -31,13 +31,14 @@ from creation_lib.ui.shell import SettingsWindow, WorkspaceHost
 from creation_lib.ui.settings import general_section, paths_section, indexes_section
 from .variants import AppVariant, get_variant
 from .version import get_version
-from creation_lib.ui.shell import ViewMenuHelper
 from creation_lib.ui.widgets.modern import heading, semantic_color
 
 _log = logging.getLogger("toolkit.app")
 
 TEXTURE_WORKSPACE_IDS = (
     "mat_copier",
+    "mat_v22_upgrader",
+    "texture_upgrader",
     "dds_inspector",
     "dds_png",
     "dds_resizer",
@@ -273,6 +274,10 @@ class ToolkitApp:
         self._first_frame = True
         self._show_about: bool = False
         self._show_theme_selector: bool = False
+        self._quit_pending = False
+        self._quit_action = None
+        self._quit_approvals = {}
+        self._quit_waiting = None
         self._toolbar_icon_font = None
         self._mono_font = None
         self._small_font = None
@@ -448,8 +453,12 @@ class ToolkitApp:
         """Map a startup file path to the workspace that can open it."""
         if not path:
             return None
+        if str(path).casefold().startswith("nxm:"):
+            return "mod_manager", str(path)
         normalized = str(Path(path).expanduser().resolve(strict=False))
         ext = Path(normalized).suffix.lower()
+        if ext in {".zip", ".7z", ".rar", ".fomod"}:
+            return "mod_manager", normalized
         if ext == ".nif":
             return "nif", normalized
         if ext in {".bgsm", ".bgem"}:
@@ -497,11 +506,27 @@ class ToolkitApp:
 
         try:
             opener(path)
-            _log.info("Opened startup file in %s workspace: %s", workspace_id, path)
-        except Exception:
-            _log.error(
-                "Failed to open startup file: %s\n%s", path, traceback.format_exc()
-            )
+            if workspace_id == "mod_manager" and str(path).casefold().startswith("nxm:"):
+                self._launch_path = None
+                _log.info("Received Nexus browser request")
+            elif workspace_id == "mod_manager":
+                self._launch_path = None
+                _log.info("Selected startup mod package for review")
+            else:
+                _log.info("Opened startup file in %s workspace: %s", workspace_id, path)
+        except Exception as exc:
+            if workspace_id == "mod_manager" and str(path).casefold().startswith("nxm:"):
+                self._launch_path = None
+                workspace.manager.error = "Nexus browser request rejected. Paste a fresh valid link in Nexus setup."
+                _log.error("Nexus browser request rejected")
+            elif workspace_id == "mod_manager":
+                self._launch_path = None
+                workspace.manager.error = "Package opening failed: " + str(exc)
+                _log.error("Startup mod package was rejected")
+            else:
+                _log.error(
+                    "Failed to open startup file: %s\n%s", path, traceback.format_exc()
+                )
 
     def _handle_dropped_files(
         self,
@@ -613,9 +638,13 @@ class ToolkitApp:
             if ws is None:
                 continue
             is_active = self._active_ws and ws.id == self._active_ws.id
-            if imgui.menu_item(ws.name, "", is_active)[0]:
-                if not is_active:
-                    self._switch_workspace(ws.id)
+            imgui.push_id(ws.id)
+            try:
+                if imgui.menu_item(f"{ws.name}###workspace", "", bool(is_active))[0]:
+                    if not is_active:
+                        self._switch_workspace(ws.id)
+            finally:
+                imgui.pop_id()
 
     def _show_menus(self):
         """Menu bar content — called by hello_imgui inside its managed menu bar."""
@@ -629,7 +658,7 @@ class ToolkitApp:
 
         if imgui.begin_menu("Workspace"):
             self._ws_menu_items(
-                ["mod_builder", "esp_editor", "nif", "search", "papyrus", "swf"]
+                ["mod_builder", "mod_manager", "esp_editor", "nif", "search", "papyrus", "swf"]
             )
             imgui.separator()
 
@@ -690,6 +719,8 @@ class ToolkitApp:
                         "folder_renamer",
                         "modlist_merger",
                         "verified_creations",
+                        "catalog_editor",
+                        "re_db",
                     ]
                 )
                 imgui.end_menu()
@@ -722,7 +753,7 @@ class ToolkitApp:
             if imgui.menu_item("About", "", False)[0]:
                 self._show_about = True
             if imgui.menu_item("Quit", "", False)[0]:
-                hello_imgui.get_runner_params().app_shall_exit = True
+                self._request_quit()
             imgui.end_menu()
 
         # Workspace-specific menus
@@ -757,7 +788,7 @@ class ToolkitApp:
             if imgui.menu_item("About", "", False)[0]:
                 self._show_about = True
             if imgui.menu_item("Quit", "", False)[0]:
-                hello_imgui.get_runner_params().app_shall_exit = True
+                self._request_quit()
             imgui.end_menu()
 
     def _gui(self):
@@ -782,6 +813,10 @@ class ToolkitApp:
             self._handle_launch_open()
             self._first_frame = False
 
+        if "mod_manager" in self._ws_map:
+            from ui.mod_manager.integration import poll_nexus_intake
+            poll_nexus_intake(self)
+
         # Menu content drawn via hello_imgui's show_menus callback (see _show_menus)
 
         # Tag log entries with active workspace
@@ -796,16 +831,7 @@ class ToolkitApp:
             self._apply_settings_to_workspaces()
         if self._settings_window.rerun_setup:
             self._settings_window.rerun_setup = False
-            self._settings.setup_complete = False
-            self._settings.save()
-            # Relaunch so the setup wizard runs at startup in the new process
-            from app.paths import is_frozen
-
-            if is_frozen():
-                subprocess.Popen([sys.executable])
-            else:
-                subprocess.Popen([sys.executable] + sys.argv)
-            hello_imgui.get_runner_params().app_shall_exit = True
+            self._request_quit(action=self._relaunch_setup)
 
         # About dialog
         about_title = f"About {self._app_variant.exe_name}##about"
@@ -856,6 +882,163 @@ class ToolkitApp:
             self._settings.save()
         if result:
             self._apply_tab_style()
+
+    def _request_quit(self, *, action=None) -> None:
+        """Queue one quit transaction; repeated requests keep the same prompt."""
+        if not self._quit_pending:
+            if not self._reset_quit_confirmations():
+                return
+            self._quit_pending = True
+            self._quit_action = action
+
+    def _reset_quit_confirmations(self) -> bool:
+        """Clear only quit UI/approvals, preserving edits and in-flight saves."""
+        self._quit_approvals = {}
+        self._quit_waiting = None
+        success = True
+        for workspace in self._workspaces:
+            reset = getattr(workspace, "reset_exit_confirmation", None)
+            if reset is not None:
+                try:
+                    reset()
+                except Exception:
+                    _log.exception("Exit confirmation reset failed for %s", workspace.id)
+                    success = False
+        return success
+
+    def _cancel_quit(self) -> None:
+        self._quit_pending = False
+        self._quit_action = None
+        self._reset_quit_confirmations()
+
+    def _confirm_quit(self) -> None:
+        """Run before ImGui render, while exit can still be cancelled.
+
+        Optional workspace confirm_exit hooks return True (ready), False
+        (cancelled), or None (waiting for a choice or background save).
+        Inactive workspaces participate too. State-backed approvals last for
+        this transaction only; changed edits/jobs invalidate them.
+        Editors expose exit_confirmation_state() as an immutable snapshot and
+        reset_exit_confirmation() to clear quit UI without clearing edits.
+        Legacy hooks without snapshots are rechecked instead of cached.
+        """
+        params = hello_imgui.get_runner_params()
+        if params.app_shall_exit:
+            params.app_shall_exit = False
+            self._request_quit()
+        if not self._quit_pending:
+            return
+        params.app_shall_exit = False
+        # Poll approved editors too, so a completed mutation cannot slip past
+        # an approval while another editor's modal is waiting for input.
+        states = {}
+        try:
+            invalidated = False
+            for workspace in self._workspaces:
+                state = getattr(workspace, "exit_confirmation_state", None)
+                if state is None:
+                    continue
+                key = id(workspace)
+                states[key] = state()
+                if key in self._quit_approvals and self._quit_approvals[key] != states[key]:
+                    self._quit_approvals.pop(key)
+                    workspace.reset_exit_confirmation()
+                    invalidated = True
+            if invalidated and self._quit_waiting is not None:
+                # Close the later modal before returning to a changed editor.
+                reset = getattr(self._quit_waiting, "reset_exit_confirmation", None)
+                if reset is not None:
+                    reset()
+                self._quit_waiting = None
+        except Exception:
+            _log.exception("Exit state validation failed; keeping the application open")
+            self._cancel_quit()
+            return
+        for workspace in self._workspaces:
+            confirm = getattr(workspace, "confirm_exit", None)
+            if confirm is None:
+                continue
+            key = id(workspace)
+            if key in self._quit_approvals and self._quit_approvals[key] == states.get(key):
+                continue
+            try:
+                result = confirm()
+                if result is True and key in states:
+                    self._quit_approvals[key] = workspace.exit_confirmation_state()
+            except Exception:
+                _log.exception("Exit confirmation failed for %s", workspace.id)
+                result = False
+            if result is False:
+                self._cancel_quit()
+                return
+            if result is not True:
+                self._quit_waiting = workspace
+                return
+        # A later confirmation may finish a job or mutate an earlier editor.
+        # Validate again before executing a relaunch or permitting cleanup.
+        try:
+            for workspace in self._workspaces:
+                key = id(workspace)
+                if key in self._quit_approvals and self._quit_approvals[key] != workspace.exit_confirmation_state():
+                    self._quit_approvals.pop(key)
+                    workspace.reset_exit_confirmation()
+                    self._quit_waiting = None
+                    return
+        except Exception:
+            _log.exception("Final exit validation failed; keeping the application open")
+            self._cancel_quit()
+            return
+        action = self._quit_action
+        self._quit_pending = False
+        self._quit_action = None
+        if not self._reset_quit_confirmations():
+            return
+        if action is not None:
+            try:
+                action()
+            except Exception:
+                _log.exception("Exit action failed; keeping the application open")
+                return
+        params.app_shall_exit = True
+
+    def _relaunch_setup(self) -> None:
+        from app.paths import is_frozen
+
+        # Defer settings changes and process creation until unsaved edits are
+        # resolved, so Cancel leaves the current application intact.
+        command = [sys.executable] if is_frozen() else [sys.executable] + sys.argv
+        self._settings.setup_complete = False
+        self._settings.save()
+        try:
+            subprocess.Popen(command)
+        except Exception:
+            self._settings.setup_complete = True
+            self._settings.save()
+            raise
+
+    def _install_platform_callbacks(self) -> None:
+        self._install_file_drop_callback()
+        import imgui_bundle
+
+        window_address = hello_imgui.get_glfw_window_address()
+        if not window_address:
+            raise RuntimeError("Cannot install unsaved-change protection: GLFW window unavailable")
+        glfw = ctypes.CDLL(os.path.join(os.path.dirname(imgui_bundle.__file__), "glfw3.dll"))
+        callback_type = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+        glfw.glfwSetWindowShouldClose.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        glfw.glfwSetWindowShouldClose.restype = None
+        glfw.glfwSetWindowCloseCallback.argtypes = [ctypes.c_void_p, callback_type]
+        glfw.glfwSetWindowCloseCallback.restype = ctypes.c_void_p
+
+        def on_close(window):
+            # GLFW sets should-close before invoking the callback. Clear it
+            # before hello_imgui consumes the event (X and Alt+F4 share this).
+            glfw.glfwSetWindowShouldClose(window, 0)
+            self._request_quit()
+
+        self._glfw_close_callback = callback_type(on_close)
+        self._glfw_close_dll = glfw
+        glfw.glfwSetWindowCloseCallback(window_address, self._glfw_close_callback)
 
     def _on_exit(self):
         """Called by hello_imgui before exit."""
@@ -923,11 +1106,12 @@ class ToolkitApp:
         params.callbacks.show_gui = self._gui
         params.callbacks.post_new_frame = self._apply_tab_style
         params.callbacks.before_exit = self._on_exit
+        params.callbacks.before_imgui_render = self._confirm_quit
         params.callbacks.load_additional_fonts = self._load_fonts
         params.callbacks.default_icon_font = hello_imgui.DefaultIconFont.font_awesome6
         params.callbacks.post_init = self._post_init
         params.callbacks.post_init_add_platform_backend_callbacks = (
-            self._install_file_drop_callback
+            self._install_platform_callbacks
         )
         params.imgui_window_params.default_imgui_window_type = (
             hello_imgui.DefaultImGuiWindowType.provide_full_screen_dock_space

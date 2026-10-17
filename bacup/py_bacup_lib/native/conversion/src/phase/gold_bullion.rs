@@ -6,6 +6,7 @@ use serde_json::json;
 
 use crate::ids::{FormKey, SigCode};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
+use crate::plugin_catalog;
 use crate::session::open_session;
 use crate::translator::Game;
 
@@ -95,11 +96,11 @@ impl Phase for GoldBullionPhase {
                 source_prices.push((raw, value));
             }
         }
-        let mut catalogs = vec![("GoldBullion.json", source_prices)];
+        let mut catalogs = vec![("bullion", source_prices)];
         for (filename, root) in [
-            ("Stamps.json", 0x63966F),
-            ("TadpoleBadges.json", 0x3FC7DF),
-            ("PossumBadges.json", 0x426912),
+            ("stamps", 0x63966F),
+            ("tadpole", 0x3FC7DF),
+            ("possum", 0x426912),
         ] {
             if !scan.with_record(root, |_| true).unwrap_or(false) {
                 continue;
@@ -157,6 +158,8 @@ impl Phase for GoldBullionPhase {
         }
         drop(scan);
         let mut report = PhaseReport::default();
+        let mut sections = serde_json::Map::new();
+        let mut skipped_by_section = serde_json::Map::new();
         for (filename, source_prices) in catalogs {
             let mut prices = BTreeMap::new();
             let mut skipped = 0;
@@ -207,24 +210,35 @@ impl Phase for GoldBullionPhase {
                 }
             }
             let rows: Vec<_> = prices.into_iter().map(|((plugin, object_id), price)|
-                json!({"plugin": plugin, "object_id": object_id, "price": price})).collect();
-            let catalog = json!({"schema_version": 1, "prices": rows, "skipped_unmapped": skipped});
-            let directory = ctx.mod_path.join("F4SE/Plugins/B21_TalesFromAppalachia");
-            std::fs::create_dir_all(&directory).map_err(|e| PhaseError::Internal(e.to_string()))?;
-            let mut pending = tempfile::NamedTempFile::new_in(&directory)
-                .map_err(|e| PhaseError::Internal(e.to_string()))?;
-            pending
-                .write_all(
-                    &serde_json::to_vec(&catalog)
-                        .map_err(|e| PhaseError::Internal(e.to_string()))?,
-                )
-                .map_err(|e| PhaseError::Internal(e.to_string()))?;
-            pending
-                .persist(directory.join(filename))
-                .map_err(|e| PhaseError::Internal(e.to_string()))?;
-            report.assets_written += 1;
+                json!({"form": plugin_catalog::form_key(&plugin, object_id), "price": price})).collect();
+            sections.insert(filename.to_string(), json!(rows));
+            skipped_by_section.insert(filename.to_string(), json!(skipped));
             report.warnings += skipped;
         }
+        let mut catalog = serde_json::Map::new();
+        catalog.insert("version".into(), json!(1));
+        catalog.insert("settings".into(), json!({"skipped_unmapped": skipped_by_section}));
+        catalog.extend(sections);
+        let filename = std::path::Path::new(&ctx.run.config.output_plugin_name)
+            .file_name()
+            .ok_or_else(|| PhaseError::BadParams("missing output plugin filename".into()))?;
+        let destination = ctx
+            .mod_path
+            .join(plugin_catalog::catalog_path("GoldBullion", &filename.to_string_lossy()));
+        let directory = destination.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&directory).map_err(|e| PhaseError::Internal(e.to_string()))?;
+        let mut pending = tempfile::NamedTempFile::new_in(&directory)
+            .map_err(|e| PhaseError::Internal(e.to_string()))?;
+        pending
+            .write_all(
+                &serde_json::to_vec(&serde_json::Value::Object(catalog))
+                    .map_err(|e| PhaseError::Internal(e.to_string()))?,
+            )
+            .map_err(|e| PhaseError::Internal(e.to_string()))?;
+        pending
+            .persist(destination)
+            .map_err(|e| PhaseError::Internal(e.to_string()))?;
+        report.assets_written += 1;
         Ok(report)
     }
 }
@@ -494,53 +508,32 @@ mod tests {
                 .map_err(|e| RunError::InvalidConfig(e.to_string()))
         })
         .unwrap();
-        assert_eq!(report.assets_written, 4);
+        assert_eq!(report.assets_written, 1);
         assert_eq!(report.warnings, 2);
         let catalog: serde_json::Value = serde_json::from_slice(
             &std::fs::read(
                 directory
                     .path()
-                    .join("F4SE/Plugins/B21_TalesFromAppalachia/GoldBullion.json"),
+                    .join("F4SE/Plugins/B21_TalesFromAppalachia/GoldBullion/Renamed.esp.json"),
             )
             .unwrap(),
         )
         .unwrap();
+        assert_eq!(catalog["version"], 1);
         assert_eq!(
-            catalog["prices"],
-            json!([{"plugin": "Renamed.esp", "object_id": 0x900, "price": 1250}])
+            catalog["bullion"],
+            json!([{"form": "Renamed.esp:000900", "price": 1250}])
         );
-        let stamps: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(
-                directory
-                    .path()
-                    .join("F4SE/Plugins/B21_TalesFromAppalachia/Stamps.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
         assert_eq!(
-            stamps["prices"],
+            catalog["stamps"],
             json!([
-                {"plugin": "Renamed.esp", "object_id": 0x901, "price": 50},
-                {"plugin": "Renamed.esp", "object_id": 0x902, "price": 20},
+                {"form": "Renamed.esp:000901", "price": 50},
+                {"form": "Renamed.esp:000902", "price": 20},
             ])
         );
-        assert_eq!(stamps["skipped_unmapped"], 1);
-        for (name, object_id, price) in [("TadpoleBadges", 0x903, 3), ("PossumBadges", 0x904, 8)] {
-            let badges: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(
-                    directory
-                        .path()
-                        .join(format!("F4SE/Plugins/B21_TalesFromAppalachia/{name}.json")),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                badges["prices"],
-                json!([{"plugin": "Renamed.esp", "object_id": object_id, "price": price}])
-            );
-        }
+        assert_eq!(catalog["settings"]["skipped_unmapped"]["stamps"], 1);
+        assert_eq!(catalog["tadpole"], json!([{"form": "Renamed.esp:000903", "price": 3}]));
+        assert_eq!(catalog["possum"], json!([{"form": "Renamed.esp:000904", "price": 8}]));
         drop_run(id).unwrap();
         plugin_handle_close_native(source);
         plugin_handle_close_native(target);

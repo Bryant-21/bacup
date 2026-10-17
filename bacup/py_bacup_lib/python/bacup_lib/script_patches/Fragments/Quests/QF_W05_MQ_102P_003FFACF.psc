@@ -47,6 +47,9 @@ Function Fragment_Stage_0450_Item_00()
 EndFunction
 
 Function Fragment_Stage_0530_Item_00()
+    If IsObjectiveDisplayed(60) && !IsObjectiveCompleted(60)
+        SetObjectiveCompleted(60, True)
+    EndIf
     SetObjectiveDisplayed(100)
     ; The security terminal sets 550 on download; cover a recording taken before Brass asked.
     If Game.GetPlayer().GetItemCount(W05_MQ_102P_VTec_Holotape01) > 0 && !IsStageDone(550) && !IsStageDone(560)
@@ -55,6 +58,9 @@ Function Fragment_Stage_0530_Item_00()
 EndFunction
 
 Function Fragment_Stage_0540_Item_00()
+    If IsObjectiveDisplayed(60) && !IsObjectiveCompleted(60)
+        SetObjectiveCompleted(60, True)
+    EndIf
     SetObjectiveDisplayed(130)
 EndFunction
 
@@ -280,6 +286,14 @@ EndFunction
 Function Fragment_Stage_0900_Item_00()
     SetObjectiveCompleted(500)
     SetObjectiveDisplayed(510)
+    Game.GetPlayer().SetValue(W05_MQ_102P_RestrictedWingAccess, 1.0)
+    ; W05_MQ_102P_RestrictedWingGrid (54E483) sits between MaintenanceQT markers 04 and 05, ahead of
+    ; SetStage1000Trigger, and gates on this AV. Re-evaluate it now so it opens even when the player
+    ; is already standing at it or its cell is not loaded.
+    LaserGridScript restrictedWingGrid = Game.GetFormFromFile(0x0054E483, "SeventySix.esm") as LaserGridScript
+    If restrictedWingGrid
+        restrictedWingGrid.RequestReevaluateConditions()
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()

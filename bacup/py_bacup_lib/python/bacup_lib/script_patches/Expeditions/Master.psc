@@ -34,6 +34,11 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
 		StopObjectiveModuleForPhase(3)
 	ElseIf auiStageID == ST_QUEST_COMPLETE
 		StopAllObjectiveModules()
+		; FO76's server sent the stamps start event after a mission; its node only accepts a
+		; player without keyword 6547F0 whose XPD_StampsQuest is not yet completed.
+		If XPD_StampsQuest_StartKeyword != None
+			XPD_StampsQuest_StartKeyword.SendStoryEvent(None, Game.GetPlayer())
+		EndIf
 	EndIf
 EndEvent
 

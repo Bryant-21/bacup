@@ -508,6 +508,9 @@ Function Fragment_Stage_8000_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    If IsObjectiveDisplayed(1500) && !IsObjectiveCompleted(1500)
+        SetObjectiveCompleted(1500, True)
+    EndIf
     Int objectiveIndex = 1200
     While objectiveIndex <= 1500
         If IsObjectiveDisplayed(objectiveIndex)

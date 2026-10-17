@@ -40,6 +40,8 @@ class Setting:
     step: float
     applies: str
     choices: tuple[Choice, ...] = ()
+    # "key=value" in the same section, written when the user edits this row (a color picking its mode).
+    selects: str = ""
 
     @property
     def id(self) -> str:
@@ -74,6 +76,7 @@ def _setting(raw: dict) -> Setting:
         section=raw["section"], key=raw["key"], label=raw["label"], help=raw["help"], kind=raw["kind"],
         default=raw["default"], min=float(raw["min"]), max=float(raw["max"]), step=float(raw["step"]),
         applies=raw["applies"], choices=tuple(Choice(c["value"], c["label"]) for c in raw.get("choices", ())),
+        selects=raw.get("selects", ""),
     )
 
 
@@ -96,6 +99,13 @@ def load_schema() -> Schema:
 
 def template_text() -> str:
     return (RESOURCES / "B21_TalesFromAppalachia.ini").read_text(encoding="utf-8")
+
+
+def matches_search(page: Page, group: Group, setting: Setting, query: str) -> bool:
+    """Mirrors TalesConfigRules.cpp MatchesSearch: every word in the label, help, key, a choice or the titles."""
+    fields = [setting.label, setting.help, setting.key, page.title, group.title, *(c.label for c in setting.choices)]
+    fields = [field.lower() for field in fields]
+    return all(any(word in field for field in fields) for word in query.lower().split())
 
 
 # --- ini text -------------------------------------------------------------------------------
@@ -343,6 +353,39 @@ def read_number(ini: dict[str, dict[str, str]], setting: Setting) -> float:
     return min(max(value, setting.min), setting.max)
 
 
+def parse_color(text: str) -> int:
+    """RRGGBB (optionally #-prefixed) as 0xRRGGBB; malformed text is 0, as in ParseColor."""
+    text = text.strip(" \t").removeprefix("#")
+    if len(text) != 6 or any(c not in "0123456789abcdefABCDEF" for c in text):
+        return 0
+    return int(text, 16)
+
+
+def format_color(rgb: int) -> str:
+    return f"{rgb & 0xFFFFFF:06X}"
+
+
+def read_color(ini: dict[str, dict[str, str]], setting: Setting) -> int:
+    """A color row's 0-255 channels in ``<key>R/G/B``; each missing one takes the default's channel."""
+    fallback = parse_color(setting.default)
+    rgb = 0
+    for index, channel in enumerate("RGB"):
+        shift = 16 - 8 * index
+        raw = _get(ini, setting.section, setting.key + channel)
+        try:
+            value = int((raw or "").strip())
+        except ValueError:
+            value = fallback >> shift & 0xFF
+        rgb |= min(max(value, 0), 255) << shift
+    return rgb
+
+
+def set_color(text: str, setting: Setting, rgb: int) -> str:
+    for index, channel in enumerate("RGB"):
+        text = set_value(text, setting.section, setting.key + channel, str(rgb >> (16 - 8 * index) & 0xFF))
+    return text
+
+
 def is_default(ini: dict[str, dict[str, str]], setting: Setting) -> bool:
     """"1.0" in the file and "1" as the default are the same value."""
     if setting.kind == "toggle":
@@ -351,18 +394,26 @@ def is_default(ini: dict[str, dict[str, str]], setting: Setting) -> bool:
         return abs(read_number(ini, setting) - float(setting.default)) < 1e-6
     if setting.kind == "key":
         return key_code(read(ini, setting)) == key_code(setting.default)
+    if setting.kind == "color":
+        return read_color(ini, setting) == parse_color(setting.default)
     return read(ini, setting) == setting.default
 
 
 # --- install --------------------------------------------------------------------------------
 
+def write_setting(text: str, setting: Setting, value: str) -> str:
+    """One row's value; a color's RRGGBB value fills its three channel keys."""
+    if setting.kind == "color":
+        return set_color(text, setting, parse_color(value))
+    return set_value(text, setting.section, setting.key, value)
+
+
 def apply_edits(text: str, edits: dict[str, str], schema: Schema | None = None) -> str:
     """Write the dialog's pending ``{"Section/key": value}`` edits into ``text``."""
-    known = {s.id for s in (schema or load_schema()).settings()}
+    known = {s.id: s for s in (schema or load_schema()).settings()}
     for setting_id, value in edits.items():
         if setting_id in known:
-            section, key = setting_id.split("/", 1)
-            text = set_value(text, section, key, value)
+            text = write_setting(text, known[setting_id], value)
     return text
 
 

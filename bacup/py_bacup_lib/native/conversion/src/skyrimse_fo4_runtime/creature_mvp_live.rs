@@ -12,7 +12,6 @@ use havok_native::hkx::types::HkxValue;
 use nif_core_native::creature_closure::{
     CreatureClosureReceipt, CreatureClosureRequest, CreatureNifInput, CreatureNifRole,
     refresh_staged_creature_nif_artifact, seal_embedded_creature_collision,
-    stage_creature_nif_closure,
 };
 use nif_core_native::creature_ragdoll::{
     install_fo4_creature_controller_collision, install_fo4_creature_ragdoll_collision,
@@ -32,14 +31,14 @@ use crate::run::{
 use crate::source_rig::race_data::{ControllerArchitecture, MeasurementAxis};
 use crate::source_rig::{
     ATTACK_STAGGER_OFFSET_ZERO_PROOF_SCHEMA, ATTACK_STAMINA_TO_ACTION_POINTS_PROOF_SCHEMA,
-    ATTACK_TYPE_RUNTIME_INERT_PROOF_SCHEMA, BoneDecl, Capsule, ClipBinding, ClipDecl,
+    BoneDecl, Capsule, ClipBinding, ClipDecl,
     CreatureActorActionRecordPlan, CreatureAttackRecordProjection, CreatureAttackRecordVariant,
     CreatureAttackSourceDataReceipt, CreatureAttackSpellPolicy, CreatureAttackStaggerOffsetPolicy,
     CreatureAttackStaminaPolicy, CreatureAttackTargetData, CreatureAttackTypePolicy,
-    CreatureBodyNifRecordPart, CreatureBodyPartProjection, CreatureControllerDecl,
+    CreatureBodyNifRecordPart, CreatureControllerDecl,
     CreatureDegradationReceipt, CreatureFallbackDisposition, CreatureGraphTemplate,
     CreatureManifest, CreatureMeleeRecordKeyPlan, CreatureNpcInventoryEntry,
-    CreatureNpcInventoryOwnership, CreatureNpcRecordKeyPlan, CreatureNpcRecordVariant,
+    CreatureNpcInventoryOwnership, CreatureNpcPerk, CreatureNpcRecordKeyPlan, CreatureNpcRecordVariant,
     CreaturePrimaryRecordMapping, CreatureRecordEditorIds, CreatureRecordFormKeys,
     CreatureRecordKeyPlan, CreatureRecordManifest, CreatureRecordProjectionManifest,
     CreatureSemanticProofReceipt, CreatureSourceRecordReference, CreatureTargetRecordReference,
@@ -86,7 +85,6 @@ use super::source_rig_bridge::{
     required_skyrim_source_rig_field_names,
 };
 
-const FO4_CREATURE_RANGED_FALLBACK_WEAPON: u32 = 0x03175B;
 
 #[derive(Clone, Copy)]
 pub struct SkyrimCreatureLiveRecipeBuildInput<'a> {
@@ -122,6 +120,7 @@ pub(crate) struct SkyrimCreatureLiveMvpPreparationBuildInput<'a> {
     pub dependency: &'a SkyrimCreatureDependencyLedger,
     pub source_data_root: &'a Path,
     pub private_staging_root: &'a Path,
+    pub dependency_models: &'a HashMap<FormKey, Vec<(String, String)>>,
     pub reservations: &'a [SkyrimCreatureRecordReservation],
     pub ancillary_reservations: &'a [SkyrimCreatureAncillaryReservationReceipt],
     pub actor_action_reservations: &'a [CreatureActorActionReservationReceipt],
@@ -427,7 +426,7 @@ fn actor_action_reservation_requests(
     Ok(requests)
 }
 
-fn skyrim_family_root_behavior_path(family_id: &str) -> String {
+pub(crate) fn skyrim_family_root_behavior_path(family_id: &str) -> String {
     format!(
         "{}\\Behaviors\\SkyrimRootBehavior.hkx",
         skyrim_family_runtime_root(family_id)
@@ -637,6 +636,7 @@ pub struct SkyrimCreatureLivePreparationAccounting {
 pub struct SkyrimCreatureLivePreparationLedger {
     pub families: Vec<SkyrimCreatureLivePreparedFamily>,
     pub accounting: SkyrimCreatureLivePreparationAccounting,
+    pub casting_catalog: super::creature_casting::CreatureCastCatalog,
 }
 
 #[derive(Debug, Error)]
@@ -649,6 +649,8 @@ pub enum SkyrimCreatureLiveMvpPreparationBuildError {
 
 #[derive(Clone)]
 struct PreparedSkyrimLiveFamilyAssets {
+    replacement_runtime_paths: BTreeMap<String, String>,
+    body_part_segments: Vec<nif_core_native::skin::creature_parts::CreatureBodyPartSegment>,
     closure: CreatureClosureReceipt,
     closure_staged_data_root: PathBuf,
     rig: CreatureManifest,
@@ -803,6 +805,7 @@ pub(crate) fn build_live_skyrim_creature_mvp_families(
     let target_plugin = input.mapper_state.options.output_plugin_name.clone();
     let mut families = Vec::with_capacity(evidence.recipe_ledger.family_jobs.len());
     let mut ready_candidates = 0usize;
+    let mut casting_catalog = super::creature_casting::CreatureCastCatalog::default();
     for family in &evidence.recipe_ledger.family_jobs {
         let mut members = family_members.remove(&family.family_id).unwrap_or_default();
         let family_actor_action_records = actor_action_plans
@@ -880,6 +883,9 @@ pub(crate) fn build_live_skyrim_creature_mvp_families(
                 &evidence,
                 input.source_data_root,
                 input.private_staging_root,
+                &members.iter().filter_map(|source| evidence.catalog.races.iter().find(|race| race.source_race == *source).and_then(|race| race.body_part_data).and_then(|key| records.get(&key).copied())).collect::<Vec<_>>(),
+                &input.dependency.families.iter().filter(|entry| entry.family_id == family.family_id).flat_map(|entry| entry.closure.iter()).filter_map(|key| input.dependency_models.get(key)).flatten().cloned().collect::<Vec<_>>(),
+                interner,
             ) {
                 Ok(assets) => {
                     let mut recipes = Vec::with_capacity(members.len());
@@ -907,6 +913,7 @@ pub(crate) fn build_live_skyrim_creature_mvp_families(
                             interner,
                         ) {
                             Ok(prepared) => {
+                                casting_catalog.actors.extend(prepared.casting_profiles);
                                 recipes.push(prepared.recipe);
                                 dependency_projections.extend(prepared.dependency_projections);
                                 source_field_receipts.extend(prepared.source_field_receipts);
@@ -1001,6 +1008,7 @@ pub(crate) fn build_live_skyrim_creature_mvp_families(
             blocked_families: families.len().saturating_sub(ready_families),
         },
         families,
+        casting_catalog,
     })
 }
 
@@ -1009,6 +1017,7 @@ struct PreparedSkyrimCandidateRecipe {
     dependency_projections: Vec<SkyrimCreatureTargetDependencyProjection>,
     source_field_receipts: Vec<SkyrimCreatureSourceFieldReceipt>,
     warnings: Vec<CreatureDegradationReceipt>,
+    casting_profiles: Vec<super::creature_casting::CreatureCastActor>,
 }
 
 fn attach_actor_action_records(
@@ -1063,19 +1072,6 @@ fn candidate_attack_warnings(
     let source_key = source_key(source_race, interner);
     let mut warnings = Vec::new();
     for attack in &candidate.attack_data {
-        if attack.attack_type.is_some() {
-            warnings.push(CreatureDegradationReceipt {
-                code: "skyrim_attack_type_runtime_inert".to_string(),
-                detail: format!(
-                    "ATKD[{}] event {:?} KYWD is retained only as a runtime-inert FO4 policy",
-                    attack.ordinal, attack.event
-                ),
-                policy_id: "skyrim_creature_attack_policy_v1".to_string(),
-                disposition: CreatureFallbackDisposition::Omitted,
-                affected_source_keys: vec![source_key.clone()],
-                source_signature: Some("KYWD".to_string()),
-            });
-        }
         match attack
             .attack_spell
             .as_ref()
@@ -1148,8 +1144,12 @@ fn prepare_live_skyrim_family_assets(
     _evidence: &SkyrimCreatureLiveRecipeEvidence,
     source_data_root: &Path,
     private_staging_root: &Path,
+    body_part_records: &[&Record],
+    dependency_models: &[(String, String)],
+    interner: &StringInterner,
 ) -> Result<PreparedSkyrimLiveFamilyAssets, String> {
     let graph = graph_manifest(family).map_err(|error| error.to_string())?;
+    let body_part_segments = crate::source_rig::body_parts::creature_body_part_segments(body_part_records, "skyrimse", interner)?;
     let [variant] = family.graph_variants.as_slice() else {
         return Err(format!(
             "family {} has {} graph variants; stage2 requires one exact project/character/skeleton owner",
@@ -1187,6 +1187,12 @@ fn prepare_live_skyrim_family_assets(
         source_owner: family.family_id.clone(),
         body_variant: None,
     }];
+    closure_inputs.extend(crate::source_rig::body_parts::creature_body_part_replacement_models(body_part_records, interner).into_iter().map(|path| CreatureNifInput {
+        role: CreatureNifRole::BodyPartReplacement,
+        source_data_relative_path: data_relative_mesh_path(&path),
+        source_owner: family.family_id.clone(),
+        body_variant: None,
+    }));
     let mut body_paths = family
         .body_variants
         .iter()
@@ -1206,16 +1212,27 @@ fn prepare_live_skyrim_family_assets(
                 body_variant: Some(format!("body_{index:04}")),
             }),
     );
-    let mut closure = stage_creature_nif_closure(&CreatureClosureRequest {
+    let mut dependency_targets = BTreeMap::new();
+    for (source, target) in dependency_models {
+        if let Some(previous) = dependency_targets.insert(source.clone(), target.clone()) {
+            if previous != *target {
+                return Err(format!("dependency model {source} has conflicting target paths"));
+            }
+        } else {
+            closure_inputs.push(CreatureNifInput { role: CreatureNifRole::DependencyModel, source_data_relative_path: source.clone(), source_owner: family.family_id.clone(), body_variant: None });
+        }
+    }
+    let mut closure = nif_core_native::creature_closure::stage_creature_nif_closure_with_dependency_models(&CreatureClosureRequest {
         source_game: "skyrimse".to_string(),
         source_data_root: source_data_root.to_path_buf(),
         private_staging_root: closure_staging_root.clone(),
         target_namespace: runtime_root.clone(),
         texture_fallbacks: std::collections::BTreeMap::new(),
         inputs: closure_inputs,
-    })
+    }, &body_part_segments, &dependency_targets)
     .map_err(|error| format!("creature NIF closure failed: {error}"))?;
     let closure_staged_data_root = closure_staging_root.join("data");
+    let replacement_runtime_paths = closure.inputs.iter().filter(|input| input.role == CreatureNifRole::BodyPartReplacement).map(|input| (path_key(&input.source_data_relative_path), runtime_nif_path(&input.target_data_relative_path))).collect();
     let visual_skeleton_input = closure
         .inputs
         .iter()
@@ -1308,7 +1325,10 @@ fn prepare_live_skyrim_family_assets(
     for clip in &selected_clips {
         let bytes = fs::read(asset_path(source_data_root, &clip.clip_path))
             .map_err(|error| format!("read clip {}: {error}", clip.clip_path))?;
-        skeleton_names.insert(animation_binding(&bytes)?.original_skeleton_name);
+        let name = animation_binding(&bytes)?.original_skeleton_name;
+        if family.family_id != "horse" || name != "PairedRoot" {
+            skeleton_names.insert(name);
+        }
     }
     let skeleton_names = skeleton_names.into_iter().collect::<Vec<_>>();
     let [skeleton_runtime_name] = skeleton_names.as_slice() else {
@@ -1363,11 +1383,25 @@ fn prepare_live_skyrim_family_assets(
         let source_bytes = fs::read(&source_path)
             .map_err(|error| format!("read source clip {}: {error}", source_path.display()))?;
         let binding = animation_binding(&source_bytes)?;
+        let runtime_path = format!("{runtime_root}\\Animations\\{}.hkx", clip.clip_id);
+        if family.family_id == "horse" && binding.original_skeleton_name == "PairedRoot" {
+            let skeleton_bytes = fs::read(&skeleton_source_path).map_err(|error| format!("read source horse skeleton: {error}"))?;
+            let (converted, declaration) = crate::phase::animations::skyrim_rider::stage_paired_horse_clip(
+                &source_bytes, &skeleton_bytes, &skeleton_runtime_path, &runtime_path, &clip.clip_id,
+            )?;
+            clip_declarations.push(declaration);
+            stage_skyrim_converted_artifact(
+                &converted_root, SourceRigArtifactRole::AnimationClip { clip_name: clip.clip_id.clone() },
+                SourceRigArtifactProvenance::ConvertedSourceClip, &runtime_path,
+                exact_asset_hash(family, &clip.clip_path, SkyrimAssetRole::AnimationClip)?, &converted,
+                &mut artifact_requests, &mut artifact_receipts, &mut converted_artifacts,
+            )?;
+            continue;
+        }
         let converted =
             havok_native::api::havok_reemit_skyrim_2010_animation_asset_to_fo4(&source_bytes)
                 .map_err(|error| format!("convert Skyrim clip {}: {error}", clip.clip_path))?;
         let converted = preserve_bound_root_motion(&converted, clip)?;
-        let runtime_path = format!("{runtime_root}\\Animations\\{}.hkx", clip.clip_id);
         let clip_binding = bind_clip_to_skeleton(binding, &skeleton, &skeleton_runtime_path)?;
         let looping = clip_is_semantically_looping(&graph, &clip.clip_id);
         clip_declarations.push(ClipDecl {
@@ -1495,6 +1529,7 @@ fn prepare_live_skyrim_family_assets(
             .sort_by_key(|event| event.name.to_ascii_lowercase());
     }
     let rig = CreatureManifest {
+        property_sequences: Vec::new(),
         creature_name,
         visual_skeleton_nif,
         animation_skeleton: SkeletonDecl {
@@ -1577,6 +1612,8 @@ fn prepare_live_skyrim_family_assets(
     }
     body_paths.clear();
     Ok(PreparedSkyrimLiveFamilyAssets {
+        replacement_runtime_paths,
+        body_part_segments,
         closure,
         closure_staged_data_root,
         rig,
@@ -1690,28 +1727,10 @@ fn prepare_live_skyrim_candidate_recipe(
         target_plugin,
         interner,
     )?;
-    let race_spells = candidate
-        .attack_spells
-        .iter()
-        .map(|source| {
-            parse_form_key(source, interner)
-                .ok_or_else(|| format!("invalid candidate spell locator {source}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter_map(|source| {
-            dependency_projections
-                .iter()
-                .find(|projection| {
-                    projection.source.form_key == source
-                        && projection.source.signature == "SPEL"
-                        && projection.target.signature == "SPEL"
-                })
-                .map(|projection| projection.target.clone())
-        })
-        .collect::<Vec<_>>();
-
     let npc_sources = projected_creature_npc_sources(dependency_candidate, interner);
+    let source_race_record = records.get(&source_race).copied().ok_or("missing source race")?;
+    let mut casting_profiles = Vec::new();
+    let mut casting_owners = HashSet::new();
     let mut npc_variants = Vec::with_capacity(npc_sources.len().max(1));
     let mut npc_key_plan = Vec::with_capacity(npc_sources.len().max(1));
     if npc_sources.is_empty() {
@@ -1730,6 +1749,7 @@ fn prepare_live_skyrim_candidate_recipe(
             source_race.local,
         );
         npc_variants.push(CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: primary_source_identity.clone(),
             form_key: target.clone(),
             editor_id,
@@ -1743,14 +1763,18 @@ fn prepare_live_skyrim_candidate_recipe(
             action_points: 50,
             npc_inventory: Some(Vec::new()),
             npc_equipment: None,
-            npc_spells: Some(race_spells.clone()),
+            npc_spells: Some(Vec::new()),
+            npc_perks: Vec::new(),
             npc_death_item: None,
         });
         npc_key_plan.push(CreatureNpcRecordKeyPlan {
             source_identity: primary_source_identity.clone(),
-            form_key: target,
+            form_key: target.clone(),
             primary: true,
         });
+        if let Some(profile) = super::creature_casting::build_actor_profile(source_race_record, None, target, race_target.clone(), family, records, &dependency_projections, interner)? {
+            casting_profiles.push(profile);
+        }
     }
     for (index, source_npc) in npc_sources.iter().copied().enumerate() {
         let (target, cloned_for_race) = projected_creature_record_target(
@@ -1768,10 +1792,7 @@ fn prepare_live_skyrim_candidate_recipe(
             .get(&source_npc)
             .copied()
             .ok_or_else(|| format!("missing winning NPC_ {}", source_npc.format(interner)))?;
-        let stats_record = effective_npc_template_record(record, 0x0002, records, interner)?;
-        let inventory_record = effective_npc_template_record(record, 0x0100, records, interner)?;
-        let spell_record = effective_npc_template_record(record, 0x0008, records, interner)?;
-        let stats = skyrim_npc_runtime_stats(stats_record, interner)?;
+        let stats = skyrim_npc_runtime_stats(record, interner)?;
         let identity = if index == 0 {
             primary_source_identity.clone()
         } else {
@@ -1789,7 +1810,7 @@ fn prepare_live_skyrim_candidate_recipe(
         }
         let primary = index == 0;
         let npc_inventory = source_npc_inventory(
-            inventory_record,
+            record,
             dependency,
             &dependency_projections,
             records,
@@ -1797,19 +1818,15 @@ fn prepare_live_skyrim_candidate_recipe(
             target_plugin,
             interner,
         )?;
-        let mut npc_spells = source_record_target_references(
-            spell_record.form_key,
+        let npc_spells = source_record_target_references(
+            record.form_key,
             "SPLO",
-            "SPEL",
+            &["SPEL", "LVSP"],
             dependency,
             &dependency_projections,
         )?;
-        for spell in &race_spells {
-            if !npc_spells.contains(spell) {
-                npc_spells.push(spell.clone());
-            }
-        }
         npc_variants.push(CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: identity.clone(),
             form_key: target.clone(),
             editor_id,
@@ -1823,13 +1840,27 @@ fn prepare_live_skyrim_candidate_recipe(
             npc_inventory: Some(npc_inventory),
             npc_equipment: None,
             npc_spells: Some(npc_spells),
+            npc_perks: source_npc_perks(record, &dependency_projections, interner)?,
             npc_death_item: None,
         });
         npc_key_plan.push(CreatureNpcRecordKeyPlan {
             source_identity: identity,
-            form_key: target,
+            form_key: target.clone(),
             primary,
         });
+        for owner in super::npc_templates::owners(record, 0x8, records, interner)? {
+            if !casting_owners.insert(owner.form_key) { continue; }
+            let owner_target = if owner.form_key == source_npc {
+                target.clone()
+            } else {
+                let mapped = mapper_state.source_to_target.get(&owner.form_key)
+                    .ok_or_else(|| format!("unmapped spell template {}", owner.form_key.format(interner)))?;
+                TargetFormKey::new(mapped.local, interner.resolve(mapped.plugin).ok_or("unresolved template plugin")?)
+            };
+            if let Some(profile) = super::creature_casting::build_actor_profile(source_race_record, Some(owner), owner_target, race_target.clone(), family, records, &dependency_projections, interner)? {
+                casting_profiles.push(profile);
+            }
+        }
     }
     let primary_npc_target = npc_key_plan[0].form_key.clone();
     let editor_stem = projected_editor_id(
@@ -1838,18 +1869,17 @@ fn prepare_live_skyrim_candidate_recipe(
         source_race.local,
     );
     let editor_id = |suffix: &str| format!("{editor_stem}{suffix}");
-    let fallback_spell = npc_variants
-        .iter()
-        .find(|variant| variant.primary)
-        .and_then(|variant| variant.npc_spells.as_ref())
-        .and_then(|spells| spells.first());
+    let casting_spell = casting_profiles.first()
+        .and_then(|profile| profile.abilities.first())
+        .and_then(|ability| ability.words.first())
+        .map(|word| CreatureTargetRecordReference::new("SPEL", word.spell.clone()));
     let attacks = live_attack_projections(
         candidate,
         family,
         &dependency_projections,
         reservations,
         ancillary_reservations,
-        fallback_spell,
+        casting_spell.as_ref(),
         target_plugin,
         &editor_stem,
         interner,
@@ -1929,21 +1959,33 @@ fn prepare_live_skyrim_candidate_recipe(
         .iter()
         .map(|part| part.armor_addon_form_key.clone())
         .collect::<Vec<_>>();
-    let projection = CreatureRecordProjectionManifest {
-        base: base.clone(),
-        source_primary_identity: primary_source_identity.clone(),
-        race_data,
-        body_parts: CreatureBodyPartProjection::root_only_32(
-            selected_variant.actual_root_bone.clone(),
-        ),
-        body_nif_parts,
-        variants: npc_variants,
-        npc_inventory: Vec::new(),
-        npc_equipment: Vec::new(),
-        npc_spells: Vec::new(),
-        npc_death_item: None,
-        attacks,
-    };
+    let equipment_slots = super::equipment_slots::project_race_slots(
+        source_race_record,
+        source_record_target_references(source_race, "QNAM", &["EQUP"], dependency, &dependency_projections)?,
+        interner,
+    )?;
+    let projection = CreatureRecordProjectionManifest { templates: None, equipment_slots, base: base.clone(),
+    race_keywords: Vec::new(),
+    source_primary_identity: primary_source_identity.clone(),
+    race_data,
+    body_parts: crate::source_rig::body_parts::project_source_body_parts(
+        records.get(&body_part_source).copied().ok_or("source BPTD record missing")?,
+        "skyrimse", &selected_variant.actual_root_bone, &assets.body_part_segments, interner,
+        |row, field, _raw| {
+            let source = dependency.records.iter().find(|record| record.source.form_key == body_part_source).ok_or("source BPTD dependency missing")?;
+            let field_index = records.get(&body_part_source).ok_or("source BPTD record missing")?.fields.iter().enumerate().filter(|(_, field)| field.sig.as_str() == "BPND").nth(row).map(|(index, _)| index).ok_or("source BPTD row missing")?;
+            let prefix = format!("BPND[{field_index}].{field}");
+            let reference = source.references.iter().find(|reference| reference.field_path.starts_with(&prefix)).ok_or_else(|| format!("BPTD dependency missing {prefix}"))?;
+            dependency_projections.iter().find(|projection| projection.source.form_key == reference.target).map(|projection| projection.target.clone()).ok_or_else(|| format!("BPTD dependency {prefix} has no target"))
+        }, |path| if path.is_empty() { Ok(String::new()) } else { assets.replacement_runtime_paths.get(&path_key(path)).cloned().ok_or_else(|| format!("unstaged BPTD replacement {path}")) },
+    )?,
+    body_nif_parts,
+    variants: npc_variants,
+    npc_inventory: Vec::new(),
+    npc_equipment: Vec::new(),
+    npc_spells: Vec::new(),
+    npc_death_item: None,
+    attacks, };
     let required_target_records = projection_dependencies(&projection);
     let key_plan = CreatureRecordKeyPlan {
         planned_source_identity: primary_source_identity.clone(),
@@ -2007,6 +2049,7 @@ fn prepare_live_skyrim_candidate_recipe(
         candidate_attack_warnings(candidate, source_race, &dependency_projections, interner)?;
     Ok(PreparedSkyrimCandidateRecipe {
         recipe,
+        casting_profiles,
         dependency_projections,
         source_field_receipts,
         warnings,
@@ -2119,7 +2162,7 @@ struct AnimationBindingEvidence {
     float_indices: Vec<usize>,
 }
 
-fn preserve_bound_root_motion(
+pub(super) fn preserve_bound_root_motion(
     converted: &[u8],
     clip: &SkyrimCreatureClipReceipt,
 ) -> Result<Vec<u8>, String> {
@@ -2175,9 +2218,11 @@ fn preserve_bound_root_motion(
             observed.join(", ")
         ));
     };
-    let reference_frame_samples = planar_reference_frame_samples(&samples)?;
+    let reference_frame_samples = planar_reference_frame_samples(&samples, expected_sample_count)?;
     for alternative in matching {
-        if planar_reference_frame_samples(&alternative)? != reference_frame_samples {
+        if planar_reference_frame_samples(&alternative, expected_sample_count)?
+            != reference_frame_samples
+        {
             return Err(format!(
                 "multiple BoundAnims locators for {} match its summary but contain different samples",
                 clip.clip_id
@@ -2277,17 +2322,14 @@ fn bound_motion_matches_receipt(
 ) -> bool {
     let SkyrimRootMotionReceipt::Sampled {
         source: SkyrimRootMotionSourceReceipt::BoundAnims,
-        sample_count,
         translation_delta,
         rotation_start,
         rotation_end,
+        ..
     } = receipt
     else {
         return false;
     };
-    if motion.translations.len().max(motion.rotations.len()) != *sample_count {
-        return false;
-    }
     let actual_translation_delta = motion
         .translations
         .first()
@@ -2336,8 +2378,8 @@ fn optional_quaternion_matches(actual: Option<[f32; 4]>, expected: Option<[f32; 
 
 fn planar_reference_frame_samples(
     motion: &SkyrimBoundMotionSamples,
+    sample_count: usize,
 ) -> Result<Vec<[f32; 4]>, String> {
-    let sample_count = motion.translations.len().max(motion.rotations.len());
     if sample_count == 0 || !motion.duration.is_finite() || motion.duration < 0.0 {
         return Err("BoundAnims motion has no samples or an invalid duration".to_string());
     }
@@ -2383,9 +2425,6 @@ fn sample_linear_track(
     if track.is_empty() {
         return fallback;
     }
-    if track.len() == sample_count {
-        return track[index].value;
-    }
     let target_time = sample_time(index, sample_count, duration);
     let (left, right, fraction) = sample_interval(track, target_time);
     std::array::from_fn(|component| {
@@ -2401,9 +2440,6 @@ fn sample_quaternion_track(
 ) -> [f32; 4] {
     if track.is_empty() {
         return [0.0, 0.0, 0.0, 1.0];
-    }
-    if track.len() == sample_count {
-        return normalize_quaternion(track[index].value);
     }
     let target_time = sample_time(index, sample_count, duration);
     let (left, right, fraction) = sample_interval(track, target_time);
@@ -2781,7 +2817,7 @@ fn skyrim_npc_runtime_stats(
         .iter()
         .find(|field| field.sig.as_str() == "ACBS")
         .ok_or_else(|| "NPC_ has no ACBS".to_string())?;
-    let (stamina_offset, level, health_offset, template_flags) = match &acbs.value {
+    let (stamina_offset, level, health_offset, _template_flags) = match &acbs.value {
         crate::record::FieldValue::Bytes(bytes) if bytes.len() == 24 => (
             i16::from_le_bytes(bytes[6..8].try_into().unwrap()),
             u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
@@ -2804,136 +2840,12 @@ fn skyrim_npc_runtime_stats(
         ),
         _ => return Err("NPC_.ACBS is not the exact 24-byte Skyrim layout".to_string()),
     };
-    if template_flags & 0x0002 != 0 {
-        return Err(format!(
-            "NPC_ uses template flags {template_flags:04X}; exact inherited stat flattening is required"
-        ));
-    }
     let derive = |offset: i16| (50_i32 + i32::from(offset)).clamp(1, i32::from(u16::MAX)) as u16;
     Ok(SkyrimNpcRuntimeStats {
         level: level.max(1),
         health: derive(health_offset),
         action_points: derive(stamina_offset),
     })
-}
-
-fn effective_npc_template_record<'a>(
-    record: &'a Record,
-    inherited_flag: u16,
-    records: &HashMap<FormKey, &'a Record>,
-    interner: &StringInterner,
-) -> Result<&'a Record, String> {
-    let mut current = record;
-    let mut visited = HashSet::new();
-    loop {
-        if !visited.insert(current.form_key) {
-            return Err("NPC_ template chain contains a cycle".to_string());
-        }
-        let flags = skyrim_npc_template_flags(current, interner)?;
-        if flags & inherited_flag == 0 {
-            return Ok(current);
-        }
-        let target = current
-            .fields
-            .iter()
-            .find(|field| field.sig.as_str() == "TPLT")
-            .and_then(|field| first_form_key(&field.value))
-            .ok_or_else(|| {
-                format!(
-                    "NPC_ inherits template category {inherited_flag:04X} without a TPLT target"
-                )
-            })?;
-        current = resolve_npc_template_target(target, records, interner)?;
-    }
-}
-
-fn resolve_npc_template_target<'a>(
-    target: FormKey,
-    records: &HashMap<FormKey, &'a Record>,
-    interner: &StringInterner,
-) -> Result<&'a Record, String> {
-    let record = records.get(&target).copied().ok_or_else(|| {
-        format!(
-            "NPC_ template target {} is missing",
-            target.format(interner)
-        )
-    })?;
-    match record.sig.as_str() {
-        "NPC_" => Ok(record),
-        "LVLN" => {
-            let mut targets = Vec::new();
-            collect_lvln_npc_targets(record, records, &mut HashSet::new(), &mut targets);
-            targets.sort_by_key(|target| form_key_sort_key(*target, interner));
-            targets.dedup();
-            let target = targets.first().copied().ok_or_else(|| {
-                format!(
-                    "LVLN template target {} has no decoded NPC_ entries",
-                    target.format(interner)
-                )
-            })?;
-            records
-                .get(&target)
-                .copied()
-                .ok_or_else(|| "selected LVLN NPC_ template is missing".to_string())
-        }
-        signature => Err(format!(
-            "NPC_ template target {} has unsupported signature {signature}",
-            target.format(interner)
-        )),
-    }
-}
-
-fn collect_lvln_npc_targets(
-    leveled_list: &Record,
-    records: &HashMap<FormKey, &Record>,
-    visited: &mut HashSet<FormKey>,
-    output: &mut Vec<FormKey>,
-) {
-    if !visited.insert(leveled_list.form_key) {
-        return;
-    }
-    for field in leveled_list
-        .fields
-        .iter()
-        .filter(|field| field.sig.as_str() == "LVLO")
-    {
-        let mut targets = collect_form_keys(&field.value);
-        if targets.is_empty() {
-            targets.extend(
-                embedded_form_ids(&field.value, 4, 12)
-                    .into_iter()
-                    .filter_map(|raw| {
-                        resolve_embedded_form_id(leveled_list.form_key, raw, records)
-                    }),
-            );
-        }
-        for target in targets {
-            match records.get(&target).copied() {
-                Some(record) if record.sig.as_str() == "NPC_" => output.push(target),
-                Some(record) if record.sig.as_str() == "LVLN" => {
-                    collect_lvln_npc_targets(record, records, visited, output);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn skyrim_npc_template_flags(record: &Record, interner: &StringInterner) -> Result<u16, String> {
-    let acbs = record
-        .fields
-        .iter()
-        .find(|field| field.sig.as_str() == "ACBS")
-        .ok_or_else(|| "NPC_ has no ACBS".to_string())?;
-    match &acbs.value {
-        crate::record::FieldValue::Bytes(bytes) if bytes.len() == 24 => {
-            Ok(u16::from_le_bytes(bytes[18..20].try_into().unwrap()))
-        }
-        crate::record::FieldValue::Struct(fields) => struct_i64(fields, "template_flags", interner)
-            .and_then(|value| u16::try_from(value).ok())
-            .ok_or_else(|| "NPC_.ACBS has no template_flags".to_string()),
-        _ => Err("NPC_.ACBS is not the exact 24-byte Skyrim layout".to_string()),
-    }
 }
 
 fn first_form_key(value: &crate::record::FieldValue) -> Option<FormKey> {
@@ -3032,7 +2944,7 @@ fn live_attack_projections(
     dependency_projections: &[SkyrimCreatureTargetDependencyProjection],
     reservations: &HashMap<FormKey, &SkyrimCreatureRecordReservation>,
     ancillary_reservations: &[SkyrimCreatureAncillaryReservationReceipt],
-    fallback_spell: Option<&CreatureTargetRecordReference>,
+    casting_spell: Option<&CreatureTargetRecordReference>,
     target_plugin: &str,
     editor_stem: &str,
     interner: &StringInterner,
@@ -3081,10 +2993,10 @@ fn live_attack_projections(
                 &family.graph.explicit_events,
             )
         {
-            let projection = fallback_spell
+            let projection = casting_spell
                 .cloned()
                 .map(|spell| CreatureAttackRecordProjection::SpellAbility { spell })
-                .unwrap_or_else(fo4_creature_ranged_fallback_projection);
+                .ok_or_else(|| "source projectile event has no validated casting profile".to_string())?;
             return Ok(vec![CreatureAttackRecordVariant {
                 id: "attack_00".to_string(),
                 event,
@@ -3094,7 +3006,7 @@ fn live_attack_projections(
                 chance: 1.0,
                 strike_angle: 0.0,
                 action_point_cost: 0.0,
-                target_data: CreatureAttackTargetData::default(),
+                target_data: CreatureAttackTargetData { animation_cast: true, ..CreatureAttackTargetData::default() },
             }]);
         }
         let event = melee_event.ok_or_else(|| {
@@ -3145,6 +3057,7 @@ fn live_attack_projections(
         .enumerate()
         .map(|(index, attack)| {
             validate_attack_target_values(attack)?;
+            let mut contact_spell = None;
             let (projection, spell_policy, preserve_source_receipt) = match &attack.attack_spell {
                 Some(spell) if spell.signature == "SPEL" => {
                     let source = parse_form_key(&spell.source, interner).ok_or_else(|| {
@@ -3164,40 +3077,27 @@ fn live_attack_projections(
                             reservations,
                             target_plugin,
                         )?;
+                        let projection = if attack.attack_spell_delivery == Some(1) {
+                            contact_spell = Some(target);
+                            generated_unarmed_attack_projection(
+                                candidate, attack, ancillary_reservations,
+                                target_plugin, editor_stem, interner,
+                            )?
+                        } else {
+                            CreatureAttackRecordProjection::SpellAbility { spell: target }
+                        };
                         (
-                            CreatureAttackRecordProjection::SpellAbility { spell: target },
+                            projection,
                             CreatureAttackSpellPolicy::DirectSpell,
                             true,
                         )
                     } else {
-                        (
-                            graph_compatible_attack_fallback_projection(
-                                candidate,
-                                family,
-                                attack,
-                                ancillary_reservations,
-                                target_plugin,
-                                editor_stem,
-                                interner,
-                            )?,
-                            CreatureAttackSpellPolicy::NoSourceSpell,
-                            false,
-                        )
+                        return Err(format!("ATKD[{}] event {:?} has no converted source SPEL {}", attack.ordinal, attack.event, spell.source));
                     }
                 }
-                Some(spell) if spell.signature == "SHOU" => (
-                    graph_compatible_attack_fallback_projection(
-                        candidate,
-                        family,
-                        attack,
-                        ancillary_reservations,
-                        target_plugin,
-                        editor_stem,
-                        interner,
-                    )?,
-                    CreatureAttackSpellPolicy::NoSourceSpell,
-                    false,
-                ),
+                Some(spell) if spell.signature == "SHOU" => return Err(format!(
+                    "ATKD[{}] event {:?} needs an exact shout-event casting profile for {}", attack.ordinal, attack.event, spell.source
+                )),
                 Some(spell) => {
                     return Err(format!(
                         "ATKD[{}] event {:?} references unsupported {} {}",
@@ -3230,9 +3130,17 @@ fn live_attack_projections(
                 strike_angle: f32::from_bits(attack.strike_angle_bits),
                 action_point_cost: 0.0,
                 target_data: CreatureAttackTargetData {
-                    attack_flags: attack.attack_flags,
+                    attack_flags: crate::source_rig::skyrim_attack_flags_to_fo4(attack.attack_flags),
                     attack_angle: f32::from_bits(attack.attack_angle_bits),
-                    stagger: f32::from_bits(attack.stagger_bits),
+                    attack_type: attack.attack_type.as_ref().map(|reference| {
+                        let source = parse_form_key(&reference.source, interner)
+                            .ok_or_else(|| format!("ATKD[{}] has invalid KYWD locator {}", attack.ordinal, reference.source))?;
+                        target_reference_for_source(
+                            source, "KYWD", dependency_projections, reservations, target_plugin,
+                        )
+                    }).transpose()?,
+                    contact_spell,
+                    animation_cast: attack.attack_spell_delivery.is_some_and(|delivery| delivery != 1),
                     knockdown: f32::from_bits(attack.knockdown_bits),
                     recovery_time: f32::from_bits(attack.recovery_time_bits),
                     action_points_multiplier: f32::from_bits(attack.stamina_multiplier_bits),
@@ -3244,52 +3152,7 @@ fn live_attack_projections(
         .collect()
 }
 
-fn fo4_creature_ranged_fallback_projection() -> CreatureAttackRecordProjection {
-    CreatureAttackRecordProjection::RangedEquipment {
-        equipment: vec![CreatureTargetRecordReference::new(
-            "WEAP",
-            TargetFormKey::new(FO4_CREATURE_RANGED_FALLBACK_WEAPON, "Fallout4.esm"),
-        )],
-        projectile: None,
-        ammunition: None,
-    }
-}
-
-fn graph_compatible_attack_fallback_projection(
-    candidate: &super::creature_recipe::SkyrimCreatureCandidateRecipe,
-    family: &SkyrimCreatureFamilyJob,
-    attack: &SkyrimRaceAttackDataReceipt,
-    ancillary_reservations: &[SkyrimCreatureAncillaryReservationReceipt],
-    target_plugin: &str,
-    editor_stem: &str,
-    interner: &StringInterner,
-) -> Result<CreatureAttackRecordProjection, String> {
-    let role =
-        graph_attack_role_for_event(&family.graph.roles, &attack.event).ok_or_else(|| {
-            format!(
-                "ATKD[{}] event {:?} has no executable graph role",
-                attack.ordinal, attack.event
-            )
-        })?;
-    match role {
-        crate::source_rig::CreatureClipRole::ProjectileAttack => {
-            Ok(fo4_creature_ranged_fallback_projection())
-        }
-        crate::source_rig::CreatureClipRole::MeleeAttack => generated_unarmed_attack_projection(
-            candidate,
-            attack,
-            ancillary_reservations,
-            target_plugin,
-            editor_stem,
-            interner,
-        ),
-        _ => Err(format!(
-            "ATKD[{}] event {:?} resolves to unsupported attack role {role:?}",
-            attack.ordinal, attack.event
-        )),
-    }
-}
-
+#[cfg(test)]
 fn graph_attack_role_for_event(
     roles: &[crate::source_rig::CapabilityClipRole],
     event: &str,
@@ -3453,18 +3316,7 @@ fn attack_source_data_receipt(
         ordinal: u32::try_from(attack.ordinal)
             .map_err(|_| format!("ATKD ordinal {} exceeds u32", attack.ordinal))?,
         attack_type_policy: match attack_type {
-            Some(_) => CreatureAttackTypePolicy::RuntimeInertKeyword {
-                proof: proof(
-                    ATTACK_TYPE_RUNTIME_INERT_PROOF_SCHEMA,
-                    "attack_type",
-                    "runtime_inert_keyword",
-                    evidence("attack_type"),
-                    Some((
-                        "source_signature",
-                        serde_json::Value::String("KYWD".to_string()),
-                    )),
-                ),
-            },
+            Some(_) => CreatureAttackTypePolicy::DirectKeyword,
             None => CreatureAttackTypePolicy::NullOmitted,
         },
         attack_spell_policy: spell_policy,
@@ -3607,7 +3459,7 @@ fn source_projection_field_receipts(
 fn source_record_target_references(
     owner: FormKey,
     source_field: &str,
-    target_signature: &str,
+    target_signatures: &[&str],
     dependency: &SkyrimCreatureDependencyLedger,
     projections: &[SkyrimCreatureTargetDependencyProjection],
 ) -> Result<Vec<CreatureTargetRecordReference>, String> {
@@ -3615,7 +3467,7 @@ fn source_record_target_references(
         .records
         .iter()
         .find(|record| record.source.form_key == owner)
-        .ok_or_else(|| format!("dependency ledger omitted source NPC_ {owner:?}"))?;
+        .ok_or_else(|| format!("dependency ledger omitted source record {owner:?}"))?;
     let targets = projections
         .iter()
         .map(|projection| (projection.source.form_key, &projection.target))
@@ -3625,7 +3477,10 @@ fn source_record_target_references(
         .iter()
         .filter_map(|reference| {
             let order = source_field_index(&reference.field_path, source_field)?;
-            (reference.target_signature.as_deref() == Some(target_signature))
+            reference
+                .target_signature
+                .as_deref()
+                .is_some_and(|signature| target_signatures.contains(&signature))
                 .then_some((order, reference.target))
         })
         .collect::<Vec<_>>();
@@ -3641,10 +3496,32 @@ fn source_record_target_references(
             Some(target) => Some(Ok(target)),
             None if !dependency_records.contains_key(&source) => None,
             None => Some(Err(format!(
-                "{source_field} {target_signature} dependency {source:?} has no target projection"
+                "{source_field} {target_signatures:?} dependency {source:?} has no target projection"
             ))),
         })
         .collect()
+}
+
+fn source_npc_perks(
+    record: &Record,
+    projections: &[SkyrimCreatureTargetDependencyProjection],
+    interner: &StringInterner,
+) -> Result<Vec<CreatureNpcPerk>, String> {
+    record.fields.iter().filter(|field| field.sig.as_str() == "PRKR").map(|field| {
+        let keys = embedded_form_keys(&field.value);
+        let [source] = keys.as_slice() else {
+            return Err(format!("source NPC_ {} has an unresolved PRKR perk", record.form_key.format(interner)));
+        };
+        let rank = match &field.value {
+            crate::record::FieldValue::Struct(fields) => struct_i64(fields, "rank", interner),
+            _ => None,
+        }.and_then(|value| u8::try_from(value).ok())
+            .ok_or_else(|| "source NPC_ PRKR rank is not a byte".to_string())?;
+        let target = projections.iter().find(|projection| projection.source.form_key == *source
+            && projection.target.signature == "PERK")
+            .ok_or_else(|| format!("source NPC_ PRKR {} has no PERK target projection", source.format(interner)))?;
+        Ok(CreatureNpcPerk { perk: target.target.clone(), rank })
+    }).collect()
 }
 
 fn source_npc_inventory(
@@ -4803,6 +4680,10 @@ fn project_key(path: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "creature_root_motion_tests.rs"]
+mod root_motion_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ids::{SigCode, SubrecordSig};
@@ -5090,31 +4971,17 @@ mod tests {
             );
         }
         {
-            let CreatureAttackRecordProjection::RangedEquipment {
-                equipment,
-                projectile,
-                ammunition,
-            } = fo4_creature_ranged_fallback_projection()
-            else {
-                panic!("fallback must remain a ranged equipment projection");
-            };
-            assert_eq!(equipment.len(), 1);
-            assert_eq!(equipment[0].signature, "WEAP");
-            assert_eq!(
-                equipment[0].form_key,
-                TargetFormKey::new(FO4_CREATURE_RANGED_FALLBACK_WEAPON, "Fallout4.esm")
-            );
-            assert!(projectile.is_none());
-            assert!(ammunition.is_none());
-        }
-        {
             let weapon = TargetFormKey::new(0x812, "Output.esm");
             let attacks = vec![
                 CreatureAttackRecordVariant {
                     id: "attack_00".to_string(),
                     event: "attackSpell".to_string(),
                     primary: true,
-                    projection: fo4_creature_ranged_fallback_projection(),
+                    projection: CreatureAttackRecordProjection::RangedEquipment {
+                        equipment: vec![CreatureTargetRecordReference::new("WEAP", TargetFormKey::new(0x900, "Output.esm"))],
+                        projectile: None,
+                        ammunition: None,
+                    },
                     damage_multiplier: 1.0,
                     chance: 1.0,
                     strike_angle: 0.0,
@@ -5148,6 +5015,7 @@ mod tests {
         {
             let roles = vec![
                 crate::source_rig::CapabilityClipRole {
+                    equipment_index: None,
                     role: crate::source_rig::CreatureClipRole::MeleeAttack,
                     state_name: "Melee".to_string(),
                     clip_name: "MeleeClip".to_string(),
@@ -5157,6 +5025,7 @@ mod tests {
                     motion: Default::default(),
                 },
                 crate::source_rig::CapabilityClipRole {
+                    equipment_index: None,
                     role: crate::source_rig::CreatureClipRole::ProjectileAttack,
                     state_name: "Projectile".to_string(),
                     clip_name: "ProjectileClip".to_string(),
@@ -5176,6 +5045,102 @@ mod tests {
                 Some(crate::source_rig::CreatureClipRole::ProjectileAttack)
             );
         }
+    }
+
+    #[test]
+    fn intrinsic_race_spells_exclude_contact_attack_dependencies() {
+        use super::super::creature_mvp_adapter::{
+            SkyrimCreatureDependencyRecord, SkyrimRecordLoweringDisposition,
+            SkyrimRecordLoweringKind, SkyrimSourceRecordLocator, SkyrimSourceReferenceLocator,
+        };
+
+        let interner = StringInterner::new();
+        let source = |local, signature: &str| SkyrimSourceRecordLocator {
+            form_key: FormKey { local, plugin: interner.intern("Skyrim.esm") },
+            signature: signature.to_string(),
+        };
+        let race = source(0x100, "RACE");
+        let contact_spell = source(0x200, "SPEL");
+        let intrinsic_spell = source(0x201, "SPEL");
+        let spell_list = source(0x202, "LVSP");
+        let projections = [contact_spell.clone(), intrinsic_spell.clone(), spell_list.clone()]
+            .into_iter()
+            .map(|source| SkyrimCreatureTargetDependencyProjection {
+                target: CreatureTargetRecordReference {
+                    signature: source.signature.clone(),
+                    form_key: TargetFormKey::new(source.form_key.local, "Output.esm"),
+                },
+                source,
+            })
+            .collect::<Vec<_>>();
+        let dependency = SkyrimCreatureDependencyLedger {
+            schema: "test",
+            candidates: Vec::new(),
+            families: Vec::new(),
+            records: vec![SkyrimCreatureDependencyRecord {
+                source: race.clone(),
+                owners: Vec::new(),
+                fields: Vec::new(),
+                references: [
+                    ("ATKD[3].attack_spell", &contact_spell),
+                    ("SPLO[5]", &intrinsic_spell),
+                    ("SPLO[4]", &spell_list),
+                ]
+                .into_iter()
+                .map(|(field_path, target)| SkyrimSourceReferenceLocator {
+                    owner: race.clone(),
+                    field_path: field_path.to_string(),
+                    target: target.form_key,
+                    target_signature: Some(target.signature.clone()),
+                })
+                .collect(),
+                disposition: SkyrimRecordLoweringDisposition::Ready {
+                    kind: SkyrimRecordLoweringKind::SourceRigProjection,
+                },
+            }],
+            accounting: Default::default(),
+        };
+        let spells = source_record_target_references(
+            race.form_key, "SPLO", &["SPEL", "LVSP"], &dependency, &projections,
+        )
+        .unwrap();
+        assert_eq!(spells, [projections[2].target.clone(), projections[1].target.clone()]);
+    }
+
+    #[test]
+    fn source_npc_perks_follow_spell_list_template_and_preserve_rank() {
+        use super::super::creature_mvp_adapter::SkyrimSourceRecordLocator;
+        use esp_authoring_core::plugin_runtime::{ParsedRecord, ParsedSubrecord};
+        let interner = StringInterner::new();
+        let schema = crate::schema::AuthoringSchema::for_game("skyrimse").unwrap();
+        let parent_key = FormKey { local: 0x456, plugin: interner.intern("Skyrim.esm") };
+        let source = ParsedRecord {
+            signature: "NPC_".into(), form_id: parent_key.local, flags: 0, version_control: 0,
+            form_version: Some(44), version2: Some(0), raw_payload: None, parse_error: None,
+            subrecords: vec![
+                ParsedSubrecord { signature: "ACBS".into(), data: vec![0; 24].into(), semantic_type: None },
+                ParsedSubrecord { signature: "PRKR".into(), data: vec![0xA8, 0x2C, 0x0F, 0, 2, 0, 0, 0].into(), semantic_type: None },
+            ],
+        };
+        let parent = crate::source_read::decode_record_from_parsed(&source, &parent_key, &schema,
+            &[], "Skyrim.esm", None, false, &interner).unwrap();
+        let mut flags = vec![0; 24];
+        flags[18..20].copy_from_slice(&0x8u16.to_le_bytes());
+        let mut child = npc_with_acbs(&interner, flags);
+        child.fields.push(FieldEntry { sig: SubrecordSig(*b"TPLT"), value: FieldValue::FormKey(parent_key) });
+        let records = [&parent, &child].into_iter().map(|record| (record.form_key, record)).collect();
+        let owners = super::super::npc_templates::owners(&child, 0x8, &records, &interner).unwrap();
+        let owner = owners[0];
+        assert_eq!(owner.form_key, parent_key);
+        let target = CreatureTargetRecordReference::new("PERK", TargetFormKey::new(0x820, "Output.esm"));
+        let projections = vec![SkyrimCreatureTargetDependencyProjection {
+            source: SkyrimSourceRecordLocator { form_key: FormKey { local: 0xF2CA8, plugin: parent_key.plugin }, signature: "PERK".to_string() },
+            target: target.clone(),
+        }];
+        assert_eq!(source_npc_perks(owner, &projections, &interner).unwrap(),
+            [CreatureNpcPerk { perk: target, rank: 2 }]);
+        assert!(source_npc_perks(owner, &[], &interner).is_err());
+        assert!(source_npc_perks(&child, &projections, &interner).unwrap().is_empty());
     }
 
     #[test]
@@ -5214,9 +5179,9 @@ mod tests {
                 .collect::<HashMap<_, _>>();
 
             let resolved =
-                resolve_npc_template_target(leveled_list.form_key, &records, &interner).unwrap();
+                super::super::npc_templates::owners(&leveled_list, 0x8, &records, &interner).unwrap();
 
-            assert_eq!(resolved.form_key, npc.form_key);
+            assert_eq!(resolved.iter().map(|record| record.form_key).collect::<Vec<_>>(), [npc.form_key]);
         }
         {
             let interner = StringInterner::new();
@@ -5270,6 +5235,7 @@ mod tests {
             event: event.to_string(),
             damage_multiplier_bits: 1.5_f32.to_bits(),
             attack_chance_bits: 0.75_f32.to_bits(),
+            attack_spell_delivery: attack_spell.as_ref().map(|_| 1),
             attack_spell,
             attack_flags: 0x12,
             attack_angle_bits: 45.0_f32.to_bits(),
@@ -5318,10 +5284,8 @@ mod tests {
             );
 
             bytes[18..20].copy_from_slice(&0x0002_u16.to_le_bytes());
-            let error = skyrim_npc_runtime_stats(&npc_with_acbs(&interner, bytes), &interner)
-                .err()
-                .unwrap();
-            assert!(error.contains("exact inherited stat flattening"));
+            let local = skyrim_npc_runtime_stats(&npc_with_acbs(&interner, bytes), &interner).unwrap();
+            assert_eq!(local.health, 125);
         }
         {
             let mut attack = attack(0, "attackBite", None);
@@ -5405,6 +5369,7 @@ mod tests {
                             attack_chance_bits: 1.0_f32.to_bits(),
                             attack_spell: None,
                             attack_spell_signature: None,
+                            attack_spell_delivery: None,
                             attack_flags: 0,
                             attack_angle_bits: 0.0_f32.to_bits(),
                             strike_angle_bits: 0.0_f32.to_bits(),
@@ -5422,6 +5387,7 @@ mod tests {
                             attack_chance_bits: 1.0_f32.to_bits(),
                             attack_spell: Some(shout),
                             attack_spell_signature: Some("SHOU".to_string()),
+                            attack_spell_delivery: None,
                             attack_flags: 0,
                             attack_angle_bits: 0.0_f32.to_bits(),
                             strike_angle_bits: 0.0_f32.to_bits(),
@@ -5439,6 +5405,7 @@ mod tests {
                             attack_chance_bits: 1.0_f32.to_bits(),
                             attack_spell: Some(spell),
                             attack_spell_signature: Some("SPEL".to_string()),
+                            attack_spell_delivery: Some(1),
                             attack_flags: 0,
                             attack_angle_bits: 0.0_f32.to_bits(),
                             strike_angle_bits: 0.0_f32.to_bits(),
@@ -5577,7 +5544,7 @@ mod tests {
             assert_eq!(receipt.attack_spell.unwrap().signature, "SPEL");
             assert!(matches!(
                 receipt.attack_type_policy,
-                CreatureAttackTypePolicy::RuntimeInertKeyword { .. }
+                CreatureAttackTypePolicy::DirectKeyword
             ));
             assert!(matches!(
                 receipt.stamina_multiplier_policy,

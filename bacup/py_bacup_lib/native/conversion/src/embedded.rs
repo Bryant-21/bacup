@@ -32,6 +32,8 @@ pub const SKELETON_FO3_TO_FO4_CREATURES: &str =
     include_str!("embedded/translation_maps/skeleton_fo3_to_fo4_creatures.yaml");
 pub const SKELETON_SKYRIMSE_TO_FO4: &str =
     include_str!("embedded/translation_maps/skeleton_skyrimse_to_fo4.yaml");
+pub const SKELETON_STARFIELD_TO_FO4: &str =
+    include_str!("embedded/translation_maps/skeleton_starfield_to_fo4.yaml");
 pub const SKYRIMSE_TO_FO4: &str = include_str!("embedded/translation_maps/skyrimse_to_fo4.yaml");
 pub const STARFIELD_TO_FO4: &str = include_str!("embedded/translation_maps/starfield_to_fo4.yaml");
 
@@ -100,6 +102,7 @@ pub const ALL_YAMLS: &[(&str, &str)] = &[
         SKELETON_FO3_TO_FO4_CREATURES,
     ),
     ("skeleton_skyrimse_to_fo4", SKELETON_SKYRIMSE_TO_FO4),
+    ("skeleton_starfield_to_fo4", SKELETON_STARFIELD_TO_FO4),
     ("skyrimse_to_fo4", SKYRIMSE_TO_FO4),
     ("starfield_to_fo4", STARFIELD_TO_FO4),
     ("whitelist_fnv", WHITELIST_FNV),

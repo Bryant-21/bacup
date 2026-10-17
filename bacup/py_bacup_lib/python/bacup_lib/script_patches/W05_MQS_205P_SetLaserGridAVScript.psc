@@ -23,13 +23,20 @@ Function RefreshLaserGridState()
         QuestScript = OwningQuest as W05_MQS_205_Script
     endif
 
-    ObjectReference laserGrid = GetRef()
-    if laserGrid == None || QuestScript == None
+    ; This alias is the EnterBasementTrigger; the grids (55F73F/55F744/55F747) read the AV from the player.
+    Actor playerRef = Game.GetPlayer()
+    if QuestScript == None
         return
     endif
     if OwningQuest.GetStage() >= LaserGridTurnedOffStage
-        laserGrid.SetValue(QuestScript.W05_MQS_205P_LaserGridState, 1.0)
+        playerRef.SetValue(QuestScript.W05_MQS_205P_LaserGridState, 1.0)
     else
-        laserGrid.SetValue(QuestScript.W05_MQS_205P_LaserGridState, 0.0)
+        playerRef.SetValue(QuestScript.W05_MQS_205P_LaserGridState, 0.0)
     endif
 EndFunction
+
+Event OnTriggerEnter(ObjectReference akActionRef)
+    if akActionRef == Game.GetPlayer()
+        RefreshLaserGridState()
+    endif
+EndEvent

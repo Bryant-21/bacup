@@ -18,7 +18,7 @@ def build_preview(converted_data: Path, output: Path, ruffle_package: Path,
     output.mkdir(parents=True, exist_ok=True)
     strings = dict(line.split('\t', 1) for line in read_table(host_file(target / 'interface', 'translate_en.txt', target_data_dir)) if '\t' in line)
     strings.update(dict(line.split('\t', 1) for line in read_table(source / 'interface/translate_en.txt')
-                        if line.split('\t', 1)[0] in ('$Loading', '$LEVEL')))
+                        if line.split('\t', 1)[0] in ('$LOADING', '$LEVEL')))
     strings['$B21_PM_Menu'] = 'PHOTO MODE'
     # Fallout4.esm LSCR 021E50 (PipBoy01), English Description. The fixture calls the live host setter.
     tip = 'The RobCo Pip-Boy is the ultimate in personal computing devices.'
@@ -38,8 +38,12 @@ def build_preview(converted_data: Path, output: Path, ruffle_package: Path,
             init = next(t for t in native.abc_class_outline(movie, name)['instance_traits'] if t['name'] == 'InitList')
             arguments = ['true', 'true', 'false', 'false', 'true', 'true', 'true', 'false', 'false', 'false']
             fixture_source = fixture_source.replace('__B21_INIT_LIST_ARGS__', ','.join(arguments[:len(init['signature']['params'])]))
-        movie = native.augment_as3_classes(replace_tags(movie, tags), {name: fixture_source})
-        movie = native.patch_as3_method(movie, name, '$constructor', [['callpropvoid', hook, 0]],
+        class_name = name if name == 'MainMenu' else 'B21_Loading_LoadingMenu'
+        fixture_source = fixture_source.replace('class LoadingMenu', 'class B21_Loading_LoadingMenu')
+        movie = native.augment_as3_classes(replace_tags(movie, tags), {class_name: fixture_source})
+        method = '$constructor' if name == 'MainMenu' else 'B21Stage'
+        hook = hook if name == 'MainMenu' else 'B21Layout'
+        movie = native.patch_as3_method(movie, class_name, method, [['callpropvoid', hook, 0]],
             [['keep', 0], ['getlocal', 0], ['callpropvoid', 'B21PreviewBoot', 0]])
         movie = embed_game_fonts(movie, host_file(target / 'interface', 'fonts_en.swf', target_data_dir).read_bytes())
         (output / ('main-preview.swf' if name == 'MainMenu' else 'loading-preview.swf')).write_bytes(movie)
@@ -53,7 +57,9 @@ def build_preview(converted_data: Path, output: Path, ruffle_package: Path,
         data = host_file(target / 'interface', name, target_data_dir).read_bytes()
         (output / name).write_bytes(data)
         dependencies.update(imports(data))
-    Image.open(source / 'textures/interface/loadingmenubackgrounds/ls_mischief_reloaded.dds').save(output / 'photo-background.png')
+    # Tales stretches FO76's square backgrounds to 1920x1080 (MenuPresentation.cpp BackgroundImage).
+    Image.open(source / 'textures/interface/loadingmenubackgrounds/ls_mischief_reloaded.dds').resize(
+        (1920, 1080), Image.LANCZOS).save(output / 'photo-background.png')
     shutil.copytree(ruffle_package, output / 'ruffle', dirs_exist_ok=True)
     (output / 'index.html').write_text('''<!doctype html><meta charset="utf-8"><style>
 body{margin:0;background:#182024;color:#eee;font:14px sans-serif}header{padding:10px}button,select{margin-right:8px}

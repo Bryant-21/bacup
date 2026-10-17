@@ -145,7 +145,10 @@ impl IndexedRecordDef {
         }
     }
 
-    #[cfg(test)]
+    pub(crate) fn definition(&self) -> &RecordDef {
+        &self.definition
+    }
+
     pub(crate) fn subrecord_def(&self, sig: &str) -> Option<&SubrecordDef> {
         self.subrecord_positions
             .get(sig)
@@ -377,6 +380,41 @@ fn json_for_game(game: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_membership_matches_normalizer_signature_sets() {
+        use crate::ids::SubrecordSig;
+        use std::collections::HashSet;
+
+        for game in [
+            "fo76", "fo4", "skyrimse", "fnv", "fo3", "starfield", "oblivion",
+        ] {
+            let schema = AuthoringSchema::for_game(game).unwrap();
+            let mut candidates: HashSet<SubrecordSig> = schema
+                .record_signatures()
+                .flat_map(|signature| &schema.record_def(signature).unwrap().subrecords)
+                .filter_map(|subrecord| SubrecordSig::from_str(&subrecord.id).ok())
+                .collect();
+            candidates.insert(SubrecordSig::from_str("ZZZZ").unwrap());
+            for signature in schema.record_signatures() {
+                let indexed = schema.record_lookup(signature).unwrap();
+                let supported: HashSet<SubrecordSig> = indexed
+                    .definition()
+                    .subrecords
+                    .iter()
+                    .filter_map(|subrecord| SubrecordSig::from_str(&subrecord.id).ok())
+                    .collect();
+                for candidate in &candidates {
+                    assert_eq!(
+                        supported.contains(candidate),
+                        indexed.subrecord_def(candidate.as_str()).is_some(),
+                        "{game} {signature}.{}",
+                        candidate.as_str(),
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn indexed_subrecords_preserve_every_game_definition_and_first_match() {

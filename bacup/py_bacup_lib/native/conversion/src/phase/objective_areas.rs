@@ -8,15 +8,22 @@ use serde_json::{Value, json};
 use crate::fixups::rewrite_raw_object_template_formids::fo76_condition_reference_offsets;
 use crate::ids::{FormKey, SigCode};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
+use crate::plugin_catalog;
 use crate::session::open_session;
 use crate::translator::Game;
 
 pub struct ObjectiveAreasPhase;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Identity {
     plugin: String,
     object_id: u32,
+}
+
+impl Serialize for Identity {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&plugin_catalog::form_key(&self.plugin, self.object_id))
+    }
 }
 
 #[derive(Clone)]
@@ -433,15 +440,17 @@ impl Phase for ObjectiveAreasPhase {
             }
         }
         let output_plugin = &ctx.run.config.output_plugin_name;
-        let catalog = json!({"schema_version": 1, "output_plugin": output_plugin,
-            "nonzero_source_declarations": declarations, "areas": areas, "skipped": skipped});
-        let directory = ctx
-            .mod_path
-            .join("F4SE/Plugins/B21_TalesFromAppalachia/ObjectiveAreas");
-        std::fs::create_dir_all(&directory).map_err(|e| PhaseError::Internal(e.to_string()))?;
+        let catalog = json!({"version": 1,
+            "settings": {"output_plugin": output_plugin, "nonzero_source_declarations": declarations},
+            "areas": areas, "skipped": skipped});
         let filename = std::path::Path::new(output_plugin)
             .file_name()
             .ok_or_else(|| PhaseError::BadParams("missing output filename".into()))?;
+        let destination = ctx
+            .mod_path
+            .join(plugin_catalog::catalog_path("ObjectiveAreas", &filename.to_string_lossy()));
+        let directory = destination.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&directory).map_err(|e| PhaseError::Internal(e.to_string()))?;
         let mut file = tempfile::NamedTempFile::new_in(&directory)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
         file.write_all(
@@ -449,7 +458,7 @@ impl Phase for ObjectiveAreasPhase {
                 .map_err(|e| PhaseError::Internal(e.to_string()))?,
         )
         .map_err(|e| PhaseError::Internal(e.to_string()))?;
-        file.persist(directory.join(format!("{}.json", filename.to_string_lossy())))
+        file.persist(destination)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
         Ok(PhaseReport {
             assets_written: 1,

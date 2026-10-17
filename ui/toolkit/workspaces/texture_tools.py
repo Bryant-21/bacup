@@ -8,6 +8,8 @@ from ui.tools.image.color_report import ColorReportTool
 from ui.tools.image.image_utils import ImageUtilsTool
 from ui.tools.image.upscaler import ImageUpscalerTool
 from ui.tools.materials.bulk_copier import MaterialCopierTool
+from ui.tools.materials.texture_upgrader import TextureUpgraderTool
+from ui.tools.materials.v22_upgrader import MaterialV22UpgraderTool
 from ui.tools.palette.quantizer import ImageQuantizerTool
 
 
@@ -58,6 +60,24 @@ class MaterialCopierWorkspace(ToolWorkspace):
     icon = "MCP"
     id = "mat_copier"
     tool_class = MaterialCopierTool
+
+
+class MaterialV22UpgraderWorkspace(ToolWorkspace):
+    name = "BGSM v22+ Upgrader"
+    icon = "PBR"
+    id = "mat_v22_upgrader"
+    tool_class = MaterialV22UpgraderTool
+
+
+class TextureUpgraderWorkspace(ToolWorkspace):
+    name = "Texture Upgrader"
+    icon = "TUP"
+    id = "texture_upgrader"
+    tool_class = TextureUpgraderTool
+
+    def __init__(self, toolkit_settings=None):
+        super().__init__(toolkit_settings)
+        self._tool._toolkit_settings = toolkit_settings
 
 
 class ImageQuantizerWorkspace(ToolWorkspace):

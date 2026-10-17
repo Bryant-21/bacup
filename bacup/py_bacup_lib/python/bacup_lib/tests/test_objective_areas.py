@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+from bacup_lib.tests.catalog_schema_validation import validate_catalog
+
 
 ROOT = Path(__file__).resolve().parents[5]
 EXPORTER = ROOT / "bacup/py_bacup_lib/target/debug/examples/export_objective_areas.exe"
@@ -43,7 +45,10 @@ def export(tmp_path, source_targets, output_targets, *, source_version=209, glob
     subprocess.run([str(EXPORTER), str(source), str(output), str(tmp_path)], check=True, capture_output=True)
     assert path.read_bytes() == first
     assert before == (source.read_bytes(), output.read_bytes())
-    return json.loads(first)
+    document = json.loads(first)
+    assert document["version"] == 1
+    validate_catalog("ObjectiveAreas", document)
+    return document
 
 
 def qsta(alias=0, flags=0, radius=1800, *, source=True):
@@ -58,10 +63,10 @@ def test_literal_alias_zero_and_global_mapping(tmp_path):
     data = export(tmp_path, [qsta(flags=0x200), qsta(1, 0x300, 0x801)], [qsta(source=False), qsta(1, source=False)])
     assert data["skipped"] == []
     literal, global_area = data["areas"]
-    assert literal["quest"] == {"plugin": "Output.esm", "object_id": 0x900}
+    assert literal["quest"] == "Output.esm:000900"
     assert literal["alias"] == 0 and literal["area_flags"] == 2
     assert literal["radius"] == {"kind": "literal", "value": 1800}
-    assert global_area["radius"] == {"kind": "global", "form": {"plugin": "Output.esm", "object_id": 0x901}}
+    assert global_area["radius"] == {"kind": "global", "form": "Output.esm:000901"}
 
 
 def test_same_alias_distinct_conditions_keep_ordinals(tmp_path):
@@ -87,7 +92,7 @@ def test_zero_area_and_ordinary_target(tmp_path):
     data = export(tmp_path, [qsta(radius=0), qsta(1, 0x200, 0)], [qsta(source=False), qsta(1, source=False)])
     assert len(data["areas"]) == 1 and data["areas"][0]["alias"] == 1
     assert data["areas"][0]["radius"]["value"] == 0
-    assert data["nonzero_source_declarations"] == 0
+    assert data["settings"]["nonzero_source_declarations"] == 0
 
 
 def test_v151_byte_flags_and_integer_radius(tmp_path):
@@ -102,7 +107,7 @@ def test_repeated_alias_condition_formkeys_are_remapped(tmp_path):
         [qsta(source=False), condition(1, 0x901), qsta(source=False), condition(2, 0x901)])
     assert data["skipped"] == []
     assert data["areas"][0]["conditions"][0]["parameters"][0] == {
-        "kind": "form", "form": {"plugin": "Output.esm", "object_id": 0x901}}
+        "kind": "form", "form": "Output.esm:000901"}
 
 
 def test_same_alias_parameter_only_reorder_rejected(tmp_path):

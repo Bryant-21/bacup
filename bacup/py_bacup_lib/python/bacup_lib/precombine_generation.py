@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
-import shutil
+from time import perf_counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,6 +50,7 @@ class PrecombineResult:
     report_path: Path | None = None
     timing_path: Path | None = None
     index: dict | None = None
+    index_resources: object | None = field(default=None, repr=False)
 
 
 def precombine_sidecar_names(plugin_name: str) -> tuple[str, str, str]:
@@ -59,6 +60,8 @@ def precombine_sidecar_names(plugin_name: str) -> tuple[str, str, str]:
 
 
 def remove_existing_precombines(mod_data_dir: Path, plugin_path: Path) -> int:
+    from creation_lib._native import previs_native
+
     removed = 0
     plugin_name = plugin_path.name
     stem = plugin_path.stem.casefold()
@@ -66,13 +69,13 @@ def remove_existing_precombines(mod_data_dir: Path, plugin_path: Path) -> int:
         for combined in meshes.glob("[Pp][Rr][Ee][Cc][Oo][Mm][Bb][Ii][Nn][Ee][Dd]"):
             for candidate in combined.iterdir():
                 if candidate.is_dir() and candidate.name.casefold() == plugin_name.casefold():
-                    shutil.rmtree(candidate)
+                    previs_native.remove_generated_directory(str(candidate))
                     removed += 1
     # Stamping clears every previs stamp, so earlier UVDs are orphaned.
     for vis in mod_data_dir.glob("[Vv][Ii][Ss]"):
         for candidate in vis.iterdir():
             if candidate.is_dir() and candidate.name.casefold() == plugin_name.casefold():
-                shutil.rmtree(candidate)
+                previs_native.remove_generated_directory(str(candidate))
                 removed += 1
     stale ={f"{stem} - geometry.csg", f"{stem} - geometry.psg", f"{stem}.cdx", f"{stem} - exterior.cdx"}
     for directory in {mod_data_dir, plugin_path.parent}:
@@ -86,7 +89,7 @@ def remove_existing_precombines(mod_data_dir: Path, plugin_path: Path) -> int:
 def refresh_precombine_index(plugin_path: Path, mod_data_dir: Path) -> dict | None:
     """Rewrites ``<stem>.cdx`` from the stamped plugin; previs reruns it so
     CELLs with a UVD index it instead of the no-previs marker."""
-    from bacup_lib._native import previs_native
+    from creation_lib._native import previs_native
 
     report = previs_native.write_precombine_index(str(plugin_path), str(mod_data_dir))
     return json.loads(report) if report else None
@@ -98,13 +101,22 @@ def generate_precombines(request: PrecombineRequest, *, log, progress=None) -> P
     ``log(level, message)`` receives diagnostics; ``progress(done, total, item)``
     receives coarse progress.
     """
-    from bacup_lib._native import previs_native
+    from creation_lib._native import previs_native
 
+    cleanup_started = perf_counter()
     removed = remove_existing_precombines(request.mod_data_dir, request.plugin_path)
     if removed:
-        log("INFO", f"precombine: removed {removed} stale precombined output(s)")
+        log("INFO", f"precombine: removed {removed} stale precombined output(s) in {perf_counter() - cleanup_started:.3f}s")
     if progress:
-        progress(0, 2, "Building precombined meshes")
+        progress(0, 0, "Building precombined meshes")
+    cell_progress = (0, 0)
+    report_progress = stage_progress(log, progress, stage="precombine", noun="CELLs", item="Building precombined meshes")
+
+    def report_cells(done: int, total: int) -> None:
+        nonlocal cell_progress
+        cell_progress = (done, total)
+        report_progress(done, total)
+
     report_path = request.work_dir / "precombine_report.json"
     timing_path = request.work_dir / "precombine_timing.json"
     log("INFO", "precombine: loading the plugin and building precombined meshes")
@@ -122,10 +134,10 @@ def generate_precombines(request: PrecombineRequest, *, log, progress=None) -> P
         str(report_path),
         str(timing_path),
         workers=request.workers,
-        progress=stage_progress(log, progress, stage="precombine", noun="CELLs", item="Building precombined meshes"),
+        progress=report_cells,
     )
     if progress:
-        progress(1, 2, "Stamping CELL precombine data")
+        progress(*cell_progress, "Stamping CELL precombine data")
     log("INFO", "precombine: stamping CELLs and writing the precombine index")
     today = _dt.date.today()
     summary = json.loads(prepared.finalize(today.year, today.month, today.day))
@@ -133,11 +145,12 @@ def generate_precombines(request: PrecombineRequest, *, log, progress=None) -> P
         **summary,
         "report_path": Path(summary["report_path"]),
         "timing_path": Path(summary["timing_path"]),
+        "index_resources": prepared.take_index_resources(),
     })
     for reason in result.skipped_invalid:
         log("WARN", f"precombine: invalid input skipped: {reason}")
     if progress:
-        progress(2, 2, "")
+        progress(*cell_progress, "")
     log(
         "INFO",
         f"precombine: combined {result.cells} CELL(s) into {result.groups} group(s), "

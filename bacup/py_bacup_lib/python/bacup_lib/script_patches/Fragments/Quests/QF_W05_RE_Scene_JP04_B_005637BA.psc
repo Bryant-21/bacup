@@ -9,9 +9,9 @@ EndFunction
 
 Function Fragment_Stage_0013_Item_00()
     If HeadSacRef != None
-        ObjectReference baitRef = BaitRef.GetReference()
-        If baitRef != None
-            baitRef.RemoveItem(HeadSacRef, 1, true)
+        ObjectReference baitObject = BaitRef.GetReference()
+        If baitObject != None
+            baitObject.RemoveItem(HeadSacRef, 1, true)
         EndIf
     EndIf
 EndFunction

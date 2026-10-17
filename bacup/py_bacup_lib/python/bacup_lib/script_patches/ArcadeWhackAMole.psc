@@ -13,6 +13,9 @@ Event OnActivate(ObjectReference akActionRef)
         PlayStartSFX()
         PlayMainLoopSFX()
         LocalGameStart()
+        If gameDuration != None
+            StartTimer(gameDuration.GetValue(), 90)
+        EndIf
     EndIf
 EndEvent
 
@@ -40,7 +43,12 @@ Function RegisterMoleHit(Int hitScore)
 EndFunction
 
 Function LocalGameEnd()
+    If !gameActive
+        Return
+    EndIf
     gameActive = False
+    CancelTimer(90)
+    PayoutPoints()
     StopMainLoopSFX()
     PlayEndSFX()
     Int i = 0
@@ -58,3 +66,20 @@ Event OnTimer(Int aiTimerID)
         LocalGameEnd()
     EndIf
 EndEvent
+
+; FO76 paid out through the machine's ticket peripheral (TicketSlot at TicketNodes[0]), which owns
+; the points AV, per-game cap and first-payout tutorial. Lives on the child because the generated
+; ArcadeController skeleton does not compile (its GameEnd custom event declaration was lost).
+Function PayoutPoints()
+    Actor playerRef = Game.GetPlayer()
+    If myPlayer != playerRef || score <= 0
+        Return
+    EndIf
+    If ticketsOut == None && TicketSlot != None && TicketNodes != None && TicketNodes.Length > 0
+        ticketsOut = PlaceAtNode(TicketNodes[0], TicketSlot, 1, False, False, False, True) as ArcadeTicketDispenser
+    EndIf
+    If ticketsOut != None
+        ticketsOut.scorePerTicket = scorePerTicket
+        ticketsOut.PayoutPoints(playerRef, score)
+    EndIf
+EndFunction

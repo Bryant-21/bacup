@@ -68,6 +68,7 @@ Function Fragment_Stage_0070_Item_00()
 EndFunction
 
 Function Fragment_Stage_0090_Item_00()
+    ; TODO(recipes): FO76 teaches co_MoM_BladeofBastet at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(70)
     Int objectiveIndex = 80
     While objectiveIndex <= 89

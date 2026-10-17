@@ -2,7 +2,7 @@ package {
     import flash.display.MovieClip;
     import flash.events.MouseEvent;
     public class SelfieMenu extends Shared.AS3.IMenu {
-        public function get B21PhotoModeVersion():uint { return 2; }
+        public function get B21PhotoModeVersion():uint { return 3; }
         override public function SetPlatform(platform:uint, ps3Switch:Boolean, controller:uint = 0, keyboard:uint = 0):* {
             B21SetFO4Platform(platform);
         }
@@ -12,14 +12,21 @@ package {
             tabChildren = false;
             Initialize();
             AddStepper(Panel2_Cinematic_mc, "Freeze Time", "$B21_PM_FreezeTime");
-            SetControlActive(false, "Expression", "Player");
-            SetControlActive(false, "Vanity Light Style", "Player");
-            SetControlActive(false, "Vanity Light Strength", "Player");
-            SetControlActive(false, "Texture Category", "Filters");
-            SetControlActive(false, "Texture", "Filters");
+            AddStepper(Panel2_Cinematic_mc, "Time of Day", "$B21_PM_TimeOfDay");
+            AddStepper(Panel2_Cinematic_mc, "Weather", "$B21_PM_Weather");
             for each (var panel:Object in Panels) panel.B21BindMouse();
             for (var i:int = 0; i < Panels.length; i++)
                 PanelBackground_mc.TabSelector_mc.getChildByName("Icon" + i + "_mc").addEventListener(MouseEvent.CLICK, B21MouseTab);
+        }
+        public function B21RefreshStepper(name:String, panelName:String):void {
+            for each (var panel:Object in Panels) {
+                var control:Object = panel.getControlByName(name);
+                if (control != null) {
+                    control.clearOptions();
+                    BGSCodeObj.FillStepper(control, name);
+                    return;
+                }
+            }
         }
         private function B21MouseTab(event:MouseEvent):void { SetPanel(int(event.currentTarget.name.charAt(4))); }
         public function B21Snapshot():void { BGSCodeObj.Action("capture"); }

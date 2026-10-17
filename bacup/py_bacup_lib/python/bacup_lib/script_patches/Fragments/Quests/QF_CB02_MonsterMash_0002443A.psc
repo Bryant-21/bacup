@@ -53,6 +53,9 @@ Function Fragment_Stage_0010_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
+    If IsObjectiveDisplayed(0) && !IsObjectiveCompleted(0)
+        SetObjectiveCompleted(0, True)
+    EndIf
     CB02_QuestScript eventScript = EventScript()
     If eventScript != None
         eventScript.HandleRoundEnd()

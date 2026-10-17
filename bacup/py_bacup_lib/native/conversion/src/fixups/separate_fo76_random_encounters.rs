@@ -30,6 +30,9 @@
 //!    `SendStoryEventAndWait` then fails for every later encounter.
 //!    `B21:RandomEncounterStartup` calls it from `OnQuestInit`.
 //!
+//! 4. **RunOnce.** FO76's server re-instanced an encounter each time it fired;
+//!    FO4 refuses to restart a RunOnce quest, so the bit is cleared.
+//!
 //! Idempotent: a second pass over an already-gated branch or an already-attached
 //! quest leaves both byte-identical.
 
@@ -76,6 +79,8 @@ const CTDA_RUN_ON_EVENT_DATA: u32 = 7;
 /// `EncounterType.SendStoryEventAndWait(GetCurrentLocation(), Self, None, ...)`.
 /// Fallout 4's own `REMainBranch` selects Reference1 the same way.
 const CTDA_EVENT_DATA_REFERENCE_1: u32 = 12626;
+
+const QUST_DNAM_FLAG_RUN_ONCE: u16 = 0x0100;
 
 const VMAD_VERSION: u16 = 6;
 const VMAD_OBJECT_FORMAT: u16 = 2;
@@ -342,20 +347,27 @@ fn repair_encounter_quests(
                 continue;
             }
         }
-        if patched.as_slice() == bytes.as_slice() {
-            continue;
+        let vmad_changed = patched.as_slice() != bytes.as_slice();
+        if vmad_changed {
+            record.fields[vmad].value = FieldValue::Bytes(patched.into());
         }
-        record.fields[vmad].value = FieldValue::Bytes(patched.into());
-        changed_records.push(record);
+        let run_once_cleared = clear_run_once(&mut record, mapper.interner);
+        if run_once_cleared {
+            stats.run_once_cleared += 1;
+        }
+        if vmad_changed || run_once_cleared {
+            changed_records.push(record);
+        }
     }
 
     report.diagnostics.push(mapper.interner.intern(&format!(
         "separate_fo76_random_encounters: encounter_quests={} re_parent_renamed={} \
-         startup_attached={} startup_already_present={} conflicts={}",
+         startup_attached={} startup_already_present={} run_once_cleared={} conflicts={}",
         stats.encounter_quests,
         stats.re_parent_renamed,
         stats.startup_attached,
         stats.startup_already_present,
+        stats.run_once_cleared,
         conflicts.len(),
     )));
     for reason in dedup_conflicts(conflicts) {
@@ -384,6 +396,52 @@ struct QuestStats {
     re_parent_renamed: usize,
     startup_attached: usize,
     startup_already_present: usize,
+    run_once_cleared: usize,
+}
+
+/// FO76's server re-instanced each encounter every time its trigger fired, so the
+/// RunOnce bit it carries never limited play; in FO4 it lets each encounter run
+/// once per save. Only the quest-level `DNAM` (the first one) holds flags.
+fn clear_run_once(record: &mut Record, interner: &StringInterner) -> bool {
+    let Some(entry) = record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.0 == *b"DNAM")
+    else {
+        return false;
+    };
+    match &mut entry.value {
+        FieldValue::Bytes(bytes) if bytes.len() >= 2 => {
+            let old = u16::from_le_bytes([bytes[0], bytes[1]]);
+            let new = old & !QUST_DNAM_FLAG_RUN_ONCE;
+            bytes[0..2].copy_from_slice(&new.to_le_bytes());
+            old != new
+        }
+        FieldValue::Struct(members) => {
+            let mut cleared = false;
+            for (name, value) in members.iter_mut() {
+                let is_flags = interner
+                    .resolve(*name)
+                    .is_some_and(|name| name.replace('_', "").eq_ignore_ascii_case("flags"));
+                if !is_flags {
+                    continue;
+                }
+                match value {
+                    FieldValue::Uint(bits) if *bits & u64::from(QUST_DNAM_FLAG_RUN_ONCE) != 0 => {
+                        *bits &= !u64::from(QUST_DNAM_FLAG_RUN_ONCE);
+                        cleared = true;
+                    }
+                    FieldValue::Int(bits) if *bits & i64::from(QUST_DNAM_FLAG_RUN_ONCE) != 0 => {
+                        *bits &= !i64::from(QUST_DNAM_FLAG_RUN_ONCE);
+                        cleared = true;
+                    }
+                    _ => {}
+                }
+            }
+            cleared
+        }
+        _ => false,
+    }
 }
 
 /// `rescript` itself, or a subclass whose namespaced name ends in it. Both
@@ -522,6 +580,29 @@ mod tests {
             sig: SubrecordSig(*sig),
             value: FieldValue::Bytes(SmallVec::from_vec(bytes)),
         }
+    }
+
+    #[test]
+    fn run_once_cleared_on_quest_dnam_only() {
+        // StartGameEnabled | RunOnce | HasDialogueData on the quest DNAM, then a stage DNAM.
+        let (mut record, interner) = smbn(
+            None,
+            vec![
+                field(b"DNAM", vec![0x01, 0x11, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                field(b"DNAM", vec![0x00, 0x01, 0, 0]),
+            ],
+        );
+        assert!(clear_run_once(&mut record, &interner));
+        let FieldValue::Bytes(quest) = &record.fields[0].value else {
+            panic!("bytes");
+        };
+        assert_eq!(u16::from_le_bytes([quest[0], quest[1]]), 0x1001);
+        assert_eq!(quest[2], 40);
+        let FieldValue::Bytes(stage) = &record.fields[1].value else {
+            panic!("bytes");
+        };
+        assert_eq!(stage.as_slice(), &[0x00, 0x01, 0, 0]);
+        assert!(!clear_run_once(&mut record, &interner), "idempotent");
     }
 
     /// `RE_Parent` is one byte longer than `REParent`, so the length prefix has

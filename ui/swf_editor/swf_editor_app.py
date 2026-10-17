@@ -16,13 +16,13 @@ import moderngl
 from ui.mesh_workspace.undo import UndoStack
 from ui.swf_editor.ortho_camera import OrthoCamera
 from ui.swf_editor.swf_renderer import SwfRenderer
-from ui.swf_editor.swf_scene import SwfScene
 from ui.swf_editor.tools import BaseTool
+from ui.swf_editor.commands import DocumentActions
 
 _log = logging.getLogger(__name__)
 
 
-class SwfEditorApp:
+class SwfEditorApp(DocumentActions):
     """Main SWF editor application."""
 
     def __init__(self, toolkit_settings=None):
@@ -35,7 +35,7 @@ class SwfEditorApp:
         self.camera = OrthoCamera()
 
         # Document
-        self.scene = SwfScene()
+        self._init_document()
         self.undo_stack: UndoStack = UndoStack(max_entries=50)
 
         # Tool state
@@ -50,6 +50,8 @@ class SwfEditorApp:
         self.tools_panel = None
         self.properties_panel = None
         self.library_panel = None
+        self.document_panel = None
+        self.stage_panel = None
 
         self._first_frame = True
         self._panels_initialized = False
@@ -112,6 +114,8 @@ class SwfEditorApp:
         from ui.swf_editor.panels.tools_panel import ToolsPanel
         from ui.swf_editor.panels.properties_panel import PropertiesPanel
         from ui.swf_editor.panels.library_panel import LibraryPanel
+        from ui.swf_editor.panels.document_panel import DocumentPanel
+        from ui.swf_editor.panels.stage_panel import StagePanel
 
         self.canvas_panel = CanvasPanel(self)
         self.timeline_panel = TimelinePanel(self)
@@ -119,6 +123,8 @@ class SwfEditorApp:
         self.tools_panel = ToolsPanel(self)
         self.properties_panel = PropertiesPanel(self)
         self.library_panel = LibraryPanel(self)
+        self.document_panel = DocumentPanel(self)
+        self.stage_panel = StagePanel(self)
         self._panels_initialized = True
 
     def draw_workspace(self) -> None:
@@ -130,6 +136,8 @@ class SwfEditorApp:
             self._init_panels()
 
         self._handle_shortcuts()
+        self.poll()
+        self.draw_pending_dialog()
         self._draw_viewport()
 
     def _draw_viewport(self) -> None:
@@ -144,22 +152,45 @@ class SwfEditorApp:
             imgui.end()
             return
 
+        if self.document.mode == "binary":
+            self.stage_panel.draw_viewport()
+            imgui.end()
+            return
+        if self.document.mode != "visual":
+            imgui.text_wrapped("Use Document for AS3 source, compiled structure and Ruffle preview. The vector canvas is available for artwork projects.")
+            imgui.text_wrapped(self.status_text)
+            imgui.end()
+            return
+
         size = imgui.get_content_region_avail()
         w, h = max(int(size.x), 1), max(int(size.y), 1)
 
         self.camera.viewport_width = w
         self.camera.viewport_height = h
+        if self._fit_on_next_viewport and w >= 40 and h >= 40:
+            self.camera.fit_canvas()
+            self._fit_on_next_viewport = False
 
         self.renderer.ensure_fbo(w, h)
 
         # Collect visible shapes
-        entries = self.scene.get_visible_entries()
+        entries = self.scene.get_render_entries()
         shape_list = []
-        for shape, transform in entries:
+        for shape, transform, alpha in entries:
             shape_list.append(
-                (shape, glm.mat4(1.0))
+                (shape, self._gl_transform(transform), alpha)
             )  # NOTE: transform is discarded here (identity used) -- per-shape placement not yet applied
 
+        if self.timeline_panel and self.timeline_panel.onion_skin:
+            original_frame = self.scene.current_frame
+            ghosts = []
+            for frame in range(max(0, original_frame - self.timeline_panel.onion_range),
+                               min(self.scene.total_frames, original_frame + self.timeline_panel.onion_range + 1)):
+                if frame != original_frame:
+                    self.scene.current_frame = frame
+                    ghosts.extend((s, self._gl_transform(t), a * 0.18) for s, t, a in self.scene.get_render_entries())
+            self.scene.current_frame = original_frame
+            shape_list = ghosts + shape_list
         projection = self.camera.get_projection()
         self.renderer.render(
             projection,
@@ -167,6 +198,8 @@ class SwfEditorApp:
             bg_color=(0.12, 0.12, 0.14),
             canvas_width=self.scene.canvas_width,
             canvas_height=self.scene.canvas_height,
+            canvas_color=(self.scene.background.r / 255, self.scene.background.g / 255,
+                          self.scene.background.b / 255),
         )
 
         tex_id = self.renderer.get_fbo_texture_id()
@@ -181,7 +214,7 @@ class SwfEditorApp:
             )
 
         # Input handling
-        if imgui.is_item_hovered():
+        if tex_id and (imgui.is_item_hovered() or self._captured_tool is not None):
             io = imgui.get_io()
             # Mouse position relative to viewport image widget
             mx = io.mouse_pos.x - img_pos.x
@@ -203,29 +236,56 @@ class SwfEditorApp:
                     self.camera.do_zoom(direction * 2, mx, my)
             else:
                 # Tool input: left-click dispatched to active tool
-                tool = self.current_tool
+                tool = self._captured_tool or self.current_tool
                 if tool:
                     for btn in range(2):  # left=0, right=1
                         if imgui.is_mouse_clicked(btn):
-                            tool.on_mouse_down(mx, my, btn)
+                            self._gesture_snapshot = self._take_snapshot()
+                            self._gesture_undo_count = len(self.undo_stack._undo)
+                            if tool.on_mouse_down(mx, my, btn):
+                                self._captured_tool = tool
 
                     tool.on_mouse_move(mx, my)
 
                     for btn in range(2):
                         if imgui.is_mouse_released(btn):
                             tool.on_mouse_up(mx, my, btn)
+                            self._captured_tool = None
+                            self._gesture_snapshot = None
 
         # Tool overlay (draw handles, preview shapes, etc.)
         tool = self.current_tool
         if tool and tex_id:
             dl = imgui.get_window_draw_list()
-            tool.draw_overlay(dl, self.camera)
+            from ui.swf_editor.ortho_camera import OverlayCamera
+            dl.push_clip_rect(img_pos, imgui.ImVec2(img_pos.x + w, img_pos.y + h), True)
+            tool.draw_overlay(dl, OverlayCamera(self.camera, img_pos.x, img_pos.y))
+            dl.pop_clip_rect()
 
         imgui.end()
 
     def _handle_shortcuts(self) -> None:
         """Process keyboard shortcuts for tool switching."""
+        if self.library_panel:
+            self.library_panel.background_tick()
+        if self.stage_panel:
+            try:
+                self.stage_panel.tick()
+            except Exception as exc:
+                self.report_error(exc)
         io = imgui.get_io()
+
+        if io.key_ctrl:
+            if imgui.is_key_pressed(imgui.Key.o):
+                self.choose_open()
+            elif imgui.is_key_pressed(imgui.Key.n):
+                self.new_document()
+            elif imgui.is_key_pressed(imgui.Key.s):
+                self.save_document(save_as=io.key_shift)
+            elif imgui.is_key_pressed(imgui.Key.e):
+                self.choose_export()
+        if imgui.is_key_pressed(imgui.Key.f5):
+            self.start_build(preview=io.key_ctrl)
         if io.want_text_input:
             return
 
@@ -242,12 +302,14 @@ class SwfEditorApp:
             imgui.Key.z: "zoom",
         }
         for key, tool in tool_keys.items():
-            if imgui.is_key_pressed(key):
-                self.active_tool = tool
+            if not (io.key_ctrl or io.key_alt or io.key_shift) and imgui.is_key_pressed(key):
+                self.select_tool(tool)
                 break
 
         # Forward key events to active tool (e.g. Escape cancels pen path)
         active = self.current_tool
+        if self.document.mode != "visual":
+            active = None
         if active:
             for key in (
                 imgui.Key.escape,
@@ -257,6 +319,8 @@ class SwfEditorApp:
             ):
                 if imgui.is_key_pressed(key):
                     active.on_key(key, True)
+                    if key == imgui.Key.escape:
+                        self.cancel_gesture()
 
         # Undo/Redo
         ctrl = io.key_ctrl
@@ -268,11 +332,9 @@ class SwfEditorApp:
                 self.undo()
 
         # Path boolean operations (Ctrl+Shift+key)
-        if ctrl and shift:
+        if ctrl and shift and self.document.mode == "visual":
             if imgui.is_key_pressed(imgui.Key.u):
                 self.boolean_op("union")
-            elif imgui.is_key_pressed(imgui.Key.s):
-                self.boolean_op("subtract")
             elif imgui.is_key_pressed(imgui.Key.i):
                 self.boolean_op("intersect")
             elif imgui.is_key_pressed(imgui.Key.x):
@@ -280,135 +342,78 @@ class SwfEditorApp:
 
     def open_swf(self, path: str) -> None:
         """Open a SWF file for editing."""
-        from creation_lib.swf.parser import parse_swf_file
+        self.open_document(path)
 
+    def place_shape(self, shape_row: dict) -> bool:
+        """Compatibility entry: preview and placement use the same geometry decoder."""
+        from creation_lib.swf.library_assets import decode_geometry
         try:
-            doc = parse_swf_file(path)
-            self.scene = SwfScene.from_swf_document(doc)
-            self.scene.file_path = path
-            self.undo_stack.clear()
-            self.camera.canvas_width = self.scene.canvas_width
-            self.camera.canvas_height = self.scene.canvas_height
-            self.camera.fit_canvas()
-            if self.renderer:
-                self.renderer.cleanup()
-            self.status_text = f"Opened {Path(path).name}"
+            shape, warning = decode_geometry(shape_row.get("shape_data") or b"", shape_row.get("svg_preview") or "")
+            placed = self.place_library_asset(shape, shape_row.get("name", "shape"))
+            if placed and warning:
+                self.status_text += " • " + warning
+            return placed
         except Exception as exc:
-            _log.error("Failed to open SWF: %s", exc)
-            self.status_text = f"Error: {exc}"
+            self.report_error(exc)
+            return False
 
-    def place_shape(self, shape_row: dict) -> None:
-        """Place a library shape onto the active layer at the canvas origin.
-
-        Args:
-            shape_row: A dict from the shapes DB row — must contain
-                       'shape_data' (bytes), 'bounds' (JSON str), and 'id' (int).
-        """
-        import json as _json
-        from creation_lib.swf.shapes import (
-            ShapeDef,
-            StyleChange,
-            StraightEdge,
-            CurvedEdge,
-            EndShape,
-        )
-        from creation_lib.swf.types import FillStyle, RGBA
-        from ui.swf_editor.swf_scene import EditorDisplayEntry
-
-        shape_data = shape_row.get("shape_data") or b""
-        if not shape_data:
-            self.status_text = "Shape has no geometry data; rebuild the SWF shape index."
-            return
-
-        try:
-            from creation_lib.preprocessor.swf import deserialize_shape_records
-
-            data = deserialize_shape_records(shape_data)
-        except Exception as exc:
-            _log.error("Failed to deserialize shape: %s", exc)
-            return
-
-        # Rebuild ShapeDef from serialized data
-        fill_styles = []
-        for fs_data in data.get("fill_styles", []):
-            hex_c = fs_data["color"].lstrip("#")
-            if len(hex_c) == 6:
-                hex_c += "ff"
-            r, g, b, a = (int(hex_c[i : i + 2], 16) for i in (0, 2, 4, 6))
-            fill_styles.append(
-                FillStyle(fill_type=fs_data.get("type", 0), color=RGBA(r, g, b, a))
-            )
-
-        records = []
-        for rec in data.get("records", []):
-            rtype = rec.get("type")
-            if rtype == "sc":
-                sc_kwargs = {
-                    "fill0": rec.get("fill0"),
-                    "fill1": rec.get("fill1"),
-                }
-                if rec.get("move"):
-                    sc_kwargs["move_x"] = rec.get("dx", 0)
-                    sc_kwargs["move_y"] = rec.get("dy", 0)
-                records.append(StyleChange(**sc_kwargs))
-            elif rtype == "se":
-                records.append(StraightEdge(dx=rec.get("dx", 0), dy=rec.get("dy", 0)))
-            elif rtype == "ce":
-                records.append(
-                    CurvedEdge(
-                        cx=rec.get("cx", 0),
-                        cy=rec.get("cy", 0),
-                        ax=rec.get("ax", 0),
-                        ay=rec.get("ay", 0),
-                    )
-                )
-            elif rtype == "end":
-                records.append(EndShape())
-
-        bounds_list = data.get("bounds", [0, 0, 100, 100])
-        from creation_lib.swf.types import TWIPS_PER_PIXEL
-
-        bounds_twips = tuple(int(v * TWIPS_PER_PIXEL) for v in bounds_list)
-
+    def place_library_asset(self, shape, name="shape") -> bool:
+        """Copy a validated vector onto the active frame as one undoable action."""
+        import copy
+        from creation_lib.swf.library_assets import validate_geometry
+        from ui.swf_editor.swf_scene import EditorDisplayEntry, Keyframe
+        if self.document.mode != "visual":
+            self.report_error("Library placement is available in vector artwork projects")
+            return False
+        if not self.scene.layers:
+            self.report_error("Add a layer before placing library artwork")
+            return False
+        layer = self.scene.layers[self.scene.active_layer_index]
+        if layer.locked:
+            self.report_error("The active layer is locked")
+            return False
+        validate_geometry(shape)
         shape_id = max(self.scene.library_symbols.keys(), default=0) + 1
-        new_shape = ShapeDef(
-            shape_id=shape_id,
-            bounds=bounds_twips,
-            fill_styles=fill_styles,
-            line_styles=[],
-            records=records,
-        )
+        if shape_id > 65535:
+            self.report_error("SWF character ID limit reached")
+            return False
+        new_shape = copy.deepcopy(shape)
+        new_shape.shape_id = shape_id
+        self.push_undo("Place Library Shape")
         self.scene.library_symbols[shape_id] = new_shape
-
-        # Add to active layer, current frame
-        layer = (
-            self.scene.layers[self.scene.active_layer_index]
-            if self.scene.layers
-            else None
-        )
-        if layer:
-            kf = layer.keyframe_at(self.scene.current_frame)
-            if kf:
-                self.push_undo("Place Library Shape")
-                kf.display_list.append(EditorDisplayEntry(shape_id=shape_id))
-                self.scene.dirty = True
-                self.status_text = f"Placed {shape_row.get('name', 'shape')}"
+        keyframe = layer.keyframe_at(self.scene.current_frame)
+        if not keyframe:
+            keyframe = Keyframe(frame=self.scene.current_frame)
+            layer.keyframes.append(keyframe)
+            layer.keyframes.sort(key=lambda item: item.frame)
+        keyframe.display_list.append(EditorDisplayEntry(shape_id=shape_id))
+        self.scene.selection = [(self.scene.active_layer_index, len(keyframe.display_list) - 1)]
+        self.scene.dirty = True
+        self.status_text = f"Placed {name}"
+        return True
 
     def export_swf(self, path: str) -> None:
         """Export current document to SWF."""
-        # TODO: Implement SwfScene -> SwfDocument conversion
-        self.status_text = f"Exported {Path(path).name}"
+        try:
+            data = self.document.export(path)
+            self.status_text = f"Exported {Path(path).name} ({len(data):,} bytes)"
+        except Exception as exc:
+            self.report_error(exc)
 
     def undo(self) -> None:
+        current = self._take_snapshot()
         result = self.undo_stack.undo()
         if result:
             _label, snap = result
+            self.undo_stack._redo[-1] = (_label, current)
             self._restore_snapshot(snap)
 
     def redo(self) -> None:
+        current = self._take_snapshot()
         result = self.undo_stack.redo()
         if result:
             _label, snap = result
+            self.undo_stack._undo[-1] = (_label, current)
             self._restore_snapshot(snap)
 
     def push_undo(self, label: str) -> None:
@@ -421,19 +426,18 @@ class SwfEditorApp:
         """Capture current scene state for undo."""
         import copy
 
-        return {
-            "layers": copy.deepcopy(self.scene.layers),
-            "current_frame": self.scene.current_frame,
-            "active_layer": self.scene.active_layer_index,
-        }
+        return copy.deepcopy(self.document)
 
     def _restore_snapshot(self, snap: dict) -> None:
         """Restore scene state from undo snapshot."""
         import copy
 
-        self.scene.layers = copy.deepcopy(snap["layers"])
-        self.scene.current_frame = snap["current_frame"]
-        self.scene.active_layer_index = snap["active_layer"]
+        saved_state, path = self.document.saved_state, self.document.path
+        self.document = copy.deepcopy(snap)
+        self.document.saved_state, self.document.path = saved_state, path
+        self.compiled_bytes = self.compiled_key = None
+        if self.document_panel:
+            self.document_panel.reset()
         if self.renderer:
             # Invalidate all cached tessellations
             for sid in self.scene.library_symbols:
@@ -450,7 +454,6 @@ class SwfEditorApp:
         from creation_lib.swf.shapes import (
             ShapeDef,
             StraightEdge,
-            CurvedEdge,
             StyleChange,
             EndShape,
         )
@@ -459,8 +462,6 @@ class SwfEditorApp:
         scene = self.scene
         if len(scene.selection) < 2:
             return
-
-        self.push_undo(f"Path {operation.title()}")
 
         op_map = {
             "union": pyclipper.CT_UNION,
@@ -483,37 +484,40 @@ class SwfEditorApp:
             if not shape:
                 continue
             selected_entries.append((layer_idx, entry_idx, de, shape))
-            poly = self._shape_to_polygon(shape, de.transform.x, de.transform.y)
-            all_polys.append(poly)
+            all_polys.append(self._shape_to_polygons(shape, de.transform))
 
         if len(all_polys) < 2:
             return
 
         # Run clipper operation
         pc = pyclipper.Pyclipper()
-        pc.AddPath(
+        pc.AddPaths(
             pyclipper.scale_to_clipper(all_polys[0]),
             pyclipper.PT_SUBJECT,
             True,
         )
         for poly in all_polys[1:]:
-            pc.AddPath(
+            pc.AddPaths(
                 pyclipper.scale_to_clipper(poly),
-                pyclipper.PT_CLIP,
+                pyclipper.PT_SUBJECT if operation == "union" else pyclipper.PT_CLIP,
                 True,
             )
 
         try:
             result_polys = pc.Execute(
                 clip_type,
-                pyclipper.PFT_EVENODD,
-                pyclipper.PFT_EVENODD,
+                pyclipper.PFT_NONZERO,
+                pyclipper.PFT_NONZERO,
             )
         except pyclipper.ClipperException:
             _log.warning("Clipper boolean op failed for %s", operation)
             return
 
         if not result_polys:
+            self.push_undo(f"Path {operation.title()}")
+            for li, ei, _, _ in sorted(selected_entries, key=lambda e: e[:2], reverse=True):
+                scene.layers[li].keyframe_at(scene.current_frame).display_list.pop(ei)
+            scene.selection.clear()
             return
 
         result_polys = pyclipper.scale_from_clipper(result_polys)
@@ -554,15 +558,16 @@ class SwfEditorApp:
         shape_id = max(scene.library_symbols.keys(), default=0) + 1
         result_shape = ShapeDef(
             shape_id=shape_id,
-            bounds=(min_x, min_y, max_x, max_y),
+            bounds=tuple(round(v) for v in (min_x, min_y, max_x, max_y)),
             fill_styles=[FillStyle(fill_type=0, color=RGBA(255, 255, 255, 255))],
             line_styles=[],
             records=records,
         )
+        self.push_undo(f"Path {operation.title()}")
         scene.library_symbols[shape_id] = result_shape
 
         # Remove old selected entries (in reverse order to preserve indices)
-        from ui.swf_editor.swf_scene import EditorDisplayEntry, AffineTransform
+        from ui.swf_editor.swf_scene import EditorDisplayEntry
 
         removals = sorted(
             [(li, ei) for li, ei, _, _ in selected_entries],
@@ -586,6 +591,24 @@ class SwfEditorApp:
             scene.selection = []
 
         scene.dirty = True
+
+    @staticmethod
+    def _shape_to_polygons(shape, transform):
+        from creation_lib.swf.svg_io import _bucket_edges, _stitch
+        from ui.swf_editor.swf_renderer import _subdivide_quadratic
+        fills, _ = _bucket_edges(shape)
+        polygons = []
+        for _, segments in fills.values():
+            for contour in _stitch(segments):
+                points = [(contour[0][0] / 20, contour[0][1] / 20)]
+                for sx, sy, ex, ey, cx, cy in contour:
+                    if cx is None:
+                        points.append((ex / 20, ey / 20))
+                    else:
+                        points.extend(_subdivide_quadratic(sx / 20, sy / 20, cx / 20, cy / 20, ex / 20, ey / 20)[1:])
+                if len(points) >= 3:
+                    polygons.append([transform.apply(x, y) for x, y in points])
+        return polygons
 
     @staticmethod
     def _shape_to_polygon(
@@ -629,5 +652,18 @@ class SwfEditorApp:
 
     def cleanup(self) -> None:
         """Release GL resources."""
+        self.jobs.close()
+        self.close_preview()
+        if self.library_panel:
+            self.library_panel.close()
+        if self.stage_panel:
+            self.stage_panel.close()
         if self.renderer:
             self.renderer.cleanup()
+
+    @staticmethod
+    def _gl_transform(transform):
+        matrix = transform.to_matrix()
+        return glm.mat4(matrix.scale_x, matrix.rotate_skew_0, 0, 0,
+                        matrix.rotate_skew_1, matrix.scale_y, 0, 0,
+                        0, 0, 1, 0, matrix.translate_x / 20, matrix.translate_y / 20, 0, 1)

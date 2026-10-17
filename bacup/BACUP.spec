@@ -7,6 +7,7 @@ Build with:
 
 import os
 import sys
+from pathlib import Path
 from glob import glob as _glob_translations
 from PyInstaller.utils.hooks import (
     collect_data_files,
@@ -80,6 +81,10 @@ bacup_ui_mods = collect_submodules(
     and not name.rsplit(".", 1)[-1].startswith("test"),
 )
 bacup_lib_datas = collect_data_files("bacup_lib")
+from bacup_lib.conversion_runtime import built_runtime_binary
+
+if Path(repo_root, "mods/B21_ConversionRuntime/F4SE/Plugins/B21_ConversionRuntime.dll").is_file():
+    bacup_lib_datas.append((str(built_runtime_binary(Path(repo_root))), "bacup_lib/resources/conversion_runtime"))
 translation_dir = os.path.join(bacup_python_root, "bacup_lib", "data", "translations")
 translation_destination = "bacup_lib/data/translations"
 if not os.path.isfile(os.path.join(translation_dir, "B21_TalesFromAppalachia_en.txt")):
@@ -178,6 +183,10 @@ nif_excludes = [
     "trimesh",
 ] if is_nif_build else []
 
+from bacup.scripts.build_packaged_native import build_packaged_native
+
+packaged_native = build_packaged_native(Path(repo_root))
+
 a = Analysis(
     [os.path.join(bacup_python_root, "bacup_ui", "__main__.py")],
     pathex=[repo_root, bacup_python_root, creation_python_root],
@@ -251,7 +260,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[os.path.join(bacup_root, "scripts", "rthook_packaged_native.py")],
     excludes=[
         # Large ML libraries — not needed (FTS5 keyword search only)
         "sentence_transformers",
@@ -297,6 +306,13 @@ a = Analysis(
 # ---------------------------------------------------------------------------
 # PYZ (compressed Python modules)
 # ---------------------------------------------------------------------------
+
+a.binaries = [
+    entry for entry in a.binaries
+    if not (entry[0].replace("\\", "/").startswith(("creation_lib/_native.", "bacup_lib/_native."))
+            and entry[0].lower().endswith(".pyd"))
+]
+a.binaries.append(("bacup_lib/_native.pyd", str(packaged_native), "EXTENSION"))
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

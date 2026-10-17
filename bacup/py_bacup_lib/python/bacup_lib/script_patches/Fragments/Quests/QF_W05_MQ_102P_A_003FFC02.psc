@@ -11,10 +11,16 @@ Function Fragment_Stage_0100_Item_00()
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
+    If IsObjectiveDisplayed(10) && !IsObjectiveCompleted(10)
+        SetObjectiveCompleted(10, True)
+    EndIf
     SetObjectiveDisplayed(200)
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()
+    If IsObjectiveDisplayed(200) && !IsObjectiveCompleted(200)
+        SetObjectiveCompleted(200, True)
+    EndIf
     SetObjectiveDisplayed(400)
 EndFunction
 

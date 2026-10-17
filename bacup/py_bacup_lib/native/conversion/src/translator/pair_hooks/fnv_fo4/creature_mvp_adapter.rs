@@ -23,7 +23,7 @@ use super::source_rig_bridge::{
     canonical_fnv_fo3_family_id,
 };
 
-pub const FNV_FO3_MVP_PREPARATION_SCHEMA_VERSION: u32 = 2;
+pub const FNV_FO3_MVP_PREPARATION_SCHEMA_VERSION: u32 = 3;
 
 pub(super) fn canonical_recipe_source_key(source: &StableFormKey) -> StableFormKey {
     StableFormKey {
@@ -72,6 +72,7 @@ pub enum FnvFo3MvpCandidateBlocker {
 #[serde(tag = "disposition", rename_all = "snake_case")]
 pub enum FnvFo3MvpCandidateDisposition {
     Ready {
+        additional_branches: Vec<FnvFo3MvpPreparedBranch>,
         recipe: SourceRigExecutableRecipe,
         closure: CreatureClosureReceipt,
         closure_staged_data_root: PathBuf,
@@ -83,6 +84,15 @@ pub enum FnvFo3MvpCandidateDisposition {
     Accounted {
         reason: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct FnvFo3MvpPreparedBranch {
+    pub family_id: String,
+    pub recipe: SourceRigExecutableRecipe,
+    pub closure: CreatureClosureReceipt,
+    pub closure_staged_data_root: PathBuf,
+    pub converted_artifacts: Vec<FnvFo3MvpConvertedArtifact>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -232,7 +242,7 @@ pub fn build_fnv_fo3_mvp_candidate_preparations_with_live_blockers(
         let recipe_source = canonical_recipe_source_key(&dependency.source);
         let record = record_by_source.get(&recipe_source).copied();
         let mut accounted_reason = None;
-        let family = record.and_then(|record| match &record.disposition {
+        let mut family = record.and_then(|record| match &record.disposition {
             CreatureRecordRecipeDisposition::VisualOwner { rig, .. }
             | CreatureRecordRecipeDisposition::Proxy { rig, .. } => Some(rig.clone()),
             CreatureRecordRecipeDisposition::RejectedProxy { blockers: rejected } => {
@@ -248,6 +258,11 @@ pub fn build_fnv_fo3_mvp_candidate_preparations_with_live_blockers(
             blockers.insert(FnvFo3MvpCandidateBlocker::RecordDisposition {
                 detail: "recipe_record_missing".to_string(),
             });
+        }
+        let candidate_preparations = prepared_candidates.get(&dependency.source);
+        if let Some(PreparedFamily::Ready { family: template_family, template_branch: Some(_), .. }) = candidate_preparations.and_then(|items| items.first()) {
+            family = Some(template_family.clone());
+            accounted_reason = None;
         }
 
         if let Some(family) = &family {
@@ -270,17 +285,16 @@ pub fn build_fnv_fo3_mvp_candidate_preparations_with_live_blockers(
             .as_ref()
             .map(canonical_fnv_fo3_family_id)
             .unwrap_or_else(|| terminal_family_id(dependency));
-        let candidate_preparation = prepared_candidates.get(&dependency.source);
-        match candidate_preparation {
-            Some(PreparedFamily::Blocked(detail)) => {
+        let candidate_preparation = candidate_preparations.and_then(|items| items.first());
+        for preparation in candidate_preparations.into_iter().flatten() {
+            if let PreparedFamily::Blocked(detail) = preparation {
                 blockers.insert(FnvFo3MvpCandidateBlocker::FamilyPreparation {
                     detail: detail.clone(),
                 });
             }
-            None if family.is_some() && blockers.is_empty() => {
-                blockers.insert(FnvFo3MvpCandidateBlocker::MissingCandidatePreparation);
-            }
-            _ => {}
+        }
+        if candidate_preparation.is_none() && family.is_some() && blockers.is_empty() {
+            blockers.insert(FnvFo3MvpCandidateBlocker::MissingCandidatePreparation);
         }
 
         let dependency_records = dependency
@@ -302,11 +316,21 @@ pub fn build_fnv_fo3_mvp_candidate_preparations_with_live_blockers(
                 closure,
                 closure_staged_data_root,
                 converted_artifacts,
+                ..
             }) = candidate_preparation
             else {
                 unreachable!("an unblocked candidate has a prepared family")
             };
             FnvFo3MvpCandidateDisposition::Ready {
+                additional_branches: candidate_preparations.into_iter().flatten().skip(1).map(|branch| {
+                    let PreparedFamily::Ready { recipe, closure, closure_staged_data_root, converted_artifacts, .. } = branch else {
+                        unreachable!("all branch blockers were checked")
+                    };
+                    FnvFo3MvpPreparedBranch {
+                        family_id: recipe.batch_intent.family_id.clone(), recipe: recipe.clone(), closure: closure.clone(),
+                        closure_staged_data_root: closure_staged_data_root.clone(), converted_artifacts: converted_artifacts.clone(),
+                    }
+                }).collect(),
                 recipe: recipe.clone(),
                 closure: closure.clone(),
                 closure_staged_data_root: closure_staged_data_root.clone(),
@@ -391,6 +415,8 @@ fn canonical_live_blockers(
 #[derive(Clone, Debug)]
 enum PreparedFamily {
     Ready {
+        family: RigFamilyKey,
+        template_branch: Option<super::creature_templates::LegacyTemplateBranchReceipt>,
         recipe: SourceRigExecutableRecipe,
         closure: CreatureClosureReceipt,
         closure_staged_data_root: PathBuf,
@@ -402,7 +428,7 @@ enum PreparedFamily {
 fn prepare_candidates(
     recipe_ledger: &CreatureFamilyRecipeLedger,
     candidate_inputs: Vec<FnvFo3MvpCandidatePreparationInput>,
-) -> Result<BTreeMap<StableFormKey, PreparedFamily>, FnvFo3MvpAdapterError> {
+) -> Result<BTreeMap<StableFormKey, Vec<PreparedFamily>>, FnvFo3MvpAdapterError> {
     let expected_ledger_hash = recipe_ledger.content_hash_blake3.clone();
     let mut prepared = BTreeMap::new();
     let record_by_source = recipe_ledger
@@ -410,7 +436,30 @@ fn prepare_candidates(
         .iter()
         .map(|record| (canonical_recipe_source_key(&record.source), record))
         .collect::<BTreeMap<_, _>>();
-    for mut input in candidate_inputs {
+    let mut groups = BTreeMap::<StableFormKey, Vec<FnvFo3MvpCandidatePreparationInput>>::new();
+    for input in candidate_inputs {
+        groups.entry(input.source.clone()).or_default().push(input);
+    }
+    for (source, mut inputs) in groups {
+        if inputs.iter().any(|input| input.source_rig.template_branch.is_some()) {
+            let branches = inputs.iter().map(|input| input.source_rig.template_branch.as_ref())
+                .collect::<Option<Vec<_>>>().ok_or_else(|| FnvFo3MvpAdapterError::InvalidInput("template and non-template preparations cannot share a root".into()))?;
+            let first = branches[0];
+            let paths = branches.iter().map(|branch| branch.entry_indices.clone()).collect::<BTreeSet<_>>();
+            if branches.iter().any(|branch| branch.plan != first.plan || branch.profile().map_or(true, |profile| canonical_recipe_source_key(&profile.root) != canonical_recipe_source_key(&source)))
+                || branches.iter().filter(|branch| branch.wrapper).count() != 1
+                || paths.len() != branches.len() || paths != first.plan.branch_paths().into_iter().collect() {
+                return Err(FnvFo3MvpAdapterError::InvalidInput(format!("template candidate {source} must cover every ordered source branch exactly once")));
+            }
+            inputs.sort_by_key(|input| {
+                let branch = input.source_rig.template_branch.as_ref().unwrap();
+                (!branch.wrapper, branch.entry_indices.clone())
+            });
+        } else if inputs.len() != 1 {
+            return Err(FnvFo3MvpAdapterError::InvalidInput(format!("duplicate candidate preparation {source}")));
+        }
+        let mut preparations = Vec::new();
+        for mut input in inputs {
         if input.family != input.source_rig.family {
             return Err(FnvFo3MvpAdapterError::InvalidInput(
                 "family preparation and source-rig family differ".to_string(),
@@ -422,36 +471,26 @@ fn prepare_candidates(
                 canonical_fnv_fo3_family_id(&input.family)
             )));
         }
+        let template_branch = input.source_rig.template_branch.clone();
+        let owner = template_branch.as_ref().map(|branch| &branch.profile().unwrap().owners[6]).unwrap_or(&input.source);
         let expected_family = record_by_source
-            .get(&canonical_recipe_source_key(&input.source))
+            .get(&canonical_recipe_source_key(owner))
             .and_then(|record| match &record.disposition {
                 CreatureRecordRecipeDisposition::VisualOwner { rig, .. }
                 | CreatureRecordRecipeDisposition::Proxy { rig, .. } => Some(rig),
                 CreatureRecordRecipeDisposition::RejectedProxy { .. }
                 | CreatureRecordRecipeDisposition::Special { .. } => None,
             });
-        if expected_family != Some(&input.family)
-            || input
-                .source_rig
-                .projection
-                .source_primary_identity
-                .local_form_id
-                != input.source.local
-            || !input
-                .source_rig
-                .projection
-                .source_primary_identity
-                .plugin
-                .eq_ignore_ascii_case(&input.source.plugin)
+        let identity = &input.source_rig.projection.source_primary_identity;
+        let identity_matches = if let Some(branch) = template_branch.as_ref().filter(|branch| !branch.wrapper) {
+            identity == &branch.generated_identity
+        } else {
+            identity.local_form_id == input.source.local && identity.plugin.eq_ignore_ascii_case(&input.source.plugin)
+        };
+        if expected_family != Some(&input.family) || !identity_matches
         {
             return Err(FnvFo3MvpAdapterError::InvalidInput(format!(
                 "candidate {} preparation identity or family differs from the recipe ledger",
-                input.source
-            )));
-        }
-        if prepared.contains_key(&input.source) {
-            return Err(FnvFo3MvpAdapterError::InvalidInput(format!(
-                "duplicate candidate preparation {}",
                 input.source
             )));
         }
@@ -469,13 +508,17 @@ fn prepare_candidates(
                 .map_err(|error| error.to_string())
             })
             .map(|(recipe, closure)| PreparedFamily::Ready {
+                family: input.family,
+                template_branch,
                 recipe,
                 closure,
                 closure_staged_data_root: input.closure_staged_data_root,
                 converted_artifacts: input.converted_artifacts,
             })
             .unwrap_or_else(PreparedFamily::Blocked);
-        prepared.insert(input.source, preparation);
+        preparations.push(preparation);
+        }
+        prepared.insert(source, preparations);
     }
     Ok(prepared)
 }

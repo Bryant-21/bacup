@@ -33,12 +33,9 @@ pub(crate) fn legacy_explosion_fallback_warnings(record: &Record) -> Vec<String>
     let mut warnings = BTreeSet::new();
     for field in &record.fields {
         match field.sig.as_str() {
-            "MNAM" => {
-                warnings.insert("legacy_explosion_imagespace_modifier_omitted".to_string());
-            }
             "DATA" if matches!(&field.value, FieldValue::Bytes(bytes) if bytes.len() == LEGACY_EXPLOSION_DATA_LEN && bytes[36..48].iter().any(|byte| *byte != 0)) =>
             {
-                warnings.insert("legacy_explosion_radiation_scalars_omitted".to_string());
+                warnings.insert("legacy_explosion_radiation_requires_runtime_catalog".to_string());
             }
             _ => {}
         }
@@ -200,9 +197,7 @@ pub(crate) fn lower_legacy_explosion(record: &mut Record) -> bool {
         field.value = FieldValue::Bytes(target.into());
         lowered = true;
     }
-    record
-        .fields
-        .retain(|field| !matches!(field.sig.as_str(), "MODT" | "MNAM"));
+    record.fields.retain(|field| field.sig.as_str() != "MODT");
     lowered
 }
 
@@ -306,14 +301,25 @@ mod tests {
     }
 
     #[test]
-    fn source_only_imagespace_and_radiation_use_explicit_omission_warnings() {
+    fn native_imagespace_is_preserved_and_radiation_requires_a_runtime_consumer() {
         let interner = StringInterner::new();
         assert!(classify_legacy_explosion(&source_record(&interner, false)).is_ready());
-        let imagespace = source_record(&interner, true);
+        let mut imagespace = source_record(&interner, true);
         assert!(classify_legacy_explosion(&imagespace).is_ready());
+        assert!(legacy_explosion_fallback_warnings(&imagespace).is_empty());
+        let original = imagespace
+            .fields
+            .iter()
+            .find(|field| field.sig.as_str() == "MNAM")
+            .cloned()
+            .unwrap();
+        assert!(lower_legacy_explosion(&mut imagespace));
         assert_eq!(
-            legacy_explosion_fallback_warnings(&imagespace),
-            ["legacy_explosion_imagespace_modifier_omitted"]
+            imagespace
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "MNAM"),
+            Some(&original)
         );
         let mut radiation = source_record(&interner, false);
         let FieldValue::Bytes(data) = &mut radiation
@@ -329,7 +335,7 @@ mod tests {
         assert!(classify_legacy_explosion(&radiation).is_ready());
         assert_eq!(
             legacy_explosion_fallback_warnings(&radiation),
-            ["legacy_explosion_radiation_scalars_omitted"]
+            ["legacy_explosion_radiation_requires_runtime_catalog"]
         );
     }
 

@@ -109,7 +109,7 @@ class TestPathBoundary:
             run.save_target(str(override), run_nvnm_validator=False)
             assert override.is_file()
 
-    @pytest.mark.parametrize("phase", ["translate_v2", "walk", "convert_terrain"])
+    @pytest.mark.parametrize("phase", ["translate_v2", "walk", "convert_terrain", "fnv_legacy"])
     def test_source_dependent_dispatcher_phases_fail_clearly(self, tmp_path, phase):
         from bacup_lib.run import ConversionRun
 

@@ -12,7 +12,7 @@ use nif_core_native::convert_file::{ConvertFileOptions, convert_nif_file};
 use nif_core_native::creature_closure::{
     CreatureClosureReceipt, CreatureClosureRequest, CreatureNifInput, CreatureNifRole,
     refresh_staged_creature_nif_artifact, seal_embedded_creature_collision,
-    stage_creature_nif_closure,
+    stage_creature_nif_closure_with_body_parts,
 };
 use nif_core_native::creature_ragdoll::{
     extract_fnv_fo3_creature_ragdoll, install_fo4_creature_controller_collision,
@@ -20,6 +20,35 @@ use nif_core_native::creature_ragdoll::{
 };
 use nif_core_native::model::NifFile;
 use thiserror::Error;
+
+#[path = "creature_action_selection.rs"]
+mod creature_action_selection;
+#[path = "creature_automatic_selection.rs"]
+mod creature_automatic_selection;
+
+#[path = "creature_attack_selection.rs"]
+mod creature_attack_selection;
+
+#[path = "creature_channel_selection.rs"]
+mod creature_channel_selection;
+
+#[path = "creature_aim_selection.rs"]
+mod creature_aim_selection;
+
+#[path = "creature_movement_selection.rs"]
+mod creature_movement_selection;
+
+#[path = "creature_template_preparations.rs"]
+mod creature_template_preparations;
+
+#[path = "creature_actor_projection.rs"]
+mod creature_actor_projection;
+
+#[path = "creature_property_sequences.rs"]
+mod creature_property_sequences;
+
+pub(super) use creature_automatic_selection::validate_automatic_phase_projection;
+pub(super) use creature_aim_selection::candidates as source_aim_candidates;
 
 use crate::formkey_mapper::{FormKeyMapper, MapperState};
 use crate::ids::FormKey;
@@ -49,6 +78,7 @@ use crate::source_rig::{
     deterministic_standard_event, required_actor_action_records,
     validate_source_rig_runtime_model_closure,
 };
+use crate::source_rig::CreatureTemplateProjection;
 use crate::sym::StringInterner;
 
 use super::creature_catalog::{
@@ -66,6 +96,7 @@ use super::creature_motion::{
     KfParseEvidence, MotionCandidate, MotionEventKind, MotionRole, RootMotionEvidence,
     stage_request_from_motion_candidate,
 };
+use super::creature_templates::{LegacyTemplateBranchReceipt, LegacyTemplateProfile};
 use super::creature_mvp_adapter::{
     FnvFo3MvpAdapterError, FnvFo3MvpCandidateBlocker, FnvFo3MvpCandidateDestination,
     FnvFo3MvpConvertedArtifact, FnvFo3MvpPreparationLedger,
@@ -99,6 +130,7 @@ pub struct FnvFo3LiveMvpPreparationBuildInput<'a> {
     pub target_data_root: &'a Path,
     pub private_staging_root: &'a Path,
     pub mapper_state: &'a MapperState,
+    pub compiled_script: &'a dyn Fn(FormKey, FormKey) -> Result<crate::source_rig::CreatureNpcScriptAttachment, String>,
     pub ancillary_npc_reservations: &'a [CreatureAncillaryNpcReservation],
     pub actor_action_reservations: &'a [CreatureActorActionReservationReceipt],
     pub destinations: &'a [FnvFo3MvpCandidateDestination],
@@ -149,10 +181,7 @@ pub(crate) fn fnv_fo3_actor_action_reservation_requests(
         let graph = build_capability_graph(&selected, None)
             .map_err(FnvFo3LiveMvpPreparationBuildError::Input)?;
         let family_hash = blake3::hash(family_id.as_bytes()).to_hex().to_string();
-        let root_behavior = format!(
-            "Actors\\FnvFo3Creature_{}\\Behaviors\\FnvFo3RootBehavior.hkx",
-            &family_hash[..16]
-        );
+        let root_behavior = super::creature_source_idles::source_family_behavior_path(&family.rig);
         for (ordinal, requirement) in required_actor_action_records(&graph, &root_behavior)
             .into_iter()
             .enumerate()
@@ -299,10 +328,15 @@ fn actor_action_owners_by_family(
 
 #[derive(Clone)]
 struct PreparedLiveFamily {
+    replacement_runtime_paths: BTreeMap<String, String>,
+    body_part_segments: Vec<nif_core_native::skin::creature_parts::CreatureBodyPartSegment>,
     closure: CreatureClosureReceipt,
     closure_staged_data_root: PathBuf,
     rig: CreatureManifest,
     graph: CapabilityGraphManifest,
+    attack_weapon_sources: BTreeMap<String, Vec<StableFormKey>>,
+    power_attack_events: BTreeSet<String>,
+    natural_attack_seconds: BTreeMap<String, f32>,
     artifact_requests: Vec<SourceRigConvertedArtifactRequestReceipt>,
     artifact_receipts: Vec<SourceRigArtifactReceipt>,
     converted_artifacts: Vec<FnvFo3MvpConvertedArtifact>,
@@ -317,12 +351,22 @@ struct PreparedLegacyDebrisRecord {
 
 #[derive(Clone)]
 struct SelectedClip {
+    thrown_attack: bool,
     candidate: MotionCandidate,
     role: CreatureClipRole,
     name: String,
     state_name: String,
     trigger_event: Option<String>,
     target_looping: bool,
+    locomotion_sample: Option<(f32, f32)>,
+    source_idle: Option<CapabilityRoleGenerator>,
+    source_aim: Option<CapabilityRoleGenerator>,
+    source_attack: Option<crate::source_rig::SourceAttackContract>,
+    attack_blend_only: bool,
+    source_movement: Option<crate::source_rig::SourceMovementClip>,
+    automatic_attack: Option<creature_automatic_selection::SelectedAutomaticAttack>,
+    source_weapon: Option<StableFormKey>,
+    equipment_index: Option<u8>,
 }
 
 #[derive(Clone)]
@@ -336,6 +380,7 @@ struct SelectedOverlay {
 
 #[derive(Clone)]
 struct SelectedGraph {
+    source_channels: Vec<crate::source_rig::SourceAnimationClip>,
     template: CreatureGraphTemplate,
     clips: Vec<SelectedClip>,
     overlays: Vec<SelectedOverlay>,
@@ -396,6 +441,7 @@ pub fn build_live_fnv_fo3_mvp_candidate_preparations(
     let evidence = build_live_fnv_fo3_creature_recipe_evidence(
         FnvFo3LiveRecipeBuildInput {
             winning_records: input.winning_records,
+            dependency_ledger: input.dependency_ledger,
             source_data_root: input.source_data_root,
             expected_creature_winners: input.expected_creature_winners,
         },
@@ -417,6 +463,11 @@ pub fn build_live_fnv_fo3_mvp_candidate_preparations(
     let winning_record_by_source = winning_creature_records(input.winning_records, interner)?;
     let winning_runtime_record_by_source =
         winning_runtime_records(input.winning_records, interner)?;
+    let template_records_by_game = [LegacyCreatureGame::Fnv, LegacyCreatureGame::Fo3]
+        .into_iter().map(|game| (game, winning_runtime_record_by_source.iter()
+            .filter(|((source_game, _), record)| *source_game == game && matches!(record.sig.as_str(), "CREA" | "LVLC" | "LVLN"))
+            .map(|((_, key), record)| (key.clone(), *record)).collect::<BTreeMap<_, _>>()))
+        .collect::<BTreeMap<_, _>>();
     let ancillary_npc_appearances = build_legacy_ancillary_npc_appearance_preparations(
         input.ancillary_npc_reservations,
         &winning_runtime_record_by_source,
@@ -533,6 +584,25 @@ pub fn build_live_fnv_fo3_mvp_candidate_preparations(
         let Some(record) = record_by_source.get(&recipe_source) else {
             continue;
         };
+        match creature_template_preparations::prepare(
+            input, candidate, record, &evidence, &shared_recipe_ledger,
+            &winning_record_by_source, &winning_runtime_record_by_source,
+            &template_records_by_game[&record.provenance.game],
+            &dependency_record_by_source, action_point_settings.get(&record.provenance.game).copied(),
+            &actor_action_owners, &actor_action_plans,
+            &mut family_cache, &mut runtime_model_cache, &mut allocator, interner,
+        ) {
+            Ok(Some(preparations)) => {
+                candidate_inputs.extend(preparations);
+                continue;
+            }
+            Ok(None) => {}
+            Err(detail) => {
+                live_blockers.entry(candidate.source.clone()).or_default()
+                    .push(FnvFo3MvpCandidateBlocker::RecordProjection { detail });
+                continue;
+            }
+        }
         let rig = match &record.disposition {
             CreatureRecordRecipeDisposition::VisualOwner { rig, .. }
             | CreatureRecordRecipeDisposition::Proxy { rig, .. } => rig,
@@ -579,38 +649,15 @@ pub fn build_live_fnv_fo3_mvp_candidate_preparations(
             continue;
         };
         let proxy_owner = singular_proxy_owner(record);
-        let inherited_stats = match (
-            resolve_template_group_record(
+        let inherited_stats = match resolve_template_group_record(
                 &candidate.source,
                 TEMPLATE_STATS,
                 &winning_record_by_source,
                 proxy_owner,
                 interner,
-            ),
-            resolve_template_group_record(
-                &candidate.source,
-                TEMPLATE_BASE_DATA,
-                &winning_record_by_source,
-                proxy_owner,
-                interner,
-            ),
-            resolve_template_group_record(
-                &candidate.source,
-                TEMPLATE_TRAITS,
-                &winning_record_by_source,
-                proxy_owner,
-                interner,
-            ),
-        ) {
-            (Ok((_, stats)), Ok((_, base)), Ok((_, traits))) => (stats, base, traits),
-            (Err(detail), _, _) => {
-                live_blockers
-                    .entry(candidate.source.clone())
-                    .or_default()
-                    .push(FnvFo3MvpCandidateBlocker::RecordProjection { detail });
-                continue;
-            }
-            (_, Err(detail), _) | (_, _, Err(detail)) => {
+            ) {
+            Ok((_, stats)) => stats,
+            Err(detail) => {
                 live_blockers
                     .entry(candidate.source.clone())
                     .or_default()
@@ -619,9 +666,7 @@ pub fn build_live_fnv_fo3_mvp_candidate_preparations(
             }
         };
         let stats = match legacy_creature_stats(
-            inherited_stats.0,
-            inherited_stats.1,
-            inherited_stats.2,
+            inherited_stats,
             settings,
             interner,
         ) {
@@ -654,6 +699,8 @@ pub fn build_live_fnv_fo3_mvp_candidate_preparations(
                 &evidence,
                 input.source_data_root,
                 input.private_staging_root,
+                &winning_runtime_record_by_source,
+                interner,
             )
         });
         let family_assets = match family_assets {
@@ -690,6 +737,10 @@ pub fn build_live_fnv_fo3_mvp_candidate_preparations(
             &target_plugin,
             input.editor_id_prefix,
             actor_action_records,
+            input.compiled_script,
+            None,
+            None,
+            None,
             interner,
         ) {
             Ok(preparation) => candidate_inputs.push(preparation),
@@ -760,9 +811,20 @@ fn prepare_live_candidate(
     allocator: &mut FormKeyMapper<'_>,
     target_plugin: &str,
     editor_id_prefix: &str,
-    actor_action_records: Vec<CreatureActorActionRecordPlan>,
+    mut actor_action_records: Vec<CreatureActorActionRecordPlan>,
+    compiled_script: &dyn Fn(FormKey, FormKey) -> Result<crate::source_rig::CreatureNpcScriptAttachment, String>,
+    template_branch: Option<LegacyTemplateBranchReceipt>,
+    templates: Option<CreatureTemplateProjection>,
+    template_leaf: Option<TargetFormKey>,
     interner: &StringInterner,
 ) -> Result<super::creature_mvp_adapter::FnvFo3MvpCandidatePreparationInput, String> {
+    let direct_profile = if template_branch.is_none() {
+        match super::creature_templates::resolve_template_plan(&candidate.source, record.provenance.game, winning_records, interner)? {
+            super::creature_templates::LegacyTemplatePlan::Creature(profile) => Some(profile),
+            super::creature_templates::LegacyTemplatePlan::Leveled { .. } => return Err("leveled template bypassed its branch projection".to_string()),
+        }
+    } else { None };
+    let template_profile = template_branch.as_ref().map(|branch| branch.profile()).transpose()?.or(direct_profile.as_ref());
     let body = match &record.disposition {
         CreatureRecordRecipeDisposition::VisualOwner { body, .. } => body,
         CreatureRecordRecipeDisposition::Proxy {
@@ -796,16 +858,20 @@ fn prepare_live_candidate(
     if body.body_paths.is_empty() {
         return Err("body variant has no NIF parts".to_string());
     }
-    let source_identity = SourceCreatureIdentity {
+    let mut source_identity = SourceCreatureIdentity {
         namespace: legacy_game_name(record.provenance.game).to_string(),
         plugin: candidate.source.plugin.clone(),
         local_form_id: candidate.source.local,
     };
-    let editor_id_stem = candidate_editor_id_stem(
+    if let Some(branch) = &template_branch {
+        if !branch.wrapper { source_identity = branch.generated_identity.clone(); }
+    }
+    let mut editor_id_stem = candidate_editor_id_stem(
         editor_id_prefix,
         record.provenance.game,
         candidate.source.local,
     )?;
+    if template_branch.is_some() { editor_id_stem.push_str(&format!("_T{:06X}", reservation.local)); }
     let target = |form_key: FormKey| TargetFormKey::new(form_key.local, target_plugin);
     let allocate = |allocator: &mut FormKeyMapper<'_>| target(allocator.allocate_generated());
     let mut form_keys = CreatureRecordFormKeys {
@@ -857,23 +923,32 @@ fn prepare_live_candidate(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let body_nif = body_nif_parts[0].body_nif.clone();
-    let (base_source, base_record) = resolve_template_group_record(
+    let (_, base_record) = candidate_template_group_record(
         &candidate.source,
         TEMPLATE_BASE_DATA,
         winning_records,
         singular_proxy_owner(record),
+        template_profile,
         interner,
     )?;
     let display_name = source_display_name(base_record, record, interner);
-    let base_dependencies = dependency_records
-        .get(&base_source)
+    let (traits_source, traits_record) = candidate_template_group_record(
+        &candidate.source,
+        TEMPLATE_TRAITS,
+        winning_records,
+        singular_proxy_owner(record),
+        template_profile,
+        interner,
+    )?;
+    let traits_dependencies = dependency_records
+        .get(&traits_source)
         .copied()
         .ok_or_else(|| {
-            format!("dependency ledger omitted inherited base-data owner {base_source}")
+            format!("dependency ledger omitted inherited traits owner {traits_source}")
         })?;
-    let source_death_item = exact_optional_record_form_key(base_record, "INAM", interner)?;
+    let source_death_item = exact_optional_record_form_key(traits_record, "INAM", interner)?;
     let followed_death_items =
-        direct_followed_sources_at_locator(base_dependencies, "LVLI", "INAM[");
+        direct_followed_sources_at_locator(traits_dependencies, "LVLI", "INAM[");
     let npc_death_item = match (source_death_item.as_ref(), followed_death_items.as_slice()) {
         (None, []) => None,
         (Some(source), [followed]) if source == followed => Some(mapped_target_reference(
@@ -884,23 +959,17 @@ fn prepare_live_candidate(
         )?),
         _ => {
             return Err(format!(
-                "inherited CREA base-data owner {base_source} has INAM {source_death_item:?} but {} followed LVLI receipts",
+                "inherited CREA traits owner {traits_source} has INAM {source_death_item:?} but {} followed LVLI receipts",
                 followed_death_items.len()
             ));
         }
     };
-    let (traits_source, traits_record) = resolve_template_group_record(
-        &candidate.source,
-        TEMPLATE_TRAITS,
-        winning_records,
-        singular_proxy_owner(record),
-        interner,
-    )?;
-    let (spell_source, _) = resolve_template_group_record(
+    let (spell_source, _) = candidate_template_group_record(
         &candidate.source,
         TEMPLATE_SPELL_LIST,
         winning_records,
         singular_proxy_owner(record),
+        template_profile,
         interner,
     )?;
     let spell_dependencies = dependency_records
@@ -912,11 +981,12 @@ fn prepare_live_candidate(
         .iter()
         .map(|source| mapped_target_reference(source, "SPEL", mapper_state, interner))
         .collect::<Result<Vec<_>, _>>()?;
-    let (inventory_source, inventory_record) = resolve_template_group_record(
+    let (inventory_source, inventory_record) = candidate_template_group_record(
         &candidate.source,
         TEMPLATE_INVENTORY,
         winning_records,
         singular_proxy_owner(record),
+        template_profile,
         interner,
     )?;
     let inventory_dependencies = dependency_records
@@ -933,23 +1003,22 @@ fn prepare_live_candidate(
         mapper_state,
         interner,
     )?;
-    let traits_dependencies = dependency_records
-        .get(&traits_source)
-        .copied()
-        .ok_or_else(|| {
-            format!("dependency ledger omitted inherited traits owner {traits_source}")
-        })?;
-    let melee_weapons = exact_melee_weapon_list_sources(traits_dependencies, dependency_records)?;
-    let inventory_weapons = exact_ranged_weapon_sources(
+    let inventory_weapons = exact_inventory_weapon_sources(
         inventory_dependencies,
         &direct_inventory_weapons,
-        &melee_weapons,
         dependency_records,
     )?;
-    let npc_equipment = inventory_weapons
-        .iter()
-        .map(|source| mapped_target_reference(source, "WEAP", mapper_state, interner))
-        .collect::<Result<Vec<_>, _>>()?;
+    let inventory_weapons = if family.rig.game == LegacyCreatureGame::Fnv {
+        exact_usable_inventory_weapon_sources(&inventory_weapons, traits_dependencies, dependency_records)?
+    } else { inventory_weapons };
+    let melee_weapons = exact_weapon_sources_by_kind(
+        &inventory_weapons,
+        false, family.rig.game, winning_runtime_records, interner,
+    )?;
+    let owned_equipment = inventory_weapons.clone();
+    let inventory_weapons = exact_weapon_sources_by_kind(
+        &inventory_weapons, true, family.rig.game, winning_runtime_records, interner,
+    )?;
     let attack_policy = exact_legacy_attack_projection_policy(&[source_record, traits_record])?;
 
     let melee_events = graph_events(&family_assets.graph, CreatureClipRole::MeleeAttack);
@@ -961,55 +1030,69 @@ fn prepare_live_candidate(
     let mut attacks = Vec::new();
     let mut melee_key_plan = Vec::new();
     for (index, event) in melee_events.iter().enumerate() {
+        let event_weapons = if family_assets.attack_weapon_sources.get(&event.to_ascii_lowercase()).is_some_and(|weapons| !weapons.is_empty()) {
+            let weapons = attack_weapons_for_event(&family_assets.attack_weapon_sources, event, &melee_weapons)?;
+            if weapons.is_empty() { continue; }
+            weapons
+        } else {
+            Vec::new()
+        };
         let ordinal = index + 1;
         let attack_id = format!("source_unarmed_{ordinal:02}");
-        let projection = if melee_weapons.is_empty() {
+        let projection = if event_weapons.is_empty() {
             let weapon_form_key = allocate(allocator);
-            if index == 0 {
+            let primary_unarmed = melee_key_plan.is_empty();
+            if primary_unarmed {
                 form_keys.unarmed_weapon = weapon_form_key.clone();
             }
             melee_key_plan.push(CreatureMeleeRecordKeyPlan {
                 attack_id: attack_id.clone(),
                 form_key: weapon_form_key.clone(),
-                primary: index == 0,
+                primary: primary_unarmed,
             });
             CreatureAttackRecordProjection::MeleeUnarmed {
                 weapon_form_key,
-                weapon_editor_id: if index == 0 {
+                weapon_editor_id: if primary_unarmed {
                     editor_ids.unarmed_weapon.clone()
                 } else {
                     format!("{}_{}", editor_ids.unarmed_weapon, ordinal)
                 },
                 damage: stats.damage,
                 reach: stats.reach,
-                attack_seconds: exact_melee_attack_seconds(family)?,
+                attack_seconds: *family_assets.natural_attack_seconds.get(&event.to_ascii_lowercase())
+                    .ok_or_else(|| format!("natural melee event {event} has no exact source clip duration"))?,
             }
         } else {
             CreatureAttackRecordProjection::MeleeEquipment {
-                equipment: melee_weapons
+                equipment: event_weapons
                     .iter()
                     .map(|source| mapped_target_reference(source, "WEAP", mapper_state, interner))
                     .collect::<Result<Vec<_>, _>>()?,
             }
         };
+        let mut target_data = attack_policy.target_data.clone();
+        if family_assets.power_attack_events.contains(&event.to_ascii_lowercase()) {
+            target_data.attack_flags |= 4;
+        }
         attacks.push(CreatureAttackRecordVariant {
             id: attack_id,
             event: event.clone(),
-            primary: index == 0,
+            primary: attacks.is_empty(),
             projection,
             damage_multiplier: attack_policy.damage_multiplier,
             chance: attack_policy.chance,
             strike_angle: attack_policy.strike_angle,
             action_point_cost: attack_policy.action_point_cost,
-            target_data: attack_policy.target_data.clone(),
+            target_data,
         });
     }
     for (index, event) in projectile_events.iter().enumerate() {
-        if inventory_weapons.is_empty() {
+        let event_weapons = attack_weapons_for_event(&family_assets.attack_weapon_sources, event, &inventory_weapons)?;
+        if event_weapons.is_empty() {
             continue;
         }
         let (projectile, ammunition) = exact_weapon_set_runtime_dependencies(
-            &inventory_weapons,
+            &event_weapons,
             candidate,
             dependency_records,
             mapper_state,
@@ -1020,7 +1103,7 @@ fn prepare_live_candidate(
             event: event.clone(),
             primary: attacks.is_empty(),
             projection: CreatureAttackRecordProjection::RangedEquipment {
-                equipment: npc_equipment.clone(),
+                equipment: event_weapons.iter().map(|source| mapped_target_reference(source, "WEAP", mapper_state, interner)).collect::<Result<Vec<_>, _>>()?,
                 projectile,
                 ammunition,
             },
@@ -1032,11 +1115,12 @@ fn prepare_live_candidate(
         });
     }
     for (index, event) in continuous_events.iter().enumerate() {
-        if inventory_weapons.is_empty() {
+        let event_weapons = attack_weapons_for_event(&family_assets.attack_weapon_sources, event, &inventory_weapons)?;
+        if event_weapons.is_empty() {
             continue;
         }
         let (projectile, ammunition) = exact_weapon_set_runtime_dependencies(
-            &inventory_weapons,
+            &event_weapons,
             candidate,
             dependency_records,
             mapper_state,
@@ -1047,7 +1131,7 @@ fn prepare_live_candidate(
             event: event.clone(),
             primary: attacks.is_empty(),
             projection: CreatureAttackRecordProjection::RangedEquipment {
-                equipment: npc_equipment.clone(),
+                equipment: event_weapons.iter().map(|source| mapped_target_reference(source, "WEAP", mapper_state, interner)).collect::<Result<Vec<_>, _>>()?,
                 projectile,
                 ammunition,
             },
@@ -1058,14 +1142,16 @@ fn prepare_live_candidate(
             target_data: attack_policy.target_data.clone(),
         });
     }
-    let race_data = family
-        .race_data
-        .as_ref()
-        .and_then(|race| match &race.derivation.mapping {
-            RaceDataMapping::Mapped { target } => Some(target.clone()),
-            RaceDataMapping::Missing { .. } => None,
-        })
-        .ok_or_else(|| "Ready family has no complete FO4 RACE.DATA mapping".to_string())?;
+    let profile = template_profile.ok_or("creature projection has no resolved source profile")?;
+    let (_, stats_record) = stable_map_entry(winning_records, &profile.owners[1])
+        .ok_or("creature profile Stats owner is absent")?;
+    let profile_race_data = super::creature_profile_race_data::prepare(
+        family, &profile.owners[1], stats_record, interner,
+    )?;
+    let race_data = match &profile_race_data.derivation.mapping {
+        RaceDataMapping::Mapped { target } => target.clone(),
+        RaceDataMapping::Missing { .. } => return Err("creature profile has no complete FO4 RACE.DATA mapping".into()),
+    };
     let root = family
         .actual_root_node
         .clone()
@@ -1082,17 +1168,66 @@ fn prepare_live_candidate(
         .iter()
         .map(|part| part.armor_addon_form_key.clone())
         .collect();
-    let projection = CreatureRecordProjectionManifest {
+    let mut projection = CreatureRecordProjectionManifest {
+        race_keywords: vec![super::creature_profile_race_data::controller_scale_keyword()],
+        templates,
+        equipment_slots: super::creature_muzzle::family_equipment_slots(
+            family.indexed_motion_evidence.as_ref().map(|motion| motion.weapon_attacks.as_slice()).unwrap_or_default(),
+            &owned_equipment, mapper_state, interner,
+        )?,
         base,
         source_primary_identity: source_identity.clone(),
         race_data,
-        body_parts: CreatureBodyPartProjection::root_only_32(root),
+        body_parts: if let Some(source_key) = source_body_part_key(template_profile.map(|profile| &profile.owners[6]).unwrap_or(&candidate.source), winning_records, singular_proxy_owner(record), interner)? {
+            let body_record = winning_runtime_records
+                .get(&(record.provenance.game, source_key.clone()))
+                .copied()
+                .ok_or("source BPTD is absent from winning records")?;
+            let dependency = dependency_records
+                .get(&source_key)
+                .ok_or("source BPTD dependency is absent")?;
+            crate::source_rig::body_parts::project_source_body_parts(
+                body_record,
+                legacy_game_name(record.provenance.game),
+                &root,
+                &family_assets.body_part_segments,
+                interner,
+                |row, field, _raw| {
+                    let locator = format!("BPND[{row}].{field}@");
+                    let reference = dependency
+                        .references
+                        .iter()
+                        .find(|reference| {
+                            reference
+                                .source_locators
+                                .iter()
+                                .any(|value| value.starts_with(&locator))
+                        })
+                        .ok_or_else(|| format!("BPTD dependency missing {locator}"))?;
+                    match &reference.resolution {
+                        DependencyReferenceResolution::Followed { signature } => mapped_target_reference(&reference.target, signature, mapper_state, interner),
+                        DependencyReferenceResolution::TargetIntrinsic { signature, mapped_target } => Ok(CreatureTargetRecordReference::new(signature, TargetFormKey::new(mapped_target.local, &mapped_target.plugin))),
+                        _ => Err(format!("BPTD dependency {locator} is not translated")),
+                    }
+                },
+                |path| {
+                    if path.is_empty() {
+                        Ok(String::new())
+                    } else {
+                        family_assets.replacement_runtime_paths.get(&canonical_mesh_path(path)).cloned().ok_or_else(|| format!("unstaged BPTD replacement {path}"))
+                    }
+                },
+            )?
+        } else {
+            CreatureBodyPartProjection::root_only_32(root)
+        },
         body_nif_parts,
         npc_inventory: Vec::new(),
         npc_spells: Vec::new(),
         npc_death_item: None,
         npc_equipment: Vec::new(),
         variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
             source_identity: source_identity.clone(),
             form_key: form_keys.npc.clone(),
             editor_id: editor_ids.npc.clone(),
@@ -1104,11 +1239,12 @@ fn prepare_live_candidate(
             npc_inventory: Some(npc_inventory),
             npc_equipment: Some(Vec::new()),
             npc_spells: Some(npc_spells),
+            npc_perks: Vec::new(),
             npc_death_item: candidate_death_item_override(npc_death_item),
         }],
         attacks,
     };
-    let key_plan = CreatureRecordKeyPlan {
+    let mut key_plan = CreatureRecordKeyPlan {
         planned_source_identity: source_identity.clone(),
         base: form_keys,
         armor_addons: armor_addon_keys,
@@ -1119,6 +1255,32 @@ fn prepare_live_candidate(
         }],
         melee_attacks: melee_key_plan,
     };
+    projection.variants[0].actor_data = Some(creature_actor_projection::prepare_candidate_actor_data(
+        template_profile.ok_or("creature projection has no resolved source profile")?,
+        winning_records, dependency_records, mapper_state, interner,
+    )?);
+    let profile = template_profile.ok_or("creature script has no resolved source profile")?;
+    let (_, script_owner) = stable_map_entry(winning_records, &profile.owners[9])
+        .ok_or("creature Script template owner is missing")?;
+    if let Some(source_script) = exact_optional_record_form_key(script_owner, "SCRI", interner)? {
+        projection.variants[0].actor_data.as_mut().unwrap().script = Some(compiled_script(FormKey { local: source_script.local, plugin: interner.intern(&source_script.plugin) }, reservation)?);
+    }
+    if let Some(leaf_key) = template_leaf {
+        let branch = template_branch.as_ref().ok_or("template leaf has no source branch receipt")?;
+        if !branch.wrapper { return Err("secondary template leaf is only valid on the wrapper recipe".to_string()); }
+        let mut leaf = projection.variants[0].clone();
+        leaf.source_identity = branch.generated_identity.clone();
+        leaf.form_key = leaf_key.clone();
+        leaf.editor_id.push_str("_Selected");
+        leaf.primary = false;
+        projection.variants.push(leaf);
+        key_plan.npc_variants.push(CreatureNpcRecordKeyPlan {
+            source_identity: branch.generated_identity.clone(),
+            form_key: leaf_key,
+            primary: false,
+        });
+    }
+    bind_attack_actor_action_conditions(&mut actor_action_records, family_assets, family, mapper_state, interner)?;
     let required_target_records = projection_target_dependencies(&projection);
     let batch_intent = SourceRigRecordBatchIntent {
         family_id: canonical_fnv_fo3_family_id(&family.rig),
@@ -1166,6 +1328,8 @@ fn prepare_live_candidate(
         );
     }
     let mut source_rig = FnvFo3SourceRigAdapterInput {
+        template_branch,
+        profile_race_data: Some(profile_race_data),
         ledger: Arc::clone(shared_recipe_ledger),
         family: family.rig.clone(),
         creature_closure: family_assets.closure.clone(),
@@ -1199,7 +1363,13 @@ fn prepare_live_candidate(
             source_game,
         );
     for receipt in &mut source_rig.field_receipts {
-        receipt.decision = if is_legacy_inert_attack_policy_field(&receipt.field) {
+        receipt.decision = if receipt.field.starts_with("projection.attacks[") && receipt.field.ends_with(".target_data.attack_flags") {
+            SourceRigFieldDecision::Derived {
+                source_games: vec![source_game.to_string()],
+                source_fields: vec!["NiControllerSequence.name:source_attack_group".to_string(), "WEAP.DNAM.animation_type".to_string()],
+                policy_id: "fnv_fo3_source_power_groups_92_96_to_fo4_power_attack_v1".to_string(),
+            }
+        } else if is_legacy_inert_attack_policy_field(&receipt.field) {
             SourceRigFieldDecision::Derived {
                 source_games: vec![source_game.to_string()],
                 source_fields: vec![
@@ -1695,7 +1865,19 @@ fn source_display_name(
         .to_string()
 }
 
-fn resolve_template_group_record<'a>(
+pub(super) fn source_body_part_key(
+    source: &StableFormKey,
+    records: &BTreeMap<StableFormKey, &Record>,
+    visual_owner: Option<&StableFormKey>,
+    interner: &StringInterner,
+) -> Result<Option<StableFormKey>, String> {
+    let (_, owner) = resolve_template_group_record(
+        source, TEMPLATE_MODEL_ANIMATION, records, visual_owner, interner,
+    )?;
+    exact_optional_record_form_key(owner, "PNAM", interner)
+}
+
+pub(super) fn resolve_template_group_record<'a>(
     source: &StableFormKey,
     group_flag: u16,
     records: &'a BTreeMap<StableFormKey, &'a Record>,
@@ -1740,6 +1922,23 @@ fn resolve_template_group_record<'a>(
         }
         current = template.expect("template presence was checked");
     }
+}
+
+fn candidate_template_group_record<'a>(
+    source: &StableFormKey,
+    group_flag: u16,
+    records: &'a BTreeMap<StableFormKey, &'a Record>,
+    singular_proxy_owner: Option<&StableFormKey>,
+    profile: Option<&LegacyTemplateProfile>,
+    interner: &StringInterner,
+) -> Result<(StableFormKey, &'a Record), String> {
+    if let Some(profile) = profile {
+        let owner = &profile.owners[group_flag.trailing_zeros() as usize];
+        return stable_map_entry(records, owner)
+            .map(|(key, record)| (key.clone(), *record))
+            .ok_or_else(|| format!("selected creature template owner {owner} is unavailable"));
+    }
+    resolve_template_group_record(source, group_flag, records, singular_proxy_owner, interner)
 }
 
 fn singular_proxy_owner(
@@ -1899,10 +2098,9 @@ fn direct_followed_sources_at_locator(
     sources.into_iter().map(|(_, source)| source).collect()
 }
 
-fn exact_ranged_weapon_sources(
+pub(super) fn exact_inventory_weapon_sources(
     inventory: &RuntimeDependencyRecordReceipt,
     direct_weapons: &[StableFormKey],
-    embedded_weapons: &[StableFormKey],
     records: &BTreeMap<StableFormKey, &RuntimeDependencyRecordReceipt>,
 ) -> Result<Vec<StableFormKey>, String> {
     let mut weapons = direct_weapons.iter().cloned().collect::<BTreeSet<_>>();
@@ -1923,27 +2121,25 @@ fn exact_ranged_weapon_sources(
         weapons.extend(direct_followed_sources(receipt, "WEAP"));
         pending_lists.extend(direct_followed_sources(receipt, "LVLI"));
     }
-    if weapons.is_empty() {
-        let ammunition = direct_followed_sources_at_locator(inventory, "AMMO", "CNTO[")
-            .into_iter()
-            .map(|source| canonical_recipe_source_key(&source))
-            .collect::<BTreeSet<_>>();
-        if !ammunition.is_empty() {
-            for weapon in embedded_weapons {
-                let Some((_, receipt)) = stable_map_entry(records, weapon) else {
-                    continue;
-                };
-                if receipt.signature == "WEAP"
-                    && direct_followed_sources(receipt, "AMMO")
-                        .iter()
-                        .any(|source| ammunition.contains(&canonical_recipe_source_key(source)))
-                {
-                    weapons.insert(weapon.clone());
-                }
-            }
-        }
-    }
     Ok(weapons.into_iter().collect())
+}
+
+pub(super) fn exact_usable_inventory_weapon_sources(
+    inventory_weapons: &[StableFormKey],
+    traits: &RuntimeDependencyRecordReceipt,
+    records: &BTreeMap<StableFormKey, &RuntimeDependencyRecordReceipt>,
+) -> Result<Vec<StableFormKey>, String> {
+    let lists = direct_followed_sources_at_locator(traits, "FLST", "LNAM[");
+    let [list] = lists.as_slice() else {
+        if lists.is_empty() { return Ok(Vec::new()); }
+        return Err(format!("creature traits {} has {} weapon admissibility lists", traits.source, lists.len()));
+    };
+    let (_, receipt) = stable_map_entry(records, list)
+        .ok_or_else(|| format!("creature weapon FLST dependency receipt {list} is absent"))?;
+    if receipt.signature != "FLST" { return Err(format!("creature weapon list {list} is not FLST")); }
+    let admitted = direct_followed_sources_at_locator(receipt, "WEAP", "LNAM[")
+        .iter().map(canonical_recipe_source_key).collect::<BTreeSet<_>>();
+    Ok(inventory_weapons.iter().filter(|weapon| admitted.contains(&canonical_recipe_source_key(weapon))).cloned().collect())
 }
 
 fn stable_map_entry<'a, T>(
@@ -2264,46 +2460,116 @@ fn inventory_count(value: &FieldValue, interner: &StringInterner) -> Option<i32>
     }
 }
 
-fn exact_melee_weapon_list_sources(
-    creature: &RuntimeDependencyRecordReceipt,
-    records: &BTreeMap<StableFormKey, &RuntimeDependencyRecordReceipt>,
+fn exact_weapon_sources_by_kind(
+    sources: &[StableFormKey],
+    ranged: bool,
+    game: LegacyCreatureGame,
+    records: &BTreeMap<(LegacyCreatureGame, StableFormKey), &Record>,
+    interner: &StringInterner,
 ) -> Result<Vec<StableFormKey>, String> {
-    let lists = direct_followed_sources_at_locator(creature, "FLST", "LNAM[");
-    match lists.as_slice() {
-        [] => Ok(Vec::new()),
-        [list] => {
-            let list_record = records
-                .get(list)
-                .copied()
-                .ok_or_else(|| format!("CREA melee FLST {list} is absent from closure receipts"))?;
-            if list_record.signature != "FLST" {
-                return Err(format!(
-                    "CREA melee list {list} resolved as {}",
-                    list_record.signature
-                ));
-            }
-            Ok(direct_followed_sources_at_locator(
-                list_record,
-                "WEAP",
-                "LNAM[",
-            ))
+    let mut weapons = Vec::new();
+    for source in sources {
+        let record = records.iter().find_map(|((record_game, key), record)| {
+            (*record_game == game && key.local == source.local && key.plugin.eq_ignore_ascii_case(&source.plugin)).then_some(*record)
+        }).ok_or_else(|| format!("creature attack WEAP {source} is absent from source records"))?;
+        let attack = super::creature_weapon_attacks::weapon_attack_evidence(record, interner)?;
+        if attack.is_ranged() == ranged && !weapons.contains(source) {
+            weapons.push(source.clone());
         }
-        _ => Err(format!(
-            "CREA resolves {} LNAM melee FLST records",
-            lists.len()
-        )),
     }
+    Ok(weapons)
 }
 
 fn graph_events(graph: &CapabilityGraphManifest, role: CreatureClipRole) -> Vec<String> {
     let mut events = graph
         .roles
         .iter()
-        .filter(|entry| entry.role == role)
+        .filter(|entry| entry.role == role && entry.generator.is_attack_entry())
         .filter_map(|entry| entry.trigger_event.clone())
         .collect::<Vec<_>>();
     events.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     events
+}
+
+fn attack_weapons_for_event(
+    event_weapons: &BTreeMap<String, Vec<StableFormKey>>,
+    event: &str,
+    inventory_weapons: &[StableFormKey],
+) -> Result<Vec<StableFormKey>, String> {
+    let sources = event_weapons.get(&event.to_ascii_lowercase())
+        .ok_or_else(|| format!("creature attack event {event} lacks a source WEAP binding"))?;
+    Ok(inventory_weapons.iter().filter(|weapon| sources.iter().any(|source| {
+        source.local == weapon.local && source.plugin.eq_ignore_ascii_case(&weapon.plugin)
+    })).cloned().collect())
+}
+
+fn selected_attack_weapon_sources(
+    selected: &SelectedGraph,
+    family: &CreatureFamilyRecipeJob,
+) -> BTreeMap<String, Vec<StableFormKey>> {
+    let mut entries = BTreeMap::new();
+    for clip in &selected.clips {
+        if clip.attack_blend_only { continue; }
+        if !matches!(clip.role, CreatureClipRole::MeleeAttack | CreatureClipRole::ProjectileAttack | CreatureClipRole::ContinuousAttackStart) {
+            continue;
+        }
+        let Some(event) = &clip.trigger_event else { continue; };
+        if clip.automatic_attack.as_ref().is_some_and(|automatic| !automatic.generator.is_attack_entry()) {
+            continue;
+        }
+        let weapons = if let Some(source) = &clip.source_weapon {
+            vec![source.clone()]
+        } else if clip.role == CreatureClipRole::MeleeAttack {
+            Vec::new()
+        } else {
+            family.indexed_motion_evidence.iter().flat_map(|motion| &motion.weapon_attacks)
+                .filter(|weapon| (weapon.is_ranged() != (clip.role == CreatureClipRole::MeleeAttack)) && weapon.matches_clip(&clip.candidate.source_kf, &clip.candidate.sequence_name))
+                .map(|weapon| weapon.source.clone()).collect()
+        };
+        entries.insert(event.to_ascii_lowercase(), weapons);
+    }
+    entries
+}
+
+fn bind_attack_actor_action_conditions(
+    plans: &mut [CreatureActorActionRecordPlan],
+    assets: &PreparedLiveFamily,
+    family: &CreatureFamilyRecipeJob,
+    mapper: &MapperState,
+    interner: &StringInterner,
+) -> Result<(), String> {
+    for plan in plans.iter_mut().filter(|plan| matches!(plan.requirement.kind, crate::source_rig::ActorActionKind::Melee | crate::source_rig::ActorActionKind::FireSingle | crate::source_rig::ActorActionKind::FireAuto | crate::source_rig::ActorActionKind::Throw)) {
+        let event = plan.requirement.animation_event.to_ascii_lowercase();
+        plan.graph_condition = assets.graph.roles.iter().find(|role| {
+            role.trigger_event.as_ref().is_some_and(|value| value.eq_ignore_ascii_case(&event))
+                || role.trigger_aliases.iter().any(|value| value.eq_ignore_ascii_case(&event))
+        }).and_then(|role| role.generator.source_attack()).map(|contract| crate::source_rig::CreatureActorActionGraphCondition {
+            name: contract.gate_variable.clone(), value: contract.group,
+        });
+        let sources = assets.attack_weapon_sources.get(&event)
+            .ok_or_else(|| format!("projectile Actor Action {event} lacks exact source WEAP"))?;
+        if sources.is_empty() && plan.requirement.kind == crate::source_rig::ActorActionKind::Melee {
+            plan.weapon_exclusions = family.indexed_motion_evidence.iter().flat_map(|motion| &motion.weapon_attacks)
+                .filter(|weapon| !weapon.is_ranged())
+                .map(|weapon| mapped_target_reference(&weapon.source, "WEAP", mapper, interner).map(|target| target.form_key))
+                .collect::<Result<Vec<_>, _>>()?;
+            continue;
+        }
+        let [source] = sources.as_slice() else {
+            return Err(format!("projectile Actor Action {event} has {} source weapons", sources.len()));
+        };
+        let weapon = family.indexed_motion_evidence.iter().flat_map(|motion| &motion.weapon_attacks)
+            .find(|weapon| weapon.source.local == source.local && weapon.source.plugin.eq_ignore_ascii_case(&source.plugin))
+            .ok_or_else(|| format!("projectile Actor Action {event} lacks source weapon evidence"))?;
+        if weapon.equipment_index.is_none() {
+            return Err(format!("weapon Actor Action {event} lacks an exact equipment index"));
+        }
+        plan.weapon_condition = Some(crate::source_rig::CreatureActorActionWeaponCondition {
+            weapon: mapped_target_reference(source, "WEAP", mapper, interner)?.form_key,
+            equipment_index: weapon.equipment_index,
+        });
+    }
+    Ok(())
 }
 
 fn exact_legacy_attack_projection_policy(
@@ -2338,9 +2604,7 @@ fn is_legacy_inert_attack_policy_field(field: &str) -> bool {
             ".chance",
             ".strike_angle",
             ".action_point_cost",
-            ".target_data.attack_flags",
             ".target_data.attack_angle",
-            ".target_data.stagger",
             ".target_data.knockdown",
             ".target_data.recovery_time",
             ".target_data.action_points_multiplier",
@@ -2350,8 +2614,7 @@ fn is_legacy_inert_attack_policy_field(field: &str) -> bool {
         .any(|suffix| field.ends_with(suffix))
 }
 
-fn exact_melee_attack_seconds(family: &CreatureFamilyRecipeJob) -> Result<f32, String> {
-    let candidate = first_motion_candidate_with_looping(family, MotionRole::MeleeAttack, false)?;
+fn exact_melee_attack_seconds(family: &CreatureFamilyRecipeJob, candidate: &MotionCandidate) -> Result<f32, String> {
     let motion = family
         .indexed_motion_evidence
         .as_ref()
@@ -2470,10 +2733,15 @@ fn projection_target_dependencies(
     projection: &CreatureRecordProjectionManifest,
 ) -> Vec<CreatureTargetRecordReference> {
     let mut dependencies = projection.npc_spells.clone();
+    dependencies.extend(projection.race_keywords.iter().cloned());
+    dependencies.extend(projection.templates.iter().flat_map(|templates| templates.dependencies()));
+    dependencies.extend(projection.equipment_slots.iter().map(|binding| binding.equip_slot.clone()));
+    dependencies.extend(projection.body_parts.dependencies());
     dependencies.extend(projection.npc_equipment.clone());
     dependencies.extend(projection.npc_death_item.iter().cloned());
     extend_inventory_dependencies(&mut dependencies, &projection.npc_inventory);
     for variant in &projection.variants {
+        dependencies.extend(variant.actor_data.iter().flat_map(|data| data.dependencies()));
         dependencies.extend(
             variant
                 .npc_spells
@@ -2572,6 +2840,8 @@ fn prepare_live_family(
     _evidence: &FnvFo3LiveRecipeEvidence,
     source_data_root: &Path,
     private_staging_root: &Path,
+    source_records: &BTreeMap<(LegacyCreatureGame, StableFormKey), &Record>,
+    interner: &StringInterner,
 ) -> Result<PreparedLiveFamily, String> {
     let source_data_root = game_data_root(source_data_root, family.rig.game);
     let selected = select_family_graph(family)?;
@@ -2583,6 +2853,16 @@ fn prepare_live_family(
     let runtime_root = format!("Actors\\{creature_name}");
     let source_game = legacy_game_name(family.rig.game);
     let source_owner = family_id.clone();
+    let member_body_parts = family.members.iter().filter_map(|member| source_records.get(&(family.rig.game, member.clone())).copied()).map(|record| exact_optional_record_form_key(record, "PNAM", interner)).collect::<Result<Vec<_>,_>>()?.into_iter().flatten().collect::<BTreeSet<_>>();
+    let source_body_parts = source_records.iter().filter(|((game, _), record)| *game == family.rig.game && record.sig.as_str() == "BPTD")
+        .filter(|((_, key), record)| member_body_parts.contains(key) || record.fields.iter().any(|field| field.sig.as_str() == "MODL" && matches!(&field.value, FieldValue::String(value) if interner.resolve(*value).is_some_and(|path| canonical_mesh_path(&path) == canonical_mesh_path(&family.rig.skeleton_path)))))
+        .map(|(_, record)| *record)
+        .collect::<Vec<_>>();
+    let body_part_segments = crate::source_rig::body_parts::creature_body_part_segments(
+        &source_body_parts,
+        source_game,
+        interner,
+    )?;
 
     let mut closure_inputs = vec![CreatureNifInput {
         role: CreatureNifRole::Skeleton,
@@ -2590,6 +2870,12 @@ fn prepare_live_family(
         source_owner: source_owner.clone(),
         body_variant: None,
     }];
+    closure_inputs.extend(crate::source_rig::body_parts::creature_body_part_replacement_models(&source_body_parts, interner).into_iter().map(|path| CreatureNifInput {
+        role: CreatureNifRole::BodyPartReplacement,
+        source_data_relative_path: data_relative_mesh_path(&path),
+        source_owner: source_owner.clone(),
+        body_variant: None,
+    }));
     let mut body_paths = family
         .body_variants
         .iter()
@@ -2615,19 +2901,23 @@ fn prepare_live_family(
         .join("families")
         .join(&staging_namespace);
     let closure_staging_root = family_staging_root.join("closure");
-    let mut closure = stage_creature_nif_closure(&CreatureClosureRequest {
-        source_game: source_game.to_string(),
-        source_data_root: source_data_root.clone(),
-        private_staging_root: closure_staging_root.clone(),
-        target_namespace,
-        texture_fallbacks: BTreeMap::from([(
-            "textures/creatures/deathclaw/deathclaw_alphamale.dds".to_string(),
-            "textures/creatures/deathclaw/deathclaw.dds".to_string(),
-        )]),
-        inputs: closure_inputs,
-    })
+    let mut closure = stage_creature_nif_closure_with_body_parts(
+        &CreatureClosureRequest {
+            source_game: source_game.to_string(),
+            source_data_root: source_data_root.clone(),
+            private_staging_root: closure_staging_root.clone(),
+            target_namespace,
+            texture_fallbacks: BTreeMap::from([(
+                "textures/creatures/deathclaw/deathclaw_alphamale.dds".to_string(),
+                "textures/creatures/deathclaw/deathclaw.dds".to_string(),
+            )]),
+            inputs: closure_inputs,
+        },
+        &body_part_segments,
+    )
     .map_err(|error| format!("creature NIF closure failed: {error}"))?;
     let closure_staged_data_root = closure_staging_root.join("data");
+    let replacement_runtime_paths = closure.inputs.iter().filter(|input| input.role == CreatureNifRole::BodyPartReplacement).map(|input| (canonical_mesh_path(&input.source_data_relative_path), runtime_nif_path(&input.target_data_relative_path))).collect();
     let visual_skeleton_input = closure
         .inputs
         .iter()
@@ -2670,7 +2960,7 @@ fn prepare_live_family(
         &skeleton_source_path,
         &skeleton_runtime_path,
         skeleton_runtime_name,
-        &skeleton_claim.skeleton_float_slots,
+        &[],
     )
     .map_err(|error| format!("source-owned skeleton conversion failed: {error}"))?;
 
@@ -2692,14 +2982,16 @@ fn prepare_live_family(
     )?;
 
     let mut clip_declarations = Vec::new();
+    let mut property_clips = Vec::new();
     let mut clip_motion_policies = BTreeMap::new();
+    let mut natural_attack_seconds = BTreeMap::new();
     for selection in &selected.clips {
         let runtime_path = format!("{runtime_root}\\Animations\\{}.hkx", selection.name);
         let source_path = source_mesh_path(&source_data_root, &selection.candidate.source_kf);
         let source_bytes = fs::read(&source_path)
             .map_err(|error| format!("read source KF {}: {error}", source_path.display()))?;
         let event_map = HashMap::new();
-        let request = stage_request_from_motion_candidate(
+        let mut request = stage_request_from_motion_candidate(
             &selection.candidate,
             &family.rig.skeleton_path,
             &skeleton,
@@ -2713,6 +3005,9 @@ fn prepare_live_family(
                 selection.candidate.source_kf
             )
         })?;
+        creature_action_selection::configure_attack_request(family, selection, &mut request)?;
+        creature_property_sequences::capture(&mut property_clips, &source_bytes, &request,
+            &selection.candidate, &selection.name, selection.target_looping, selection.source_idle.as_ref())?;
         let staged = crate::phase::animations::stage_fnv_creature_kf(&source_bytes, request)
             .map_err(|error| {
                 format!(
@@ -2720,6 +3015,11 @@ fn prepare_live_family(
                     selection.candidate.source_kf
                 )
             })?;
+        if selection.role == CreatureClipRole::MeleeAttack && selection.source_weapon.is_none() && !selection.attack_blend_only
+            && let Some(event) = &selection.trigger_event
+        {
+            natural_attack_seconds.insert(event.to_ascii_lowercase(), exact_melee_attack_seconds(family, &selection.candidate)?);
+        }
         clip_motion_policies.insert(
             selection.name.clone(),
             staged_clip_motion_policy(&staged.receipt.motion),
@@ -2761,6 +3061,8 @@ fn prepare_live_family(
             None,
         )
         .map_err(|error| format!("overlay KF request failed: {error}"))?;
+        creature_property_sequences::capture(&mut property_clips, &source_bytes, &request,
+            &overlay.candidate, &overlay.clip_name, overlay.candidate.looping, None)?;
         let staged = crate::phase::animations::stage_fnv_creature_kf(&source_bytes, request)
             .map_err(|error| format!("overlay KF conversion failed: {error}"))?;
         clip_motion_policies.insert(
@@ -2790,6 +3092,7 @@ fn prepare_live_family(
         )?;
     }
 
+    let property_sequences = creature_property_sequences::attach(&property_clips, &mut closure, &closure_staged_data_root)?;
     let mut embedded_ragdoll_body_count = None;
     let ragdoll = match family.ragdoll.as_ref() {
         Some(RagdollCapabilityEvidence::Supported { owner_asset, .. }) => {
@@ -2846,19 +3149,26 @@ fn prepare_live_family(
     };
 
     let graph = build_capability_graph(&selected, Some(&clip_motion_policies))?;
-    let mut declarations = graph_declarations(&graph, &ragdoll);
+    let mut root_declarations = graph_declarations(&graph, &ragdoll);
+    let mut core_declarations = graph_declarations(
+        &graph,
+        &RagdollDisposition::NoRagdoll {
+            reason: NoRagdollReason::UnsupportedSourceRagdoll,
+        },
+    );
     if graph.template == CreatureGraphTemplate::StationaryTurret {
-        add_stationary_aim_declarations(&mut declarations);
+        add_stationary_aim_declarations(&mut root_declarations);
+        add_stationary_aim_declarations(&mut core_declarations);
     }
     let race = family
         .race_data
         .as_ref()
         .ok_or_else(|| "Ready family has no RACE.DATA evidence".to_string())?;
-    let scale = race
-        .derivation
-        .scale_audit
+    let capsule = race
+        .measured_evidence
+        .capsule
         .as_ref()
-        .ok_or_else(|| "Ready family has no capsule scale audit".to_string())?;
+        .ok_or_else(|| "Ready family has no source controller capsule".to_string())?;
     let mut visual_skeleton = NifFile::load(&visual_skeleton_path).map_err(|error| {
         format!(
             "reload staged visual skeleton {}: {error}",
@@ -2867,12 +3177,20 @@ fn prepare_live_family(
     })?;
     install_fo4_creature_controller_collision(
         &mut visual_skeleton,
-        scale.scaled_capsule_height / 69.99125,
-        scale.scaled_capsule_radius / 69.99125,
+        capsule.total_height / 69.99125,
+        capsule.radius / 69.99125,
         [0.0, 0.0, 1.0],
         1,
     )
     .map_err(|error| format!("install FO4 CharacterController collision: {error}"))?;
+    super::creature_muzzle::validate_weapon_attachment_nodes(
+        &visual_skeleton,
+        family.indexed_motion_evidence.as_ref().map(|motion| motion.weapon_attacks.as_slice()).unwrap_or_default(),
+    )?;
+    super::creature_muzzle::install_projectile_node_aliases(
+        &mut visual_skeleton,
+        &super::creature_muzzle::family_muzzle_nodes(family.indexed_motion_evidence.as_ref().map(|motion| motion.weapon_attacks.as_slice()).unwrap_or_default()),
+    )?;
     visual_skeleton
         .save(Some(visual_skeleton_path.clone()))
         .map_err(|error| format!("save controller-bearing visual skeleton: {error}"))?;
@@ -2893,6 +3211,7 @@ fn prepare_live_family(
         .map_err(|error| format!("refresh controller-bearing NIF receipt: {error}"))?;
     }
     let rig = CreatureManifest {
+        property_sequences,
         creature_name,
         visual_skeleton_nif,
         animation_skeleton: SkeletonDecl {
@@ -2926,8 +3245,8 @@ fn prepare_live_family(
             .map(|clip| clip.name.clone())
             .ok_or_else(|| "selected graph has no primary idle clip".to_string())?,
         capsule: Capsule {
-            height: scale.scaled_capsule_height,
-            radius: scale.scaled_capsule_radius,
+            height: capsule.total_height,
+            radius: capsule.radius,
         },
         paths: ScaffoldPaths {
             project: format!("{runtime_root}\\FnvFo3Project.hkx"),
@@ -2935,11 +3254,12 @@ fn prepare_live_family(
             root_behavior: format!("{runtime_root}\\Behaviors\\FnvFo3RootBehavior.hkx"),
             core_behavior: format!("{runtime_root}\\Behaviors\\FnvFo3CoreBehavior.hkx"),
         },
-        root: declarations.clone(),
-        core: declarations,
+        root: root_declarations,
+        core: core_declarations,
     };
     rig.validate_capability_graph(&graph)
         .map_err(|error| format!("live source-rig graph validation failed: {error}"))?;
+    creature_property_sequences::instantiate_graph_sequences(&rig, &graph, &mut closure, &closure_staged_data_root)?;
     artifact_requests.sort_by_key(|request| {
         (
             request.runtime_path.to_ascii_lowercase(),
@@ -2954,11 +3274,21 @@ fn prepare_live_family(
     });
     converted_artifacts.sort();
     body_paths.clear();
+    let attack_weapon_sources = selected_attack_weapon_sources(&selected, family);
+    let power_attack_events = selected.clips.iter().filter(|clip| !clip.attack_blend_only && clip.role == CreatureClipRole::MeleeAttack)
+        .filter(|clip| super::creature_weapon_attacks::exact_source_attack_group(&clip.candidate.source_kf, &clip.candidate.sequence_name)
+            .is_some_and(|(group, _)| matches!(group, 92..=96)))
+        .filter_map(|clip| clip.trigger_event.as_ref().map(|event| event.to_ascii_lowercase())).collect();
     Ok(PreparedLiveFamily {
+        replacement_runtime_paths,
+        body_part_segments,
         closure,
         closure_staged_data_root,
         rig,
         graph,
+        attack_weapon_sources,
+        power_attack_events,
+        natural_attack_seconds,
         artifact_requests,
         artifact_receipts,
         converted_artifacts,
@@ -3225,6 +3555,9 @@ fn select_family_graph(family: &CreatureFamilyRecipeJob) -> Result<SelectedGraph
         }
     }
 
+    creature_action_selection::add_lifecycle_clips(family, &mut clips, &mut used_events)?;
+    creature_action_selection::add_source_idle_clips(family, &mut clips, &mut used_events)?;
+
     if has(MotionRole::MeleeAttack)
         && matches!(
             template,
@@ -3236,9 +3569,6 @@ fn select_family_graph(family: &CreatureFamilyRecipeJob) -> Result<SelectedGraph
                 | CreatureGraphTemplate::Fly
         )
     {
-        let max_melee_clips = 10usize
-            .saturating_sub(clips.len())
-            .saturating_sub(usize::from(has_ranged()));
         add_motion_attack_clips(
             family,
             &mut clips,
@@ -3248,7 +3578,6 @@ fn select_family_graph(family: &CreatureFamilyRecipeJob) -> Result<SelectedGraph
             "melee_attack",
             "MeleeAttack",
             true,
-            max_melee_clips,
             false,
         )?;
     }
@@ -3266,7 +3595,6 @@ fn select_family_graph(family: &CreatureFamilyRecipeJob) -> Result<SelectedGraph
                 | CreatureGraphTemplate::StationaryTurret
         )
     {
-        let max_projectile_clips = 10usize.saturating_sub(clips.len());
         add_motion_attack_clips(
             family,
             &mut clips,
@@ -3284,7 +3612,6 @@ fn select_family_graph(family: &CreatureFamilyRecipeJob) -> Result<SelectedGraph
             "projectile_attack",
             "ProjectileAttack",
             false,
-            max_projectile_clips,
             template == CreatureGraphTemplate::StationaryTurret,
         )?;
     }
@@ -3307,10 +3634,21 @@ fn select_family_graph(family: &CreatureFamilyRecipeJob) -> Result<SelectedGraph
             stop_event,
         });
     }
-    if clips.len() > 10 {
-        return Err("selected graph exceeds the ten-state source-rig capacity".to_string());
+    creature_automatic_selection::expand(family, &mut clips)?;
+    creature_attack_selection::attach(family, &mut clips)?;
+    creature_aim_selection::attach(family, &mut clips)?;
+    creature_movement_selection::attach(family, &mut clips)?;
+    if let Some(motion) = &family.indexed_motion_evidence {
+        for clip in &mut clips {
+            clip.equipment_index = clip.source_weapon.as_ref().and_then(|source| {
+                motion.weapon_attacks.iter().find(|weapon| &weapon.source == source)
+                    .and_then(|weapon| weapon.equipment_index)
+            });
+        }
     }
+    let source_channels = creature_channel_selection::collect(family, &clips, &overlays)?;
     Ok(SelectedGraph {
+        source_channels,
         template,
         clips,
         overlays,
@@ -3328,13 +3666,12 @@ fn add_motion_attack_clips(
     name_prefix: &str,
     state_prefix: &str,
     melee_event: bool,
-    max_clips: usize,
     project_looping_as_one_shot: bool,
 ) -> Result<(), String> {
     let motion_candidates = motion_candidates(family, motion_role)?;
     let mut candidates = motion_candidates
         .iter()
-        .filter(|candidate| !candidate.looping)
+        .filter(|candidate| !candidate.looping || (role == CreatureClipRole::ProjectileAttack && creature_automatic_selection::is_automatic(family, candidate)))
         .cloned()
         .collect::<Vec<_>>();
     if candidates.is_empty() && project_looping_as_one_shot {
@@ -3350,10 +3687,8 @@ fn add_motion_attack_clips(
             "Ready family has no non-looping {motion_role:?} attack candidate"
         ));
     }
-    for (index, candidate) in candidates.into_iter().take(max_clips).enumerate() {
-        if clips.len() == 10 {
-            break;
-        }
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let automatic = role == CreatureClipRole::ProjectileAttack && creature_automatic_selection::is_automatic(family, &candidate);
         let ordinal = index + 1;
         add_selected_clip_with_cycle_projection(
             clips,
@@ -3364,7 +3699,7 @@ fn add_motion_attack_clips(
             &format!("{state_prefix}{ordinal}"),
             true,
             melee_event,
-            project_looping_as_one_shot,
+            project_looping_as_one_shot || automatic,
         )?;
     }
     Ok(())
@@ -3382,6 +3717,15 @@ fn add_first_motion_clip(
     trigger: bool,
     melee_event: bool,
 ) -> Result<(), String> {
+    if role == CreatureClipRole::GroundForward {
+        return creature_action_selection::add_locomotion_clips(
+            family,
+            clips,
+            used_events,
+            name,
+            state_name,
+        );
+    }
     let candidate =
         first_motion_candidate_with_looping(family, motion_role, clip_role_expects_looping(role))?
             .clone();
@@ -3446,12 +3790,22 @@ fn add_selected_clip_with_cycle_projection(
         .then(|| selected_trigger_event(&candidate, role, ordinal, melee_event, used_events))
         .transpose()?;
     clips.push(SelectedClip {
+        thrown_attack: false,
         candidate,
         role,
         name: name.to_string(),
         state_name: state_name.to_string(),
         trigger_event,
         target_looping: expected_looping,
+        locomotion_sample: None,
+        source_idle: None,
+        source_aim: None,
+        source_attack: None,
+        attack_blend_only: false,
+        source_movement: None,
+        automatic_attack: None,
+        source_weapon: None,
+        equipment_index: None,
     });
     Ok(())
 }
@@ -3460,6 +3814,7 @@ fn clip_role_expects_looping(role: CreatureClipRole) -> bool {
     matches!(
         role,
         CreatureClipRole::Idle
+            | CreatureClipRole::WeaponAim
             | CreatureClipRole::GroundForward
             | CreatureClipRole::SwimIdle
             | CreatureClipRole::SwimForward
@@ -3467,6 +3822,9 @@ fn clip_role_expects_looping(role: CreatureClipRole) -> bool {
             | CreatureClipRole::FlyForward
             | CreatureClipRole::StationaryIdle
             | CreatureClipRole::ContinuousAttackLoop
+            | CreatureClipRole::TurnLeft
+            | CreatureClipRole::TurnRight
+            | CreatureClipRole::ScriptedLoop
     )
 }
 
@@ -3526,7 +3884,10 @@ fn first_motion_candidate_with_looping(
 ) -> Result<&MotionCandidate, String> {
     motion_candidates(family, role)?
         .iter()
-        .find(|candidate| candidate.looping == looping)
+        .filter(|candidate| candidate.looping == looping)
+        .min_by_key(|candidate| {
+            role == MotionRole::Idle && !candidate.sequence_name.eq_ignore_ascii_case("Idle")
+        })
         .ok_or_else(|| {
             format!("Ready family has no {role:?} motion candidate with looping={looping}")
         })
@@ -3539,12 +3900,15 @@ fn first_stationary_motion_candidate_with_looping(
 ) -> Result<&MotionCandidate, String> {
     motion_candidates(family, role)?
         .iter()
-        .find(|candidate| {
+        .filter(|candidate| {
             candidate.looping == looping
                 && matches!(
                     candidate.root_motion,
                     RootMotionEvidence::None | RootMotionEvidence::Stationary { .. }
                 )
+        })
+        .min_by_key(|candidate| {
+            role == MotionRole::Idle && !candidate.sequence_name.eq_ignore_ascii_case("Idle")
         })
         .ok_or_else(|| {
             format!(
@@ -3631,9 +3995,42 @@ fn build_capability_graph(
         &selected.idle_event,
         EventUsage::Generic,
     );
+    if selected.clips.iter().any(|clip| clip.automatic_attack.is_some()) {
+        insert_event(&mut explicit_events, "attackStop", EventUsage::Generic);
+        insert_event(&mut explicit_events, "attackRelease", EventUsage::Generic);
+    }
+    if selected.clips.iter().any(|clip| clip.thrown_attack) {
+        insert_event(&mut explicit_events, "weaponAttach", EventUsage::Generic);
+        insert_event(&mut explicit_events, "weaponDetach", EventUsage::Generic);
+    }
+    if selected.clips.iter().any(|clip| matches!(clip.role, CreatureClipRole::ScriptedAction | CreatureClipRole::ScriptedLoop)) {
+        insert_event(&mut explicit_events, "IdleStop", EventUsage::Generic);
+    }
+    for clip in &selected.clips {
+        if let Some(CapabilityRoleGenerator::SourceIdle { complete_event, .. }) = &clip.source_idle {
+            insert_event(&mut explicit_events, complete_event, EventUsage::Generic);
+        }
+    }
+    if selected.clips.iter().any(|clip| clip.role == CreatureClipRole::MeleeAttack) {
+        for name in ["preHitFrame", "weaponSwing", "HitFrame", "attackWinStart", "attackStop"] {
+            insert_event(&mut explicit_events, name, EventUsage::Generic);
+        }
+    }
+    if selected.clips.iter().any(|clip| matches!(clip.role,
+        CreatureClipRole::ProjectileAttack | CreatureClipRole::ContinuousAttackStart
+        | CreatureClipRole::ContinuousAttackLoop | CreatureClipRole::ContinuousAttackStop
+    )) {
+        insert_event(&mut explicit_events, "weaponFire", EventUsage::Generic);
+        for clip in &selected.clips {
+            let name = clip.equipment_index.map(|index| format!("attackState{index}"))
+                .unwrap_or_else(|| "attackState".to_string());
+            insert_event(&mut explicit_events, &name, EventUsage::Generic);
+        }
+    }
     let roles = selected
         .clips
         .iter()
+        .filter(|clip| !clip.attack_blend_only && (clip.locomotion_sample.is_none() || clip.trigger_event.is_some()))
         .map(|clip| {
             if let Some(event) = &clip.trigger_event {
                 insert_event(
@@ -3647,10 +4044,16 @@ fn build_capability_graph(
                 );
             }
             CapabilityClipRole {
+                equipment_index: clip.equipment_index,
                 role: clip.role,
                 state_name: clip.state_name.clone(),
                 clip_name: clip.name.clone(),
-                generator: CapabilityRoleGenerator::Single,
+                generator: {
+                    let base = clip.source_aim.clone().or_else(|| clip.thrown_attack.then_some(CapabilityRoleGenerator::ThrownAttack)).or_else(|| clip.automatic_attack.as_ref().map(|attack| attack.generator.clone()))
+                        .unwrap_or_else(|| creature_action_selection::role_generator(selected, clip));
+                    let base = creature_movement_selection::wrap(selected, clip, base);
+                    clip.source_attack.as_ref().map(|contract| CapabilityRoleGenerator::SourceAttack { contract:contract.clone(), generator:Box::new(base.clone()) }).unwrap_or(base)
+                },
                 trigger_event: clip.trigger_event.clone(),
                 trigger_aliases: Vec::new(),
                 motion: clip_motion_policies
@@ -3660,6 +4063,23 @@ fn build_capability_graph(
             }
         })
         .collect::<Vec<_>>();
+    if roles
+        .iter()
+        .any(|role| role.role == CreatureClipRole::Death)
+    {
+        insert_event(
+            &mut explicit_events,
+            "B21_DeathAnimationComplete",
+            EventUsage::Generic,
+        );
+    }
+    for role in &roles {
+        if role.generator.source_attack().is_some_and(|contract| contract.window.is_some()) {
+            for event in crate::source_rig::SourceAttackContract::window_events(&role.state_name) {
+                insert_event(&mut explicit_events, &event, EventUsage::Generic);
+            }
+        }
+    }
     let overlays = selected
         .overlays
         .iter()
@@ -3687,11 +4107,13 @@ fn build_capability_graph(
         })
         .collect();
     Ok(CapabilityGraphManifest {
+        source_channels: selected.source_channels.clone(),
         template: selected.template,
         roles,
         idle_event: selected.idle_event.clone(),
         explicit_events: explicit_events.into_values().collect(),
         candidate_attack_bindings: Vec::new(),
+        source_inert_attack_receipts: Vec::new(),
         overlays,
     })
 }
@@ -3756,6 +4178,49 @@ fn graph_declarations(
         variable_type: VariableType::Bool,
         initial_value: VariableValue::Bool(true),
     }];
+    for (name, opening) in graph.roles.iter().filter_map(|role| role.generator.source_attack())
+        .map(|contract| (contract.gate_variable.clone(), contract.opening_group)).collect::<BTreeMap<_, _>>()
+    {
+        variables.push(VariableDecl { name, variable_type:VariableType::Int32, initial_value:VariableValue::Int32(opening) });
+    }
+    if graph.roles.iter().any(|role| role.generator.source_attack().is_some()) {
+        variables.push(VariableDecl { name:"B21SourceAttackActive".to_string(), variable_type:VariableType::Int32, initial_value:VariableValue::Int32(0) });
+        variables.push(VariableDecl { name:"B21SourceMovementActive".to_string(), variable_type:VariableType::Int32, initial_value:VariableValue::Int32(0) });
+    }
+    let has_source_aim = graph.roles.iter().any(|role| matches!(role.generator, CapabilityRoleGenerator::SourceAim { .. }));
+    if has_source_aim {
+        variables.push(VariableDecl { name:"B21SourceWeaponBank".to_string(), variable_type:VariableType::Int32, initial_value:VariableValue::Int32(0) });
+    }
+    if has_source_aim || graph.roles.iter().any(|role| role.generator.source_attack().is_some_and(|contract| !contract.aim_children.is_empty())) {
+        variables.push(VariableDecl { name:"B21SourceWeaponPitch".to_string(), variable_type:VariableType::Real, initial_value:VariableValue::Real(0.0) });
+    }
+    for name in graph.roles.iter().filter_map(|role| role.generator.source_attack()).filter_map(|contract| contract.opening_variable.clone()).collect::<BTreeSet<_>>() {
+        variables.push(VariableDecl { name, variable_type:VariableType::Int32, initial_value:VariableValue::Int32(32) });
+    }
+    if graph
+        .roles
+        .iter()
+        .any(|role| matches!(role.generator.base_generator(), CapabilityRoleGenerator::Locomotion { .. }))
+    {
+        for name in ["Speed", "Direction"] {
+            variables.push(VariableDecl {
+                name: name.to_string(),
+                variable_type: VariableType::Real,
+                initial_value: VariableValue::Real(0.0),
+            });
+        }
+    }
+    if graph
+        .roles
+        .iter()
+        .any(|role| role.role == CreatureClipRole::Death)
+    {
+        variables.push(VariableDecl {
+            name: "bSupportedDeathAnim".to_string(),
+            variable_type: VariableType::Bool,
+            initial_value: VariableValue::Bool(true),
+        });
+    }
     if graph.any_animation_driven() {
         variables.push(VariableDecl {
             name: "bAnimationDriven".to_string(),
@@ -4063,22 +4528,20 @@ fn load_action_point_settings(
 
 fn legacy_creature_stats(
     stats_record: &Record,
-    base_record: &Record,
-    traits_record: &Record,
     action_points: ActionPointSettings,
     interner: &StringInterner,
 ) -> Result<LegacyCreatureStats, String> {
     let level = struct_integer(stats_record, "ACBS", "level", interner)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "CREA.ACBS.level is missing or outside u16".to_string())?;
-    let health = struct_integer_or_bytes(base_record, "DATA", "health", 4, true, interner)
+    let health = struct_integer_or_bytes(stats_record, "DATA", "health", 4, true, interner)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "CREA.DATA.health is missing, negative, or outside u16".to_string())?;
-    let damage = struct_integer_or_bytes(base_record, "DATA", "damage", 8, true, interner)
+    let damage = struct_integer_or_bytes(stats_record, "DATA", "damage", 8, true, interner)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "CREA.DATA.damage is missing, negative, or outside u16".to_string())?;
     let agility = struct_integer_or_bytes(
-        base_record,
+        stats_record,
         "DATA",
         "attribute_agility",
         15,
@@ -4098,7 +4561,7 @@ fn legacy_creature_stats(
             "legacy action-point formula produced nonintegral/out-of-range value {computed_action_points}"
         ));
     }
-    let reach_percent = scalar_integer(traits_record, "RNAM", interner)
+    let reach_percent = scalar_integer(stats_record, "RNAM", interner)
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "CREA.RNAM attack reach is missing or outside u16".to_string())?;
     Ok(LegacyCreatureStats {
@@ -4251,6 +4714,72 @@ mod tests {
     }
 
     #[test]
+    fn leveled_visual_owner_replaces_placeholder_body_parts_only_for_model_inheritance() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("FalloutNV.esm");
+        let make = |local, template_flags, parent, body| {
+            let mut record = Record::new(SigCode(*b"CREA"), FormKey { local, plugin });
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"ACBS"),
+                value: FieldValue::Struct(vec![(interner.intern("template_flags"), FieldValue::Uint(template_flags))]),
+            });
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"PNAM"),
+                value: FieldValue::FormKey(FormKey { local: body, plugin }),
+            });
+            if let Some(local) = parent {
+                record.fields.push(FieldEntry { sig: SubrecordSig(*b"TPLT"), value: FieldValue::FormKey(FormKey { local, plugin }) });
+            }
+            record
+        };
+        let owner = make(0x1cf93, 0, None, 0x2026e);
+        let inherited = make(0x1f67c, u64::from(TEMPLATE_MODEL_ANIMATION), Some(0x2359f), 0x1d);
+        let local = make(0x1cf72, u64::from(TEMPLATE_TRAITS), Some(0x2359f), 0x8445e);
+        let records = BTreeMap::from([(stable(0x1cf93), &owner), (stable(0x1f67c), &inherited), (stable(0x1cf72), &local)]);
+        assert_eq!(source_body_part_key(&stable(0x1f67c), &records, Some(&stable(0x1cf93)), &interner).unwrap(), Some(stable(0x2026e)));
+        assert_eq!(source_body_part_key(&stable(0x1cf72), &records, Some(&stable(0x1cf93)), &interner).unwrap(), Some(stable(0x8445e)));
+        assert!(source_body_part_key(&stable(0x1f67c), &records, None, &interner).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires source FalloutNV.esm and CLI-derived B21_CREATURE_BODY_PART_TEMPLATE_AUDIT"]
+    fn real_fnv_leveled_body_parts_follow_each_selected_visual_owner() {
+        use esp_authoring_core::plugin_runtime::{plugin_handle_close_native, plugin_handle_load_lazy_records_no_py};
+        let audit_path = PathBuf::from(std::env::var("B21_CREATURE_BODY_PART_TEMPLATE_AUDIT").unwrap());
+        let audit: serde_json::Value = serde_json::from_slice(&std::fs::read(&audit_path).unwrap()).unwrap();
+        let plugins: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(std::env::var("B21_CREATURE_BODY_PART_PLUGINS").unwrap()).unwrap()).unwrap();
+        let plugin = plugins.iter().find(|entry| entry["game"] == "fnv" && entry["path"].as_str().unwrap().ends_with("FalloutNV.esm")).unwrap();
+        let handle = plugin_handle_load_lazy_records_no_py(plugin["path"].as_str().unwrap(), "fnv", None, &[*b"CREA"]).unwrap();
+        let keys = crate::session::open_session(handle, None).unwrap().handle_raw_scan(handle).unwrap().form_keys_of_signature("CREA");
+        let interner = StringInterner::new();
+        let schema = crate::schema::AuthoringSchema::for_game("fnv").unwrap();
+        let owned = keys.iter().map(|key| crate::source_read::read_record(handle, key, &schema, &interner).unwrap()).collect::<Vec<_>>();
+        let records = owned.iter().map(|record| (stable(record.form_key.local), record)).collect::<BTreeMap<_, _>>();
+        let key = |value: &serde_json::Value| {
+            let (plugin, local) = value.as_str().unwrap().split_once(':').unwrap();
+            StableFormKey { plugin: plugin.to_string(), local: u32::from_str_radix(local, 16).unwrap() }
+        };
+        let mut checked = Vec::new();
+        for row in audit["records_detail"].as_array().unwrap() {
+            let source = key(&row["source"]);
+            assert!(row["errors"].as_array().unwrap().is_empty());
+            assert!(!row["owners"].as_array().unwrap().is_empty());
+            for branch in row["owners"].as_array().unwrap() {
+                let owner = key(&branch["owner"]);
+                let expected = key(&branch["bodypart"]);
+                let projected = source_body_part_key(&source, &records, Some(&owner), &interner).unwrap();
+                assert_eq!(projected, Some(expected), "{source} selected {owner}");
+                checked.push(serde_json::json!({"source":source,"owner":owner,"bodypart":projected}));
+            }
+        }
+        assert!(!checked.is_empty());
+        assert!(plugin_handle_close_native(handle));
+        let report = serde_json::json!({"sources":audit["records"],"branches":checked.len(),"checked":checked});
+        std::fs::write(audit_path.with_file_name("fnv_creature_bodypart_effective_projection.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        println!("FNV body-part template projections: {} source proxies, {} selected branches", audit["records"], checked.len());
+    }
+
+    #[test]
     fn raw_gmst_float_is_decoded() {
         let interner = StringInterner::new();
         let mut record = Record::new(
@@ -4314,6 +4843,50 @@ mod tests {
     }
 
     #[test]
+    fn stats_template_owns_health_damage_agility_and_reach_independently_of_base_data() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("FalloutNV.esm");
+        let mut root = Record::new(SigCode(*b"CREA"), FormKey { local: 0x100, plugin });
+        root.fields.extend([
+            FieldEntry { sig: SubrecordSig(*b"ACBS"), value: FieldValue::Struct(vec![
+                (interner.intern("template_flags"), FieldValue::Uint(TEMPLATE_STATS.into())),
+                (interner.intern("level"), FieldValue::Uint(1)),
+            ]) },
+            FieldEntry { sig: SubrecordSig(*b"TPLT"), value: FieldValue::FormKey(FormKey { local: 0x200, plugin }) },
+            FieldEntry { sig: SubrecordSig(*b"DATA"), value: FieldValue::Struct(vec![
+                (interner.intern("health"), FieldValue::Int(1)),
+                (interner.intern("damage"), FieldValue::Int(2)),
+                (interner.intern("attribute_agility"), FieldValue::Uint(1)),
+            ]) },
+            FieldEntry { sig: SubrecordSig(*b"RNAM"), value: FieldValue::Uint(10) },
+        ]);
+        let mut parent = root.clone();
+        parent.form_key.local = 0x200;
+        parent.fields.retain(|field| field.sig.0 != *b"TPLT");
+        parent.fields[0].value = FieldValue::Struct(vec![
+            (interner.intern("template_flags"), FieldValue::Uint(0)),
+            (interner.intern("level"), FieldValue::Uint(7)),
+        ]);
+        parent.fields[1].value = FieldValue::Struct(vec![
+            (interner.intern("health"), FieldValue::Int(321)),
+            (interner.intern("damage"), FieldValue::Int(27)),
+            (interner.intern("attribute_agility"), FieldValue::Uint(9)),
+        ]);
+        parent.fields[2].value = FieldValue::Uint(150);
+        let source = StableFormKey { local: 0x100, plugin: "FalloutNV.esm".into() };
+        let records = BTreeMap::from([
+            (source.clone(), &root),
+            (StableFormKey { local: 0x200, plugin: source.plugin.clone() }, &parent),
+        ]);
+        let (_, stats) = resolve_template_group_record(&source, TEMPLATE_STATS, &records, None, &interner).unwrap();
+        let (base_owner, _) = resolve_template_group_record(&source, TEMPLATE_BASE_DATA, &records, None, &interner).unwrap();
+        assert_eq!(base_owner, source);
+        let result = legacy_creature_stats(stats, ActionPointSettings { base: 50.0, multiplier: 1.0 }, &interner).unwrap();
+        assert_eq!((result.level, result.health, result.damage, result.action_points), (7, 321, 27, 59));
+        assert_eq!(result.reach, 1.5);
+    }
+
+    #[test]
     fn zero_legacy_level_and_health_are_preserved() {
         let interner = StringInterner::new();
         let mut stats = Record::new(
@@ -4327,8 +4900,7 @@ mod tests {
             sig: SubrecordSig::from_str("ACBS").unwrap(),
             value: FieldValue::Struct(vec![(interner.intern("level"), FieldValue::Uint(0))]),
         });
-        let mut base = stats.clone();
-        base.fields.push(FieldEntry {
+        stats.fields.push(FieldEntry {
             sig: SubrecordSig::from_str("DATA").unwrap(),
             value: FieldValue::Struct(vec![
                 (interner.intern("health"), FieldValue::Int(0)),
@@ -4336,16 +4908,13 @@ mod tests {
                 (interner.intern("attribute_agility"), FieldValue::Uint(5)),
             ]),
         });
-        let mut traits = stats.clone();
-        traits.fields.push(FieldEntry {
+        stats.fields.push(FieldEntry {
             sig: SubrecordSig::from_str("RNAM").unwrap(),
             value: FieldValue::Uint(100),
         });
 
         let result = legacy_creature_stats(
             &stats,
-            &base,
-            &traits,
             ActionPointSettings {
                 base: 50.0,
                 multiplier: 1.0,
@@ -4381,6 +4950,7 @@ mod tests {
             binding: super::super::creature_motion::BindingSummary {
                 source_skeleton_path: "creatures\\fixture\\skeleton.nif".to_string(),
                 transform_track_count: 1,
+                ordered_transform_targets: vec!["Bip01".to_string()],
                 float_track_count: 0,
                 controller_types: Vec::new(),
                 interpolator_types: Vec::new(),
@@ -4505,7 +5075,7 @@ mod tests {
     }
 
     #[test]
-    fn ranged_weapon_sources_follow_leveled_inventory_and_match_embedded_ammo() {
+    fn ranged_weapon_sources_follow_leveled_inventory_without_inventing_ammo_only_weapons() {
         let inventory_source = stable(0x100);
         let list_source = stable(0x200);
         let ammunition = stable(0x300);
@@ -4543,7 +5113,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            exact_ranged_weapon_sources(&inventory, &[], &[], &records).unwrap(),
+            exact_inventory_weapon_sources(&inventory, &[], &records).unwrap(),
             vec![leveled_weapon]
         );
 
@@ -4553,15 +5123,34 @@ mod tests {
             vec![followed(ammunition, "AMMO", "CNTO[0].item")],
         );
         assert_eq!(
-            exact_ranged_weapon_sources(
+            exact_inventory_weapon_sources(
                 &ammo_only_inventory,
                 &[],
-                &[matching_embedded_weapon.clone(), other_embedded_weapon],
                 &records,
             )
             .unwrap(),
-            vec![matching_embedded_weapon]
+            Vec::<StableFormKey>::new()
         );
+    }
+
+    #[test]
+    fn creature_weapon_admission_intersects_inventory_with_flat_traits_list() {
+        let list_key = stable(0x200);
+        let nested_key = stable(0x201);
+        let usable = stable(0x300);
+        let loot = stable(0x301);
+        let not_owned = stable(0x302);
+        let traits = receipt(stable(0x100), "CREA", vec![followed(list_key.clone(), "FLST", "LNAM[0]")]);
+        let list = receipt(list_key.clone(), "FLST", vec![
+            followed(usable.clone(), "WEAP", "LNAM[0]"),
+            followed(not_owned.clone(), "WEAP", "LNAM[1]"),
+            followed(nested_key.clone(), "FLST", "LNAM[2]"),
+        ]);
+        let nested = receipt(nested_key.clone(), "FLST", vec![followed(loot.clone(), "WEAP", "LNAM[0]")]);
+        let records = BTreeMap::from([(list_key, &list), (nested_key, &nested)]);
+        assert_eq!(exact_usable_inventory_weapon_sources(&[usable.clone(), loot.clone()], &traits, &records).unwrap(), [usable]);
+        let no_list = receipt(stable(0x101), "CREA", Vec::new());
+        assert!(exact_usable_inventory_weapon_sources(&[loot, not_owned], &no_list, &records).unwrap().is_empty());
     }
 
     #[test]
@@ -4953,29 +5542,16 @@ mod tests {
     }
 
     #[test]
-    fn melee_weapon_list_preserves_indexed_flst_order() {
-        let list = stable(0x300);
-        let first = stable(0x900);
-        let second = stable(0x100);
-        let creature = self::receipt(
-            stable(0x200),
-            "CREA",
-            vec![followed(list.clone(), "FLST", "LNAM[0]")],
-        );
-        let list_receipt = self::receipt(
-            list.clone(),
-            "FLST",
-            vec![
-                followed(first.clone(), "WEAP", "LNAM[0]"),
-                followed(second.clone(), "WEAP", "LNAM[1]"),
-            ],
-        );
-        let records = BTreeMap::from([(list, &list_receipt)]);
-
-        assert_eq!(
-            exact_melee_weapon_list_sources(&creature, &records).unwrap(),
-            vec![first, second]
-        );
+    fn creature_attack_profiles_only_bind_the_candidates_owned_weapon() {
+        let laser = stable(0x100);
+        let missile = stable(0x200);
+        let entries = BTreeMap::from([
+            ("laserattack".to_string(), vec![laser.clone()]),
+            ("missileattack".to_string(), vec![missile.clone()]),
+        ]);
+        assert_eq!(attack_weapons_for_event(&entries, "LaserAttack", std::slice::from_ref(&laser)).unwrap(), vec![laser]);
+        assert!(attack_weapons_for_event(&entries, "LaserAttack", std::slice::from_ref(&missile)).unwrap().is_empty());
+        assert!(attack_weapons_for_event(&entries, "MissingAttack", &[missile]).is_err());
     }
 
     #[test]

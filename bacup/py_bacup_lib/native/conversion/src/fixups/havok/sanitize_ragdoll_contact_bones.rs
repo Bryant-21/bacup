@@ -197,13 +197,17 @@ fn mesh_roots_for_mod_path(mod_path: &Path) -> Vec<PathBuf> {
 }
 
 fn walk_skeleton_files(dir: &Path, visit: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_skeleton_files_in_root(dir, visit, dir);
+}
+
+fn walk_skeleton_files_in_root(dir: &Path, visit: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            walk_skeleton_files(&path, visit);
+        if super::postprocess_scan::entry_is_dir(&entry) {
+            walk_skeleton_files_in_root(&path, visit, scan_root);
         } else if path
             .file_name()
             .and_then(|name| name.to_str())
@@ -225,7 +229,7 @@ fn walk_hkx_files(dir: &Path, visit: &mut impl FnMut(&Path)) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if super::postprocess_scan::entry_is_dir(&entry) {
             walk_hkx_files(&path, visit);
         } else if path
             .extension()

@@ -187,16 +187,16 @@ class HavokConverterTool(BaseTool):
         imgui.separator()
 
         if begin_form("##havok_converter"):
-            _, clicked = draw_path_row("Input", self._input_dir)
+            self._input_dir, clicked = draw_path_row("Input", self._input_dir)
             if clicked:
-                path = pick_folder("Select folder with HKX, NIF, and BTO files")
+                path = pick_folder("Select folder with HKX, NIF, and BTO files", self._input_dir)
                 if path:
                     self._input_dir = path
 
             if not self._ps4_mode:
-                _, clicked = draw_path_row("Output", self._output_dir)
+                self._output_dir, clicked = draw_path_row("Output", self._output_dir)
                 if clicked:
-                    path = pick_folder("Select output folder")
+                    path = pick_folder("Select output folder", self._output_dir)
                     if path:
                         self._output_dir = path
             end_form()

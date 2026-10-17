@@ -10,9 +10,9 @@
 //! A converted NPC's FO4 race lacks the FO76-only indices, so xEdit reports
 //! "… index [N] not found in <race>". Valid sets come from the race in the
 //! output plugin, else the target masters; an empty table strips everything.
-//! FMRI is checked against the NPC's own sex block: Human/Ghoul tables store a
-//! male then a female block, and merging them passes opposite-sex rows that
-//! xEdit still rejects.
+//! FMRI is checked against both sex blocks of the race table. xEdit rejects an
+//! opposite-sex row, but FO4 `TESRace::GetFacialBoneRegion(race, id)` searches
+//! both blocks and applies it, and some FO76 NPCs rely on it (5DBE6B).
 //!
 //! An unreadable race leaves the NPC untouched, since vanilla FO4 FMRI tables
 //! carry high chargen ids and magnitude proves nothing. Indices are stripped,
@@ -28,11 +28,6 @@ use crate::schema::AuthoringSchema;
 use crate::session::PluginSession;
 use crate::sym::StringInterner;
 use rustc_hash::{FxHashMap, FxHashSet};
-
-const BASE_MASTER: &str = "Fallout4.esm";
-const HUMAN_RACE_LOCAL: u32 = 0x0001_3746;
-const GHOUL_RACE_LOCAL: u32 = 0x000E_AFB6;
-const NPC_ACBS_FEMALE_FLAG: u32 = 0x0000_0001;
 
 pub struct StripInvalidNpcFaceMorphsFixup;
 
@@ -131,8 +126,7 @@ impl Fixup for StripInvalidNpcFaceMorphsFixup {
                 Some(Some(sets)) => {
                     // Race readable: strip every NPC morph index not in the
                     // race's table (empty set ⇒ strip all).
-                    let valid_fmri = sets.fmri_for_npc(&record, &race_fk, mapper.interner);
-                    let mut r = drop_invalid_face_morphs(&mut record, valid_fmri);
+                    let mut r = drop_invalid_face_morphs(&mut record, &sets.fmri);
                     r += filter_invalid_morph_keys(&mut record, &sets.morph_keys);
                     r
                 }
@@ -212,8 +206,7 @@ fn run_sequential_for_test(
         }
         let removed = match race_valid.get(&race_fk) {
             Some(Some(sets)) => {
-                let valid_fmri = sets.fmri_for_npc(&record, &race_fk, mapper.interner);
-                let mut removed = drop_invalid_face_morphs(&mut record, valid_fmri);
+                let mut removed = drop_invalid_face_morphs(&mut record, &sets.fmri);
                 removed += filter_invalid_morph_keys(&mut record, &sets.morph_keys);
                 removed
             }
@@ -232,40 +225,11 @@ fn run_sequential_for_test(
 
 /// Valid morph-index sets for one race, as xEdit validates NPC morph data.
 struct RaceMorphSets {
-    /// All RACE `FMRI` indices. Used as the fallback when a race is not known
-    /// to use FO4 Human/Ghoul's male-then-female table layout.
-    fmri_all: FxHashSet<u32>,
-    /// Male RACE `FMRI` indices, when the table can be split by sex.
-    fmri_male: FxHashSet<u32>,
-    /// Female RACE `FMRI` indices, when the table can be split by sex.
-    fmri_female: FxHashSet<u32>,
+    /// Every RACE `FMRI` index, male and female blocks alike.
+    fmri: FxHashSet<u32>,
     /// RACE Morph-Group preset indices (`MPPI`) ∪ Morph-Value ids (`MSID`) —
     /// validate NPC `Morph Keys` (MSDK).
     morph_keys: FxHashSet<u32>,
-}
-
-impl RaceMorphSets {
-    fn fmri_for_npc(
-        &self,
-        npc: &Record,
-        race_fk: &FormKey,
-        interner: &StringInterner,
-    ) -> &FxHashSet<u32> {
-        if !is_fo4_human_or_ghoul_race(race_fk, interner) {
-            return &self.fmri_all;
-        }
-        match npc_sex(npc) {
-            Some(NpcSex::Female) if !self.fmri_female.is_empty() => &self.fmri_female,
-            Some(NpcSex::Male) if !self.fmri_male.is_empty() => &self.fmri_male,
-            _ => &self.fmri_all,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NpcSex {
-    Male,
-    Female,
 }
 
 // ---------------------------------------------------------------------------
@@ -339,24 +303,19 @@ fn read_race_morph_sets(
 /// - `morph_keys`: every `MPPI` (Morph-Group preset index) ∪ `MSID` (Morph-Value
 ///   id), matching xEdit `wbMorphValueToStr`'s validation source for MSDK.
 fn collect_race_morph_sets(record: &Record) -> RaceMorphSets {
-    let mut fmri_values = Vec::new();
+    let mut fmri = FxHashSet::default();
     let mut morph_keys = FxHashSet::default();
     let (Ok(fmri_sig), Ok(mppi_sig), Ok(msid_sig)) = (
         SubrecordSig::from_str("FMRI"),
         SubrecordSig::from_str("MPPI"),
         SubrecordSig::from_str("MSID"),
     ) else {
-        return RaceMorphSets {
-            fmri_all: FxHashSet::default(),
-            fmri_male: FxHashSet::default(),
-            fmri_female: FxHashSet::default(),
-            morph_keys,
-        };
+        return RaceMorphSets { fmri, morph_keys };
     };
     for entry in &record.fields {
         if entry.sig == fmri_sig {
             if let Some(i) = field_u32(&entry.value) {
-                fmri_values.push(i);
+                fmri.insert(i);
             }
         } else if entry.sig == mppi_sig || entry.sig == msid_sig {
             if let Some(i) = field_u32(&entry.value) {
@@ -364,53 +323,7 @@ fn collect_race_morph_sets(record: &Record) -> RaceMorphSets {
             }
         }
     }
-    let fmri_all = fmri_values.iter().copied().collect();
-    let (fmri_male, fmri_female) = split_race_fmri_by_sex(&fmri_values);
-    RaceMorphSets {
-        fmri_all,
-        fmri_male,
-        fmri_female,
-        morph_keys,
-    }
-}
-
-fn split_race_fmri_by_sex(values: &[u32]) -> (FxHashSet<u32>, FxHashSet<u32>) {
-    if values.len() < 2 || values.len() % 2 != 0 {
-        return (FxHashSet::default(), FxHashSet::default());
-    }
-    let split = values.len() / 2;
-    (
-        values[..split].iter().copied().collect(),
-        values[split..].iter().copied().collect(),
-    )
-}
-
-fn is_fo4_human_or_ghoul_race(race_fk: &FormKey, interner: &StringInterner) -> bool {
-    matches!(race_fk.local, HUMAN_RACE_LOCAL | GHOUL_RACE_LOCAL)
-        && interner
-            .resolve(race_fk.plugin)
-            .is_some_and(|plugin| plugin.eq_ignore_ascii_case(BASE_MASTER))
-}
-
-fn npc_sex(record: &Record) -> Option<NpcSex> {
-    let acbs_sig = SubrecordSig::from_str("ACBS").ok()?;
-    for entry in &record.fields {
-        if entry.sig != acbs_sig {
-            continue;
-        }
-        return match &entry.value {
-            FieldValue::Bytes(bytes) if bytes.len() >= 4 => {
-                let flags = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                Some(if flags & NPC_ACBS_FEMALE_FLAG != 0 {
-                    NpcSex::Female
-                } else {
-                    NpcSex::Male
-                })
-            }
-            _ => None,
-        };
-    }
-    None
+    RaceMorphSets { fmri, morph_keys }
 }
 
 /// Drop every `MSDK` key not in `valid`, and the `MSDV` value at the same
@@ -582,6 +495,8 @@ mod tests {
         plugin_handle_close_native, plugin_handle_new_native, plugin_handle_save_no_py,
     };
 
+    const NPC_ACBS_FEMALE_FLAG: u32 = 0x0000_0001;
+
     fn make_record(sig_str: &str, interner: &StringInterner) -> Record {
         Record {
             sig: SigCode::from_str(sig_str).unwrap(),
@@ -703,10 +618,7 @@ mod tests {
         push(&mut race, "MSID", FieldValue::Uint(200));
 
         let sets = collect_race_morph_sets(&race);
-        assert_eq!(sets.fmri_all.len(), 4);
-        assert!(sets.fmri_all.contains(&0) && sets.fmri_all.contains(&58));
-        assert_eq!(sets.fmri_male, set(&[0, 58]));
-        assert_eq!(sets.fmri_female, set(&[100000, 100001]));
+        assert_eq!(sets.fmri, set(&[0, 58, 100000, 100001]));
         assert_eq!(sets.morph_keys.len(), 3);
         assert!(sets.morph_keys.contains(&100));
         assert!(sets.morph_keys.contains(&101));
@@ -715,47 +627,28 @@ mod tests {
         assert!(!sets.morph_keys.contains(&0));
     }
 
+    /// FO4 `TESRace::GetFacialBoneRegion(race, id)` (1.10.155 RVA 0x604920)
+    /// searches both sex blocks, so an opposite-sex row still deforms the face.
+    /// FO76 NPCs such as 5DBE6B (female, 30 male-block rows) rely on that.
     #[test]
-    fn human_npcs_use_their_sex_fmri_block_and_other_races_keep_all() {
-        let sets = RaceMorphSets {
-            fmri_all: set(&[0, 1, 100000, 100001]),
-            fmri_male: set(&[0, 1]),
-            fmri_female: set(&[100000, 100001]),
-            morph_keys: FxHashSet::default(),
-        };
-        for (name, human, acbs_flags, expected) in [
-            ("female_human", true, NPC_ACBS_FEMALE_FLAG, vec![100000]),
-            ("male_human", true, 0, vec![0]),
-            ("non_human", false, NPC_ACBS_FEMALE_FLAG, vec![0, 100000]),
-        ] {
-            let interner = StringInterner::new();
-            let race_fk = if human {
-                FormKey {
-                    plugin: interner.intern(BASE_MASTER),
-                    local: HUMAN_RACE_LOCAL,
-                }
-            } else {
-                FormKey {
-                    plugin: interner.intern("Output.esp"),
-                    local: 0x010000,
-                }
-            };
-            let mut npc = make_record("NPC_", &interner);
-            push(&mut npc, "ACBS", acbs(acbs_flags));
-            for index in [0, 100000] {
-                push(&mut npc, "FMRI", FieldValue::Uint(index));
-                push(&mut npc, "FMRS", fmrs_bytes());
-            }
-
-            let valid = sets.fmri_for_npc(&npc, &race_fk, &interner);
-            assert_eq!(
-                drop_invalid_face_morphs(&mut npc, valid) as usize,
-                2 - expected.len(),
-                "{name}"
-            );
-            assert_eq!(fmri_values(&npc), expected, "{name}");
-            assert_eq!(count_sig(&npc, "FMRS"), expected.len(), "{name}");
+    fn keeps_opposite_sex_fmri_rows_the_engine_resolves() {
+        let interner = StringInterner::new();
+        let mut race = make_record("RACE", &interner);
+        for index in [0, 1, 100000, 100001] {
+            push(&mut race, "FMRI", FieldValue::Uint(index));
         }
+        let sets = collect_race_morph_sets(&race);
+
+        let mut female = make_record("NPC_", &interner);
+        push(&mut female, "ACBS", acbs(NPC_ACBS_FEMALE_FLAG));
+        for index in [0, 100000, 999] {
+            push(&mut female, "FMRI", FieldValue::Uint(index));
+            push(&mut female, "FMRS", fmrs_bytes());
+        }
+
+        assert_eq!(drop_invalid_face_morphs(&mut female, &sets.fmri), 1);
+        assert_eq!(fmri_values(&female), vec![0, 100000]);
+        assert_eq!(count_sig(&female, "FMRS"), 2);
     }
 
     fn msdv_bytes(values: &[f32]) -> FieldValue {

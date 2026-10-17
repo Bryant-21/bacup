@@ -506,7 +506,10 @@ fn lower_skyrim_hazd(record: &mut Record, interner: &StringInterner) -> Result<(
                     struct_member(source, name, interner).unwrap_or(FieldValue::Uint(0)),
                 ));
             }
-            target.push((interner.intern("effect"), FieldValue::Uint(0)));
+            target.push((
+                interner.intern("effect"),
+                struct_member(source, "spell", interner).unwrap_or(FieldValue::Uint(0)),
+            ));
             for name in ["light", "impact_data_set", "sound"] {
                 target.push((
                     interner.intern(name),
@@ -524,17 +527,12 @@ fn lower_skyrim_hazd(record: &mut Record, interner: &StringInterner) -> Result<(
         }
         FieldValue::Bytes(source) if source.len() == 40 => {
             let mut target = Vec::with_capacity(52);
-            target.extend_from_slice(&source[..24]);
-            target.extend_from_slice(&0_u32.to_le_bytes());
-            target.extend_from_slice(&source[28..40]);
+            target.extend_from_slice(source);
             target.extend_from_slice(&[0; 12]);
             FieldValue::Bytes(target.into())
         }
         _ => return Err("skyrim_hazd_data_shape_unverified"),
     };
-    record
-        .warnings
-        .push(interner.intern("skyrim_hazd_spell_effect_omitted"));
     Ok(())
 }
 
@@ -838,6 +836,7 @@ fn complete_legacy_fo4_projection(
             }
         }
         (Game::Fnv | Game::Fo3, "LGTM") => synthesize_lgtm_dalc(record, interner)?,
+        (Game::Fnv, "IMAD") if pair_hooks::fnv_fo4::creature_imagespace::is_lowered(record, interner) => {}
         (Game::Fnv | Game::Fo3, "IMAD") => neutralize_legacy_imad(record, interner)?,
         (Game::Fnv | Game::Fo3, "MISC") => normalize_legacy_misc_data(record)?,
         (Game::Fnv | Game::Fo3 | Game::SkyrimSe, "REGN") => {
@@ -965,14 +964,22 @@ impl Translator {
     > {
         if self.source == Game::Starfield && self.target == Game::Fo4 {
             use pair_hooks::starfield_fo4::{
-                book_and_art, consumable, explosion, hazard, magic_effect, object_properties,
+                armor, book_and_art, consumable, explosion, hazard, magic_effect, object_properties, weapon,
             };
+            armor::register_target_identities(record, mapper);
             let mut report = match &record.sig.0 {
                 b"MGEF" => magic_effect::normalize_starfield_mgef_data(record, mapper),
                 b"ALCH" => consumable::normalize_starfield_alch(record, mapper),
                 b"BOOK" | b"DMGT" | b"ARTO" => book_and_art::normalize(record, mapper),
                 b"HAZD" => hazard::normalize(record, mapper),
                 b"EXPL" => explosion::normalize(record, mapper),
+                b"WEAP" => match weapon::normalize(record, mapper) {
+                    Ok(report) => report,
+                    Err(message) => return Some(Err(pair_hooks::fnv_fo4::LegacySerialDiagnostic {
+                        warning: false,
+                        message: format!("starfield_weapon:{:06X}:{message}", source_fk.local),
+                    })),
+                },
                 _ => pair_hooks::fnv_mgef::MgefNormalizeReport::default(),
             };
             object_properties::normalize(record, mapper, &mut report);
@@ -1506,9 +1513,10 @@ mod tests {
                     panic!("Skyrim HAZD.DNAM must be typed")
                 };
                 assert!(dnam.iter().any(|(name, value)| {
-                    interner.resolve(*name) == Some("effect") && *value == FieldValue::Uint(0)
+                    interner.resolve(*name) == Some("effect")
+                        && *value == FieldValue::FormKey(FormKey::parse("000800@Skyrim.esm", &interner).unwrap())
                 }));
-                assert!(record.warnings.iter().any(|warning| {
+                assert!(!record.warnings.iter().any(|warning| {
                     interner.resolve(*warning) == Some("skyrim_hazd_spell_effect_omitted")
                 }));
             }
@@ -1784,6 +1792,7 @@ mod tests {
 
         let handle = plugin_handle_new_no_py(OUTPUT, Some("fo4"));
         plugin_handle_add_master_native(handle, "Fallout4.esm", None).unwrap();
+        plugin_handle_add_master_native(handle, "Skyrim.esm", None).unwrap();
         for record in &records {
             crate::target_write::add_record_native(
                 handle,

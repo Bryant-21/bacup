@@ -279,6 +279,11 @@
                 (0x002D_0F69, "EN07_MQ_FleeBlast_Copy", 0x8100, false),
                 (0x0034_43FB, "MTR07_Earth", 0x8108, true),
                 (0x0034_43FB, "MTR07_EarthMisc", 0x8108, false),
+                (0x0000_FFE7, "GQ_DropGovtMaster", 0x8500, true),
+                (0x003E_133F, "Nuke_LaunchCardPatrol", 0x8500, true),
+                (0x003E_133F, "Nuke_LaunchCardPatrolCopy", 0x8500, false),
+                (0x0001_9487, "MTRZ05_Lucky", 0x8108, true),
+                (0x0041_7BE8, "M01C_Archery", 0x8108, true),
             ] {
                 cases.push((
                     QustCase {
@@ -314,6 +319,11 @@
             (0x005A_2730, "COMP_RQ_Kill_SpecificAliases_Beckett_BloodEagleDungeon"),
             (0x005A_272D, "COMP_RQ_Fetch_SpecificAliases_LegendaryArmor"),
             (0x005A_272E, "COMP_RQ_Fetch_SpecificAliases_LegendaryWeapon"),
+            (0x0058_2172, "COMP_Quest_Intro_Lite_Beggar"),
+            (0x0058_2153, "COMP_Quest_Intro_Lite_Hunter"),
+            (0x0056_8CB2, "COMP_Quest_Intro_Lite_RaiderPunk"),
+            (0x0058_5BD2, "COMP_Quest_Intro_Lite_Scavenger"),
+            (0x0058_2173, "COMP_Quest_Intro_Lite_Wanderer"),
         ] {
             cases.push((QustCase { form_id, eid: Some(eid), ..companion }, true));
         }
@@ -335,7 +345,8 @@
             0x0009_3187, 0x0031_1433, 0x0004_2F7E, 0x0062_16DA, 0x0065_E071, 0x006A_D506,
             0x0010_BAE1, 0x0051_09AF, 0x0056_2877, 0x0069_0659, 0x003E_271D, 0x0063_461B,
             0x0080_BFD0, 0x0063_4B0B, 0x0025_C090, 0x0004_A357, 0x005F_E4D7, 0x0018_7531,
-            0x0065_B0A8, 0x0003_64D0,
+            0x0065_B0A8, 0x0003_64D0, 0x0062_0F7B, 0x0061_73A1, 0x0077_FA14, 0x0079_AA0F,
+            0x0049_886E, 0x0054_B3FA, 0x003E_EAA7,
         ];
         for form_id in repeatable_public_events {
             cases.push((QustCase { form_id, ..public_event }, true));
@@ -2147,4 +2158,154 @@
 
         assert_eq!(record.form_key.local, MILE_CARAVAN_BAD_CARGO_REF_FORM_ID);
         assert_eq!(record.fields, before);
+    }
+
+    fn roaming_encounter_record(interner: &StringInterner, form_id: u32, eid: &str) -> Record {
+        let mut record = make_record("QUST", interner);
+        record.form_key.local = form_id;
+        record.eid = Some(interner.intern(eid));
+        let mut data = vec![0u8; FO76_QUST_DATA_FLAGS64_LEN];
+        data[0..8].copy_from_slice(&u64::from(QUST_DNAM_FLAG_RUN_ONCE).to_le_bytes());
+        push_field(&mut record, "DATA", raw_bytes(&data));
+        push_field(&mut record, "ANAM", FieldValue::Uint(8));
+        for (anchor, alias_id) in [("ALST", 0), ("ALLS", 2), ("ALCS", 5), ("ALST", 5), ("ALST", 7)] {
+            push_field(&mut record, anchor, FieldValue::Uint(alias_id));
+            if anchor == "ALCS" {
+                continue;
+            }
+            push_field(&mut record, "FNAM", raw_bytes(&0_u32.to_le_bytes()));
+            push_field(&mut record, "ALED", FieldValue::None);
+        }
+        record
+    }
+
+    fn roaming_alias_flags(record: &Record, anchor: &[u8; 4], alias_id: u32) -> u32 {
+        let start = record
+            .fields
+            .iter()
+            .position(|entry| entry.sig.0 == *anchor && field_value_to_u32(&entry.value) == Some(alias_id))
+            .expect("alias anchor");
+        let fnam = record.fields[start..]
+            .iter()
+            .find(|entry| entry.sig.0 == *b"FNAM")
+            .expect("alias FNAM");
+        field_value_to_u32(&fnam.value).expect("FNAM flags")
+    }
+
+    #[test]
+    fn roaming_encounters_repeat_and_leave_spawn_aliases_to_their_script() {
+        let interner = StringInterner::new();
+        let mut record = roaming_encounter_record(&interner, 0x0019_B932, "GQ_WanderingBoss");
+        Fo76Fo4Hook.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+        assert_eq!(translated_run_once_flag(&record), 0, "the region pulse restarts it");
+        assert_eq!(roaming_alias_flags(&record, b"ALST", 0) & QUST_ALIAS_OPTIONAL_FLAG, 0, "RandomPlayer stays a forced-none fill");
+        assert_ne!(roaming_alias_flags(&record, b"ALLS", 2) & QUST_ALIAS_OPTIONAL_FLAG, 0, "SpawnRegion");
+        assert_ne!(roaming_alias_flags(&record, b"ALST", 5) & QUST_ALIAS_OPTIONAL_FLAG, 0, "EdgeMarkers");
+        assert_eq!(roaming_alias_flags(&record, b"ALST", 7) & QUST_ALIAS_OPTIONAL_FLAG, 0);
+        let once = record.fields.clone();
+        Fo76Fo4Hook.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+        assert_eq!(record.fields, once, "idempotent");
+
+        for (form_id, eid, plugin) in [
+            (0x0019_B933, "GQ_WanderingBoss", None),
+            (0x0019_B932, "GQ_WanderingBoss_Copy", None),
+            (0x0019_B932, "GQ_WanderingBoss", Some("Other.esm")),
+        ] {
+            let mut record = roaming_encounter_record(&interner, form_id, eid);
+            if let Some(plugin) = plugin {
+                record.form_key.plugin = interner.intern(plugin);
+            }
+            Fo76Fo4Hook.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+            assert_eq!(roaming_alias_flags(&record, b"ALLS", 2) & QUST_ALIAS_OPTIONAL_FLAG, 0, "{eid} {form_id:06X}");
+            assert_eq!(translated_run_once_flag(&record), QUST_DNAM_FLAG_RUN_ONCE, "{eid} {form_id:06X}");
+        }
+
+        for (form_id, eid) in [(0x0000_123F, "GQ_Horde"), (0x0018_6DEE, "GQ_Swarm")] {
+            let mut record = roaming_encounter_record(&interner, form_id, eid);
+            Fo76Fo4Hook.pre_translate(&mut make_ctx(&interner), &mut record).unwrap();
+            assert_eq!(translated_run_once_flag(&record), 0, "{eid}");
+        }
+    }
+
+    fn invaders_location_record(interner: &StringInterner, form_id: u32, eid: &str) -> Record {
+        let mut record = make_record("QUST", interner);
+        record.form_key.local = form_id;
+        record.eid = Some(interner.intern(eid));
+        push_field(&mut record, "ALLS", FieldValue::Uint(3));
+        push_field(&mut record, "ALED", FieldValue::Bytes(Default::default()));
+        push_field(&mut record, "ALST", FieldValue::Uint(4));
+        push_field(&mut record, "ALFA", FieldValue::Uint(3));
+        push_field(&mut record, "ALRT", form_key_value(interner, INVADERS_SITE_LOCATION_REF_TYPE));
+        push_field(&mut record, "ALED", FieldValue::Bytes(Default::default()));
+        record
+    }
+
+    fn location_alias_conditions(record: &Record, alias_id: u32) -> Vec<Vec<u8>> {
+        let start = record
+            .fields
+            .iter()
+            .position(|f| f.sig.0 == *b"ALLS" && field_value_to_u32(&f.value) == Some(alias_id))
+            .expect("location alias");
+        record.fields[start..]
+            .iter()
+            .take_while(|f| f.sig.0 != *b"ALED")
+            .filter(|f| f.sig.0 == *b"CTDA")
+            .map(|f| match &f.value {
+                FieldValue::Bytes(bytes) => bytes.to_vec(),
+                other => panic!("CTDA bytes: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn invaders_event_location_fills_from_its_site_ref_type() {
+        let interner = StringInterner::new();
+        let mut record = invaders_location_record(&interner, INVADERS_FORM_ID, "E07B_Invaders");
+        Fo76Fo4Hook::adapt_invaders_event_location_fill(&interner, &mut record);
+        let conditions = location_alias_conditions(&record, INVADERS_EVENT_LOCATION_ALIAS_ID);
+        assert_eq!(conditions.len(), 1);
+        let condition = &conditions[0];
+        assert_eq!(f32::from_le_bytes(condition[4..8].try_into().unwrap()), 1.0);
+        assert_eq!(
+            u16::from_le_bytes(condition[8..10].try_into().unwrap()),
+            FO4_LOCATION_HAS_REF_TYPE_FUNCTION
+        );
+        assert_eq!(
+            u32::from_le_bytes(condition[12..16].try_into().unwrap()),
+            INVADERS_SITE_LOCATION_REF_TYPE
+        );
+        assert_eq!(u32::from_le_bytes(condition[28..32].try_into().unwrap()), u32::MAX);
+        // The dependent extractor alias keeps its ALFA, now anchored on a fillable scope.
+        assert!(record.fields.iter().any(|f| f.sig.0 == *b"ALFA"));
+
+        let once = record.fields.clone();
+        Fo76Fo4Hook::adapt_invaders_event_location_fill(&interner, &mut record);
+        assert_eq!(record.fields, once, "idempotent");
+
+        for (form_id, eid, plugin) in [
+            (INVADERS_FORM_ID + 1, "E07B_Invaders", None),
+            (INVADERS_FORM_ID, "E07B_InvadersCopy", None),
+            (INVADERS_FORM_ID, "E07B_Invaders", Some("Other.esm")),
+        ] {
+            let mut other = invaders_location_record(&interner, form_id, eid);
+            if let Some(plugin) = plugin {
+                other.form_key.plugin = interner.intern(plugin);
+            }
+            let before = other.fields.clone();
+            Fo76Fo4Hook::adapt_invaders_event_location_fill(&interner, &mut other);
+            assert_eq!(other.fields, before, "{eid} {form_id:06X} {plugin:?}");
+        }
+
+        // An alias that already carries a fill rule is left alone.
+        let mut filled = invaders_location_record(&interner, INVADERS_FORM_ID, "E07B_Invaders");
+        filled.fields.insert(
+            1,
+            FieldEntry {
+                sig: SubrecordSig(*b"ALFL"),
+                value: form_key_value(&interner, 0x0005_5E01),
+            },
+        );
+        let before = filled.fields.clone();
+        Fo76Fo4Hook::adapt_invaders_event_location_fill(&interner, &mut filled);
+        assert_eq!(filled.fields, before);
     }

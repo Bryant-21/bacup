@@ -16,6 +16,29 @@
         }
     }
 
+    #[test]
+    fn caps_currency_count_becomes_get_item_count_and_other_currencies_still_drop() {
+        let interner = StringInterner::new();
+        // INFO 6EB13B: GetCurrencyCount(Caps 00000F) >= 5.0 on Target, then a supply count.
+        let caps = "60000000 0000A040 5403 0000 0F000000 00000000 01000000 00000000 FFFFFFFF"
+            .replace(' ', "");
+        let supplies = "60000000 0000A040 5403 0000 25E77700 00000000 01000000 00000000 FFFFFFFF"
+            .replace(' ', "");
+        let mut record = make_record("INFO", &interner);
+        push_field(&mut record, "CTDA", raw_ctda_from_hex(&caps));
+        push_field(&mut record, "CTDA", raw_ctda_from_hex(&supplies));
+
+        Fo76Fo4Hook::drop_fo4_incompatible_conditions(&interner, &mut record);
+
+        assert_eq!(record.fields.len(), 1, "only the caps gate survives");
+        let FieldValue::Bytes(bytes) = &record.fields[0].value else {
+            panic!("expected raw CTDA bytes");
+        };
+        let mut expected = hex::decode(&caps).unwrap();
+        expected[8..10].copy_from_slice(&FO4_GET_ITEM_COUNT_CONDITION_FUNCTION_ID.to_le_bytes());
+        assert_eq!(bytes.as_slice(), expected.as_slice());
+    }
+
     fn raw_condition_fixture(function_id: u16) -> Vec<u8> {
         let mut bytes = vec![
             0xA4, 0x11, 0x22, 0x33, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x55, 0x66, 0xEF, 0xBE,
@@ -1548,6 +1571,43 @@
         );
     }
 
+    /// `COMP_Conversation_Astronaut_Emerson_003_FirstMet` (`563F8B`) picks its
+    /// conversation with `GetValue(COMP_AV_PlayerVisitorValue_Astronaut) == 3`
+    /// on FO76 event-data member `0x3352`, which no FO4 event fills.
+    #[test]
+    fn quest_player_event_data_rows_run_on_player_ref() {
+        let interner = StringInterner::new();
+        // GetValue(5B59C7) == 3, Run On = Event Data, member 0x3352.
+        let source = concat!(
+            "00000000", "00004040", "0E000000", "C7595B00", "00000000", "07000000", "00000000",
+            "52330000"
+        );
+        let mut record = make_record("QUST", &interner);
+        push_field(&mut record, "CTDA", raw_ctda_from_hex(source));
+        let mut node = make_record("SMQN", &interner);
+        push_field(&mut node, "CTDA", raw_ctda_from_hex(source));
+
+        Fo76Fo4Hook::normalize_fo76_quest_player_event_data_run_on(&mut record);
+        Fo76Fo4Hook::normalize_fo76_quest_player_event_data_run_on(&mut node);
+
+        let FieldValue::Bytes(row) = &record.fields[0].value else {
+            panic!("CTDA should stay raw bytes");
+        };
+        assert_eq!(Fo76Fo4Hook::raw_condition_run_on(row), Some(2));
+        assert_eq!(Fo76Fo4Hook::raw_condition_reference(row), Some(0x14));
+        assert_eq!(Fo76Fo4Hook::raw_condition_parameter_3(row), Some(u32::MAX));
+        assert_eq!(Fo76Fo4Hook::raw_condition_function_id(row), Some(14));
+        assert_eq!(Fo76Fo4Hook::raw_condition_comparison_value(row), Some(3.0));
+        let FieldValue::Bytes(node_row) = &node.fields[0].value else {
+            panic!("CTDA should stay raw bytes");
+        };
+        assert_eq!(
+            Fo76Fo4Hook::raw_condition_run_on(node_row),
+            Some(7),
+            "Story Manager nodes keep their own Subject rewrite"
+        );
+    }
+
     #[test]
     fn increase_level_get_event_data_rows_lower_to_get_level() {
         let interner = StringInterner::new();
@@ -1556,6 +1616,7 @@
             "000A00000000C84240025D4302005631000000000000000000000000FFFFFFFF",
         ] {
             let mut expected = hex::decode(source).expect("valid source CTDA");
+            expected[0] = 0x60;
             expected[8..10].copy_from_slice(&GET_LEVEL_CONDITION_FUNCTION_ID.to_le_bytes());
             expected[10..12].fill(0);
             expected[12..16].fill(0);
@@ -1590,8 +1651,35 @@
                 Fo76Fo4Hook::raw_condition_parameter_3(bytes),
                 Some(u32::MAX)
             );
+            assert_eq!(
+                Fo76Fo4Hook::raw_condition_operator(bytes),
+                Some(3),
+                "== N becomes >= N"
+            );
             assert_eq!(bytes.as_slice(), expected.as_slice());
         }
+
+        let mut less_than = hex::decode(
+            "000B00000000A0414002944302005631000000000000000000000000FFFFFFFF",
+        )
+        .expect("valid source CTDA");
+        less_than[0] = 0x80;
+        let mut record = make_record("SMQN", &interner);
+        push_field(
+            &mut record,
+            "PNAM",
+            form_key_value(&interner, FO4_INCREASE_LEVEL_STORY_MANAGER_ROOT),
+        );
+        push_field(&mut record, "CTDA", FieldValue::Bytes(SmallVec::from_vec(less_than)));
+        Fo76Fo4Hook::normalize_fo76_story_manager_level_event_data(&mut record);
+        let FieldValue::Bytes(bytes) = &record.fields[1].value else {
+            panic!("raw CTDA bytes");
+        };
+        assert_eq!(
+            Fo76Fo4Hook::raw_condition_operator(bytes),
+            Some(4),
+            "non-equal comparisons keep their operator"
+        );
     }
 
     #[test]

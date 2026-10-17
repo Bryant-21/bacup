@@ -181,7 +181,7 @@ fn find_child_ci(parent: &Path, name: &str) -> Option<PathBuf> {
         .map(|entry| entry.path())
 }
 
-fn resolve_path_ci(root: &Path, relative: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_path_ci(root: &Path, relative: &Path) -> Option<PathBuf> {
     let mut resolved = root.to_path_buf();
     for component in relative.components() {
         let Component::Normal(name) = component else {

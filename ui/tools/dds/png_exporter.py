@@ -28,18 +28,18 @@ class DDSPNGExporterTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##png_exporter"):
-            _, clicked = draw_path_row("Source", self._src_dir)
+            path, clicked = draw_path_row("Source", self._src_dir)
             if clicked:
-                path = pick_folder("Select folder with DDS files")
-                if path:
-                    self._src_dir = path
-                    if not self._out_dir:
-                        base = os.path.basename(os.path.normpath(path))
-                        self._out_dir = os.path.join(os.path.dirname(path), base + "_png")
+                path = pick_folder("Select folder with DDS files", self._src_dir)
+            if path is not None and path != self._src_dir:
+                self._src_dir = path
+                if path and os.path.isdir(path) and not self._out_dir:
+                    base = os.path.basename(os.path.normpath(path))
+                    self._out_dir = os.path.join(os.path.dirname(path), base + "_png")
 
-            _, clicked = draw_path_row("Output", self._out_dir)
+            self._out_dir, clicked = draw_path_row("Output", self._out_dir)
             if clicked:
-                path = pick_folder("Select output folder for PNGs")
+                path = pick_folder("Select output folder for PNGs", self._out_dir)
                 if path:
                     self._out_dir = path
             end_form()

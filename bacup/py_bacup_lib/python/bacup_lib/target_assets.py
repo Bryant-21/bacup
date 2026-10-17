@@ -148,6 +148,9 @@ class TargetAssetStore:
     def has_asset(self, path: str | Path) -> bool:
         return bool(self._native.has_asset(str(path)))
 
+    def has_asset_for_type(self, path: str | Path, asset_type: str) -> bool:
+        return bool(self._native.has_asset_for_type(str(path), asset_type))
+
     def list_assets(self, *, prefix: str = "", suffix: str = "") -> list[str]:
         return list(self._native.list_assets(prefix, suffix))
 

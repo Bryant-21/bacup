@@ -197,13 +197,17 @@ fn project_rel_components_from_meshes(hkx_path: &Path) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 fn walk_character_hkx_files(dir: &Path, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_character_hkx_files_in_root(dir, f, dir);
+}
+
+fn walk_character_hkx_files_in_root(dir: &Path, f: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            walk_character_hkx_files(&path, f);
+        if super::postprocess_scan::entry_is_dir(&entry) {
+            walk_character_hkx_files_in_root(&path, f, scan_root);
         } else {
             let fname = path
                 .file_name()

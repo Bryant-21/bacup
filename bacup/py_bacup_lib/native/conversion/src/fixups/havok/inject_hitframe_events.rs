@@ -260,13 +260,17 @@ fn inject_hitframe_into(anns: &mut Vec<HkxValue>) -> bool {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn walk_attack_hkx_files(dir: &Path, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_attack_hkx_files_in_root(dir, f, dir);
+}
+
+pub(crate) fn walk_attack_hkx_files_in_root(dir: &Path, f: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            walk_attack_hkx_files(&path, f);
+        if super::postprocess_scan::entry_is_dir(&entry) {
+            walk_attack_hkx_files_in_root(&path, f, scan_root);
         } else {
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let lower = fname.to_lowercase();

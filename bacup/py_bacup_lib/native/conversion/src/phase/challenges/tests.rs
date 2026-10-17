@@ -256,3 +256,64 @@ fn batched_lookup_preserves_file_order_case_signature_and_master_ownership() {
         assert_eq!(found, before);
     }
 }
+
+#[test]
+fn exam_challenges_trigger_on_their_start_terminal_and_badges_grant_their_currency_item() {
+    let reference = |id: &str| json!({"reference":{"plugin":"SeventySix.esm","object_id":id}});
+    let object = |id: &str| json!({"Alias":-1,"FormID":reference(id)});
+    let record = |sig: &str, eid: &str, fields: Value| -> SourceRecord {
+        (sig.into(), eid.into(), serde_json::from_value(fields).unwrap())
+    };
+    let challenge = |name: &str, stat: &str, category: &str| {
+        json!({"Name":[name],"TrackedStatUsed":[stat],"RequiredCount":[1],
+            "ChallengeFrequency":["Lifetime"],"ChallengeCategory":[category]})
+    };
+    let mut parent = challenge("Possum: Archaeologist", "", "World");
+    parent["SubChallengeCompletionList"] = json!([reference("4287BC")]);
+    parent["RewardRecord"] = json!([reference("630F56")]);
+    let mut reader = FixtureReader(IndexMap::from([
+        (0x485276, record("GLOB", "Count1", json!({"Value":[1.0]}))),
+        (0x46B675, record("TERM", "P01C_ExamTerminal", json!({"VirtualMachineAdapter":[{"Scripts":[{
+            "ScriptName":"Quests:U01C_Scouts:ExamTerminalMain",
+            "Properties":[{"propertyName":"AllExams","Value":[[
+                {"memberName":"StartTerminal","Value":object("3F1593")},
+                {"memberName":"ChallengeToComplete","Value":object("4287AF")}]]}]}]}]}))),
+        (0x3F1593, record("TERM", "P01C_Exam_Archaeologist", json!({}))),
+        (0x4287AF, record("CHAL", "Challenge_Exam_Sub", challenge("Pass exam", "Script", "SubChallengeUnsorted"))),
+        (0x4287B0, record("CHAL", "Challenge_Other_Script", challenge("Find treasure", "Script", "World"))),
+        (0x4287C9, record("CHAL", "Challenge_Badge", parent)),
+        (0x4287BC, record("FLST", "BadgeSubs", json!({"FormID":[reference("4287AF")]}))),
+        (0x630F56, record("GMRW", "BadgeReward", json!({"QuestRewardCurrencyObject":[reference("421760")],
+            "CurrencyAmountGlobal":[reference("485276")]}))),
+        (0x421760, record("CNCY", "PossumBadge", json!({}))),
+    ]));
+    let table = HashMap::from([
+        (("TERM".to_owned(), "P01C_Exam_Archaeologist".to_owned()), "SeventySix.esm:3F1593".to_owned()),
+        (("MISC".to_owned(), "PossumBadge".to_owned()), "SeventySix.esm:421760".to_owned()),
+    ]);
+    let (catalog, report) = build_catalog(
+        &mut reader,
+        &mut |sig, eid| table.get(&(sig.into(), eid.into())).cloned(),
+        "SeventySix.esm",
+        "SeventySix.esm",
+        "sha",
+    )
+    .unwrap();
+    let challenges = catalog["challenges"].as_array().unwrap();
+    let find = |id: &str| challenges.iter().find(|entry| entry["id"] == id).unwrap();
+
+    let exam = find("4287AF");
+    assert_eq!(exam["kind"], "script");
+    assert_eq!(exam["parent"], "4287C9");
+    assert_eq!(
+        exam["conditions"],
+        json!([[{"fn":"GetIsID","on":"target","op":"==","value":1.0,"params":["SeventySix.esm:3F1593"]}]])
+    );
+    let badge = find("4287C9");
+    assert_eq!(badge["sub_challenges"], json!(["4287AF"]));
+    assert_eq!(badge["reward"]["item"], "SeventySix.esm:421760");
+    assert_eq!(
+        report["dropped"],
+        json!([{"eid":"Challenge_Other_Script","reason":"unsupported stat 'Script'"}])
+    );
+}

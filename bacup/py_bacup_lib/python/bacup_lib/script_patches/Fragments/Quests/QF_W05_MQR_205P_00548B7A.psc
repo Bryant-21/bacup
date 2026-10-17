@@ -15,6 +15,13 @@ EndFunction
 
 Function Fragment_Stage_0106_Item_00()
     SetObjectiveCompleted(105)
+    ; LaserGridsToDisable (55F73F/55F744/55F747) are the Settlers heist's grids, gated on
+    ; W05_MQS_205P_LaserGridState, which the Raiders route never sets. FO76's hollow instance setup
+    ; removed them for this quest; do it as the player enters Vault 79.
+    W05_MQR_205P_QuestScript questScript = (Self as Quest) as W05_MQR_205P_QuestScript
+    If questScript != None && questScript.LaserGridsToDisable != None
+        questScript.LaserGridsToDisable.DisableAll()
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0110_Item_00()
@@ -28,6 +35,9 @@ Function Fragment_Stage_0200_Item_00()
 EndFunction
 
 Function Fragment_Stage_0210_Item_00()
+    If IsObjectiveDisplayed(200) && !IsObjectiveCompleted(200)
+        SetObjectiveCompleted(200, True)
+    EndIf
     SetObjectiveDisplayed(210)
     If W05_MQR_205P_002_Lou_Door02 != None && !W05_MQR_205P_002_Lou_Door02.IsPlaying()
         W05_MQR_205P_002_Lou_Door02.Start()
@@ -55,6 +65,9 @@ Function Fragment_Stage_0305_Item_00()
 EndFunction
 
 Function Fragment_Stage_0310_Item_00()
+    If IsObjectiveDisplayed(300) && !IsObjectiveCompleted(300)
+        SetObjectiveCompleted(300, True)
+    EndIf
     SetObjectiveDisplayed(310)
 EndFunction
 
@@ -65,6 +78,9 @@ Function Fragment_Stage_0315_Item_00()
 EndFunction
 
 Function Fragment_Stage_0320_Item_00()
+    If IsObjectiveDisplayed(310) && !IsObjectiveCompleted(310)
+        SetObjectiveCompleted(310, True)
+    EndIf
     SetObjectiveDisplayed(320)
     W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
     If owningQuestScript != None
@@ -127,6 +143,9 @@ Function Fragment_Stage_0410_Item_00()
 EndFunction
 
 Function Fragment_Stage_0500_Item_00()
+    If IsObjectiveDisplayed(400) && !IsObjectiveCompleted(400)
+        SetObjectiveCompleted(400, True)
+    EndIf
     SetObjectiveDisplayed(500)
 EndFunction
 
@@ -190,14 +209,23 @@ Function Fragment_Stage_0710_Item_00()
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()
+    If IsObjectiveDisplayed(700) && !IsObjectiveCompleted(700)
+        SetObjectiveCompleted(700, True)
+    EndIf
     SetObjectiveDisplayed(800)
 EndFunction
 
 Function Fragment_Stage_0810_Item_00()
+    If IsObjectiveDisplayed(800) && !IsObjectiveCompleted(800)
+        SetObjectiveCompleted(800, True)
+    EndIf
     SetObjectiveDisplayed(810)
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()
+    If IsObjectiveDisplayed(810) && !IsObjectiveCompleted(810)
+        SetObjectiveCompleted(810, True)
+    EndIf
     SetObjectiveDisplayed(900)
 EndFunction
 
@@ -222,6 +250,9 @@ Function Fragment_Stage_0906_Item_00()
 EndFunction
 
 Function Fragment_Stage_0910_Item_00()
+    If IsObjectiveDisplayed(900) && !IsObjectiveCompleted(900)
+        SetObjectiveCompleted(900, True)
+    EndIf
     W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
     If owningQuestScript != None && owningQuestScript.W05_MQR_205P_014_RaRa_OverseerVent03 != None && !owningQuestScript.W05_MQR_205P_014_RaRa_OverseerVent03.IsPlaying()
         owningQuestScript.W05_MQR_205P_014_RaRa_OverseerVent03.Start()
@@ -280,6 +311,9 @@ Function Fragment_Stage_1100_Item_00()
 EndFunction
 
 Function Fragment_Stage_1105_Item_00()
+    If IsObjectiveDisplayed(1100) && !IsObjectiveCompleted(1100)
+        SetObjectiveCompleted(1100, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
     If raRaRef != None
         raRaRef.EvaluatePackage()
@@ -300,6 +334,9 @@ Function Fragment_Stage_1107_Item_00()
 EndFunction
 
 Function Fragment_Stage_1110_Item_00()
+    If IsObjectiveDisplayed(1100) && !IsObjectiveCompleted(1100)
+        SetObjectiveCompleted(1100, True)
+    EndIf
     W05_MQR_205P_QuestScript owningQuestScript = (Self as Quest) as W05_MQR_205P_QuestScript
     If owningQuestScript != None && owningQuestScript.OptionalDoor != None
         ObjectReference optionalDoor = owningQuestScript.OptionalDoor.GetReference()
@@ -348,6 +385,9 @@ Function Fragment_Stage_1220_Item_00()
 EndFunction
 
 Function Fragment_Stage_1230_Item_00()
+    If IsObjectiveDisplayed(1000) && !IsObjectiveCompleted(1000)
+        SetObjectiveCompleted(1000, True)
+    EndIf
     ObjectReference endDoor = Alias_endDoor.GetReference()
     If endDoor != None
         endDoor.Lock(False)

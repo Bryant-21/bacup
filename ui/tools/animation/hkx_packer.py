@@ -41,18 +41,18 @@ class HKXPackerTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##hkx_packer"):
-            _, clicked = draw_path_row("Input", self._input_path)
+            self._input_path, clicked = draw_path_row("Input", self._input_path)
             if clicked:
-                path = pick_folder("Select folder with HKX/XML files")
+                path = pick_folder("Select folder with HKX/XML files", self._input_path)
                 if not path:
                     ext = "*.xml" if self._pack_mode else "*.hkx"
                     path = pick_file("Select file", [("HKX/XML", f"{ext}"), ("All", "*.*")])
                 if path:
                     self._input_path = path
 
-            _, clicked = draw_path_row("Output", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output", self._output_dir)
             if clicked:
-                path = pick_folder("Select output folder (optional)")
+                path = pick_folder("Select output folder (optional)", self._output_dir)
                 if path:
                     self._output_dir = path
 

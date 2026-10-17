@@ -186,6 +186,9 @@ Function Fragment_Stage_1000_Item_00()
     If playerRef != None
         playerRef.SetValue(W05_MQS_203P_CanInteractBrainPrep, 0.0)
     EndIf
+    If !IsStageDone(1001)
+        SetStage(1001)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1001_Item_00()

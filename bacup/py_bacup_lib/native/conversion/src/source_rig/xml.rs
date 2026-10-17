@@ -23,6 +23,80 @@ struct XmlNode {
     children: Vec<XmlNode>,
 }
 
+pub(super) fn number_generated_object_ids(xml: &str) -> Result<String, ValidationErrors> {
+    let document = roxmltree::Document::parse(xml).map_err(|error| {
+        let mut errors = ValidationErrors::default();
+        errors.push("malformed_xml", error.to_string());
+        errors
+    })?;
+    let ids: BTreeSet<_> = document
+        .descendants()
+        .filter(|node| node.has_tag_name("hkobject"))
+        .filter_map(|node| node.attribute("name"))
+        .collect();
+    let mut next = ids
+        .iter()
+        .filter_map(|id| id.strip_prefix('#')?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut replacements = BTreeMap::new();
+    for id in ids {
+        if id.starts_with('#') && id[1..].parse::<u64>().is_err() {
+            replacements.insert(id, format!("#{next}"));
+            next += 1;
+        }
+    }
+    let mut edits = Vec::new();
+    for node in document.descendants() {
+        for attribute in node.attributes() {
+            if ((node.has_tag_name("hkobject") && attribute.name() == "name")
+                || (node.has_tag_name("hkpackfile") && attribute.name() == "toplevelobject"))
+                && let Some(replacement) = replacements.get(attribute.value())
+            {
+                edits.push((
+                    attribute.range(),
+                    format!("{}=\"{replacement}\"", attribute.name()),
+                ));
+            }
+        }
+        if !node.is_text() {
+            continue;
+        }
+        let Some(parent) = node
+            .parent()
+            .filter(|parent| parent.has_tag_name("hkparam"))
+        else {
+            continue;
+        };
+        if matches!(
+            parent.attribute("name"),
+            Some("name" | "expression" | "animationName")
+        ) || (parent.attribute("name") == Some("data")
+            && parent.parent().and_then(|object| object.attribute("class"))
+                == Some("hkbStringEventPayload"))
+        {
+            continue;
+        }
+        let text = node.text().unwrap_or_default();
+        let mut cursor = 0;
+        for token in text.split_whitespace() {
+            let start = cursor + text[cursor..].find(token).unwrap();
+            cursor = start + token.len();
+            if let Some(replacement) = replacements.get(token) {
+                let offset = node.range().start;
+                edits.push((offset + start..offset + cursor, replacement.clone()));
+            }
+        }
+    }
+    let mut result = xml.to_owned();
+    edits.sort_by_key(|(range, _)| range.start);
+    for (range, replacement) in edits.into_iter().rev() {
+        result.replace_range(range, &replacement);
+    }
+    Ok(result)
+}
+
 pub fn validate_havok_xml(xml: &str) -> Result<HavokXmlFacts, ValidationErrors> {
     let root = match parse_xml(xml) {
         Ok(root) => root,

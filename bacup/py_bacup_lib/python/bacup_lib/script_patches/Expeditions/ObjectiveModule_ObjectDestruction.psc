@@ -24,7 +24,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		PrepareLocalDestructionSets()
 	EndIf
 EndEvent
@@ -40,20 +40,17 @@ Event ObjectReference.OnActivate(ObjectReference akSender, ObjectReference akAct
 EndEvent
 
 Function InitializeLocalDestructionStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 EndFunction
 
 Function PrepareLocalDestructionSets()
-	If IsStageDone(CompleteStage) || DestructionSets == None
+	If IsStageDone(GetCompleteStage()) || DestructionSets == None
 		Return
 	EndIf
 	Int setLimit = GetLocalDestructionSetLimit()
@@ -94,7 +91,7 @@ Function PrepareLocalDestructionSets()
 EndFunction
 
 Function ReconcileLocalDestructionSets()
-	If IsStageDone(CompleteStage) || DestructionSets == None
+	If IsStageDone(GetCompleteStage()) || DestructionSets == None
 		Return
 	EndIf
 	DestructionSetsComplete = 0
@@ -123,7 +120,7 @@ Function ReconcileLocalDestructionSets()
 		setIndex += 1
 	EndWhile
 	If setLimit > 0 && DestructionSetsComplete >= setLimit
-		SetStage(CompleteStage)
+		SetStage(GetCompleteStage())
 	EndIf
 EndFunction
 

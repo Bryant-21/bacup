@@ -43,7 +43,9 @@ Function CheckPlayerInstanceLocation(Location playerLocation)
     While InstancedLocationData && index < InstancedLocationData.Length
         LocationDatum locationData = InstancedLocationData[index]
         If locationData.TargetLocation == playerLocation && locationData.StageToSet >= 0 && !IsStageDone(locationData.StageToSet)
-            If (locationData.PreReqStage < 0 || IsStageDone(locationData.PreReqStage)) && (locationData.ShutdownStage < 0 || GetStage() < locationData.ShutdownStage)
+            ; FO76 contract: ShutdownStage means "once this stage is set, ignore this location".
+            ; Comparing against GetStage() blocked COMP_Quest_Intro_Full_Astronaut forever (ShutdownStage 0).
+            If (locationData.PreReqStage < 0 || IsStageDone(locationData.PreReqStage)) && (locationData.ShutdownStage < 0 || !IsStageDone(locationData.ShutdownStage))
                 SetStage(locationData.StageToSet)
             EndIf
         EndIf

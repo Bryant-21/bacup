@@ -52,6 +52,8 @@ use crate::source_read::{
 use crate::sym::StringInterner;
 use crate::target_write::replace_records_native;
 
+mod legacy_parts;
+
 // ---------------------------------------------------------------------------
 // Embedded default resource data
 // ---------------------------------------------------------------------------
@@ -253,7 +255,7 @@ fn should_attempt_bake(race_class: RaceClass, coefficients: &[f32]) -> bool {
     if !race_class.is_bakeable() {
         return false;
     }
-    if coefficients.len() != 50 {
+    if coefficients.len() != 80 {
         return false;
     }
     coefficients.iter().any(|&v| v.abs() > 1e-6)
@@ -823,22 +825,18 @@ fn parse_tri_neutral_vertices(path: &Path) -> Result<Vec<[f32; 3]>, String> {
 const EGM_HEADER_SIZE: usize = 64;
 const EGM_MAGIC: &[u8; 5] = b"FREGM";
 
-/// Parse EGM morph basis for `num_differences` morphs.
-/// Returns: (num_differences, num_vertices, 3) as flat Vec<f32> in row-major order.
 fn parse_egm_basis(path: &Path) -> Result<(usize, usize, Vec<f32>), String> {
     let parsed = parse_egm_basis_full(path)?;
-    let symmetric_values = parsed.symmetric_count * parsed.vertex_count * 3;
     Ok((
-        parsed.symmetric_count,
+        parsed.symmetric_count + parsed.asymmetric_count,
         parsed.vertex_count,
-        parsed.basis[..symmetric_values].to_vec(),
+        parsed.basis,
     ))
 }
 
 #[derive(Debug)]
 struct ParsedEgmBasis {
     symmetric_count: usize,
-    #[cfg(test)]
     asymmetric_count: usize,
     vertex_count: usize,
     basis: Vec<f32>,
@@ -887,7 +885,6 @@ fn parse_egm_basis_full(path: &Path) -> Result<ParsedEgmBasis, String> {
 
     Ok(ParsedEgmBasis {
         symmetric_count: num_differences,
-        #[cfg(test)]
         asymmetric_count: num_asymmetric,
         vertex_count: num_vertices,
         basis,
@@ -1719,27 +1716,6 @@ fn target_hair_spec(hair: &HairRef) -> Option<HeadPartSpec> {
     })
 }
 
-fn exact_legacy_hair_spec(
-    source_npc_local: u32,
-    source: &HairRef,
-    race_class: RaceClass,
-) -> Option<HeadPartSpec> {
-    if source_npc_local != 0x0010_4C7F
-        || race_class != RaceClass::HumanMale
-        || !source.plugin.eq_ignore_ascii_case("FalloutNV.esm")
-        || u32::from_str_radix(source.object_id.trim_start_matches("0x"), 16).ok()? != 0x0009_87D9
-    {
-        return None;
-    }
-    Some(HeadPartSpec {
-        plugin: "Fallout4.esm".to_string(),
-        local: 0x0014_77D0,
-        model_path: "Meshes/Actors/Character/CharacterAssets/Hair/Male/Hair18.nif".to_string(),
-        source_model_path: Some("Meshes/Characters/Hair/HairBaseOld.NIF".to_string()),
-        shape_name: "Hat".to_string(),
-    })
-}
-
 const FO4_BEARD_FORM_IDS: &[u32] = &[
     0x000E_12A4,
     0x0013_5A95,
@@ -1853,9 +1829,16 @@ fn fnv_weight_to_fo4_morphs(weight: f32) -> (f32, f32, f32) {
 // NPC source record extraction helpers
 // ---------------------------------------------------------------------------
 
-fn extract_fggs_coefficients(record: &Record) -> Option<Vec<f32>> {
+fn extract_facegen_geometry_coefficients(record: &Record) -> Option<Vec<f32>> {
+    let mut coefficients = extract_facegen_coefficients(record, "FGGS")?;
+    coefficients
+        .extend(extract_facegen_coefficients(record, "FGGA").unwrap_or_else(|| vec![0.0; 30]));
+    Some(coefficients)
+}
+
+fn extract_facegen_coefficients(record: &Record, signature: &str) -> Option<Vec<f32>> {
     for entry in &record.fields {
-        if entry.sig.as_str() == "FGGS" {
+        if entry.sig.as_str() == signature {
             if let FieldValue::Bytes(bytes) = &entry.value {
                 if bytes.len() % 4 == 0 {
                     let coeffs: Vec<f32> = bytes
@@ -3599,8 +3582,9 @@ impl Phase for ConvertFacePhase {
         let mut warnings: u32 = 0;
         let mut bake_jobs = Vec::new();
         let mut records_to_replace = Vec::new();
-        let mut face_part_assets: HashMap<HeadPartSpec, Result<Arc<FacePartAsset>, String>> =
-            HashMap::new();
+        let mut legacy_face_parts =
+            HashMap::<(String, RaceClass), Option<Arc<FacePartAsset>>>::new();
+        let mut generated_parts = Vec::new();
         let mut completed = 0u32;
 
         let total = npc_form_keys.len() as u32;
@@ -3658,7 +3642,8 @@ impl Phase for ConvertFacePhase {
             };
             let source_head_profile = classify_source_head_profile(source_race, race_class);
 
-            let coefficients = extract_fggs_coefficients(&source_record).unwrap_or_default();
+            let coefficients =
+                extract_facegen_geometry_coefficients(&source_record).unwrap_or_default();
 
             // Read target NPC record
             let mut target_record =
@@ -3681,41 +3666,71 @@ impl Phase for ConvertFacePhase {
             let source_hair_color = extract_hclr_rgb(&source_record, interner);
             let hair_ref_source = extract_hnam_ref(&source_record, interner);
             let pnam_refs_source = extract_pnam_refs(&source_record, interner);
-            let mut variable_specs = Vec::new();
-            if let Some(spec) = hair_ref_source.as_ref().and_then(|source| {
-                exact_legacy_hair_spec(source_form_key.local, source, race_class)
-            }) {
-                variable_specs.push(spec);
-            } else if let Some(hair) = hair_table.lookup(hair_ref_source.as_ref(), race_class) {
-                if let Some(spec) = target_hair_spec(&hair) {
-                    variable_specs.push(spec);
-                }
-            }
-            if let Some(beard) = pnam_refs_source
-                .iter()
-                .filter_map(|source| target_beard_spec(source, race_class))
-                .next_back()
-            {
-                variable_specs.push(beard);
-            }
-            variable_specs.sort_by_key(|spec| spec.local);
-            variable_specs.dedup_by_key(|spec| spec.local);
-
             let mut variable_parts = Vec::new();
-            for spec in &variable_specs {
-                let loaded = face_part_assets
-                    .entry(spec.clone())
-                    .or_insert_with(|| {
-                        load_face_part_asset(&target_extracted, &source_extracted, spec.clone())
-                            .map(Arc::new)
-                    })
-                    .clone();
-                match loaded {
-                    Ok(asset) => variable_parts.push(asset),
-                    Err(error) => {
-                        eprintln!("[convert_face] WARN [{eid}] {error}");
-                        warnings += 1;
-                    }
+            for source in hair_ref_source.iter().chain(pnam_refs_source.iter()) {
+                let cache_key = (source.normalize_key(), race_class);
+                if !legacy_face_parts.contains_key(&cache_key) {
+                    let source_key = FormKey {
+                        plugin: interner.intern(&source.plugin),
+                        local: u32::from_str_radix(source.object_id.trim_start_matches("0x"), 16)
+                            .map_err(|error| PhaseError::Internal(error.to_string()))?,
+                    };
+                    let source_part = read_record(
+                        source_handle_id,
+                        &form_key_to_read_str(&source_key, interner),
+                        &schema_source,
+                        interner,
+                    )
+                    .map_err(|error| error.to_string());
+                    let reference = if source_part
+                        .as_ref()
+                        .is_ok_and(|part| part.sig.0 == *b"HAIR")
+                    {
+                        hair_table
+                            .lookup(Some(source), race_class)
+                            .and_then(|hair| target_hair_spec(&hair))
+                    } else {
+                        target_beard_spec(source, race_class)
+                    };
+                    let loaded = match (source_part, reference) {
+                        (Ok(part), Some(reference)) => {
+                            let state = ctx.run.mapper_state.as_mut().ok_or_else(|| {
+                                PhaseError::Internal("head parts require mapper state".into())
+                            })?;
+                            let key =
+                                crate::formkey_mapper::FormKeyMapper::from_state(state, interner)
+                                    .allocate_generated();
+                            legacy_parts::convert_part(
+                                &part,
+                                key,
+                                race_class,
+                                &reference,
+                                &source_extracted,
+                                &target_extracted,
+                                &mod_path,
+                                interner,
+                            )
+                            .map(|(asset, record)| {
+                                generated_parts.push(record);
+                                Arc::new(asset)
+                            })
+                            .map(Some)
+                        }
+                        (Ok(_), None) => Ok(None),
+                        (Err(error), _) => Err(error),
+                    };
+                    let asset = match loaded {
+                        Ok(asset) => asset,
+                        Err(error) => {
+                            eprintln!("[convert_face] WARN [{eid}] {error}");
+                            warnings += 1;
+                            None
+                        }
+                    };
+                    legacy_face_parts.insert(cache_key.clone(), asset);
+                }
+                if let Some(Some(asset)) = legacy_face_parts.get(&cache_key) {
+                    variable_parts.push(asset.clone());
                 }
             }
             let pnam_refs_target = target_head_part_refs(race_class, &variable_parts);
@@ -3788,6 +3803,16 @@ impl Phase for ConvertFacePhase {
             });
         }
 
+        for part in generated_parts {
+            crate::target_write::add_record_native(
+                target_handle_id,
+                part,
+                &schema_target,
+                &ctx.run.interner,
+            )
+            .map_err(|error| PhaseError::Internal(format!("write legacy head part: {error}")))?;
+        }
+
         let mut profiles = HashMap::new();
         for profile_key in bake_jobs
             .iter()
@@ -3836,6 +3861,7 @@ impl Phase for ConvertFacePhase {
                             profile,
                             &named_bones,
                             &job.variable_parts,
+                            job.source_hair_color,
                         ),
                         Some(Err(error)) => Err(error.clone()),
                         None => Err(format!("missing cached profile for {:?}", job.race_class)),
@@ -3973,6 +3999,7 @@ fn attempt_face_bake_cached(
     profile: &FaceBakeProfile,
     named_bones: &[NamedBone],
     variable_parts: &[Arc<FacePartAsset>],
+    source_hair_color: Option<[u8; 3]>,
 ) -> Result<BakeResult, String> {
     let fnv_vertices = reconstruct_fnv_face_from_basis(
         &profile.fnv_neutral,
@@ -4008,6 +4035,7 @@ fn attempt_face_bake_cached(
     let mut assembled_template = profile.template.clone();
     let face_node = find_face_node(&assembled_template)
         .ok_or_else(|| "FaceGen template has no BSFaceGenNiNodeSkinned node".to_string())?;
+    let mut copied_parts = Vec::new();
     for asset in variable_parts {
         for (shape_index, source_shape_id) in asset.shape_ids.iter().enumerate() {
             let shape_name = if shape_index == 0 {
@@ -4030,6 +4058,7 @@ fn attempt_face_bake_cached(
                 face_node,
                 shape_name,
             )?;
+            copied_parts.push(copied_shape_id);
             if let Some(reference) = asset.skin_reference.as_ref() {
                 nif_core_native::skin::rig_facegen_shape_from_reference(
                     &mut assembled_template,
@@ -4040,6 +4069,11 @@ fn attempt_face_bake_cached(
         }
     }
     nif_core_native::convert_file::finalize_assembled_facegeom_for_fo4(&mut assembled_template);
+    if let Some(color) = source_hair_color {
+        for shape in copied_parts {
+            legacy_parts::apply_baked_color(&mut assembled_template, shape, color);
+        }
+    }
     write_facegeom_nif_from_template(
         &assembled_template,
         profile.template_shape_id,
@@ -4486,6 +4520,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(deformed, vec![[15.0, 28.0, 41.0]]);
+        let (count, vertices, basis) = parse_egm_basis(file.path()).unwrap();
+        assert_eq!((count, vertices), (2, 1));
+        assert_eq!(basis, parsed.basis);
+    }
+
+    #[test]
+    fn face_bake_extracts_geometry_coefficients_in_egm_order() {
+        let interner = StringInterner::new();
+        let mut record = Record::new(
+            SigCode::from_str("NPC_").unwrap(),
+            FormKey {
+                plugin: interner.intern("Source.esm"),
+                local: 0x800,
+            },
+        );
+        for (sig, values) in [("FGGA", vec![0.25f32; 30]), ("FGGS", vec![0.0f32; 50])] {
+            record.fields.push(FieldEntry {
+                sig: crate::ids::SubrecordSig::from_str(sig).unwrap(),
+                value: FieldValue::Bytes(
+                    values
+                        .iter()
+                        .flat_map(|value| value.to_le_bytes())
+                        .collect(),
+                ),
+            });
+        }
+        let coefficients = extract_facegen_geometry_coefficients(&record).unwrap();
+        assert_eq!(&coefficients[..50], &[0.0; 50]);
+        assert_eq!(&coefficients[50..], &[0.25; 30]);
+        assert!(should_attempt_bake(RaceClass::HumanMale, &coefficients));
+        record.fields.retain(|field| field.sig.0 != *b"FGGA");
+        let neutral_asymmetry = extract_facegen_geometry_coefficients(&record).unwrap();
+        assert_eq!(&neutral_asymmetry[50..], &[0.0; 30]);
     }
 
     #[test]
@@ -4523,6 +4590,75 @@ mod tests {
         assert_eq!(correspondence.sample_count, 1696);
         assert_eq!(correspondence.triangle_indices.len(), 1696);
         assert_eq!(correspondence.barycentrics.len(), 1696);
+    }
+
+    #[test]
+    #[ignore = "requires extracted FNV and FO4 assets"]
+    fn extracted_head_profiles_transfer_asymmetric_morphs_to_fo4() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let extracted = manifest.join("../../../../extracted");
+        let resources = manifest.join("src/phase/resources/face");
+        let mut params = serde_json::Map::new();
+        for suffix in [
+            "male",
+            "female",
+            "ghoul_male",
+            "ghoul_female",
+            "child_male",
+            "child_female",
+        ] {
+            params.insert(
+                format!("correspondence_path_{suffix}"),
+                JsonValue::String(
+                    resources
+                        .join(format!("fnv_to_fo4_correspondence_{suffix}.npz"))
+                        .to_string_lossy()
+                        .into(),
+                ),
+            );
+        }
+        let params = JsonValue::Object(params);
+        for (race, source_profile) in [
+            (RaceClass::HumanMale, SourceHeadProfile::Standard),
+            (RaceClass::HumanFemale, SourceHeadProfile::Standard),
+            (RaceClass::HumanMale, SourceHeadProfile::Old),
+            (RaceClass::HumanFemale, SourceHeadProfile::Old),
+            (RaceClass::GhoulMale, SourceHeadProfile::Standard),
+            (RaceClass::GhoulFemale, SourceHeadProfile::Standard),
+            (RaceClass::ChildMale, SourceHeadProfile::Standard),
+            (RaceClass::ChildFemale, SourceHeadProfile::Standard),
+        ] {
+            let profile = load_face_bake_profile(
+                race,
+                source_profile,
+                &extracted.join("fnv"),
+                &extracted.join("fo4"),
+                &TargetFaceAssets::from_params(&params),
+                &FaceResourcePaths::from_params(&params),
+            )
+            .unwrap();
+            assert_eq!(profile.egm_num_diffs, 80, "{race:?} {source_profile:?}");
+            let mut coefficients = vec![0.0; 80];
+            coefficients[70] = 0.25;
+            let deformed = reconstruct_fnv_face_from_basis(
+                &profile.fnv_neutral,
+                profile.egm_num_diffs,
+                profile.egm_num_verts,
+                &profile.egm_basis,
+                &coefficients,
+            )
+            .unwrap();
+            let deformation = profile
+                .correspondence
+                .interpolate_deformation(&profile.fnv_neutral, &deformed)
+                .unwrap();
+            assert_eq!(deformation.len(), profile.fo4_neutral.len());
+            assert!(deformation.iter().flatten().all(|value| value.is_finite()));
+            assert!(
+                deformation.iter().flatten().any(|value| value.abs() > 1e-6),
+                "{race:?} {source_profile:?}"
+            );
+        }
     }
 
     #[test]
@@ -4616,8 +4752,8 @@ mod tests {
     // ── should_attempt_bake ──────────────────────────────────────────────────
 
     #[test]
-    fn should_attempt_bake_requires_supported_race_and_nonzero_50_coeffs() {
-        let nonzero = vec![0.5f32; 50];
+    fn should_attempt_bake_requires_supported_race_and_nonzero_80_coeffs() {
+        let nonzero = vec![0.5f32; 80];
         for race in [
             RaceClass::HumanMale,
             RaceClass::GhoulMale,
@@ -4629,7 +4765,7 @@ mod tests {
         }
         assert!(!should_attempt_bake(
             RaceClass::HumanMale,
-            &vec![0.0f32; 50]
+            &vec![0.0f32; 80]
         ));
         assert!(!should_attempt_bake(
             RaceClass::HumanMale,
@@ -4743,19 +4879,13 @@ mod tests {
     }
 
     #[test]
-    fn easy_pete_old_hair_uses_source_geometry_with_fo4_combover_fallback() {
+    fn easy_pete_old_hair_has_fo4_combover_skin_reference() {
         let table = HairTable::load(EMBEDDED_HAIR_LOOKUP_YAML).unwrap();
         for plugin in ["FalloutNV.esm"] {
             let source = HairRef {
                 plugin: plugin.to_string(),
                 object_id: "0987D9".to_string(),
             };
-            let exact = exact_legacy_hair_spec(0x0010_4C7F, &source, RaceClass::HumanMale).unwrap();
-            assert_eq!(exact.shape_name, "Hat");
-            assert_eq!(
-                exact.source_model_path.as_deref(),
-                Some("Meshes/Characters/Hair/HairBaseOld.NIF")
-            );
             let mapped = table.lookup(Some(&source), RaceClass::HumanMale).unwrap();
             assert_eq!(mapped.plugin, "Fallout4.esm");
             assert_eq!(mapped.object_id, "1477D0");
@@ -4770,7 +4900,6 @@ mod tests {
                     shape_name: "HairMale18".to_string(),
                 }
             );
-            assert!(exact_legacy_hair_spec(0x0010_4C80, &source, RaceClass::HumanMale).is_none());
         }
     }
 

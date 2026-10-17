@@ -75,6 +75,7 @@ package
         private var pending:String = "";
         // What the panel art measured on the last fit, reported with the card.
         private var note:String = "";
+        private var hudTint:ColorMatrixFilter = null;
 
         public function ExamineMenu()
         {
@@ -272,14 +273,28 @@ package
             var red:Number = (color >> 16 & 255) / 255;
             var green:Number = (color >> 8 & 255) / 255;
             var blue:Number = (color & 255) / 255;
-            var tint:ColorMatrixFilter = new ColorMatrixFilter([
+            hudTint = new ColorMatrixFilter([
                 red, 0, 0, 0, 0,
                 green, 0, 0, 0, 0,
                 blue, 0, 0, 0, 0,
                 0, 0, 0, 1, 0]);
-            content.filters = [tint];
-            repairContent.filters = [tint];
-            repairHints.filters = [tint];
+            TintContent(content);
+            repairContent.filters = [hudTint];
+            repairHints.filters = [hudTint];
+        }
+
+        private function TintContent(target:DisplayObject):void
+        {
+            // Parent filters recolor green/red arrows even when the arrow's own transform is reset.
+            if (target.name == "Difference_mc") return;
+            var container:DisplayObjectContainer = target as DisplayObjectContainer;
+            if (container != null && (target == content || target == stats || target == card ||
+                target is ItemCard_Entry || target.name == "EntryHolder_mc"))
+            {
+                target.filters = [];
+                for (var i:int = 0; i < container.numChildren; i++) TintContent(container.getChildAt(i));
+            }
+            else target.filters = hudTint != null ? [hudTint] : [];
         }
 
         public function Clear():void
@@ -333,6 +348,8 @@ package
             stats.scaleY = scale;
             // Above one, FO76's card adds its own stack weight row from the weight entry.
             card.Count = value.count != null ? uint(value.count) : 1;
+            ItemCard_Entry.DynamicModDescEnable = layout.workbench == true;
+            ItemCard_Entry.AdvanceModDescMode = false;
             card.InfoObj = InfoRows(value.rows as Array);
             card.redrawUIComponent();
             PlacePanels();
@@ -609,6 +626,7 @@ package
             RestyleText(content);
             CurrencyIcons();
             PlacePanels();
+            TintContent(content);
         }
 
         // FO76 finds the caps icon by class name in ApplicationDomain.currentDomain. Nested in the
@@ -764,6 +782,15 @@ package
         }
 
         // Card rows in FO76 ItemCard's own data contract.
+        public static function ComparisonRow(label:String, row:Object):Object
+        {
+            var difference:Number = Number(row.difference) || 0;
+            return {text: label, value: row.value, difference: difference,
+                comparisonLabel: label == "$B21_TFA_ChargeTime" ? "$APCost" : label,
+                diffRating: int(row.diffRating), precision: int(row.precision),
+                originalValue: row.originalValue != null ? Number(row.originalValue) : Number(row.value) - difference};
+        }
+
         public static function InfoRows(rows:Array):Array
         {
             var info:Array = [];
@@ -783,17 +810,21 @@ package
                 {
                     for each (var part:Object in row.parts as Array)
                     {
-                        info.push({text: row.label, value: part.value, damageType: part.damageType, difference: part.difference});
+                        var damage:Object = ComparisonRow(String(row.label), part);
+                        damage.damageType = part.damageType;
+                        info.push(damage);
                     }
                 }
                 else if (kind == "ammo")
                 {
                     // These entries switch to their highlighted frame whenever difference is not 0.
-                    info.push({text: row.label, value: row.value, damageType: 10, difference: Number(row.difference) || 0});
+                    var ammo:Object = ComparisonRow(String(row.label), row);
+                    ammo.damageType = 10;
+                    info.push(ammo);
                 }
                 else if (kind == "fireMode")
                 {
-                    info.push({text: "$ATTACKMODE", value: row.value, difference: Number(row.difference) || 0});
+                    info.push(ComparisonRow("$ATTACKMODE", row));
                 }
                 else if (kind == "value")
                 {
@@ -801,7 +832,7 @@ package
                 }
                 else
                 {
-                    var entry:Object = {text: row.label, value: row.value, difference: row.difference};
+                    var entry:Object = ComparisonRow(String(row.label), row);
                     // FO76 draws a timer on timed effects and a component list for junk from these alone.
                     if (Number(row.duration) > 0) entry.duration = Number(row.duration);
                     if (row.components is Array && (row.components as Array).length > 0) entry.components = row.components;
@@ -822,14 +853,60 @@ package
             var title:TextField = AddText(header, String(value.title), 26, true, left, Number(layout.headerTop), width, "center", true);
             title.textColor = GOLD_COLOR;
             if (layout.barter != true) TrailingStars(header, title, int(value.stars), 9, GOLD_COLOR);
+            var titleBonusOffset:Number = int(value.stars) > 0 ? int(value.stars) * 21.6 + 12 : 0;
+            if (layout.barter != true && value.unique == true)
+            {
+                TrailingBonus(header, title, value.uniqueIcon as Array, titleBonusOffset, GOLD_COLOR);
+                titleBonusOffset += 26;
+            }
+            if (layout.barter != true && value.setLabel != null && String(value.setLabel).length > 0)
+                TrailingBonus(header, title, value.setIcon as Array, titleBonusOffset, GOLD_COLOR);
             var y:Number = Math.max(Number(layout.descriptionTop), title.y + title.height);
             if (layout.barter == true) { title.visible = false; y = Number(layout.headerTop); }
+            if (value.setLabel != null && String(value.setLabel).length > 0)
+            {
+                var setTitle:TextField = AddText(header, String(value.setLabel), 18, true, left, y, width, "center", true);
+                y += setTitle.height;
+            }
+            for each (var setEffect:Object in value.bonuses as Array)
+            {
+                if (int(setEffect.icon) != 2) continue;
+                var setLine:TextField = AddText(header, String(setEffect.text), 18, false, left, y, width, "center", true);
+                TrailingBonus(header, setLine, value.setIcon as Array);
+                y += setLine.height;
+            }
             for each (var effect:Object in value.effects as Array)
             {
                 var line:TextField = AddText(header, String(effect.text), 18, false, left, y, width, "center", true);
                 TrailingStars(header, line, int(effect.stars), 5.5);
                 y += line.height;
             }
+            for each (var bonus:Object in value.bonuses as Array)
+            {
+                if (int(bonus.icon) == 2) continue;
+                var bonusLine:TextField = AddText(header, String(bonus.text), 18, false, left, y, width, "center", true);
+                if (int(bonus.icon) == 1) TrailingBonus(header, bonusLine, value.uniqueIcon as Array);
+                y += bonusLine.height;
+            }
+        }
+
+        private function TrailingBonus(target:Sprite, field:TextField, commands:Array, offset:Number = 0, color:uint = 0xFFFFCB):void
+        {
+            if (commands == null || field.numLines == 0) return;
+            var last:TextLineMetrics = field.getLineMetrics(field.numLines - 1);
+            var icon:Shape = new Shape();
+            icon.graphics.beginFill(color);
+            for each (var command:Array in commands)
+            {
+                if (int(command[0]) == 0) icon.graphics.moveTo(Number(command[1]),Number(command[2]));
+                else if (int(command[0]) == 1) icon.graphics.lineTo(Number(command[1]),Number(command[2]));
+                else icon.graphics.curveTo(Number(command[1]),Number(command[2]),Number(command[3]),Number(command[4]));
+            }
+            icon.graphics.endFill();
+            icon.scaleX = icon.scaleY = Number(field.defaultTextFormat.size) * .8;
+            icon.x = field.x + 2 + last.x + last.width + 4 + offset;
+            icon.y = field.y + field.height - last.height;
+            target.addChild(icon);
         }
 
         public function DrawMods(list:Array, scale:Number):void

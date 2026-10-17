@@ -140,7 +140,11 @@ class PaletteApp:
         # --- Top row: source picker ---
         clicked = False
         if begin_form("##pal_src_form"):
-            _, clicked = draw_path_row("Source", self._source_path)
+            path, clicked = draw_path_row("Source", self._source_path)
+            if path != self._source_path:
+                self._source_path = path
+                self._result = None
+                self._tex_dirty = True
             end_form()
         if clicked:
             path = pick_file(
@@ -515,10 +519,10 @@ class PaletteApp:
     def _draw_variant_save_row(self) -> None:
         clicked = False
         if begin_form("##var_output_form"):
-            _, clicked = draw_path_row("Output", self._variant_output_path)
+            self._variant_output_path, clicked = draw_path_row("Output", self._variant_output_path)
             end_form()
         if clicked:
-            path = pick_folder("Select output folder")
+            path = pick_folder("Select output folder", self._variant_output_path)
             if path:
                 self._variant_output_path = path
 
@@ -1074,10 +1078,10 @@ class PaletteApp:
     def _draw_adjust_save_row(self) -> None:
         clicked = False
         if begin_form("##adjust_output_form"):
-            _, clicked = draw_path_row("Output", self._adjust_output_path)
+            self._adjust_output_path, clicked = draw_path_row("Output", self._adjust_output_path)
             end_form()
         if clicked:
-            path = pick_folder("Select output folder")
+            path = pick_folder("Select output folder", self._adjust_output_path)
             if path:
                 self._adjust_output_path = path
 
@@ -1278,10 +1282,10 @@ class PaletteApp:
     def _draw_save_row(self) -> None:
         clicked = False
         if begin_form("##output_form"):
-            _, clicked = draw_path_row("Output", self._output_path)
+            self._output_path, clicked = draw_path_row("Output", self._output_path)
             end_form()
         if clicked:
-            path = pick_folder("Select output folder")
+            path = pick_folder("Select output folder", self._output_path)
             if path:
                 self._output_path = path
 

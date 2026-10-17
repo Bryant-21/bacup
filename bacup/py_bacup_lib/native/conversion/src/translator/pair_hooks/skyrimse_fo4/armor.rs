@@ -21,6 +21,47 @@ pub(super) fn normalize_skyrim_armor(record: &mut Record, interner: &StringInter
 
     if record.sig.as_str() == "ARMA" {
         record.fields.retain(|field| field.sig.0 != *b"MODL");
+        for field in &mut record.fields {
+            rewrite_first_person_models(
+                &mut field.value,
+                matches!(&field.sig.0, b"MOD4" | b"MOD5"),
+                interner,
+            );
+        }
+    }
+}
+
+fn rewrite_first_person_models(
+    value: &mut FieldValue,
+    first_person: bool,
+    interner: &StringInterner,
+) {
+    match value {
+        FieldValue::String(path) if first_person => {
+            if let Some(relative) = interner
+                .resolve(*path)
+                .and_then(super::super::model_paths::canonical_model_path)
+                && relative.to_ascii_lowercase().ends_with(".nif")
+                && !relative.to_ascii_lowercase().starts_with("firstperson\\")
+            {
+                *path = interner.intern(&format!("FirstPerson\\{relative}"));
+            }
+        }
+        FieldValue::List(items) => {
+            for item in items {
+                rewrite_first_person_models(item, first_person, interner);
+            }
+        }
+        FieldValue::Struct(fields) => {
+            for (key, nested) in fields {
+                rewrite_first_person_models(
+                    nested,
+                    first_person || matches!(interner.resolve(*key), Some("MOD4" | "MOD5")),
+                    interner,
+                );
+            }
+        }
+        _ => {}
     }
 }
 

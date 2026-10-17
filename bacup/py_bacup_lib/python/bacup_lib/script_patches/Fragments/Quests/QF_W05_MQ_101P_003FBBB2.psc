@@ -255,6 +255,7 @@ Function Fragment_Stage_1310_Item_00()
 EndFunction
 
 Function Fragment_Stage_1400_Item_00()
+    ; TODO(recipes): FO76 teaches W05_MQ_101P_NukaColaVaccinated_Recipe, W05_MQ_101P_NukaColaBlood_Recipe, W05_MQ_101P_NukaColaScorched_Recipe at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(120)
     If W05_MQ_101P_006_FlavorCompleted && !W05_MQ_101P_006_FlavorCompleted.IsPlaying()
         W05_MQ_101P_006_FlavorCompleted.Start()

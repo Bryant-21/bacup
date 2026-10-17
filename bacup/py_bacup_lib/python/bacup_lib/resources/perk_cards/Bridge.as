@@ -63,7 +63,7 @@ package {
                 frame.character.playerRace = 1;
                 frame.character.hasSeenPVPTutorial = true;
                 for each (var pick:Object in frame.perks.levelUpPerkCardDataA) pick.unequippedDuplicateCount = 0;
-                for each (var cards:Array in [frame.perks.perkCardDataA, frame.perks.unownedPerkCardDataA,
+                for each (var cards:Array in [frame.perks.perkCardDataA, frame.perks.teammateCardDataA, frame.perks.unownedPerkCardDataA,
                         frame.perks.levelUpPerkCardDataA, frame.packs.openedPackCardData]) {
                     if (cards != null) {
                         for each (var entry:Object in cards) entry.supportedGameMode = 0;
@@ -136,6 +136,14 @@ package {
                 this.LevelUpButton.ButtonEnabled = this._NumLevelUpPoints > 0;
             }
             if (this._NumLevelUpPoints == 0) this.LevelUpButton.ButtonFlashing = false;
+            var selected:Object = stage.focus == this.Collection_mc ? this.Collection_mc.selectedEntry :
+                stage.focus == this.EquipDeckHolder_mc ? this.EquipDeckHolder_mc.selectedEntry : null;
+            if (selected != null && Boolean(selected.isTeammateCard)) {
+                this.AcceptButton.ButtonEnabled = false;
+                this.RankUpButton.ButtonEnabled = false;
+                this.ScrapButton.ButtonVisible = false;
+                this.ScrapButton.ButtonEnabled = false;
+            }
             return true;
         }
 
@@ -242,11 +250,11 @@ package {
             if (bar == null || !bar.visible) return;
             var bounds:Rectangle = bar.getBounds(bar);
             if (bounds.width <= 0) return;
-            var left:Number = Math.max(48, bar.StartingXPos);
+            var left:Number = 48;
             if (this.Header_mc != null) left = Math.max(left, this.Header_mc.getBounds(this).right + 24);
-            var scale:Number = Math.min(1, (1872 - left) / bounds.width);
+            var scale:Number = Math.min(1, 2 * Math.min(960 - left, 912) / bounds.width);
             bar.scaleX = bar.scaleY = scale;
-            bar.x = left - bounds.left * scale;
+            bar.x = 960 - (bounds.left + bounds.width / 2) * scale;
         }
 
         public function B21AllocationValues():Object {

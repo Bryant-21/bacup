@@ -27,7 +27,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		PrepareLocalAssassination()
 	EndIf
 EndEvent
@@ -40,19 +40,16 @@ Event Actor.OnDeath(Actor akSender, Actor akKiller)
 EndEvent
 
 Function InitializeLocalAssassinationStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 EndFunction
 
 Function PrepareLocalAssassination()
-	If IsStageDone(CompleteStage) || AssassinationSets == None || AssassinationSets.Length == 0
+	If IsStageDone(GetCompleteStage()) || AssassinationSets == None || AssassinationSets.Length == 0
 		Return
 	EndIf
 
@@ -106,7 +103,7 @@ Function RegisterLocalAssassinationTargets()
 EndFunction
 
 Function CompleteLocalAssassination()
-	If IsStageDone(CompleteStage) || AssassinationSets == None || CurrentAssassinationSet < 0 || CurrentAssassinationSet >= AssassinationSets.Length
+	If IsStageDone(GetCompleteStage()) || AssassinationSets == None || CurrentAssassinationSet < 0 || CurrentAssassinationSet >= AssassinationSets.Length
 		Return
 	EndIf
 
@@ -120,5 +117,5 @@ Function CompleteLocalAssassination()
 	If XPD_ObjMod_Assassination_TargetAssassinated_Message != None
 		XPD_ObjMod_Assassination_TargetAssassinated_Message.Show()
 	EndIf
-	SetStage(CompleteStage)
+	SetStage(GetCompleteStage())
 EndFunction

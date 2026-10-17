@@ -15,6 +15,10 @@ if not getattr(sys, "frozen", False):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+    from ui.toolkit.native_shadow import load_native_from_shadow_copies
+
+    load_native_from_shadow_copies()
+
 from creation_lib.havok.native_runtime import configure_native_resources
 
 configure_native_resources()
@@ -30,6 +34,11 @@ from ui.toolkit.app import ToolkitApp  # noqa: E402
 
 
 def _prepare_first_run_settings(settings: ToolkitSettings, variant) -> bool:
+    if not settings.setup_complete and variant.id == "mod_manager":
+        # This workspace has its own game/library setup and does not need the
+        # authoring wizard's extraction/index/prefix pipeline. Do not mark the
+        # shared authoring wizard complete for other variants.
+        return True
     if settings.setup_complete or variant.id != "nif":
         return False
 
@@ -66,6 +75,17 @@ def _set_taskbar_identity(variant) -> None:
 
 def run_toolkit_variant(variant_id: str = "full", launch_path: str | None = None):
     multiprocessing.freeze_support()
+    if launch_path and launch_path.casefold().startswith("nxm:"):
+        from creation_lib.mod_manager.nxm_instances import forward_link
+        from creation_lib.mod_manager.nexus import NexusError
+        from ui.toolkit.app_paths import get_ini_dir
+        try:
+            if forward_link(get_ini_dir() / "mod-manager", launch_path):
+                return
+        except NexusError as exc:
+            raise SystemExit(str(exc)) from None
+        if variant_id != "mod_manager":
+            variant_id = "full"
     variant = get_variant(variant_id)
     _set_taskbar_identity(variant)
 

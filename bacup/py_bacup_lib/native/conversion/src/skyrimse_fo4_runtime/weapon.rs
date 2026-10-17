@@ -133,6 +133,7 @@ pub(crate) fn project_simple_melee_weapon(record: &mut Record, interner: &String
     let Some(model) = clone_field(record, "MODL") else {
         return false;
     };
+    let keywords = clone_field(record, "KWDA");
     emit_fo4_melee_weapon(
         record,
         Fo4MeleeSourcePayload {
@@ -148,6 +149,35 @@ pub(crate) fn project_simple_melee_weapon(record: &mut Record, interner: &String
         STEEL_BATTLEAXE_PROFILE,
         interner,
     );
+    if let Some(FieldEntry {
+        value: FieldValue::List(source_keywords),
+        ..
+    }) = keywords
+    {
+        let mut count = 0;
+        if let Some(FieldEntry {
+            value: FieldValue::List(keywords),
+            ..
+        }) = record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"KWDA")
+        {
+            for keyword in source_keywords {
+                if !keywords.contains(&keyword) {
+                    keywords.push(keyword);
+                }
+            }
+            count = keywords.len();
+        }
+        if let Some(size) = record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"KSIZ")
+        {
+            size.value = FieldValue::Uint(count as u64);
+        }
+    }
     true
 }
 
@@ -355,6 +385,29 @@ mod tests {
             field("VNAM", FieldValue::Uint(0)),
         ]);
         record
+    }
+
+    #[test]
+    fn steel_battleaxe_retains_source_weapon_category_keywords() {
+        let interner = StringInterner::new();
+        let mut record = source_weapon(&interner);
+        let category = FieldValue::FormKey(FormKey {
+            local: 0x06D932,
+            plugin: interner.intern("Skyrim.esm"),
+        });
+        record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"KWDA")
+            .unwrap()
+            .value = FieldValue::List(vec![category.clone()]);
+        assert!(project_simple_melee_weapon(&mut record, &interner));
+        let FieldValue::List(keywords) = exact_field(&record, "KWDA").unwrap() else {
+            panic!()
+        };
+        assert!(keywords.contains(&category));
+        assert_eq!(keywords.len(), 4);
+        assert_eq!(exact_field(&record, "KSIZ"), Some(&FieldValue::Uint(4)));
     }
 
     #[test]

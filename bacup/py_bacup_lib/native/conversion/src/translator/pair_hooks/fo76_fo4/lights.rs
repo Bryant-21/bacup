@@ -1,7 +1,9 @@
 use super::*;
+use crate::fixups::fo76_light_model::{
+    FO4_LIGH_FLAG_CAN_BE_CARRIED, contract_weight_from_fo76_flags,
+};
 
 pub(super) const FO4_LIGH_DATA_RADIUS_OFFSET: usize = 4;
-pub(super) const FO76_LIGH_DATA_VALUE_OFFSET: usize = 56;
 pub(super) const FO4_LIGH_DATA_NEAR_CLIP_OFFSET: usize = 24;
 pub(super) const FO4_LIGH_DATA_SCALAR_OFFSET: usize = 44;
 pub(super) const FO4_LIGH_DATA_EXPONENT_OFFSET: usize = 48;
@@ -13,8 +15,11 @@ pub(super) const FO4_LIGH_DATA_EXPONENT_OFFSET: usize = 48;
 /// either 10.0 or nothing. The FO76 colour is already baked into the `DATA` RGB,
 /// so the Kelvin carries no information FO4 needs and is simply cleared.
 pub(super) const FO4_LIGH_DATA_GOD_RAYS_NEAR_CLIP_OFFSET: usize = 52;
-#[cfg(test)]
+/// FO4 `Value` (u32). FO76 stores its lumens in the same slot as a u32 integer
+/// (`LGT_TCS_OmniNS_100_StreetLight` = 100), kept for FO4CS; see
+/// `fixups::fo76_light_model`.
 pub(super) const FO4_LIGH_DATA_VALUE_OFFSET: usize = 56;
+/// FO4 `Weight` (f32), which carries the FO76 high-flag contract.
 pub(super) const FO4_LIGH_DATA_WEIGHT_OFFSET: usize = 60;
 pub(super) const FO4_LIGH_DATA_LEN: usize = FO4_LIGH_DATA_WEIGHT_OFFSET + 4;
 pub(super) const FO4_LIGH_DATA_FLAGS_OFFSET: usize = 12;
@@ -23,12 +28,15 @@ pub(super) const FO4_LIGH_DATA_FLICKER_INTENSITY_AMP_OFFSET: usize = 32;
 pub(super) const FO4_LIGH_DEFAULT_FADE: f32 = 1.0;
 pub(super) const FO4_LIGH_DEFAULT_SCALAR: f32 = 1.0;
 pub(super) const FO4_LIGH_DEFAULT_EXPONENT: f32 = 2.0;
+pub(super) const FO4_LIGH_DEFAULT_VALUE: u32 = 0;
 pub(super) const FO4_LIGH_DEFAULT_WEIGHT: f32 = 0.0;
 pub(super) const FO4_LIGH_DEFAULT_GOD_RAYS_NEAR_CLIP: f32 = 0.0;
-pub(super) const FO4_LIGH_MAX_SYNTHETIC_RADIUS: u32 = 2048;
-pub(super) const FO4_SUNLIGHT_MAX_RADIUS: u32 = 256;
+/// A zero radius is a degenerate bounding volume. The FO76 runtime radius is
+/// written later by `fixups::normalize_light_radii`.
+pub(super) const FO4_LIGH_MIN_RADIUS: u32 = 1;
 pub(super) const FO4_CAGE_BULB_GOBO_PATH: &str = "textures/effects/gobos/cagebulbgobo01_d.dds";
-pub(super) const FO4_CAGE_BULB_GOBO_MAX_RADIUS: u32 = 256;
+/// Cage-bulb gobo lights wider than this get the larger near clip below.
+pub(super) const FO4_CAGE_BULB_GOBO_NEAR_CLIP_MIN_RADIUS: u32 = 256;
 pub(super) const FO4_CAGE_BULB_GOBO_MIN_NEAR_CLIP: f32 = 32.0;
 /// FO4 flicker-intensity-amplitude ceilings (`DATA` @ +32). FO76 authors this on
 /// a far larger scale (flicker lights: median ~3, up to 30000) than FO4, whose
@@ -53,29 +61,12 @@ pub(super) const FO4_LIGH_MIN_NEAR_CLIP: f32 = 7.217;
 /// is cleared to restore FO4-native specular.
 pub(super) const FO4_LIGH_FLAGS_NON_SPECULAR: u32 = 0x0000_8000;
 pub(super) const FO4_LIGH_FLAGS_SHADOW_SPOTLIGHT: u32 = 0x0000_0400;
-pub(super) const FO4_LIGH_FLAGS_SHADOW_HEMISPHERE: u32 = 0x0000_0800;
-pub(super) const FO4_LIGH_FLAGS_SHADOW_OMNIDIRECTIONAL: u32 = 0x0000_1000;
-/// A light renders a shadow map iff one of these `DATA` flag bits (@ +12) is set.
-pub(super) const FO4_LIGH_FLAGS_SHADOW_MASK: u32 = FO4_LIGH_FLAGS_SHADOW_SPOTLIGHT
-    | FO4_LIGH_FLAGS_SHADOW_HEMISPHERE
-    | FO4_LIGH_FLAGS_SHADOW_OMNIDIRECTIONAL;
-/// Radius ceiling for a shadow-casting light (`DATA` @ +4). FO4 renders one full
-/// shadow map per shadow-casting light in range, with no shadow atlas, no static
-/// shadow caching and no per-frame allocation budget; FO76 has all three plus a
-/// baked GI solution, so its artists could afford far larger shadow radii.
-/// Measured populations: `Fallout4.esm` shadow lights sit at radius p50 256 /
-/// p90 1024 (max 2048, and 75% are exactly 256), while `SeventySix.esm` runs
-/// p50 893 / p90 1631 up to 20000. Shadow-frustum volume goes as radius^3, so an
-/// unclamped light costs orders of magnitude more per map *and* reaches the view
-/// from farther away, multiplying how many maps render at once. 1024 is FO4's own
-/// p90 — exactly one vanilla shadow light exceeds it — so this trims the tail
-/// without going below what the base game itself ships.
-pub(super) const FO4_LIGH_SHADOW_CASTER_MAX_RADIUS: u32 = 1024;
 /// FO76 commonly pairs `attenuation_only` with shadow spotlights, but carrying
 /// that combination into FO4 washes out projected lights instead of preserving it.
 pub(super) const FO4_LIGH_FLAGS_ATTENUATION_ONLY: u32 = 0x0001_0000;
 /// FO4 defines LIGH `DATA` flag bits only up to 0x200000; FO76 sets higher bits
-/// (0x400000+) that are meaningless in FO4. Mask the flags to FO4's defined range.
+/// (0x400000+) that the FO4 engine must not see. They are masked off the flag
+/// word and survive in the `Weight` contract instead.
 pub(super) const FO4_LIGH_FLAGS_VALID_MASK: u32 = 0x003F_FFFF;
 impl Fo76Fo4Hook {
     pub(super) fn ensure_light_radius(interner: &crate::sym::StringInterner, record: &mut Record) {
@@ -100,35 +91,22 @@ impl Fo76Fo4Hook {
                     if radius > 0 {
                         continue;
                     }
-                    let fallback = if bytes.len() >= FO76_LIGH_DATA_VALUE_OFFSET + 4 {
-                        u32::from_le_bytes(
-                            bytes[FO76_LIGH_DATA_VALUE_OFFSET..FO76_LIGH_DATA_VALUE_OFFSET + 4]
-                                .try_into()
-                                .unwrap(),
-                        )
-                    } else {
-                        1
-                    }
-                    .clamp(1, FO4_LIGH_MAX_SYNTHETIC_RADIUS);
                     bytes[FO4_LIGH_DATA_RADIUS_OFFSET..FO4_LIGH_DATA_RADIUS_OFFSET + 4]
-                        .copy_from_slice(&fallback.to_le_bytes());
+                        .copy_from_slice(&FO4_LIGH_MIN_RADIUS.to_le_bytes());
                 }
                 FieldValue::Struct(fields) => {
                     let radius_index = fields.iter().position(|(name, _)| {
                         Self::struct_field_name_is(interner, *name, "Radius")
                     });
-                    let fallback = Self::positive_u32_struct_field(interner, fields, "Value")
-                        .unwrap_or(1)
-                        .min(FO4_LIGH_MAX_SYNTHETIC_RADIUS);
 
                     if let Some(index) = radius_index {
                         if Self::field_value_positive_u32(&fields[index].1).is_none() {
-                            fields[index].1 = FieldValue::Uint(u64::from(fallback));
+                            fields[index].1 = FieldValue::Uint(u64::from(FO4_LIGH_MIN_RADIUS));
                         }
                     } else {
                         fields.push((
                             interner.intern("Radius"),
-                            FieldValue::Uint(u64::from(fallback)),
+                            FieldValue::Uint(u64::from(FO4_LIGH_MIN_RADIUS)),
                         ));
                     }
                 }
@@ -160,6 +138,7 @@ impl Fo76Fo4Hook {
             }
             match &mut entry.value {
                 FieldValue::Bytes(bytes) => {
+                    Self::write_raw_light_photometric_contract(bytes);
                     Self::normalize_raw_light_flags(bytes);
                     Self::raise_raw_light_near_clip(bytes, FO4_LIGH_MIN_NEAR_CLIP);
                     if is_fire_light {
@@ -187,25 +166,15 @@ impl Fo76Fo4Hook {
                             ..FO4_LIGH_DATA_GOD_RAYS_NEAR_CLIP_OFFSET + 4]
                             .copy_from_slice(&FO4_LIGH_DEFAULT_GOD_RAYS_NEAR_CLIP.to_le_bytes());
                     }
-                    // `Value` (@ +56) still holds FO76's lumens here. The post-copy
-                    // `normalize_light_radii` pass needs it to derive the FO4 radius
-                    // for this base *and* to rescale its placed `XRDS` overrides in
-                    // lockstep, so it is cleared there rather than here.
-                    if bytes.len() >= FO4_LIGH_DATA_WEIGHT_OFFSET + 4 {
-                        bytes[FO4_LIGH_DATA_WEIGHT_OFFSET..FO4_LIGH_DATA_WEIGHT_OFFSET + 4]
-                            .copy_from_slice(&FO4_LIGH_DEFAULT_WEIGHT.to_le_bytes());
-                    }
                     if bytes.len() > FO4_LIGH_DATA_LEN {
                         bytes.truncate(FO4_LIGH_DATA_LEN);
                     }
                 }
                 FieldValue::Struct(fields) => {
-                    // `Value` is kept: it still holds FO76's lumens, which the
-                    // post-copy `normalize_light_radii` pass consumes and clears.
                     fields.retain(|(name, _)| {
                         !Self::struct_field_name_is(interner, *name, "Bytes19")
-                            && !Self::struct_field_name_is(interner, *name, "Weight")
                     });
+                    Self::write_struct_light_photometric_contract(interner, fields);
                     Self::set_struct_float_field(
                         interner,
                         fields,
@@ -251,131 +220,57 @@ impl Fo76Fo4Hook {
         }
     }
 
-    pub(super) fn normalize_sunlight_radius_for_fo4(
-        interner: &crate::sym::StringInterner,
-        record: &mut Record,
-    ) {
-        if record.sig.0 != *b"LIGH"
-            || !record
-                .eid
-                .and_then(|eid| interner.resolve(eid))
-                .is_some_and(Self::is_fo76_omni_sunlight_editor_id)
-        {
+    /// FO4CS [Fo76Lighting] photometric contract (see `fixups::fo76_light_model`):
+    /// FO76 lumens stay in `Value` (@ +56, u32) and the FO76 flags above FO4's
+    /// range move into `Weight` (@ +60, f32) before the flag word is masked.
+    /// A carryable light's `Value`/`Weight` are FO4 item stats, so they are reset.
+    pub(super) fn write_raw_light_photometric_contract(bytes: &mut [u8]) {
+        if bytes.len() < FO4_LIGH_DATA_WEIGHT_OFFSET + 4 {
             return;
         }
-
-        for entry in &mut record.fields {
-            if entry.sig.0 != *b"DATA" {
-                continue;
-            }
-            match &mut entry.value {
-                FieldValue::Bytes(bytes) if bytes.len() >= FO4_LIGH_DATA_RADIUS_OFFSET + 4 => {
-                    let range = FO4_LIGH_DATA_RADIUS_OFFSET..FO4_LIGH_DATA_RADIUS_OFFSET + 4;
-                    let radius = u32::from_le_bytes(bytes[range.clone()].try_into().unwrap());
-                    if radius > FO4_SUNLIGHT_MAX_RADIUS {
-                        bytes[range].copy_from_slice(&FO4_SUNLIGHT_MAX_RADIUS.to_le_bytes());
-                    }
-                }
-                FieldValue::Struct(fields) => {
-                    let Some((_, radius)) = fields
-                        .iter_mut()
-                        .find(|(name, _)| Self::struct_field_name_is(interner, *name, "Radius"))
-                    else {
-                        continue;
-                    };
-                    if Self::field_value_positive_u32(radius)
-                        .is_some_and(|radius| radius > FO4_SUNLIGHT_MAX_RADIUS)
-                    {
-                        *radius = FieldValue::Uint(u64::from(FO4_SUNLIGHT_MAX_RADIUS));
-                    }
-                }
-                _ => {}
-            }
-        }
+        let flags = u32::from_le_bytes(
+            bytes[FO4_LIGH_DATA_FLAGS_OFFSET..FO4_LIGH_DATA_FLAGS_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let weight = if flags & FO4_LIGH_FLAG_CAN_BE_CARRIED != 0 {
+            bytes[FO4_LIGH_DATA_VALUE_OFFSET..FO4_LIGH_DATA_VALUE_OFFSET + 4]
+                .copy_from_slice(&FO4_LIGH_DEFAULT_VALUE.to_le_bytes());
+            FO4_LIGH_DEFAULT_WEIGHT
+        } else {
+            contract_weight_from_fo76_flags(flags)
+        };
+        bytes[FO4_LIGH_DATA_WEIGHT_OFFSET..FO4_LIGH_DATA_WEIGHT_OFFSET + 4]
+            .copy_from_slice(&weight.to_le_bytes());
     }
 
-    pub(super) fn clamp_shadow_caster_radius_for_fo4(
+    /// Struct-branch counterpart of `write_raw_light_photometric_contract`, for an
+    /// integer-valued `Flags` field.
+    pub(super) fn write_struct_light_photometric_contract(
         interner: &crate::sym::StringInterner,
-        record: &mut Record,
+        fields: &mut Vec<(crate::sym::Sym, FieldValue)>,
     ) {
-        if record.sig.0 != *b"LIGH" {
-            return;
-        }
-
-        for entry in &mut record.fields {
-            if entry.sig.0 != *b"DATA" {
-                continue;
-            }
-            match &mut entry.value {
-                FieldValue::Bytes(bytes) => {
-                    if bytes.len() < FO4_LIGH_DATA_FLAGS_OFFSET + 4 {
-                        continue;
-                    }
-                    let flags = u32::from_le_bytes(
-                        bytes[FO4_LIGH_DATA_FLAGS_OFFSET..FO4_LIGH_DATA_FLAGS_OFFSET + 4]
-                            .try_into()
-                            .unwrap(),
-                    );
-                    if flags & FO4_LIGH_FLAGS_SHADOW_MASK == 0 {
-                        continue;
-                    }
-                    let range = FO4_LIGH_DATA_RADIUS_OFFSET..FO4_LIGH_DATA_RADIUS_OFFSET + 4;
-                    let radius = u32::from_le_bytes(bytes[range.clone()].try_into().unwrap());
-                    if radius > FO4_LIGH_SHADOW_CASTER_MAX_RADIUS {
-                        bytes[range]
-                            .copy_from_slice(&FO4_LIGH_SHADOW_CASTER_MAX_RADIUS.to_le_bytes());
-                    }
-                }
-                FieldValue::Struct(fields) => {
-                    if !Self::struct_light_flags_cast_shadows(interner, fields) {
-                        continue;
-                    }
-                    let Some(index) = fields.iter().position(|(name, _)| {
-                        Self::struct_field_name_is(interner, *name, "Radius")
-                    }) else {
-                        continue;
-                    };
-                    if Self::field_value_positive_u32(&fields[index].1)
-                        .is_some_and(|radius| radius > FO4_LIGH_SHADOW_CASTER_MAX_RADIUS)
-                    {
-                        fields[index].1 =
-                            FieldValue::Uint(u64::from(FO4_LIGH_SHADOW_CASTER_MAX_RADIUS));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Whether a structured LIGH `DATA` carries any shadow-casting flag bit. Mirrors
-    /// `normalize_struct_light_flags` in only understanding integer-valued `Flags`.
-    pub(super) fn struct_light_flags_cast_shadows(
-        interner: &crate::sym::StringInterner,
-        fields: &[(crate::sym::Sym, FieldValue)],
-    ) -> bool {
-        fields.iter().any(|(name, value)| {
-            if !Self::struct_field_name_is(interner, *name, "Flags") {
-                return false;
-            }
-            match value {
+        let flags = fields
+            .iter()
+            .find(|(name, _)| Self::struct_field_name_is(interner, *name, "Flags"))
+            .and_then(|(_, value)| match value {
                 FieldValue::Uint(flags) => u32::try_from(*flags).ok(),
                 FieldValue::Int(flags) => u32::try_from(*flags).ok(),
                 _ => None,
-            }
-            .is_some_and(|flags| flags & FO4_LIGH_FLAGS_SHADOW_MASK != 0)
-        })
-    }
-
-    pub(super) fn is_fo76_omni_sunlight_editor_id(editor_id: &str) -> bool {
-        let editor_id = editor_id.to_ascii_lowercase();
-        editor_id
-            .strip_prefix("lgt_sunlight")
-            .is_some_and(|suffix| {
-                suffix == "ns"
-                    || suffix.starts_with("ns_")
-                    || suffix == "s"
-                    || suffix.starts_with("s_")
             })
+            .unwrap_or(0);
+        let weight = if flags & FO4_LIGH_FLAG_CAN_BE_CARRIED != 0 {
+            if let Some((_, value)) = fields
+                .iter_mut()
+                .find(|(name, _)| Self::struct_field_name_is(interner, *name, "Value"))
+            {
+                *value = FieldValue::Uint(u64::from(FO4_LIGH_DEFAULT_VALUE));
+            }
+            FO4_LIGH_DEFAULT_WEIGHT
+        } else {
+            contract_weight_from_fo76_flags(flags)
+        };
+        Self::set_struct_float_field(interner, fields, "Weight", weight);
     }
 
     /// Whether a LIGH carries a projected-light mask (`NAM0` gobo) — the signal
@@ -505,28 +400,22 @@ impl Fo76Fo4Hook {
                             .try_into()
                             .unwrap(),
                     );
-                    if radius <= FO4_CAGE_BULB_GOBO_MAX_RADIUS {
+                    if radius <= FO4_CAGE_BULB_GOBO_NEAR_CLIP_MIN_RADIUS {
                         continue;
                     }
-                    bytes[FO4_LIGH_DATA_RADIUS_OFFSET..FO4_LIGH_DATA_RADIUS_OFFSET + 4]
-                        .copy_from_slice(&FO4_CAGE_BULB_GOBO_MAX_RADIUS.to_le_bytes());
                     Self::raise_raw_light_near_clip(bytes, FO4_CAGE_BULB_GOBO_MIN_NEAR_CLIP);
                 }
                 FieldValue::Struct(fields) => {
-                    let Some(radius_index) = fields.iter().position(|(name, _)| {
-                        Self::struct_field_name_is(interner, *name, "Radius")
-                    }) else {
-                        continue;
-                    };
-                    let Some(radius) = Self::field_value_positive_u32(&fields[radius_index].1)
+                    let Some(radius) = fields
+                        .iter()
+                        .find(|(name, _)| Self::struct_field_name_is(interner, *name, "Radius"))
+                        .and_then(|(_, radius)| Self::field_value_positive_u32(radius))
                     else {
                         continue;
                     };
-                    if radius <= FO4_CAGE_BULB_GOBO_MAX_RADIUS {
+                    if radius <= FO4_CAGE_BULB_GOBO_NEAR_CLIP_MIN_RADIUS {
                         continue;
                     }
-                    fields[radius_index].1 =
-                        FieldValue::Uint(u64::from(FO4_CAGE_BULB_GOBO_MAX_RADIUS));
                     Self::raise_struct_float_field(
                         interner,
                         fields,

@@ -45,6 +45,60 @@ package
         }
 
         private var B21ModeHint:BSButtonHintData;
+        private var B21LockHint:BSButtonHintData;
+        private var B21ScrapHints:Vector.<BSButtonHintData>;
+        public var B21ScrapMode:Boolean;
+
+        public function B21SetLockHint(show:Boolean, locked:Boolean, callback:Function):void
+        {
+            if (B21LockHint == null)
+            {
+                B21LockHint = new BSButtonHintData("$B21_TFA_Lock", "L", "", "", 1, callback);
+                InventoryButtonHints.push(B21LockHint);
+                InspectModeButtons.push(B21LockHint);
+            }
+            var label:String = locked ? "$B21_TFA_Unlock" : "$B21_TFA_Lock";
+            var changed:Boolean = B21LockHint.ButtonVisible != show || B21LockHint.ButtonText != label;
+            B21LockHint.ButtonVisible = show;
+            B21LockHint.ButtonText = label;
+            if (changed)
+            {
+                if (_inspectMode) ButtonHintBar_mc.SetButtonHintData(InspectModeButtons);
+                else UpdateButtons();
+            }
+        }
+
+        // Tales calls this every frame. AE's ButtonBarMenu forwarder reads the list's length and
+        // every entry natively, so a null list or entry is a CTD: build the list before anything
+        // can throw, and mark the mode only once its setup has completed.
+        public function B21SetScrapMode(callback:Function):void
+        {
+            if (B21ScrapHints == null)
+            {
+                var hints:Vector.<BSButtonHintData> = new Vector.<BSButtonHintData>();
+                hints.push(new BSButtonHintData("$SCRAP", "Space", "PSN_A", "Xenon_A", 1, onScrapBuildAdd));
+                hints.push(new BSButtonHintData("$B21_TFA_ScrapAllJunk", "T", "", "", 1, callback));
+                if (B21LockHint != null) hints.push(B21LockHint);
+                hints.push(BackButton);
+                B21ScrapHints = hints;
+            }
+            if (!B21ScrapMode)
+            {
+                allowEquip = false;
+                allowRename = false;
+                allowRepair = false;
+                showScrapButton = true;
+                eMode = INVENTORY_MODE;
+                B21ScrapMode = true;
+            }
+            ButtonHintBar_mc.SetButtonHintData(B21ScrapHints);
+        }
+
+        public function B21OnItemPressed():void
+        {
+            if (B21ScrapMode) onScrapBuildAdd();
+            else onModButton();
+        }
 
         // The recipe list is CookingMenu's first list, shown with the slot-mode buttons.
         public function B21SetModeHint(label:String, crafting:Boolean, callback:Function):void

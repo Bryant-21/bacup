@@ -71,6 +71,24 @@ impl Phase for BuildEspPhase {
 
         ctx.check_cancel()?;
 
+        let skill_records =
+            crate::skyrimse_fo4_runtime::skill_modifiers::ensure_skill_modifier_keywords(ctx.run)
+                .map_err(PhaseError::Internal)?;
+        let magic_runtime = if ctx.run.source_handle().is_some() {
+            crate::skyrimse_fo4_runtime::magic_resources::prepare_magic_runtime_output(ctx.run)
+                .map_err(PhaseError::Internal)?
+        } else {
+            None
+        };
+        let fnv_radiation =
+            crate::translator::pair_hooks::fnv_fo4::creature_magic_runtime::prepare_fnv_radiation_output(
+                ctx.run,
+            )
+            .map_err(PhaseError::Internal)?;
+        let fnv_imagespace =
+            crate::translator::pair_hooks::fnv_fo4::creature_imagespace::prepare_output(ctx.run)
+                .map_err(PhaseError::Internal)?;
+
         crate::plugin_header::normalize_target_plugin_header(
             target_handle_id,
             ctx.run.target.as_str(),
@@ -113,6 +131,19 @@ impl Phase for BuildEspPhase {
             level: LogLevel::Info,
             message: format!("build_esp: saved ESP to '{output_path}'"),
         });
+
+        if let Some(output) = &magic_runtime {
+            output.write(ctx.mod_path).map_err(PhaseError::Internal)?;
+        }
+        crate::translator::pair_hooks::fnv_fo4::creature_magic_runtime::remove_stale_native_outputs(
+            ctx.run, ctx.mod_path, fnv_radiation.is_some(), fnv_imagespace.is_some(),
+        ).map_err(PhaseError::Internal)?;
+        if let Some(output) = &fnv_radiation {
+            output.write(ctx.mod_path).map_err(PhaseError::Internal)?;
+        }
+        if let Some(output) = &fnv_imagespace {
+            output.write(ctx.mod_path).map_err(PhaseError::Internal)?;
+        }
 
         ctx.check_cancel()?;
 
@@ -161,7 +192,12 @@ impl Phase for BuildEspPhase {
         };
 
         Ok(PhaseReport {
-            assets_written: 1,
+            records_added: skill_records,
+            records_changed: magic_runtime
+                .as_ref()
+                .map_or(0, |output| output.records_changed),
+            assets_written: 1 + u32::from(magic_runtime.is_some())
+                + u32::from(fnv_radiation.is_some()) + u32::from(fnv_imagespace.is_some()),
             warnings: validator_warnings,
             ..Default::default()
         })

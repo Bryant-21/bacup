@@ -32,7 +32,7 @@ use super::creature_race_data::{
     load_creature_record_race_data_evidence, load_legacy_movement_base_settings,
 };
 
-pub const CREATURE_RECIPE_SCHEMA_VERSION: u32 = 3;
+pub const CREATURE_RECIPE_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -177,6 +177,7 @@ pub struct MovementSettingsReceipt {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FamilyRaceDataRecipe {
     pub selection: FamilyRaceDataSelection,
+    pub scale_policy: Fo4RaceDataScalePolicy,
     pub measured_evidence: SourceFamilyRaceDataEvidence,
     pub derivation: Fo4RaceDataDerivation,
     pub policy_receipts: Vec<RaceDataFidelityReceipt>,
@@ -902,6 +903,13 @@ fn normalize_and_validate_indexed_motion(
             KfParseEvidence::MissingAsset | KfParseEvidence::ParseFailed(_) => {}
         }
         for claim in &kf.idle_claims {
+            match winning_records.get(&claim.source_idle) {
+                Some(record) if record.sig.as_str() == "IDLE" => {},
+                Some(record) => blockers.push(FamilyRecipeBlocker::WrongIdleSignature {
+                    source: claim.source_idle.clone(), signature: record.sig.as_str().to_string(),
+                }),
+                None => blockers.push(FamilyRecipeBlocker::MissingIdleRecord(claim.source_idle.clone())),
+            }
             for node in &claim.ancestry {
                 match winning_records.get(&node.form_key) {
                     None => blockers.push(FamilyRecipeBlocker::MissingIdleRecord(
@@ -1098,6 +1106,7 @@ fn build_family_race_recipe(
     policy_receipts.dedup();
     Some(FamilyRaceDataRecipe {
         selection: selection.clone(),
+        scale_policy: policy.clone(),
         measured_evidence,
         derivation,
         policy_receipts,
@@ -1945,6 +1954,9 @@ pub(super) mod tests {
             };
             let idle_claim = IdleClaimEvidence {
                 source_idle: idle_key.clone(),
+                source_group: 20,
+                looping_min: 0,
+                looping_max: 0,
                 ancestry: vec![IdleAncestryNode {
                     form_key: idle_key,
                     editor_id: Some("GeckoIdle".to_string()),
@@ -1983,6 +1995,8 @@ pub(super) mod tests {
                         controller_types: vec!["NiTransformController".to_string()],
                         interpolator_types: vec!["NiTransformInterpolator".to_string()],
                         target_names: vec!["Bip01".to_string()],
+                        transform_priorities: Default::default(),
+                        transform_components: Default::default(),
                         required_float_slots: Vec::new(),
                         compatibility: BindingCompatibility::Verified,
                         compatibility_detail: None,
@@ -2047,6 +2061,7 @@ pub(super) mod tests {
                     rig: rig.clone(),
                     referenced_kfs,
                     kf_evidence: clips,
+                    weapon_attacks: Vec::new(),
                     creature_traits: Vec::new(),
                 }],
                 graph: vec![CreatureGraphContractEvidence {

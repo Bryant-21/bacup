@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
+use unicode_casefold::UnicodeCaseFold;
 
 struct Directory {
     entries: Vec<(OsString, fs::FileType)>,
@@ -13,7 +14,7 @@ struct Directory {
 }
 
 #[derive(Default)]
-struct Inventory {
+pub(crate) struct Inventory {
     directories: HashMap<PathBuf, Option<Arc<Directory>>>,
     probes: HashMap<PathBuf, (bool, bool)>,
     directory_requests: usize,
@@ -25,6 +26,53 @@ struct Inventory {
 }
 
 impl Inventory {
+    pub(crate) fn child_case_folded(&mut self, parent: &Path, name: &str) -> Option<PathBuf> {
+        self.directory(parent)?
+            .entries
+            .iter()
+            .find(|(entry, kind)| {
+                (kind.is_dir() || (kind.is_symlink() && parent.join(entry).is_dir()))
+                    && entry.to_string_lossy().case_fold().eq(name.case_fold())
+            })
+            .map(|(entry, _)| parent.join(entry))
+    }
+
+    pub(crate) fn child_directories_case_insensitive(
+        &mut self,
+        parent: &Path,
+        name: &str,
+    ) -> Vec<PathBuf> {
+        let Some(directory) = self.directory(parent) else {
+            return Vec::new();
+        };
+        directory
+            .entries
+            .iter()
+            .filter(|(entry, kind)| {
+                entry.to_string_lossy().to_lowercase() == name.to_lowercase()
+                    && (kind.is_dir() || (kind.is_symlink() && parent.join(entry).is_dir()))
+            })
+            .map(|(entry, _)| parent.join(entry))
+            .collect()
+    }
+
+    pub(crate) fn child_case_insensitive(&mut self, parent: &Path, name: &str) -> Option<PathBuf> {
+        if !parent.is_dir() {
+            return None;
+        }
+        if let Some(directory) = self.directory(parent) {
+            if let Some((actual, _)) = directory
+                .entries
+                .iter()
+                .find(|(entry, _)| entry.to_string_lossy().to_lowercase() == name.to_lowercase())
+            {
+                return Some(parent.join(actual));
+            }
+        }
+        let direct = parent.join(name);
+        direct.exists().then_some(direct)
+    }
+
     fn directory(&mut self, path: &Path) -> Option<Arc<Directory>> {
         self.directory_requests += 1;
         if self.directories.contains_key(path) {
@@ -63,7 +111,7 @@ impl Inventory {
             .clone()
     }
 
-    fn exists(&mut self, path: &Path, allow_directories: bool) -> bool {
+    pub(crate) fn exists(&mut self, path: &Path, allow_directories: bool) -> bool {
         if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
             if let Some(directory) = self.directory(parent) {
                 if let Some(&index) = directory.by_name.get(name) {
@@ -83,7 +131,7 @@ impl Inventory {
         file || (allow_directories && directory)
     }
 
-    fn files(
+    pub(crate) fn files(
         &mut self,
         root: &Path,
         suffixes: &[String],
@@ -182,7 +230,7 @@ impl Inventory {
 
 #[derive(Default)]
 pub struct SourceAssetInventory {
-    inner: Mutex<Inventory>,
+    pub(crate) inner: Mutex<Inventory>,
 }
 
 impl SourceAssetInventory {
@@ -234,6 +282,55 @@ impl PySourceAssetInventory {
     #[new]
     fn new() -> Self {
         Self::default()
+    }
+
+    #[staticmethod]
+    fn asset_signatures(kinds: Vec<String>) -> Option<Vec<String>> {
+        let mut signatures = std::collections::BTreeSet::new();
+        for kind in kinds {
+            signatures.extend(match kind.as_str() {
+                "material" => vec!["MSWP"],
+                "behavior" => vec!["IDLE", "RACE"],
+                "sound" => vec!["SNDR", "SOUN", "MUSC", "MUST"],
+                _ => return None,
+            });
+        }
+        (!signatures.is_empty()).then(|| signatures.into_iter().map(str::to_owned).collect())
+    }
+
+    fn collect_assets_json(
+        &self,
+        py: Python<'_>,
+        raw_json: &str,
+        options_json: &str,
+    ) -> PyResult<String> {
+        py.detach(|| crate::asset_collection::collect_json(&self.inner, raw_json, options_json))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    fn discover_legacy_music_json(&self, py: Python<'_>, options_json: &str) -> PyResult<String> {
+        py.detach(|| crate::asset_collection::discover_legacy_music_json(&self.inner, options_json))
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    fn resolve_asset(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        source: &str,
+        options_json: &str,
+        source_names: Vec<String>,
+    ) -> PyResult<(Option<String>, Option<String>)> {
+        py.detach(|| {
+            crate::asset_collection::resolve_asset(
+                &self.inner,
+                kind,
+                source,
+                options_json,
+                &source_names,
+            )
+        })
+        .map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     #[pyo3(signature = (path, allow_directories=false))]

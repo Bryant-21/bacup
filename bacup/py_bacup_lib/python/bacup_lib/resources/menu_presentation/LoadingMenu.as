@@ -1,26 +1,95 @@
 package {
+    import flash.display.DisplayObjectContainer;
     import flash.display.Loader;
     import flash.display.MovieClip;
     import flash.events.Event;
     import flash.events.IOErrorEvent;
     import flash.events.SecurityErrorEvent;
+    import flash.events.TimerEvent;
     import flash.geom.Matrix;
     import flash.net.URLRequest;
+    import flash.utils.Timer;
 
     public class LoadingMenu extends MovieClip {
+        public var LeftText_mc:MovieClip;
+        public var VaultTecLogo_mc:MovieClip;
+        public var Vault51Logo_mc:MovieClip;
+        public var BlackRect_mc:MovieClip;
+        public var Box_mc:MovieClip;
+        public var Info_mc:MovieClip;
+        public var BGSCodeObj:Object;
+        public var InMinimalMode:Boolean = false;
         private var b21Photo:Loader;
-        private var b21Frame:MovieClip;
-        private var b21Text:MovieClip;
         private var b21PendingUrl:String;
-        private var b21TextAlpha:Number;
-        private var b21SpinnerAlpha:Number;
-        private var b21TextHidden:Boolean;
-        private var b21Level:Number = 0;
         private var b21Url:String;
-        // Images still to try if the current one fails, and Tales' logger for each attempt.
         private var b21Queue:Array;
+        private var b21Timer:Timer;
         public var B21LoadingReport:Function;
-        public function get B21PhotoHostVersion():uint { return 2; }
+        public function get B21PhotoHostVersion():uint { return 3; }
+
+        public function LoadingMenu() {
+            super();
+            BGSCodeObj = {};
+            Info_mc.visible = Vault51Logo_mc.visible = BlackRect_mc.visible = false;
+            VaultTecLogo_mc.visible = true;
+            LeftText_mc.VDSGText_tf.visible = false;
+            LeftText_mc.LoadScreenText_tf.text = "";
+            b21Timer = new Timer(3000);
+            b21Timer.addEventListener(TimerEvent.TIMER, refreshLoadingText);
+            addEventListener(Event.ADDED_TO_STAGE, B21Stage);
+            addEventListener(Event.REMOVED_FROM_STAGE, B21Removed);
+        }
+
+        private function B21Stage(event:Event):void {
+            if (event.target != this) return;
+            b21Timer.start();
+            stage.addEventListener(Event.RESIZE, B21PhotoResized);
+            B21Layout();
+        }
+
+        private function B21Removed(event:Event):void {
+            if (event.target != this) return;
+            b21Timer.stop();
+            B21ClearPhoto();
+            if (stage) stage.removeEventListener(Event.RESIZE, B21PhotoResized);
+        }
+
+        public function SetPlatform(platform:uint, swap:Boolean):void {}
+        public function SetSafeRect(x:Number, y:Number):void { B21Layout(); }
+
+        public function SetLoadingText(slide:uint, title:String, tip:String):void {
+            InMinimalMode = false;
+            BlackRect_mc.visible = false;
+            VaultTecLogo_mc.visible = true;
+            Box_mc.visible = LeftText_mc.visible = true;
+            LeftText_mc.LoadScreenText_tf.text = tip;
+            LeftText_mc.LoadScreenText_tf.visible = true;
+            LeftText_mc.Dots_mc.play();
+            if (b21Photo) b21Photo.visible = true;
+        }
+
+        public function SetLevel(level:uint, fraction:Number):void {
+            LeftText_mc.LevelText_tf.text = "$LEVEL";
+            LeftText_mc.LevelText_tf.appendText(" " + level);
+            LeftText_mc.PlayerLevelMeter_mc.gotoAndStop(Math.max(1, Math.round(Math.max(0, Math.min(1, fraction)) * 300)));
+            LeftText_mc.LevelText_tf.visible = LeftText_mc.PlayerLevelMeter_mc.visible = level > 0;
+        }
+
+        public function SetMinimalMode():void {
+            InMinimalMode = true;
+            Box_mc.visible = LeftText_mc.visible = false;
+            BlackRect_mc.visible = VaultTecLogo_mc.visible = true;
+            if (b21Photo) b21Photo.visible = false;
+        }
+
+        public function SpinnerOnly():void {
+            SetMinimalMode();
+            BlackRect_mc.visible = false;
+        }
+
+        public function refreshLoadingText(event:Event = null):void {
+            if (BGSCodeObj && BGSCodeObj.requestLoadingText != null) BGSCodeObj.requestLoadingText();
+        }
 
         public function B21ShowPhotos(urls:Array):void {
             B21ShowPhoto(urls && urls.length ? String(urls[0]) : null);
@@ -54,7 +123,9 @@ package {
             b21Photo.contentLoaderInfo.addEventListener(Event.COMPLETE, B21PhotoLoaded);
             b21Photo.contentLoaderInfo.addEventListener(IOErrorEvent.IO_ERROR, B21PhotoFailed);
             b21Photo.contentLoaderInfo.addEventListener(SecurityErrorEvent.SECURITY_ERROR, B21PhotoFailed);
-            addChildAt(b21Photo, BlackRect_mc && contains(BlackRect_mc) ? getChildIndex(BlackRect_mc) + 1 : 0);
+            // Under FilterHolder_mc, in stage coordinates: FO76 places this menu 10px down inside it,
+            // and FO4 tints that holder with the HUD colour. FO76 draws its backgrounds untinted.
+            DisplayObjectContainer(root).addChildAt(b21Photo, 0);
             try { b21Photo.load(new URLRequest(url)); }
             catch (error:Error) { B21TryNext(error.message); }
         }
@@ -69,48 +140,23 @@ package {
         private function B21PhotoLoaded(event:Event):void {
             if (!b21Photo || event.target != b21Photo.contentLoaderInfo) return;
             try {
-                b21Frame = new B21_LoadingBox();
-                b21Text = new B21_LoadingText();
-                b21Frame.mouseEnabled = b21Text.mouseEnabled = false;
-                b21Frame.mouseChildren = b21Text.mouseChildren = false;
-                addChildAt(b21Frame, getChildIndex(b21Photo) + 1);
-                addChildAt(b21Text, getChildIndex(b21Frame) + 1);
-                b21Text.Dots_mc.play();
-                // A failed fit has already moved on to the next image.
                 if (!B21FitPhoto()) return;
-                b21TextAlpha = LeftText_mc.alpha;
-                b21SpinnerAlpha = VaultTecLogo_mc.alpha;
-                b21TextHidden = true;
-                LeftText_mc.alpha = 0;
-                addEventListener(Event.ENTER_FRAME, B21SyncText);
-                stage.addEventListener(Event.RESIZE, B21PhotoResized);
-                B21SyncText(null);
+                b21Photo.visible = !InMinimalMode;
                 var size:Array = B21PhotoSize();
                 B21Report(true, size[0] + "x" + size[1]);
             } catch (error:Error) { B21TryNext(error.message); }
         }
 
-        public function B21LevelChanged(fraction:Number):void {
-            b21Level = Math.max(0, Math.min(1, fraction));
-        }
+        private function B21PhotoResized(event:Event):void { B21Layout(); B21FitPhoto(); }
 
-        private function B21SyncText(event:Event):void {
-            if (!b21Text || !b21Photo) return;
-            try {
-                b21Photo.visible = !InMinimalMode;
-                VaultTecLogo_mc.alpha = InMinimalMode ? b21SpinnerAlpha : 0;
-                b21Frame.visible = !InMinimalMode;
-                b21Text.visible = !InMinimalMode;
-                b21Text.LoadScreenText_tf.text = LeftText_mc.LoadScreenText_tf.text;
-                b21Text.LevelText_tf.text = LeftText_mc.LevelText_tf.text;
-                b21Text.LoadScreenText_tf.visible = LeftText_mc.LoadScreenText_tf.visible;
-                b21Text.LevelText_tf.visible = LeftText_mc.LevelText_tf.visible;
-                b21Text.PlayerLevelMeter_mc.visible = LeftText_mc.LevelMeter_mc.visible;
-                b21Text.PlayerLevelMeter_mc.gotoAndStop(Math.max(1, Math.round(b21Level * 300)));
-            } catch (error:Error) { B21ClearPhoto(); }
+        private function B21Layout():void {
+            if (!stage) return;
+            B21Place(Box_mc, B21_MenuLayout.loading.Box_mc);
+            B21Place(LeftText_mc, B21_MenuLayout.loading.LeftText_mc);
+            B21Place(VaultTecLogo_mc, B21_MenuLayout.loading.VaultTecLogo_mc);
+            BlackRect_mc.width = stage.stageWidth;
+            BlackRect_mc.height = stage.stageHeight;
         }
-
-        private function B21PhotoResized(event:Event):void { B21FitPhoto(); }
 
         private function B21Place(clip:MovieClip, source:Array):void {
             var scale:Number = Math.min(stage.stageWidth / 1920, stage.stageHeight / 1080);
@@ -136,8 +182,6 @@ package {
             b21Photo.content.scaleX = b21Photo.content.scaleY = scale;
             b21Photo.x = (stage.stageWidth - width * scale) / 2;
             b21Photo.y = (stage.stageHeight - height * scale) / 2;
-            B21Place(b21Frame, B21_MenuLayout.loading.Box_mc);
-            B21Place(b21Text, B21_MenuLayout.loading.LeftText_mc);
             return true;
         }
 
@@ -148,22 +192,14 @@ package {
 
         public function B21ClearPhoto():void {
             removeEventListener(Event.ADDED_TO_STAGE, B21PhotoStage);
-            removeEventListener(Event.ENTER_FRAME, B21SyncText);
-            if (stage) stage.removeEventListener(Event.RESIZE, B21PhotoResized);
             b21PendingUrl = null;
             b21Queue = null;
-            if (b21TextHidden && LeftText_mc) LeftText_mc.alpha = b21TextAlpha;
-            if (b21TextHidden && VaultTecLogo_mc) VaultTecLogo_mc.alpha = b21SpinnerAlpha;
-            b21TextHidden = false;
-            if (b21Frame && contains(b21Frame)) removeChild(b21Frame);
-            if (b21Text && contains(b21Text)) removeChild(b21Text);
-            b21Frame = b21Text = null;
             if (!b21Photo) return;
             b21Photo.contentLoaderInfo.removeEventListener(Event.COMPLETE, B21PhotoLoaded);
             b21Photo.contentLoaderInfo.removeEventListener(IOErrorEvent.IO_ERROR, B21PhotoFailed);
             b21Photo.contentLoaderInfo.removeEventListener(SecurityErrorEvent.SECURITY_ERROR, B21PhotoFailed);
             try { b21Photo.close(); } catch (error:Error) {}
-            if (contains(b21Photo)) removeChild(b21Photo);
+            if (b21Photo.parent) b21Photo.parent.removeChild(b21Photo);
             b21Photo.unloadAndStop(true);
             b21Photo = null;
         }

@@ -82,6 +82,14 @@ package {
             _SPECIALToLevel = 4;
             check(!B21PickPerkOnly() && _SPECIALToLevel == -1, "picking any card never forces a SPECIAL choice");
             check(!ShareButton.ButtonVisible, "multiplayer share remains hidden");
+            Collection_mc.selectedEntry = {isTeammateCard:true};
+            AcceptButton.ButtonEnabled = true;
+            RankUpButton.ButtonEnabled = true;
+            ScrapButton.ButtonVisible = true;
+            B21SetButtons();
+            check(!AcceptButton.ButtonEnabled && !RankUpButton.ButtonEnabled && !ScrapButton.ButtonVisible,
+                "borrowed cards cannot equip, rank up or scrap");
+            Collection_mc.selectedEntry = null;
             addChild(PickAPerk_mc);
             B21OpenPerks();
             check(stage.focus == PickAPerk_mc, "banked picks open the card picker");
@@ -166,9 +174,13 @@ package {
             check(B21RankCandidates(target).length == 0, "unavailable next rank cannot merge");
             var confirmation:PerkCardRankConfirmation = new PerkCardRankConfirmation();
             confirmation.B21SetData({isAnimatedPerk: false}, {isAnimatedPerk: true});
-            check(!confirmation.ProducedCard_mc.dataObj.isAnimatedPerk, "foil ingredient does not change preserved target");
+            check(confirmation.ProducedCard_mc.dataObj.isAnimatedPerk, "foil ingredient makes the combined card animated");
             confirmation.B21SetData({isAnimatedPerk: true}, {isAnimatedPerk: false});
             check(confirmation.ProducedCard_mc.dataObj.isAnimatedPerk, "foil target stays foil");
+            confirmation.B21SetData({isAnimatedPerk: true}, {isAnimatedPerk: true});
+            check(confirmation.ProducedCard_mc.dataObj.isAnimatedPerk, "two animated copies stay animated");
+            confirmation.B21SetData({isAnimatedPerk: false}, {isAnimatedPerk: false});
+            check(!confirmation.ProducedCard_mc.dataObj.isAnimatedPerk, "two normal copies stay normal");
             QuantityModal_mc.opened = true;
             check(B21PromptActive, "quantity dialog uses native modal navigation");
             B21ProcessUserEvent("Left",true);
@@ -195,8 +207,11 @@ package {
             ButtonHintBar_mc.graphics.drawRect(-1000,0,2100,30);
             ButtonHintBar_mc.graphics.endFill();
             dispatchEvent(new Event(Event.ENTER_FRAME));
-            check(ButtonHintBar_mc.getBounds(this).left >= 360 && ButtonHintBar_mc.getBounds(this).right <= 1872.1,
-                "long footer fits between source left anchor and right margin");
+            check(ButtonHintBar_mc.getBounds(this).left >= Header_mc.getBounds(this).right + 24 &&
+                    ButtonHintBar_mc.getBounds(this).right <= 1872.1,
+                "long footer fits beside the header and within the right margin");
+            check(Math.abs(ButtonHintBar_mc.getBounds(this).left + ButtonHintBar_mc.getBounds(this).width / 2 - 960) < 0.1,
+                "long footer is centered on the source canvas");
             ButtonHintBar_mc.graphics.clear();
             ButtonHintBar_mc.graphics.beginFill(0xFFFFCB);
             ButtonHintBar_mc.graphics.drawRect(-100,0,200,30);
@@ -204,6 +219,8 @@ package {
             dispatchEvent(new Event(Event.ENTER_FRAME));
             check(ButtonHintBar_mc.scaleX == 1 && ButtonHintBar_mc.scaleY == 1,
                 "short modal footer restores natural text size");
+            check(Math.abs(ButtonHintBar_mc.getBounds(this).left + ButtonHintBar_mc.getBounds(this).width / 2 - 960) < 0.1,
+                "short modal footer stays centered after the hints change");
             for each (var color:uint in [0x00FF00,0xFFB642,0x60BFFF]) {
                 B21SetHUDColor(color);
                 check(Math.abs(ButtonHintBar_mc.transform.colorTransform.redMultiplier-((color>>16)&255)/255)<0.005,

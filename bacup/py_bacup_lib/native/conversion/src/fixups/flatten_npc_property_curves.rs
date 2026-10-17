@@ -6,10 +6,12 @@ use crate::fixups::rewrite_raw_object_template_formids::encode_target_form_id;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
-use crate::record::{FieldValue, Record};
+use crate::record::{FieldEntry, FieldValue, Record};
 use crate::session::PluginSession;
+use crate::source_read::form_key_to_read_str;
 use crate::sym::{StringInterner, Sym};
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 const FO76_PROPERTY_ROW_LEN: usize = 12;
 const FO4_PROPERTY_ROW_LEN: usize = 8;
@@ -17,6 +19,27 @@ const ACBS_LEVEL_OFFSET: usize = 6;
 const ACBS_TEMPLATE_FLAGS_OFFSET: usize = 14;
 const ACBS_FLAG_PC_LEVEL_MULT: u32 = 0x0000_0080;
 const ACBS_TEMPLATE_FLAG_STATS: u16 = 0x0002;
+const CURVE_SOURCE_EDITOR_ID: &str = "B21_NpcCurveSource";
+const AVIF_FLAG_DEFAULT_TO_0: u32 = 0x0000_0400;
+const AVIF_TYPE_VARIABLE: u32 = 8;
+/// NPC_ subrecords that follow PRPS, for placing a PRPS the record lacked.
+const PRPS_SUCCESSOR_SIGS: &[&str] = &[
+    "FTYP", "NTRM", "COCT", "CNTO", "AIDT", "PKID", "KSIZ", "KWDA", "APPR", "OBTE", "CNAM", "FULL",
+    "SHRT", "DATA", "DNAM",
+];
+
+/// Mapper key the curve-source marker AVIF is allocated under.
+///
+/// Tales hooks `TESNPC::GetActorValue`, which only sees a TESNPC, often a leveled
+/// template base whose PRPS was copied from its Stats template. Every converted NPC
+/// therefore carries its own object id under this actor value, naming the FO76 record
+/// whose curves `emit_npc_stats_catalog` exports. The id is exact in an f32 (24 bits).
+pub(crate) fn curve_source_marker_key(interner: &StringInterner) -> FormKey {
+    FormKey {
+        local: 1,
+        plugin: interner.intern(CURVE_SOURCE_EDITOR_ID),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ResolvedProperty {
@@ -83,6 +106,14 @@ impl Fixup for FlattenNpcPropertyCurvesFixup {
         let mut points_cache = CurvePointsCache::default();
         let mut changed_records = Vec::new();
         let mut report = FixupReport::empty();
+        let converts_fo76_to_fo4 = source_slot.parsed.game.as_deref() == Some("fo76")
+            && session.target_slot().parsed.game.as_deref() == Some("fo4");
+        let marker_raw = if converts_fo76_to_fo4 {
+            let marker = ensure_curve_source_avif(session, mapper, target_schema, &mut report)?;
+            encode_target_form_id(marker, mapper.interner, &target_masters)
+        } else {
+            None
+        };
 
         let fks = session
             .form_keys_of_sig(npc_sig, mapper.interner)
@@ -124,7 +155,14 @@ impl Fixup for FlattenNpcPropertyCurvesFixup {
                         .intern(&format!("flatten_npc_curve:{eid}:{warning}")),
                 );
             }
-            if resolved.is_empty() {
+            // Master overrides keep the master's identity; only the plugin's own NPCs name themselves.
+            let marker = marker_raw
+                .filter(|_| fk.plugin == target_plugin_sym && source_record.sig == npc_sig)
+                .map(|raw| ResolvedProperty {
+                    target_actor_value_raw: raw,
+                    value: fk.local as f32,
+                });
+            if resolved.is_empty() && marker.is_none() {
                 continue;
             }
             let mut target_record =
@@ -139,7 +177,11 @@ impl Fixup for FlattenNpcPropertyCurvesFixup {
                         continue;
                     }
                 };
-            if apply_resolved_properties(&mut target_record, &resolved) {
+            let mut changed = apply_resolved_properties(&mut target_record, &resolved);
+            if let Some(marker) = marker {
+                changed |= set_property(&mut target_record, marker);
+            }
+            if changed {
                 changed_records.push(target_record);
                 report.records_changed += 1;
             }
@@ -388,6 +430,98 @@ fn apply_resolved_value(value: &mut FieldValue, resolved: &[ResolvedProperty]) -
         }
         _ => false,
     }
+}
+
+/// Writes `property` into the record's PRPS row for its actor value, adding the row
+/// (and the PRPS itself) when missing.
+fn set_property(record: &mut Record, property: ResolvedProperty) -> bool {
+    let mut row = [0u8; FO4_PROPERTY_ROW_LEN];
+    row[0..4].copy_from_slice(&property.target_actor_value_raw.to_le_bytes());
+    row[4..8].copy_from_slice(&property.value.to_le_bytes());
+    let Some(entry) = record
+        .fields
+        .iter_mut()
+        .find(|entry| entry.sig.as_str() == "PRPS")
+    else {
+        let at = record
+            .fields
+            .iter()
+            .position(|entry| PRPS_SUCCESSOR_SIGS.contains(&entry.sig.as_str()))
+            .unwrap_or(record.fields.len());
+        record.fields.insert(
+            at,
+            FieldEntry {
+                sig: SubrecordSig(*b"PRPS"),
+                value: FieldValue::Bytes(SmallVec::from_slice(&row)),
+            },
+        );
+        return true;
+    };
+    let FieldValue::Bytes(bytes) = &mut entry.value else {
+        return false;
+    };
+    if bytes.len() % FO4_PROPERTY_ROW_LEN != 0 {
+        return false;
+    }
+    match bytes
+        .chunks_exact_mut(FO4_PROPERTY_ROW_LEN)
+        .find(|existing| existing[0..4] == row[0..4])
+    {
+        Some(existing) if *existing == row => false,
+        Some(existing) => {
+            existing.copy_from_slice(&row);
+            true
+        }
+        None => {
+            bytes.extend_from_slice(&row);
+            true
+        }
+    }
+}
+
+fn ensure_curve_source_avif(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    target_schema: &crate::schema::AuthoringSchema,
+    report: &mut FixupReport,
+) -> Result<FormKey, FixupError> {
+    let interner = mapper.interner;
+    let marker =
+        mapper.allocate_or_resolve(curve_source_marker_key(interner), None, SigCode(*b"AVIF"));
+    let target_id = session.target_id();
+    let exists = session
+        .record_exists_in_handle(target_id, &form_key_to_read_str(&marker, interner))
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    if !exists {
+        let editor_id = interner.intern(CURVE_SOURCE_EDITOR_ID);
+        let mut avif = Record::new(SigCode(*b"AVIF"), marker);
+        avif.eid = Some(editor_id);
+        avif.fields.extend([
+            FieldEntry {
+                sig: SubrecordSig(*b"EDID"),
+                value: FieldValue::String(editor_id),
+            },
+            FieldEntry {
+                sig: SubrecordSig(*b"NAM0"),
+                value: FieldValue::Float(0.0),
+            },
+            FieldEntry {
+                sig: SubrecordSig(*b"AVFL"),
+                value: FieldValue::Bytes(SmallVec::from_slice(
+                    &AVIF_FLAG_DEFAULT_TO_0.to_le_bytes(),
+                )),
+            },
+            FieldEntry {
+                sig: SubrecordSig(*b"NAM1"),
+                value: FieldValue::Bytes(SmallVec::from_slice(&AVIF_TYPE_VARIABLE.to_le_bytes())),
+            },
+        ]);
+        session
+            .add_record(avif, target_schema, interner)
+            .map_err(|error| FixupError::HandleError(error.to_string()))?;
+        report.records_added += 1;
+    }
+    Ok(marker)
 }
 
 pub(crate) fn source_raw_to_form_key(
@@ -685,6 +819,221 @@ mod tests {
         assert!(plugin_handle_close_native(source_handle));
         assert!(plugin_handle_close_native(target_handle));
         health
+    }
+
+    fn property_rows(bytes: &[u8]) -> Vec<(u32, f32)> {
+        bytes
+            .chunks_exact(FO4_PROPERTY_ROW_LEN)
+            .map(|row| {
+                (
+                    u32::from_le_bytes(row[0..4].try_into().unwrap()),
+                    f32::from_le_bytes(row[4..8].try_into().unwrap()),
+                )
+            })
+            .collect()
+    }
+
+    fn raw_fields(handle: u64, raw: u32) -> Vec<(String, Vec<u8>)> {
+        let mut session = crate::session::open_session(handle, None).unwrap();
+        let scan = session.handle_raw_scan(handle).unwrap();
+        scan.with_record_subrecords(raw, |fields| {
+            fields
+                .iter()
+                .map(|field| (field.signature.to_string(), field.data.to_vec()))
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    fn field_of<'a>(fields: &'a [(String, Vec<u8>)], signature: &str) -> Option<&'a [u8]> {
+        fields
+            .iter()
+            .find(|(found, _)| found == signature)
+            .map(|(_, data)| data.as_slice())
+    }
+
+    #[test]
+    fn own_converted_npcs_carry_one_curve_source_marker_naming_themselves() {
+        let source_handle = plugin_handle_new_native("SeventySix.esm", Some("fo76")).unwrap();
+        let target_handle = plugin_handle_new_native("SeventySix.esm", Some("fo4")).unwrap();
+        plugin_handle_add_master_native(target_handle, "Fallout4.esm", None).unwrap();
+
+        let interner = StringInterner::new();
+        let plugin = interner.intern("SeventySix.esm");
+        let curved = FormKey {
+            local: 0x043C75,
+            plugin,
+        };
+        let bare = FormKey {
+            local: 0x05A1B2,
+            plugin,
+        };
+        let overridden = FormKey {
+            local: 0x05A1B3,
+            plugin,
+        };
+        let master_npc = FormKey {
+            local: 0x000007,
+            plugin: interner.intern("Fallout4.esm"),
+        };
+        let field = |sig: &str, bytes: Vec<u8>| FieldEntry {
+            sig: SubrecordSig::from_str(sig).unwrap(),
+            value: FieldValue::Bytes(SmallVec::from_vec(bytes)),
+        };
+        let record = |sig: &str, form_key, fields: Vec<FieldEntry>| Record {
+            sig: SigCode::from_str(sig).unwrap(),
+            form_key,
+            eid: Some(interner.intern(&format!("Npc{:06X}", form_key.local))),
+            flags: RecordFlags::empty(),
+            fields: fields.into_iter().collect(),
+            warnings: SmallVec::new(),
+        };
+        let rows = |rows: &[(u32, f32)]| {
+            rows.iter()
+                .flat_map(|(actor_value, value)| {
+                    [actor_value.to_le_bytes(), value.to_le_bytes()].concat()
+                })
+                .collect::<Vec<u8>>()
+        };
+
+        let source_schema = {
+            let mut session = crate::session::open_session(source_handle, None).unwrap();
+            let schema = session.schema().unwrap();
+            let health_curve = [
+                0x2D4u32.to_le_bytes(),
+                0.0f32.to_le_bytes(),
+                0x7ABE3Eu32.to_le_bytes(),
+            ]
+            .concat();
+            for source in [
+                record("NPC_", curved, vec![field("PRPS", health_curve)]),
+                record("NPC_", bare, vec![field("ACBS", vec![0; 20])]),
+                record("NPC_", overridden, vec![field("ACBS", vec![0; 20])]),
+                Record {
+                    sig: SigCode::from_str("CURV").unwrap(),
+                    form_key: FormKey {
+                        local: 0x7ABE3E,
+                        plugin,
+                    },
+                    eid: Some(interner.intern("CT_Health")),
+                    flags: RecordFlags::empty(),
+                    fields: smallvec::smallvec![FieldEntry {
+                        sig: SubrecordSig::from_str("JASF").unwrap(),
+                        value: FieldValue::String(
+                            interner.intern("Creatures\\Health\\Health.json")
+                        ),
+                    }],
+                    warnings: SmallVec::new(),
+                },
+            ] {
+                session
+                    .add_record(source, schema.as_ref(), &interner)
+                    .unwrap();
+            }
+            schema
+        };
+        let target_schema = {
+            let mut session = crate::session::open_session(target_handle, None).unwrap();
+            let schema = session.schema().unwrap();
+            for target in [
+                record("NPC_", curved, vec![field("PRPS", rows(&[(0x2D4, 0.0)]))]),
+                record(
+                    "NPC_",
+                    bare,
+                    vec![field("ACBS", vec![0; 20]), field("AIDT", vec![0; 20])],
+                ),
+                record(
+                    "NPC_",
+                    master_npc,
+                    vec![field("PRPS", rows(&[(0x2D4, 5.0)]))],
+                ),
+            ] {
+                session
+                    .add_record(target, schema.as_ref(), &interner)
+                    .unwrap();
+            }
+            schema
+        };
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "bacup_npc_marker_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let curve_path = temp_root.join("misc/curvetables/json/creatures/health/health.json");
+        std::fs::create_dir_all(curve_path.parent().unwrap()).unwrap();
+        std::fs::write(&curve_path, r#"{"curve":[{"x":1,"y":10},{"x":50,"y":30}]}"#).unwrap();
+
+        let mut mapper_state = MapperState::new(
+            [],
+            MapperOptions {
+                output_plugin_name: "SeventySix.esm".into(),
+                target_master_names: vec!["Fallout4.esm".into()],
+                preserve_source_ids: true,
+                ..Default::default()
+            },
+        );
+        mapper_state.source_to_target.insert(overridden, master_npc);
+        let mut mapper = FormKeyMapper::from_state(&mut mapper_state, &interner);
+        let config = FixupConfig {
+            is_whole_plugin: true,
+            source_extracted_dir: Some(temp_root.clone()),
+            target_schema: Some(target_schema.clone()),
+            source_schema: Some(source_schema.clone()),
+            ..Default::default()
+        };
+        let mut run = || {
+            let mut session =
+                crate::session::open_session(target_handle, Some(source_handle)).unwrap();
+            FlattenNpcPropertyCurvesFixup
+                .run_with_session(&mut session, &mut mapper, &config)
+                .unwrap()
+        };
+        let first = run();
+        let second = run();
+        let marker = mapper
+            .lookup(curve_source_marker_key(&interner))
+            .expect("marker AVIF allocated");
+
+        let marker_raw = 0x0100_0000 | marker.local;
+        let avif = raw_fields(target_handle, marker_raw);
+        let curved_fields = raw_fields(target_handle, 0x0100_0000 | curved.local);
+        let bare_fields = raw_fields(target_handle, 0x0100_0000 | bare.local);
+        let master_fields = raw_fields(target_handle, master_npc.local);
+        let _ = std::fs::remove_dir_all(temp_root);
+        assert!(plugin_handle_close_native(source_handle));
+        assert!(plugin_handle_close_native(target_handle));
+
+        assert_eq!(marker.plugin, plugin);
+        assert_eq!(field_of(&avif, "EDID"), Some(&b"B21_NpcCurveSource\0"[..]));
+        assert_eq!(field_of(&avif, "NAM0"), Some(&0.0f32.to_le_bytes()[..]));
+        assert_eq!(field_of(&avif, "AVFL"), Some(&0x400u32.to_le_bytes()[..]));
+        assert_eq!(field_of(&avif, "NAM1"), Some(&8u32.to_le_bytes()[..]));
+
+        assert_eq!(
+            property_rows(field_of(&curved_fields, "PRPS").unwrap()),
+            vec![(0x2D4, 20.0), (marker_raw, 0x043C75 as f32)]
+        );
+        let bare_signatures: Vec<&str> = bare_fields
+            .iter()
+            .map(|(sig, _)| sig.as_str())
+            .filter(|sig| *sig != "EDID")
+            .collect();
+        assert_eq!(bare_signatures, vec!["ACBS", "PRPS", "AIDT"]);
+        assert_eq!(
+            property_rows(field_of(&bare_fields, "PRPS").unwrap()),
+            vec![(marker_raw, 0x05A1B2 as f32)]
+        );
+        assert_eq!(
+            property_rows(field_of(&master_fields, "PRPS").unwrap()),
+            vec![(0x2D4, 5.0)]
+        );
+
+        assert_eq!((first.records_added, first.records_changed), (1, 2));
+        assert_eq!((second.records_added, second.records_changed), (0, 0));
     }
 
     fn raw_acbs(level: u16, flags: u32, template_flags: u16) -> SmallVec<[u8; 32]> {

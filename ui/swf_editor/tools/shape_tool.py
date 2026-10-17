@@ -33,6 +33,8 @@ class ShapeTool(BaseTool):
     def on_mouse_down(self, x: float, y: float, button: int) -> bool:
         if button != 0:
             return False
+        if self.app.scene.layers[self.app.scene.active_layer_index].locked:
+            return False
 
         cx, cy = self.app.camera.screen_to_canvas(x, y)
         self._drawing = True
@@ -52,9 +54,17 @@ class ShapeTool(BaseTool):
         if io.key_shift:
             dx = cx - self._start_x
             dy = cy - self._start_y
-            side = max(abs(dx), abs(dy))
-            cx = self._start_x + math.copysign(side, dx)
-            cy = self._start_y + math.copysign(side, dy)
+            if self.mode == ShapeMode.LINE:
+                angle = round(math.atan2(dy, dx) / (math.pi / 4)) * math.pi / 4
+                length = math.hypot(dx, dy)
+                cx, cy = self._start_x + length * math.cos(angle), self._start_y + length * math.sin(angle)
+            else:
+                side = max(abs(dx), abs(dy))
+                cx = self._start_x + math.copysign(side, dx)
+                cy = self._start_y + math.copysign(side, dy)
+        if self.app.camera.snap_to_grid:
+            grid = self.app.camera.grid_size
+            cx, cy = round(cx / grid) * grid, round(cy / grid) * grid
 
         self._end_x = cx
         self._end_y = cy
@@ -98,7 +108,7 @@ class ShapeTool(BaseTool):
         fill_styles = [FillStyle(fill_type=0, color=RGBA(255, 255, 255, 255))]
         shape = ShapeDef(
             shape_id=shape_id,
-            bounds=(x0 * 20, y0 * 20, x1 * 20, y1 * 20),
+            bounds=(0, 0, round(w * 20), round(h * 20)),
             fill_styles=fill_styles,
             line_styles=[],
             records=records,
@@ -131,32 +141,34 @@ class ShapeTool(BaseTool):
         ]
 
     def _make_ellipse_records(self, w: float, h: float) -> list:
-        """Ellipse approximated with 4 quadratic bezier arcs in twips."""
-        # Kappa for quadratic bezier circle approximation
-        rx, ry = w / 2.0 * 20, h / 2.0 * 20
-        kx = rx * 0.5522847498
-        ky = ry * 0.5522847498
-
-        # Start at top center, go clockwise
-        records = [
-            StyleChange(move_x=int(rx), move_y=0, fill1=1),
-            # Top-right quadrant
-            CurvedEdge(cx=int(kx), cy=0, ax=int(rx - kx), ay=int(ry - ky)),
-            CurvedEdge(cx=0, cy=int(ky), ax=int(-rx + kx), ay=int(ry - ky)),
-            # Bottom-right to bottom-left
-            CurvedEdge(cx=int(-kx), cy=0, ax=int(-(rx - kx)), ay=int(-(ry - ky))),
-            CurvedEdge(cx=0, cy=int(-ky), ax=int(rx - kx), ay=int(-(ry - ky))),
-            EndShape(),
-        ]
+        """Eight quadratic arcs with quantized endpoints and exact closure."""
+        rx, ry = w * 10, h * 10
+        start = (round(rx), 0)
+        records = [StyleChange(move_x=start[0], move_y=start[1], fill1=1)]
+        previous = start
+        for i in range(8):
+            a0 = -math.pi / 2 + i * math.pi / 4
+            a1 = a0 + math.pi / 4
+            mid = (a0 + a1) / 2
+            control = (round(rx + rx * math.cos(mid) / math.cos(math.pi / 8)),
+                       round(ry + ry * math.sin(mid) / math.cos(math.pi / 8)))
+            end = start if i == 7 else (round(rx + rx * math.cos(a1)), round(ry + ry * math.sin(a1)))
+            records.append(CurvedEdge(cx=control[0] - previous[0], cy=control[1] - previous[1],
+                                     ax=end[0] - control[0], ay=end[1] - control[1]))
+            previous = end
+        records.append(EndShape())
         return records
 
     def _make_line_records(self, x0: float, y0: float, x1: float, y1: float) -> list:
         """Line as a single straight edge in twips."""
-        return [
-            StyleChange(move_x=int(x0 * 20), move_y=int(y0 * 20), fill1=1),
-            StraightEdge(dx=int((x1 - x0) * 20), dy=int((y1 - y0) * 20)),
-            EndShape(),
-        ]
+        length = max(math.hypot(x1 - x0, y1 - y0), 0.01)
+        nx, ny = -(y1 - y0) / length * 0.5, (x1 - x0) / length * 0.5
+        points = [(round(x * 20), round(y * 20)) for x, y in
+                  ((x0 + nx, y0 + ny), (x1 + nx, y1 + ny), (x1 - nx, y1 - ny), (x0 - nx, y0 - ny))]
+        records = [StyleChange(move_x=points[0][0], move_y=points[0][1], fill1=1)]
+        for start, end in zip(points, points[1:] + points[:1]):
+            records.append(StraightEdge(dx=end[0] - start[0], dy=end[1] - start[1]))
+        return records + [EndShape()]
 
     def draw_overlay(self, draw_list, camera) -> None:
         """Draw shape preview while dragging."""

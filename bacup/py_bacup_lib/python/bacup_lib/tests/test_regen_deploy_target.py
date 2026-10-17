@@ -389,6 +389,30 @@ def test_deploy_output_mods_plugin_only_deploys_runtime_payload(monkeypatch, tmp
     ).read_text(encoding="utf-8") == "{}"
 
 
+@pytest.mark.parametrize("native_fog", [False, True])
+def test_deploy_removes_legacy_infestation_files_after_native_replacement(monkeypatch, tmp_path, native_fog):
+    from bacup_lib.infestations import LEGACY_OUTPUT, OUTPUT
+
+    mod = tmp_path / "mods" / "SeventySix"
+    destination = tmp_path / "Fallout4" / "Data"
+    legacy = destination / LEGACY_OUTPUT
+    legacy.mkdir(parents=True)
+    (legacy / "map-extension.js").write_text("obsolete", encoding="utf-8")
+    (legacy / "unrelated.txt").write_text("keep", encoding="utf-8")
+    mod.mkdir(parents=True)
+    if native_fog:
+        (mod / OUTPUT).mkdir(parents=True)
+        (mod / OUTPUT / "presentation.json").write_text("{}", encoding="utf-8")
+        (mod / OUTPUT / "fog0.dds").write_bytes(b"DDS ")
+    monkeypatch.setattr("creation_lib.build.deployer.deploy_mod", lambda *_args, **_kwargs: None)
+    regen_pipeline._deploy_output_mods("SeventySix", plugin_names=["SeventySix.esm"], project_root=tmp_path,
+        game_data_dir=destination, resource_dir=tmp_path / "resource", plugin_only=True, deploy_archives=False)
+    assert (legacy / "map-extension.js").exists() is not native_fog
+    assert (legacy / "unrelated.txt").read_text(encoding="utf-8") == "keep"
+    if native_fog:
+        assert (destination / OUTPUT / "fog0.dds").read_bytes() == b"DDS "
+
+
 @pytest.mark.parametrize("deploy_fails", [False, True])
 def test_deploy_output_mods_supports_distinct_mod_and_plugin_names(
     monkeypatch, tmp_path, deploy_fails

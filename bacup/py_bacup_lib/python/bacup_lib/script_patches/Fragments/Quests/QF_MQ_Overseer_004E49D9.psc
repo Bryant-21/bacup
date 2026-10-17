@@ -256,3 +256,75 @@ Bool Function HasHolotape(Actor akPlayer, ActorValue akPickedUpValue)
     EndIf
     Return akPlayer.GetValue(akPickedUpValue) >= 1.0
 EndFunction
+
+; Entering a holotape location (stage 18-110, 500-540) reveals that location's marker on objective 10, whose
+; per-target conditions are "stage done AND holotape not picked up"; re-show the objective so the new target appears.
+Function Fragment_Stage_0018_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0020_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0030_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0040_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0050_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0060_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0070_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0080_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0090_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0100_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0110_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0500_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0510_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0520_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0530_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function Fragment_Stage_0540_Item_00()
+    ShowHolotapeLocationObjective()
+EndFunction
+
+Function ShowHolotapeLocationObjective()
+    If !IsObjectiveCompleted(10)
+        SetObjectiveDisplayed(10, True, True)
+    EndIf
+EndFunction

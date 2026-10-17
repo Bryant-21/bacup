@@ -42,18 +42,19 @@ class GunFireTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##gun_fire"):
-            _, clicked = draw_path_row("Source WAV", self._source_wav)
+            path, clicked = draw_path_row("Source WAV", self._source_wav)
             if clicked:
                 path = pick_file("Select single-shot WAV", [("WAV files", "*.wav")])
-                if path:
-                    self._source_wav = path
-                    if not self._output_dir:
-                        import os
+            if path is not None and path != self._source_wav:
+                self._source_wav = path
+                if not self._output_dir:
+                    import os
+                    if path and os.path.isfile(path):
                         self._output_dir = os.path.dirname(path)
 
-            _, clicked = draw_path_row("Output Dir", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output Dir", self._output_dir)
             if clicked:
-                path = pick_folder("Select output directory")
+                path = pick_folder("Select output directory", self._output_dir)
                 if path:
                     self._output_dir = path
 

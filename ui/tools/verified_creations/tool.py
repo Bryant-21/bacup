@@ -88,9 +88,11 @@ class VerifiedCreationsTool(BaseTool):
                     imgui.same_line()
                 _, self._kinds[kind] = imgui.checkbox(kind.capitalize(), self._kinds[kind])
 
-            _, clicked = draw_path_row("Output folder", str(self._resolved_output_dir()))
+            path, clicked = draw_path_row("Output folder", str(self._resolved_output_dir()))
+            if path != str(self._resolved_output_dir()):
+                self._output_dir = path
             if clicked:
-                path = pick_folder("Select output folder")
+                path = pick_folder("Select output folder", self._output_dir)
                 if path:
                     self._output_dir = path
             end_form()

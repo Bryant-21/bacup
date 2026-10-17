@@ -122,6 +122,9 @@ Function Fragment_Stage_0225_Item_00()
 EndFunction
 
 Function Fragment_Stage_0250_Item_00()
+	If IsObjectiveDisplayed(200) && !IsObjectiveCompleted(200)
+		SetObjectiveCompleted(200, True)
+	EndIf
 	ShowHeartOpenObjectives()
 EndFunction
 
@@ -209,6 +212,9 @@ Function Fragment_Stage_0700_Item_00()
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()
+	If IsObjectiveDisplayed(250) && !IsObjectiveCompleted(250)
+		SetObjectiveCompleted(250, True)
+	EndIf
 	If EventEnded()
 		Return
 	EndIf
@@ -216,6 +222,9 @@ Function Fragment_Stage_0800_Item_00()
 EndFunction
 
 Function Fragment_Stage_0800_Item_01()
+	If IsObjectiveDisplayed(250) && !IsObjectiveCompleted(250)
+		SetObjectiveCompleted(250, True)
+	EndIf
 	If EventEnded()
 		Return
 	EndIf

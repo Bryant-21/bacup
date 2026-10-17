@@ -70,21 +70,21 @@ class BSAExtractorTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##bsa_extractor"):
-            _, clicked = draw_path_row("Input", self._input_path)
+            self._input_path, clicked = draw_path_row("Input", self._input_path)
             if clicked:
                 if self._pack_mode:
-                    path = pick_folder("Select folder to pack")
+                    path = pick_folder("Select folder to pack", self._input_path)
                 else:
                     path = pick_file("Select archive", [("Archives", "*.bsa *.ba2"), ("All", "*.*")])
                 if path:
                     self._input_path = path
 
-            _, clicked = draw_path_row("Output", self._output_path)
+            self._output_path, clicked = draw_path_row("Output", self._output_path)
             if clicked:
                 if self._pack_mode:
                     path = pick_save_file("Save archive as", [("Archives", "*.bsa *.ba2"), ("All", "*.*")])
                 else:
-                    path = pick_folder("Select output folder")
+                    path = pick_folder("Select output folder", self._output_path)
                 if path:
                     self._output_path = path
 

@@ -11,6 +11,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
+use crate::fixups::master_record_numbering::record_decoded_in_master_for_target;
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -258,17 +259,22 @@ pub(crate) fn collect_canonical_pack_templates(
             .form_keys_of_sig_in_handle(*handle_id, pack_sig, interner)
             .map_err(|e| FixupError::HandleError(e.to_string()))?;
         for fk in fks {
-            let record =
-                match session.record_decoded_in_handle(*handle_id, &fk, target_schema, interner) {
-                    Ok(record) => record,
-                    Err(e) => {
-                        let warning = interner.intern(&format!(
-                            "normalize_fo76_pack_templates_master_read_err:{e}"
-                        ));
-                        report.warnings.push(warning);
-                        continue;
-                    }
-                };
+            let record = match record_decoded_in_master_for_target(
+                session,
+                *handle_id,
+                &fk,
+                target_schema,
+                interner,
+            ) {
+                Ok(record) => record,
+                Err(e) => {
+                    let warning = interner.intern(&format!(
+                        "normalize_fo76_pack_templates_master_read_err:{e}"
+                    ));
+                    report.warnings.push(warning);
+                    continue;
+                }
+            };
             if !is_standalone_pack_template(&record) {
                 continue;
             }

@@ -63,7 +63,7 @@ package {
                     if (requested == "Standard") {
                         collapsing = false;
                         collapseDelay = -1;
-                        tween(Math.max(19,spread));
+                        tween(spread);
                     } else {
                         if (!collapsing) { collapsing = true; collapseDelay = requested == "Activate" ? .0003 : 0; }
                         collapseDelay -= delta;

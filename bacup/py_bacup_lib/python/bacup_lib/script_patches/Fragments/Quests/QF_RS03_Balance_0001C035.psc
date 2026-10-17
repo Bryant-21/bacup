@@ -81,6 +81,9 @@ Function Fragment_Stage_0100_Item_00()
 	If playerRef != None && dataHolotape != None && playerRef.GetItemCount(dataHolotape) == 0
 		playerRef.AddItem(dataHolotape, 1, False)
 	EndIf
+	If IsStageDone(200) && IsStageDone(300) && !IsStageDone(350)
+		SetStage(350)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
@@ -101,6 +104,9 @@ Function Fragment_Stage_0200_Item_00()
 	If playerRef != None && dataHolotape != None && playerRef.GetItemCount(dataHolotape) == 0
 		playerRef.AddItem(dataHolotape, 1, False)
 	EndIf
+	If IsStageDone(100) && IsStageDone(300) && !IsStageDone(350)
+		SetStage(350)
+	EndIf
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
@@ -120,6 +126,9 @@ Function Fragment_Stage_0300_Item_00()
 	EndIf
 	If playerRef != None && dataHolotape != None && playerRef.GetItemCount(dataHolotape) == 0
 		playerRef.AddItem(dataHolotape, 1, False)
+	EndIf
+	If IsStageDone(100) && IsStageDone(200) && !IsStageDone(350)
+		SetStage(350)
 	EndIf
 EndFunction
 

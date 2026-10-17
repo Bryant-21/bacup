@@ -121,12 +121,12 @@ class DDSInspectorTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##dds_inspector"):
-            _, clicked = draw_path_row("DDS File", self._dds_path)
+            path, clicked = draw_path_row("DDS File", self._dds_path)
             if clicked:
                 path = pick_file("Select DDS file", [("DDS", "*.dds"), ("All", "*.*")])
-                if path:
-                    self._dds_path = path
-                    self._refresh()
+            if path is not None and path != self._dds_path:
+                self._dds_path = path
+                self._refresh()
             end_form()
 
         if imgui.button("Refresh"):

@@ -34,7 +34,11 @@ class HKXViewerTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##hkx_viewer_form"):
-            _, clicked = draw_path_row("HKX File", self._input_path)
+            path, clicked = draw_path_row("HKX File", self._input_path)
+            if path != self._input_path:
+                self._input_path = path
+                if Path(path).is_file():
+                    self.open_file(path)
             if clicked:
                 path = self.open_file_dialog()
                 if path:

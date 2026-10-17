@@ -5,9 +5,12 @@ import json
 import struct
 from pathlib import Path
 
+from bacup_lib.plugin_catalog import form_key, write_document
+
 RECIPE = Path(__file__).with_name("resources") / "daily_ops/radio_topics.json"
 OUTPUT = Path("Sound/FX/B21/TalesFromAppalachia/DailyOps")
-CATALOG = Path("F4SE/Plugins/B21_TalesFromAppalachia/daily_ops_voice.json")
+FEATURE = "DailyOps"
+PLUGIN = "SeventySix.esm"
 SPEAKER = "bs01_npcm_dailyops_dodge"
 
 
@@ -42,11 +45,13 @@ def convert_daily_ops_voice(source_root: Path, output_mod: Path) -> dict:
             topics[topic].append({"info": variant["info"], "clips": clips})
     manifest = {"version": 1, "speaker": SPEAKER, "topics": topics,
                 "recipe_sha256": hashlib.sha256(RECIPE.read_bytes()).hexdigest()}
+    voice = {form_key(PLUGIN, int(topic)): {"variants": [{"info": form_key(PLUGIN, variant["info"]), "clips": variant["clips"]}
+                                                          for variant in variants]}
+             for topic, variants in topics.items()}
+    document = {"version": 1, "settings": {"speaker": SPEAKER, "recipe_sha256": manifest["recipe_sha256"]}, "voice": voice}
     for path, data in files.items():
         target = output_mod / "data" / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-    target = output_mod / CATALOG
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    write_document(FEATURE, PLUGIN, document, output_mod)
     return manifest

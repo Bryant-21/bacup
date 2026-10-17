@@ -133,6 +133,74 @@ _PHASE_ALIASES = {
 _LOD_PROFILE_VALUES = [PROFILE_HIGH_QUALITY, PROFILE_PERFORMANCE]
 
 
+class _DeferCompleteRunner:
+    """The pipeline reports "complete" once its BA2s are packed, before deployment.
+
+    The panel sends the run's only completion after deploying, so the completion
+    dialog never opens on the not-yet-deployed "Open folder" view mid-run.
+    """
+
+    def __init__(self, runner: ConversionRunner) -> None:
+        self._runner = runner
+
+    def emit_complete(self, mod_path: str, summary) -> None:
+        pass
+
+    def __getattr__(self, name: str):
+        return getattr(self._runner, name)
+
+
+def _enable_fo4cs_bgsm22(ini_path: Path) -> None:
+    """Native assets ship BGSM v22+ materials; FO4CS must read them or the engine misparses them."""
+    _enable_fo4cs_section(ini_path, "Bgsm22Materials")
+
+
+# Converted worldspaces' distant terrain needs both: objects lose depth ties to far terrain
+# without the first, and the far clip plane slices the horizon without the second.
+_FO4CS_DEPLOY_ENABLED_SECTIONS = ("Terrain.LODDepth", "Terrain.FarDistance")
+
+
+def _enable_fo4cs_section(ini_path: Path, name: str) -> None:
+    _set_fo4cs_ini_keys(ini_path, name, {"bEnabled": 1})
+
+
+def _set_fo4cs_ini_keys(ini_path: Path, name: str, values: dict[str, int]) -> None:
+    lines = ini_path.read_bytes().decode("utf-8").splitlines(keepends=True)
+    newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    section = next(
+        (i for i, line in enumerate(lines) if line.strip().lower() == f"[{name.lower()}]"),
+        None,
+    )
+    if section is None:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += newline
+        lines.append(f"[{name}]{newline}")
+        lines += [f"{key} = {value}{newline}" for key, value in values.items()]
+    else:
+        end = next(
+            (i for i in range(section + 1, len(lines)) if lines[i].lstrip().startswith("[")),
+            len(lines),
+        )
+        missing = []
+        for key, value in values.items():
+            found = next(
+                (
+                    i for i in range(section + 1, end)
+                    if lines[i].split("=", 1)[0].strip().lower() == key.lower()
+                ),
+                None,
+            )
+            if found is None:
+                missing.append(f"{key} = {value}{newline}")
+            else:
+                lines[found] = f"{key} = {value}{newline}"
+        lines[section + 1:section + 1] = missing
+    ini_path.write_text("".join(lines), encoding="utf-8", newline="")
+
+
+_FO4CS_DENSE_LAND_KEYS = {"bEnabled": 1, "bDenseAlpha": 1, "bDenseColors": 1, "bGroundCover": 1}
+
+
 def _lod_profile_values(pair_id: str) -> list[str]:
     shipped = available_profiles(pair_id)
     return [p for p in _LOD_PROFILE_VALUES if p in shipped]
@@ -169,9 +237,14 @@ _TEXTURE_LANDSCAPE_MIP_FLOODING_KEY = "texture_landscape_mip_flooding"
 _BUILD_PRECOMBINES_KEY = "build_precombines"
 _GENERATE_PREVIS_KEY = "generate_previs"
 _INTERIOR_CDX_ONLY_KEY = "interior_cdx_only"
+_NATIVE_ASSETS_KEY = "native_assets"
+_REPLACE_FO4_MATERIALS_KEY = "replace_fo4_materials"
+_UPGRADE_FO4_MATERIALS_KEY = "upgrade_fo4_materials"
+_DENSE_LAND_KEY = "dense_land"
 _FULL_LOGGING_KEY = "full_logging"
 _CONTINUE_ON_ERROR_KEY = "continue_on_error"
 _INSTALL_DEVTOOLS_KEY = "install_devtools"
+_INSTALL_FO4CS_KEY = "install_fo4cs"
 _CONVERSION_MUSIC_MUTED_KEY = "conversion_music_muted"
 _CONVERSION_MUSIC_VOLUME_KEY = "conversion_music_volume"
 _DEFAULT_CONVERSION_MUSIC_VOLUME = 0.12
@@ -179,8 +252,8 @@ _WORKERS_KEY = "workers"
 _TALES_CONFIG_EDITS_KEY = "tales_config_edits"
 _LOD_PROFILE_KEY = "lod_profile"
 _INSTALL_LOCATION_KEY = "install_location"
-_INSTALL_LOCATION_VALUES = ["game", "mo2", "vortex", "none"]
-_INSTALL_LOCATION_LABELS = ["Game Dir", "MO2", "Vortex", "None"]
+_INSTALL_LOCATION_VALUES = ["mo2", "game", "vortex", "none"]
+_INSTALL_LOCATION_LABELS = ["Selected Folder (MO2)", "Game Dir", "Vortex", "None"]
 _FO76_SOURCE_KEY = "fo76_source"
 _FO76_SOURCE_VALUES = ["retail", "playtest"]
 _FO76_SOURCE_LABELS = ["Fallout 76", "Fallout 76 Public Test Server"]
@@ -250,11 +323,22 @@ _FULL_SCREEN_MAP_DEPLOY_DIRS = (
 _DEVTOOLS_MOD_NAME = "B21_DevTools"
 # Holds the user's hotkeys and workbench filters, so a redeploy never overwrites it.
 _DEVTOOLS_USER_INI = Path("F4SE/Plugins/B21_DevTools.ini")
-_BUNDLED_MOD_NAMES = (_COMPANION_MOD_NAME, _FULL_SCREEN_MAP_MOD_NAME, _DEVTOOLS_MOD_NAME)
+_FO4CS_MOD_NAME = "fallout4-community-shaders"
+_FO4CS_PLUGIN_NAME = "FO4CS"
+_FO4CS_DEPLOY_DIRS = ("F4SE",)
+# Holds the user's FO4CS settings, so a redeploy never overwrites it.
+_FO4CS_USER_INI = Path("F4SE/Plugins/FO4CS.ini")
+_BUNDLED_MOD_NAMES = (
+    _COMPANION_MOD_NAME,
+    _FULL_SCREEN_MAP_MOD_NAME,
+    _DEVTOOLS_MOD_NAME,
+    _FO4CS_PLUGIN_NAME,
+)
 # Only BACUP's bundled mods and the conversion write here, so undeploy removes them whole.
 _UNDEPLOY_OWNED_DIRS = (
     *(Path("F4SE/Plugins") / name for name in _BUNDLED_MOD_NAMES),
     Path("Interface/B21/TalesFromAppalachia"),
+    Path("Textures/FO4CS"),
 )
 _STORE_INSTALL_LABELS = {
     "fo4": "FO4",
@@ -276,6 +360,8 @@ _GIB = 1024**3
 _FO76_INSTALL_REFERENCE_BYTES = 180 * _GIB
 _LOOSE_WORKSPACE_PEAK_BYTES = 120 * _GIB
 _PACKED_MOD_PEAK_BYTES = 60 * _GIB
+# Upgraded FO4 materials, textures and meshes, loose and then packed.
+_UPGRADE_FO4_MATERIALS_BYTES = 20 * _GIB
 # Reference measurements and headroom are recorded in bacup/docs/ui-modernization.md.
 _CONVERSION_SPACE_ESTIMATES = {
     "fo76:fo4": (_LOOSE_WORKSPACE_PEAK_BYTES, _PACKED_MOD_PEAK_BYTES),
@@ -510,10 +596,10 @@ class RegenPanel:
         self.project_label = project_label or default_project_label
         workspace_settings = self._workspace_settings()
         self.install_location = str(
-            workspace_settings.get(_INSTALL_LOCATION_KEY, "game")
+            workspace_settings.get(_INSTALL_LOCATION_KEY, "mo2")
         ).strip().lower()
         if self.install_location not in _INSTALL_LOCATION_VALUES:
-            self.install_location = "game"
+            self.install_location = "mo2"
         self.deploy = self.install_location != "none"
         self.install_path = str(workspace_settings.get("install_path", "") or "")
         self.mo2_use_profile_ini = bool(
@@ -580,6 +666,7 @@ class RegenPanel:
         self.install_devtools = bool(
             workspace_settings.get(_INSTALL_DEVTOOLS_KEY, False)
         )
+        self.install_fo4cs = bool(workspace_settings.get(_INSTALL_FO4CS_KEY, True))
         self.music_muted = bool(
             workspace_settings.get(_CONVERSION_MUSIC_MUTED_KEY, True)
         )
@@ -599,6 +686,14 @@ class RegenPanel:
         self.build_precombines = bool(workspace_settings.get(_BUILD_PRECOMBINES_KEY, True))
         self.generate_previs = bool(workspace_settings.get(_GENERATE_PREVIS_KEY, True))
         self.interior_cdx_only = bool(workspace_settings.get(_INTERIOR_CDX_ONLY_KEY, False))
+        self.native_assets = bool(workspace_settings.get(_NATIVE_ASSETS_KEY, False))
+        self.replace_fo4_materials = bool(
+            workspace_settings.get(_REPLACE_FO4_MATERIALS_KEY, True)
+        )
+        self.upgrade_fo4_materials = bool(
+            workspace_settings.get(_UPGRADE_FO4_MATERIALS_KEY, False)
+        )
+        self.dense_land = bool(workspace_settings.get(_DENSE_LAND_KEY, True))
         self.re_use_land = False
         self.recovery_phase = _recovery_phase(
             workspace_settings.get(_RECOVERY_PHASE_KEY, "lodgen")
@@ -878,6 +973,28 @@ class RegenPanel:
             seen.add(key)
         return rows
 
+    def _dense_land_effective(self) -> bool:
+        return bool(
+            getattr(self, "dense_land", False)
+            and getattr(self, "native_assets", False)
+            and self._pair().pair_id == "fo76:fo4"
+        )
+
+    def _upgrade_fo4_materials_effective(self) -> bool:
+        return bool(
+            getattr(self, "upgrade_fo4_materials", False)
+            and getattr(self, "native_assets", False)
+            and self._pair().pair_id == "fo76:fo4"
+        )
+
+    def _space_estimates(self) -> tuple[int, int]:
+        loose, packed = _CONVERSION_SPACE_ESTIMATES[self._pair().pair_id]
+        extra = _UPGRADE_FO4_MATERIALS_BYTES if self._upgrade_fo4_materials_effective() else 0
+        return loose + extra, packed + extra
+
+    def _effective_lod_mode(self) -> str:
+        return "hybrid-instanced" if self._dense_land_effective() else self.lod_mode
+
     def _reset_progress(self, start_phase: str = "prepare") -> None:
         self._conversion_error = None
         self._conversion_error_pending = False
@@ -885,11 +1002,12 @@ class RegenPanel:
         self._progress_estimate = ProgressEstimate(
             estimated_phase_weights(
                 self._pair().pair_id,
-                lod_mode=self.lod_mode,
+                lod_mode=self._effective_lod_mode(),
                 packed=self.deploy_format != "loose",
                 deploy=self.deploy and self.install_location != "none",
                 build_precombines=getattr(self, "build_precombines", True),
                 previs=getattr(self, "generate_previs", True),
+                upgrade_fo4_materials=self._upgrade_fo4_materials_effective(),
                 start_phase=start_phase,
             )
         )
@@ -1015,13 +1133,25 @@ class RegenPanel:
             deploy_loose=deploy_loose,
             workers=self.workers or None,
             asset_workers=None,
-            lod_mode=self.lod_mode,
+            lod_mode=self._effective_lod_mode(),
             texture_landscape_mip_flooding=bool(
                 getattr(self, "texture_landscape_mip_flooding", False)
             ),
             build_precombines=bool(getattr(self, "build_precombines", True)),
             generate_previs=bool(getattr(self, "generate_previs", True)),
             interior_cdx_only=bool(getattr(self, "interior_cdx_only", False)),
+            native_assets=bool(getattr(self, "native_assets", False) and self._pair().pair_id in {"fo76:fo4", "starfield:fo4"}),
+            emit_btd4=bool(getattr(self, "native_assets", False) and self._pair().pair_id == "fo76:fo4"),
+            replace_fo4_materials=bool(
+                self._pair().pair_id == "fo76:fo4"
+                and getattr(self, "native_assets", False)
+                and getattr(self, "replace_fo4_materials", False)
+            ),
+            upgrade_fo4_materials=bool(
+                self._pair().pair_id == "fo76:fo4"
+                and getattr(self, "native_assets", False)
+                and getattr(self, "upgrade_fo4_materials", False)
+            ),
             re_use_land=self.re_use_land,
             write_land_cache=False,
             include_interior=True,
@@ -1074,7 +1204,16 @@ class RegenPanel:
         excluded = required_exclude_signatures(self._pair().pair_id)
         return {"exclude_signatures": excluded} if excluded else None
 
+    def _install_folder_missing(self) -> bool:
+        return self.install_location in ("mo2", "vortex") and not self.install_path.strip()
+
+    def _require_install_folder(self) -> None:
+        if self._install_folder_missing():
+            raise ValueError("Choose an install folder before deploying.")
+
     def can_convert(self) -> bool:
+        if self._install_folder_missing():
+            return False
         if self._runner_running() or getattr(self, "_cleanup_status", "idle") == "deleting":
             return False
         s = self._settings()
@@ -1096,6 +1235,8 @@ class RegenPanel:
         return self.build_paths().output_root / self._pair().output_plugin_name
 
     def can_deploy_existing(self) -> bool:
+        if self._install_folder_missing():
+            return False
         if self._runner_running() or getattr(self, "_cleanup_status", "idle") == "deleting":
             return False
         fo4 = self._settings().get_game_paths("fo4")
@@ -1104,6 +1245,8 @@ class RegenPanel:
         return self._store_installs_ok() and self.generated_plugin_path().is_file()
 
     def can_undeploy(self) -> bool:
+        if self._install_folder_missing():
+            return False
         if self._runner_running() or getattr(self, "_cleanup_status", "idle") == "deleting":
             return False
         return bool(self._settings().get_game_paths("fo4").get("root_dir"))
@@ -1303,6 +1446,7 @@ class RegenPanel:
         return full_logging_scope(paths.diagnostics_root, runner)
 
     def start_conversion(self) -> None:
+        self._require_install_folder()
         self._phases = []
         self._reset_progress()
         self._runner_status = "Starting conversion"
@@ -1352,7 +1496,7 @@ class RegenPanel:
                 advance_preparation(3, "Loading LOD configuration")
                 lod_settings = (
                     self._selected_lod_settings(options.lod_mode)
-                    if options.lod_mode in {"generate", "hybrid", "hybrid-atlas"}
+                    if options.lod_mode in {"generate", "hybrid", "hybrid-atlas", "hybrid-instanced"}
                     else None
                 )
                 advance_preparation(4, "Starting conversion")
@@ -1380,7 +1524,7 @@ class RegenPanel:
                         options,
                         pair=pair,
                         phases=phases,
-                        runner=active_runner,
+                        runner=_DeferCompleteRunner(active_runner),
                         lod_settings=lod_settings,
                         build_option_overrides=self._build_option_overrides(),
                     )
@@ -1409,6 +1553,7 @@ class RegenPanel:
     def start_deploy_existing(self) -> None:
         from bacup_lib import regen_pipeline
 
+        self._require_install_folder()
         self._require_store_installs()
 
         self._phases = []
@@ -1449,6 +1594,7 @@ class RegenPanel:
     def start_undeploy(self) -> None:
         from bacup_lib import regen_pipeline
 
+        self._require_install_folder()
         self._phases = []
         self._reset_progress("deploy")
         self._runner_status = "Preparing undeploy"
@@ -1482,6 +1628,7 @@ class RegenPanel:
     def start_resume_from_phase(self) -> None:
         from bacup_lib import PhaseSelection, regen_pipeline
 
+        self._require_install_folder()
         self._require_store_installs()
 
         self._phases = []
@@ -1497,7 +1644,7 @@ class RegenPanel:
         start_phase = _recovery_phase(self.recovery_phase)
         lod_settings = (
             self._selected_lod_settings(options.lod_mode)
-            if options.lod_mode in {"generate", "hybrid", "hybrid-atlas"}
+            if options.lod_mode in {"generate", "hybrid", "hybrid-atlas", "hybrid-instanced"}
             else None
         )
 
@@ -1511,7 +1658,7 @@ class RegenPanel:
                         options,
                         start_phase=start_phase,
                         phases=phases,
-                        runner=active_runner,
+                        runner=_DeferCompleteRunner(active_runner),
                         lod_settings=lod_settings,
                     )
                     if result.failures and not options.continue_on_error:
@@ -1661,6 +1808,7 @@ class RegenPanel:
         key = (
             os.path.normcase(os.path.abspath(paths.output_root)),
             os.path.normcase(os.path.abspath(archive_root)),
+            self._upgrade_fo4_materials_effective(),
         )
         return key, archive_root
 
@@ -1672,7 +1820,7 @@ class RegenPanel:
     ) -> None:
         paths = paths or self.build_paths()
         space_key, archive_root = self._disk_space_target(paths, options)
-        loose_estimate, packed_estimate = _CONVERSION_SPACE_ESTIMATES[self._pair().pair_id]
+        loose_estimate, packed_estimate = self._space_estimates()
         with self._disk_usage_lock:
             cached_space = getattr(self, "_disk_space_cache", None)
             cached_summary = (
@@ -1975,6 +2123,33 @@ class RegenPanel:
                 shutil.copy2(src, dest)
                 deployed.append(rel.as_posix())
 
+        native_assets = getattr(self, "native_assets", False)
+        if native_assets or getattr(self, "install_fo4cs", False):
+            fo4cs_root = app_root / "mods" / _FO4CS_MOD_NAME
+            for dirname in _FO4CS_DEPLOY_DIRS:
+                src_root = fo4cs_root / dirname
+                if not src_root.is_dir():
+                    raise FileNotFoundError(f"Bundled mod directory not found: {src_root}")
+                for src in sorted(src_root.rglob("*")):
+                    if not src.is_file():
+                        continue
+                    rel = Path(dirname) / src.relative_to(src_root)
+                    dest = deploy_data_dir / rel
+                    if rel == _FO4CS_USER_INI and dest.is_file():
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dest)
+                    deployed.append(rel.as_posix())
+            if native_assets:
+                _enable_fo4cs_bgsm22(deploy_data_dir / _FO4CS_USER_INI)
+            for section in _FO4CS_DEPLOY_ENABLED_SECTIONS:
+                _enable_fo4cs_section(deploy_data_dir / _FO4CS_USER_INI, section)
+            _set_fo4cs_ini_keys(
+                deploy_data_dir / _FO4CS_USER_INI,
+                "Terrain.Dense",
+                _FO4CS_DENSE_LAND_KEYS if self._dense_land_effective() else {"bEnabled": 0},
+            )
+
         for dirname in _COMPANION_DEPLOY_DIRS:
             src_root = companion_root / dirname
             if not src_root.is_dir():
@@ -2074,7 +2249,7 @@ class RegenPanel:
         if runner is not None:
             runner.emit_log(
                 "INFO",
-                f"Removed Tales, FullScreenMap and DevTools ({len(removed)} file(s))",
+                f"Removed Tales, FullScreenMap, DevTools and FO4CS ({len(removed)} file(s))",
             )
         return removed
 
@@ -2358,6 +2533,10 @@ class RegenPanel:
             )
         if running:
             imgui.text_wrapped(message)
+            for key, phase in self._progress_estimate.phases.items():
+                eta = self._progress_estimate.phase_eta(key)
+                if eta:
+                    imgui.text_disabled(f"{phase.get('phase_name') or key}: {eta}")
         elif self._progress_succeeded:
             imgui.text_wrapped(message)
         else:
@@ -2571,6 +2750,7 @@ class RegenPanel:
             with section(f"{identifier}{_NS}", title) as visible:
                 if visible:
                     draw()
+        self._draw_native_materials()
         with expandable_section(f"Game install information{_NS}",
             description=f"{get_project_profile(self.project_id).source_label} → Fallout 4") as expanded:
             if expanded:
@@ -2617,7 +2797,9 @@ class RegenPanel:
                     imgui.text_colored(semantic_color("error"), store_result.message)
             deploy_data_dir = paths.deploy_data_dir or paths.target_data_dir
             _form_row_label("Deploy folder")
-            imgui.text_wrapped(f"{deploy_data_dir}")
+            imgui.text_wrapped(
+                "Choose an install folder" if self._install_folder_missing() else str(deploy_data_dir)
+            )
             if self.deploy_format != "standard":
                 _form_row_label("INI")
                 imgui.text(f"{install_target.runtime_ini_path or '(none)'}")
@@ -2643,12 +2825,14 @@ class RegenPanel:
             archive_detail += (
                 "\n"
                 f"Footprint guide: FO76 ~{_format_gb(_FO76_INSTALL_REFERENCE_BYTES)} already installed; "
-                f"loose workspace ~{_format_gb(_LOOSE_WORKSPACE_PEAK_BYTES)}; "
-                f"packed mod ~{_format_gb(_PACKED_MOD_PEAK_BYTES)}. "
+                f"loose workspace ~{_format_gb(self._space_estimates()[0])}; "
+                f"packed mod ~{_format_gb(self._space_estimates()[1])}. "
                 "Projected use includes the additional conversion reserve."
             )
+            if self._upgrade_fo4_materials_effective():
+                archive_detail += f" Includes ~{_format_gb(_UPGRADE_FO4_MATERIALS_BYTES)} for Upgrade FO4 Materials."
         else:
-            loose_estimate, packed_estimate = _CONVERSION_SPACE_ESTIMATES[self._pair().pair_id]
+            loose_estimate, packed_estimate = self._space_estimates()
             archive_detail += (
                 f"\nFootprint guide: loose workspace ~{_format_gb(loose_estimate)}; "
                 f"packed mod ~{_format_gb(packed_estimate)}. "
@@ -2809,12 +2993,19 @@ class RegenPanel:
                 self.deploy = self.install_location != "none"
                 self._set_workspace_settings({_INSTALL_LOCATION_KEY: self.install_location})
             if self.install_location in ("mo2", "vortex"):
-                _, clicked = draw_path_row("Install folder", self.install_path)
+                path, clicked = draw_path_row("Install folder", self.install_path)
+                if path != self.install_path:
+                    self.install_path = path
+                    self._set_workspace_settings({"install_path": self.install_path})
                 if clicked:
                     picked = _pick_folder("Select install folder", self.install_path)
                     if picked:
                         self.install_path = os.path.normpath(picked)
                         self._set_workspace_settings({"install_path": self.install_path})
+                imgui.text_wrapped(
+                    "Choose a mod folder, such as MO2's mods/<Name> folder. "
+                    "Keep it outside the game installation folder."
+                )
             deploy_mode = "loose" if self.deploy_format == "loose" else "packed"
             deploy_mode_idx = _DEPLOY_MODE_VALUES.index(deploy_mode)
             changed, deploy_mode_idx = draw_combo_field(
@@ -2846,7 +3037,7 @@ class RegenPanel:
                     imgui.set_tooltip(
                         "Off = register archives in the global Documents\\My Games\\Fallout4"
                         "\\Fallout4Custom.ini instead (for MO2 profiles that don't use "
-                        "profile-specific game INIs)."
+                        "profile-specific game INIs). Other folders use the global INI."
                     )
                 if changed:
                     self._set_workspace_settings(
@@ -2856,6 +3047,7 @@ class RegenPanel:
                 ini_label = (
                     "Update MO2 Custom.ini"
                     if self.install_location == "mo2" and self.mo2_use_profile_ini
+                    and Path(self.install_path).parent.name.lower() == "mods"
                     else "Update Fallout4Custom.ini"
                 )
                 _form_row_label(ini_label)
@@ -2889,6 +3081,25 @@ class RegenPanel:
                 if changed:
                     self._set_workspace_settings(
                         {_INSTALL_DEVTOOLS_KEY: self.install_devtools}
+                    )
+                _form_row_label("Install FO4CS")
+                if self.native_assets:
+                    imgui.begin_disabled()
+                changed, install_fo4cs = toggle(
+                    "##installfo4cs", self.install_fo4cs or self.native_assets
+                )
+                if not self.native_assets and changed:
+                    self.install_fo4cs = install_fo4cs
+                    self._set_workspace_settings({_INSTALL_FO4CS_KEY: self.install_fo4cs})
+                if self.native_assets:
+                    imgui.end_disabled()
+                if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                    imgui.set_tooltip(
+                        "Fallout 4 Community Shaders, on by default. Always installed when Native "
+                        "Materials is enabled, which needs it to render, and then with BGSM "
+                        "v22+ materials turned on. Deployed with the companion mod; an existing "
+                        "FO4CS.ini is kept, with the distant terrain depth fix and the longer "
+                        "exterior view distance turned on."
                     )
             pair_id = self._pair().pair_id
             profile_values = _lod_profile_values(pair_id)
@@ -3003,7 +3214,7 @@ class RegenPanel:
                 self._open_tales_config()
             if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
                 imgui.set_tooltip(
-                    "Tales from Appalachia settings (the in-game TALES CONFIG menu), "
+                    "Tales from Appalachia settings (the in-game TFA CONFIG menu), "
                     "written to its ini when the mod is installed."
                 )
             side_by_side = imgui.get_content_region_avail().x >= 3 * secondary_width + 2 * gap
@@ -3043,9 +3254,74 @@ class RegenPanel:
         self._tales_config().open(data_dir, self._tales_config_edits())
 
     def _deploy_existing_hint(self) -> str:
+        if self._install_folder_missing():
+            return "Choose an install folder to enable conversion and deployment."
         if self.generated_plugin_path().is_file():
             return ""
         return f"Deploy existing mod is available after {self._pair().output_plugin_name} exists."
+
+    def _draw_native_materials(self) -> None:
+        pair_id = self._pair().pair_id
+        if pair_id not in {"fo76:fo4", "starfield:fo4"}:
+            return
+        with expandable_section(f"Native PBR Materials{_NS}",
+            description="Native materials and PBR textures, rendered by FO4CS") as expanded:
+            if not expanded:
+                return
+            changed, self.native_assets = toggle(f"Enabled{_NS}", self.native_assets)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Keep FO76 or Starfield materials and PBR textures for Fallout 4 "
+                    "Community Shaders, which is then always installed. Meshes are still "
+                    "converted. Starfield needs extracted JSON .mat files and includes "
+                    "parent materials and original DDS textures. FO76 also writes BTD4 "
+                    "dense terrain."
+                )
+            if changed:
+                self._set_workspace_settings({_NATIVE_ASSETS_KEY: self.native_assets})
+            if pair_id != "fo76:fo4":
+                return
+            options_off = not self.native_assets
+            if options_off:
+                imgui.begin_disabled()
+            changed, self.replace_fo4_materials = toggle(
+                f"Replace FO4 Materials{_NS}",
+                self.replace_fo4_materials,
+            )
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "Where Fallout 4 has a material at the same path, use FO76's "
+                    "material and its textures instead. Fallout 4's own content then "
+                    "uses them too, so it also needs FO4CS."
+                )
+            if changed:
+                self._set_workspace_settings({_REPLACE_FO4_MATERIALS_KEY: self.replace_fo4_materials})
+            changed, self.upgrade_fo4_materials = toggle(
+                f"Upgrade FO4 Materials (~20 GB) (WIP){_NS}",
+                self.upgrade_fo4_materials,
+            )
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "Upgrade Fallout 4's own materials, textures and meshes to BGSM v22+ "
+                    "so FO4CS renders them with PBR lighting. Adds about 20 GB to the "
+                    "workspace and the packed mod, and a long step to the conversion."
+                )
+            if changed:
+                self._set_workspace_settings({_UPGRADE_FO4_MATERIALS_KEY: self.upgrade_fo4_materials})
+            changed, self.dense_land = toggle(f"Dense Land{_NS}", self.dense_land)
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    "Dense FO76 terrain (heights, layer blend, colours and FO76 ground "
+                    "cover) drawn by Fallout 4 Community Shaders from the BTD4 sidecars. "
+                    "Forces the Hybrid Instanced LOD mode so distant terrain LOD uses "
+                    "the same FO76 heights. Only takes effect with Native PBR Materials on."
+                )
+            if changed:
+                self._set_workspace_settings({_DENSE_LAND_KEY: self.dense_land})
+            if self._dense_land_effective():
+                imgui.text_disabled("LOD mode forced to Hybrid Instanced by Dense Land")
+            if options_off:
+                imgui.end_disabled()
 
     def _draw_advanced(self) -> None:
         running = self._runner_running()
@@ -3254,7 +3530,7 @@ class RegenPanel:
         plugin = self._pair().output_plugin_name
         if not self._is_default_pair():
             return plugin
-        return f"{plugin}, Tales From Appalachia, FullScreenMap and DevTools"
+        return f"{plugin}, Tales From Appalachia, FullScreenMap, DevTools and FO4CS"
 
     def _draw_undeploy(self) -> None:
         popup = f"Undeploy mods{_NS}_undeploy"
@@ -3277,7 +3553,7 @@ class RegenPanel:
         if opened:
             imgui.text_wrapped(
                 f"Remove {self._undeploy_targets_label()} from the install folder? "
-                "Their settings files (including Tales and DevTools .ini files) are "
+                "Their settings files (including Tales, DevTools and FO4CS .ini files) are "
                 "deleted too. The converted output folder is not touched, so if it "
                 "still exists Deploy existing mod can reinstall it."
             )

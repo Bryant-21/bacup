@@ -277,6 +277,10 @@ def _params_for_convert_nifs(orchestrator, nif_assets=None) -> dict:
         and source_game in {"fo3", "fnv", "skyrim", "skyrimse"}
     )
     static_cloth_variants = _fo76_misc_static_model_variants(orchestrator)
+    armor_roles = (
+        _armor_model_roles(orchestrator)
+        if target_game == "fo4" and source_game in {"starfield", "skyrimse"} else {}
+    )
 
     nif_entries = []
     for asset in nif_assets:
@@ -297,16 +301,6 @@ def _params_for_convert_nifs(orchestrator, nif_assets=None) -> dict:
             entry["material_namespace"] = material_namespace
         if asset.workshop_wire_point is not None:
             entry["workshop_wire_point"] = list(asset.workshop_wire_point)
-        if asset.workshop_snap_points:
-            entry["workshop_snap_points"] = [
-                {
-                    "name": point.name,
-                    "translation": list(point.translation),
-                    "rotation": list(point.rotation),
-                    "scale": point.scale,
-                }
-                for point in asset.workshop_snap_points
-            ]
         role = (
             _weapon_role_for_asset(
                 orchestrator,
@@ -318,7 +312,26 @@ def _params_for_convert_nifs(orchestrator, nif_assets=None) -> dict:
         )
         if role is not None:
             entry["weapon_role"] = role
-        nif_entries.append(entry)
+        perspectives = armor_roles.get(_weapon_model_key(asset.source_path), set())
+        if perspectives != {"first_person"}:
+            companions = _armor_cloth_companions(asset, first_person=False)
+            if companions:
+                entry["cloth_companions"] = companions
+            nif_entries.append(entry)
+        if "first_person" in perspectives:
+            skeleton = _nif_resolve_target_extract_nif(orchestrator, _NIF_FIRST_PERSON_SKELETON)
+            if skeleton is None:
+                raise ValueError(f"{source_game} first-person armor requires the Fallout 4 first-person skeleton")
+            first_person_entry = dict(entry)
+            relative = _first_person_model_path(asset.source_path, source_game)
+            namespace = str(entry.get("asset_namespace") or "").strip("/\\")
+            first_person_entry["output_subpath"] = "/".join(part for part in ("Meshes", namespace, relative) if part)
+            first_person_entry["target_skeleton"] = str(skeleton)
+            first_person_entry.pop("cloth_companions", None)
+            companions = _armor_cloth_companions(asset, first_person=True)
+            if companions:
+                first_person_entry["cloth_companions"] = companions
+            nif_entries.append(first_person_entry)
         static_output = static_cloth_variants.get(
             _nif_normalize_asset_key(
                 normalize_asset_source_path(str(asset.source_path or ""))
@@ -1011,7 +1024,7 @@ def _params_for_convert_material_assets(orchestrator, mat_assets) -> dict:
                 orchestrator, "base_asset_namespace", ""
             )
         entries.append(entry)
-    return {
+    params = {
         "materials": entries,
         "source_game": orchestrator.source_game,
         "target_game": orchestrator.target_game,
@@ -1021,6 +1034,12 @@ def _params_for_convert_material_assets(orchestrator, mat_assets) -> dict:
         "pbr_carry": bool(getattr(orchestrator, "pbr_carry", False)),
         "bgsm_default_overrides": bgsm_default_overrides,
     }
+    if orchestrator.source_game == "starfield":
+        params["nif_paths"] = [
+            {"source_path": asset.source_path, "resolved_path": asset.resolved_path or ""}
+            for asset in orchestrator.graph.all_assets if asset.asset_type == "nif"
+        ]
+    return params
 
 
 def _params_for_convert_materials(orchestrator) -> dict:
@@ -3064,6 +3083,60 @@ def _try_get_profile(game_id: str):
 # ---------------------------------------------------------------------------
 
 _NIF_TARGET_SKELETON = Path("meshes/actors/character/characterassets/skeleton.nif")
+_NIF_FIRST_PERSON_SKELETON = Path("meshes/actors/character/_1stperson/characterassets/skeleton.nif")
+
+
+def _first_person_model_path(path: str, source_game: str) -> str:
+    relative = str(path).strip().rstrip("\0").replace("\\", "/").lstrip("/")
+    for prefix in ("data/", "meshes/"):
+        if relative.casefold().startswith(prefix):
+            relative = relative[len(prefix):]
+    namespace = "skyrim" if source_game == "skyrimse" else source_game
+    if relative.casefold().startswith(f"{namespace}/"):
+        relative = relative[len(namespace) + 1:]
+    if relative.casefold().startswith("firstperson/"):
+        return relative
+    return f"FirstPerson/{relative}"
+
+
+def _armor_cloth_companions(asset, *, first_person: bool) -> list[str]:
+    roles = {"MOD4", "MOD5"} if first_person else {"MOD2", "MOD3"}
+    paths = {}
+    for claim in getattr(asset, "cloth_companion_claims", ()):
+        path = claim.get("resolved_path")
+        if claim.get("consumer_field") in roles and isinstance(path, str) and path:
+            paths.setdefault(path.replace("\\", "/").casefold(), path)
+    return [paths[key] for key in sorted(paths)]
+
+
+def _armor_model_roles(orchestrator) -> dict[str, set[str]]:
+    graph = getattr(orchestrator, "graph", None)
+    assets = list(getattr(graph, "all_assets", ()))
+    for record in getattr(graph, "all_records", ()):
+        assets.extend(getattr(record, "assets", ()))
+    roles: dict[str, set[str]] = {}
+    for asset in assets:
+        provenance = getattr(asset, "provenance", None)
+        owners = [(getattr(provenance, "added_by_record_sig", ""), getattr(provenance, "added_by_field", ""))]
+        owners.extend(
+            (owner.get("source_record_signature", ""), owner.get("source_subrecord_sig", ""))
+            for owner in getattr(asset, "owner_claims", ())
+        )
+        for signature, field in owners:
+            field = str(field).casefold()
+            tokens = field.replace("/", ".").split(".")
+            if str(signature).upper() != "ARMA":
+                if signature:
+                    roles.setdefault(_weapon_model_key(asset.source_path), set()).add("base")
+                continue
+            if "1stperson" in field or any(token in {"mod4", "mod5"} for token in tokens):
+                role = "first_person"
+            elif "bipedmodels" in field or any(token in {"mod2", "mod3"} for token in tokens):
+                role = "third_person"
+            else:
+                continue
+            roles.setdefault(_weapon_model_key(asset.source_path), set()).add(role)
+    return roles
 _NIF_AUTO_SKIN_REFERENCE_BODY = Path(
     "meshes/actors/character/characterassets/malebody.nif"
 )
@@ -3221,6 +3294,7 @@ def resolve_nif_conversion_options(orchestrator) -> dict[str, object]:
         "fnv",
         "fo3",
         "skyrimse",
+        "starfield",
     }
     if not skin_options_requested and not default_skin_conversion:
         return {}
@@ -3438,9 +3512,27 @@ class ConversionFixups:
         self._target_nif_paths = paths
         return self._target_nif_paths
 
+    def _native_overwrite_paths(self) -> frozenset[str]:
+        run = getattr(self, "_rust_conversion_run", None)
+        cached = getattr(self, "_native_overwrite_path_cache", None)
+        if cached is not None and cached[0] is run:
+            return cached[1]
+        reader = getattr(run, "native_overwrite_paths", None)
+        paths = frozenset(reader()) if callable(reader) else frozenset()
+        self._native_overwrite_path_cache = (run, paths)
+        return paths
+
     def _target_has_asset(self, asset: AssetRef) -> bool:
         """Check if the target game already has this asset at the same relative path."""
         if not self.use_base_game_assets:
+            return False
+
+        # FO76 native assets can replace FO4's matching materials, their textures and the
+        # inline-textured meshes that use them; the native run decides which, so those
+        # collisions go through.
+        if asset.asset_type in ("texture", "material", "nif") and (
+            self._asset_data_subpath(asset).lower() in self._native_overwrite_paths()
+        ):
             return False
 
         target_asset_index = getattr(self, "target_asset_index", None)

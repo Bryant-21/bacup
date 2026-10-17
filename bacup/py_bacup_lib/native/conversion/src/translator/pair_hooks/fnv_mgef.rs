@@ -85,7 +85,7 @@ const ACTOR_VALUE_TARGETS: &[ActorValueTarget] = &[
     ActorValueTarget::ExplicitNull,              // Inventory Weight
     ActorValueTarget::HardcodedRaw(0xF400_02F2), // Paralysis
     ActorValueTarget::HardcodedRaw(0xF400_02F3), // Invisibility
-    ActorValueTarget::ExplicitNull,              // Chameleon
+    ActorValueTarget::HardcodedRaw(0xF400_02F3), // Chameleon
     ActorValueTarget::HardcodedRaw(0xF400_02F4), // Night Eye
     ActorValueTarget::ExplicitNull,              // Turbo / Detect Life Range
     ActorValueTarget::HardcodedRaw(0xF400_02E5), // Fire Resistance
@@ -333,14 +333,7 @@ fn convert_legacy_data(
         FieldValue::Float(finite_or_zero(read_f32(source, 4))),
     );
     push_field(&mut fields, interner, "assoc_item", assoc_item);
-    for name in [
-        "magic_skill_unused_byte_1",
-        "magic_skill_unused_byte_2",
-        "magic_skill_unused_byte_3",
-        "magic_skill_unused_byte_4",
-    ] {
-        push_field(&mut fields, interner, name, byte_value(0));
-    }
+    push_field(&mut fields, interner, "associated_skill", null_reference());
     push_field(&mut fields, interner, "resist_value", resist_value);
     push_field(
         &mut fields,
@@ -543,11 +536,15 @@ fn actor_value_reference(
                 ),
             }
         }
+        // The xEdit prototype's F4 tag is not a runtime master index.
         ActorValueTarget::HardcodedRaw(target_raw) => (
-            FieldValue::Bytes(SmallVec::from_slice(&target_raw.to_le_bytes())),
+            FieldValue::FormKey(FormKey {
+                local: target_raw & 0x00ff_ffff,
+                plugin: mapper.interner.intern("Fallout4.esm"),
+            }),
             MgefReferenceOutcome::PreservedHardcoded {
                 source_value,
-                target_raw,
+                target_raw: target_raw & 0x00ff_ffff,
             },
         ),
     };
@@ -685,6 +682,8 @@ mod tests {
     use crate::record::FieldEntry;
     use crate::sym::StringInterner;
 
+    include!("fnv_mgef/creature_magic_tests.rs");
+
     fn form_key(interner: &StringInterner, plugin: &str, local: u32) -> FormKey {
         FormKey {
             local,
@@ -815,12 +814,12 @@ mod tests {
         );
         set_f32(&mut expected, 4, 12.5);
         set_u32(&mut expected, 8, 0x5678);
-        set_u32(&mut expected, 16, 0xF400_02E3);
+        set_u32(&mut expected, 16, 0x0000_02E3);
         set_u16(&mut expected, 20, 3);
         set_u32(&mut expected, 36, 0x0100_6789);
         set_u32(&mut expected, 64, 17);
-        set_u32(&mut expected, 68, 0xF400_02D4);
-        set_u32(&mut expected, 88, 0xF400_02D4);
+        set_u32(&mut expected, 68, 0x0000_02D4);
+        set_u32(&mut expected, 88, 0x0000_02D4);
         set_f32(&mut expected, 112, 1.0);
         set_u32(&mut expected, 140, NORMAL_CASTING_SOUND_LEVEL);
 
@@ -901,7 +900,7 @@ mod tests {
         let actual = encoded_data(&record);
 
         assert_eq!(actual.len(), FO4_MGEF_DATA_LEN);
-        assert_eq!(read_u32(&actual, 16), 0xF400_02D4);
+        assert_eq!(read_u32(&actual, 16), 0x0000_02D4);
         assert_eq!(read_u32(&actual, 64), 49);
         assert_eq!(read_u32(&actual, 68), 0);
         assert_eq!(read_u32(&actual, 84), 3);
@@ -923,7 +922,7 @@ mod tests {
         let mut fo3 = record_with_data(&interner, source);
         normalize_legacy_mgef_data(&mut fo3, LegacyMgefFamily::Fo3, &mut fo3_mapper);
 
-        assert_eq!(read_u32(&encoded_data(&fnv), 68), 0xF400_0367);
+        assert_eq!(read_u32(&encoded_data(&fnv), 68), 0x0000_0367);
         assert_eq!(read_u32(&encoded_data(&fo3), 68), 0);
     }
 
@@ -948,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_and_hardcoded_actor_values_keep_their_distinct_encodings() {
+    fn ordinary_and_engine_actor_values_use_master_relative_form_keys() {
         let interner = StringInterner::new();
         let mut ordinary_mapper = self::mapper(&interner, &[("Strength", 0x2C2)]);
         let mut ordinary_source = legacy_data();
@@ -974,12 +973,12 @@ mod tests {
             LegacyMgefFamily::Fnv,
             &mut hardcoded_mapper,
         );
-        assert_eq!(read_u32(&encoded_data(&hardcoded), 68), 0xF400_02D4);
+        assert_eq!(read_u32(&encoded_data(&hardcoded), 68), 0x0000_02D4);
         assert_eq!(
             decision(&hardcoded_report, "actor_value"),
             &MgefReferenceOutcome::PreservedHardcoded {
                 source_value: 16,
-                target_raw: 0xF400_02D4
+                target_raw: 0x0000_02D4
             }
         );
     }
@@ -1117,6 +1116,7 @@ mod tests {
             (44, 0xF400_0367),
             (47, 0xF400_02F2),
             (48, 0xF400_02F3),
+            (49, 0xF400_02F3),
             (50, 0xF400_02F4),
             (52, 0xF400_02E5),
             (53, 0xF400_02F6),
@@ -1142,7 +1142,7 @@ mod tests {
             (74, 0xF400_0855),
             (75, 0xF400_0828),
         ];
-        let explicit_null = [3, 4, 32, 33, 34, 35, 37, 38, 40, 41, 45, 46, 49, 51, 61, 76];
+        let explicit_null = [3, 4, 32, 33, 34, 35, 37, 38, 40, 41, 45, 46, 51, 61, 76];
         let mut covered = [false; 77];
         for (source, editor_id) in ordinary {
             covered[source] = true;

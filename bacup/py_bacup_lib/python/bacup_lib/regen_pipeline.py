@@ -87,10 +87,18 @@ class RegenOptions:
     asset_workers: int | None = None
     serialize_tracks: bool = True
     lod_mode: str = (
-        "hybrid-atlas"  # "convert" | "generate" | "hybrid" | "hybrid-atlas" | "none"
+        "hybrid-atlas"  # "convert" | "generate" | "hybrid" | "hybrid-atlas" | "hybrid-instanced" | "none"
     )
     pbr_carry: bool = False
     texture_landscape_mip_flooding: bool = False
+    # FO76/Starfield -> FO4: retain native materials and PBR textures (requires FO4CS).
+    native_assets: bool = False
+    # With native_assets: FO76 materials FO4 also ships, and their textures, replace FO4's.
+    replace_fo4_materials: bool = False
+    # With native_assets: FO4's own materials outside the replace set are upgraded to BGSM v22+.
+    upgrade_fo4_materials: bool = False
+    # When set, only these post phases run (by label); None runs them all.
+    post_phases_only: tuple[str, ...] | None = None
     # fo4:starfield only (see PluginPortOptions/TerrainOptions).
     placeholder_audio: bool = False
     terrain_extent_cells: int | None = None
@@ -110,7 +118,8 @@ class RegenOptions:
     # Umbra previs from the clean-room Rust solve (default on).
     generate_previs: bool = True
     records_limit: int | None = None
-    emit_btd4: bool = False
+    # None follows native_assets.
+    emit_btd4: bool | None = None
     generate_anim_text_data: bool = False
     anim_text_data_native: bool = False
     validate_collision: bool = False
@@ -1096,10 +1105,14 @@ def _build_options(
     force_cpu_textures: bool = False,
     pbr_carry: bool = False,
     texture_landscape_mip_flooding: bool = False,
+    native_assets: bool = False,
+    replace_fo4_materials: bool = False,
+    upgrade_fo4_materials: bool = False,
+    post_phases_only: tuple[str, ...] | None = None,
     convert_precombined_nifs: bool = False,
     disable_nif_collision_memo: bool = False,
     papyrus_compiler: str = "native",
-    emit_btd4: bool = False,
+    emit_btd4: bool | None = None,
     generate_anim_text_data: bool = False,
     anim_text_data_native: bool = False,
     validate_collision: bool = False,
@@ -1114,19 +1127,17 @@ def _build_options(
 
     ps = phases or PhaseSelection()
     terrain = TerrainOptions(
-        fo76_data_dir=""
-        if records_only or fo76_data_dir is None
-        else str(fo76_data_dir),
+        fo76_data_dir="" if fo76_data_dir is None else str(fo76_data_dir),
     )
     terrain.lod_mode = ps.lod_mode
-    terrain.emit_btd4 = emit_btd4
+    terrain.emit_btd4 = (native_assets and pair_id in {None, "fo76:fo4"}) if emit_btd4 is None else emit_btd4
     terrain.extent_cells = terrain_extent_cells
     # Legacy skip_* params still force-off when passed; the PhaseSelection is the
     # primary source. Face conversion remains disabled for FO76 parity and is
     # enabled only for pairs that supply audited face-bake resources.
     placed = ps.convert_placed_records and not skip_placed_records
     animations = ps.convert_animations and not skip_animations
-    # convert_btos (FO76 .bto -> FO4 .bto) must NOT run in generate/hybrid/hybrid-atlas/none mode:
+    # convert_btos (FO76 .bto -> FO4 .bto) must NOT run in generate/hybrid*/none mode:
     # lodgen produces fresh FO4 LODs there, and also converting the FO76 LODs
     # double-processes them (a malformed converted .bto null-derefs on load).
     lod = ps.convert_lod and convert_lod and ps.lod_mode == "convert"
@@ -1134,7 +1145,7 @@ def _build_options(
     # FO76 hybrid modes consume source BTO tiles and must not synthesize them.
     synthesize_object_lod = ps.lod_mode == "generate" or (
         pair_id in {"fnvfo3:fo4", "skyrimse:fo4"}
-        and ps.lod_mode in {"hybrid", "hybrid-atlas"}
+        and ps.lod_mode in {"hybrid", "hybrid-atlas", "hybrid-instanced"}
     )
 
     if records_only:
@@ -1168,6 +1179,8 @@ def _build_options(
             force_cpu_textures=force_cpu_textures,
             pbr_carry=pbr_carry,
             texture_landscape_mip_flooding=texture_landscape_mip_flooding,
+            native_assets=native_assets,
+            replace_fo4_materials=replace_fo4_materials,
             convert_precombined_nifs=convert_precombined_nifs,
             disable_nif_collision_memo=disable_nif_collision_memo,
             papyrus_compiler=papyrus_compiler,
@@ -1209,6 +1222,10 @@ def _build_options(
         force_cpu_textures=force_cpu_textures,
         pbr_carry=pbr_carry,
         texture_landscape_mip_flooding=texture_landscape_mip_flooding,
+        native_assets=native_assets,
+        replace_fo4_materials=replace_fo4_materials,
+        upgrade_fo4_materials=upgrade_fo4_materials,
+        post_phases_only=post_phases_only,
         convert_precombined_nifs=convert_precombined_nifs,
         disable_nif_collision_memo=disable_nif_collision_memo,
         papyrus_compiler=papyrus_compiler,
@@ -1282,6 +1299,7 @@ def _run_generate_lod(
     source_data_dir: "Path | None" = None,
     fo76_profile: bool = False,
     object_lod_overlay: "Path | None" = None,
+    fo76_data_dir: "Path | None" = None,
 ) -> None:
     """Call the native lodgen wrapper for each worldspace and write into mod_root.
 
@@ -1296,7 +1314,7 @@ def _run_generate_lod(
     from creation_lib.lod.native_runtime import generate_lod
 
     output_dir = Path(mod_root) / "data"
-    lod_asset_dirs = [str(output_dir)] + [str(p) for p in asset_dirs]
+    lod_asset_dirs = [str(output_dir)] + _output_lod_archives(Path(mod_root)) + [str(p) for p in asset_dirs]
     for world in worldspaces:
         _remove_world_lod_outputs(output_dir, world, runner_log)
         world_settings = copy.deepcopy(settings)
@@ -1307,8 +1325,9 @@ def _run_generate_lod(
             world_global["stride"] = None
             world_global["southwest_cell"] = None
             world_global["bounds"] = None
+        _resolve_world_btd(world_settings, world, fo76_data_dir, source_data_dir, runner_log, mod_root=Path(mod_root))
         object_source = str(objects_settings.get("source", "records")).lower()
-        if fo76_profile and object_source in {"fo76_bto", "fo76_bto_atlas"}:
+        if fo76_profile and object_source in {"fo76_bto", "fo76_bto_atlas", "fo76_bto_instanced"}:
             from creation_lib.lod.native_runtime import count_fo76_bto_tiles
 
             source_bto_count = (
@@ -1408,7 +1427,8 @@ def _run_generate_lod(
         # Remove lodgen's atlas-map intermediates (e.g. APPALACHIA.Objects.txt,
         # APPALACHIA.Objects.meta.json). Their UV data is baked into the BTOs, and
         # DX10 BA2 packing expects only textures under Textures/. lodgen's Objects/
-        # casing varies, so it is matched case-insensitively.
+        # casing varies, so it is matched case-insensitively. <world>.InstanceArray.txt
+        # is not an intermediate: the game reads it beside the InstanceArray DDS arrays.
         obj_dir: Path | None = None
         terrain_root = output_dir / "Textures" / "Terrain"
         # Walk two levels: Terrain/<world_case>/Objects/
@@ -1427,6 +1447,8 @@ def _run_generate_lod(
                 ("*.meta.json", "atlas cache metadata"),
             ):
                 for path in obj_dir.glob(pattern):
+                    if path.name.lower().endswith(".instancearray.txt"):
+                        continue
                     path.unlink(missing_ok=True)
                     runner_log("INFO", f"lodgen: removed {label} {path.name}")
 
@@ -1551,6 +1573,82 @@ def _resume_phase_selection(start_phase: str, phases):
     return selected
 
 
+def _resolve_world_btd(
+    world_settings: dict,
+    world: str,
+    fo76_data_dir: "Path | None",
+    source_data_dir: "Path | None",
+    runner_log,
+    mod_root: "Path | None" = None,
+) -> None:
+    """Point ``terrain.source = "btd"`` at this world's FO76 BTD, or fall back to LAND without one.
+
+    The world's dense-terrain sidecar in ``mod_root``, when present, also becomes ``terrain.btd4_path``
+    so lodgen composites the LOD textures from the same data FO4CS dense terrain draws.
+    """
+    terrain = world_settings.get("terrain") or {}
+    if str(terrain.get("source", "land")).lower() != "btd":
+        return
+    if mod_root is not None and not terrain.get("btd4_path"):
+        sidecar = _world_btd4_sidecar(Path(mod_root), world)
+        if sidecar is not None:
+            terrain["btd4_path"] = str(sidecar)
+    if terrain.get("btd_path"):
+        return
+    from bacup_lib.fo76_sources import (  # noqa: PLC0415
+        fo76_worldspace_editor_id_from_btd,
+        resolve_fo76_btd_paths,
+    )
+
+    found = resolve_fo76_btd_paths(source_data_dir=fo76_data_dir, extracted_dir=source_data_dir)
+    btd = next(
+        (p for p in found.paths if fo76_worldspace_editor_id_from_btd(p).casefold() == world.casefold()),
+        None,
+    )
+    if btd is None:
+        terrain["source"] = "land"
+        runner_log("WARN", f"lodgen {world}: no FO76 BTD for this worldspace; terrain LOD uses LAND")
+        return
+    terrain["btd_path"] = str(btd)
+    runner_log("INFO", f"lodgen {world}: terrain LOD heights from {btd}")
+
+
+def _world_btd4_sidecar(mod_root: Path, world: str) -> "Path | None":
+    """``<mod_root>/Terrain/<world>.btd4``, matched case-insensitively (the terrain phase writes the EditorID)."""
+    terrain_dir = mod_root / "Terrain"
+    if not terrain_dir.is_dir():
+        return None
+    wanted = f"{world}.btd4".casefold()
+    return next((p for p in sorted(terrain_dir.iterdir()) if p.name.casefold() == wanted and p.is_file()), None)
+
+
+def _output_lod_archives(mod_root: Path) -> list[str]:
+    """The output's own BA2s, so lodgen finds packed assets (the raw terrain bank textures) too."""
+    return [
+        str(p)
+        for folder in (mod_root / "data", mod_root)
+        if folder.is_dir()
+        for p in sorted(folder.iterdir())
+        if p.suffix.casefold() == ".ba2" and p.is_file()
+    ]
+
+
+def _apply_hybrid_atlas_defaults(settings: dict, objects_settings: dict) -> None:
+    settings.setdefault("global", {}).setdefault("generate_trees", False)
+    settings.setdefault("trees", {}).setdefault("trees_3d", False)
+    objects_settings.setdefault("fo76_bto_atlas_pages", True)
+    objects_settings.setdefault("fo76_bto_merge_atlassed_shapes", True)
+    objects_settings.setdefault("fo76_bto_atlas_min_tile_size", 0)
+    objects_settings.setdefault("fo76_bto_atlas_min_foliage_tile_size", 1024)
+    objects_settings.setdefault("fo76_bto_atlas_foliage_page_size", 4096)
+    objects_settings.setdefault("fo76_bto_atlas_foliage_max_tile_size", 1024)
+    objects_settings.setdefault("fo76_bto_atlas_min_alpha_tested_tile_size", 1024)
+    objects_settings.setdefault("fo76_bto_atlas_alpha_tested_page_size", 4096)
+    objects_settings.setdefault("fo76_bto_atlas_alpha_tested_max_tile_size", 1024)
+    objects_settings.setdefault("fo76_bto_atlas_from_lod", 8)
+    objects_settings.setdefault("fo76_bto_tree_billboard_from_lod", None)
+
+
 def _prepare_lod_generation_settings(
     options: "RegenOptions",
     lod_settings: dict | None,
@@ -1559,7 +1657,7 @@ def _prepare_lod_generation_settings(
     *,
     pair_id: str = DEFAULT_PAIR_ID,
 ) -> tuple[list[str], dict, bool, bool] | None:
-    if options.lod_mode not in {"generate", "hybrid", "hybrid-atlas"}:
+    if options.lod_mode not in {"generate", "hybrid", "hybrid-atlas", "hybrid-instanced"}:
         return None
     if not lod_settings:
         raise RuntimeError(f"lod_mode={options.lod_mode} requires lod_settings")
@@ -1606,24 +1704,20 @@ def _prepare_lod_generation_settings(
     elif options.lod_mode == "hybrid":
         objects_settings["source"] = "fo76_bto"
     elif options.lod_mode == "hybrid-atlas":
-        settings.setdefault("global", {}).setdefault("generate_trees", False)
-        settings.setdefault("trees", {}).setdefault("trees_3d", False)
         objects_settings["source"] = "fo76_bto_atlas"
-        objects_settings.setdefault("fo76_bto_atlas_pages", True)
-        objects_settings.setdefault("fo76_bto_merge_atlassed_shapes", True)
-        objects_settings.setdefault("fo76_bto_atlas_min_tile_size", 0)
-        objects_settings.setdefault("fo76_bto_atlas_min_foliage_tile_size", 1024)
-        objects_settings.setdefault("fo76_bto_atlas_foliage_page_size", 4096)
-        objects_settings.setdefault("fo76_bto_atlas_foliage_max_tile_size", 1024)
-        objects_settings.setdefault("fo76_bto_atlas_min_alpha_tested_tile_size", 1024)
-        objects_settings.setdefault("fo76_bto_atlas_alpha_tested_page_size", 4096)
-        objects_settings.setdefault("fo76_bto_atlas_alpha_tested_max_tile_size", 1024)
-        objects_settings.setdefault("fo76_bto_atlas_from_lod", 8)
-        objects_settings.setdefault("fo76_bto_tree_billboard_from_lod", None)
+        _apply_hybrid_atlas_defaults(settings, objects_settings)
+    elif options.lod_mode == "hybrid-instanced":
+        objects_settings["source"] = "fo76_bto_instanced"
+        _apply_hybrid_atlas_defaults(settings, objects_settings)
+        # _run_generate_lod resolves each world's BTD, or falls back to LAND.
+        settings.setdefault("terrain", {})["source"] = "btd"
     lod_uses_fo76_bto = is_fo76_pair and (
         str(objects_settings.get("source", "records")).lower()
-        in {"fo76_bto", "fo76_bto_atlas"}
+        in {"fo76_bto", "fo76_bto_atlas", "fo76_bto_instanced"}
     )
+    if lod_uses_fo76_bto and options.native_assets:
+        # FO4CS shades object LOD with the FO76 _l/_r the full-detail meshes carry.
+        objects_settings["fo76_bto_pbr_maps"] = True
     return list(wss), settings, lod_uses_fo76_bto, discover_worldspaces
 
 
@@ -1735,7 +1829,7 @@ def _run_existing_lodgen(
     )
     if prepared is None:
         raise RuntimeError(
-            f"Resume from LODGen requires lod_mode generate/hybrid/hybrid-atlas, got {options.lod_mode!r}"
+            f"Resume from LODGen requires lod_mode generate/hybrid/hybrid-atlas/hybrid-instanced, got {options.lod_mode!r}"
         )
     wss, settings, _lod_uses_fo76_bto, discover_worldspaces = prepared
     working_esm = paths.output_root / Path(plugin_names[0]).name
@@ -1760,6 +1854,7 @@ def _run_existing_lodgen(
         runner_log=runner.emit_log,
         source_data_dir=paths.source_extracted_dir,
         fo76_profile=pair_id == DEFAULT_PAIR_ID,
+        fo76_data_dir=paths.source_data_dir,
     )
 
 
@@ -2107,6 +2202,9 @@ def _deploy_output_mods(
     else:
         from creation_lib.build.deployer import deploy_mod
 
+    from bacup_lib.legacy_tales_catalogs import remove_legacy_tales_catalogs
+
+    remove_legacy_tales_catalogs(project_root / "mods" / output_root_name)
     for plugin_name in plugin_names:
         plugin_stem = Path(plugin_name).stem
         if not deploy_loose:
@@ -2165,6 +2263,13 @@ def _deploy_output_mods(
                         destination = game_data_dir / relative
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(source, destination)
+            remove_legacy_tales_catalogs(game_data_dir)
+            from bacup_lib.infestations import OUTPUT as infestations_output, remove_legacy_bundle
+
+            native_fog = infestations_output / "presentation.json"
+            if ((exposed_project_root / "mods" / mod_name / native_fog).is_file() and
+                    (game_data_dir / native_fog).is_file()):
+                remove_legacy_bundle(game_data_dir)
         if output_root_name != plugin_stem:
             suffix = Path(plugin_name).suffix
             deployed_alias = game_data_dir / f"{output_root_name}{suffix}"
@@ -4007,6 +4112,12 @@ def run_full_regen(
         force_cpu_textures=options.cpu_textures,
         pbr_carry=options.pbr_carry,
         texture_landscape_mip_flooding=options.texture_landscape_mip_flooding,
+        native_assets=options.native_assets,
+        replace_fo4_materials=options.replace_fo4_materials,
+        upgrade_fo4_materials=(
+            options.native_assets and options.upgrade_fo4_materials
+        ),
+        post_phases_only=options.post_phases_only,
         papyrus_compiler="native",
         emit_btd4=options.emit_btd4,
         generate_anim_text_data=options.generate_anim_text_data,
@@ -4194,6 +4305,7 @@ def run_full_regen(
                     source_data_dir=_source_extracted,
                     fo76_profile=_fo76_profile,
                     object_lod_overlay=overlay_for_lod,
+                    fo76_data_dir=paths.source_data_dir,
                 )
             finally:
                 _remove_object_lod_overlay(_object_lod_overlay)
@@ -4625,6 +4737,7 @@ def _run_existing_post_phases(
             "generate",
             "hybrid",
             "hybrid-atlas",
+            "hybrid-instanced",
         }:
             _run_runner_phase(
                 runner,
@@ -4731,6 +4844,88 @@ def _run_existing_post_phases(
         failures=failures,
         warnings=warnings,
     )
+
+
+_CLEARED_ASSET_SUFFIXES = (".nif", ".bgsm", ".bgem", ".dds")
+# Folder names whose subtree --clear-assets keeps: LOD and precombines as asked, plus outputs
+# --assets-only does not fully rebuild (UI converter textures, FO4CS cubemaps).
+_KEPT_ASSET_DIRS = frozenset({"lod", "precombined", "terrain", "interface", "fo4cs"})
+
+
+def _tales_ui_manifest_files(data_dir: Path) -> set[str]:
+    """Lowercase data-relative paths the Tales UI converters list in their Interface/B21 manifests.
+    --assets-only does not re-run those converters, so their meshes and textures must survive the clear."""
+    interface = next((p for p in data_dir.iterdir() if p.is_dir() and p.name.lower() == "interface"), None)
+    b21 = next((p for p in interface.iterdir() if p.is_dir() and p.name.lower() == "b21"), None) if interface else None
+    kept: set[str] = set()
+    for manifest in b21.rglob("*.json") if b21 else ():
+        try:
+            entries = json.loads(manifest.read_text(encoding="utf-8")).get("files") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        for entry in entries:
+            path = entry.get("path") if isinstance(entry, dict) else entry
+            if isinstance(path, str):
+                path = path.replace("\\", "/").lower()
+                kept.add(path.removeprefix("data/"))
+    return kept
+
+
+def clear_asset_outputs(data_dir: Path) -> int:
+    """Delete the mod's meshes, textures and materials except the kept subtrees. Returns the count."""
+    removed = 0
+    ui_files = _tales_ui_manifest_files(data_dir)
+    for top in ("meshes", "textures", "materials"):
+        root = next((p for p in data_dir.iterdir() if p.is_dir() and p.name.lower() == top), None)
+        if root is None:
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d.lower() not in _KEPT_ASSET_DIRS]
+            for name in filenames:
+                lower = name.lower()
+                # _bacup_face copies are written by the record phase, which --assets-only skips.
+                if not lower.endswith(_CLEARED_ASSET_SUFFIXES) or lower.endswith("_bacup_face.dds"):
+                    continue
+                path = os.path.join(dirpath, name)
+                if Path(path).relative_to(data_dir).as_posix().lower() in ui_files:
+                    continue
+                os.unlink(path)
+                removed += 1
+    return removed
+
+
+def run_assets_only(
+    paths: RegenPaths,
+    options: RegenOptions,
+    *,
+    phases,
+    runner,
+    plugin_names: list[str] | None = None,
+    clear: bool = False,
+) -> RegenResult:
+    """Re-run only meshes, textures and materials (native assets included) and the FO4
+    material upgrade on an existing output, as loose files. Nothing downstream runs."""
+    pair = get_pair(DEFAULT_PAIR_ID)
+    _require_existing_plugins(paths, list(plugin_names or pair.source_plugins), start_phase="nifs")
+    if clear:
+        runner.emit_log("INFO", "Clearing meshes, textures and materials (keeping LOD, precombines, UI)")
+        removed = clear_asset_outputs(paths.output_root / "data")
+        runner.emit_log("INFO", f"Cleared {removed} asset files")
+    os.environ["RAYON_NUM_THREADS"] = str(options.workers or _effective_conversion_workers(None))
+    selected = _resume_phase_selection("nifs", phases)
+    selected.convert_havok = selected.synthesize_drivers = False
+    selected.convert_animations = selected.copy_sounds = False
+    selected.convert_lod = selected.rebuild_cell_offsets = False
+    selected.build_precombines = selected.generate_previs = False
+    selected.lod_mode = "none"
+    asset_options = copy.copy(options)
+    asset_options.deploy = False
+    asset_options.lod_mode = "none"
+    asset_options.build_precombines = asset_options.generate_previs = False
+    asset_options.generate_anim_text_data = False
+    asset_options.write_land_cache = False
+    asset_options.post_phases_only = ("Upgrade FO4 Materials", "Repair Face Heads")
+    return run_full_regen(paths, asset_options, pair=pair, phases=selected, runner=runner)
 
 
 def run_resume_from_phase(

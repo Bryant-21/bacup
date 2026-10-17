@@ -16,6 +16,14 @@ Actor Function PlayerReference()
     Return Alias_Player.GetActorReference()
 EndFunction
 
+; Gauntlet_LaserGrids (7455BD/7455BE/7455BF) gate on this AV at 1/2/3; keep it in step with the unlocks.
+Function RaiseWeatherLabAccessLevel(Float afLevel)
+    Actor playerRef = Game.GetPlayer()
+    If Storm_MQ13_WeatherLabAccesslevel != None && playerRef.GetValue(Storm_MQ13_WeatherLabAccesslevel) < afLevel
+        playerRef.SetValue(Storm_MQ13_WeatherLabAccesslevel, afLevel)
+    EndIf
+EndFunction
+
 Function Fragment_Stage_0010_Item_00()
     If IsStageDone(600) && !IsStageDone(700)
         Quests:Storm:MQ13:QuestScript controller = FinaleController()
@@ -55,6 +63,7 @@ Function Fragment_Stage_0210_Item_00()
     SetObjectiveCompleted(25)
     SetObjectiveDisplayed(30)
     StartSceneIfStopped(Scene_FirstGridUnlocked)
+    RaiseWeatherLabAccessLevel(1.0)
     Quests:Storm:MQ13:LostGauntletScript controller = GauntletController()
     If controller != None
         controller.UnlockLaserGrid(0)
@@ -73,6 +82,7 @@ EndFunction
 
 Function Fragment_Stage_0350_Item_00()
     StartSceneIfStopped(Scene_SecondGridUnlocked)
+    RaiseWeatherLabAccessLevel(2.0)
     Quests:Storm:MQ13:LostGauntletScript controller = GauntletController()
     If controller != None
         controller.UnlockLaserGrid(1)
@@ -84,6 +94,7 @@ Function Fragment_Stage_0400_Item_00()
     SetObjectiveCompleted(30)
     SetObjectiveDisplayed(35)
     StartSceneIfStopped(Scene_ThirdGridUnlocked)
+    RaiseWeatherLabAccessLevel(3.0)
     Quests:Storm:MQ13:LostGauntletScript controller = GauntletController()
     If controller != None
         controller.UnlockAllLaserGrids()

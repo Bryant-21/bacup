@@ -279,7 +279,7 @@ fn jzargo_inner_effect_source(interner: &StringInterner) -> Record {
     jzargo_push(
         &mut record,
         *b"SNDD",
-        FieldValue::Bytes(smallvec::smallvec![1, 2, 3, 4]),
+        FieldValue::Bytes(smallvec::smallvec![1, 0, 0, 0, 0, 0, 0, 0]),
     );
     record
 }
@@ -474,34 +474,30 @@ fn lowers_fixture_spell_and_effect_chain_to_fo4_delivery() {
     );
     jzargo_assert_form(
         jzargo_named(&inner_effect, *b"DATA", "ResistValue", &interner),
-        0x0002EB,
+        0x0002E5,
         "Fallout4.esm",
         &interner,
     );
-    jzargo_assert_form(
+    assert_eq!(
         jzargo_named(&inner_effect, *b"DATA", "HitShader", &interner),
-        0x14237E,
-        "Fallout4.esm",
-        &interner,
+        &FieldValue::Uint(0)
     );
     jzargo_assert_form(
         jzargo_named(&inner_effect, *b"DATA", "Projectile", &interner),
-        0x204172,
-        "Fallout4.esm",
+        0x012FCF,
+        "Skyrim.esm",
         &interner,
     );
     assert_eq!(
         jzargo_named(&inner_effect, *b"DATA", "Delivery", &interner),
         &FieldValue::Uint(2)
     );
-    for forbidden in [*b"SNDD", *b"PROJ", *b"ARTO"] {
-        assert!(
-            inner_effect
-                .fields
-                .iter()
-                .all(|field| field.sig.0 != forbidden)
-        );
-    }
+    assert!(
+        inner_effect
+            .fields
+            .iter()
+            .any(|field| field.sig.0 == *b"SNDD")
+    );
 }
 
 #[test]
@@ -761,7 +757,7 @@ fn lowered_jzargo_chain_survives_native_save_reopen() {
     let inner_effect = jzargo_find_parsed(&slot.parsed.root_items, "MGEF", 0x097EE1).unwrap();
     let inner_effect_data = jzargo_parsed_subrecord(inner_effect, "DATA");
     assert_eq!(inner_effect_data.len(), 152);
-    assert_eq!(jzargo_parsed_u32(inner_effect_data, 72), 0x00204172);
+    assert_eq!(jzargo_parsed_u32(inner_effect_data, 72), 0x01012FCF);
     assert_eq!(jzargo_parsed_u32(inner_effect_data, 80), 2);
     assert_eq!(jzargo_parsed_u32(inner_effect_data, 84), 2);
     assert!(

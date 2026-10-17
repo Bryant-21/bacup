@@ -295,8 +295,11 @@ fn validate_artifact(
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with(';'))
-        .and_then(|line| line.strip_prefix("ScriptName "))
-        .and_then(|tail| tail.split_ascii_whitespace().next());
+        .and_then(|line| {
+            let mut words = line.split_ascii_whitespace();
+            words.next().filter(|word| word.eq_ignore_ascii_case("ScriptName"))?;
+            words.next()
+        });
     if declared != Some(artifact.class_name.as_str()) {
         return Err(format!(
             "Skyrim PSC {} declares ScriptName {declared:?}",
@@ -309,6 +312,17 @@ fn validate_artifact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_manifest_accepts_native_emitter_keyword_casing() {
+        let artifact = SkyrimPscSourceArtifact {
+            class_name: "B21_SkyrimEffect".into(),
+            source: "Scriptname B21_SkyrimEffect Extends ActiveMagicEffect\n".into(),
+            kind: SkyrimPscKind::RecordScript,
+            required: true,
+        };
+        assert!(psc_manifest_row(&artifact).is_ok());
+    }
 
     fn compile_evidence(
         root: &Path,

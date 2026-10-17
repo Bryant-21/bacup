@@ -16,8 +16,12 @@ Function RefreshSelectedStat()
 	If QS == None
 		QS = OwningQuest as Quests:U01A_Brewing:DailyScript
 	EndIf
-	If QS != None && QS.ChosenStatIndex >= 0 && QS.ChosenStatIndex < TestProperties.Length
-		SelectedStat = TestProperties[QS.ChosenStatIndex]
+	; DailyScript keeps ChosenStatIndex as a private variable, but mirrors it into D01A_ChosenStat.
+	If PlayerRef != None && D01A_ChosenStat != None
+		Int chosenStatIndex = PlayerRef.GetValue(D01A_ChosenStat) as Int
+		If chosenStatIndex >= 0 && chosenStatIndex < TestProperties.Length
+			SelectedStat = TestProperties[chosenStatIndex]
+		EndIf
 	EndIf
 EndFunction
 

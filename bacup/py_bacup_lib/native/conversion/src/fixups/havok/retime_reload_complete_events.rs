@@ -180,13 +180,17 @@ fn retime_reload_complete(annotations: &mut [HkxValue], duration: f32) -> bool {
 }
 
 fn walk_reload_hkx_files(dir: &Path, visit: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_reload_hkx_files_in_root(dir, visit, dir);
+}
+
+fn walk_reload_hkx_files_in_root(dir: &Path, visit: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            walk_reload_hkx_files(&path, visit);
+        if super::postprocess_scan::entry_is_dir(&entry) {
+            walk_reload_hkx_files_in_root(&path, visit, scan_root);
             continue;
         }
         let is_reload = path

@@ -134,6 +134,7 @@ pub struct TranslatedScript {
     pub properties: Vec<TranslatedProperty>,
     pub package_data_aliases: Vec<PackageDataAliasContract>,
     pub dedicated_topics: Vec<DedicatedTopicContract>,
+    pub deferred_creature_quest: Option<super::deferred_creature_quests::DeferredCreatureQuest>,
     pub compile_status: ScriptCompileStatus,
     pub terminal_status: ScriptTerminalStatus,
 }
@@ -310,6 +311,10 @@ fn translate_scpt_record_inner(
         }
     };
 
+    let (source, deferred_creature_quest) = super::deferred_creature_quests::partition(
+        &source, source_form_key, &eid,
+        !attachments.is_empty() && attachments.iter().all(|item| matches!(item.target_signature.as_str(), "CREA" | "NPC_")),
+    ).map_err(|error| (ScriptTerminalStatus::Unsupported, error))?;
     let mut script = parse_script(&source).map_err(|error| {
         (
             ScriptTerminalStatus::Unsupported,
@@ -323,6 +328,10 @@ fn translate_scpt_record_inner(
     let papyrus_type = papyrus_type_for_record(record, &eid, source_form_key, attachments)
         .map_err(|error| (ScriptTerminalStatus::Unsupported, error))?;
     let mut target = TargetMetadata::for_extends(papyrus_type.extends_class());
+    target.game_mode_native_frames = !attachments.is_empty()
+        && attachments.iter().all(|attachment| matches!(attachment.target_signature.as_str(), "CREA" | "NPC_"));
+    let function_map = load_native_function_map_for_exact_slice_record(&eid, source_form_key, mod_prefix)
+        .map_err(|error| (ScriptTerminalStatus::Unsupported, format!("SCPT '{eid}' load function map: {error}")))?;
     if exact_source_identity(source_form_key, 0x123191)
         && eid.eq_ignore_ascii_case("TecMineHostage")
     {
@@ -339,6 +348,7 @@ fn translate_scpt_record_inner(
         mod_prefix,
         papyrus_type,
         mapped_form_keys,
+        &function_map,
         &mut target,
     )
     .map_err(|error| (ScriptTerminalStatus::Unsupported, error))?;
@@ -355,17 +365,7 @@ fn translate_scpt_record_inner(
     .map_err(|error| (ScriptTerminalStatus::Unsupported, error))?;
 
     let ctx = NativeScriptContext {
-        function_map: load_native_function_map_for_exact_slice_record(
-            &eid,
-            source_form_key,
-            mod_prefix,
-        )
-        .map_err(|error| {
-            (
-                ScriptTerminalStatus::Unsupported,
-                format!("SCPT '{eid}' load function map: {error}"),
-            )
-        })?,
+        function_map,
         actor_value_map: load_native_actor_value_map().map_err(|error| {
             (
                 ScriptTerminalStatus::Unsupported,
@@ -418,6 +418,7 @@ fn translate_scpt_record_inner(
         properties,
         package_data_aliases,
         dedicated_topics,
+        deferred_creature_quest,
         compile_status: ScriptCompileStatus::SourceGeneratedPendingCompile,
         terminal_status: ScriptTerminalStatus::SourceGeneratedPendingCompile,
     })
@@ -1095,6 +1096,9 @@ fn papyrus_type_for_record(
         }
         return Ok(PapyrusType::Actor);
     }
+    if !attachments.is_empty() && attachments.iter().all(|attachment| matches!(attachment.target_signature.as_str(), "CREA" | "NPC_")) {
+        return Ok(PapyrusType::Actor);
+    }
     let value = field_value_any(record, &["SCHR", "BasicScriptData"]);
     let raw_type = value
         .and_then(|value| value.get("type").or_else(|| value.get("Type")))
@@ -1116,9 +1120,25 @@ fn populate_external_symbols(
     mod_prefix: &str,
     papyrus_type: PapyrusType,
     mapped_form_keys: &HashMap<String, String>,
+    function_map: &fnv_script_native::function_map::FunctionMap,
     target: &mut TargetMetadata,
 ) -> Result<Vec<TranslatedProperty>, String> {
     let mut names = external_symbol_names(script);
+    let actor_values = source_actor_value_symbols(script, function_map);
+    names.retain(|name| !actor_values.contains(&name.to_ascii_lowercase()));
+    let mut properties = Vec::new();
+    for name in &actor_values {
+        let (property, form_key) = super::actor_value_bindings::native_actor_value_binding(name)
+            .ok_or_else(|| format!("SCPT '{eid}' actor value '{name}' has no verified target property binding"))?;
+        target.insert_symbol(name, SymbolMetadata::new(property, "ActorValue"));
+        properties.push(TranslatedProperty {
+            source_name: name.clone(), papyrus_name: property.into(), papyrus_type: "ActorValue".into(),
+            source_form_key: form_key.into(), target_form_key: Some(form_key.into()),
+        });
+    }
+    names.retain(|name| matches!(name.to_ascii_lowercase().as_str(), "player" | "playerref")
+        || !function_map.get(name).is_some_and(|entry| entry.arg_kinds.is_empty()));
+    let idle_symbols = source_idle_argument_symbols(script);
     if exact_source_identity(source_form_key, 0x123191)
         && eid.eq_ignore_ascii_case("TecMineHostage")
     {
@@ -1129,20 +1149,82 @@ fn populate_external_symbols(
             )
         });
     }
+    let named_idles = record.get("__source_idle_symbols").and_then(Value::as_object);
+    if let Some(named_forms) = record.get("__source_form_symbols").and_then(Value::as_object)
+        && ![0x11FC64, 0x134491, 0x123191, 0x166305].into_iter().any(|local| exact_source_identity(source_form_key, local))
+    {
+        let source_refs = external_form_keys(record).into_iter().map(|value| normalize_form_key(&value)).collect::<HashSet<_>>();
+        for name in names {
+            let normalized = name.to_ascii_lowercase();
+            if matches!(normalized.as_str(), "player" | "playerref") {
+                target.insert_symbol(&name, intrinsic("Actor", "Game.GetPlayer()").metadata);
+                continue;
+            }
+            let metadata = named_forms.get(&normalized);
+            let idle = named_idles.and_then(|symbols| symbols.get(&normalized)).and_then(Value::as_str);
+            let source_key = idle.or_else(|| metadata.and_then(|value| value.get("form_key")).and_then(Value::as_str))
+                .ok_or_else(|| format!("SCPT '{eid}' symbol '{name}' has no exact source reference metadata"))?;
+            if idle.is_none() && !source_refs.contains(&normalize_form_key(source_key)) {
+                return Err(format!("SCPT '{eid}' symbol '{name}' is not in the source SCRO references"));
+            }
+            if exact_source_identity(source_form_key, 0x102AB3) && name.eq_ignore_ascii_case("VFreeformNellis")
+                && !exact_source_identity(source_key, 0x0FED44)
+            {
+                return Err(format!("SCPT '{eid}' VFreeformNellis callback requires exact source quest 0FED44:FalloutNV.esm"));
+            }
+            let binding = if idle.is_some() {
+                external(&name, "Idle", SymbolMetadata::new(&name, "Idle").with_static_record_kind("formkey"))
+            } else if let Ok(binding) = explicit_symbol_binding(eid, source_form_key, &name, mod_prefix, papyrus_type) {
+                binding
+            } else {
+                let signature = metadata.and_then(|value| value.get("signature")).and_then(Value::as_str).unwrap_or_default();
+                let ty = match signature {
+                    "SPEL" => "Spell", "EXPL" => "Explosion", "MGEF" => "MagicEffect",
+                    "ACHR" | "ACRE" => "Actor", "REFR" => "ObjectReference", "NPC_" | "CREA" => "ActorBase",
+                    "WEAP" => "Weapon", "ARMO" => "Armor", "AMMO" => "Ammo", "ALCH" => "Potion", "MISC" => "MiscObject",
+                    "QUST" => "Quest", "GLOB" => "GlobalVariable", "FACT" => "Faction", "PACK" => "Package", "MESG" => "Message",
+                    "EFSH" => "EffectShader", "SOUN" | "SNDR" => "Sound", "CSTY" => "CombatStyle", "IMAD" => "ImageSpaceModifier", "PERK" => "Perk", "IDLE" => "Idle", "DIAL" => "Topic", "FLST" => "FormList",
+                    _ => return Err(format!("SCPT '{eid}' symbol '{name}' has unsupported source type '{signature}'")),
+                };
+                external(&name, ty, SymbolMetadata::new(&name, ty))
+            };
+            let mapped = mapped_form_keys.get(&normalize_form_key(source_key)).cloned();
+            if binding.property_type.is_some() && mapped.is_none() {
+                return Err(format!("SCPT '{eid}' symbol '{name}' has no emitted target record for {source_key}"));
+            }
+            target.insert_symbol(&name, binding.metadata);
+            if let Some(papyrus_type) = binding.property_type {
+                properties.push(TranslatedProperty {
+                    source_name: name, papyrus_name: binding.papyrus_name, papyrus_type,
+                    source_form_key: source_key.into(), target_form_key: mapped,
+                });
+            }
+        }
+        return Ok(properties);
+    }
+    let scro_names = names.iter().filter(|name| named_idles.is_none_or(|symbols| !symbols.contains_key(&name.to_ascii_lowercase()))).cloned().collect::<Vec<_>>();
     let references =
-        order_exact_slice_references(eid, source_form_key, &names, external_form_keys(record))?;
-    if names.len() != references.len() {
+        order_exact_slice_references(eid, source_form_key, &scro_names, external_form_keys(record))?;
+    if scro_names.len() != references.len() {
         return Err(format!(
             "SCPT '{eid}' external symbol accounting mismatch: source_names={} SCRO={}",
-            names.len(),
+            scro_names.len(),
             references.len()
         ));
     }
 
-    let mut properties = Vec::new();
-    for (name, source_reference_form_key) in names.into_iter().zip(references) {
-        let binding =
-            explicit_symbol_binding(eid, source_form_key, &name, mod_prefix, papyrus_type)?;
+    let mut references = references.into_iter();
+    for name in names {
+        let source_reference_form_key = named_idles.and_then(|symbols| symbols.get(&name.to_ascii_lowercase())).and_then(Value::as_str).map(str::to_string)
+            .or_else(|| references.next()).expect("external symbol references were counted");
+        let binding = if idle_symbols.contains(&name.to_ascii_lowercase()) {
+            if !mapped_form_keys.contains_key(&normalize_form_key(&source_reference_form_key)) {
+                return Err(format!("SCPT '{eid}' PlayIdle '{name}' has no emitted target IDLE"));
+            }
+            external(&name, "Idle", SymbolMetadata::new(&name, "Idle").with_static_record_kind("formkey"))
+        } else {
+            explicit_symbol_binding(eid, source_form_key, &name, mod_prefix, papyrus_type)?
+        };
         target.insert_symbol(&name, binding.metadata);
         if let Some(papyrus_type) = binding.property_type {
             properties.push(TranslatedProperty {
@@ -1163,6 +1245,49 @@ fn populate_external_symbols(
         }
     }
     Ok(properties)
+}
+
+fn source_actor_value_symbols(script: &Script, functions: &fnv_script_native::function_map::FunctionMap) -> HashSet<String> {
+    fn call(value: &FunctionCall, functions: &fnv_script_native::function_map::FunctionMap, output: &mut HashSet<String>) {
+        if value.name.eq_ignore_ascii_case("GetHealthPercentage") { output.insert("health".into()); }
+        if let Some(entry) = functions.get(&value.name) {
+            for (argument, kind) in value.args.iter().zip(&entry.arg_kinds) {
+                if kind == "actor_value" && let Expr::Ident(name) | Expr::String(name) = argument {
+                    output.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+        if let Some(receiver) = &value.receiver { expression(receiver, functions, output); }
+        for argument in &value.args { expression(argument, functions, output); }
+    }
+    fn expression(value: &Expr, functions: &fnv_script_native::function_map::FunctionMap, output: &mut HashSet<String>) {
+        match value {
+            Expr::Ident(name) if name.eq_ignore_ascii_case("GetHealthPercentage") => { output.insert("health".into()); }
+            Expr::Call(value) => call(value, functions, output),
+            Expr::Member { receiver, .. } => expression(receiver, functions, output),
+            Expr::BinOp { lhs, rhs, .. } => { expression(lhs, functions, output); expression(rhs, functions, output); }
+            Expr::UnaryOp { operand, .. } => expression(operand, functions, output),
+            _ => {}
+        }
+    }
+    fn statements(values: &[Stmt], functions: &fnv_script_native::function_map::FunctionMap, output: &mut HashSet<String>) {
+        for value in values {
+            match value {
+                Stmt::Call(value) => call(value, functions, output),
+                Stmt::Set { value, .. } => expression(value, functions, output),
+                Stmt::If { cond, then_branch, elif_branches, else_branch } => {
+                    expression(cond, functions, output);
+                    statements(then_branch, functions, output);
+                    for (condition, branch) in elif_branches { expression(condition, functions, output); statements(branch, functions, output); }
+                    statements(else_branch, functions, output);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut output = HashSet::new();
+    for block in &script.blocks { statements(&block.statements, functions, &mut output); }
+    output
 }
 
 fn order_exact_slice_references(
@@ -1258,6 +1383,16 @@ fn explicit_symbol_binding(
     if source_name.eq_ignore_ascii_case("Player") || source_name.eq_ignore_ascii_case("PlayerRef") {
         return Ok(intrinsic("Actor", "Game.GetPlayer()"));
     }
+    if exact_source_identity(source_form_key, 0x102AB3)
+        && script_eid.eq_ignore_ascii_case("NellisExplodingAntScript")
+        && source_name.eq_ignore_ascii_case("VFreeformNellis")
+    {
+        let class = standalone_script_name(mod_prefix, 0x0FED40);
+        return Ok(external(source_name, &class, SymbolMetadata::new(source_name, &class)
+            .with_static_record_kind("quest")
+            .with_member("iAntCount", "iAntCount")
+            .with_member("iInfestation", "iInfestation")));
+    }
     if source_name.eq_ignore_ascii_case("VTechatticup") {
         let quest_class = standalone_script_name(mod_prefix, 0x11FC64);
         let exact_owner_script = exact_source_identity(source_form_key, 0x11FC64)
@@ -1342,6 +1477,43 @@ fn external_symbol_names(script: &Script) -> Vec<String> {
         collect_block_symbols(block, &declared, &mut seen, &mut names);
     }
     names
+}
+
+pub(crate) fn source_idle_argument_symbols(script: &Script) -> HashSet<String> {
+    fn call(call: &FunctionCall, output: &mut HashSet<String>) {
+        if call.name.eq_ignore_ascii_case("PlayIdle")
+            && let [Expr::Ident(name)] = call.args.as_slice()
+        { output.insert(name.to_ascii_lowercase()); }
+        if let Some(receiver) = &call.receiver { expression(receiver, output); }
+        for argument in &call.args { expression(argument, output); }
+    }
+    fn expression(value: &Expr, output: &mut HashSet<String>) {
+        match value {
+            Expr::Call(value) => call(value, output),
+            Expr::Member { receiver, .. } => expression(receiver, output),
+            Expr::BinOp { lhs, rhs, .. } => { expression(lhs, output); expression(rhs, output); }
+            Expr::UnaryOp { operand, .. } => expression(operand, output),
+            _ => {}
+        }
+    }
+    fn statements(values: &[Stmt], output: &mut HashSet<String>) {
+        for value in values {
+            match value {
+                Stmt::Call(value) => call(value, output),
+                Stmt::Set { value, .. } => expression(value, output),
+                Stmt::If { cond, then_branch, elif_branches, else_branch } => {
+                    expression(cond, output);
+                    statements(then_branch, output);
+                    for (condition, branch) in elif_branches { expression(condition, output); statements(branch, output); }
+                    statements(else_branch, output);
+                }
+                Stmt::Return | Stmt::ScriptBlockEnd => {}
+            }
+        }
+    }
+    let mut output = HashSet::new();
+    for block in &script.blocks { statements(&block.statements, &mut output); }
+    output
 }
 
 fn collect_block_symbols(
@@ -1499,6 +1671,10 @@ fn field_value_any<'a>(record: &'a Value, signatures: &[&str]) -> Option<&'a Val
             .find_map(|signature| object.get(*signature))
     })
 }
+
+#[cfg(test)]
+#[path = "script_synthesizer/creature_scripts_tests.rs"]
+mod creature_scripts_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1965,6 +2141,24 @@ End"#;
             .unwrap_err();
             assert!(error.to_string().contains("attachment evidence"));
         }
+    }
+
+    #[test]
+    fn playidle_uses_typed_source_idle_property_and_requires_target_mapping() {
+        let mut record = json!({
+            "eid": "CreatureIdleScript",
+            "fields": [
+                { "SCTX": raw_source("scn CreatureIdleScript\nBegin OnActivate\nPlayIdle NVRavenFlyAway\nEnd") }
+            ],
+            "__source_idle_symbols": { "nvravenflyaway": "1424D2:FalloutNV.esm" },
+            "__mapped_form_keys": { "1424D2:FalloutNV.esm": "2424D2:Target.esp" }
+        });
+        let translated = translate_scpt_record(&record, "B21", "000800:FalloutNV.esm").unwrap();
+        assert!(translated.psc_text.contains("Idle Property NVRavenFlyAway Auto Const"));
+        assert!(translated.psc_text.contains("(Self as Actor).PlayIdle(NVRavenFlyAway as Idle)"));
+        assert_eq!(translated.properties[0].target_form_key.as_deref(), Some("2424D2:Target.esp"));
+        record["__mapped_form_keys"] = json!({});
+        assert!(translate_scpt_record(&record, "B21", "000800:FalloutNV.esm").unwrap_err().to_string().contains("no emitted target IDLE"));
     }
 
     #[test]

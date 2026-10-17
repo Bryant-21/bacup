@@ -20,4 +20,5 @@ Function FireStrike()
     If E07B_Invaders_MissileStrikeShooter != None
         PlaceAtMe(E07B_Invaders_MissileStrikeShooter)
     EndIf
+    Delete()
 EndFunction

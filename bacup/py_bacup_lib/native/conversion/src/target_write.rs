@@ -860,7 +860,22 @@ pub fn add_interior_cell_with_children_native(
         let slot = store
             .get_mut(&handle_id)
             .ok_or_else(|| WriteError::InsertFailure(format!("no plugin handle: {handle_id}")))?;
-        let cell_parsed = match encode_record_for_slot(slot, cell, schema, interner)? {
+        let master_map = build_master_lookup(&slot.parsed.header.masters);
+        let target_game = slot.parsed.game.clone();
+        let mut ctx = EncodeContext {
+            interner,
+            master_map: &master_map,
+            own_index: (slot.parsed.header.masters.len() & 0xFF) as u32,
+            target_is_localized: (slot.parsed.header.flags & 0x0000_0080) != 0,
+            slot: Some(slot),
+            localized_strings: None,
+        };
+        let cell_parsed = match encode_record_for_target(
+            cell,
+            schema,
+            &mut ctx,
+            target_game.as_deref(),
+        )? {
             Some(parsed) => parsed,
             None => {
                 return Ok(InteriorInsertOutcome {
@@ -872,14 +887,14 @@ pub fn add_interior_cell_with_children_native(
         };
         let mut persistent_parsed = Vec::with_capacity(persistent.len());
         for child in persistent {
-            match encode_record_for_slot(slot, child, schema, interner)? {
+            match encode_record_for_target(child, schema, &mut ctx, target_game.as_deref())? {
                 Some(parsed) => persistent_parsed.push(parsed),
                 None => children_dropped += 1,
             }
         }
         let mut temporary_parsed = Vec::with_capacity(temporary.len());
         for child in temporary {
-            match encode_record_for_slot(slot, child, schema, interner)? {
+            match encode_record_for_target(child, schema, &mut ctx, target_game.as_deref())? {
                 Some(parsed) => temporary_parsed.push(parsed),
                 None => children_dropped += 1,
             }
@@ -4174,6 +4189,10 @@ fn unresolved_lstring_placeholder(string_id: u32) -> String {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "target_write/interior_tests.rs"]
+mod interior_tests;
 
 #[cfg(test)]
 mod tests {

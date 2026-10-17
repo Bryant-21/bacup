@@ -569,6 +569,36 @@ struct SkeletonBone {
     scale: [f32; 3],
 }
 
+pub(crate) fn nif_reference_pose(
+    nif: &nif_core_native::model::NifFile,
+) -> Result<havok_native::animation::pose::PoseSkeleton, String> {
+    use havok_native::animation::pose::{PoseSkeleton, QsTransform};
+
+    let skeleton = extract_nif_skeleton(nif, "source", false)
+        .map_err(|error| format!("source skeleton: {error:?}"))?;
+    Ok(PoseSkeleton {
+        bone_names: skeleton
+            .bones
+            .iter()
+            .map(|bone| bone.name.clone())
+            .collect(),
+        parent_indices: skeleton
+            .bones
+            .iter()
+            .map(|bone| bone.parent_index)
+            .collect(),
+        reference_local: skeleton
+            .bones
+            .iter()
+            .map(|bone| QsTransform {
+                translation: bone.translation,
+                rotation: bone.rotation,
+                scale: bone.scale,
+            })
+            .collect(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // NIF skeleton extraction
 // ---------------------------------------------------------------------------

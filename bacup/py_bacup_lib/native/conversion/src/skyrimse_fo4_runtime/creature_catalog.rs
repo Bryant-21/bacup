@@ -102,6 +102,7 @@ pub struct CreatureRaceAttackDataPlan {
     pub attack_chance_bits: u32,
     pub attack_spell: Option<FormKey>,
     pub attack_spell_signature: Option<String>,
+    pub attack_spell_delivery: Option<u32>,
     pub attack_flags: u32,
     pub attack_angle_bits: u32,
     pub strike_angle_bits: u32,
@@ -716,6 +717,7 @@ fn parse_race_attack_data(
                     interner,
                 ),
                 attack_spell_signature: None,
+                attack_spell_delivery: None,
                 attack_flags: word(12),
                 attack_angle_bits: word(16),
                 strike_angle_bits: word(20),
@@ -748,6 +750,7 @@ fn parse_race_attack_data(
                 malformed("ATKD.attack_spell is not a decoded FormKey".to_string())
             })?,
             attack_spell_signature: None,
+            attack_spell_delivery: None,
             attack_flags: struct_u32(fields, "attack_flags", interner)
                 .ok_or_else(|| malformed("ATKD.attack_flags is not a decoded u32".to_string()))?,
             attack_angle_bits: struct_float_bits(fields, "attack_angle", interner)
@@ -775,6 +778,17 @@ fn parse_race_attack_data(
         .attack_spell
         .and_then(|form_key| index.get(form_key))
         .map(|record| record.sig.as_str().to_string());
+    receipt.attack_spell_delivery = receipt
+        .attack_spell
+        .and_then(|form_key| index.get(form_key))
+        .filter(|record| record.sig.as_str() == "SPEL")
+        .and_then(|record| {
+            record
+                .fields
+                .iter()
+                .find(|field| field.sig.as_str() == "SPIT")
+        })
+        .and_then(|field| spell_delivery(&field.value, interner));
     if !matches!(
         receipt.attack_spell_signature.as_deref(),
         Some("SPEL" | "SHOU")
@@ -801,6 +815,36 @@ fn resolve_attack_form_optional(
     match index.resolve_embedded_form_id(owner, raw, interner) {
         EmbeddedFormResolution::Resolved(form_key) => Some(form_key),
         EmbeddedFormResolution::Ambiguous(_) | EmbeddedFormResolution::Missing => None,
+    }
+}
+
+fn spell_delivery(value: &FieldValue, interner: &StringInterner) -> Option<u32> {
+    match value {
+        FieldValue::Bytes(bytes) => bytes
+            .get(20..24)
+            .map(|raw| u32::from_le_bytes(raw.try_into().unwrap())),
+        FieldValue::Struct(fields) => fields.iter().find_map(|(name, value)| {
+            let name = interner.resolve(*name)?;
+            if !["targettype", "target_type", "delivery"]
+                .contains(&name.to_ascii_lowercase().as_str())
+            {
+                return None;
+            }
+            match value {
+                FieldValue::Uint(value) => u32::try_from(*value).ok(),
+                FieldValue::Int(value) => u32::try_from(*value).ok(),
+                FieldValue::String(value) => match interner.resolve(*value)? {
+                    "Self" => Some(0),
+                    "Touch" | "Contact" => Some(1),
+                    "Aimed" => Some(2),
+                    "TargetActor" => Some(3),
+                    "TargetLocation" => Some(4),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }),
+        _ => None,
     }
 }
 
@@ -1605,6 +1649,33 @@ mod tests {
                 CreatureCatalogIssue::MalformedRaceAttackData { ordinal: 1, detail }
                     if detail.contains("not followed")
             )));
+        }
+    }
+
+    #[test]
+    fn creature_attack_spell_delivery_reads_source_spit_layout_and_names() {
+        let interner = StringInterner::new();
+        for (delivery, label) in [
+            (0_u32, "Self"),
+            (1, "Touch"),
+            (2, "Aimed"),
+            (3, "TargetActor"),
+            (4, "TargetLocation"),
+        ] {
+            let mut bytes = vec![0_u8; 36];
+            bytes[16..20].copy_from_slice(&99_u32.to_le_bytes());
+            bytes[20..24].copy_from_slice(&delivery.to_le_bytes());
+            assert_eq!(
+                spell_delivery(&FieldValue::Bytes(SmallVec::from_vec(bytes)), &interner),
+                Some(delivery)
+            );
+            for name in ["Delivery", "TargetType", "target_type"] {
+                let value = FieldValue::Struct(vec![(
+                    interner.intern(name),
+                    FieldValue::String(interner.intern(label)),
+                )]);
+                assert_eq!(spell_delivery(&value, &interner), Some(delivery));
+            }
         }
     }
 

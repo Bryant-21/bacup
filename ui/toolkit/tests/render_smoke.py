@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--width", type=int, default=1600)
     parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--previs-report", type=Path, help="Saved `modkit previs check` JSON shown by the previs workspace.")
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     settings = ToolkitSettings(path=args.output.parent / "fixture-settings.json",
@@ -67,6 +68,14 @@ def main():
                     builder._progress_message = "Processing audio and textures for the selected mod..."
                     builder._progress_fraction = .58 if args.screen == "loading-known" else None
                     builder._progress_lines = ["Reading source files", "Building plugin", "Processing audio and textures"]
+                if args.workspace == "previs" and args.previs_report:
+                    import json
+
+                    state = app._active_ws.app.state
+                    state.report = json.loads(args.previs_report.read_text(encoding="utf-8"))
+                    state.load_order_label = state.report["summary"].get("load_order", "")
+                    state.selected_cell = next((c["form_key"] for c in state.report["cells"] if c.get("action")), "")
+                    state.selected_cluster = next((c.get("cluster") or "" for c in state.report["cells"] if c["form_key"] == state.selected_cell), "")
             if frames >= 12:
                 params.app_shall_exit = True
 

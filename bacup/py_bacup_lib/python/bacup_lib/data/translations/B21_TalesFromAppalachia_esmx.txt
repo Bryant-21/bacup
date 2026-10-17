@@ -11,6 +11,9 @@ $B21_TFA_Capacity	CAPACIDAD
 $B21_TFA_Unlimited	ILIMITADOS
 $B21_TFA_Legendary	Legendary
 $B21_TFA_SemiAutomatic	Semi-Automatic
+$B21_TFA_Charging	Carga
+$B21_TFA_ChargeTime	Tiempo de carga
+$B21_TFA_ChargeBonus	Bono de carga
 $B21_TFA_VATSAccuracy	Precisión V.A.T.S.
 $B21_TFA_WeaponType_Melee	Melee
 $B21_TFA_WeaponType_OneHanded	One-Handed
@@ -50,7 +53,29 @@ $B21_TFA_AssignPermanentSPECIAL	ASSIGN PERMANENT SPECIAL
 $B21_TFA_AssignSPECIAL	AUMENTO DE SPECIAL
 $B21_TFA_MoveSPECIAL	MOVER PUNTO SPECIAL
 $B21_TFA_AddLoadout	AGREGAR LA CARGA
-$B21_PM_Salute	Salud (requiere tiempo en vivo)
+$B21_PM_Salute	Salud
+$B21_PM_ExpressionAfraid	Miedo
+$B21_PM_ExpressionAmused	Amused
+$B21_PM_ExpressionAngry	Angry
+$B21_PM_ExpressionAwed	Awed
+$B21_PM_ExpressionConcerned	Concerned
+$B21_PM_ExpressionConfident	Confident
+$B21_PM_ExpressionDisgust	Es un desastre.
+$B21_PM_ExpressionFlirting	Flirting
+$B21_PM_ExpressionFriendly	Amistad
+$B21_PM_ExpressionHappy	Feliz
+$B21_PM_ExpressionImpressed	Impresionado
+$B21_PM_ExpressionIrritated	Irritated
+$B21_PM_ExpressionNeutral	Neutral
+$B21_PM_ExpressionPuzzled	Puzzled
+$B21_PM_ExpressionSad	Triste
+$B21_PM_ExpressionSinisterSmile	Sinister Smile
+$B21_PM_ExpressionSomber	Somber
+$B21_PM_ExpressionStern	Stern
+$B21_PM_ExpressionSurprised	Sorpresa
+$B21_PM_ExpressionThinking	Pensando
+$B21_PM_ExpressionTired	Cansado
+$B21_PM_ExpressionWorried	Worried
 $B21_PM_FO4Poses	Fallo 4
 $B21_PM_Warm	Warm
 $B21_PM_Cool	Genial.
@@ -58,6 +83,30 @@ $B21_PM_Vintage	Vintage
 $B21_PM_Keepsake	Keepsake
 $B21_PM_PhotoFrames	Fotografías
 $B21_PM_FreezeTime	Tiempo libre
+$B21_PM_TimeOfDay	Hora del día
+$B21_PM_Weather	El tiempo
+$B21_PM_SkyCurrent	Corriente
+$B21_PM_WeatherClear	Despejado
+$B21_PM_WeatherOvercast	Overcast
+$B21_PM_WeatherFoggy	Foggy
+$B21_PM_WeatherMisty	Misty
+$B21_PM_WeatherRain	Lluvia
+$B21_PM_WeatherThunderstorm	Thunderstorm
+$B21_PM_WeatherRadstorm	Radstorm
+$B21_PM_WeatherSnow	Nieve
+$B21_PM_WeatherAurora	Aurora
+$B21_PM_WeatherRainbow	Rainbow
+$B21_PM_WeatherBloodMoon	Luna de sangre
+$B21_PM_WeatherToxicValley	Valle tóxico
+$B21_PM_WeatherMire	El Mire
+$B21_PM_WeatherCranberryBog	Cranberry Bog
+$B21_PM_WeatherAshHeap	Ash Heap
+$B21_PM_WeatherNukeZone	Zona Nuke
+$B21_PM_WeatherCommonwealthClear	Commonwealth Clear
+$B21_PM_WeatherCommonwealthOvercast	Commonwealth Overcast
+$B21_PM_WeatherCommonwealthFoggy	Commonwealth Fog
+$B21_PM_WeatherCommonwealthRain	Commonwealth Rain
+$B21_PM_WeatherCommonwealthRadstorm	Commonwealth Radstorm
 $B21_PM_Menu	MODO DE FOTO
 $B21_PM_Saturated	Saturated
 $B21_PM_BlackAndWhite	Blanco y negro
@@ -126,3 +175,79 @@ $B21_Settings_Ultra	Ultra
 $B21_Settings_Fullscreen	Pantalla completa
 $B21_Settings_Borderless	Sin fronteras
 $B21_Settings_Windowed	Ventana
+$B21_Settings_QuickBoy	Quick-Boy
+$B21_Settings_PipBoyView	Pip-Boy View
+$B21_Settings_QuickBoyColor	Modo de color Quick-Boy
+$B21_Settings_QuickBoyR	Quick-Boy Color R
+$B21_Settings_QuickBoyG	Quick-Boy Color G
+$B21_Settings_QuickBoyB	Quick-Boy Color B
+$B21_Settings_QuickBoySize	Quick-Boy Tamaño
+$B21_Settings_QuickBoyBrightness	Quick-Boy Brightness
+$B21_Settings_DamageNumbers	Mostrar números de daños
+$B21_Settings_WeaponCondition	Mostrar arma condición
+$B21_Settings_AlwaysShowNeeds	Mostrar siempre el hambre y la cosa
+$B21_Settings_CorpseHighlight	Highlight Corpses
+$B21_Settings_UnhighlightMode	Stop Highlighting Corpses
+$B21_Settings_HighlightPlayerKills	Sólo resalta tus asesinatos
+$B21_Settings_MatchPipBoy	Partido Pip-Boy
+$B21_Settings_MatchHUD	Partido HUD
+$B21_Settings_OwnColor	Color propio
+$B21_Settings_PipBoy	Pip-Boy
+$B21_Settings_OnLoot	Después de tomar el préstamo
+$B21_Settings_OnInspect	Después de inspeccionar
+$B21_Settings_WhenEmpty	Cuando se vacía
+$B21_TFA_Lock	CERRADURA
+$B21_TFA_Unlock	DESBLOQUEAR
+$B21_TFA_Locked	Cerrado
+$B21_TFA_ItemLocked	Este artículo está cerrado.
+$B21_TFA_ItemUnlocked	Elemento desbloqueado.
+$B21_TFA_LockUnavailable	Incapaz de bloquear este artículo.
+$B21_TFA_ScrapAllJunk	SCRAP TODA LA BASURA
+$B21_TFA_ScrapAllQuestion	¿Arrastrar toda basura desbloqueada en componentes?
+$B21_TFA_JunkScrapped	Tu basura desbloqueada fue raspada.
+$B21_TFA_NoJunkToScrap	No tienes basura desbloqueada.
+$B21_TFA_ScrapStale	El artículo seleccionado cambió. Seleccione de nuevo antes de raspar.
+$B21_TFA_NoScrapYield	Este artículo no tiene componentes de chatarra.
+$B21_TFA_BuildMenuControls	CONTROLES DE MENÚ
+$B21_TFA_BuildCameraControls	CONTROLES DE CÁMARA
+$B21_TFA_FilterAll	FILTRO: TODOS
+$B21_TFA_FilterKnown	FILTRO: CONOCIDO
+$B21_TFA_FilterBuildable	FILTRO: EDIFICABLE
+$B21_TFA_FilterRecent	FILTRO: RECIENTE
+$B21_TFA_UnsupportedBuildVariant	Esta variante no tiene objeto edificable.
+$B21_TFA_CameraMove	MOVEOS
+$B21_TFA_CameraRiseFall	LEVÁNTATE / CAÍDA
+$B21_TFA_CameraSpeed	SPEED
+$B21_TFA_CameraPadHelpTop	MUÉVETE.   MIRA.
+$B21_TFA_CameraPadHelpBottom	RISE / FALL: D-pad Up / Down   D-pad Right
+$B21_TFA_Deselect	DESELECT
+$B21_TFA_BlueprintObjects	objetos
+$B21_TFA_BlueprintUnavailable	no disponible
+$B21_TFA_BlueprintSelected	seleccionado
+$B21_TFA_TeamFullLeaves	Equipo lleno. <Name> deja el equipo.
+$B21_TFA_TeamFullCantJoin	Equipo lleno. <Name> no puede unirse.
+$B21_TFA_TeamAllyCantLead	Los aliados no pueden liderar el equipo.
+$B21_TFA_TeamOwnSystem	<Name> utiliza su propio sistema de seguimiento.
+$B21_TFA_TeamNowLeads	<Name> ahora lidera el equipo.
+$B21_TFA_TeamTookOverUCF	Tus compañeros ilimitados de Companion Framework se unieron al equipo. Guardar, entonces UCF puede ser eliminado.
+$B21_TFA_TeamFullStaysUCF	Equipo lleno. <Name> se queda con el Marco de Compañero ilimitado.
+$B21_TFA_TeamLeadAfterUCF	Elige el plomo después de eliminar el Marco de Compañero ilimitado.
+$B21_TFA_SetBonus	BONIFICACIÓN DE CONJUNTO
+$B21_TFA_UniquePerkRank	+{rank} rango de {perk}
+$B21_TFA_Pets	MASCOTAS
+$B21_TFA_CompanionTitle	COMPAÑEROS
+$B21_TFA_CompanionEmpty	Contrata a un compañero para viajar contigo.
+$B21_TFA_CompanionLevel	NIVEL
+$B21_TFA_CompanionXP	XP
+$B21_TFA_CompanionHP	HP
+$B21_TFA_CompanionAffinity	AFINIDAD
+$B21_TFA_CompanionNotTracked	No rastreado
+$B21_TFA_CompanionBonuses	BONOS DE NIVEL
+$B21_TFA_CompanionPerks	COMPAÑERO
+$B21_TFA_CompanionShared	TARJETA COMPARTIDA
+$B21_TFA_CompanionMax	MAX
+$B21_TFA_CompanionSelect	[Up/Down] Seleccionar compañero   [D-pad] Seleccionar compañero
+$B21_TFA_CompanionVeteran	Veterano: +25 daños y resistencia energética
+$B21_TFA_CompanionPackMule	Mula de paquete: +50 peso
+$B21_TFA_CompanionCombatTraining	Formación de combate: +10% de daño
+$B21_TFA_CompanionEndurance	Resistencia: +100 salud

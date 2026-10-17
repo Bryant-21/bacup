@@ -16,7 +16,7 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::fixups::gate_runtime_controlled_placed_refs::NUKED_FLORA_BASE_MARKER;
+use crate::fixups::master_record_numbering::record_decoded_in_master_for_target;
 use crate::fixups::ref_index::build_target_fk_sig_map;
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -339,9 +339,7 @@ fn target_record_decoded(
         return session.record_decoded(fk, target_schema, interner).ok();
     }
     let handle_id = target_master_handle_for_fk(fk, masters, target_master_handle_ids, interner)?;
-    session
-        .record_decoded_in_handle(handle_id, fk, target_schema, interner)
-        .ok()
+    record_decoded_in_master_for_target(session, handle_id, fk, target_schema, interner).ok()
 }
 
 fn is_fo76_to_fo4(session: &PluginSession) -> bool {
@@ -658,11 +656,12 @@ fn build_default_leaf_preferences(
     out
 }
 
-/// FO76 nuke/radstorm variants (`FloraRad*`) only exist inside an active blast
-/// zone, which FO4 has no equivalent of. A flattened placed base must never land
-/// on one while a normal-world leaf is available — the same intent as the
-/// nuked-flora rule in [`crate::fixups::gate_runtime_controlled_placed_refs`],
-/// which only sees placements whose *source* base is already the variant.
+const NUKED_FLORA_BASE_MARKER: &str = "FloraRad";
+
+/// FO76 nuke/radstorm variants (`FloraRad*`) only roll inside an active blast
+/// zone. A flattened placed base can't re-roll there, so it must never land on
+/// one while a normal-world leaf is available. Placed refs that keep their list
+/// in `XLIB` roll at runtime instead, where Tales evaluates the nuke regions.
 fn drop_nuked_leaves(
     session: &mut PluginSession,
     leaves_map: &mut FxHashMap<FormKey, Vec<FormKey>>,

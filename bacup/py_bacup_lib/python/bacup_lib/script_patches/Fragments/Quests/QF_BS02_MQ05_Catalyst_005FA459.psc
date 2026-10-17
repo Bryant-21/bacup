@@ -159,6 +159,7 @@ Function Fragment_Stage_0750_Item_00()
     If BS02_MQ05_Catalyst_BlackburnBetrayal != None && !BS02_MQ05_Catalyst_BlackburnBetrayal.IsPlaying()
         BS02_MQ05_Catalyst_BlackburnBetrayal.Start()
     EndIf
+    SetBlackburnLaserGridsEnabled(False)
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()
@@ -174,6 +175,7 @@ EndFunction
 
 Function Fragment_Stage_0900_Item_00()
     Alias_Trigger_HatchDrop.TryToDisable()
+    SetBlackburnLaserGridsEnabled(True)
     Alias_Door_BossRoomHatch.TryToDisable()
     If BS02_MQ05_Catalyst_TheExperiment != None && !BS02_MQ05_Catalyst_TheExperiment.IsPlaying()
         BS02_MQ05_Catalyst_TheExperiment.Start()
@@ -757,4 +759,27 @@ Function Fragment_Stage_10000_Item_00()
         i += 1
     EndWhile
     Stop()
+EndFunction
+
+; The West Tek grids 82C1BE/5FAFD8/5F7491 admit only BS02_MQ05_Catalyst_BlackburnLaserGridKeyword,
+; which Blackburn's alias carries, so FO76 let him walk through to the test chamber while they
+; stayed shut for the player. FO4 has no per-actor collision: they open for his betrayal walk
+; and close again once the player has dropped through the hatch.
+Function SetBlackburnLaserGridsEnabled(Bool abEnabled)
+    Int[] gridIDs = new Int[3]
+    gridIDs[0] = 0x0082C1BE
+    gridIDs[1] = 0x005FAFD8
+    gridIDs[2] = 0x005F7491
+    Int index = 0
+    While index < gridIDs.Length
+        ObjectReference grid = Game.GetFormFromFile(gridIDs[index], "SeventySix.esm") as ObjectReference
+        If grid != None
+            If abEnabled
+                grid.Enable()
+            Else
+                grid.Disable()
+            EndIf
+        EndIf
+        index += 1
+    EndWhile
 EndFunction

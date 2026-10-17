@@ -12,7 +12,6 @@ from __future__ import annotations
 import io
 import json
 import math
-import struct
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +19,10 @@ from bacup_lib.fullscreen_map import PLUGIN_ASSETS_REL
 
 PACK_REL = PLUGIN_ASSETS_REL / "maps" / "appalachia"
 MARKER_LIBRARY_REL = Path("interface/mapmarkerlibrary.swf")
-_CELL = 128
+_CELL = 256
 _COLUMNS = 24
-_ICON_SIZE = 112
-_RENDER_SCALE = 6.0
+_ICON_SIZE = 224
+_RENDER_SCALE = 12.0
 # Luma bounds of the four tint bands (shadow, dim, mid, bright), as the map's own atlas tool splits them.
 _BAND_LIMITS = (0.12, 0.68, 0.93)
 
@@ -44,24 +43,12 @@ _SYMBOL_OVERRIDES: dict[int, str] = {
 
 def marker_symbols(source_plugin: Path) -> dict[int, str]:
     """FO76 map marker object ID -> marker symbol name."""
-    from creation_lib.esp import native_runtime
-    from creation_lib.esp.plugin import Plugin
+    from bacup_lib.native_runtime import load_native_module
     from creation_lib.esp.schema import get_schema
 
     labels = dict(get_schema("fo76").enums["REFR.TNAM.type"].labels)
-    plugin = Plugin.load(Path(source_plugin), game="fo76", lazy_index=True)
-    try:
-        handle = plugin._rust_handle
-        symbols: dict[int, str] = {}
-        for form_id in native_runtime.plugin_handle_record_form_ids_with_subrecords(handle, ["XMRK"]):
-            for signature, data, _semantic in native_runtime.plugin_handle_record_subrecords(handle, form_id) or []:
-                if signature == "TNAM" and len(data) >= 2:
-                    label = labels.get(struct.unpack_from("<H", data)[0])
-                    if label:
-                        symbols[form_id & 0xFFFFFF] = label
-                    break
-    finally:
-        plugin.close()
+    symbols = {object_id: labels[kind] for object_id, kind in
+               load_native_module().collect_map_marker_types(str(source_plugin)) if labels.get(kind)}
     symbols.update(_SYMBOL_OVERRIDES)
     return symbols
 
@@ -76,18 +63,19 @@ def icon_cells(icon: Any) -> list[Any]:
     from PIL import Image, ImageChops
 
     icon = icon.convert("RGBA")
-    icon.thumbnail((_ICON_SIZE, _ICON_SIZE), Image.Resampling.LANCZOS)
-    placed = Image.new("RGBA", (_CELL, _CELL))
-    placed.alpha_composite(icon, ((_CELL - icon.width) // 2, (_CELL - icon.height) // 2))
-    alpha = placed.getchannel("A")
-    luma = placed.convert("RGB").convert("L")
+    alpha = icon.getchannel("A")
+    luma = icon.convert("RGB").convert("L")
 
     def white(mask: Any) -> Any:
-        cell = Image.new("RGBA", placed.size, (255, 255, 255, 0))
-        cell.putalpha(mask)
+        # Classify at source resolution, then shrink coverage so tint boundaries stay antialiased.
+        mask.thumbnail((_ICON_SIZE, _ICON_SIZE), Image.Resampling.LANCZOS)
+        coverage = Image.new("L", (_CELL, _CELL))
+        coverage.paste(mask, ((_CELL - mask.width) // 2, (_CELL - mask.height) // 2))
+        cell = Image.new("RGBA", coverage.size, (255, 255, 255, 0))
+        cell.putalpha(coverage)
         return cell
 
-    cells = [white(alpha)]
+    cells = [white(alpha.copy())]
     for band in range(4):
         selected = luma.point(lambda value, band=band: 255 if _band(value) == band else 0)
         cells.append(white(ImageChops.multiply(selected, alpha)))
@@ -111,7 +99,7 @@ def build_atlas(icons: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     slot = 0
     for name in names:
         for offset, cell in enumerate(icon_cells(icons[name])):
-            atlas.alpha_composite(cell, ((slot + offset) % _COLUMNS * _CELL, (slot + offset) // _COLUMNS * _CELL))
+            atlas.paste(cell, ((slot + offset) % _COLUMNS * _CELL, (slot + offset) // _COLUMNS * _CELL))
         entries[name] = {"tintable": True, "shape": rect(slot), "bands": [rect(slot + band) for band in range(1, 5)]}
         slot += 5
     manifest = {"version": 1, "texture": "markers.dds", "width": width, "height": height, "cell": _CELL, "icons": entries}

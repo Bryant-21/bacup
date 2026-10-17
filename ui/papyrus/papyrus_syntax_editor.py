@@ -648,7 +648,7 @@ class PapyrusSyntaxEditor:
                         draw_list.add_rect(
                             imgui.ImVec2(bx, by),
                             imgui.ImVec2(bx + bw, by + self._line_height),
-                            col_bracket, 0.0, 0, 1.0,
+                            col_bracket, thickness=1.0,
                         )
                 break  # Only highlight first match found
 

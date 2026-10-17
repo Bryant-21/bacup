@@ -9,7 +9,7 @@ use crate::terrain_textures::ltex_walk::{
     field_all_reference_form_keys, field_reference_form_key, field_str, field_value,
     normalize_esp_form_key,
 };
-use crate::terrain_textures::manifest::{GrassEntry, ObjectBounds};
+use crate::terrain_textures::manifest::{GrassEntry, GroundCoverGrass, GroundCoverManifest, ObjectBounds};
 use crate::terrain_textures::starfield_records::{raw_hex_bytes, raw_u16_le, resolve_raw_form_id};
 
 const FO4_GRASS_FLAGS: &[&str] = &["VertexLighting", "UniformScaling", "FitToSlope"];
@@ -131,6 +131,38 @@ pub fn gcvr_land_texture_form_keys(
         }
     }
     Ok(form_keys)
+}
+
+/// A GCVR as FO76's `BGSGroundCover::Load` keeps it: a grass enters the map only when a DNAM
+/// follows its GNAM, a repeated GNAM keeps its first entry, and YNAM defaults to 0.286.
+pub fn ground_cover_manifest(handle_id: u64, gcvr_form_key: &str) -> Result<GroundCoverManifest, String> {
+    let gcvr_fk_norm = normalize_esp_form_key(gcvr_form_key);
+    let gcvr = plugin_handle_read_authoring_record_value_json(handle_id, &gcvr_fk_norm)
+        .map_err(|e| format!("plugin lookup failed for GCVR {gcvr_form_key}: {e}"))?
+        .ok_or_else(|| format!("GCVR not found: {gcvr_form_key}"))?;
+    let fields = gcvr
+        .get("fields")
+        .and_then(|v| v.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    Ok(GroundCoverManifest {
+        form_key: gcvr_fk_norm.into_owned(),
+        editor_id: gcvr.get("eid").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+        ynam: field_value(fields, "YNAM")
+            .and_then(f32_value)
+            .unwrap_or(terrain_native::fo76_grass::GCVR_DEFAULT_YNAM),
+        ltex_form_keys: gcvr_land_texture_form_keys(handle_id, gcvr_form_key)?,
+        grasses: ground_cover_grasses(gcvr_grass_refs_for_handle(handle_id, fields)?),
+    })
+}
+
+fn ground_cover_grasses(refs: Vec<GcvrGrassRef>) -> Vec<GroundCoverGrass> {
+    let mut seen = HashSet::new();
+    refs.into_iter()
+        .filter_map(|grass_ref| Some((grass_ref.weight?, grass_ref.form_key)))
+        .filter(|(_, form_key)| seen.insert(normalize_esp_form_key(form_key).to_ascii_lowercase()))
+        .map(|(dnam, form_key)| GroundCoverGrass { form_key, dnam })
+        .collect()
 }
 
 pub fn record_editor_id(handle_id: u64, form_key: &str) -> Result<String, String> {
@@ -325,13 +357,17 @@ fn entry_from_grass_with_policy_for_handle(
     let raw_data = plugin_handle_read_raw_subrecords_no_py(handle_id, form_key, "DNAM")
         .ok()
         .and_then(|values| values.into_iter().next());
-    entry_from_grass_with_policy_and_raw(
+    let mut entry = entry_from_grass_with_policy_and_raw(
         grass,
         form_key,
         asset_prefix,
         gcvr_policy,
         Some((raw_model.as_deref(), raw_data.as_deref())),
-    )
+    );
+    if is_fo76_source_game(asset_prefix) {
+        entry.fo76_dnam = raw_data.as_deref().and_then(terrain_native::fo76_grass::GrassDnam::from_file_bytes);
+    }
+    entry
 }
 
 fn entry_from_grass_with_policy_and_raw(
@@ -438,6 +474,7 @@ fn entry_from_grass_with_policy_and_raw(
         position_range_normalized,
         source_gcvr_form_keys: Vec::new(),
         target_form_key: None,
+        fo76_dnam: None,
         assets: Vec::new(),
     }
 }
@@ -881,6 +918,72 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn ground_cover_grasses_follow_the_runtime_gcvr_load() {
+        let grass = |object_id: &str, weight: Option<u16>| GcvrGrassRef {
+            form_key: format!("SeventySix.esm:{object_id}"),
+            weight,
+        };
+        let grasses = ground_cover_grasses(vec![
+            grass("3900A5", Some(65535)),
+            grass("3B396F", None),
+            grass("00DC6B", Some(40)),
+            grass("3900A5", Some(10)),
+        ]);
+        assert_eq!(
+            grasses,
+            vec![
+                GroundCoverGrass { form_key: "SeventySix.esm:3900A5".into(), dnam: 65535 },
+                GroundCoverGrass { form_key: "SeventySix.esm:00DC6B".into(), dnam: 40 },
+            ],
+            "a GNAM without DNAM is not loaded; a repeated GNAM keeps its first entry"
+        );
+    }
+
+    #[test]
+    fn grass_point_manifest_fields_reach_the_terrain_bridge() {
+        use crate::terrain_textures::manifest::{TextureBundle, TextureManifest};
+        let dnam = terrain_native::fo76_grass::GrassDnam::from_file_bytes(&[
+            0x00, 0x00, 0xbe, 0x42, 0xcd, 0xcc, 0xcc, 0x3d, 0x9a, 0x99, 0x99, 0x3e, 0xcd, 0xcc, 0x4c,
+            0x3e, 0x00, 0x00, 0x11, 0x43, 0x00, 0x00, 0xff, 0xff, 0x5e, 0x00, 0x39, 0x15, 0x00, 0x00,
+            0xc2, 0x42, 0xcd, 0xcc, 0xcc, 0x3d,
+        ])
+        .unwrap();
+        let cover = GroundCoverManifest {
+            form_key: "SeventySix.esm:011C67".into(),
+            editor_id: "GCForestGrass01".into(),
+            ynam: 1.5,
+            ltex_form_keys: vec!["SeventySix.esm:00D677".into()],
+            grasses: vec![GroundCoverGrass { form_key: "SeventySix.esm:3900A5".into(), dnam: 65535 }],
+        };
+        let manifest = TextureManifest {
+            textures: vec![TextureBundle {
+                grass: vec![GrassEntry {
+                    source_form_key: "SeventySix.esm:3900A5".into(),
+                    fo76_dnam: Some(dnam),
+                    ..GrassEntry::default()
+                }],
+                ..TextureBundle::default()
+            }],
+            ground_covers: vec![cover],
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let bridged: terrain_native::texture_bridge::TextureManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(bridged.textures[0].grass[0].fo76_dnam, Some(dnam));
+        let cover = &bridged.ground_covers[0];
+        assert_eq!((cover.form_key.as_str(), cover.ynam), ("SeventySix.esm:011C67", 1.5));
+        assert_eq!(cover.ltex_form_keys, vec!["SeventySix.esm:00D677"]);
+        assert_eq!((cover.grasses[0].form_key.as_str(), cover.grasses[0].dnam), ("SeventySix.esm:3900A5", 65535));
+
+        // Without grass points the manifest keeps its previous shape.
+        let plain = serde_json::to_value(TextureManifest { textures: vec![TextureBundle {
+            grass: vec![GrassEntry::default()],
+            ..TextureBundle::default()
+        }], ..TextureManifest::default() }).unwrap();
+        assert!(plain.get("ground_covers").is_none());
+        assert!(plain["textures"][0]["grass"][0].get("fo76_dnam").is_none());
     }
 
     #[test]

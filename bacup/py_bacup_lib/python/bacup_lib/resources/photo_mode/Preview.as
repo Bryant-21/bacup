@@ -50,7 +50,16 @@ package {
             var selected:String = options[name == "Show Player" || name == "Freeze Time" ? 1 : 0];
             control.setDefault(B21_PhotoStrings.values[selected] || selected);
         }
-        public function B21Changed(panel:String,name:String,value:Number):void { b21Changes.push({panel:panel,name:name,value:value}); }
+        public function B21Changed(panel:String,name:String,value:Number):void {
+            b21Changes.push({panel:panel,name:name,value:value});
+            if (name.indexOf(" Category") > 0) {
+                var child:String = name.substr(0, name.indexOf(" Category"));
+                if (B21_PhotoStrings.groups[child]) {
+                    B21_PhotoStrings.options[child] = B21_PhotoStrings.groups[child][value];
+                    B21RefreshStepper(child, panel);
+                }
+            }
+        }
         public function B21Action(action:String):void { b21Actions.push(action); ExternalInterface.call("action",action); }
         public function B21Sound(name:String):void {}
         public function B21PreviewPlatform(platform:uint):void { SetPlatform(platform, false); }

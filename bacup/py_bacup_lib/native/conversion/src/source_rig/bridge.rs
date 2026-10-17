@@ -20,6 +20,8 @@ pub const SOURCE_RIG_BRIDGE_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SourceRigPairLedgerEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_root_identity: Option<SourceCreatureIdentity>,
     pub schema: String,
     pub canonical_json: String,
     pub ledger_blake3: String,
@@ -53,6 +55,8 @@ pub struct SourceRigConvertedArtifactRequestReceipt {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SourceRigRecipeBridgeReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_root_identity: Option<SourceCreatureIdentity>,
     pub version: u32,
     pub ledger_schema: String,
     pub ledger_blake3: String,
@@ -85,6 +89,7 @@ pub struct SourceRigRecipeBridgeInput {
 impl SourceRigRecipeBridgeInput {
     pub fn bridge_receipt(&self) -> SourceRigRecipeBridgeReceipt {
         let mut receipt = SourceRigRecipeBridgeReceipt {
+            source_root_identity: self.pair_ledger.source_root_identity.clone(),
             version: SOURCE_RIG_BRIDGE_VERSION,
             ledger_schema: self.pair_ledger.schema.clone(),
             ledger_blake3: self.pair_ledger.ledger_blake3.clone(),
@@ -159,6 +164,10 @@ pub fn build_source_rig_executable_recipe(
 
 fn validate_pair_ledger(input: &SourceRigRecipeBridgeInput) -> Result<(), SourceRigBridgeError> {
     let ledger = &input.pair_ledger;
+    if ledger.source_root_identity.as_ref().is_some_and(|root| !root.is_valid()
+        || !root.namespace.eq_ignore_ascii_case(&ledger.source_identity.namespace)) {
+        return Err(invalid("pair_ledger_source_root", "generated source root is invalid or crosses game provenance"));
+    }
     if ledger.schema.trim().is_empty()
         || ledger.family_id.trim().is_empty()
         || ledger.canonical_json.trim().is_empty()
@@ -297,7 +306,7 @@ fn validate_selected_family(
     let referenced = graph
         .roles
         .iter()
-        .map(|role| role.clip_name.as_str())
+        .flat_map(|role| role.generator.clip_names(&role.clip_name))
         .chain(
             graph
                 .overlays

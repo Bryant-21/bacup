@@ -24,6 +24,8 @@ from bacup_lib.models import (
 from bacup_lib.native_maps import native_translation_maps_dir
 from bacup_lib.workflows import unified as unified_mod
 from bacup_lib.workflows.unified import (
+    AssetRuns,
+    AssetWaveToggles,
     TrackSignals,
     UnifiedDriver,
     _UnifiedRecordRuntime,
@@ -633,95 +635,84 @@ def test_unified_record_track_rejects_cell_bounds(tmp_path: Path, monkeypatch) -
         driver._convert_record_track(request.source_plugins[0], StubRunner())
 
 
+@pytest.mark.parametrize("military_present", [True, False])
 def test_finalize_fo76_pipboy_map_texture_writes_fo4_legacy_dds(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    military_present: bool,
 ) -> None:
     from PIL import Image
 
-    from creation_lib.dds import io as dds_io
+    from bacup_lib import fullscreen_map_markers, fullscreen_map_regions
+    from bacup_lib.fullscreen_map import write_ui_dds
+    from creation_lib.dds.io import load_image, save_image
 
     source_root = tmp_path / "source"
-    source_path = (
-        source_root / "textures" / "interface" / "pip-boy" / "papermap_city_d.dds"
-    )
+    source_path = source_root / "textures/interface/pip-boy/papermap_city_d.dds"
     source_path.parent.mkdir(parents=True)
-    source_path.write_bytes(b"dds")
-    mod_path = tmp_path / "out" / "SeventySix"
+    pixels = Image.frombytes("RGBA", (5, 7), bytes((i * 17) % 256 for i in range(5 * 7 * 4)))
+    save_image(pixels, str(source_path), format="R8G8B8A8_UNORM", use_gpu=False)
+    if military_present:
+        save_image(pixels, str(source_path.with_name("military_map_d.dds")), format="R8G8B8A8_UNORM", use_gpu=False)
+    expected_map = tmp_path / "expected_map.dds"
+    write_ui_dds(pixels, expected_map, pad=True)
+    resized = pixels.resize((2048, 2048), Image.Resampling.LANCZOS)
+    expected_pipboy = tmp_path / "expected_pipboy.dds"
+    save_image(resized, str(expected_pipboy), format="DXT1", generate_mips=True, use_gpu=False)
+    monkeypatch.setattr(fullscreen_map_markers, "export_marker_icons", lambda **_: 0)
+    region_calls = []
+    monkeypatch.setattr(fullscreen_map_regions, "export_region_labels", lambda **kwargs: region_calls.append(kwargs) or 8)
+
+    mod_path = tmp_path / "out/SeventySix"
     ctx = SimpleNamespace(source_data_dir=source_root, mod_path=mod_path)
     request = make_request(tmp_path)
     request.options.convert_textures = True
     runner = StubRunner()
-    saved: dict[str, object] = {}
-    saved_maps: dict[Path, dict[str, object]] = {}
-
-    military_path = source_path.with_name("military_map_d.dds")
-    military_path.write_bytes(b"dds")
-
-    def fake_load_image(path: str, mode: str = "RGBA") -> Image.Image:
-        assert path in (str(source_path), str(military_path))
-        assert mode == "RGBA"
-        return Image.new("RGBA", (4, 4), (1, 2, 3, 255))
-
-    def fake_save_image(
-        img: Image.Image,
-        path: str,
-        *,
-        is_palette: bool = False,
-        format: str | None = None,
-        generate_mips: bool = False,
-        use_gpu: bool = True,
-    ) -> None:
-        if "B21_FullScreenMap" in Path(path).parts:
-            saved_maps[Path(path)] = {"size": img.size, "format": format, "generate_mips": generate_mips}
-            return
-        saved.update(
-            path=Path(path),
-            size=img.size,
-            is_palette=is_palette,
-            format=format,
-            generate_mips=generate_mips,
-            use_gpu=use_gpu,
-        )
-
-    monkeypatch.setattr(dds_io, "load_image", fake_load_image)
-    monkeypatch.setattr(dds_io, "save_image", fake_save_image)
-
     _finalize_fo76_pipboy_map_texture(request, ctx, runner)
 
-    assert saved == {
-        "path": mod_path
-        / "data"
-        / "textures"
-        / "interface"
-        / "pip-boy"
-        / "papermap_city_d.dds",
-        "size": (2048, 2048),
-        "is_palette": False,
-        "format": "DXT1",
-        "generate_mips": True,
-        "use_gpu": False,
-    }
-    pack = mod_path / "F4SE" / "Plugins" / "B21_FullScreenMap" / "maps" / "appalachia"
-    assert saved_maps[pack / "map.dds"] == {"size": (4, 4), "format": "BC7_UNORM", "generate_mips": True}
-    assert not (pack / "map.png").exists()
-    assert saved_maps[pack / "military.dds"] == {"size": (4, 4), "format": "BC7_UNORM", "generate_mips": True}
+    assert region_calls == [{"source_plugin": Path(request.source_plugins[0]), "source_root": source_root, "mod_root": mod_path}]
+    pipboy = mod_path / "data/textures/interface/pip-boy/papermap_city_d.dds"
+    assert pipboy.read_bytes() == expected_pipboy.read_bytes()
+    assert pipboy.read_bytes()[84:88] == b"DXT1"
+    assert load_image(str(pipboy)).size == (2048, 2048)
+    pack = mod_path / "F4SE/Plugins/B21_FullScreenMap/maps/appalachia"
+    assert (pack / "map.dds").read_bytes() == expected_map.read_bytes()
     manifest = json.loads((pack / "map.json").read_text(encoding="utf-8"))
     assert manifest["image"] == "map.dds"
-    assert manifest["nukeImage"] == "military.dds"
+    assert manifest.get("nukeImage") == ("military.dds" if military_present else None)
+    if military_present:
+        assert (pack / "military.dds").read_bytes() == expected_map.read_bytes()
     assert manifest["worldspace"] == "Appalachia"
     assert manifest["discovery"] == "proximity"
-    assert manifest["calibration"]["mode"] == "survey"
-    assert any(
-        log[0] == "INFO"
-        and log[1].startswith("Wrote FO4-compatible Appalachia Pip-Boy map texture")
-        for log in runner.logs
-    )
-    assert any(
-        log[0] == "INFO"
-        and log[1].startswith("Wrote generated Appalachia fullscreen map pack")
-        for log in runner.logs
-    )
+    assert manifest["calibration"] == {
+        "mode": "survey", "centerX": 340, "centerY": 135, "maxRange": 582500, "mapPx": 4096,
+    }
+    timing = json.loads((mod_path / "conversion/pipboy_map_timing.json").read_text())
+    assert len([op for op in timing["operations"] if op["operation"] == "encode"]) == (3 if military_present else 2)
+    for operation in timing["operations"]:
+        if operation["operation"] == "encode":
+            assert operation["gpu_attempts"] == (0 if "papermap_city_d.dds" in operation["path"] else 1)
+            assert operation["gpu_failures"] <= operation["gpu_attempts"]
+    assert any(level == "INFO" and message.startswith("Wrote FO4-compatible Appalachia Pip-Boy map texture") for level, message in runner.logs)
+    assert any(level == "INFO" and message.startswith("Wrote generated Appalachia fullscreen map pack") for level, message in runner.logs)
+
+
+def test_finalize_fo76_pipboy_map_missing_source_skips_marker_export(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from bacup_lib import fullscreen_map_markers
+
+    def unexpected_export(**kwargs: object) -> None:
+        pytest.fail("missing map must skip marker export")
+
+    monkeypatch.setattr(fullscreen_map_markers, "export_marker_icons", unexpected_export)
+    request = make_request(tmp_path)
+    request.options.convert_textures = True
+    runner = StubRunner()
+    ctx = SimpleNamespace(source_data_dir=tmp_path / "source", mod_path=tmp_path / "out")
+    _finalize_fo76_pipboy_map_texture(request, ctx, runner)
+    assert not ctx.mod_path.exists()
+    assert any(level == "WARN" and "not found" in message for level, message in runner.logs)
 
 
 def test_copy_fo76_vaultboy_swfs_preserves_both_interface_trees(
@@ -815,6 +806,9 @@ def test_target_asset_preflight_ignores_live_data_loose_assets(
             return str(path).replace("\\", "/").casefold() == (
                 "meshes/setdressing/baseonly.nif"
             )
+
+        def has_asset_for_type(self, path, asset_type):
+            return self.has_asset(path)
 
         def list_assets(self, *, prefix="", suffix=""):
             path = "meshes/setdressing/baseonly.nif"
@@ -945,7 +939,7 @@ def test_final_term_marker_repair_roundtrips_real_plugins(tmp_path) -> None:
     assert not output_path.with_name(f"{output_path.name}.termrepair.tmp").exists()
 
 
-def test_iter_nif_files_parallel_returns_sorted_paths(tmp_path: Path) -> None:
+def test_native_nif_inventory_returns_sorted_paths(tmp_path: Path) -> None:
     mesh_root = tmp_path / "Meshes"
     first = mesh_root / "Actors" / "B.nif"
     second = mesh_root / "Actors" / "Nested" / "A.nif"
@@ -955,7 +949,11 @@ def test_iter_nif_files_parallel_returns_sorted_paths(tmp_path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
 
-    paths = _UnifiedRecordRuntime._iter_nif_files(mesh_root, workers=4)
+    runtime = _UnifiedRecordRuntime(make_request(tmp_path))
+    runtime._req.options.convert_nifs = True
+    ctx = SimpleNamespace(source_data_dir=tmp_path, is_whole_plugin=True, conversion_workers=4)
+    assets = runtime._resolve_and_expand_native_assets([], tmp_path / "source.esm", ctx)
+    paths = [Path(asset.resolved_path) for asset in assets if asset.asset_type == "nif"]
 
     assert [path.relative_to(mesh_root).as_posix() for path in paths] == [
         "Actors/B.nif",
@@ -968,6 +966,7 @@ def test_havok_bundle_expansion_uses_workers_and_resolves_companions(
     tmp_path: Path,
 ) -> None:
     runtime = _UnifiedRecordRuntime(make_request(tmp_path))
+    runtime._req.options.convert_havok = True
     source_root = tmp_path / "source"
     project = source_root / "Meshes" / "Effects" / "Foo" / "Foo.hkx"
     behavior = source_root / "Meshes" / "Effects" / "Foo" / "Behaviors" / "Behavior.hkx"
@@ -983,16 +982,8 @@ def test_havok_bundle_expansion_uses_workers_and_resolves_companions(
         extracted_dir=None,
         conversion_workers=4,
     )
-    assets = [
-        AssetRef(
-            "behavior",
-            "Meshes/Effects/Foo/Foo.hkx",
-            resolved_path=str(project),
-        )
-    ]
-
-    expanded = runtime._augment_havok_behavior_bundles(
-        assets,
+    expanded = runtime._resolve_and_expand_native_assets(
+        [{"asset_type": "behavior", "source_path": "Meshes/Effects/Foo/Foo.hkx"}],
         source_plugin,
         ctx,
         StubRunner(),
@@ -1142,14 +1133,17 @@ def test_record_sequence_matches_legacy_order(tmp_path, monkeypatch):
     assert not signals.record_failed.is_set()
 
 
+@pytest.mark.parametrize("continue_on_error", [False, True])
 def test_translate_records_failure_aborts_before_terrain_and_build(
     tmp_path,
     monkeypatch,
+    continue_on_error,
 ):
     recorded: list = []
     signals = TrackSignals()
     request = make_request(tmp_path)
     request.source_game = "fnv"
+    request.options.continue_on_error = continue_on_error
     driver = UnifiedDriver(request, sink_id=None, signals=signals)
     runtime = driver.record_runtime
     run_phase = runtime._run_phase
@@ -1482,7 +1476,7 @@ def test_post_asset_modt_runs_for_every_fo4_source_and_replaces_closed_plugin(
         "regenerate_modt",
     ]
     assert ("share_dependencies", "asset-nif-run") in plugin_events
-    assert "output_handle_id" not in phases[1][1]["params"]
+    assert "output_handle_id" not in phases[-1][1]["params"]
     assert plugin_events[-3][0] == "save"
     temp_output_path = plugin_events[-3][1]
     assert temp_output_path.parent == output_path.parent
@@ -1503,6 +1497,254 @@ def test_post_asset_modt_runs_for_every_fo4_source_and_replaces_closed_plugin(
     ]
     assert progress.completed_items == 3
     assert progress.total_items == 3
+
+
+@pytest.mark.parametrize("source_game", ["fo76", "starfield"])
+def test_native_run_config_carries_native_assets(tmp_path: Path, source_game: str) -> None:
+    request = make_request(tmp_path)
+    request.source_game = source_game
+    ctx = SimpleNamespace(output_plugin_name="SeventySix.esm")
+    assert UnifiedDriver(request).record_runtime._native_run_config(ctx)["native_assets"] is False
+
+    request.options.native_assets = True
+    assert UnifiedDriver(request).record_runtime._native_run_config(ctx)["native_assets"] is True
+
+
+def test_native_run_config_carries_replace_fo4_materials(tmp_path: Path) -> None:
+    request = make_request(tmp_path)
+    ctx = SimpleNamespace(output_plugin_name="SeventySix.esm")
+    config = UnifiedDriver(request).record_runtime._native_run_config
+    assert config(ctx)["replace_fo4_materials"] is False
+
+    request.options.replace_fo4_materials = True
+    assert config(ctx)["replace_fo4_materials"] is True
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_asset_runs_carry_native_assets_and_replace_fo4_materials(
+    tmp_path: Path, monkeypatch, enabled: bool
+) -> None:
+    captured = []
+
+    def create_new(source, target, source_plugin, output_plugin, *, config):
+        captured.append(config)
+        return SimpleNamespace(id=len(captured))
+
+    monkeypatch.setattr("bacup_lib.run.ConversionRun.create_new", create_new)
+    ctx = SimpleNamespace(
+        source_game="fo76",
+        target_game="fo4",
+        output_plugin_name="SeventySix.esm",
+        mod_path=tmp_path,
+        native_assets=enabled,
+        replace_fo4_materials=enabled,
+    )
+    AssetRuns(
+        ctx,
+        AssetWaveToggles(
+            nifs=True,
+            btos=False,
+            textures=True,
+            materials=True,
+            havok=True,
+            drivers=False,
+            sounds=True,
+            animations=False,
+        ),
+    )
+
+    assert len(captured) == 4
+    for config in captured:
+        assert config["native_assets"] is enabled
+        assert config["replace_fo4_materials"] is enabled
+
+
+def _material_upgrade_ctx(tmp_path: Path, replace_set: list[str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        mod_path=str(tmp_path / "mod"),
+        target_data_dir=str(tmp_path / "Data"),
+        native_overwrite_paths=replace_set,
+        conversion_workers=2,
+    )
+
+
+def test_upgrade_materials_rerun_restores_leftovers_and_drops_old_outputs(tmp_path: Path, monkeypatch) -> None:
+    from creation_lib.material_tools import upgrade_v22
+
+    mod = tmp_path / "mod"
+    data = mod / "data"
+    leftover, written = "materials/suit/number.bgsm", "materials/props/can.bgsm"
+    calls = []
+
+    def fake_run(options, progress=None):
+        calls.append(options)
+        assert not (data / written).exists(), "the last run's output is removed before the rerun"
+        assert (data / leftover).read_bytes() == b"original"
+        for key in (leftover, written):
+            (data / key).parent.mkdir(parents=True, exist_ok=True)
+            (data / key).write_bytes(b"upgraded")
+        return {"summary": {"upgrade": 2, "skipped": 0}, "result": {"errors": [], "written": [leftover, written]}}
+
+    monkeypatch.setattr(upgrade_v22, "run", fake_run)
+    monkeypatch.setattr(unified_mod, "_fo76_legacy_leftover_materials", lambda *_a: [leftover])
+    (data / "materials/suit").mkdir(parents=True)
+    (data / leftover).write_bytes(b"original")
+    request = make_request(tmp_path)
+    request.options.upgrade_fo4_materials = True
+    ctx = _material_upgrade_ctx(tmp_path, ["meshes/x.nif"])
+    assert unified_mod._upgrade_fo4_materials(request, ctx) == 2
+
+    assert unified_mod.rerun_fo4_material_upgrade(mod, tmp_path / "Data", None, 2) == 2
+    assert calls[-1].exclude_paths == ["meshes/x.nif"]
+    assert calls[-1].overlay_upgrade_paths == [leftover]
+
+
+def test_upgrade_materials_rerun_without_manifest_uses_the_upgrade_report(tmp_path: Path, monkeypatch) -> None:
+    from creation_lib.material_tools import upgrade_v22
+
+    mod, fo76, fo4 = tmp_path / "mod", tmp_path / "fo76", tmp_path / "fo4"
+    data = mod / "data"
+    texture, shared, fo76_only = "textures/a_l.dds", "materials/shared.bgsm", "materials/fo76only.bgsm"
+    for key in (texture, shared, fo76_only, "materialupgrade/upgrade_report.json"):
+        (data / key).parent.mkdir(parents=True, exist_ok=True)
+        (data / key).write_bytes(b"upgraded")
+    (data / "materialupgrade/upgrade_report.json").write_text(
+        json.dumps({"result": {"written": [texture, shared, fo76_only]}}), encoding="utf-8"
+    )
+    (mod / "debug").mkdir()
+    (mod / "debug/fo4_overwrite_outputs.txt").write_text("meshes/x.nif\n", encoding="utf-8")
+    (fo4 / shared).parent.mkdir(parents=True)
+    (fo4 / shared).write_bytes(b"fo4")
+    monkeypatch.setattr(unified_mod, "_fo76_source_names_smoothspec", lambda _root, key: key.endswith(".bgsm"))
+    monkeypatch.setattr(unified_mod, "_fo76_legacy_leftover_materials", lambda *_a: [])
+    seen = {}
+
+    def fake_run(options, progress=None):
+        seen["exclude"] = options.exclude_paths
+        seen["present"] = sorted(k for k in (texture, shared, fo76_only) if (data / k).exists())
+        return {"summary": {"upgrade": 0, "skipped": 0}, "result": {"errors": [], "written": []}}
+
+    monkeypatch.setattr(upgrade_v22, "run", fake_run)
+    unified_mod.rerun_fo4_material_upgrade(mod, tmp_path / "Data", fo76, 2, target_extracted_dir=fo4)
+    assert seen["exclude"] == ["meshes/x.nif"]
+    # FO4 has its own copy of the shared leftover; the FO76-only one has no other source, so it stays.
+    assert seen["present"] == [fo76_only]
+
+
+def test_post_phases_only_runs_just_the_listed_phases() -> None:
+    ran = []
+    runner = SimpleNamespace(emit_phase_start=lambda _p: None, emit_phase_complete=lambda _p: None, emit_log=lambda *_a: None)
+    request = SimpleNamespace(options=SimpleNamespace(post_phases_only=("Upgrade FO4 Materials",)), timing_report=None)
+    for label in ("Generate Item Icons", "Upgrade FO4 Materials"):
+        unified_mod._run_post_phase(label, lambda _p, label=label: ran.append(label), runner, request=request)
+    assert ran == ["Upgrade FO4 Materials"]
+
+
+def test_face_head_repair_takes_the_source_data_dir_regen_hands_over(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+    native = SimpleNamespace(repair_face_head_files=lambda data, source: calls.append((data, source)) or (1, 1, []))
+    monkeypatch.setattr(unified_mod, "load_native_module", lambda: native)
+    unified_mod._repair_face_heads_for(SimpleNamespace(mod_path=tmp_path / "Mod", source_data_dir=tmp_path / "fo76"))
+    assert calls == [(str(tmp_path / "Mod" / "data"), str(tmp_path / "fo76"))]
+
+
+def test_upgrade_fo4_materials_is_off_by_default(tmp_path: Path, monkeypatch) -> None:
+    from creation_lib.material_tools import upgrade_v22
+
+    monkeypatch.setattr(upgrade_v22, "run", lambda *_a, **_k: pytest.fail("upgrade ran"))
+    request = make_request(tmp_path)
+    assert unified_mod._upgrade_fo4_materials(request, _material_upgrade_ctx(tmp_path, [])) == 0
+
+
+def test_upgrade_fo4_materials_skips_the_replace_set(tmp_path: Path, monkeypatch) -> None:
+    from creation_lib.material_tools import upgrade_v22
+
+    seen = []
+
+    def fake_run(options, progress=None):
+        seen.append(options)
+        return {"summary": {"upgrade": 1, "skipped": 1}, "result": {"errors": []}}
+
+    monkeypatch.setattr(upgrade_v22, "run", fake_run)
+    request = make_request(tmp_path)
+    request.options.upgrade_fo4_materials = True
+    replace_set = ["materials/props/can.bgsm", "textures/props/can_d.dds"]
+    assert unified_mod._upgrade_fo4_materials(request, _material_upgrade_ctx(tmp_path, replace_set)) == 1
+    (options,) = seen
+    assert options.exclude_paths == replace_set
+    assert options.include_nifs
+    assert options.sources == [str(tmp_path / "Data")]
+    assert options.overlay_sources == [str(tmp_path / "mod" / "data")]
+    assert options.output == str(tmp_path / "mod" / "data")
+
+
+def test_only_fo76_legacy_leftovers_are_named_for_the_overlay_upgrade(tmp_path: Path) -> None:
+    from creation_lib.material_tools import upgrade_v22
+
+    try:
+        upgrade_v22._native()
+    except RuntimeError:
+        pytest.skip("material_upgrade_native not built")
+    from creation_lib.material_tools.tests.test_upgrade_v22 import _write_v2
+
+    source, mod_data = tmp_path / "fo76", tmp_path / "mod" / "data"
+    # FO4-era leftover: FO76 still names an _s; the converter kept it legacy.
+    _write_v2(source / "Materials/Clothes/Suit.bgsm", "Clothes/Suit_d.dds", "Clothes/Suit_s.dds")
+    _write_v2(mod_data / "Materials/Clothes/Suit.bgsm", "Clothes/Suit_d.dds", "Clothes/Suit_s.dds")
+    # Legacy conversion of a real FO76 material: its source names an _r, never an _s.
+    _write_v2(source / "Materials/Gold/Cap.bgsm", "Gold/Cap_d.dds", "Gold/Cap_r.dds")
+    _write_v2(mod_data / "Materials/Gold/Cap.bgsm", "Gold/Cap_d.dds", "Gold/Cap_s.dds")
+
+    assert unified_mod._fo76_legacy_leftover_materials(source, mod_data) == ["materials/clothes/suit.bgsm"]
+    assert unified_mod._fo76_legacy_leftover_materials(None, mod_data) == []
+
+
+def test_replace_then_upgrade_leaves_replaced_materials_alone(tmp_path: Path) -> None:
+    """Both on: the replace set is computed first and only the remaining FO4 materials are upgraded."""
+    from creation_lib.material_tools import upgrade_v22
+
+    try:
+        upgrade_v22._native()
+    except RuntimeError:
+        pytest.skip("material_upgrade_native not built")
+    from creation_lib.material_tools.tests.test_upgrade_v22 import _write_v2
+    from creation_lib.dds.native_runtime import write_dds_rgba
+
+    data = tmp_path / "Data"
+    _write_v2(data / "Materials/Props/Can.bgsm", "Props/Can_d.dds", "Props/Can_s.dds")
+    _write_v2(data / "Materials/Props/Box.bgsm", "Props/Box_d.dds", "Props/Box_s.dds")
+    (data / "Textures/Props").mkdir(parents=True)
+    spec = bytes(b for i in range(256) for b in (200, i, 0, 255))
+    for name in ("Can_s.dds", "Box_s.dds"):
+        assert write_dds_rgba(str(data / "Textures/Props" / name), 16, 16, spec, format="BC5_UNORM",
+                              generate_mips=True, use_gpu=False)
+    request = make_request(tmp_path)
+    request.options.upgrade_fo4_materials = True
+    ctx = _material_upgrade_ctx(tmp_path, ["materials/props/can.bgsm"])
+    assert unified_mod._upgrade_fo4_materials(request, ctx) == 1
+    out = tmp_path / "mod" / "data"
+    assert (out / "materials/props/box.bgsm").is_file()
+    assert not (out / "materials/props/can.bgsm").exists()
+
+
+def test_upgrade_never_touches_the_converted_mods_own_materials(tmp_path: Path) -> None:
+    """A pre-v22 FO76 conversion in the mod folder kept its own _r; the upgrade gave it dielectric_r."""
+    from creation_lib.material_tools import upgrade_v22
+
+    try:
+        upgrade_v22._native()
+    except RuntimeError:
+        pytest.skip("material_upgrade_native not built")
+    from creation_lib.material_tools.tests.test_upgrade_v22 import _write_v2
+
+    gold = tmp_path / "mod" / "data" / "Materials/WhiteSpring/Gold.bgsm"
+    _write_v2(gold, "WhiteSpring/Gold_d.dds", "WhiteSpring/Gold_s.dds")
+    authored = gold.read_bytes()
+    _write_v2(tmp_path / "Data" / "Materials/Props/Box.bgsm", "Props/Box_d.dds", "Props/Box_s.dds")
+    request = make_request(tmp_path)
+    request.options.upgrade_fo4_materials = True
+    assert unified_mod._upgrade_fo4_materials(request, _material_upgrade_ctx(tmp_path, [])) == 1
+    assert gold.read_bytes() == authored
 
 
 def test_native_run_config_carries_legacy_pack_provenance(tmp_path: Path) -> None:
@@ -1647,11 +1889,6 @@ def test_grafted_asset_roots_resolve_after_primary_with_stable_dedup(tmp_path: P
     )
 
     runtime = driver._record_runtime
-    assert runtime._native_asset_source_roots(source_plugin, ctx) == [
-        primary,
-        grafted,
-        source_plugin.parent,
-    ]
     assert runtime._resolve_native_asset_path(
         "nif", "Meshes/clutter/shared.nif", source_plugin, ctx
     ) == (str(primary_asset), None)
@@ -1744,7 +1981,7 @@ def test_condition_catalog_keeps_mapper_and_masters_through_terrain_tail(tmp_pat
             calls.append("emit")
             path = Path(kwargs["mod_path"]) / "F4SE/Plugins/B21_TalesFromAppalachia/Condition/SeventySix.esm.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"mapping_available": True}))
+            path.write_text(json.dumps({"version": 1, "settings": {"mapping_available": True}}))
             return {"assets_written": 1}
 
         def release_remap_state(self):
@@ -1785,7 +2022,7 @@ def test_production_condition_catalog_rejects_source_only_diagnostic(tmp_path):
         def run_phase(self, phase, **kwargs):
             path = tmp_path / "F4SE/Plugins/B21_TalesFromAppalachia/Condition/SeventySix.esm.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"mapping_available": False}))
+            path.write_text(json.dumps({"version": 1, "settings": {"mapping_available": False}}))
             return {"assets_written": 1}
 
     ctx = SimpleNamespace(mod_path=tmp_path, output_plugin_name="SeventySix.esm")
@@ -2202,14 +2439,6 @@ def test_full_plugin_asset_collection_sweeps_all_source_nifs(tmp_path):
                     "source_record_signature": "RACE",
                     "source_subrecord_sig": "MODL",
                     "workshop_wire_point": [3.5, 15.0, 77.0],
-                    "workshop_snap_points": [
-                        (
-                            "P-76-0A7382",
-                            (0.0, 128.0, -32.0),
-                            (1.0, 0.0, 0.0, 0.0),
-                            1.0,
-                        )
-                    ],
                 }
             ]
 
@@ -2230,7 +2459,7 @@ def test_full_plugin_asset_collection_sweeps_all_source_nifs(tmp_path):
     )
 
     by_key = {
-        driver.record_runtime._nif_source_path_key(asset.source_path): asset
+        asset.source_path.replace("\\", "/").removeprefix("Meshes/").lower(): asset
         for asset in assets
         if asset.asset_type == "nif"
     }
@@ -2256,12 +2485,6 @@ def test_full_plugin_asset_collection_sweeps_all_source_nifs(tmp_path):
     assert by_key[
         "actors/graftonmonster/characterassets/skeleton.nif"
     ].workshop_wire_point == (3.5, 15.0, 77.0)
-    assert (
-        by_key["actors/graftonmonster/characterassets/skeleton.nif"]
-        .workshop_snap_points[0]
-        .name
-        == "P-76-0A7382"
-    )
     assert (
         by_key["landscape/rocks/conflictrock.nif"].provenance.walker_pass
         == "full_plugin_nif_sweep"
@@ -3523,67 +3746,6 @@ def test_iter_top_level_papyrus_members_skips_in_state_members():
 
 
 @pytest.mark.parametrize(
-    ("source_type", "expected"),
-    (
-        ("QuestInstance", "Quest"),
-        ("questinstance", "Quest"),
-        ("QUESTINSTANCE", "Quest"),
-        ("QuestInstance[]", "Quest[]"),
-        ("questinstance[][]", "Quest[][]"),
-    ),
-)
-def test_fo76_questinstance_type_adapts_to_fo4_quest(
-    source_type: str,
-    expected: str,
-) -> None:
-    assert unified_mod._fo76_to_fo4_script_type(source_type) == expected
-
-
-def test_skyrim_decompile_uses_fo4_type_and_api_adapters(tmp_path, monkeypatch):
-    import dataclasses
-    import creation_lib.pex as pex_mod
-
-    def fake_decompile(
-        *_args,
-        type_adapter=None,
-        skip_internal_functions=False,
-        fo4_api_compat=False,
-        **_kwargs,
-    ):
-        assert type_adapter is not None
-        assert type_adapter("ArmorAddon") == "Form"
-        assert type_adapter("SoundDescriptor[]") == "Sound[]"
-        assert skip_internal_functions
-        assert fo4_api_compat
-        return "Scriptname SkyrimObjectScript Extends ObjectReference\n"
-
-    monkeypatch.setattr(pex_mod, "decompile_pex", fake_decompile)
-    patch_dir = tmp_path / "patches"
-    patch_dir.mkdir()
-    monkeypatch.setattr(unified_mod, "_SCRIPT_PATCH_DIR", patch_dir)
-    request = dataclasses.replace(make_request(tmp_path), source_game="skyrimse")
-
-    runtime = _UnifiedRecordRuntime(request)
-    result = runtime._decompile_script_source_for_fo4(
-        "SkyrimObjectScript",
-        tmp_path / "SkyrimObjectScript.pex",
-        SimpleNamespace(mod_path=tmp_path / "mod"),
-        StubRunner(),
-    )
-
-    assert result is None
-    written = (
-        tmp_path
-        / "mod"
-        / "Scripts"
-        / "Source"
-        / "User"
-        / "SkyrimObjectScript.psc"
-    ).read_text(encoding="utf-8")
-    assert written.startswith("Scriptname SkyrimObjectScript Extends ObjectReference\n")
-
-
-@pytest.mark.parametrize(
     ("skeleton", "patch", "present", "absent", "counts"),
     [
         pytest.param(
@@ -3657,6 +3819,22 @@ def test_skyrim_decompile_uses_fo4_type_and_api_adapters(tmp_path, monkeypatch):
             id="state_rename_updates_declaration_and_exact_gotostate_target",
         ),
         pytest.param(
+            "Scriptname PlayerTransferFactionsScript Extends Actor\n"
+            "Int Property Count Auto\n",
+            "; @extends ReferenceAlias\n"
+            "Event OnAliasInit()\n"
+            "    Count = 1\n"
+            "EndEvent\n",
+            (
+                "Scriptname PlayerTransferFactionsScript Extends ReferenceAlias\n",
+                "Int Property Count Auto",
+                "Event OnAliasInit()",
+            ),
+            ("Extends Actor",),
+            {"Scriptname": 1},
+            id="extends_directive_reparents_skeleton_header",
+        ),
+        pytest.param(
             "Scriptname X Extends ObjectReference\n"
             "State Waiting\n"
             "    Event OnLoad()\n"
@@ -3681,43 +3859,20 @@ def test_merge_script_method_patches(skeleton, patch, present, absent, counts):
         assert merged.count(text) == count
 
 
-def test_decompile_merges_patch_into_skeleton(tmp_path, monkeypatch):
-    import creation_lib.pex as pex_mod
+def test_upgrade_fo4_materials_reports_item_progress_on_its_phase(tmp_path: Path, monkeypatch) -> None:
+    from bacup_lib.models import PhaseProgress
+    from creation_lib.material_tools import upgrade_v22
 
-    skeleton = (
-        "Scriptname WindChimesActivatorScript Extends ObjectReference\n"
-        "Form Property ResourceToGive Auto Mandatory\n"
-        "State waitingforactivate\nEndState\n"
-    )
-    monkeypatch.setattr(pex_mod, "decompile_pex", lambda *a, **k: skeleton)
+    def fake_run(options, progress=None):
+        assert progress(3, 10, "textures") is True
+        return {"summary": {"upgrade": 1, "skipped": 0}, "result": {"errors": [], "written": []}}
 
-    patch_dir = tmp_path / "patches"
-    patch_dir.mkdir()
-    (patch_dir / "WindChimesActivatorScript.psc").write_text(
-        "Event OnActivate(ObjectReference akActionRef)\n"
-        "    akActionRef.AddItem(ResourceToGive, 1)\nEndEvent\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(unified_mod, "_SCRIPT_PATCH_DIR", patch_dir)
-
-    runtime = _UnifiedRecordRuntime(make_request(tmp_path))
-    runner = StubRunner()
-    ctx = SimpleNamespace(mod_path=tmp_path / "mod")
-
-    result = runtime._decompile_script_source_for_fo4(
-        "WindChimesActivatorScript", tmp_path / "src.pex", ctx, runner
-    )
-
-    assert result is None
-    written = (
-        tmp_path
-        / "mod"
-        / "Scripts"
-        / "Source"
-        / "User"
-        / "WindChimesActivatorScript.psc"
-    ).read_text(encoding="utf-8")
-    assert "Scriptname WindChimesActivatorScript" in written
-    assert "Form Property ResourceToGive" in written
-    assert "akActionRef.AddItem(ResourceToGive, 1)" in written
-    assert any("merged fix-folder method patch" in msg for _, msg in runner.logs)
+    events = []
+    runner = SimpleNamespace(emit_log=lambda *_a: None, is_cancelled=lambda: False,
+                             emit_item_progress=lambda p: events.append((p.completed_items, p.total_items, p.current_item)))
+    monkeypatch.setattr(upgrade_v22, "run", fake_run)
+    request = make_request(tmp_path)
+    request.options.upgrade_fo4_materials = True
+    phase = PhaseProgress(phase=0, phase_name="Upgrade FO4 Materials")
+    unified_mod._upgrade_fo4_materials(request, _material_upgrade_ctx(tmp_path, []), runner, phase)
+    assert events == [(3, 10, "textures")]

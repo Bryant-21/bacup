@@ -1107,10 +1107,11 @@ fn collect_source_lod_hints_in_items(
             ParsedItem::Record(record)
                 if record.signature.as_str() == "REFR" && record.flags & FLAG_DELETED == 0 =>
             {
-                if source_ref_requests_object_lod(record) {
+                let record = crate::source_read::uncompressed_record_view(record);
+                if source_ref_requests_object_lod(&record) {
                     out.ref_visible_reference_ids
                         .insert(local_object_id(record.form_id));
-                    if let Some(base_form_id) = record_formid_subrecord(record, "NAME") {
+                    if let Some(base_form_id) = record_formid_subrecord(&record, "NAME") {
                         out.ref_visible_distant.insert(base_form_id);
                     }
                 }
@@ -3616,6 +3617,47 @@ mod tests {
 
         plugin_handle_close_native(source_handle_id);
         plugin_handle_close_native(target_handle_id);
+    }
+
+    #[test]
+    fn compact_placed_payload_preserves_source_lod_hints() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut linked = refr_record(0x1001, 0x801, 0);
+        linked
+            .subrecords
+            .push(xlkr_subrecord(MULTIREF_LOD_KEYWORD_OBJECT_ID, 0x2000));
+        let records = vec![
+            refr_record(0x1000, 0x800, XALG_VISIBLE_DISTANT),
+            linked,
+            refr_record(0x1002, 0x802, XALG_NEVER_VISIBLE_DISTANT),
+        ];
+        let eager = records
+            .iter()
+            .cloned()
+            .map(ParsedItem::Record)
+            .collect::<Vec<_>>();
+        let compact = records
+            .into_iter()
+            .map(|mut record| {
+                let mut payload = Vec::new();
+                for subrecord in &record.subrecords {
+                    payload.extend_from_slice(subrecord.signature.as_bytes());
+                    payload.extend_from_slice(&(subrecord.data.len() as u16).to_le_bytes());
+                    payload.extend_from_slice(&subrecord.data);
+                }
+                record.raw_payload = Some(Bytes::from(payload));
+                record.subrecords.clear();
+                ParsedItem::Record(record)
+            })
+            .collect::<Vec<_>>();
+        let expected = collect_source_lod_hints(&eager, tmp.path());
+        let actual = collect_source_lod_hints(&compact, tmp.path());
+        assert_eq!(expected.ref_visible_distant, HashSet::from([0x800, 0x801]));
+        assert_eq!(actual.ref_visible_distant, expected.ref_visible_distant);
+        assert_eq!(
+            actual.ref_visible_reference_ids,
+            expected.ref_visible_reference_ids,
+        );
     }
 
     #[test]

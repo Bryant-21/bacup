@@ -8,6 +8,16 @@ Intelligence: Intelligence
 Agility: Agility
 Luck: Luck
 Health: Health
+Aggression: Aggression
+Variable01: Variable01
+Sneak: Sneak
+BrainCondition: BrainCondition
+PerceptionCondition: PerceptionCondition
+EnduranceCondition: EnduranceCondition
+LeftAttackCondition: LeftAttackCondition
+RightAttackCondition: RightAttackCondition
+LeftMobilityCondition: LeftMobilityCondition
+RightMobilityCondition: RightMobilityCondition
 ActionPoints: ActionPoints
 DamageResist: DamageResist
 EnergyResist: EnergyResist

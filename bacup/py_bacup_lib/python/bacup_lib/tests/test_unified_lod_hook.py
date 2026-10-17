@@ -287,8 +287,8 @@ def test_lod_hook_none_no_change(monkeypatch, tmp_path):
 
 def test_run_generate_lod_removes_atlas_txt(monkeypatch, tmp_path):
     """generate_lod() leaves a <world>.Objects.txt alongside the atlas DDS.
-    _run_generate_lod must delete every *.txt under
-    Textures/Terrain/<world>/Objects/ so it cannot land in a DX10 BA2."""
+    _run_generate_lod must delete it from Textures/Terrain/<world>/Objects/ so
+    it cannot land in a DX10 BA2, but keep the InstanceArray index the game reads."""
     world = "APPALACHIA"
     mod_root = tmp_path / "SeventySix"
     mod_root.mkdir()
@@ -296,6 +296,7 @@ def test_run_generate_lod_removes_atlas_txt(monkeypatch, tmp_path):
     obj_dir = mod_root / "data" / "Textures" / "Terrain" / world / "Objects"
     atlas_txt = obj_dir / f"{world}.Objects.txt"
     atlas_dds = obj_dir / f"{world}.Objects.dds"
+    array_index = obj_dir / f"{world}.InstanceArray.txt"
 
     fake_result = SimpleNamespace(btr=1, bto=2, dds=3, lod_written=True, warnings=[])
 
@@ -303,6 +304,7 @@ def test_run_generate_lod_removes_atlas_txt(monkeypatch, tmp_path):
         obj_dir.mkdir(parents=True)
         atlas_txt.write_text("fake atlas map")
         atlas_dds.write_bytes(b"DDS ")
+        array_index.write_text("lodarrays 1\n")
         return fake_result
 
     monkeypatch.setattr(_lod_rt, "generate_lod", fake_generate_lod)
@@ -319,6 +321,7 @@ def test_run_generate_lod_removes_atlas_txt(monkeypatch, tmp_path):
 
     assert not atlas_txt.exists(), "atlas-map .txt should have been removed"
     assert atlas_dds.exists(), "atlas .dds must not be removed"
+    assert array_index.exists(), "the InstanceArray index ships with the mod"
     removed = [msg for _lvl, msg in logs if "atlas-map intermediate" in msg]
     assert removed, f"expected removal log message; got logs={logs}"
 

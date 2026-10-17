@@ -17,6 +17,8 @@ Int[] Property ExpiryStages Auto Const
 
 Float[] Remaining
 Bool[] Armed
+; Tales holds a scheduled event's countdowns until the player reaches it.
+Bool TimersHeld
 
 Event OnQuestInit()
     Remaining = None
@@ -66,7 +68,7 @@ Function TickObjectiveTimers()
                 Armed[row] = True
                 Remaining[row] = TimerLengths[row].GetValue()
             EndIf
-        Else
+        ElseIf !TimersHeld
             Remaining[row] = Remaining[row] - 1.0
             If Remaining[row] <= 0.0
                 Armed[row] = False
@@ -81,6 +83,11 @@ Function TickObjectiveTimers()
         EndIf
         row += 1
     EndWhile
+EndFunction
+
+Bool Function HoldTimers(Bool abHold)
+    TimersHeld = abHold
+    Return True
 EndFunction
 
 Float Function GetObjectiveTimeRemaining(Int aiObjective)

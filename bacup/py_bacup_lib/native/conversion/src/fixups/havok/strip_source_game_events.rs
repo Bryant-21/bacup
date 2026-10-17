@@ -227,13 +227,17 @@ fn should_drop_annotation(ann: &HkxValue) -> bool {
 
 /// Recursively walk `dir` and call `f` for every `.hkx` file found.
 fn walk_hkx_files(dir: &Path, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_hkx_files_in_root(dir, f, dir);
+}
+
+fn walk_hkx_files_in_root(dir: &Path, f: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            walk_hkx_files(&path, f);
+        if super::postprocess_scan::entry_is_dir(&entry) {
+            walk_hkx_files_in_root(&path, f, scan_root);
         } else if path
             .extension()
             .and_then(|e| e.to_str())

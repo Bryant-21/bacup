@@ -6,6 +6,7 @@ import pytest
 from bacup_lib import daily_ops_voice as voice
 from bacup_lib.daily_ops_ui import empty_hud_timeline
 from bacup_lib.legendary_perks_ui import swf_tags
+from bacup_lib.tests.catalog_schema_validation import validate_catalog
 
 
 def fuz(kind=b"XWMA"):
@@ -37,7 +38,9 @@ def test_catalog_is_loose_and_multiline_audio_is_packed(tmp_path, monkeypatch):
     catalog = voice.convert_daily_ops_voice(source, output)
     clips = catalog["topics"]["10"][0]["clips"]
     assert len(clips) == 2
-    assert (output / voice.CATALOG).is_file()
+    written = json.loads((output / "F4SE/Plugins/B21_TalesFromAppalachia/DailyOps/SeventySix.esm.json").read_text(encoding="utf-8"))
+    validate_catalog("DailyOps", written)
+    assert written["voice"]["SeventySix.esm:00000A"]["variants"][0]["info"] == "SeventySix.esm:000014"
     for clip in clips:
         assert (output / "data" / clip["path"]).read_bytes() == fuz()[15:]
     assert not (output / "Sound").exists()

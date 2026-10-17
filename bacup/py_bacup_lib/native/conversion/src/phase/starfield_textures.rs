@@ -29,9 +29,11 @@
 // they're emitted as an Info Log summary instead — see the `sets_converted=.. mips_min=..`
 // message at the end of `run`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use serde_json::Value as JsonValue;
+use serde_json::{Value as JsonValue, json};
+use unicode_casefold::UnicodeCaseFold;
 
 use crate::phase::progress::ProgressReporter;
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
@@ -43,6 +45,101 @@ const SINGLE_CHANNEL_FORMAT: &str = "BC4_UNORM";
 /// Relative to `data/Textures`. Shared by every converted material set — Starfield's
 /// AO slot has no FO4 source input, so we ship one constant white map.
 pub const SHARED_AO_OUTPUT_REL: &str = "PBR/starfield_shared_ao.dds";
+
+fn texture_reference(raw: &str) -> String {
+    let normalized = raw.replace('\0', "").trim().replace('\\', "/");
+    let path = normalized.trim_start_matches('/');
+    if path.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case("textures/")) {
+        path[9..].into()
+    } else {
+        path.into()
+    }
+}
+
+fn texture_directory_and_stem(path: &str) -> (String, String) {
+    // Match PurePosixPath's lexical normalization without resolving '..' or touching disk.
+    let parts: Vec<_> = path.split('/').filter(|part| !part.is_empty() && *part != ".").collect();
+    let Some((name, parents)) = parts.split_last() else {
+        return (String::new(), String::new());
+    };
+    let stem = match name.rfind('.') {
+        Some(index) if index > 0 && index + 1 < name.len() => &name[..index],
+        _ => name,
+    };
+    (parents.join("/"), stem.into())
+}
+
+fn casefold(value: &str) -> String {
+    value.case_fold().collect()
+}
+
+pub fn texture_sets_from_materials(
+    materials: &[(String, String)],
+    resolved_textures: &HashMap<String, String>,
+) -> (Vec<JsonValue>, Vec<String>) {
+    let mut sets = Vec::new();
+    let mut warnings = Vec::new();
+    let mut seen = HashSet::new();
+    for (source_path, resolved_path) in materials {
+        let material = match std::fs::read(resolved_path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| materials_native::bgsm::parse(&bytes).map_err(|error| error.to_string()))
+        {
+            Ok(material) => material,
+            Err(error) => {
+                warnings.push(format!("{source_path}: cannot read BGSM ({error})"));
+                continue;
+            }
+        };
+        let refs: Vec<_> = [
+            ("color", material.DiffuseTexture.as_str()),
+            ("normal", material.NormalTexture.as_str()),
+            ("spec_gloss", material.SmoothSpecTexture.as_str()),
+            ("emissive", material.GlowTexture.as_deref().unwrap_or_default()),
+        ]
+        .into_iter()
+        .filter(|(_, raw)| !raw.replace('\0', "").trim().is_empty())
+        .map(|(role, raw)| (role, texture_reference(raw)))
+        .collect();
+        let Some((_, diffuse)) = refs.iter().find(|(role, path)| *role == "color" && !path.is_empty()) else {
+            warnings.push(format!("{source_path}: no DiffuseTexture; no Starfield texture set"));
+            continue;
+        };
+        let (output_subdir, mut base_name) = texture_directory_and_stem(diffuse);
+        if base_name.to_ascii_lowercase().ends_with("_d") {
+            base_name.truncate(base_name.len() - 2);
+        }
+        if !seen.insert(casefold(&format!("{output_subdir}/{base_name}"))) {
+            continue;
+        }
+        let mut entry = json!({
+            "base_name": base_name,
+            "output_subdir": output_subdir,
+            "environment_mapping": material.header.env_mapping.unwrap_or(false),
+        });
+        for (role, rel) in refs {
+            if role != "color" {
+                let (role_dir, mut role_base) = texture_directory_and_stem(&rel);
+                let mut suffix = role_base.char_indices().rev();
+                if suffix.next().is_some() {
+                    if let Some((index, '_')) = suffix.next() {
+                        role_base.truncate(index);
+                    }
+                }
+                if casefold(&role_dir) != casefold(&output_subdir) || casefold(&role_base) != casefold(&base_name) {
+                    warnings.push(format!(
+                        "{source_path}: {role} map {rel} does not share the diffuse set's directory/stem ({output_subdir}/{base_name}); the .mat will name it under the diffuse set"
+                    ));
+                }
+            }
+            let source_rel = format!("Textures/{rel}");
+            let key = casefold(&crate::asset_collection::normalized(&source_rel));
+            entry[role] = json!(resolved_textures.get(&key).unwrap_or(&source_rel));
+        }
+        sets.push(entry);
+    }
+    (sets, warnings)
+}
 
 pub struct TextureSetPaths {
     pub base_name: String,

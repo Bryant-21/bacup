@@ -20,6 +20,7 @@ directxtex_native    = { path = "../../../../py_creation_lib/native/directxtex" 
 db_native            = { path = "../../../../py_creation_lib/native/db" }
 papyrus_core         = { path = "../../../../py_creation_lib/native/papyrus_core" }
 bitflags             = "2"
+base64               = "0.22"
 blake3               = "1"
 bytes                = "1.7"
 crossbeam-channel    = "0.5"
@@ -28,6 +29,7 @@ flate2               = "1.1.9"
 hex                  = "0.4"
 indexmap             = "2"
 lasso                = { version = "0.7", features = ["multi-threaded"] }
+libz-sys             = { version = "1.1", default-features = false, features = ["static", "libc"] }
 memmap2              = "0.9"
 memory-stats         = "1"
 meshopt              = "0.6.2"
@@ -37,7 +39,7 @@ regex                = "1"
 rusqlite             = { version = "0.32", features = ["bundled"] }
 rustc-hash           = "2"
 serde                = { workspace = true, features = ["derive"] }
-serde_json           = { workspace = true, features = ["preserve_order"] }
+serde_json           = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
 roxmltree            = { workspace = true }
 serde-saphyr         = { workspace = true }
 sha2                 = "0.10"
@@ -46,6 +48,10 @@ smallvec             = { version = "1", features = ["const_generics"] }
 smol_str             = "0.3"
 tempfile             = { workspace = true }
 thiserror            = { workspace = true }
+unicode-casefold     = "0.2"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }

@@ -20,6 +20,12 @@ fn register_submodule(
 
 #[pymodule]
 fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(feature = "packaged-creation")]
+    {
+        let creation = PyModule::new(py, "creation_lib._native")?;
+        creation_native::register_module(py, &creation)?;
+        m.add("_creation_native", creation)?;
+    }
     register_submodule(
         py,
         m,
@@ -32,6 +38,5 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "esp_authoring_core",
         esp_authoring_core::register_module,
     )?;
-    register_submodule(py, m, "previs_native", previs_native::register_module)?;
     Ok(())
 }

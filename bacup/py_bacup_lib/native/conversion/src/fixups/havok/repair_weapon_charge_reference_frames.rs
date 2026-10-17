@@ -86,13 +86,17 @@ fn mesh_roots_for_mod_path(mod_path: &Path) -> Vec<PathBuf> {
 }
 
 fn walk_target_clips(root: &Path, dir: &Path, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_target_clips_in_root(root, dir, f, dir);
+}
+
+fn walk_target_clips_in_root(root: &Path, dir: &Path, f: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            walk_target_clips(root, &path, f);
+        if super::postprocess_scan::entry_is_dir(&entry) {
+            walk_target_clips_in_root(root, &path, f, scan_root);
             continue;
         }
         let Ok(relative) = path.strip_prefix(root) else {

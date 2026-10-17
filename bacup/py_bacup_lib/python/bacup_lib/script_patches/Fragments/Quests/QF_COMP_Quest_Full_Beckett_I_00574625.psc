@@ -1,3 +1,12 @@
+; "Rollins Prison Instance Init": REF_COMP_Actor_Beckett_Jail (582E3A) ships initially
+; disabled with no enable parent; FO76 enabled him when the prison instance loaded.
+Function Fragment_Stage_0001_Item_00()
+    Actor beckett = Alias_Beckett.GetActorReference()
+    If beckett && beckett.IsDisabled() && !beckett.IsDead() && !IsStageDone(2000)
+        beckett.Enable()
+    EndIf
+EndFunction
+
 Function Fragment_Stage_0050_Item_00()
     If !IsStageDone(100)
         SetStage(100)
@@ -137,6 +146,7 @@ Function Fragment_Stage_1090_Item_00()
 EndFunction
 
 Function Fragment_Stage_2000_Item_00()
+    ; TODO(recipes): FO76 teaches CampObjectRecipe at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     If !IsObjectiveCompleted(2000) && !IsObjectiveDisplayed(2000)
         SetObjectiveDisplayed(2000)
     EndIf

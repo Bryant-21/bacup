@@ -47,6 +47,11 @@ def production_module(name):
 bacup_modules = collect_submodules("bacup_lib", filter=production_module)
 creation_modules = collect_submodules("creation_lib", filter=production_module)
 bacup_datas = collect_data_files("bacup_lib")
+from pathlib import Path
+from bacup_lib.conversion_runtime import built_runtime_binary
+
+if Path(repo_root, "mods/B21_ConversionRuntime/F4SE/Plugins/B21_ConversionRuntime.dll").is_file():
+    bacup_datas.append((str(built_runtime_binary(Path(repo_root))), "bacup_lib/resources/conversion_runtime"))
 bacup_binaries = collect_dynamic_libs("bacup_lib")
 creation_binaries = collect_dynamic_libs("creation_lib")
 numpy_binaries = collect_dynamic_libs("numpy")

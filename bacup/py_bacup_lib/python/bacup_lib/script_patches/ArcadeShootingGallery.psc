@@ -1,5 +1,5 @@
-; Free-play offline loop. Token registration, multiplayer ownership, objectives,
-; and ticket payout remain server-only; bound target forms/nodes drive play.
+; Free-play offline loop. Token registration, multiplayer ownership and objectives
+; remain server-only; bound target forms/nodes drive play. Points pay out on game end.
 
 Event OnActivate(ObjectReference akActionRef)
     If akActionRef != Game.GetPlayer()
@@ -14,6 +14,9 @@ Event OnActivate(ObjectReference akActionRef)
         PlayStartSFX()
         PlayMainLoopSFX()
         LocalGameStart()
+        If gameDuration != None
+            StartTimer(gameDuration.GetValue(), 90)
+        EndIf
     EndIf
 EndEvent
 
@@ -55,9 +58,14 @@ Function RegisterTargetMiss()
 EndFunction
 
 Function LocalGameEnd()
+    If !gameActive
+        Return
+    EndIf
     stopSpawns = True
     gameActive = False
     CancelTimer(91)
+    CancelTimer(90)
+    PayoutPoints()
     StopMainLoopSFX()
     PlayEndSFX()
 EndFunction
@@ -69,3 +77,18 @@ Event OnTimer(Int aiTimerID)
         SpawnNextTarget()
     EndIf
 EndEvent
+
+; Same payout as ArcadeWhackAMole.PayoutPoints; the shared parent skeleton cannot carry it.
+Function PayoutPoints()
+    Actor playerRef = Game.GetPlayer()
+    If myPlayer != playerRef || score <= 0
+        Return
+    EndIf
+    If ticketsOut == None && TicketSlot != None && TicketNodes != None && TicketNodes.Length > 0
+        ticketsOut = PlaceAtNode(TicketNodes[0], TicketSlot, 1, False, False, False, True) as ArcadeTicketDispenser
+    EndIf
+    If ticketsOut != None
+        ticketsOut.scorePerTicket = scorePerTicket
+        ticketsOut.PayoutPoints(playerRef, score)
+    EndIf
+EndFunction

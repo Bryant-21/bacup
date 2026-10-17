@@ -8,6 +8,7 @@ from importlib import import_module
 _WORKSPACE_SPECS = (
     # Core workspaces
     ("mod_builder", "ui.toolkit.workspaces.mod_builder_workspace", "ModBuilderWorkspace"),
+    ("mod_manager", "ui.mod_manager.workspace", "ModManagerWorkspace"),
     ("esp_editor", "ui.esp_editor.workspace", "EspEditorWorkspace"),
     ("nif", "ui.toolkit.workspaces.nif_workspace", "NifWorkspace"),
     ("search", "ui.toolkit.workspaces.search_workspace", "SearchWorkspace"),
@@ -17,6 +18,8 @@ _WORKSPACE_SPECS = (
     ("palette", "ui.toolkit.workspaces.palette_workspace", "PaletteWorkspace"),
     ("materials", "ui.toolkit.workspaces.material_workspace", "MaterialWorkspace"),
     ("mat_copier", "ui.toolkit.workspaces.texture_tools", "MaterialCopierWorkspace"),
+    ("mat_v22_upgrader", "ui.toolkit.workspaces.texture_tools", "MaterialV22UpgraderWorkspace"),
+    ("texture_upgrader", "ui.toolkit.workspaces.texture_tools", "TextureUpgraderWorkspace"),
     ("dds_inspector", "ui.toolkit.workspaces.texture_tools", "DDSInspectorWorkspace"),
     ("dds_png", "ui.toolkit.workspaces.texture_tools", "DDSPNGWorkspace"),
     ("dds_resizer", "ui.toolkit.workspaces.texture_tools", "DDSResizerWorkspace"),
@@ -63,6 +66,7 @@ _WORKSPACE_SPECS = (
     ),
     ("world_viewer", "ui.world_viewer.workspace", "WorldViewerWorkspace"),
     ("lodgen", "ui.lodgen.workspace", "LodgenWorkspace"),
+    ("previs", "ui.previs.workspace", "PrevisWorkspace"),
 
     # Mod tool workspaces
     ("bsa_viewer", "ui.bsa_viewer.workspace", "BSAViewerWorkspace"),
@@ -78,6 +82,8 @@ _WORKSPACE_SPECS = (
     ("folder_renamer", "ui.toolkit.workspaces.mod_tools", "FolderRenamerWorkspace"),
     ("modlist_merger", "ui.toolkit.workspaces.mod_tools", "ModlistMergerWorkspace"),
     ("verified_creations", "ui.toolkit.workspaces.mod_tools", "VerifiedCreationsWorkspace"),
+    ("catalog_editor", "ui.toolkit.workspaces.mod_tools", "CatalogEditorWorkspace"),
+    ("re_db", "ui.toolkit.workspaces.re_db_workspace", "ReDbWorkspace"),
 )
 
 

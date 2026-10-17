@@ -8,9 +8,12 @@ import struct
 from pathlib import Path
 
 from bacup_lib.esp_native_runtime import load_esp_native
+from bacup_lib.plugin_catalog import write_document
 from bacup_lib.reputation_catalog import NativeReader, NativeResolver, first, reference_id, plugin_masters
+from bacup_lib.player_ghoul_native import build_native_rules
 
-OUTPUT = Path("F4SE/Plugins/B21_TalesFromAppalachia/player_ghoul.json")
+FEATURE = "PlayerGhoul"
+SECTION_KEYS = ("cards", "chems", "appearance")
 THRESHOLDS = ("GHL_SURV_FeralThreshold_1_Fed", "GHL_SURV_FeralThreshold_2_Hungry",
               "GHL_SURV_FeralThreshold_3_Famished", "GHL_SURV_FeralThreshold_4_Starving")
 FORMS = {"keyword": ("KYWD", "GHL_ActorTypePlayerGhoul"),
@@ -226,18 +229,18 @@ def build_catalog(source, resolver, source_name, digest, base_resolver=None):
         for value in fields.get("MalePerk", []):
             perk_id = reference_id(value)
             _, perk_eid, perk_fields = source.fields(perk_id)
-            ranks.append({"source": f"{perk_id:06X}:{source_name}", "editor_id": perk_eid,
+            ranks.append({"source": f"{source_name}:{perk_id:06X}", "editor_id": perk_eid,
                           "form": resolver.resolve("PERK", perk_eid),
                           "name": english(first(perk_fields, "Name")),
                           "description": english(first(perk_fields, "Description")),
                           "status": ("native-adapter" if perk_eid.startswith(("GHL_ChemDiet", "GHL_HyperReflexes")) or perk_eid == "GHL_MoralSupport01"
                                      else "engine-ready" if perk_eid.startswith(ENGINE_CARDS) else "blocked-effect-review")})
-        cards.append({"source": f"{raw & 0xFFFFFF:06X}:{source_name}", "editor_id": eid,
+        cards.append({"source": f"{source_name}:{raw & 0xFFFFFF:06X}", "editor_id": eid,
                       "special": restriction.get("Special", "Strength"), "min_level": restriction.get("MinLevel", 0),
                       "art": first(fields, "MaleName"), "costs": fields.get("CardRankCost", []), "ranks": ranks})
     for signature in ("RACE", "ARMO", "ARMA", "HDPT", "TXST"):
         for raw, _, eid, _ in source.rows(signature, "GHL_*"):
-            appearance.append({"source": f"{raw & 0xFFFFFF:06X}:{source_name}", "signature": signature,
+            appearance.append({"source": f"{source_name}:{raw & 0xFFFFFF:06X}", "signature": signature,
                                "editor_id": eid, "converted": resolver.resolve(signature, eid)})
     bindings = {key: resolver.resolve(*value) for key, value in FORMS.items()}
     return {"schema_version": 1, "source": {"plugin": source_name, "sha256": digest},
@@ -248,19 +251,26 @@ def build_catalog(source, resolver, source_name, digest, base_resolver=None):
             "modifiers": tiers, "chems": chems, "chem_diet": diet,
             "hyper_reflexes": {"chances": chances, "glow_threshold": glow_thresholds[0]},
             "moral_support": resolver.resolve("PERK", "GHL_MoralSupport01"),
-            "cards": cards, "appearance": appearance,
+            "cards": cards, "native_rules": build_native_rules(source, resolver, cards, condition_data, number), "appearance": appearance,
             "appearance_status": "human-race-head-and-skin-profile-with-asset-preflight",
             "glow_capacity_policy": "Tales: one current maximum-health bar; FO76 executable cap not established",
             "radiation_context_policy": "Tales applies the installed fraction to all post-resistance radiation; source effect-context conditions are inventoried, not reinterpreted as actor immunity.",
             "quest": {"required_level": 50, "completion_stage": 9000},
             "limitations": ["No player race swap; two converted head/skin profiles and source eyes; original appearance is the asset fallback.",
-                            "Chem Diet, Moral Support and Hyper Reflexes use native adapters; twelve other families use reviewed converted engine effects.",
-                            "Unreviewed FO76 combat/team/legendary effects remain unavailable rather than applying inert custom actor values.",
+                            "Ordinary ghoul cards use native consumers, including translated engine entry points and source limb/glow effects; legendary cards use the separate legendary system.",
+                            "Native readiness requires the complete source rules and their converted form bindings; missing dependencies remain unavailable.",
                             "Server team checks use a recruited FO4 companion.",
                             "Disguise condition is adapted to wearing its source keyword; server outfit/character services are not reproduced."]}
 
 
-def emit_player_ghoul(source_plugin: Path, converted_plugin: Path, output_mod: Path, target_data_dir: Path | None = None):
+def to_document(catalog):
+    """Tales layout: cards (key source), chems (key form) and appearance (key source) are sections, the rest settings."""
+    settings = {key: value for key, value in catalog.items() if key not in SECTION_KEYS and key != "schema_version"}
+    return {"version": catalog["schema_version"], "settings": settings,
+            **{key: catalog[key] for key in SECTION_KEYS}}
+
+
+def emit_player_ghoul(source_plugin: Path, converted_plugin: Path, output_mod: Path, target_data_dir: Path | None = None, *, source_root: Path | None = None):
     native = load_esp_native()
     handles = []
     try:
@@ -279,14 +289,37 @@ def emit_player_ghoul(source_plugin: Path, converted_plugin: Path, output_mod: P
         catalog = build_catalog(Source(native, source_handle),
                                 NativeResolver(native, converted_plugin.name, converted, plugin_masters(native, converted)),
                                 source_plugin.name, digest, base_resolver)
+        from bacup_lib.perk_card_extras import emit_catalog
+        emit_catalog(Source(native, source_handle),
+                     NativeResolver(native, converted_plugin.name, converted, plugin_masters(native, converted)),
+                     output_mod, source_root or source_plugin.parent, condition_data, number, base_resolver)
+        from bacup_lib.food_spoilage import emit_catalog as emit_food_spoilage
+        # Spoilage is optional for Tales; a source change it can't read must not cost the ghoul
+        # catalog written below.
+        try:
+            emit_food_spoilage(Source(native, source_handle),
+                               NativeResolver(native, converted_plugin.name, converted, plugin_masters(native, converted)),
+                               output_mod, source_root or source_plugin.parent, number, base_resolver)
+        except (ValueError, KeyError, OSError) as error:
+            import logging
+            logging.getLogger(__name__).warning("FoodSpoilage.json not written: %s", error)
+        from bacup_lib.diseases import emit_catalog as emit_diseases
+        # Tales turns diseases off without it; never at the ghoul catalog's expense.
+        try:
+            emit_diseases(Source(native, source_handle),
+                          NativeResolver(native, converted_plugin.name, converted, plugin_masters(native, converted)),
+                          output_mod, number, base_resolver, data_dir=base_path.parent)
+        # Broad on purpose: a reshaped source row surfaces as TypeError/AttributeError/IndexError,
+        # and native lookups raise their own types; none of them may abort the regen.
+        except Exception as error:
+            import logging
+            logging.getLogger(__name__).warning("Diseases.json not written: %s: %s", type(error).__name__, error)
     finally:
         for handle in reversed(handles):
             native.plugin_handle_close(handle)
-    destination = output_mod / OUTPUT
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(".tmp")
-    temporary.write_text(json.dumps(catalog, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    temporary.replace(destination)
+    document = to_document(catalog)
+    json.dumps(document, allow_nan=False)
+    write_document(FEATURE, converted_plugin.name, document, output_mod)
     return catalog
 
 
@@ -297,6 +330,8 @@ if __name__ == "__main__":
     parser.add_argument("--converted-plugin", type=Path, required=True)
     parser.add_argument("--output-mod", type=Path, required=True)
     parser.add_argument("--target-data-dir", type=Path)
+    parser.add_argument("--source-root", type=Path)
     args = parser.parse_args()
-    result = emit_player_ghoul(args.source, args.converted_plugin, args.output_mod, args.target_data_dir)
+    result = emit_player_ghoul(args.source, args.converted_plugin, args.output_mod, args.target_data_dir,
+                              source_root=args.source_root)
     print(f"Ghoul catalog: available={result['available']}, {len(result['chems'])} chems, {len(result['cards'])} cards")

@@ -28,7 +28,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		RegisterLocalDefendNPC()
 		If IsStageDone(BeginActivitiesStage)
 			ResumeLocalDefendActivity()
@@ -69,7 +69,7 @@ Event OnStageSet(Int auiStageID, Int auiItemID)
 EndEvent
 
 Event OnTimer(Int aiTimerID)
-	If aiTimerID != PROGRESS_TIMER || DefendComplete || IsStageDone(CompleteStage) || !IsStageDone(BeginActivitiesStage)
+	If aiTimerID != PROGRESS_TIMER || DefendComplete || IsStageDone(GetCompleteStage()) || !IsStageDone(BeginActivitiesStage)
 		Return
 	EndIf
 	If NPC_Actor == None
@@ -107,14 +107,11 @@ Event OnTimer(Int aiTimerID)
 EndEvent
 
 Function InitializeLocalDefendStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 	SetObjectiveDisplayed(300, True)
@@ -134,7 +131,7 @@ Function RegisterLocalDefendNPC()
 EndFunction
 
 Function BeginLocalDefendActivities()
-	If DefendComplete || IsStageDone(CompleteStage)
+	If DefendComplete || IsStageDone(GetCompleteStage())
 		Return
 	EndIf
 	If !IsStageDone(BeginActivitiesStage)
@@ -151,7 +148,7 @@ Function BeginLocalDefendActivities()
 EndFunction
 
 Function ResumeLocalDefendActivity()
-	If DefendComplete || IsStageDone(CompleteStage)
+	If DefendComplete || IsStageDone(GetCompleteStage())
 		Return
 	EndIf
 	Int completedCount = CountCompletedLocalActivities()
@@ -316,7 +313,7 @@ Int Function GetLocalDefendGoal()
 EndFunction
 
 Function CompleteLocalDefendModule()
-	If DefendComplete || IsStageDone(CompleteStage)
+	If DefendComplete || IsStageDone(GetCompleteStage())
 		Return
 	EndIf
 	DefendComplete = True
@@ -325,5 +322,5 @@ Function CompleteLocalDefendModule()
 	If NPCHealthBarObjID >= 0
 		SetObjectiveCompleted(NPCHealthBarObjID, True)
 	EndIf
-	SetStage(CompleteStage)
+	SetStage(GetCompleteStage())
 EndFunction

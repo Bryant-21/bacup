@@ -78,6 +78,7 @@ def test_can_convert_needs_source_extractions_but_not_fo4_extraction(pair_id, pr
     settings.paths["fo4"]["extracted_dir"] = ""
     workspace = SimpleNamespace(_toolkit_settings=settings, _runner=None)
     panel = RegenPanel(workspace, fixed_pair_id=pair_id, project_id=project_id)
+    panel.install_location = "none"
     panel._store_installs_ok = lambda: True
 
     assert panel.can_convert() is True

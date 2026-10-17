@@ -569,6 +569,18 @@ EndFunction
 Function Fragment_Stage_0600_Item_00()
     SetObjectiveCompleted(575)
     SetObjectiveDisplayed(600)
+    ; Objective 600's target is the Operations elevator button, and laser grid 547A4B
+    ; (RequiredActorValue W05_MQS_206P_Checkpoint >= 2) is the only navmesh route to it. FO76's
+    ; checkpoint ladder: >= 1 collapses the heist tunnels, >= 2 opens this grid, >= 3 is tested
+    ; only by the Wayward's Cherise marker. Raise, never lower.
+    Actor playerRef = Alias_Player.GetActorReference()
+    If playerRef && playerRef.GetValue(W05_MQS_206P_Checkpoint) < 2.0
+        playerRef.SetValue(W05_MQS_206P_Checkpoint, 2.0)
+    EndIf
+    LaserGridScript operationsGrid = Game.GetFormFromFile(0x00547A4B, "SeventySix.esm") as LaserGridScript
+    If operationsGrid
+        operationsGrid.RequestReevaluateConditions()
+    EndIf
 EndFunction
 
 Function Fragment_Stage_0700_Item_00()
@@ -757,8 +769,9 @@ Function Fragment_Stage_9000_Item_00()
     If playerRef && playerRef.GetItemCount(W05_Vault79Operations_KeyCard) == 0
         playerRef.AddItem(W05_Vault79Operations_KeyCard, 1, True)
     EndIf
-    If playerRef
-        playerRef.SetValue(W05_MQS_206P_Checkpoint, 1.0)
+    ; The player reached Operations through grid 547A4B, so keep it open (>= 2) after completion.
+    If playerRef && playerRef.GetValue(W05_MQS_206P_Checkpoint) < 2.0
+        playerRef.SetValue(W05_MQS_206P_Checkpoint, 2.0)
     EndIf
     If mapMarker
         mapMarker.Enable()

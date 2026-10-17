@@ -29,6 +29,7 @@ const OWB_ATTACK_SHOTS_SEC_BITS: u32 = 0x4022_7627;
 
 const FNV_MELEE_EQUIPMENT_TYPE: i64 = 3;
 const FNV_UNARMED_EQUIPMENT_TYPE: i64 = 4;
+const FO4_GRENADE_EQUIP_LOCAL: u32 = 0x04_6AAC;
 const FO4_MACHETE_BLOCK_IMPACT_LOCAL: u32 = 0x0A_726B;
 const FO4_MACHETE_BLOCK_MATERIAL_LOCAL: u32 = 0x0A_726C;
 const FO4_MACHETE_SWING_SOUND_LOCAL: u32 = 0x03_C730;
@@ -369,10 +370,19 @@ pub(super) fn relayout_weap_equipment_type(record: &mut Record, interner: &Strin
     let Some(equipment_type) = exact_field(record, "ETYP").and_then(integer_value) else {
         return;
     };
-    let local = match equipment_type {
-        FNV_MELEE_EQUIPMENT_TYPE => FO4_RIGHT_HAND_EQUIP_LOCAL,
-        FNV_UNARMED_EQUIPMENT_TYPE => FO4_UNARMED_WEAPON_EQUIP_LOCAL,
-        _ => FO4_BOTH_HANDS_EQUIP_LOCAL,
+    let animation_type = exact_field(record, "DNAM").and_then(|value| match value {
+        FieldValue::Bytes(bytes) => read_u32(bytes, 0),
+        FieldValue::Struct(fields) => named_u32(fields, "animation_type", interner),
+        _ => None,
+    });
+    let local = if animation_type.is_some_and(|kind| matches!(kind, 10..=13)) {
+        FO4_GRENADE_EQUIP_LOCAL
+    } else {
+        match equipment_type {
+            FNV_MELEE_EQUIPMENT_TYPE => FO4_RIGHT_HAND_EQUIP_LOCAL,
+            FNV_UNARMED_EQUIPMENT_TYPE => FO4_UNARMED_WEAPON_EQUIP_LOCAL,
+            _ => FO4_BOTH_HANDS_EQUIP_LOCAL,
+        }
     };
     let plugin = interner.intern("Fallout4.esm");
     for entry in &mut record.fields {

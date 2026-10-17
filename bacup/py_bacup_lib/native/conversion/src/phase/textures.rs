@@ -1067,7 +1067,25 @@ pub(crate) fn output_is_base_overwrite_allowed(
     let Ok(rel) = output_path.strip_prefix(data_root) else {
         return false;
     };
-    materials_native::convert::path_is_base_overwrite_allowed(&rel.to_string_lossy(), prefixes)
+    let rel = rel.to_string_lossy();
+    !crate::relocation::is_target_cubemap_path(&rel)
+        && materials_native::convert::path_is_base_overwrite_allowed(&rel, prefixes)
+}
+
+pub(crate) fn output_overwrites_target(
+    output_path: &Path,
+    data_root: &Path,
+    overwrite_paths: &std::collections::HashSet<String>,
+) -> bool {
+    !overwrite_paths.is_empty()
+        && output_path.strip_prefix(data_root).is_ok_and(|rel| {
+            !crate::relocation::is_target_cubemap_path(&rel.to_string_lossy())
+                && overwrite_paths.contains(
+                &rel.to_string_lossy()
+                    .replace('\\', "/")
+                    .to_ascii_lowercase(),
+            )
+        })
 }
 
 pub(crate) fn output_exists_in_target_game(
@@ -2366,6 +2384,22 @@ mod tests {
             PathBuf::from("/mod/data/Textures/body_d.dds"),
         )];
         assert!(!group_is_base_owned(&outputs, data_root, &[], None, &[]));
+    }
+
+    #[test]
+    fn no_overwrite_rule_lets_an_output_replace_a_target_cubemap() {
+        let data_root = Path::new("/mod/data");
+        let cube = data_root
+            .join("Textures")
+            .join("Shared")
+            .join("Cubemaps")
+            .join("mipblur_DefaultOutside1.dds");
+        let paths: std::collections::HashSet<String> =
+            ["textures/shared/cubemaps/mipblur_defaultoutside1.dds".to_string()].into();
+        let prefixes = vec!["textures/shared/".to_string()];
+
+        assert!(!output_overwrites_target(&cube, data_root, &paths));
+        assert!(!output_is_base_overwrite_allowed(&cube, data_root, &prefixes));
     }
 
     #[test]

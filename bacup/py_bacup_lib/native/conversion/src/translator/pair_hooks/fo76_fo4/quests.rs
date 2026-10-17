@@ -81,7 +81,15 @@ const TRAP_PARENT_LOCATION_ALIAS_ID: u32 = 16;
 const TRAP_LOCATION_ACTUAL_ALIAS_ID: u32 = 15;
 /// LCRT `fss01_traploc`, carried by the six lure sites.
 const TRAP_SITE_LOCATION_REF_TYPE: u32 = 0x003D_A755;
-const FO4_LOCATION_HAS_REF_TYPE_FUNCTION: u16 = 563;
+pub(super) const FO4_LOCATION_HAS_REF_TYPE_FUNCTION: u16 = 563;
+pub(super) const INVADERS_FORM_ID: u32 = 0x0062_0F7B;
+pub(super) const INVADERS_EID: &str = "e07b_invaders";
+/// `EventLoc`, which every extractor, spawn centre, boss furniture and the UFO
+/// resolve inside through `ALFA`.
+pub(super) const INVADERS_EVENT_LOCATION_ALIAS_ID: u32 = 3;
+/// LCRT `E07B_Invaders_LocRefType_Extractor01` (Siphon Kappa), carried by every
+/// authored event site.
+pub(super) const INVADERS_SITE_LOCATION_REF_TYPE: u32 = 0x0062_0F7A;
 pub(super) const MILE_CARAVAN_CARGO_ALIAS_ID: u32 = 11;
 pub(super) const MILE_CARAVAN_DEAD_BRAHMIN_ALIAS_ID: i16 = 10;
 pub(super) const MILE_CARAVAN_BAD_CARGO_REF_FORM_ID: u32 = 0x0043_23B4;
@@ -134,7 +142,7 @@ const FO76_ENGINE_MANAGED_REPEATABLE_DAILY_QUESTS: [u32; 10] = [
     0x0062_1FB7,
     0x006F_D072,
 ];
-const FO76_REPEATABLE_PUBLIC_EVENT_QUESTS: [u32; 32] = [
+const FO76_REPEATABLE_PUBLIC_EVENT_QUESTS: [u32; 39] = [
     0x0058_3D14,
     0x0068_F383,
     0x007E_BDF4,
@@ -167,6 +175,17 @@ const FO76_REPEATABLE_PUBLIC_EVENT_QUESTS: [u32; 32] = [
     0x0018_7531,
     0x0065_B0A8,
     0x0003_64D0,
+    // Seasonal events (Invaders from Beyond, Mothman Equinox, Mischief Night, The
+    // Big Bloom, Fasnacht Day, Grahm's Meat-Cook). Tales runs each season on a
+    // schedule; RunOnce would end it after one round.
+    0x0062_0F7B,
+    0x0061_73A1,
+    0x0077_FA14,
+    0x0079_AA0F,
+    0x0049_886E,
+    0x0054_B3FA,
+    // Fasnacht's Master of Ceremonies barks, started and stopped with each Fasnacht round.
+    0x003E_EAA7,
 ];
 /// FO76 activities (smaller events renamed in The Backwoods). The server rotated
 /// them forever; FO4 refuses to restart a RunOnce quest.
@@ -201,7 +220,7 @@ const FO76_REPEATABLE_ACTIVITY_QUESTS: [u32; 29] = [
     0x0056_0B13,
     0x0034_608A,
 ];
-const FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS: [(u32, &str); 24] = [
+const FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS: [(u32, &str); 34] = [
     (0x002D_0F69, "en07_mq_fleeblast"),
     (0x0034_43FB, "mtr07_earth"),
     (0x007B_95E1, "fishing_bigfish"),
@@ -259,6 +278,25 @@ const FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS: [(u32, &str); 24] = [
     ),
     (0x005A_272D, "comp_rq_fetch_specificaliases_legendaryarmor"),
     (0x005A_272E, "comp_rq_fetch_specificaliases_legendaryweapon"),
+    // Lite-ally hire conversations. Every roadside encounter re-sent the start event; a
+    // declined or walked-away hire must be offerable again, and a hire completes the quest
+    // (CompanionLiteAllyEffectScript then stops re-sending it).
+    (0x0058_2172, "comp_quest_intro_lite_beggar"),
+    (0x0058_2153, "comp_quest_intro_lite_hunter"),
+    (0x0056_8CB2, "comp_quest_intro_lite_raiderpunk"),
+    (0x0058_5BD2, "comp_quest_intro_lite_scavenger"),
+    (0x0058_2173, "comp_quest_intro_lite_wanderer"),
+    // The government air drop (holotape, Tales random drops) and the launch-card vertibot
+    // patrol ran again every time on FO76's server.
+    (0x0000_FFE7, "gq_dropgovtmaster"),
+    (0x003E_133F, "nuke_launchcardpatrol"),
+    // Lucky Strike: each of the three treasure maps starts its own dig run.
+    (0x0001_9487, "mtrz05_lucky"),
+    // Tadpole Archery Test: a failed run is retaken from the range terminal.
+    (0x0041_7BE8, "m01c_archery"),
+    // Scorchbeast summon-allies: every Scorchbeast's ability re-sends the start event, and
+    // the quest stops once its summoner is gone, so each encounter must be able to summon.
+    (0x0034_608B, "sq_scorchbeastsummonallies"),
 ];
 /// RD01 Gleaming Depths master and its five encounter modules. FO76 re-instanced them per
 /// raid; FO4 needs RunOnce cleared so a wipe can retry and a finished raid can be rerun.
@@ -269,6 +307,25 @@ const FO76_REPEATABLE_RAID_QUESTS: [(u32, &str); 6] = [
     (0x0078_B59E, "rd01_enc04_enclavesquad"),
     (0x0078_8127, "rd01_enc05_researchlab"),
     (0x0078_6D41, "rd01_enc06_scorchtongue"),
+];
+/// FO76's region manager re-ran these ambient encounters every pulse; Tales' region pulse
+/// restarts them, which FO4 refuses for a RunOnce quest.
+pub(super) const FO76_ROAMING_ENCOUNTER_QUESTS: [(u32, &str); 3] = [
+    (0x0000_123F, "gq_horde"),
+    (0x0018_6DEE, "gq_swarm"),
+    (0x0019_B932, "gq_wanderingboss"),
+];
+/// Start-time aliases of the roaming encounters that FO76 filled from server state (a random
+/// player, scope-free `ALFF` searches, a create-at on the event's Reference1). FO4 cannot fill
+/// them before start, and a failed non-Optional fill aborts the start, so they become Optional
+/// and the encounter's script fills them from the spawn anchor Tales hands it.
+const ROAMING_ENCOUNTER_SCRIPT_FILLED_ALIASES: [(u32, &[u32]); 3] = [
+    // AlphaSpawnMarker, EventStartMarker.
+    (0x0000_123F, &[16, 31]),
+    // NearbyLocation, LocationCenter, SwarmCenterMarker.
+    (0x0018_6DEE, &[25, 26, 27]),
+    // SpawnRegion (ALFA on the empty RandomPlayer), EdgeMarkers.
+    (0x0019_B932, &[2, 5]),
 ];
 pub(super) const BURN_GRUNT_HUNT_FORM_ID: u32 = 0x007D_6A80;
 const BURN_GRUNT_HUNT_EID: &str = "burn_bountyhunt_grunthunt";
@@ -432,6 +489,7 @@ fn qust_is_repeatable_event(interner: &crate::sym::StringInterner, record: &Reco
             FO76_REPEATABLE_SINGLE_PLAYER_EVENT_QUESTS
                 .iter()
                 .chain(FO76_REPEATABLE_RAID_QUESTS.iter())
+                .chain(FO76_ROAMING_ENCOUNTER_QUESTS.iter())
                 .any(|(expected_local, expected_eid)| {
                     local == *expected_local && eid == *expected_eid
                 })
@@ -659,11 +717,14 @@ impl Fo76Fo4Hook {
         Self::adapt_nuke_launch_card_patrol_location_ref_types(interner, record);
         Self::adapt_fly_swatter_location_ref_types(interner, record);
         Self::adapt_trap_parent_location_fill(interner, record);
+        Self::adapt_invaders_event_location_fill(interner, record);
+        Self::make_roaming_encounter_aliases_script_filled(interner, record);
         Self::restrict_nuke_edge_marker_alias(interner, record);
         super::enclave_events::adapt_event_center(interner, record);
         Self::repair_mile_caravan_intro_cargo_alias(interner, record);
         Self::remove_tw043_guard_startup_link(interner, record);
-        strip_w05_mqs_205_shutdown_script_binding(interner, record);
+        super::super_mutant_merchant::restrict_destination_aliases(interner, record);
+        strip_fo4_shutdown_script_bindings(interner, record);
         strip_rd01_enc02_dead_topic_bindings(interner, record);
         strip_en07_invalid_code_topic_bindings(interner, record);
         let player_event_consumer_alias_ids = qust_vmad_player_event_consumer_alias_ids(record);
@@ -843,6 +904,47 @@ impl Fo76Fo4Hook {
         }
         drop(fields);
         record.fields = retained;
+    }
+
+    fn make_roaming_encounter_aliases_script_filled(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        let local = record.form_key.local & 0x00FF_FFFF;
+        if !interner
+            .resolve(record.form_key.plugin)
+            .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO76_MASTER_NAME))
+        {
+            return;
+        }
+        let Some((_, eid)) = FO76_ROAMING_ENCOUNTER_QUESTS
+            .iter()
+            .find(|(form_id, _)| *form_id == local)
+        else {
+            return;
+        };
+        if qust_eid_lower(interner, record).as_deref() != Some(*eid) {
+            return;
+        }
+        let Some((_, alias_ids)) = ROAMING_ENCOUNTER_SCRIPT_FILLED_ALIASES
+            .iter()
+            .find(|(form_id, _)| *form_id == local)
+        else {
+            return;
+        };
+        let mut current_alias = None;
+        for entry in &mut record.fields {
+            if QUST_ALIAS_ANCHOR_SIGS.contains(&entry.sig.0) {
+                current_alias = field_value_to_u32(&entry.value);
+            } else if entry.sig.0 == *b"ALED" {
+                current_alias = None;
+            } else if entry.sig.0 == *b"FNAM"
+                && current_alias.is_some_and(|alias| alias_ids.contains(&alias))
+            {
+                mark_qust_alias_fnam_optional(&mut entry.value);
+                current_alias = None;
+            }
+        }
     }
 
     fn restrict_nuke_edge_marker_alias(interner: &crate::sym::StringInterner, record: &mut Record) {
@@ -1187,6 +1289,65 @@ impl Fo76Fo4Hook {
             sig: SubrecordSig(*b"CTDA"),
             value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&condition)),
         };
+    }
+
+    /// Invaders from Beyond's `EventLoc` has no fill: FO76's
+    /// `ChooseRandomLocation` forced a site from FLST `623C02` and then
+    /// `RefillAlias`ed every `ALFA EventLoc` alias against it. FO4 has no
+    /// `RefillAlias`, so a forced location leaves the extractors, spawn
+    /// centres, boss furniture and UFO empty for the whole event. A
+    /// conditions-only location alias (the `FSS01_Trap` shape) lets the engine
+    /// pick a site at start and fill those aliases inside it as authored;
+    /// `ChooseRandomLocation` only forces an empty alias, so it then just sets
+    /// its stage.
+    pub(super) fn adapt_invaders_event_location_fill(
+        interner: &crate::sym::StringInterner,
+        record: &mut Record,
+    ) {
+        if record.form_key.local & 0x00FF_FFFF != INVADERS_FORM_ID
+            || !interner
+                .resolve(record.form_key.plugin)
+                .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO76_MASTER_NAME))
+            || qust_eid_lower(interner, record).as_deref() != Some(INVADERS_EID)
+        {
+            return;
+        }
+
+        let Some(start) = record.fields.iter().position(|entry| {
+            entry.sig.0 == *b"ALLS"
+                && field_value_to_u32(&entry.value) == Some(INVADERS_EVENT_LOCATION_ALIAS_ID)
+        }) else {
+            return;
+        };
+        let Some(end) = record.fields[start..]
+            .iter()
+            .position(|entry| entry.sig.0 == *b"ALED")
+            .map(|offset| start + offset)
+        else {
+            return;
+        };
+        // Only the authored shape is repaired: no fill rule and no conditions.
+        if record.fields[start + 1..end].iter().any(|entry| {
+            matches!(
+                &entry.sig.0,
+                b"CTDA" | b"ALFL" | b"ALFA" | b"ALFE" | b"ALFD" | b"ALFF" | b"ALEQ" | b"ALEA"
+            )
+        }) {
+            return;
+        }
+
+        let mut condition = [0u8; 32];
+        condition[4..8].copy_from_slice(&1.0_f32.to_le_bytes());
+        condition[8..10].copy_from_slice(&FO4_LOCATION_HAS_REF_TYPE_FUNCTION.to_le_bytes());
+        condition[12..16].copy_from_slice(&INVADERS_SITE_LOCATION_REF_TYPE.to_le_bytes());
+        condition[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        record.fields.insert(
+            end,
+            FieldEntry {
+                sig: SubrecordSig(*b"CTDA"),
+                value: FieldValue::Bytes(smallvec::SmallVec::from_slice(&condition)),
+            },
+        );
     }
 
     pub(super) fn repair_mile_caravan_intro_cargo_alias(

@@ -2,9 +2,9 @@
 
 use crate::fixups::havok::copy_character_support_files::copy_character_support_files_in_mod_path;
 use crate::fixups::havok::declare_engine_driven_locomotion::declare_engine_driven_locomotion_in_mod_path;
-use crate::fixups::havok::filter_unreferenced_behaviors::filter_unreferenced_behaviors_preserving;
+use crate::fixups::havok::filter_unreferenced_behaviors::filter_unreferenced_behaviors_with_cache;
 use crate::fixups::havok::fix_character_rig_path::fix_character_rig_path_in_mod_path;
-use crate::fixups::havok::inject_animation_names::inject_animation_names_in_mod_path;
+use crate::fixups::havok::inject_animation_names::inject_animation_names_with_cache;
 use crate::fixups::havok::inject_attack_stop_events::inject_attack_stop_events_in_mod_path;
 use crate::fixups::havok::inject_hitframe_events::inject_hitframe_events_in_mod_path;
 use crate::fixups::havok::normalize_character_properties::normalize_character_properties_in_mod_path;
@@ -329,8 +329,10 @@ impl Phase for PostprocessHavokAssetsPhase {
         assets_written += swarm_death.records_changed;
 
         // 4. inject_animation_names
+        // Behavior graphs stop changing here; retain only names, not parsed graphs.
+        let mut behavior_names = crate::fixups::havok::postprocess_scan::BehaviorNamesCache::default();
         let started = std::time::Instant::now();
-        let r4 = inject_animation_names_in_mod_path(ctx.mod_path)
+        let r4 = inject_animation_names_with_cache(ctx.mod_path, &mut behavior_names)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
         log_timing!(
             "inject_animation_names",
@@ -366,7 +368,7 @@ impl Phase for PostprocessHavokAssetsPhase {
             .map(|relative| ctx.mod_path.join("data/Meshes").join(relative))
             .collect();
         let started = std::time::Instant::now();
-        let r5 = filter_unreferenced_behaviors_preserving(ctx.mod_path, &preserved_files)
+        let r5 = filter_unreferenced_behaviors_with_cache(ctx.mod_path, &preserved_files, &mut behavior_names)
             .map_err(|e| PhaseError::Internal(e.to_string()))?;
         log_timing!(
             "filter_unreferenced_behaviors",
@@ -376,6 +378,12 @@ impl Phase for PostprocessHavokAssetsPhase {
             r5.warnings.len()
         );
         records_dropped += r5.records_dropped;
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: "postprocess_havok_assets",
+            level: LogLevel::Info,
+            message: format!("[havok_behavior_names] files={} cache_hits={}", behavior_names.files(), behavior_names.hits),
+        });
+        drop(behavior_names);
 
         // 6. fix_character_rig_path
         let started = std::time::Instant::now();

@@ -20,6 +20,9 @@ class SwfEditorWorkspace(BaseWorkspace):
     user_guide_body = """
 Create or open a SWF, edit the scene with the viewport, and manage layers, properties, and timeline controls.
 Use the library panel for reusable shapes and export when the file is ready.
+Use Document for AS3 sources, project manifests, compiled classes, tags, diagnostics and Ruffle preview.
+Save preserves an editing project; Export produces a separate compiled SWF. Binary menus keep untouched tags.
+ABC decompilation and game-runtime certification are unavailable; test native callbacks and input in game.
 """
 
     def get_dockable_windows(self) -> list[hello_imgui.DockableWindow]:
@@ -29,6 +32,7 @@ Use the library panel for reusable shapes and export when the file is ready.
             make_window(f"Properties{_NS}", "RightDock"),
             make_window(f"Library{_NS}", "RightDock"),
             make_window(f"Timeline{_NS}", "BottomDock"),
+            make_window(f"Document{_NS}", "MainDockSpace"),
         ]
 
     def get_required_addons(self) -> dict:
@@ -48,6 +52,7 @@ Use the library panel for reusable shapes and export when the file is ready.
             f"Properties{_NS}": self._app.properties_panel.draw,
             f"Library{_NS}": self._app.library_panel.draw,
             f"Timeline{_NS}": self._app.timeline_panel.draw,
+            f"Document{_NS}": self._app.document_panel.draw,
         })
 
         if self._pending_settings:
@@ -61,6 +66,8 @@ Use the library panel for reusable shapes and export when the file is ready.
         if not self.active or not self._initialized:
             return
         self._app._handle_shortcuts()
+        self._app.poll()
+        self._app.draw_pending_dialog()
 
     def draw_menu(self) -> None:
         if self._app is None:
@@ -68,33 +75,22 @@ Use the library panel for reusable shapes and export when the file is ready.
 
         if imgui.begin_menu("File"):
             if imgui.menu_item("New SWF", "Ctrl+N", False)[0]:
-                from ui.swf_editor.swf_scene import SwfScene
-                self._app.scene = SwfScene()
-                self._app.camera.fit_canvas()
+                self._app.new_document()
+            if imgui.menu_item("New AS3 menu", "", False)[0]:
+                self._app.new_document(menu=True)
             if imgui.menu_item("Open SWF...", "Ctrl+O", False)[0]:
-                try:
-                    from creation_lib.ui.widgets.pick_folder import pick_file
-                    path = pick_file(
-                        "Open SWF",
-                        [("SWF files", "*.swf"), ("All files", "*.*")],
-                    )
-                    if path:
-                        self._app.open_swf(path)
-                except Exception:
-                    pass
+                self._app.choose_open()
+            if imgui.menu_item("Save project", "Ctrl+S", False)[0]:
+                self._app.save_document()
+            if imgui.menu_item("Save project as...", "Ctrl+Shift+S", False)[0]:
+                self._app.save_document(save_as=True)
             imgui.separator()
             if imgui.menu_item("Export SWF...", "Ctrl+E", False)[0]:
-                try:
-                    from creation_lib.ui.widgets.pick_folder import pick_save_file
-                    path = pick_save_file(
-                        "Export SWF",
-                        [("SWF files", "*.swf")],
-                        default_ext=".swf",
-                    )
-                    if path:
-                        self._app.export_swf(path)
-                except Exception:
-                    pass
+                self._app.choose_export()
+            if imgui.menu_item("Import SVG / raster...", "", False, self._app.document.mode == "visual")[0]:
+                self._app.choose_import()
+            if imgui.menu_item("Export selected SVG...", "", False, self._app.document.mode == "visual")[0]:
+                self._app.export_svg()
             imgui.end_menu()
 
         if imgui.begin_menu("Edit"):
@@ -110,6 +106,27 @@ Use the library panel for reusable shapes and export when the file is ready.
                 "Ctrl+Shift+Z", False, can_redo,
             )[0]:
                 self._app.redo()
+            imgui.separator()
+            for label, operation in (("Union", "union"), ("Subtract", "subtract"), ("Intersect", "intersect"), ("Exclude", "exclude")):
+                if imgui.menu_item(label, "", False, self._app.document.mode == "visual" and len(self._app.scene.selection) >= 2)[0]:
+                    try:
+                        self._app.boolean_op(operation)
+                    except Exception as exc:
+                        self._app.report_error(exc)
+            if imgui.menu_item("Outline Stroke", "", False, self._app.document.mode == "visual" and bool(self._app.scene.selection))[0]:
+                try:
+                    self._app.outline_stroke()
+                except Exception as exc:
+                    self._app.report_error(exc)
+            imgui.end_menu()
+
+        if imgui.begin_menu("Build"):
+            if imgui.menu_item("Compile / validate", "F5", False, not self._app.jobs.busy)[0]:
+                self._app.start_build()
+            if imgui.menu_item("Compile & preview in Ruffle", "Ctrl+F5", False, not self._app.jobs.busy)[0]:
+                self._app.start_build(preview=True)
+            if imgui.menu_item("Cancel operation", "", False, self._app.jobs.busy)[0]:
+                self._app.jobs.cancel()
             imgui.end_menu()
 
         if imgui.begin_menu("View"):
@@ -141,14 +158,16 @@ Use the library panel for reusable shapes and export when the file is ready.
             return clicked
 
         def _tool_btn(icon: str, tool_id: str, tooltip: str) -> None:
+            imgui.begin_disabled(self._app.document.mode != "visual")
             active = self._app.active_tool == tool_id
             if active:
                 imgui.push_style_color(imgui.Col_.button, imgui.ImVec4(0.2, 0.4, 0.7, 1.0))
             if _btn(icon, tooltip):
-                self._app.active_tool = tool_id
+                self._app.select_tool(tool_id)
             if active:
                 imgui.pop_style_color()
             imgui.same_line()
+            imgui.end_disabled()
 
         def _sep() -> None:
             imgui.text("|")
@@ -187,7 +206,22 @@ Use the library panel for reusable shapes and export when the file is ready.
         _sep()
 
         # Zoom level
-        imgui.text(f"{int(self._app.camera.zoom * 100)}%")
+        if self._app.document.mode == "visual":
+            imgui.text(f"{int(self._app.camera.zoom * 100)}%")
+        else:
+            imgui.text(self._app.document.mode.title())
+        imgui.same_line()
+        _sep()
+        if _btn(getattr(fa, "ICON_FA_FLOPPY_DISK", "Save"), "Save editing project (Ctrl+S)"):
+            self._app.save_document()
+        imgui.same_line()
+        imgui.begin_disabled(self._app.jobs.busy)
+        if _btn(getattr(fa, "ICON_FA_CODE", "Build"), "Compile / validate (F5)"):
+            self._app.start_build()
+        imgui.same_line()
+        if _btn(getattr(fa, "ICON_FA_PLAY", "Play"), "Compile & preview in Ruffle (Ctrl+F5)"):
+            self._app.start_build(preview=True)
+        imgui.end_disabled()
 
     def handle_file_drop(
         self,
@@ -199,10 +233,28 @@ Use the library panel for reusable shapes and export when the file is ready.
         if self._app is None:
             return False
         for path in paths:
-            if Path(path).suffix.lower() == ".swf":
-                self._app.open_swf(path)
+            suffix = Path(path).suffix.lower()
+            if suffix in {".swf", ".swfproj"}:
+                if suffix == ".swf":
+                    self._app.open_swf(path)
+                else:
+                    self._app.open_document(path)
                 return True
         return False
+
+    def confirm_exit(self) -> bool | None:
+        """Participate in the host's all-workspace guard, including inactive SWF."""
+        if self._app is None:
+            return True
+        self._app.poll()
+        return self._app.confirm_exit()
+
+    def exit_confirmation_state(self):
+        return self._app.exit_confirmation_state() if self._app else None
+
+    def reset_exit_confirmation(self):
+        if self._app:
+            self._app.reset_exit_confirmation()
 
     def on_activate(self) -> None:
         super().on_activate()
@@ -233,10 +285,16 @@ Use the library panel for reusable shapes and export when the file is ready.
     def _apply_saved_settings(self, settings: dict) -> None:
         if self._app:
             self._app.camera.snap_to_grid = settings.get("grid_snap", False)
+            if settings.get("preview_player"):
+                self._app.preview_player = settings["preview_player"]
+            if self._app.timeline_panel:
+                self._app.timeline_panel.onion_skin = settings.get("onion_skin", False)
 
     def collect_settings(self) -> dict:
         if self._app:
             return {
                 "grid_snap": self._app.camera.snap_to_grid,
+                "onion_skin": self._app.timeline_panel.onion_skin if self._app.timeline_panel else False,
+                "preview_player": self._app.preview_player,
             }
         return self.get_settings_defaults()

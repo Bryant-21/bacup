@@ -8,16 +8,21 @@
 //! the FO76 record, templates included, is never written, so those leveled lists spawn
 //! an ordinary weapon. This writes a master override of the vanilla weapon with the
 //! FO76 combinations that vanilla has no equivalent for, plus the FO76 attach points
-//! their mods hang from.
+//! their mods hang from. A weapon that has no combination but holds a forced material keyword
+//! (`ma_Gun_Appearance`) gets the override too, so FO76 paints and skins list on it.
 //!
 //! Runs after `rewrite_raw_object_template_formids`: the appended bytes are remapped
-//! here, and the vanilla combinations of the override are left untouched.
+//! here, and the vanilla combinations of the override are only renumbered into the
+//! output's masters.
+
+use std::collections::hash_map::Entry;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use esp_authoring_core::plugin_runtime::ParsedSubrecord;
 
+use crate::fixups::master_record_numbering::record_decoded_in_master_for_target;
 use crate::fixups::quest_script_binding::SourcePlugin;
 use crate::fixups::rewrite_raw_object_template_formids::{
     add_output_record_targets, encoded_targets_by_source_object_id, rewrite_obts_bytes,
@@ -26,6 +31,7 @@ use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
 use crate::record::{FieldEntry, FieldValue, Record, write_u32_field};
+use crate::run::FO76_FO4_FORCED_KEYWORD_SUBSTITUTIONS;
 use crate::session::PluginSession;
 use crate::sym::StringInterner;
 use crate::translator::pair_hooks::fo76_fo4::strip_raw_weapon_object_template_property_rows;
@@ -40,6 +46,7 @@ pub struct BridgeFo76WeaponObjectTemplatesFixup;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct SourceWeaponTemplates {
     attach_parent_slots: Vec<u32>,
+    keywords: Vec<u32>,
     combinations: Vec<SourceCombination>,
 }
 
@@ -54,6 +61,7 @@ struct BridgeOutcome {
     combinations_added: u32,
     unresolved_keywords: u32,
     dropped_includes: u32,
+    changed: bool,
 }
 
 impl Fixup for BridgeFo76WeaponObjectTemplatesFixup {
@@ -110,6 +118,7 @@ impl Fixup for BridgeFo76WeaponObjectTemplatesFixup {
                 })
                 .collect::<Vec<_>>()
         };
+        let weapons = merge_by_target(weapons);
         if weapons.is_empty() {
             return Ok(report);
         }
@@ -161,7 +170,13 @@ impl Fixup for BridgeFo76WeaponObjectTemplatesFixup {
                 else {
                     continue;
                 };
-                session.record_decoded_in_handle(*handle, &target, schema.as_ref(), mapper.interner)
+                record_decoded_in_master_for_target(
+                    session,
+                    *handle,
+                    &target,
+                    schema.as_ref(),
+                    mapper.interner,
+                )
             };
             let Ok(mut vanilla) = vanilla else {
                 warn(
@@ -181,7 +196,7 @@ impl Fixup for BridgeFo76WeaponObjectTemplatesFixup {
             );
             total.unresolved_keywords += outcome.unresolved_keywords;
             total.dropped_includes += outcome.dropped_includes;
-            if outcome.combinations_added == 0 {
+            if !outcome.changed {
                 continue;
             }
             total.combinations_added += outcome.combinations_added;
@@ -227,6 +242,10 @@ fn parse_source_weapon_templates(subrecords: &[ParsedSubrecord]) -> Option<Sourc
                 data.chunks_exact(4)
                     .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])),
             ),
+            "KWDA" if !in_block => templates.keywords.extend(
+                data.chunks_exact(4)
+                    .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])),
+            ),
             "OBTE" => in_block = true,
             "STOP" => in_block = false,
             "OBTF" if in_block => editor_only = true,
@@ -242,7 +261,35 @@ fn parse_source_weapon_templates(subrecords: &[ParsedSubrecord]) -> Option<Sourc
             _ => {}
         }
     }
-    (!templates.combinations.is_empty()).then_some(templates)
+    (!templates.combinations.is_empty() || !material_keywords(&templates.keywords).is_empty())
+        .then_some(templates)
+}
+
+/// Several FO76 weapons can map onto one vanilla weapon (two onto the Harpoon Gun).
+/// Their combinations must share one override: a plugin cannot hold two records
+/// with the same FormID.
+fn merge_by_target(
+    weapons: Vec<(FormKey, SourceWeaponTemplates)>,
+) -> Vec<(FormKey, SourceWeaponTemplates)> {
+    let mut merged: Vec<(FormKey, SourceWeaponTemplates)> = Vec::with_capacity(weapons.len());
+    let mut index_by_target: FxHashMap<FormKey, usize> = FxHashMap::default();
+    for (target, templates) in weapons {
+        match index_by_target.entry(target) {
+            Entry::Occupied(entry) => {
+                let existing = &mut merged[*entry.get()].1;
+                existing
+                    .attach_parent_slots
+                    .extend(templates.attach_parent_slots);
+                existing.keywords.extend(templates.keywords);
+                existing.combinations.extend(templates.combinations);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(merged.len());
+                merged.push((target, templates));
+            }
+        }
+    }
+    merged
 }
 
 fn bridge_weapon_templates(
@@ -253,18 +300,61 @@ fn bridge_weapon_templates(
     is_valid_first_master_form_id: &mut dyn FnMut(u32) -> bool,
 ) -> BridgeOutcome {
     let mut outcome = BridgeOutcome::default();
-    let (Some(count_index), Some(stop_index)) = (
-        vanilla
-            .fields
-            .iter()
-            .position(|field| field.sig.0 == *b"OBTE"),
-        vanilla
-            .fields
-            .iter()
-            .position(|field| field.sig.0 == *b"STOP"),
-    ) else {
-        return outcome;
-    };
+    let template_range = vanilla
+        .fields
+        .iter()
+        .position(|field| field.sig.0 == *b"OBTE")
+        .zip(
+            vanilla
+                .fields
+                .iter()
+                .position(|field| field.sig.0 == *b"STOP"),
+        );
+    let mut appended = Vec::new();
+    if let Some((count_index, stop_index)) = template_range {
+        append_source_combinations(
+            vanilla,
+            source,
+            (count_index, stop_index),
+            encoded_targets,
+            is_valid_first_master_form_id,
+            &mut appended,
+            &mut outcome,
+        );
+    }
+    if let Some((count_index, stop_index)) = template_range.filter(|_| !appended.is_empty()) {
+        let vanilla_count = field_value_u32(&vanilla.fields[count_index].value).unwrap_or(0);
+        write_u32_field(
+            &mut vanilla.fields[count_index].value,
+            vanilla_count + outcome.combinations_added,
+        );
+        vanilla.fields.insert_many(stop_index, appended);
+        outcome.changed = true;
+    }
+    let carries_material = !material_keywords(&source.keywords).is_empty();
+    if outcome.combinations_added > 0 || carries_material {
+        outcome.changed |= add_form_ids(
+            vanilla,
+            b"APPR",
+            &source.attach_parent_slots,
+            encoded_targets,
+            source_targets,
+        );
+    }
+    outcome.changed |=
+        add_material_keywords(vanilla, &source.keywords, encoded_targets, source_targets);
+    outcome
+}
+
+fn append_source_combinations(
+    vanilla: &Record,
+    source: &SourceWeaponTemplates,
+    (count_index, stop_index): (usize, usize),
+    encoded_targets: &FxHashMap<u32, u32>,
+    is_valid_first_master_form_id: &mut dyn FnMut(u32) -> bool,
+    appended: &mut Vec<FieldEntry>,
+    outcome: &mut BridgeOutcome,
+) {
     let mut known_keyword_sets: Vec<Vec<u32>> = vanilla.fields[count_index..stop_index]
         .iter()
         .filter(|field| field.sig.0 == *b"OBTS")
@@ -274,7 +364,6 @@ fn bridge_weapon_templates(
         })
         .collect();
 
-    let mut appended = Vec::new();
     for combination in &source.combinations {
         let Some(source_keywords) = obts_keywords(&combination.obts) else {
             continue;
@@ -307,47 +396,91 @@ fn bridge_weapon_templates(
         known_keyword_sets.push(target_keywords);
         outcome.combinations_added += 1;
     }
-    if outcome.combinations_added == 0 {
-        return outcome;
-    }
-
-    let vanilla_count = field_value_u32(&vanilla.fields[count_index].value).unwrap_or(0);
-    write_u32_field(
-        &mut vanilla.fields[count_index].value,
-        vanilla_count + outcome.combinations_added,
-    );
-    vanilla.fields.insert_many(stop_index, appended);
-    add_attach_parent_slots(
-        vanilla,
-        &source.attach_parent_slots,
-        encoded_targets,
-        source_targets,
-    );
-    outcome
 }
 
-fn add_attach_parent_slots(
+/// FO76 weapon mods filter on the weapon's mod-association keywords (`ma_Gun_Appearance`,
+/// which maps to `ma_WeaponMaterialSwaps`), and FO4 only lists a mod whose every filter
+/// keyword the weapon carries. Vanilla weapons that lack the keyword offer no paint or skin
+/// slot, so the forced material keywords the source weapon holds are added to the override.
+/// Other source keywords stay out: they would change the vanilla weapon's animations and type.
+fn material_keywords(source_keywords: &[u32]) -> Vec<u32> {
+    source_keywords
+        .iter()
+        .copied()
+        .filter(|raw| {
+            FO76_FO4_FORCED_KEYWORD_SUBSTITUTIONS
+                .iter()
+                .any(|(source, _, _)| *source == raw & 0x00FF_FFFF)
+        })
+        .collect()
+}
+
+fn add_material_keywords(
     record: &mut Record,
-    source_slots: &[u32],
+    source_keywords: &[u32],
     encoded_targets: &FxHashMap<u32, u32>,
     source_targets: &FxHashMap<u32, FormKey>,
-) {
+) -> bool {
+    let material_keywords = material_keywords(source_keywords);
+    if material_keywords.is_empty()
+        || !add_form_ids(
+            record,
+            b"KWDA",
+            &material_keywords,
+            encoded_targets,
+            source_targets,
+        )
+    {
+        return false;
+    }
+    let count = record
+        .fields
+        .iter()
+        .find(|field| field.sig.0 == *b"KWDA")
+        .and_then(|field| match &field.value {
+            FieldValue::List(values) => Some(values.len()),
+            FieldValue::Bytes(bytes) => Some(bytes.len() / 4),
+            _ => None,
+        });
+    if let (Some(count), Some(size)) = (
+        count,
+        record
+            .fields
+            .iter_mut()
+            .find(|field| field.sig.0 == *b"KSIZ"),
+    ) {
+        write_u32_field(&mut size.value, u32::try_from(count).unwrap_or(u32::MAX));
+    }
+    true
+}
+
+/// Appends the targets of `source_ids` to the record's `signature` array; `false` when
+/// nothing was new or the record has no such array.
+fn add_form_ids(
+    record: &mut Record,
+    signature: &[u8; 4],
+    source_ids: &[u32],
+    encoded_targets: &FxHashMap<u32, u32>,
+    source_targets: &FxHashMap<u32, FormKey>,
+) -> bool {
     let Some(slots) = record
         .fields
         .iter_mut()
-        .find(|field| field.sig.0 == *b"APPR")
+        .find(|field| field.sig.0 == *signature)
     else {
-        return;
+        return false;
     };
+    let mut added = false;
     match &mut slots.value {
         FieldValue::List(values) => {
-            for target in source_slots
+            for target in source_ids
                 .iter()
                 .filter_map(|raw| source_targets.get(&(raw & 0x00FF_FFFF)))
             {
                 let value = FieldValue::FormKey(*target);
                 if !values.contains(&value) {
                     values.push(value);
+                    added = true;
                 }
             }
         }
@@ -356,17 +489,19 @@ fn add_attach_parent_slots(
                 .chunks_exact(4)
                 .map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
                 .collect();
-            for encoded in source_slots
+            for encoded in source_ids
                 .iter()
                 .filter_map(|raw| encoded_targets.get(&(raw & 0x00FF_FFFF)))
             {
                 if present.insert(*encoded) {
                     bytes.extend_from_slice(&encoded.to_le_bytes());
+                    added = true;
                 }
             }
         }
         _ => {}
     }
+    added
 }
 
 fn obts_keywords(bytes: &[u8]) -> Option<Vec<u32>> {

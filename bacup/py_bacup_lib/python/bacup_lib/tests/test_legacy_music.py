@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from bacup_lib.legacy_music import (
-    augment_legacy_music_assets,
     discover_legacy_music_tracks,
     prepare_legacy_music_assets,
 )
@@ -91,11 +90,23 @@ def test_augmentation_replaces_legacy_musc_directory_refs(tmp_path: Path) -> Non
         },
     ]
 
-    augmented = augment_legacy_music_assets([directory_ref], tracks)
+    import json
+    from bacup_lib.native_runtime import load_native_module
+
+    result = json.loads(load_native_module().SourceAssetInventory().collect_assets_json(
+        json.dumps([{
+            "asset_type": directory_ref.asset_type,
+            "source_path": directory_ref.source_path,
+            "source_record_signature": "MUSC",
+            "source_subrecord_sig": "FNAM",
+        }]),
+        json.dumps({"sounds": True, "legacy_music_tracks": tracks}),
+    ))
+    augmented = result["assets"]
 
     assert len(augmented) == 1
-    assert augmented[0].source_path == tracks[0]["asset_path"]
-    assert augmented[0].resolved_path == str(source)
+    assert augmented[0]["source_path"] == tracks[0]["asset_path"]
+    assert augmented[0]["resolved_path"] == str(source)
 
 
 def test_prepare_encodes_mp3_once_and_reuses_cache(tmp_path: Path) -> None:

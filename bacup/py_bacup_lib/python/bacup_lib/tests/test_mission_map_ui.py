@@ -39,7 +39,8 @@ def test_converts_only_local_artwork_with_reproducible_manifest(tmp_path, monkey
     output = tmp_path / "converted/data"
     first = ui.convert_mission_map_ui(source, output)
     assert first == ui.convert_mission_map_ui(source, output)
-    assert len(first["files"]) == 14
+    assert len(first["files"]) == 16
+    assert {row["symbol"] for row in first["files"] if "/nuke-" in row["path"]} == {"NukeDroppedIcon", "NukeDropIcon"}
     assert not any("vertibird" in row["path"] or "mapmenu.swf" in row["source"] for row in first["files"])
     for row in first["files"]:
         target = output / row["path"]

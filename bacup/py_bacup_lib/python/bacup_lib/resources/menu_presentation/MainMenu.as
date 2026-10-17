@@ -3,6 +3,7 @@ package {
     import flash.display.MovieClip;
     import flash.events.Event;
     import flash.events.MouseEvent;
+    import flash.geom.ColorTransform;
     import flash.geom.Point;
     import flash.utils.getDefinitionByName;
     import flash.utils.getQualifiedClassName;
@@ -14,6 +15,9 @@ package {
         private var b21Version:Object;
         private var b21Placed:Array = [];
         private var b21Grown:Array = [];
+        private var b21LayoutMode:String;
+        private var b21CategoryAlpha:Object;
+        private var b21QuickPreview:Boolean;
         public function get B21MainHostVersion():uint { return 2; }
         public function get B21MainHostFamily():String { return "__B21_HOST_FAMILY__"; }
         public var B21PhotoModeAction:Function;
@@ -24,6 +28,7 @@ package {
             // Capture on the root runs before the stock handlers, which would hand the engine an id it
             // does not own.
             addEventListener(SettingsOptionItem.VALUE_CHANGE, B21SettingChanged, true, 100);
+            addEventListener(BSScrollingList.SELECTION_CHANGE, B21SettingSelected, false, -10);
         }
 
         public function B21AppendDisplayOptions(options:Array):void {
@@ -39,8 +44,56 @@ package {
             event.stopImmediatePropagation();
             // Filling the list sets each row's value, which also reports a change.
             if (entry.value == item.value) return;
+            var previous:Object = entry.value;
             entry.value = item.value;
-            B21SettingsAction("set", entry.ID, item.value);
+            if (B21SettingsAction("set", entry.ID, item.value) === false) {
+                entry.value = previous;
+                item.value = previous;
+                return;
+            }
+            if (entry.b21Feature) {
+                B21ReloadFeatures();
+            }
+        }
+
+        private function B21ReloadFeatures():void {
+            var list:Object = OptionsPanel_mc.Fader_mc.List_mc;
+            for each (var fresh:Object in B21SettingsAction("features") as Array)
+                for each (var row:Object in list.entryList)
+                    if (row.ID == fresh.ID) row.value = fresh.value;
+            var overwrite:Boolean = list.allowValueOverwrite;
+            list.allowValueOverwrite = true;
+            list.InvalidateData();
+            list.allowValueOverwrite = overwrite;
+            B21UpdateQuickPreview();
+        }
+
+        public function B21ResetFeatureSettings():void {
+            if (B21SettingsAction == null) return;
+            for each (var row:Object in OptionsPanel_mc.Fader_mc.List_mc.entryList) if (row.b21Feature) {
+                B21SettingsAction("defaults");
+                B21ReloadFeatures();
+                return;
+            }
+        }
+
+        private function B21SettingSelected(event:Event):void { B21UpdateQuickPreview(); }
+
+        private function B21UpdateQuickPreview():void {
+            var list:Object = OptionsPanel_mc.Fader_mc.List_mc;
+            var entry:Object = list.selectedEntry;
+            if (currentState == OPTIONS_LISTS_STATE && entry && entry.b21QuickColor) {
+                var rgb:Array = [];
+                for each (var row:Object in list.entryList) if (row.b21QuickColor) rgb.push(row.value);
+                if (rgb.length == 3) {
+                    ColorReference_mc.ColorSwatch_mc.transform.colorTransform = new ColorTransform(rgb[0], rgb[1], rgb[2]);
+                    ColorReference_mc.visible = true;
+                    b21QuickPreview = true;
+                }
+            } else if (b21QuickPreview) {
+                if (!entry || (!entry.pipboyColorUpdate && !entry.hudColorUpdate)) ColorReference_mc.visible = false;
+                b21QuickPreview = false;
+            }
         }
 
         public function B21InstallPhotoEntry():void {
@@ -107,10 +160,10 @@ package {
 
         private function B21Refresh(event:Event):void {
             if (!stage || !b21Rows || !MainPanel_mc || !MainPanel_mc.List_mc) return;
-            var saves:Boolean = !PauseMode && (currentState == SAVE_LOAD_STATE ||
+            var saves:Boolean = (currentState == SAVE_LOAD_STATE ||
                 currentState == SAVE_LOAD_CONFIRM_STATE || currentState == DELETE_SAVE_CONFIRM_STATE ||
                 currentState == CHARACTER_SELECT_STATE);
-            var showing:Boolean = !PauseMode && MainPanel_mc.visible && (currentState == MAIN_STATE ||
+            var showing:Boolean = MainPanel_mc.visible && (currentState == MAIN_STATE ||
                 currentState == CONTINUE_CONFIRM_STATE || currentState == NEW_CONFIRM_STATE ||
                 currentState == QUIT_CONFIRM_STATE || saves);
             var settings:Boolean = (currentState == SETTINGS_CATEGORY_STATE ||
@@ -124,13 +177,19 @@ package {
             try {
                 var scale:Number = Math.min(stage.stageWidth / 1920, stage.stageHeight / 1080);
                 var top:Number = (stage.stageHeight - 1080 * scale) / 2;
+                var mode:String = settings ? "settings" : PauseMode ? "pause" : "title";
+                if (mode != b21LayoutMode) { B21Restore(); b21LayoutMode = mode; }
                 if (!b21Hidden.length) {
                     B21CoverStage();
-                    B21Hide(MainPanel_mc);
+                    if (mode != "pause") B21Hide(MainPanel_mc);
                     B21Hide(BackgroundAndBrackets_mc);
                     B21Hide(BethesdaLogo_mc);
                     B21Hide(ButtonHintBar_mc.ButtonBracket_Left_mc);
                     B21Hide(ButtonHintBar_mc.ButtonBracket_Right_mc);
+                    if (mode == "pause") for (var child:int = 0; child < MainPanel_mc.numChildren; child++) {
+                        var decoration:DisplayObject = MainPanel_mc.getChildAt(child);
+                        if (decoration != MainPanel_mc.List_mc) B21Hide(decoration);
+                    }
                 }
                 B21KeepCover();
                 if (settings) {
@@ -140,10 +199,41 @@ package {
                     B21GrowList(OptionsPanel_mc.Fader_mc.List_mc, panels.options[1]);
                     B21GrowList(ControlsPanel_mc.Fader_mc.List_mc, panels.controls[1]);
                     B21Place(SettingsPanel_mc, SettingsPanel_mc.SettingsList_mc, panels.categories, rows, scale, top);
-                    B21Place(OptionsPanel_mc, OptionsPanel_mc.Fader_mc.List_mc, panels.options, rows, scale, top);
-                    B21Place(ControlsPanel_mc, ControlsPanel_mc.Fader_mc.List_mc, panels.controls, rows, scale, top);
+                    if (b21CategoryAlpha == null) b21CategoryAlpha = {value:SettingsPanel_mc.SettingsList_mc.alpha,
+                        visible:SettingsPanel_mc.visible};
+                    SettingsPanel_mc.visible = true;
+                    SettingsPanel_mc.SettingsList_mc.alpha = 1;
+                    B21Place(OptionsPanel_mc, OptionsPanel_mc.Fader_mc.List_mc.GetClipByIndex(0).border,
+                        panels.options, rows, scale, top, true);
+                    B21Place(ControlsPanel_mc, ControlsPanel_mc.Fader_mc.List_mc.GetClipByIndex(0).border,
+                        panels.controls, rows, scale, top, true);
                     B21Place(ButtonHintBar_mc, ButtonHintBar_mc, panels.hints, scale * 1920 / loaderInfo.width,
                         scale, top);
+                    B21UpdateQuickPreview();
+                    if (ColorReference_mc.visible && currentState == OPTIONS_LISTS_STATE) {
+                        var list:Object = OptionsPanel_mc.Fader_mc.List_mc;
+                        var selected:Object = list.GetClipByIndex(list.selectedClipIndex);
+                        if (selected) {
+                            var box:Object = selected.border.getBounds(this);
+                            B21Place(ColorReference_mc, ColorReference_mc, [0, 0], scale, scale, 0);
+                            ColorReference_mc.x = box.right + 4 * scale;
+                            ColorReference_mc.y = box.y + (box.height - ColorReference_mc.height) / 2;
+                        }
+                    }
+                    return;
+                }
+                if (PauseMode) {
+                    b21Rows.visible = false;
+                    panels = B21_MenuLayout.main.panels;
+                    rows = scale * panels.rowRatio;
+                    B21GrowList(MainPanel_mc.List_mc, panels.categories[1]);
+                    B21Place(MainPanel_mc, MainPanel_mc.List_mc, panels.categories, rows, scale, top);
+                    B21Place(ButtonHintBar_mc, ButtonHintBar_mc, panels.hints, scale * 1920 / loaderInfo.width,
+                        scale, top);
+                    if (saves) {
+                        B21Place(SaveLoadHolder_mc, SaveLoadHolder_mc.Panel_mc.PlayerInfo_tf, panels.saves, rows, scale, top);
+                        B21Place(CharacterSelectList_mc, CharacterSelectList_mc, panels.saves, rows, scale, top);
+                    }
                     return;
                 }
                 if (!saves) B21Unplace();
@@ -178,14 +268,22 @@ package {
         // scaled panel leaves room for. SetNumListItems is not public, so this adds the extra rows the
         // way it does: same entry class, clip index, platform and mouse handlers, in the same holder.
         private function B21GrowList(list:Object, top:Number):void {
-            if (!list || b21Grown.indexOf(list) >= 0 || !list.GetClipByIndex(0)) return;
+            if (!list || !list.GetClipByIndex(0)) return;
+            var first:MovieClip = list.GetClipByIndex(0);
+            // Stock controls overhang the artwork; row pitch must follow the background, not those bounds.
+            list.verticalSpacing = first.border.height - first.height;
+            var pitch:Number = first.border.height;
+            if (b21Grown.indexOf(list) >= 0) {
+                // Stock timelines and control types change bounds after population.
+                for (var row:int = 1; row < list.numListItems; row++)
+                    list.GetClipByIndex(row).y = first.y + row * pitch;
+                return;
+            }
             b21Grown.push(list);
             var panels:Object = B21_MenuLayout.main.panels;
             var shown:int = int(list.numListItems);
-            var pitch:Number = list.border.height / shown;
-            var rows:int = Math.floor((panels.hints[1] - top) / (pitch * panels.rowRatio)) - 1;
+            var rows:int = Math.floor((panels.hints[1] - top) / (pitch * panels.rowRatio));
             if (rows <= shown) return;
-            var first:MovieClip = list.GetClipByIndex(0);
             var entryClass:Class = getDefinitionByName(getQualifiedClassName(first)) as Class;
             for (var i:int = shown; i < rows; i++) {
                 var clip:Object = new entryClass();
@@ -200,18 +298,27 @@ package {
             if (list.ScrollDown) list.ScrollDown.y += extra;
             list.numListItems = rows;
             list.InvalidateData();
+            if (list == OptionsPanel_mc.Fader_mc.List_mc) for (i = 0; i < rows; i++) {
+                clip = list.GetClipByIndex(i);
+                for (var j:int = 0; j < clip.numChildren; j++) {
+                    var control:DisplayObject = clip.getChildAt(j);
+                    if (control is Option_Scrollbar || control is Option_OptionStepper || control is Option_Checkbox)
+                        clip.textField.width = control.x - clip.textField.x - 12;
+                }
+            }
         }
 
         // Moves a stock panel so its anchor sits where the FO76 menu puts the matching list (a 1920x1080
         // layout); size is the panel's scale in this movie.
         private function B21Place(panel:MovieClip, anchor:DisplayObject, at:Array, size:Number, scale:Number,
-                                  top:Number):void {
+                                  top:Number, alignBounds:Boolean = false):void {
             if (!panel || !anchor) return;
             var saved:Boolean = false;
             for each (var entry:Object in b21Placed) if (entry.clip == panel) saved = true;
             if (!saved) b21Placed.push({clip:panel, x:panel.x, y:panel.y, scaleX:panel.scaleX, scaleY:panel.scaleY});
             panel.scaleX = panel.scaleY = size;
-            var origin:Point = globalToLocal(anchor.localToGlobal(new Point(0, 0)));
+            var corner:Point = alignBounds ? anchor.getBounds(anchor).topLeft : new Point(0, 0);
+            var origin:Point = globalToLocal(anchor.localToGlobal(corner));
             panel.x += at[0] * scale - origin.x;
             panel.y += top + at[1] * scale - origin.y;
         }
@@ -254,20 +361,26 @@ package {
             VersionText_tf.height = corner.y - origin.y;
         }
 
-        private function B21Hide(clip:MovieClip):void {
+        private function B21Hide(clip:DisplayObject):void {
             if (!clip) return;
-            b21Hidden.push({clip:clip, alpha:clip.alpha, mouse:clip.mouseChildren});
+            b21Hidden.push({clip:clip, alpha:clip.alpha, mouse:clip is MovieClip ? MovieClip(clip).mouseChildren : false});
             clip.alpha = 0;
-            clip.mouseChildren = false;
+            if (clip is MovieClip) MovieClip(clip).mouseChildren = false;
         }
 
         private function B21Restore():void {
             B21Unplace();
             for each (var entry:Object in b21Hidden) {
                 entry.clip.alpha = entry.alpha;
-                entry.clip.mouseChildren = entry.mouse;
+                if (entry.clip is MovieClip) entry.clip.mouseChildren = entry.mouse;
             }
             b21Hidden = [];
+            if (b21CategoryAlpha != null) {
+                if (SettingsPanel_mc.SettingsList_mc.alpha == 1)
+                    SettingsPanel_mc.SettingsList_mc.alpha = b21CategoryAlpha.value;
+                if (SettingsPanel_mc.visible) SettingsPanel_mc.visible = b21CategoryAlpha.visible;
+                b21CategoryAlpha = null;
+            }
             if (b21Version) {
                 for (var key:String in b21Version) VersionText_tf[key] = b21Version[key];
                 b21Version = null;

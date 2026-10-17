@@ -12,9 +12,13 @@ use crate::session::PluginSession;
 const FO4_COMBAT_MUSIC_LOCAL: u32 = 0x01_ED18;
 const FO76_COMBAT_MUSIC_LOCAL: u32 = 0x05_2E1F;
 const FO4_MASTER_NAME: &str = "Fallout4.esm";
+/// Tracks gated only by enemy keywords, which FO4 conditions express: the general tiers plus the
+/// Cryptid, Invaders and Bigfoot tracks. Daily Ops, Burning Springs and Atlantic City tracks need
+/// FO76-only gates and stay out.
 const FO76_GENERAL_COMBAT_TRACK_LOCALS: &[u32] = &[
     0x05_2E2E, 0x00_E217, 0x11_995B, 0x1D_49BC, 0x1D_49B4, 0x4F_E503, 0x3C_9B94, 0x4F_E504,
-    0x11_995C, 0x3D_7C4F, 0x59_BC13,
+    0x11_995C, 0x3D_7C4F, 0x59_BC13, 0x6A_C47C, 0x6A_C47D, 0x6A_C47E, 0x62_F989, 0x62_F98A,
+    0x62_F98B, 0x8A_ADCA,
 ];
 
 pub struct BridgeFo76CombatMusicFixup;
@@ -267,6 +271,10 @@ mod tests {
             local: 0x6E_02C1,
             plugin: output_plugin,
         };
+        let cryptid_track = FormKey {
+            local: 0x6A_C47E,
+            plugin: output_plugin,
+        };
         let source_handle = plugin_handle_new_native("SeventySixSource.esm", Some("fo76")).unwrap();
         let fallout4_handle = plugin_handle_new_native(FO4_MASTER_NAME, Some("fo4")).unwrap();
         let target_handle = plugin_handle_new_native("SeventySix.esm", Some("fo4")).unwrap();
@@ -301,7 +309,7 @@ mod tests {
                             plugin: output_plugin,
                         },
                         "MUS76Combat",
-                        vec![fo76_track, daily_ops_track, expedition_track],
+                        vec![fo76_track, daily_ops_track, expedition_track, cryptid_track],
                         &interner,
                     ),
                     schema.as_ref(),
@@ -340,7 +348,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             music_track_form_keys(&merged),
-            vec![vanilla_track, fo76_track]
+            vec![vanilla_track, fo76_track, cryptid_track]
         );
 
         drop(session);

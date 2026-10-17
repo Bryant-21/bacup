@@ -183,6 +183,7 @@ mod tests {
                 source_material_file: source.to_string_lossy().into_owned(),
                 ..TextureBundle::default()
             }],
+            ..TextureManifest::default()
         };
 
         assert_eq!(

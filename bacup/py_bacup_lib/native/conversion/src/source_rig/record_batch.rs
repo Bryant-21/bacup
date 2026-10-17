@@ -48,6 +48,12 @@ pub struct CreatureEncodedRecordCommitment {
     pub encoded_blake3: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CreatureEquipmentUpdateCommitment {
+    pub weapon: TargetFormKey,
+    pub equip_slot: TargetFormKey,
+}
+
 /// Structural and content-addressed proof that a prepared batch is exactly the
 /// family batch reconstructed from its recipe.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +63,8 @@ pub struct CreatureRecordRecipeBinding {
     pub required_target_records: Vec<CreatureTargetDependencyCommitment>,
     pub primary_mappings: Vec<CreaturePrimaryRecordMapping>,
     pub encoded_records: Vec<CreatureEncodedRecordCommitment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub equipment_updates: Vec<CreatureEquipmentUpdateCommitment>,
 }
 
 /// The canonical statement made before target records are committed.
@@ -685,7 +693,11 @@ pub fn prepare_creature_record_commit<'session, 'mapper, 'store>(
     let expected_binding = recipe
         .rebuild_record_family_batch(interner)
         .map_err(|error| ledger_invalid("recipe", error.to_string()))
-        .and_then(|family| recipe_binding_from_families(vec![family], schema, interner))?;
+        .and_then(|family| {
+            validate_npc_script_master_order(std::slice::from_ref(&family), prepared.session.target_masters())
+                .map_err(|error| ledger_invalid("script_master_order", error.to_string()))?;
+            recipe_binding_from_families(vec![family], schema, interner)
+        })?;
     if expected_binding != prepared.recipe_binding {
         return Err(ledger_invalid(
             "recipe_batch_mismatch",
@@ -742,6 +754,8 @@ pub fn prepare_creature_record_commit_batch<'session, 'mapper, 'store>(
         .collect::<Result<Vec<_>, _>>()?;
     let families = merge_creature_record_family_batches(families)
         .map_err(|error| ledger_invalid("recipe_batch", error.to_string()))?;
+    validate_npc_script_master_order(&families, prepared.session.target_masters())
+        .map_err(|error| ledger_invalid("script_master_order", error.to_string()))?;
     let expected_binding = recipe_binding_from_families(families, schema, interner)?;
     if expected_binding != prepared.recipe_binding {
         return Err(ledger_invalid(
@@ -926,6 +940,14 @@ fn recipe_binding_from_families(
             .primary_mappings
             .extend(family.primary_mappings.iter().cloned());
         for closure in family.closures {
+            for equipment in &closure.equipment_slots {
+                if equipment.preserve_weapon_slots {
+                    continue;
+                }
+                binding.equipment_updates.extend(equipment.weapons.iter().map(|weapon| CreatureEquipmentUpdateCommitment {
+                    weapon: weapon.form_key.clone(), equip_slot: equipment.equip_slot.form_key.clone(),
+                }));
+            }
             binding.required_target_records.extend(
                 closure
                     .required_target_records
@@ -971,11 +993,13 @@ fn recipe_binding_from_families(
         }
     }
     normalize_recipe_binding(&mut binding);
-    validate_recipe_binding(&binding, binding.encoded_records.len())?;
+    validate_recipe_binding(&binding, binding.encoded_records.len() + binding.equipment_updates.len())?;
     Ok(binding)
 }
 
 fn normalize_recipe_binding(binding: &mut CreatureRecordRecipeBinding) {
+    binding.equipment_updates.sort();
+    binding.equipment_updates.dedup();
     binding.family_ids.sort_by_key(|id| id.to_ascii_lowercase());
     binding.projected_identities.sort_by_key(|entry| {
         (
@@ -1015,7 +1039,7 @@ fn validate_recipe_binding(
     record_count: usize,
 ) -> Result<(), CreatureRecordCommitLedgerError> {
     validate_unique_ci("recipe_family", &binding.family_ids)?;
-    if binding.encoded_records.len() != record_count {
+    if binding.encoded_records.len() + binding.equipment_updates.len() != record_count {
         return Err(ledger_invalid(
             "recipe_record_count",
             "recipe binding record count differs from the receipt",
@@ -1037,6 +1061,11 @@ fn validate_recipe_binding(
         }
     }
     let mut record_keys = BTreeSet::new();
+    for update in &binding.equipment_updates {
+        if !record_keys.insert((update.weapon.plugin.to_ascii_lowercase(), update.weapon.local, "WEAP".to_string())) {
+            return Err(ledger_invalid("equipment_update", "duplicate or conflicting weapon equipment update"));
+        }
+    }
     for record in &binding.encoded_records {
         if !is_blake3_hex(&record.encoded_blake3)
             || !record_keys.insert((
@@ -1309,6 +1338,7 @@ fn prepare_creature_record_families_batch_with_failure<'session, 'mapper, 'store
     }
     families.sort_by_key(|family| family.family_id.to_ascii_lowercase());
     validate_family_ids(&families)?;
+    validate_npc_script_master_order(&families, session.target_masters())?;
 
     let target_plugin = session.target_slot().parsed.plugin_name.clone();
     if mapper_state
@@ -1343,6 +1373,7 @@ fn prepare_creature_record_families_batch_with_failure<'session, 'mapper, 'store
     let mut planned_dependencies = Vec::new();
     let mut planned_identities = Vec::new();
     let mut mapping_owners = BTreeMap::<String, String>::new();
+    let mut equipment_bindings = BTreeMap::<TargetFormKey, (String, TargetFormKey)>::new();
 
     for family in families {
         validate_family_contents(
@@ -1353,6 +1384,25 @@ fn prepare_creature_record_families_batch_with_failure<'session, 'mapper, 'store
             &mut mapping_owners,
         )?;
         for closure in family.closures {
+            for binding in closure.equipment_slots {
+                if binding.preserve_weapon_slots {
+                    continue;
+                }
+                for weapon in binding.weapons {
+                    if weapon.signature != "WEAP" || binding.equip_slot.signature != "EQUP"
+                        || !weapon.form_key.plugin.eq_ignore_ascii_case(&target_plugin)
+                    {
+                        return Err(invalid("equipment_binding", "embedded weapon binding must reference an output WEAP and an EQUP"));
+                    }
+                    if let Some((_, previous)) = equipment_bindings.get(&weapon.form_key) {
+                        if previous != &binding.equip_slot.form_key {
+                            return Err(invalid("equipment_binding", "a converted weapon has conflicting equipment slots"));
+                        }
+                    } else {
+                        equipment_bindings.insert(weapon.form_key, (family.family_id.clone(), binding.equip_slot.form_key.clone()));
+                    }
+                }
+            }
             for dependency in closure.required_target_records {
                 planned_dependencies.push((family.family_id.clone(), dependency));
             }
@@ -1429,6 +1479,25 @@ fn prepare_creature_record_families_batch_with_failure<'session, 'mapper, 'store
         &existing,
         &master_names,
     )?;
+
+    let equipment_updates = equipment_bindings.iter().map(|(weapon, (_, slot))| CreatureEquipmentUpdateCommitment {
+        weapon: weapon.clone(), equip_slot: slot.clone(),
+    }).collect::<Vec<_>>();
+    let updated_weapons = equipment_bindings.keys().map(|weapon| weapon.local).collect::<BTreeSet<_>>();
+    for (weapon, (family_id, slot)) in equipment_bindings {
+        if existing.get(&weapon.local).is_none_or(|signature| signature.as_str() != "WEAP") {
+            return Err(invalid("equipment_binding", format!("embedded weapon {:06X} is absent from the target", weapon.local)));
+        }
+        let mut record = session.record_decoded_in_handle(
+            target_id, &target_form_key(&weapon, interner), schema, interner,
+        ).map_err(|error| invalid("equipment_binding", error.to_string()))?;
+        record.fields.retain(|field| field.sig.as_str() != "ETYP");
+        record.fields.push(crate::record::FieldEntry {
+            sig: crate::ids::SubrecordSig(*b"ETYP"),
+            value: FieldValue::FormKey(target_form_key(&slot, interner)),
+        });
+        planned_records.push((family_id, record));
+    }
 
     let normalizer = TargetRecordNormalizer::target_only_with_interner(schema, interner);
     let mut normalized_records = Vec::with_capacity(planned_records.len());
@@ -1518,11 +1587,13 @@ fn prepare_creature_record_families_batch_with_failure<'session, 'mapper, 'store
                 .races
                 .push(race_receipt(&record, &target_plugin, interner));
         }
-        encoded_records.push(CreatureEncodedRecordCommitment {
+        if !updated_weapons.contains(&record.form_key.local) {
+            encoded_records.push(CreatureEncodedRecordCommitment {
             form_key: TargetFormKey::new(record.form_key.local, target_plugin.clone()),
             signature: record.sig.as_str().to_string(),
             encoded_blake3: normalized_record_hash(&record, interner)?,
-        });
+            });
+        }
         record_labels.push(label);
         normalized_records.push(record);
     }
@@ -1596,6 +1667,7 @@ fn prepare_creature_record_families_batch_with_failure<'session, 'mapper, 'store
         reserved_form_keys,
     };
     let mut recipe_binding = CreatureRecordRecipeBinding {
+        equipment_updates,
         family_ids: receipt.family_ids.clone(),
         projected_identities: planned_identities
             .into_iter()
@@ -1704,6 +1776,25 @@ fn validate_family_ids(
             return Err(CreatureRecordBatchError::DuplicateFamily {
                 family_id: family.family_id.clone(),
             });
+        }
+    }
+    Ok(())
+}
+
+fn validate_npc_script_master_order(
+    families: &[CreatureRecordFamilyBatch],
+    masters: &[String],
+) -> Result<(), CreatureRecordBatchError> {
+    for family in families {
+        for closure in &family.closures {
+            for (npc, script) in &closure.npc_scripts {
+                if script.target_masters.len() != masters.len()
+                    || !script.target_masters.iter().zip(masters).all(|(expected, actual)| expected.eq_ignore_ascii_case(actual)) {
+                    return Err(invalid("script_master_order", format!(
+                        "NPC {:06X}:{} compiled VMAD master order differs from the target plugin", npc.local, npc.plugin
+                    )));
+                }
+            }
         }
     }
     Ok(())
@@ -2206,6 +2297,8 @@ mod tests {
         CreatureRecordFamilyBatch {
             family_id: family_id.to_string(),
             closures: vec![CreatureRecordProjectionClosure {
+                equipment_slots: Vec::new(),
+                npc_scripts: Vec::new(),
                 source_primary_identity: source.clone(),
                 projected_identities: vec![super::super::ProjectedRecordIdentity {
                     signature: "NPC_".to_string(),
@@ -2241,6 +2334,37 @@ mod tests {
         let mut store = plugin_handle_store_ref().lock().unwrap();
         store.get_mut(&handle).unwrap().parsed.header.flags |= 0x0000_0080;
         handle
+    }
+
+    #[test]
+    fn creature_vmad_master_order_is_checked_before_atomic_record_prepare() {
+        let plugin = "TemplateScriptMasterOrder.esp";
+        let handle = create_localized_target(plugin);
+        let masters = vec!["Fallout4.esm".to_string(), "DLCRobot.esm".to_string()];
+        for master in &masters {
+            esp_authoring_core::plugin_runtime::plugin_handle_add_master_native(handle, master, None).unwrap();
+        }
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let mut batch = family("template-leaf", plugin, 0xD00, 0x110, &interner);
+        let vmad = vec![6, 0, 2, 0, 0, 0];
+        batch.closures[0].closure.records.iter_mut().find(|record| record.sig.as_str() == "NPC_").unwrap()
+            .fields.push(field("VMAD", FieldValue::Bytes(vmad.clone().into())));
+        batch.closures[0].npc_scripts.push((TargetFormKey::new(0xD00, plugin), super::super::CreatureNpcScriptAttachment {
+            source_script: super::super::CreatureSourceRecordReference { signature: "SCPT".into(), source_identity: source(0x220) },
+            target_vmad: vmad, dependencies: Vec::new(), target_masters: masters.clone(),
+        }));
+        let mut mapper = mapper_state(plugin);
+        let mut session = open_session(handle, None).unwrap();
+        for invalid_masters in [vec![masters[1].clone(), masters[0].clone()], vec![masters[0].clone()]] {
+            let mut invalid = batch.clone();
+            invalid.closures[0].npc_scripts[0].1.target_masters = invalid_masters;
+            assert!(matches!(prepare_creature_record_families_batch(&mut session, &mut mapper, vec![invalid], &schema, &interner),
+                Err(CreatureRecordBatchError::InvalidBatch { code: "script_master_order", .. })));
+            assert!(mapper.source_to_target.is_empty());
+        }
+        let prepared = prepare_creature_record_families_batch(&mut session, &mut mapper, vec![batch], &schema, &interner).unwrap();
+        assert_eq!(prepared.receipt().record_count, 2);
     }
 
     #[test]
@@ -2748,6 +2872,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn equipment_slot_updates_are_recipe_bound_and_atomic() {
+        let plugin = "EmbeddedWeaponBatch.esp";
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let handle = create_localized_target(plugin);
+        let weapon_key = form_key(0x850, plugin, &interner);
+        let slot_key = form_key(0x851, plugin, &interner);
+        let slot_ref = CreatureTargetRecordReference { signature: "EQUP".into(), form_key: TargetFormKey::new(0x851, plugin) };
+        let weapon_ref = CreatureTargetRecordReference { signature: "WEAP".into(), form_key: TargetFormKey::new(0x850, plugin) };
+        for record in [
+            record("WEAP", 0x850, plugin, "EmbeddedWeapon", smallvec![field("ETYP", FieldValue::Uint(0)), field("FULL", FieldValue::String(interner.intern("Source weapon")))], &interner),
+            record("EQUP", 0x851, plugin, "EmbeddedSlot", smallvec![field("DATA", FieldValue::Uint(0)), field("ANAM", FieldValue::Uint(0))], &interner),
+        ] {
+            crate::target_write::add_record_native(handle, record, &schema, &interner).unwrap();
+        }
+        let mut batch = family("robot", plugin, 0x900, 0x1234, &interner);
+        batch.closures[0].required_target_records.extend([slot_ref.clone(), weapon_ref.clone()]);
+        batch.closures[0].equipment_slots.push(super::super::CreatureEquipmentSlotBinding {
+            equip_slot: slot_ref, node: "ProjectileNode_RGatling".into(), weapon_types: 512, preserve_weapon_slots: false, weapons: vec![weapon_ref],
+        });
+        let expected = recipe_binding_from_families(vec![batch.clone()], &schema, &interner).unwrap();
+        let mut mapper = mapper_state(plugin);
+        let mut session = open_session(handle, None).unwrap();
+        let before = session.record_decoded_in_handle(handle, &weapon_key, &schema, &interner).unwrap();
+        {
+            let mut preserved = batch.clone();
+            preserved.closures[0].equipment_slots[0].preserve_weapon_slots = true;
+            let prepared = prepare_creature_record_families_batch(&mut session, &mut mapper, vec![preserved], &schema, &interner).unwrap();
+            assert!(prepared.recipe_binding.equipment_updates.is_empty());
+            assert_eq!(prepared.receipt.record_count, 2);
+        }
+        {
+            let prepared = prepare_creature_record_families_batch(&mut session, &mut mapper, vec![batch.clone()], &schema, &interner).unwrap();
+            assert_eq!(prepared.recipe_binding, expected);
+            assert_eq!(prepared.receipt.record_count, 3);
+        }
+        let abandoned = session.record_decoded_in_handle(handle, &weapon_key, &schema, &interner).unwrap();
+        assert_eq!(abandoned.fields, before.fields);
+        let prepared = prepare_creature_record_families_batch(&mut session, &mut mapper, vec![batch], &schema, &interner).unwrap();
+        prepared.commit();
+        let after = session.record_decoded_in_handle(handle, &weapon_key, &schema, &interner).unwrap();
+        assert_eq!(after.fields.iter().find(|field| field.sig.as_str() == "ETYP").unwrap().value, FieldValue::FormKey(slot_key));
+        assert_eq!(after.fields.iter().filter(|field| field.sig.as_str() != "ETYP").collect::<Vec<_>>(), before.fields.iter().filter(|field| field.sig.as_str() != "ETYP").collect::<Vec<_>>());
     }
 
     #[test]

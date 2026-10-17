@@ -116,6 +116,8 @@ pub struct SkyrimRaceAttackDataReceipt {
     pub damage_multiplier_bits: u32,
     pub attack_chance_bits: u32,
     pub attack_spell: Option<SkyrimRaceAttackFormReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attack_spell_delivery: Option<u32>,
     pub attack_flags: u32,
     pub attack_angle_bits: u32,
     pub strike_angle_bits: u32,
@@ -242,6 +244,8 @@ pub struct SkyrimCreatureGraphEvidence {
     pub roles: Vec<crate::source_rig::CapabilityClipRole>,
     #[serde(default)]
     pub candidate_attack_bindings: Vec<crate::source_rig::CapabilityCandidateAttackBinding>,
+    #[serde(default)]
+    pub source_inert_attack_receipts: Vec<crate::source_rig::CapabilitySourceInertAttack>,
     pub idle_event: Option<String>,
     pub explicit_events: Vec<EventDecl>,
     #[serde(default)]
@@ -256,6 +260,8 @@ pub struct SkyrimCreatureGraphEvidence {
 pub struct SkyrimCreatureClipReceipt {
     pub clip_id: String,
     pub clip_path: String,
+    #[serde(default)]
+    pub source_duration: Option<f32>,
     pub family_ids: Vec<String>,
     pub role: SkyrimCreatureClipRoleReceipt,
     pub trigger_event: Option<String>,
@@ -314,6 +320,9 @@ pub enum SkyrimCreatureMotionRoleReceipt {
     MechanicalStop,
     Hurt,
     Death,
+    GetUp,
+    ScriptedAction,
+    ScriptedLoop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1427,6 +1436,7 @@ fn attack_data_receipt(
         damage_multiplier_bits: attack.damage_multiplier_bits,
         attack_chance_bits: attack.attack_chance_bits,
         attack_spell: form_receipt(attack.attack_spell, &attack.attack_spell_signature),
+        attack_spell_delivery: attack.attack_spell_delivery,
         attack_flags: attack.attack_flags,
         attack_angle_bits: attack.attack_angle_bits,
         strike_angle_bits: attack.strike_angle_bits,
@@ -2011,6 +2021,7 @@ fn graph_receipt(
         template,
         roles,
         candidate_attack_bindings,
+        source_inert_attack_receipts,
         idle_event,
         explicit_events,
         variables,
@@ -2020,6 +2031,7 @@ fn graph_receipt(
             manifest.template,
             manifest.roles,
             manifest.candidate_attack_bindings,
+            manifest.source_inert_attack_receipts,
             Some(manifest.idle_event),
             manifest.explicit_events,
             variables,
@@ -2027,6 +2039,7 @@ fn graph_receipt(
         ),
         None => (
             template,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             None,
@@ -2043,6 +2056,7 @@ fn graph_receipt(
         ready,
         roles,
         candidate_attack_bindings,
+        source_inert_attack_receipts,
         idle_event,
         explicit_events,
         variables,
@@ -2161,6 +2175,7 @@ fn clip_receipt(
     SkyrimCreatureClipReceipt {
         clip_id: clip.clip_id.clone(),
         clip_path: canonical_path(&clip.clip_path),
+        source_duration: clip.source_duration,
         family_ids: canonical_strings(&clip.family_ids),
         role,
         trigger_event,
@@ -2212,10 +2227,19 @@ fn root_motion_locator_receipt(
 
 fn capability_motion_role(role: CreatureClipRole) -> SkyrimCreatureMotionRoleReceipt {
     match role {
-        CreatureClipRole::Idle => SkyrimCreatureMotionRoleReceipt::Idle,
+        CreatureClipRole::Idle | CreatureClipRole::WeaponAim => SkyrimCreatureMotionRoleReceipt::Idle,
         CreatureClipRole::GroundForward => SkyrimCreatureMotionRoleReceipt::GroundLocomotion,
-        CreatureClipRole::TurnLeft90 => SkyrimCreatureMotionRoleReceipt::TurnLeft,
-        CreatureClipRole::TurnRight90 => SkyrimCreatureMotionRoleReceipt::TurnRight,
+        CreatureClipRole::TurnLeft90 | CreatureClipRole::TurnLeft => {
+            SkyrimCreatureMotionRoleReceipt::TurnLeft
+        }
+        CreatureClipRole::TurnRight90 | CreatureClipRole::TurnRight => {
+            SkyrimCreatureMotionRoleReceipt::TurnRight
+        }
+        CreatureClipRole::Hurt => SkyrimCreatureMotionRoleReceipt::Hurt,
+        CreatureClipRole::Death => SkyrimCreatureMotionRoleReceipt::Death,
+        CreatureClipRole::GetUp => SkyrimCreatureMotionRoleReceipt::GetUp,
+        CreatureClipRole::ScriptedAction => SkyrimCreatureMotionRoleReceipt::ScriptedAction,
+        CreatureClipRole::ScriptedLoop => SkyrimCreatureMotionRoleReceipt::ScriptedLoop,
         CreatureClipRole::MeleeAttack => SkyrimCreatureMotionRoleReceipt::MeleeAttack,
         CreatureClipRole::ProjectileAttack => SkyrimCreatureMotionRoleReceipt::ProjectileAttack,
         CreatureClipRole::SwimIdle => SkyrimCreatureMotionRoleReceipt::SwimIdle,
@@ -2978,6 +3002,7 @@ mod tests {
             clip_id: id.to_string(),
             clip_path: path.to_string(),
             original_skeleton_name: Some("WolfSkeleton".to_string()),
+            source_duration: None,
             family_ids: vec!["wolf".to_string()],
             disposition: SkyrimClipDisposition::Role {
                 role,
@@ -3068,8 +3093,12 @@ mod tests {
                 ],
                 ragdoll_paths: vec![],
                 behavior_paths: vec!["Actors\\Canine\\WolfBehavior.hkx".to_string()],
+                behavior_event_names: BTreeMap::new(),
+                behavior_event_references: BTreeMap::new(),
                 behavior_groups: Vec::new(),
+                recovery_graphs: Vec::new(),
                 behavior_variables: Vec::new(),
+                mounted_rider_clip_paths: Vec::new(),
                 controllers: vec![controller],
             }],
             clips,
@@ -3408,6 +3437,7 @@ mod tests {
                 ready: true,
                 roles: vec![],
                 candidate_attack_bindings: Vec::new(),
+                source_inert_attack_receipts: Vec::new(),
                 idle_event: Some("Idle".to_string()),
                 explicit_events: vec![],
                 variables: vec![],
@@ -3423,6 +3453,7 @@ mod tests {
             ready: true,
             roles: vec![],
             candidate_attack_bindings: Vec::new(),
+            source_inert_attack_receipts: Vec::new(),
             idle_event: Some("Idle".to_string()),
             explicit_events: vec![],
             variables: vec![],

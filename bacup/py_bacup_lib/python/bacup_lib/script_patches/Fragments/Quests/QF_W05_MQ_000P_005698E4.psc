@@ -416,3 +416,8 @@ Function Fragment_Stage_2300_Item_00()
         SetStage(9000)
     EndIf
 EndFunction
+
+Function Fragment_Stage_9000_Item_00()
+    CompleteAllObjectives()
+    Stop()
+EndFunction

@@ -144,7 +144,7 @@ impl Fixup for FlattenExplDamageCurvesFixup {
     }
 }
 
-fn expl_data_offset(
+pub(crate) fn expl_data_offset(
     schema: &AuthoringSchema,
     field_id: &str,
     form_version: Option<u16>,

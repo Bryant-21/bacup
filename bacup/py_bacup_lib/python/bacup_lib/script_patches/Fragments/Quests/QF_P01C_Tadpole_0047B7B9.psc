@@ -97,5 +97,6 @@ Function Fragment_Stage_2300_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    ; TODO(recipes): FO76 teaches BackpackRecipe, FrogHabitat, FrogJar, ScoutingModRecipe at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(90)
 EndFunction

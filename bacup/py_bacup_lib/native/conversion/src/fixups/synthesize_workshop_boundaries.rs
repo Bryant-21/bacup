@@ -10,6 +10,11 @@
 //! `WorkshopLinkedBuildAreaEdge`. Stale edge links are removed from larger exclusion
 //! volumes; spheres are left alone.
 //!
+//! Those boxes are invisible, and FO76 draws its border from the REGN polygon at
+//! runtime, so each region-shaped workshop also gets a vanilla-style border: a
+//! generated mesh (`workshop_border_mesh`) on a persistent, initially disabled
+//! STAT reference edge-linked to the workbench.
+//!
 //! The workshop location comes from the LCSR `WorkshopRefType` entry claiming the
 //! workbench (FO76 bakes one per public workshop), not the parent cell: every FO76
 //! workbench sits in the shared worldspace persistent cell, so a cell lookup maps
@@ -28,6 +33,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::fixups::encounter_zones::model::WorkshopClass;
 use crate::fixups::face::materialize_leveled_template_npcs::read_target_or_master_record;
+use crate::fixups::workshop_border_mesh;
 use crate::fixups::{FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::ids::{FormKey, SigCode, SubrecordSig};
@@ -40,6 +46,9 @@ const SYNTHETIC_SANDBOX_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_sandbox__"
 const SYNTHETIC_BUILDABLE_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_buildable__";
 const SYNTHETIC_LOCATION_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_location__";
 const SYNTHETIC_SHELTER_WORKBENCH_SOURCE_PLUGIN: &str = "__fo76_to_fo4_shelter_workbench__";
+const SYNTHETIC_BORDER_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_border__";
+const SYNTHETIC_BORDER_REF_SOURCE_PLUGIN: &str = "__fo76_to_fo4_workshop_border_ref__";
+const BORDER_MESH_DIR: &str = "Workshop\\Borders";
 
 const DEFAULT_EMPTY_TRIGGER_LOCAL: u32 = 0x0002_24E3;
 const WORKSHOP_WORKBENCH_LOCAL: u32 = 0x000C_1AEB;
@@ -100,6 +109,16 @@ struct BoundaryShape {
 struct RegionBounds {
     center: [f32; 2],
     half_extents: [f32; 2],
+}
+
+struct WorkshopRegion {
+    bounds: RegionBounds,
+    polygons: Vec<Vec<[f32; 2]>>,
+}
+
+struct WorkshopBorder {
+    base: Record,
+    reference: Record,
 }
 
 #[derive(Clone, Copy)]
@@ -242,7 +261,10 @@ pub fn synthesize_workshop_boundaries(
         location_add: Option<Record>,
         location_replace: Option<Record>,
         cell_replace: Option<Record>,
+        border: Option<WorkshopBorder>,
     }
+
+    let border_output = border_output(config, &mut report, interner);
 
     // Pass 1 — reads and planning only. Structural inserts invalidate every
     // target index section, so interleaving them with indexed reads (as the old
@@ -330,7 +352,7 @@ pub fn synthesize_workshop_boundaries(
         let workshop_region = workbench_locations
             .get(&candidate.form_key)
             .and_then(|location_fk| workshop_regions.get(location_fk));
-        let edge_shape = workshop_region.map(|region| shape_from_region(*region, shape));
+        let edge_shape = workshop_region.map(|region| shape_from_region(region.bounds, shape));
         if edge_shape.is_some() {
             region_shaped += 1;
         }
@@ -344,6 +366,24 @@ pub fn synthesize_workshop_boundaries(
             );
         }
         workbench_changed |= ensure_workshop_script(&mut workbench, candidate.class);
+        let border = match (border_output.as_ref(), workshop_region, edge_shape) {
+            (Some(output), Some(region), Some(edge_shape))
+                if candidate.class != WorkshopClass::Shelter =>
+            {
+                plan_workshop_border(
+                    output,
+                    mapper,
+                    &workbench,
+                    region,
+                    edge_shape,
+                    &forms,
+                    refr_sig,
+                    interner,
+                    &mut report,
+                )
+            }
+            _ => None,
+        };
         let planned = if let Some(location_fk) = workbench_locations.get(&candidate.form_key) {
             plan_strip_boss_refs_at_location(
                 session,
@@ -437,6 +477,7 @@ pub fn synthesize_workshop_boundaries(
             location_add: planned.location_add,
             location_replace: planned.location_replace,
             cell_replace: planned.cell_replace,
+            border,
         });
     }
     eprintln!(
@@ -487,6 +528,13 @@ pub fn synthesize_workshop_boundaries(
     let pass_started = std::time::Instant::now();
     let mut batch: Vec<Record> = edge_records;
     batch.extend(shelter_boundary_records);
+    let border_bases: Vec<Record> = plans
+        .iter()
+        .filter_map(|plan| plan.border.as_ref().map(|border| border.base.clone()))
+        .collect();
+    session
+        .add_records(border_bases, target_schema.as_ref(), interner)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
     for mut plan in plans {
         if let Some(location) = plan.location_add {
             session
@@ -498,6 +546,25 @@ pub fn synthesize_workshop_boundaries(
         }
         if let Some(cell) = plan.cell_replace {
             batch.push(cell);
+        }
+        if let Some(border) = plan.border {
+            let inserted = session
+                .insert_placed_child_into_cell_group(
+                    plan.cell_form_id,
+                    PERSISTENT_GROUP,
+                    border.reference,
+                    target_schema.as_ref(),
+                    interner,
+                )
+                .map_err(|e| FixupError::HandleError(e.to_string()))?;
+            if inserted {
+                report.records_added = report.records_added.saturating_add(2);
+            } else {
+                report.warnings.push(interner.intern(&format!(
+                    "workshop_border_insert_failed:{:06X}",
+                    plan.warn_objid
+                )));
+            }
         }
         if let Some((sandbox, buildable, sandbox_fk)) = plan.triggers {
             let sandbox_inserted = session
@@ -1731,7 +1798,7 @@ fn collect_workbench_locations(
 fn collect_workshop_region_bounds(
     session: &mut PluginSession,
     own_plugin: Sym,
-) -> Result<FxHashMap<FormKey, RegionBounds>, FixupError> {
+) -> Result<FxHashMap<FormKey, WorkshopRegion>, FixupError> {
     let mut map = FxHashMap::default();
     let Some(source_id) = session.source_id() else {
         eprintln!("[workshop_timing] workshop_regions=0 (no source handle)");
@@ -1742,8 +1809,11 @@ fn collect_workshop_region_bounds(
         .handle_raw_scan(source_id)
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
     for raw_form_id in scan.raw_form_ids_of_sig(regn_sig) {
-        let Some(Some((lnam, bounds))) =
-            scan.with_record_subrecords(raw_form_id, parse_workshop_region)
+        let Some(Some(((lnam, bounds), polygons))) =
+            scan.with_record_subrecords(raw_form_id, |subrecords| {
+                parse_workshop_region(subrecords)
+                    .map(|region| (region, parse_region_polygons(subrecords)))
+            })
         else {
             continue;
         };
@@ -1754,9 +1824,12 @@ fn collect_workshop_region_bounds(
             local: lnam & 0x00FF_FFFF,
             plugin: own_plugin,
         };
-        map.entry(location_fk)
-            .and_modify(|existing: &mut RegionBounds| *existing = union_bounds(*existing, bounds))
-            .or_insert(bounds);
+        let region = map.entry(location_fk).or_insert_with(|| WorkshopRegion {
+            bounds,
+            polygons: Vec::new(),
+        });
+        region.bounds = union_bounds(region.bounds, bounds);
+        region.polygons.extend(polygons);
     }
     eprintln!("[workshop_timing] workshop_regions={}", map.len());
     Ok(map)
@@ -1801,6 +1874,22 @@ fn parse_workshop_region(subrecords: &[ParsedSubrecord]) -> Option<(u32, RegionB
             half_extents,
         },
     ))
+}
+
+fn parse_region_polygons(subrecords: &[ParsedSubrecord]) -> Vec<Vec<[f32; 2]>> {
+    subrecords
+        .iter()
+        .filter(|subrecord| subrecord.signature.as_str() == "RPLD")
+        .map(|subrecord| {
+            subrecord
+                .data
+                .as_ref()
+                .chunks_exact(8)
+                .filter_map(|chunk| Some([read_f32_at(chunk, 0)?, read_f32_at(chunk, 4)?]))
+                .collect::<Vec<_>>()
+        })
+        .filter(|points| points.len() >= 3)
+        .collect()
 }
 
 fn union_bounds(a: RegionBounds, b: RegionBounds) -> RegionBounds {
@@ -2380,13 +2469,7 @@ fn build_trigger_record(
         },
     ];
     if let Some((keyword, target)) = link {
-        fields.push(FieldEntry {
-            sig: subrecord_sig("XLKR"),
-            value: FieldValue::Struct(vec![
-                (interner.intern("keyword_ref"), FieldValue::FormKey(keyword)),
-                (interner.intern("ref"), FieldValue::FormKey(target)),
-            ]),
-        });
+        fields.push(linked_ref_field(keyword, target, interner));
     }
     fields.push(FieldEntry {
         sig: subrecord_sig("XPRM"),
@@ -2413,35 +2496,7 @@ fn build_trigger_record(
             ),
         ]),
     });
-    fields.push(FieldEntry {
-        sig: subrecord_sig("DATA"),
-        value: FieldValue::Struct(vec![
-            (
-                interner.intern("position_rotation_position_x"),
-                FieldValue::Float(shape.placement.position[0]),
-            ),
-            (
-                interner.intern("position_rotation_position_y"),
-                FieldValue::Float(shape.placement.position[1]),
-            ),
-            (
-                interner.intern("position_rotation_position_z"),
-                FieldValue::Float(shape.placement.position[2]),
-            ),
-            (
-                interner.intern("position_rotation_rotation_x"),
-                FieldValue::Float(shape.placement.rotation[0]),
-            ),
-            (
-                interner.intern("position_rotation_rotation_y"),
-                FieldValue::Float(shape.placement.rotation[1]),
-            ),
-            (
-                interner.intern("position_rotation_rotation_z"),
-                FieldValue::Float(shape.placement.rotation[2]),
-            ),
-        ]),
-    });
+    fields.push(placement_field(shape.placement, interner));
 
     Record {
         sig: sig_code("REFR"),
@@ -2449,6 +2504,223 @@ fn build_trigger_record(
         eid: Some(edid),
         flags,
         fields,
+        warnings: SmallVec::new(),
+    }
+}
+
+fn linked_ref_field(keyword: FormKey, target: FormKey, interner: &StringInterner) -> FieldEntry {
+    FieldEntry {
+        sig: subrecord_sig("XLKR"),
+        value: FieldValue::Struct(vec![
+            (interner.intern("keyword_ref"), FieldValue::FormKey(keyword)),
+            (interner.intern("ref"), FieldValue::FormKey(target)),
+        ]),
+    }
+}
+
+fn placement_field(placement: Placement, interner: &StringInterner) -> FieldEntry {
+    let names = [
+        "position_rotation_position_x",
+        "position_rotation_position_y",
+        "position_rotation_position_z",
+        "position_rotation_rotation_x",
+        "position_rotation_rotation_y",
+        "position_rotation_rotation_z",
+    ];
+    let values = placement.position.into_iter().chain(placement.rotation);
+    FieldEntry {
+        sig: subrecord_sig("DATA"),
+        value: FieldValue::Struct(
+            names
+                .into_iter()
+                .zip(values)
+                .map(|(name, value)| (interner.intern(name), FieldValue::Float(value)))
+                .collect(),
+        ),
+    }
+}
+
+struct BorderOutput {
+    template: nif_core_native::model::NifFile,
+    meshes_dir: std::path::PathBuf,
+}
+
+fn border_output(
+    config: &FixupConfig,
+    report: &mut FixupReport,
+    interner: &StringInterner,
+) -> Option<BorderOutput> {
+    let mod_path = config.mod_path.as_ref()?;
+    let template_path = config
+        .target_extracted_dir
+        .as_ref()?
+        .join(workshop_border_mesh::TEMPLATE_RELATIVE_PATH);
+    match nif_core_native::model::NifFile::load(template_path.clone()) {
+        Ok(template) => Some(BorderOutput {
+            template,
+            meshes_dir: mod_path.join("data").join("Meshes"),
+        }),
+        Err(err) => {
+            report.warnings.push(interner.intern(&format!(
+                "workshop_border_template_unreadable:{}:{err}",
+                template_path.display()
+            )));
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_workshop_border(
+    output: &BorderOutput,
+    mapper: &mut FormKeyMapper,
+    workbench: &Record,
+    region: &WorkshopRegion,
+    edge_shape: BoundaryShape,
+    forms: &WorkshopForms,
+    refr_sig: SigCode,
+    interner: &StringInterner,
+    report: &mut FixupReport,
+) -> Option<WorkshopBorder> {
+    let warn_objid = workbench.form_key.local & 0x00FF_FFFF;
+    let half_height = edge_shape.bounds[2];
+    let origin = [
+        edge_shape.placement.position[0],
+        edge_shape.placement.position[1],
+        edge_shape.placement.position[2] - half_height * 0.5,
+    ];
+    let Some(geometry) =
+        workshop_border_mesh::border_geometry(&region.polygons, origin, half_height)
+    else {
+        report.warnings.push(interner.intern(&format!(
+            "workshop_border_no_geometry:{warn_objid:06X}"
+        )));
+        return None;
+    };
+    let edid = synthetic_edid(workbench, "Border", interner);
+    let mesh_path = output
+        .meshes_dir
+        .join("Workshop")
+        .join("Borders")
+        .join(format!("{edid}.nif"));
+    if let Err(err) =
+        workshop_border_mesh::write_border_nif(&output.template, &geometry, &edid, &mesh_path)
+    {
+        report.warnings.push(interner.intern(&format!(
+            "workshop_border_mesh_failed:{warn_objid:06X}:{err}"
+        )));
+        return None;
+    }
+    let (min, max) = geometry.bounds()?;
+    let edid_sym = interner.intern(&edid);
+    let base_fk = mapper.allocate_or_resolve(
+        synthetic_source_key(workbench.form_key, SYNTHETIC_BORDER_SOURCE_PLUGIN, interner),
+        Some(edid_sym),
+        sig_code("STAT"),
+    );
+    let ref_edid = interner.intern(&synthetic_edid(workbench, "BorderRef", interner));
+    let ref_fk = mapper.allocate_or_resolve(
+        synthetic_source_key(workbench.form_key, SYNTHETIC_BORDER_REF_SOURCE_PLUGIN, interner),
+        Some(ref_edid),
+        refr_sig,
+    );
+    Some(WorkshopBorder {
+        base: build_border_static(
+            base_fk,
+            edid_sym,
+            &format!("{BORDER_MESH_DIR}\\{edid}.nif"),
+            (min, max),
+            interner,
+        ),
+        reference: build_border_reference(
+            ref_fk,
+            ref_edid,
+            base_fk,
+            origin,
+            (forms.linked_build_area_edge, workbench.form_key),
+            interner,
+        ),
+    })
+}
+
+/// Matches vanilla `WorkshopBorderSanctuary01`: OBND, MODL and a 90-degree
+/// DNAM with no material.
+fn build_border_static(
+    form_key: FormKey,
+    edid: Sym,
+    model: &str,
+    (min, max): ([f32; 3], [f32; 3]),
+    interner: &StringInterner,
+) -> Record {
+    let to_i16 = |value: f32| value.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    let obnd: Vec<u8> = min
+        .map(|value| to_i16(value.floor()))
+        .into_iter()
+        .chain(max.map(|value| to_i16(value.ceil())))
+        .flat_map(i16::to_le_bytes)
+        .collect();
+    let dnam: Vec<u8> = [90.0f32.to_le_bytes(), [0; 4], 1.0f32.to_le_bytes(), 1.0f32.to_le_bytes()]
+        .concat();
+    Record {
+        sig: sig_code("STAT"),
+        form_key,
+        eid: Some(edid),
+        flags: RecordFlags::empty(),
+        fields: smallvec![
+            FieldEntry {
+                sig: subrecord_sig("EDID"),
+                value: FieldValue::String(edid),
+            },
+            FieldEntry {
+                sig: subrecord_sig("OBND"),
+                value: FieldValue::Bytes(SmallVec::from_vec(obnd)),
+            },
+            FieldEntry {
+                sig: subrecord_sig("MODL"),
+                value: FieldValue::String(interner.intern(model)),
+            },
+            FieldEntry {
+                sig: subrecord_sig("DNAM"),
+                value: FieldValue::Bytes(SmallVec::from_vec(dnam)),
+            },
+        ],
+        warnings: SmallVec::new(),
+    }
+}
+
+/// Same shape as vanilla Sanctuary's border reference: persistent, initially
+/// disabled, no script, edge-linked to the workbench.
+fn build_border_reference(
+    form_key: FormKey,
+    edid: Sym,
+    base: FormKey,
+    position: [f32; 3],
+    (keyword, workbench): (FormKey, FormKey),
+    interner: &StringInterner,
+) -> Record {
+    Record {
+        sig: sig_code("REFR"),
+        form_key,
+        eid: Some(edid),
+        flags: RecordFlags::PERSISTENT | RecordFlags::INITIALLY_DISABLED,
+        fields: smallvec![
+            FieldEntry {
+                sig: subrecord_sig("EDID"),
+                value: FieldValue::String(edid),
+            },
+            FieldEntry {
+                sig: subrecord_sig("NAME"),
+                value: FieldValue::FormKey(base),
+            },
+            linked_ref_field(keyword, workbench, interner),
+            placement_field(
+                Placement {
+                    position,
+                    rotation: [0.0; 3],
+                },
+                interner,
+            ),
+        ],
         warnings: SmallVec::new(),
     }
 }
@@ -2656,6 +2928,84 @@ mod tests {
             None
         );
         assert_eq!(parse_workshop_region(&[triangle(), rdwk()]), None);
+    }
+
+    #[test]
+    fn region_polygons_keep_each_rpld_loop() {
+        let subrecords = vec![
+            parsed_subrecord(
+                "RPLD",
+                region_point_bytes(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]),
+            ),
+            parsed_subrecord("RPLD", region_point_bytes(&[[0.0, 0.0], [1.0, 0.0]])),
+            parsed_subrecord(
+                "RPLD",
+                region_point_bytes(&[[5.0, 5.0], [6.0, 5.0], [6.0, 6.0], [5.0, 6.0]]),
+            ),
+        ];
+
+        let polygons = parse_region_polygons(&subrecords);
+        assert_eq!(polygons.len(), 2);
+        assert_eq!(polygons[0], [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]]);
+        assert_eq!(polygons[1].len(), 4);
+    }
+
+    #[test]
+    fn border_records_match_the_vanilla_sanctuary_border_shape() {
+        let interner = StringInterner::new();
+        let plugin = interner.intern("Test.esp");
+        let edge = fo4_form_key(WORKSHOP_LINKED_BUILD_AREA_EDGE_LOCAL, &interner);
+        let base = build_border_static(
+            fk(0x900, plugin),
+            interner.intern("WorkshopRef_Border"),
+            "Workshop\\Borders\\WorkshopRef_Border.nif",
+            ([-10.4, -20.0, -2048.0], [30.2, 40.0, 2048.0]),
+            &interner,
+        );
+        let field = |record: &Record, sig: &str| {
+            record
+                .fields
+                .iter()
+                .find(|entry| entry.sig.as_str() == sig)
+                .map(|entry| entry.value.clone())
+        };
+        let Some(FieldValue::Bytes(obnd)) = field(&base, "OBND") else {
+            panic!("OBND bytes");
+        };
+        let obnd: Vec<i16> = obnd
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(obnd, [-11, -20, -2048, 31, 40, 2048]);
+        let Some(FieldValue::Bytes(dnam)) = field(&base, "DNAM") else {
+            panic!("DNAM bytes");
+        };
+        assert_eq!(hex::encode_upper(dnam.as_slice()), "0000B442000000000000803F0000803F");
+        assert!(matches!(field(&base, "MODL"), Some(FieldValue::String(model))
+            if interner.resolve(model) == Some("Workshop\\Borders\\WorkshopRef_Border.nif")));
+
+        let reference = build_border_reference(
+            fk(0x901, plugin),
+            interner.intern("WorkshopRef_BorderRef"),
+            base.form_key,
+            [1.0, 2.0, 3.0],
+            (edge, fk(0x800, plugin)),
+            &interner,
+        );
+        assert_eq!(
+            reference.flags,
+            RecordFlags::PERSISTENT | RecordFlags::INITIALLY_DISABLED
+        );
+        assert_eq!(
+            linked_ref(&reference, edge, &interner),
+            Some(fk(0x800, plugin))
+        );
+        assert_eq!(record_base(&reference), Some(base.form_key));
+        let data = field(&reference, "DATA").expect("DATA");
+        assert_eq!(
+            struct_number(&data, "position_rotation_position_z", &interner),
+            Some(3.0)
+        );
     }
 
     #[test]

@@ -906,3 +906,52 @@ def test_resume_from_build_esp_uses_full_rebuild_without_existing_output(
 
     assert result.exit_code == 0
     assert captured["phases"].translate_records is True
+
+
+def test_clear_asset_outputs_keeps_lod_precombined_and_non_assets(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    cleared = [
+        "Meshes/weapons/gun.nif",
+        "Materials/armor/suit.BGSM",
+        "Textures/armor/suit_d.dds",
+        "meshes/actors/character/facegendata/facegeom/seventysix.esm/00000854.nif",
+    ]
+    kept = [
+        "Meshes/LOD/tree.nif",
+        "Meshes/PreCombined/00001_oc.nif",
+        "Textures/Terrain/land_d.dds",
+        "Textures/interface/icon.dds",
+        "Textures/FO4CS/Cubemaps/sky.dds",
+        "Textures/actors/head_d_bacup_face.dds",
+        "Meshes/actors/character/behavior.hkx",
+        "Meshes/AnimTextData/clips.txt",
+    ]
+    for rel in cleared + kept:
+        (data / rel).parent.mkdir(parents=True, exist_ok=True)
+        (data / rel).write_bytes(b"x")
+
+    assert regen_pipeline.clear_asset_outputs(data) == len(cleared)
+    assert [rel for rel in cleared if (data / rel).exists()] == []
+    assert [rel for rel in kept if not (data / rel).exists()] == []
+
+
+def test_clear_asset_outputs_keeps_files_listed_by_tales_ui_manifests(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    kept = ["Meshes/B21/TalesFromAppalachia/QuickBoyScreen.nif", "textures/shared/default_d.dds",
+            "Meshes/Actors/Character/Animations/B21/PhotoMode/heroic.nif"]
+    cleared = ["Meshes/B21/TalesFromAppalachia/other.nif", "textures/shared/other_d.dds"]
+    for rel in kept + cleared:
+        (data / rel).parent.mkdir(parents=True, exist_ok=True)
+        (data / rel).write_bytes(b"x")
+    ui = data / "Interface/B21/TalesFromAppalachia"
+    (ui / "PhotoMode").mkdir(parents=True)
+    (ui / "QuickBoy.json").write_text(
+        '{"files": [{"path": "MESHES/b21/TalesFromAppalachia/QuickBoyScreen.nif"}, '
+        '{"path": "textures/shared/default_d.dds"}]}', encoding="utf-8")
+    (ui / "PhotoMode/conversion.json").write_text(
+        '{"files": [{"path": "data/Meshes/Actors/Character/Animations/B21/PhotoMode/heroic.nif"}]}',
+        encoding="utf-8")
+    (ui / "broken.json").write_text("{", encoding="utf-8")
+
+    assert regen_pipeline.clear_asset_outputs(data) == len(cleared)
+    assert [rel for rel in kept if not (data / rel).exists()] == []

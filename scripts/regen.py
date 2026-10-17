@@ -601,6 +601,9 @@ def _args_to_regen_options(args) -> RegenOptions:
         texture_landscape_mip_flooding=bool(
             getattr(args, "texture_landscape_mip_flooding", False)
         ),
+        native_assets=bool(getattr(args, "native_assets", False)),
+        replace_fo4_materials=bool(getattr(args, "replace_fo4_materials", False)),
+        upgrade_fo4_materials=bool(getattr(args, "upgrade_fo4_materials", False)),
         placeholder_audio=bool(getattr(args, "placeholder_audio", False)),
         terrain_extent_cells=getattr(args, "terrain_extent_cells", None),
         re_use_land=bool(args.re_use_land),
@@ -612,7 +615,7 @@ def _args_to_regen_options(args) -> RegenOptions:
         ),
         interior_cdx_only=bool(getattr(args, "interior_cdx_only", False)),
         records_limit=args.records_limit,
-        emit_btd4=bool(args.emit_btd4),
+        emit_btd4=args.emit_btd4,
         generate_anim_text_data=bool(args.generate_anim_text_data),
         build_precombines=bool(getattr(args, "build_precombines", True)),
         generate_previs=bool(getattr(args, "generate_previs", True)),
@@ -660,6 +663,12 @@ def run_full_mode(
     log_handler = _configure_logging(diagnostics_root / "regen.log")
     _install_native_stderr_tee(diagnostics_root / "native_stderr.log")
     LOG.info("run diagnostics: %s", diagnostics_root)
+    LOG.info(
+        "native assets: %s, replace FO4 materials: %s, upgrade FO4 materials: %s",
+        "on" if getattr(args, "native_assets", False) else "off",
+        "on" if getattr(args, "replace_fo4_materials", False) else "off",
+        "on" if getattr(args, "upgrade_fo4_materials", False) else "off",
+    )
     if args.drop_trace is not None:
         # The native conversion reads these once (cached) at the first drop site.
         trace_path = diagnostics_root / "drop_trace.log"
@@ -742,6 +751,71 @@ def run_full_mode(
         )
         return result.exit_code
 
+    if getattr(args, "assets_only", False):
+        options = _args_to_regen_options(args)
+        options.workers = conv_cli.resolve_workers(args.workers)
+        with _progress_runner(log_handler.stream) as runner:
+            try:
+                result = regen_pipeline.run_assets_only(
+                    paths,
+                    options,
+                    phases=conv_cli.phase_selection_from_args(args),
+                    runner=runner,
+                    plugin_names=output_plugin_names,
+                    clear=args.clear_assets,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                LOG.error("%s", exc)
+                return 2
+        for failure in result.failures:
+            LOG.error("%s", failure)
+        LOG.info(
+            "assets-only elapsed_seconds=%.3f exit_code=%s (loose files; --pack-only / --deploy-only to ship)",
+            result.elapsed_seconds,
+            result.exit_code,
+        )
+        return result.exit_code
+
+    if getattr(args, "upgrade_materials_only", False):
+        from bacup_lib.workflows import unified
+
+        with _progress_runner(log_handler.stream) as runner:
+            try:
+                upgraded = unified.rerun_fo4_material_upgrade(
+                    paths.output_root,
+                    paths.target_data_dir,
+                    paths.source_data_dir,
+                    conv_cli.resolve_workers(args.workers),
+                    runner,
+                    target_extracted_dir=paths.target_extracted_dir,
+                    source_extracted_dir=paths.source_extracted_dir,
+                )
+                LOG.info("upgrade-materials-only: upgraded %d FO4 materials", upgraded)
+                options = _args_to_regen_options(args)
+                options.workers = conv_cli.resolve_workers(args.workers)
+                if not options.deploy:
+                    LOG.info("upgrade-materials-only done; loose files only (--deploy repacks and deploys)")
+                    return 0
+                result = regen_pipeline.run_resume_from_phase(
+                    paths,
+                    options,
+                    start_phase="pack",
+                    phases=conv_cli.phase_selection_from_args(args),
+                    runner=runner,
+                    plugin_names=output_plugin_names,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                LOG.error("%s", exc)
+                return 2
+        for failure in result.failures:
+            LOG.error("%s", failure)
+        LOG.info(
+            "upgrade-materials-only elapsed_seconds=%.3f exit_code=%s",
+            result.elapsed_seconds,
+            result.exit_code,
+        )
+        return result.exit_code
+
     if args.pack_only:
         phases = conv_cli.phase_selection_from_args(args)
         options = _args_to_regen_options(args)
@@ -796,7 +870,7 @@ def run_full_mode(
             getattr(args, "lod_atlas_mip_flooding", None),
             pair.pair_id,
         )
-        if options.lod_mode in {"generate", "hybrid", "hybrid-atlas"}
+        if options.lod_mode in {"generate", "hybrid", "hybrid-atlas", "hybrid-instanced"}
         else None
     )
 
@@ -926,6 +1000,32 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         help="Pack the existing mods/<mod> loose assets into BA2 archives without deploying.",
     )
     parser.add_argument(
+        "--assets-only",
+        action="store_true",
+        help=(
+            "Re-run only meshes, textures and materials (with --native-assets / "
+            "--replace-fo4-materials) and --upgrade-fo4-materials on the existing "
+            "mods/<mod> output, as loose files. No records, havok, animation, sound, "
+            "LOD, previs, pack or deploy."
+        ),
+    )
+    parser.add_argument(
+        "--clear-assets",
+        action="store_true",
+        help=(
+            "With --assets-only: first delete the output's .nif/.bgsm/.bgem/.dds files, "
+            "keeping LOD, precombined, terrain, interface and FO4CS folders."
+        ),
+    )
+    parser.add_argument(
+        "--upgrade-materials-only",
+        action="store_true",
+        help=(
+            "Re-run only the FO4 material upgrade (BGSM v22+, meshes) on the existing "
+            "mods/<mod> output as loose files. --deploy also repacks its BA2s and deploys."
+        ),
+    )
+    parser.add_argument(
         "--previs-only",
         action="store_true",
         help=(
@@ -990,13 +1090,42 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         help="Carry clean FO76 PBR texture sidecars alongside the FO4 fallback bake.",
     )
     parser.add_argument(
-        "--emit-btd4",
-        action=argparse.BooleanOptionalAction,
+        "--native-assets",
+        action="store_true",
         default=False,
         help=(
+            "fo76:fo4 or starfield:fo4, requires FO4CS: keep source materials and "
+            "PBR textures with converted meshes. Starfield requires extracted JSON .mat files."
+        ),
+    )
+    parser.add_argument(
+        "--replace-fo4-materials",
+        action="store_true",
+        default=False,
+        help=(
+            "With --native-assets: FO76 materials FO4 also ships, and the "
+            "textures they name, are written over FO4's files."
+        ),
+    )
+    parser.add_argument(
+        "--upgrade-fo4-materials",
+        action="store_true",
+        default=False,
+        help=(
+            "With --native-assets: upgrade FO4's own materials to BGSM v22+ (PBR) in the "
+            "converted mod. With --replace-fo4-materials the replace set is taken first "
+            "and only the remaining FO4 materials are upgraded."
+        ),
+    )
+    parser.add_argument(
+        "--emit-btd4",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
             "Emit loose Terrain/<worldspace>.btd4 dense LAND sidecars (heights, "
-            "texture alpha, GCVR grass masks, colors) for the Tales dense-terrain "
-            "runtime. Experimental opt-in; the ESM is the same either way."
+            "texture alpha, GCVR grass masks, colors, raw v4 source bank) for the "
+            "Tales dense-terrain runtime. Defaults to on with FO76 --native-assets, "
+            "off otherwise; --no-emit-btd4 opts out. The ESM is the same either way."
         ),
     )
     parser.add_argument(
@@ -1209,7 +1338,7 @@ def build_parser(conv_cli) -> argparse.ArgumentParser:
         help="Include interior cells in output (default on; use --no-include-interior to skip).",
     )
     conv_cli.add_phase_flags(parser)  # --no-terrain ... --no-build-esp
-    conv_cli.add_lod_mode_flag(parser)  # --lod-mode {convert,generate,hybrid,hybrid-atlas,none}
+    conv_cli.add_lod_mode_flag(parser)  # --lod-mode {convert,generate,hybrid,hybrid-atlas,hybrid-instanced,none}
     conv_cli.add_lod_profile_flag(parser)  # --lod-profile {auto,native,high-quality,performance}
     conv_cli.add_lod_atlas_mip_flooding_flag(parser)
     conv_cli.add_texture_landscape_mip_flooding_flag(parser)
@@ -1365,8 +1494,40 @@ def _validate_output_mode(parser: argparse.ArgumentParser, args) -> None:
         _archive_max_bytes_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
+    if getattr(args, "replace_fo4_materials", False) and not getattr(
+        args, "native_assets", False
+    ):
+        parser.error("--replace-fo4-materials requires --native-assets")
+    if getattr(args, "upgrade_fo4_materials", False) and not getattr(
+        args, "native_assets", False
+    ):
+        parser.error("--upgrade-fo4-materials requires --native-assets")
+    if (
+        getattr(args, "native_assets", False)
+        and getattr(args, "pair", DEFAULT_PAIR_ID) not in {DEFAULT_PAIR_ID, "starfield:fo4"}
+    ):
+        parser.error("--native-assets supports only fo76:fo4 or starfield:fo4")
+    if getattr(args, "pair", DEFAULT_PAIR_ID) != DEFAULT_PAIR_ID and (
+        getattr(args, "replace_fo4_materials", False) or getattr(args, "upgrade_fo4_materials", False)
+    ):
+        parser.error("--replace-fo4-materials and --upgrade-fo4-materials support only fo76:fo4")
     if getattr(args, "pack_only", False) and getattr(args, "deploy_to_mo2", None):
         parser.error("--pack-only cannot be combined with --deploy-to-mo2")
+    if getattr(args, "upgrade_materials_only", False) and any(
+        (args.undeploy, args.deploy_only, args.pack_only, args.upgrade, args.mvp,
+         getattr(args, "previs_only", False), getattr(args, "scripts_only", False),
+         getattr(args, "records_only", False))
+    ):
+        parser.error("--upgrade-materials-only runs alone (with --deploy at most)")
+    if getattr(args, "assets_only", False) and any(
+        (args.deploy, args.undeploy, args.deploy_only, args.pack_only, args.upgrade, args.mvp,
+         getattr(args, "deploy_to_mo2", None), getattr(args, "previs_only", False),
+         getattr(args, "upgrade_materials_only", False), getattr(args, "scripts_only", False),
+         getattr(args, "records_only", False))
+    ):
+        parser.error("--assets-only runs alone; pack or deploy afterwards with --pack-only / --deploy-only")
+    if args.clear_assets and not getattr(args, "assets_only", False):
+        parser.error("--clear-assets requires --assets-only")
     if getattr(args, "previs_only", False):
         if not (args.build_precombines or args.generate_previs):
             parser.error("--previs-only needs precombines or previs enabled")

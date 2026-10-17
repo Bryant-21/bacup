@@ -8,7 +8,11 @@
 //! - orchestration via `FnvLegacyScriptingContext` + `run_fnv_legacy_scripting`
 //!   on `ConversionRun`.
 
+pub(crate) mod actor_value_bindings;
 pub mod component;
+pub(crate) mod creature_callbacks;
+pub(crate) mod deferred_creature_quests;
+pub(crate) mod creature_publication;
 pub mod dialogue;
 pub mod fk_rewrite;
 pub mod form_keys;

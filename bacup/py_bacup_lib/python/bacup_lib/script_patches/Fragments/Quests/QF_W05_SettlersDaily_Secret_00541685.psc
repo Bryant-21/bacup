@@ -23,5 +23,11 @@ Function Fragment_Stage_0299_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    CompleteAllObjectives()
     Stop()
+EndFunction
+
+Function Fragment_Stage_0200_Item_00()
+    SetObjectiveCompleted(100, True)
+    SetObjectiveDisplayed(200, True)
 EndFunction

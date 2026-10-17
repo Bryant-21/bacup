@@ -2,17 +2,15 @@
 
 use std::any::Any;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::fixups::prune_faction_relations::encoded_targets_by_source_object_id;
 use crate::fixups::ref_index::remap_struct_fk_fields;
 use crate::fixups::remap_struct_internal_formids::{
-    FO4_TARGET_FORM_VERSION, candidate_signatures, encoded_target_formids_of_signature,
-    remap_race_atkd_attack_type_keywords, remap_value_selected_union_formids,
+    FO4_TARGET_FORM_VERSION, candidate_signatures, remap_value_selected_union_formids,
 };
 use crate::fixups::{FixupConfig, FixupError};
 use crate::formkey_mapper::FormKeyMapper;
-use crate::ids::SigCode;
 use crate::record::Record;
 use crate::session::PluginSession;
 use crate::store2::visitor::{
@@ -22,7 +20,6 @@ use crate::sym::Sym;
 
 pub(crate) struct RemapStructIndex {
     encoded_targets: FxHashMap<u32, u32>,
-    encoded_target_keywords: FxHashSet<u32>,
     target_by_source_form_key: FxHashMap<crate::ids::FormKey, crate::ids::FormKey>,
     first_target_master_sigs: Option<FxHashMap<u32, crate::ids::SigCode>>,
 }
@@ -51,13 +48,6 @@ impl RecordVisitor for RemapStructInternalFormIdsVisitor {
             .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
         let target_masters = session.target_masters().to_vec();
         let encoded_targets = encoded_targets_by_source_object_id(mapper, &target_masters);
-        let encoded_target_keywords = encoded_target_formids_of_signature(
-            session,
-            config,
-            mapper.interner,
-            &target_masters,
-            SigCode::from_str("KYWD").expect("valid KYWD signature"),
-        )?;
         let target_by_source_form_key: FxHashMap<crate::ids::FormKey, crate::ids::FormKey> =
             mapper.source_to_target_iter().collect();
         let first_target_master_sigs = config
@@ -76,7 +66,6 @@ impl RecordVisitor for RemapStructInternalFormIdsVisitor {
             candidate_sigs,
             index: Some(Box::new(RemapStructIndex {
                 encoded_targets,
-                encoded_target_keywords,
                 target_by_source_form_key,
                 first_target_master_sigs,
             })),
@@ -108,11 +97,6 @@ impl RecordVisitor for RemapStructInternalFormIdsVisitor {
         if matches!(record.sig.as_str(), "PACK" | "FACT") {
             remap.remapped += remap_value_selected_union_formids(record, &idx.encoded_targets);
         }
-        remap.remapped += remap_race_atkd_attack_type_keywords(
-            record,
-            &idx.encoded_targets,
-            &idx.encoded_target_keywords,
-        );
         if remap.changed() {
             VisitOutcome::Changed
         } else {

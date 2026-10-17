@@ -43,7 +43,7 @@ pub mod normalize_character_properties;
 pub mod normalize_creature_death_phase;
 pub mod normalize_spaced_asset_names;
 pub mod normalize_weapon_behavior_contracts;
-mod postprocess_scan;
+pub(crate) mod postprocess_scan;
 pub mod repair_weapon_charge_reference_frames;
 pub mod retime_reload_complete_events;
 pub mod sanitize_ragdoll_contact_bones;

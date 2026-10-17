@@ -1213,6 +1213,70 @@
         }
     }
 
+    // Atomic Shop chassis skins (Black Rider, Excavator Raider, Santa Suit, Red Ranger) keep their
+    // meshes under `atx/...`, outside `actors/powerarmor/`. FO76 hangs them on the part root so they
+    // evict the default piece; moved to the paint slot they drew on top of it (2026-10-05).
+    #[test]
+    fn atx_power_armor_skin_model_stays_on_its_part_root() {
+        let skin_omod = |interner: &StringInterner| {
+            let mut record = make_record("OMOD", interner);
+            push_field(
+                &mut record,
+                "MODL",
+                FieldValue::String(
+                    interner.intern("atx/Actors/PowerArmor/ATX_PA_T51_Helmet_Santa.nif"),
+                ),
+            );
+            push_field(
+                &mut record,
+                "DATA",
+                FieldValue::Struct(vec![
+                    (
+                        interner.intern("form_type"),
+                        FieldValue::Uint(u32::from_le_bytes(*b"ARMO") as u64),
+                    ),
+                    (
+                        interner.intern("attach_point"),
+                        form_key_value(interner, FO76_AP_POWER_ARMOR_HEAD_MOD),
+                    ),
+                    (
+                        interner.intern("properties"),
+                        FieldValue::List(vec![property_row(interner, 13)]),
+                    ),
+                ]),
+            );
+            record
+        };
+
+        let interner = StringInterner::new();
+        let mut record = skin_omod(&interner);
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+        assert!(
+            record.fields.iter().any(|entry| entry.sig.0 == *b"MODL"),
+            "material-model strip removed a power armor skin's piece mesh"
+        );
+
+        let interner = StringInterner::new();
+        let mut record = skin_omod(&interner);
+        Fo76Fo4Hook
+            .post_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+        let data = record
+            .fields
+            .iter()
+            .find(|entry| entry.sig.0 == *b"DATA")
+            .unwrap();
+        let FieldValue::Struct(fields) = &data.value else {
+            panic!("expected structured OMOD DATA");
+        };
+        assert_eq!(
+            named_value_canonical(fields, "attach_point", &interner),
+            Some(&form_key_value(&interner, FO76_AP_POWER_ARMOR_HEAD_MOD))
+        );
+    }
+
     #[test]
     fn post_translate_exposes_fo4_paint_slot_in_power_armor_appr() {
         {

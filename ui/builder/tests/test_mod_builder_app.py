@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ruamel.yaml import YAML
+import pytest
 
 from ui.builder.mod_builder_app import (
     ModBuilderApp,
@@ -29,6 +30,99 @@ from ui.builder.mod_builder_app import (
     _set_plugin_type_files,
 )
 from ui.tools.assets.archlist_creator import create_loose_archlist
+
+
+def test_builder_multiple_deploy_folders_persist_and_deduplicate(tmp_path: Path):
+    mod_dir = tmp_path / "B21_Test"
+    mod_dir.mkdir()
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None):
+        app = ModBuilderApp()
+    app._selected_mod_dir = lambda: str(mod_dir)
+    app._deploy_to_mo2 = True
+    app._mo2_deploy_dir = str(tmp_path / "First")
+    app._additional_deploy_dirs = [str(tmp_path / "Second"), "", str(tmp_path / "First")]
+    app._save_mod_settings()
+    app._additional_deploy_dirs = []
+    app._load_mod_settings()
+    assert app._resolve_deploy_data_paths("fo4") == [tmp_path / "First", tmp_path / "Second"]
+    assert app._resolve_deploy_data_paths("sse") == [tmp_path / "First", tmp_path / "Second"]
+    app._deploy_to_mo2 = False
+    app._resolve_game_data_path = lambda game: tmp_path / "Game" / "Data"
+    assert app._resolve_deploy_data_paths("fo4") == [tmp_path / "Game" / "Data"]
+
+
+@pytest.mark.parametrize("action,service", [
+    ("_on_deploy", "creation_lib.build.deployer.deploy_mod"),
+    ("_on_xse_deploy", "creation_lib.build.deployer.deploy_mod"),
+    ("_on_deploy_loose", "creation_lib.build.loose_deploy.deploy_loose_assets"),
+    ("_on_undeploy", "creation_lib.build.deployer.undeploy_mod"),
+    ("_on_xse_undeploy", "creation_lib.build.deployer.undeploy_mod"),
+    ("_on_undeploy_loose", "creation_lib.build.loose_deploy.undeploy_loose_assets"),
+])
+def test_builder_actions_use_all_deploy_folders(tmp_path: Path, action: str, service: str):
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None):
+        app = ModBuilderApp()
+    app._selected_mod = lambda: "B21_Test"
+    app._selected_mod_kind = lambda: "mod"
+    app._get_mod_game = lambda: "fo4"
+    app._warn_creation_only_masters = lambda: None
+    app._resolve_game_data_path = lambda game: tmp_path / "Game" / "Data"
+    app._deploy_to_mo2 = True
+    app._mo2_deploy_dir = str(tmp_path / "First")
+    app._additional_deploy_dirs = [str(tmp_path / "Second")]
+    app._move_archives = True
+    app._preserve_xse_inis = True
+    app._run_fn = lambda fn, **kwargs: fn(lambda msg: None)
+    with patch(service) as operation:
+        getattr(app, action)()
+    calls = [call.kwargs for call in operation.call_args_list]
+    target_key = "game_data_dir" if "undeploy" in action else "deploy_data_dir"
+    assert [call[target_key] for call in calls] == [tmp_path / "First", tmp_path / "Second"]
+    if "undeploy" not in action:
+        assert all(call["preserve_xse_inis"] for call in calls)
+        assert calls[0]["skip_papyrus_compile"] is False
+        assert calls[1]["skip_papyrus_compile"] is True
+    if action in ("_on_deploy", "_on_deploy_loose"):
+        assert calls[0]["skip_build"] is False
+        assert calls[1]["skip_build"] is True
+    if action == "_on_deploy":
+        assert calls[0]["skip_pack"] is False
+        assert calls[1]["skip_pack"] is True
+        assert all(call["archive_transfer_mode"] == "copy" for call in calls)
+        assert all(call["pack_archives_to_deploy_target"] is False for call in calls)
+    if action == "_on_undeploy_loose":
+        assert [call["preserve_manifest"] for call in calls] == [True, False]
+
+
+def test_builder_loose_deploy_and_undeploy_multiple_folders(tmp_path: Path):
+    mod_dir = tmp_path / "mods" / "B21_Test"
+    source = mod_dir / "data" / "Scripts" / "B21_Test.pex"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"script")
+    (mod_dir / "B21_Test.esp").write_bytes(b"plugin")
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None):
+        app = ModBuilderApp()
+    app._selected_mod = lambda: "B21_Test"
+    app._get_mod_game = lambda: "fo4"
+    app._resolve_game_data_path = lambda game: tmp_path / "Game" / "Data"
+    app._deploy_to_mo2 = True
+    app._mo2_deploy_dir = str(tmp_path / "First")
+    app._additional_deploy_dirs = [str(tmp_path / "Second")]
+    app._skip_build = True
+    app._skip_papyrus_compile = True
+    app._run_fn = lambda fn, **kwargs: fn(lambda msg: None)
+    with patch("app.paths.get_app_root", return_value=tmp_path):
+        app._on_deploy_loose()
+        for target in app._resolve_deploy_data_paths("fo4"):
+            assert (target / "Scripts" / "B21_Test.pex").read_bytes() == b"script"
+            assert (target / "B21_Test.esp").read_bytes() == b"plugin"
+            (target / "unrelated.txt").write_text("keep", encoding="utf-8")
+        app._on_undeploy_loose()
+    for target in app._resolve_deploy_data_paths("fo4"):
+        assert not (target / "Scripts" / "B21_Test.pex").exists()
+        assert not (target / "B21_Test.esp").exists()
+        assert (target / "unrelated.txt").is_file()
+    assert not (mod_dir / ".loose_manifest.json").exists()
 
 
 def test_mod_plugin_type_label_reads_authoring_plugin_yaml(tmp_path: Path):
@@ -1075,9 +1169,12 @@ def test_builder_deploy_tab_places_mo2_option_after_flag_checkboxes():
     deploy_section = source[deploy_start:release_start]
     skip_validation_idx = deploy_section.index('"Skip Validation"')
     mo2_idx = deploy_section.index("self._draw_mo2_deploy_option()", skip_validation_idx)
-    tex_column_idx = deploy_section.index("imgui.table_set_column_index(1)", skip_validation_idx)
+    archive_column_idx = deploy_section.index("imgui.table_set_column_index(1)", skip_validation_idx)
+    tex_column_idx = deploy_section.index("imgui.table_set_column_index(2)", archive_column_idx)
+    options_end_idx = deploy_section.index("            imgui.end_table()", tex_column_idx)
 
-    assert skip_validation_idx < mo2_idx < tex_column_idx
+    assert 'imgui.begin_table("##deploy_split", 3, _split_flags)' in deploy_section
+    assert skip_validation_idx < archive_column_idx < tex_column_idx < options_end_idx < mo2_idx
 
 
 def test_builder_release_pack_options_include_expanded_archive_option():
@@ -1233,6 +1330,8 @@ def test_builder_settings_round_trip_per_mod(tmp_path: Path):
         app._mod_kinds = ["mod", "mod"]
 
         app._selected_mod_idx = 0
+        app._deploy_to_mo2 = True
+        app._mo2_deploy_dir = str(tmp_path / "DeployA")
         app._skip_build = True
         app._expanded_archives = True
         app._pc_max_res_idx = 2
@@ -1244,6 +1343,8 @@ def test_builder_settings_round_trip_per_mod(tmp_path: Path):
 
         app._selected_mod_idx = 1
         app._load_mod_settings()
+        assert app._deploy_to_mo2 is False
+        assert app._mo2_deploy_dir == ""
         assert app._skip_build is False
         assert app._expanded_archives is False
         assert app._pc_max_res_idx == 0
@@ -1254,6 +1355,8 @@ def test_builder_settings_round_trip_per_mod(tmp_path: Path):
 
         app._selected_mod_idx = 0
         app._load_mod_settings()
+        assert app._deploy_to_mo2 is True
+        assert app._mo2_deploy_dir == str(tmp_path / "DeployA")
         assert app._skip_build is True
         assert app._expanded_archives is True
         assert app._pc_max_res_idx == 2
@@ -1263,6 +1366,66 @@ def test_builder_settings_round_trip_per_mod(tmp_path: Path):
         assert app._release_pc_max_res_idx == 3
 
     assert not (mods_dir / "B21_B" / ".builder.json").exists()
+
+
+def test_builder_deploy_folders_survive_restart_per_mod(tmp_path: Path):
+    mods_dir = tmp_path / "mods"
+    for mod in ("B21_A", "B21_B"):
+        (mods_dir / mod).mkdir(parents=True)
+
+    settings = MagicMock()
+    settings.get_workspace_settings.return_value = {
+        "deploy_to_mo2": True,
+        "mo2_deploy_dir": str(tmp_path / "OldGlobalTarget"),
+    }
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None), patch(
+        "ui.builder.mod_builder_app.MODS_DIR", str(mods_dir)
+    ):
+        app = ModBuilderApp(settings)
+        app._mod_list = ["B21_A", "B21_B"]
+        for index, mod in enumerate(app._mod_list):
+            app._selected_mod_idx = index
+            app._load_mod_settings()
+            assert app._deploy_to_mo2 is False
+            assert app._mo2_deploy_dir == ""
+            app._deploy_to_mo2 = True
+            app._mo2_deploy_dir = str(tmp_path / mod)
+            app._save_mod_settings()
+
+        restarted = ModBuilderApp(settings)
+        restarted._mod_list = app._mod_list
+        for index, mod in enumerate(restarted._mod_list):
+            restarted._selected_mod_idx = index
+            restarted._load_mod_settings()
+            assert restarted._deploy_to_mo2 is True
+            assert restarted._resolve_deploy_data_path("fo4") == tmp_path / mod
+
+
+def test_builder_saves_edited_deploy_folder(tmp_path: Path):
+    mod_dir = tmp_path / "B21_Test"
+    mod_dir.mkdir()
+    target = str(tmp_path / "Pasted Folder")
+    with patch("ui.builder.mod_builder_app.ModBuilderApp._refresh_mods", lambda self: None):
+        app = ModBuilderApp()
+    app._deploy_to_mo2 = True
+    app._get_mod_game = lambda: "fo4"
+    app._selected_mod_dir = lambda: str(mod_dir)
+    app._refresh_deployed_state = MagicMock()
+    with patch("ui.builder.mod_builder_app.imgui") as imgui_mock, patch(
+        "ui.builder.mod_builder_app.begin_form", return_value=True
+    ), patch("ui.builder.mod_builder_app.end_form"), patch(
+        "ui.builder.mod_builder_app.form_row_label"
+    ), patch("ui.builder.mod_builder_app.pick_folder") as browse:
+        imgui_mock.checkbox.return_value = (False, True)
+        imgui_mock.input_text.return_value = (True, target)
+        imgui_mock.small_button.return_value = False
+        app._draw_mo2_deploy_option()
+
+    browse.assert_not_called()
+    app._refresh_deployed_state.assert_called_once()
+    app._mo2_deploy_dir = ""
+    app._load_mod_settings()
+    assert app._resolve_deploy_data_path("fo4") == Path(target)
 
 
 def test_builder_settings_unreadable_file_falls_back_to_defaults(tmp_path: Path):

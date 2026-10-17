@@ -23,6 +23,16 @@ in `Extends` declarations and scalar/array property types.
 - A line `; @state-rename oldName newName` renames exactly one state declaration
   in the skeleton and exact `GoToState("oldName")` string targets. The merge fails
   if the source state is missing/ambiguous or the destination already exists.
+- A line `; @extends Parent` replaces the skeleton's `Extends` parent. Use it only
+  when the script must move to a carrier of another type. The FO76 player scripts
+  (`BoSZ01PlayerScript`, `PlayerTransferFactionsScript`, `W05_ReputationPlayerScript`,
+  `PlayerAudioScript`) were attached to the player's `NPC_` record. FO4 cannot carry
+  that record, so they become `ReferenceAlias` scripts on Tales'
+  `B21_TFA_qust_PlayerScripts` PlayerRef alias. Every member that used `Self` as the
+  actor must be replaced with a version that goes through `GetActorReference()`.
+  `GenerateKeypadCombination` moves from `ObjectReference` to `Terminal`: FO76 sent
+  `OnMenuItemRun` to an ObjectReference script on a TERM base, FO4 only to a Terminal
+  script, so it works on `akTerminalRef` instead of `Self`.
 
 So you never re-declare the properties or the `Extends` line — the decompiled
 skeleton keeps them; you provide the logic.

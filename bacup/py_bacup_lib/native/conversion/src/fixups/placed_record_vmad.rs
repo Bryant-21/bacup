@@ -239,21 +239,15 @@ fn resolve_mapped_record(
     }
 
     let signature = signature_code(requirement.signature)?;
-    let exists = session
-        .form_keys_of_sig(signature, mapper.interner)
-        .map_err(|error| FixupError::HandleError(error.to_string()))?
-        .into_iter()
-        .any(|candidate| candidate == form_key);
-    if !exists {
+    let raw_form_id = session
+        .raw_form_id_of_signature(&form_key, signature, mapper.interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    let Some(raw_form_id) = raw_form_id else {
         return Ok(Err(format!(
             "target_absent_or_wrong_signature:{}:{:06X}",
             requirement.signature, form_key.local
         )));
-    }
-
-    let raw_form_id = session
-        .raw_form_id_for_form_key(&form_key)
-        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    };
     Ok(Ok(ResolvedRecord {
         form_key,
         raw_form_id,
@@ -271,21 +265,15 @@ fn resolve_preserved_local_record(
         plugin: target_plugin,
     };
     let signature = signature_code(requirement.signature)?;
-    let matches = session
-        .form_keys_of_sig(signature, mapper.interner)
-        .map_err(|error| FixupError::HandleError(error.to_string()))?
-        .into_iter()
-        .filter(|candidate| *candidate == form_key)
-        .count();
-    if matches != 1 {
+    let raw_form_id = session
+        .raw_form_id_of_signature(&form_key, signature, mapper.interner)
+        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    let Some(raw_form_id) = raw_form_id else {
         return Ok(Err(format!(
             "preserved_local_absent_or_ambiguous:{}:{:06X}",
             requirement.signature, form_key.local
         )));
-    }
-    let raw_form_id = session
-        .raw_form_id_for_form_key(&form_key)
-        .map_err(|error| FixupError::HandleError(error.to_string()))?;
+    };
     Ok(Ok(ResolvedRecord {
         form_key,
         raw_form_id,

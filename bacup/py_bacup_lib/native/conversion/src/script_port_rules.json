@@ -1,0 +1,1261 @@
+{
+  "_FO76_TO_FO4_SCRIPT_VARIABLE_ADDITIONS": {
+    "generatekeypadcombination": [
+      [
+        "Int",
+        "B21PendingCode"
+      ]
+    ],
+    "linkkeypadtounlock": [
+      [
+        "Int",
+        "B21Code"
+      ],
+      [
+        "Int",
+        "B21Digits"
+      ],
+      [
+        "Bool",
+        "B21Reading"
+      ]
+    ],
+    "xpd_fuel_trainingscript": [
+      [
+        "Form",
+        "B21ResultsBook"
+      ],
+      [
+        "Int",
+        "B21AdamThrow"
+      ],
+      [
+        "Bool",
+        "B21Completed"
+      ]
+    ],
+    "burn_publicevent_helperscript": [
+      [
+        "Int",
+        "B21PendingTimerStage"
+      ]
+    ],
+    "storm_e01_partsinstallscript": [
+      [
+        "Int",
+        "B21InstalledParts"
+      ]
+    ],
+    "quests:sfs09:habitatquestscript": [
+      [
+        "Bool",
+        "B21SludgeGathering"
+      ]
+    ],
+    "quests:sfs09:troughscript": [
+      [
+        "Bool",
+        "B21Depositing"
+      ]
+    ],
+    "e08a_moonshine_bathtubscript": [
+      [
+        "Bool",
+        "B21DepositBusy"
+      ]
+    ],
+    "sfm04_organic_questscript": [
+      [
+        "Bool",
+        "B21NestStarting"
+      ]
+    ],
+    "mtr07_earthquestscript": [
+      [
+        "Bool",
+        "B21WheelTimerStarted"
+      ]
+    ],
+    "mtnm04questscript": [
+      [
+        "Int",
+        "B21ScenePollTicks"
+      ]
+    ],
+    "rsvp03_questscript": [
+      [
+        "Bool",
+        "B21CampProgressBusy"
+      ],
+      [
+        "Bool",
+        "B21CampProgressDirty"
+      ]
+    ],
+    "momparlorsecretentrancescript": [
+      [
+        "Bool",
+        "B21PlayerInsidePod"
+      ],
+      [
+        "Bool",
+        "B21PodTravelBusy"
+      ]
+    ],
+    "mommasterquestscript": [
+      [
+        "Bool",
+        "B21ProgressBusy"
+      ],
+      [
+        "Bool",
+        "B21ProgressDirty"
+      ]
+    ],
+    "default1statesyncactivator": [
+      [
+        "Float",
+        "B21SyncProgress"
+      ]
+    ],
+    "en07_missilesoundrefscript": [
+      [
+        "Bool",
+        "B21LaunchEffectsActive"
+      ],
+      [
+        "Bool",
+        "B21HasSoundInstance"
+      ]
+    ],
+    "en07_fleesiloscript": [
+      [
+        "ObjectReference[]",
+        "B21LaunchRefs"
+      ],
+      [
+        "ObjectReference[]",
+        "B21ShutdownDisabledRefs"
+      ],
+      [
+        "ObjectReference[]",
+        "B21SealedDoorRefs"
+      ],
+      [
+        "ObjectReference[]",
+        "B21LaunchMarkers"
+      ]
+    ],
+    "sfm04_organic_blooms_questscript": [
+      [
+        "ObjectReference[]",
+        "B21HiddenPods"
+      ],
+      [
+        "ObjectReference[]",
+        "B21SpawnedBlooms"
+      ],
+      [
+        "Bool",
+        "B21GrowingBlooms"
+      ],
+      [
+        "Bool",
+        "B21StoppingBlooms"
+      ]
+    ],
+    "defaultquestencounterwavescript": [
+      [
+        "Int[]",
+        "B21ActiveLocalWaves"
+      ],
+      [
+        "Actor[]",
+        "B21UncollectedActors"
+      ],
+      [
+        "Bool[]",
+        "B21UncollectedSpawned"
+      ],
+      [
+        "Bool",
+        "B21UncollectedSpawning"
+      ],
+      [
+        "Actor[]",
+        "B21WaveActors"
+      ],
+      [
+        "Int[]",
+        "B21WaveActorWaves"
+      ],
+      [
+        "Bool[]",
+        "B21WaveActorOwned"
+      ],
+      [
+        "Int[]",
+        "B21SpawningWaves"
+      ],
+      [
+        "Int[]",
+        "B21WaveSubwaves"
+      ],
+      [
+        "Int[]",
+        "B21WaveActorsSpawned"
+      ],
+      [
+        "Float[]",
+        "B21WaveTimeRemaining"
+      ],
+      [
+        "Int[]",
+        "B21WaveLegendariesSpawned"
+      ],
+      [
+        "Bool",
+        "B21WaveSpawning"
+      ],
+      [
+        "CustomEvent",
+        "FirstSubwaveSpawned"
+      ],
+      [
+        "CustomEvent",
+        "LastWave"
+      ],
+      [
+        "CustomEvent",
+        "WaveComplete"
+      ]
+    ],
+    "defaulttriggerencounterwavescript": [
+      [
+        "Actor[]",
+        "B21WaveActors"
+      ],
+      [
+        "Bool",
+        "B21WaveFired"
+      ],
+      [
+        "Float",
+        "B21WaveEndedDay"
+      ]
+    ],
+    "defaulteventquest": [
+      [
+        "Bool",
+        "B21PlayerJoinedEvent"
+      ],
+      [
+        "Bool",
+        "B21PlayerParticipating"
+      ]
+    ],
+    "quests:_default:playmusicscript": [
+      [
+        "Bool[]",
+        "B21MusicPlaying"
+      ]
+    ],
+    "quests:_default:weatheroverridescript": [
+      [
+        "Bool",
+        "B21WeatherOverridden"
+      ]
+    ],
+    "quests:ra:spawnpartycrasher": [
+      [
+        "Bool",
+        "B21PartyCrasherRolled"
+      ]
+    ],
+    "quests:ra:spawnbigfootpartycrasher": [
+      [
+        "Bool",
+        "B21PartyCrasherRolled"
+      ]
+    ],
+    "defaultforcelegendaryalias": [
+      [
+        "ObjectReference",
+        "B21LegendaryRolledRef"
+      ]
+    ],
+    "defaultforcelegendarycollectionalias": [
+      [
+        "ObjectReference[]",
+        "B21LegendaryRolledRefs"
+      ]
+    ],
+    "defaultquestgivereputation": [
+      [
+        "Bool",
+        "B21ReputationGranted"
+      ]
+    ],
+    "nwotquestrewardnukacadepointsscript": [
+      [
+        "Bool",
+        "B21PointsGranted"
+      ]
+    ],
+    "defaultkillobjective": [
+      [
+        "Actor[]",
+        "B21CountedVictims"
+      ]
+    ],
+    "defaultdeposititem": [
+      [
+        "Bool",
+        "B21DepositBusy"
+      ]
+    ],
+    "quests:e05_radiation:questscript": [
+      [
+        "Actor[]",
+        "B21Scavengers"
+      ],
+      [
+        "ObjectReference[]",
+        "B21OreVeins"
+      ],
+      [
+        "ObjectReference[]",
+        "B21HarvestedOreVeins"
+      ]
+    ],
+    "sq_scorchbeastmasterscript": [
+      [
+        "Actor[]",
+        "B21SpawnedScorchbeasts"
+      ],
+      [
+        "Int",
+        "B21ScorchbeastSummonTries"
+      ]
+    ],
+    "defaultquestobjectivescript": [
+      [
+        "Int[]",
+        "B21RunningObjectives"
+      ],
+      [
+        "Float[]",
+        "B21ObjectiveRemaining"
+      ],
+      [
+        "CustomEvent",
+        "ObjectiveEnded"
+      ]
+    ],
+    "deconarchscript": [
+      [
+        "Bool",
+        "B21PlayerInside"
+      ]
+    ],
+    "quests:_default:progressbar:masterscript": [
+      [
+        "CustomEvent",
+        "ProgressBarFull"
+      ],
+      [
+        "CustomEvent",
+        "ProgressBarEmpty"
+      ],
+      [
+        "Bool",
+        "B21ProgressInitialized"
+      ],
+      [
+        "Bool",
+        "B21ProgressDisplayed"
+      ],
+      [
+        "Bool",
+        "B21ProgressHidden"
+      ],
+      [
+        "Bool",
+        "B21ProgressStarted"
+      ],
+      [
+        "Bool",
+        "B21ProgressFull"
+      ],
+      [
+        "Bool",
+        "B21ProgressEmpty"
+      ],
+      [
+        "Float",
+        "B21ProgressRate"
+      ],
+      [
+        "Int",
+        "B21ProgressObjective"
+      ],
+      [
+        "Int",
+        "B21ProgressFullStage"
+      ],
+      [
+        "Int",
+        "B21ProgressEmptyStage"
+      ]
+    ],
+    "enz04_botscript": [
+      [
+        "Int[]",
+        "B21StartedWaves"
+      ],
+      [
+        "Actor[]",
+        "B21SpawnedEnemies"
+      ],
+      [
+        "Int",
+        "B21SiteSpecies"
+      ]
+    ],
+    "enz01_abovescript": [
+      [
+        "Actor[]",
+        "B21SpawnedEnemies"
+      ]
+    ],
+    "ens02_blastquestscript": [
+      [
+        "Actor[]",
+        "B21SpawnedEnemies"
+      ],
+      [
+        "Bool",
+        "B21VertibotReleased"
+      ]
+    ],
+    "enz01_resourcedroprefscript": [
+      [
+        "Bool",
+        "B21TouchdownPlayed"
+      ]
+    ],
+    "en02_mq_questscript": [
+      [
+        "EN02_ExamPlayerScript:TerminalDatum[]",
+        "B21ExamAnswers"
+      ]
+    ],
+    "en07_postertutorialscript": [
+      [
+        "EN07_Death_TutorialLightManagerScript",
+        "B21LightManager"
+      ]
+    ],
+    "enb_bunkermasterscript": [
+      [
+        "ObjectReference[]",
+        "B21DeconArches"
+      ],
+      [
+        "ObjectReference[]",
+        "B21DeconDoors"
+      ]
+    ],
+    "bos02_dmv_supportscript": [
+      [
+        "Actor[]",
+        "B21DMVActors"
+      ],
+      [
+        "Bool[]",
+        "B21DMVSpawned"
+      ],
+      [
+        "Bool",
+        "B21DMVSpawning"
+      ]
+    ],
+    "fragments:quests:qf_mtnm01_mayhem_0009732e": [
+      [
+        "Bool",
+        "B21AddedCannibalPerk"
+      ]
+    ],
+    "fragments:quests:qf_en05_basic_0008c87f": [
+      [
+        "Bool",
+        "B21GraduationPapersGranted"
+      ]
+    ],
+    "fragments:terminals:term_bos_taggerdyterminal_0034b443": [
+      [
+        "Bool",
+        "B21UltracitePlansDownloaded"
+      ]
+    ],
+    "en02_orbitalstrikemarkerscript": [
+      [
+        "Int",
+        "remainingDelayCount"
+      ]
+    ],
+    "w05_actornukereactionscript": [
+      [
+        "Bool",
+        "bReactingToNuke"
+      ],
+      [
+        "Bool",
+        "bHazmatOutfitApplied"
+      ]
+    ],
+    "defaultaliasinventorymanagement": [
+      [
+        "ObjectReference",
+        "ShutdownReferenceCache"
+      ]
+    ],
+    "defaultquesttriggerrespawnvipscript": [
+      [
+        "ObjectReference[]",
+        "PlayerVIPTriggerCache"
+      ]
+    ],
+    "mtr02_equipmentterminalscript": [
+      [
+        "CustomEvent",
+        "PageAccessed"
+      ]
+    ],
+    "tw002securitystationscript": [
+      [
+        "CustomEvent",
+        "TW002GotTape"
+      ]
+    ],
+    "klaxonmanagerscript": [
+      [
+        "CustomEvent",
+        "KlaxonManagerStateChangedClient"
+      ]
+    ],
+    "lc080_modusrevealmanagerscript": [
+      [
+        "CustomEvent",
+        "MODUSRevealReset"
+      ],
+      [
+        "CustomEvent",
+        "MODUSRevealStart"
+      ],
+      [
+        "CustomEvent",
+        "MODUSRevealLoad"
+      ]
+    ],
+    "nuke_masterscript": [
+      [
+        "Int",
+        "B21LocalCodeSeed"
+      ],
+      [
+        "Int[]",
+        "B21LocalCodeRevisions"
+      ],
+      [
+        "Bool[]",
+        "B21LocalCodeUsed"
+      ],
+      [
+        "Bool",
+        "B21StartingOfficers"
+      ]
+    ],
+    "en07_codehuntquestscript": [
+      [
+        "Form",
+        "B21LocalTargetPiece"
+      ]
+    ],
+    "nuke_codesscript": [
+      [
+        "Bool",
+        "B21RestoringOfficers"
+      ]
+    ],
+    "nuke_codesofficerscript": [
+      [
+        "Bool",
+        "B21LocalOfficerAssigned"
+      ]
+    ],
+    "defaultkeypadscript": [
+      [
+        "CustomEvent",
+        "KeypadSuccess"
+      ],
+      [
+        "ReferenceAlias[]",
+        "completionDelegates"
+      ],
+      [
+        "Bool",
+        "bDigitInProgress"
+      ],
+      [
+        "Bool",
+        "bKeypadSolved"
+      ],
+      [
+        "Int",
+        "iEntryDigit"
+      ],
+      [
+        "Int",
+        "iEntryPosition"
+      ],
+      [
+        "Int",
+        "iEnteredCode"
+      ],
+      [
+        "Int",
+        "iEntryGeneration"
+      ]
+    ],
+    "defaultaliassetstageonkeypadsuccess": [
+      [
+        "DefaultKeypadScript",
+        "registeredKeypad"
+      ]
+    ],
+    "w05_mqr_vault79keypadaliasscript": [
+      [
+        "DefaultKeypadScript",
+        "registeredKeypad"
+      ]
+    ],
+    "vault79raraventsoundscript": [
+      [
+        "Bool",
+        "bCrawlPlaying"
+      ]
+    ],
+    "w05_mqr_204p_questscript": [
+      [
+        "Bool",
+        "bInformationBribePaid"
+      ]
+    ],
+    "w05_003p_applyperkonenterrefscript": [
+      [
+        "Bool",
+        "bPlayerInside"
+      ]
+    ],
+    "defaultinstancealiasadditemoncreation": [
+      [
+        "Bool",
+        "creatingItem"
+      ]
+    ],
+    "w05_wayward_swapmarkeroncriteria": [
+      [
+        "Bool",
+        "patronAppearanceRolled"
+      ],
+      [
+        "Bool",
+        "patronShouldAppear"
+      ],
+      [
+        "Float",
+        "patronCycleStamp"
+      ]
+    ],
+    "w05_mqr_203p_questscript": [
+      [
+        "Int",
+        "activeRound"
+      ],
+      [
+        "Bool",
+        "roundClockUnlimited"
+      ],
+      [
+        "Int",
+        "crowdTimerSerial"
+      ],
+      [
+        "Bool",
+        "chemClockActive"
+      ],
+      [
+        "Float",
+        "chemTimeRemaining"
+      ]
+    ],
+    "w05_mqr_202p_questscript": [
+      [
+        "ReferenceAlias",
+        "pendingExitVent"
+      ],
+      [
+        "Scene",
+        "pendingExitScene"
+      ],
+      [
+        "Bool",
+        "pulseGrenadeDropped"
+      ],
+      [
+        "Bool",
+        "foodMenuPending"
+      ]
+    ],
+    "quests:e05_caravan:master_questscript": [
+      [
+        "Bool",
+        "B21CaravanRunActive"
+      ],
+      [
+        "Float",
+        "B21CaravanCooldownRemaining"
+      ],
+      [
+        "Int",
+        "B21CostaLastCompletedDay"
+      ]
+    ],
+    "quests:storm:regionboss:regionbossquestscript": [
+      [
+        "Int",
+        "B21StopStage"
+      ],
+      [
+        "Bool",
+        "B21BossesReleased"
+      ],
+      [
+        "Actor[]",
+        "B21DefeatedBosses"
+      ],
+      [
+        "ObjectReference",
+        "B21EntranceDoor"
+      ],
+      [
+        "Bool",
+        "B21DoorWasLocked"
+      ],
+      [
+        "Int",
+        "B21DoorLockLevel"
+      ]
+    ],
+    "quests:storm:regionboss:lightningrespawnaliasscript": [
+      [
+        "Actor[]",
+        "B21RespawnedActors"
+      ]
+    ],
+    "e08b_mobtargetpicker": [
+      [
+        "Actor[]",
+        "B21DecidedActors"
+      ],
+      [
+        "Actor[]",
+        "B21CrateAttackers"
+      ]
+    ],
+    "e09c_questscript": [
+      [
+        "Int",
+        "B21WeddingMerriment"
+      ],
+      [
+        "Float",
+        "B21NextCalloutTime"
+      ]
+    ],
+    "creatureultraciteabominationscript": [
+      [
+        "Bool",
+        "B21BossInvulnerable"
+      ],
+      [
+        "Int",
+        "B21TunnelState"
+      ],
+      [
+        "Float",
+        "B21LockedHealthPercent"
+      ],
+      [
+        "Bool",
+        "B21InvulnMessageCooldown"
+      ]
+    ],
+    "e09a_destructiblecrystalsscript": [
+      [
+        "Float",
+        "B21LastMeleeOnlyMessageTime"
+      ]
+    ],
+    "e09a_crystalhengescript": [
+      [
+        "Float",
+        "B21LastMeleeOnlyMessageTime"
+      ]
+    ],
+    "e09b_script": [
+      [
+        "Int",
+        "B21WavesFailed"
+      ],
+      [
+        "Int",
+        "B21CappyHuntTotal"
+      ],
+      [
+        "Int",
+        "B21ChickensRemaining"
+      ],
+      [
+        "ObjectReference[]",
+        "B21CaughtChickens"
+      ],
+      [
+        "Bool",
+        "B21BrahminTippingActive"
+      ],
+      [
+        "ObjectReference[]",
+        "B21TippedBrahmin"
+      ],
+      [
+        "Bool",
+        "B21KeepMovingActive"
+      ],
+      [
+        "Int",
+        "B21KeepMovingExplosions"
+      ],
+      [
+        "Float",
+        "B21KeepMovingLastX"
+      ],
+      [
+        "Float",
+        "B21KeepMovingLastY"
+      ],
+      [
+        "Float",
+        "B21KeepMovingLastZ"
+      ],
+      [
+        "Scene",
+        "B21IntroScene"
+      ]
+    ],
+    "e09b_mobwaves": [
+      [
+        "Actor[]",
+        "B21WaveActors"
+      ],
+      [
+        "Int[]",
+        "B21WaveActorWaves"
+      ],
+      [
+        "Bool",
+        "B21WaveActive"
+      ],
+      [
+        "Bool",
+        "B21WaveSpawning"
+      ],
+      [
+        "Int",
+        "B21ActiveWave"
+      ],
+      [
+        "Int",
+        "B21ActiveSubwaves"
+      ],
+      [
+        "Int",
+        "B21ActiveSpawned"
+      ],
+      [
+        "Float",
+        "B21ActiveTimeRemaining"
+      ]
+    ],
+    "moon_ambush_questscript": [
+      [
+        "ReferenceAlias",
+        "B21TalkNPC"
+      ],
+      [
+        "Scene",
+        "B21TalkScene"
+      ],
+      [
+        "Int",
+        "B21TalkStage"
+      ],
+      [
+        "Scene",
+        "B21PendingScene"
+      ],
+      [
+        "Int",
+        "B21PendingSceneStage"
+      ],
+      [
+        "Float",
+        "B21PendingSceneSeconds"
+      ]
+    ],
+    "moon_ambush_cartscript": [
+      [
+        "Bool",
+        "B21DepositBusy"
+      ]
+    ],
+    "moon_herd_questscript": [
+      [
+        "ReferenceAlias",
+        "B21TalkNPC"
+      ],
+      [
+        "Int",
+        "B21TalkStage"
+      ],
+      [
+        "Scene",
+        "B21PendingScene"
+      ],
+      [
+        "Int",
+        "B21PendingSceneStage"
+      ],
+      [
+        "Float",
+        "B21PendingSceneSeconds"
+      ]
+    ],
+    "quests:e01c_tales:dark:questscript": [
+      [
+        "Bool",
+        "B21EventFinishing"
+      ]
+    ],
+    "quests:e01c_tales:dark:flatwoodsclonesscript": [
+      [
+        "Bool",
+        "B21BossVulnerable"
+      ]
+    ],
+    "quests:e01c_tales:dark:flatwoodsbossscript": [
+      [
+        "Bool",
+        "B21Vulnerable"
+      ],
+      [
+        "Float",
+        "B21LastInvulnerableMessageTime"
+      ]
+    ],
+    "quests:e01b_encryptid:questscript": [
+      [
+        "Bool",
+        "B21SecondWaveStarted"
+      ],
+      [
+        "Bool",
+        "B21EventFinishing"
+      ],
+      [
+        "Int",
+        "B21ConduitSoundID"
+      ]
+    ]
+  },
+  "_FO76_TO_FO4_SCRIPT_PROPERTY_REMOVALS": {
+    "defaultaliassetstageonkeypadsuccess": [
+      "StageToSet",
+      "preReqStage"
+    ]
+  },
+  "_FO76_TO_FO4_SCRIPT_PROPERTY_ADDITIONS": {
+    "defaultteachrecipeonmenuitemrun": [
+      [
+        "GlobalVariable[]",
+        "LearnedGlobals",
+        "GlobalVariable[] Property LearnedGlobals Auto"
+      ]
+    ],
+    "w05_actornukereactionscript": [
+      [
+        "Outfit",
+        "BaseOutfit",
+        "Outfit Property BaseOutfit Auto"
+      ]
+    ],
+    "fragments:packages:pf_rd01_enc04_eyebotpackage_0078bec3": [
+      [
+        "RefCollectionAlias",
+        "Generators",
+        "RefCollectionAlias Property Generators Auto Mandatory"
+      ]
+    ],
+    "fragments:scenes:sf_v94_1_0015fb0a": [
+      [
+        "Keyword",
+        "V94AccessQuestKeyword",
+        "Keyword Property V94AccessQuestKeyword Auto Mandatory"
+      ],
+      [
+        "Scene",
+        "V94Radio_1",
+        "Scene Property V94Radio_1 Auto Mandatory"
+      ]
+    ],
+    "fragments:scenes:sf_v94_3_0015fb12": [
+      [
+        "Keyword",
+        "V94AccessQuestKeyword",
+        "Keyword Property V94AccessQuestKeyword Auto Mandatory"
+      ],
+      [
+        "Scene",
+        "V94Radio_3",
+        "Scene Property V94Radio_3 Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_mtr08_claimtokenexchang_0004c6e5": [
+      [
+        "MiscObject",
+        "MTR08_ClaimToken",
+        "MiscObject Property MTR08_ClaimToken Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_arcade_prizeterminal_ti_0065cec5": [
+      [
+        "ActorValue",
+        "PointsAV",
+        "ActorValue Property PointsAV Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_arcade_prizeterminal_ti_0065cec6": [
+      [
+        "ActorValue",
+        "PointsAV",
+        "ActorValue Property PointsAV Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_arcade_prizeterminal_ti_0065cec7": [
+      [
+        "ActorValue",
+        "PointsAV",
+        "ActorValue Property PointsAV Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_arcade_prizeterminal_ti_0065cec8": [
+      [
+        "ActorValue",
+        "PointsAV",
+        "ActorValue Property PointsAV Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_arcade_prizeterminal__0065cec9_1": [
+      [
+        "ActorValue",
+        "PointsAV",
+        "ActorValue Property PointsAV Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_en06_presidentialvendor_0052bde0": [
+      [
+        "MiscObject",
+        "EN06_PresidentialSeal",
+        "MiscObject Property EN06_PresidentialSeal Auto Mandatory"
+      ]
+    ],
+    "fragments:quests:qf_76exiteventquest_003addf9": [
+      [
+        "Quest",
+        "p76ExitEventAnnounce",
+        "Quest Property p76ExitEventAnnounce Auto Mandatory"
+      ],
+      [
+        "Keyword",
+        "p76ExitEventAnnounce_Keyword",
+        "Keyword Property p76ExitEventAnnounce_Keyword Auto Mandatory"
+      ]
+    ],
+    "fragments:quests:qf_bs02_e01_metal_005fe4d7": [
+      [
+        "MusicType",
+        "Music_CombatMusic",
+        "MusicType Property Music_CombatMusic Auto Mandatory"
+      ]
+    ],
+    "fragments:quests:qf_p02l_mccreary_fetchquest_0041b865": [
+      [
+        "Int",
+        "SuppliesCount",
+        "Int Property SuppliesCount Auto Mandatory"
+      ]
+    ],
+    "fragments:quests:qf_rsvp00_quest_master_0050a2ee": [
+      [
+        "Keyword",
+        "pRSVP00_Keyword_QuestActive_VectorToFlatwoods",
+        "Keyword Property pRSVP00_Keyword_QuestActive_VectorToFlatwoods Auto Mandatory"
+      ],
+      [
+        "ReferenceAlias",
+        "Alias_Container_Mailbox_BridgeStreet14_Jeremiah",
+        "ReferenceAlias Property Alias_Container_Mailbox_BridgeStreet14_Jeremiah Auto Mandatory"
+      ]
+    ],
+    "fragments:quests:qf_storm_se09_00783a58": [
+      [
+        "ReferenceAlias",
+        "Trigger_CallStrikes",
+        "ReferenceAlias Property Trigger_CallStrikes Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_cb02_vending_terminal_t_0051aa03": [
+      [
+        "LeveledItem",
+        "LGND_PossibleLegendaryItemBaseLists",
+        "LeveledItem Property LGND_PossibleLegendaryItemBaseLists Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_nativerobotterminalsubm_002c506f": [
+      [
+        "Keyword",
+        "LinkTerminalProtectron",
+        "Keyword Property LinkTerminalProtectron Auto Mandatory"
+      ],
+      [
+        "ActorValue",
+        "MiscStatRobotHasBeenDisabled",
+        "ActorValue Property MiscStatRobotHasBeenDisabled Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_sfl02_track_vertibotter_00184a03": [
+      [
+        "GlobalVariable",
+        "LCP_BoSZ01",
+        "GlobalVariable Property LCP_BoSZ01 Auto Mandatory"
+      ]
+    ],
+    "fragments:terminals:term_v94_access_terminal_002fb273": [
+      [
+        "Holotape",
+        "V94_AccessCodeHolotape",
+        "Holotape Property V94_AccessCodeHolotape Auto Mandatory"
+      ]
+    ],
+    "fragments:topicinfos:tif_v94_3_personal_003ee27b": [
+      [
+        "ActorValue",
+        "V94_3_Pump_RobotHasPlayedSpawnLineValue",
+        "ActorValue Property V94_3_Pump_RobotHasPlayedSpawnLineValue Auto Mandatory"
+      ]
+    ],
+    "fragments:topicinfos:tif_v94_3_personal_003ee27e": [
+      [
+        "ActorValue",
+        "V94_3_Pump_RobotHasPlayedSpawnLineValue",
+        "ActorValue Property V94_3_Pump_RobotHasPlayedSpawnLineValue Auto Mandatory"
+      ]
+    ],
+    "defaultaliasonactivategiveitem": [
+      [
+        "ActorValue",
+        "RequiredActorValue",
+        "ActorValue Property RequiredActorValue Auto"
+      ],
+      [
+        "Int",
+        "RequiredActorValueValue",
+        "Int Property RequiredActorValueValue Auto"
+      ]
+    ],
+    "weapontestingrangespellscript": [
+      [
+        "Potion",
+        "Stimpak",
+        "Potion Property Stimpak Auto Mandatory"
+      ]
+    ],
+    "radiogeneral_masterscript": [
+      [
+        "Int[]",
+        "songFormIDs",
+        "Int[] Property songFormIDs Auto Const Mandatory"
+      ]
+    ],
+    "radiodramaradio_masterscript": [
+      [
+        "Int[]",
+        "songFormIDs",
+        "Int[] Property songFormIDs Auto Const Mandatory"
+      ],
+      [
+        "Int[]",
+        "dramaFormIDs",
+        "Int[] Property dramaFormIDs Auto Const Mandatory"
+      ],
+      [
+        "Int[]",
+        "commercialFormIDs",
+        "Int[] Property commercialFormIDs Auto Const Mandatory"
+      ]
+    ]
+  },
+  "additions": {
+    "fo76:fo4": [
+      "B21TwoStateActivator76",
+      "B21MusicInstrumentScript",
+      "B21_PlayerFear",
+      "B21:FurnitureBuff",
+      "B21:StoryEventOnTriggerEnter",
+      "B21:StoryEventOnActivateStartScene",
+      "B21:QuestRewards",
+      "B21:CurrencyQuestRewards",
+      "B21:ExpeditionMissionRewards",
+      "B21:LocalEncounterMaterializer",
+      "B21:EncounterWaveCatalog",
+      "B21:QuestVariables",
+      "B21:QuestTimer",
+      "B21:QuestStartKeyword",
+      "B21:ObjectiveTimers",
+      "B21:EnclaveEventSupport",
+      "B21:HolotapeStageOnPlay",
+      "B21:PlanLearnOnRead",
+      "B21:WorkshopCollector",
+      "B21:AmmoConverter",
+      "B21:RandomEncounterStartup",
+      "B21_ActivateAliasWithRequiredItem",
+      "B21_ShowMessageOnActivateAlias",
+      "B21:KeypadNative",
+      "B21_WaywardState",
+      "B21_W05QuestDistanceCheckScript",
+      "Fragments:Packages:PF_BS02_MQ02_Missing_Marci_0060E191_2",
+      "Fragments:Scenes:SF_W05_MQR_202P_RaRaVent_097_0056B746"
+    ]
+  }
+}

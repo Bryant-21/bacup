@@ -15,7 +15,7 @@ _NS = "##mod_builder"
 class ModBuilderWorkspace(BaseWorkspace):
     """Workspace wrapper for the Mod Builder."""
 
-    name = "Mod Manager"
+    name = "Mod Builder"
     icon = "MOD"
     id = "mod_builder"
 

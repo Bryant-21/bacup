@@ -13,6 +13,7 @@ pub mod grass_assets;
 pub mod grass_walk;
 pub mod ltex_walk;
 pub mod manifest;
+mod raw_source;
 pub mod nif_refs;
 pub mod starfield_records;
 
@@ -72,6 +73,7 @@ use std::path::Path;
 use crate::terrain_textures::ba2_resolver::Ba2Resolver;
 use crate::terrain_textures::grass_walk::{
     gcvr_land_texture_form_keys, grass_entries_for_gcvr, grass_entries_for_ltex,
+    ground_cover_manifest,
 };
 use crate::terrain_textures::ltex_walk::{build_bundle, normalize_esp_form_key};
 use crate::terrain_textures::manifest::{GrassEntry, TextureManifest};
@@ -107,7 +109,7 @@ pub fn py_terrain_with_textures(py: Python<'_>, options_json: &str) -> PyResult<
                 return Err("source_plugin_path is required".to_string());
             }
             let source_game = normalize_source_game(&opts.source_game)?;
-            let source_handle = crate::run::OwnedPluginHandle::load(
+            let source_handle = crate::run::OwnedPluginHandle::load_source(
                 Path::new(&opts.source_plugin_path),
                 source_game.as_str(),
                 None,
@@ -165,14 +167,8 @@ pub fn run_with_progress(
         source_worldspace_authoring_dir: opts.source_worldspace_authoring_dir.clone(),
         source_worldspace_terrain_ids_json: opts.source_worldspace_terrain_ids_json.clone(),
         heightmap_output_path: opts.heightmap_output_path.clone(),
-        // Pass .btd4 emission only on pass 2 (emit_textures=true = the record-emitting pass).
-        // Pass 1 (emit_textures=false) only collects required LTEX form IDs; writing the
-        // sidecar there would produce an incomplete file and run the emitter twice.
-        btd4_output_path: if emit_textures {
-            opts.btd4_output_path.clone()
-        } else {
-            String::new()
-        },
+        // The scan does not emit a sidecar; it needs this request to retain the entire raw source bank.
+        btd4_output_path: opts.btd4_output_path.clone(),
         conversion_workers: opts.conversion_workers,
         land_skip_ground_cover_variants: opts.land_skip_ground_cover_variants,
         // Reuse only matters on the record-emitting pass (pass 2). Pass 1
@@ -229,6 +225,7 @@ pub fn run_with_progress(
         required_profile.operation_counts,
     );
     let required_usages = required_profile.usages;
+    let record_usages = required_profile.record_usages;
     let required_ltex: BTreeSet<&str> = required_usages
         .iter()
         .map(|usage| usage.ltex_form_key.as_str())
@@ -254,11 +251,22 @@ pub fn run_with_progress(
             &manifest_path,
         )?;
         let mut manifest = manifest;
-        if assign_target_grass(
+        let raw_sources = source_game == "fo76" && !opts.btd4_output_path.trim().is_empty();
+        if raw_sources {
+            raw_source::prepare_manifest(&mut manifest)?;
+            raw_source::mark_raw_bank_only(&mut manifest, &record_usages)?;
+            manifest.ground_covers =
+                terrain_native::authoring_emit::btd_ground_cover_form_keys(&opts.btd_path)
+                    .map_err(|e| format!("read BTD ground-cover table: {e}"))?
+                    .iter()
+                    .map(|form_key| ground_cover_manifest(opts.source_handle_id, form_key))
+                    .collect::<Result<_, _>>()?;
+        }
+        let assigned_grass = assign_target_grass(
             &mut manifest,
             &TerrainRecordRemaps::new(&opts).target_grass_by_editor_id,
-        ) > 0
-        {
+        );
+        if raw_sources || assigned_grass > 0 {
             let json = serde_json::to_string_pretty(&manifest)
                 .map_err(|e| format!("serialize manifest: {e}"))?;
             fs::write(&manifest_path, json)
@@ -1321,7 +1329,10 @@ pub fn build_manifest(
         textures.push(bundle);
     }
 
-    let manifest = TextureManifest { textures };
+    let manifest = TextureManifest {
+        textures,
+        ground_covers: Vec::new(),
+    };
     if let Some(parent) = manifest_output_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
@@ -1421,6 +1432,7 @@ mod tests {
                 grass: vec![grass("RiverRockGrassObj01"), grass("Forest76GrassObj03A")],
                 ..crate::terrain_textures::manifest::TextureBundle::default()
             }],
+            ..TextureManifest::default()
         };
         let targets = HashMap::from([(
             normalized_editor_id("riverrockgrassobj01"),

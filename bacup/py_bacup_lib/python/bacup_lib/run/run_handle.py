@@ -153,6 +153,10 @@ class ConversionRun:
         """
         return _native().conversion_run_drain_warnings(self._id)
 
+    def native_overwrite_paths(self) -> list[str]:
+        """Data-relative keys (``materials/...``, ``textures/...``) written over FO4's files."""
+        return _native().conversion_run_native_overwrite_paths(self._id)
+
     def run_phase(
         self,
         name: str,

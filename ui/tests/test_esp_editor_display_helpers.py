@@ -43,7 +43,7 @@ def test_referenced_by_label_includes_editor_id(monkeypatch) -> None:
         app.session._plugins = [_loaded_plugin(7, "Patch.esp", 0)]
 
         assert app._referenced_by_label(7, 0x01001234) == (
-            "Patch.esp  0x01001234  B21_SourceRecord"
+            "Patch.esp  01001234  B21_SourceRecord"
         )
     finally:
         app._executor.shutdown(wait=False, cancel_futures=True)

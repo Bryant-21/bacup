@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--space", choices=("measuring", "healthy", "low", "unavailable", "split"), default="measuring")
     parser.add_argument("--extra-projects", type=int, default=0)
     parser.add_argument("--project", default="appalachia")
+    parser.add_argument("--search", default="", help="Tales Config search text (with --screen tales-config)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     collapsing_header = imgui.collapsing_header
@@ -188,6 +189,7 @@ def main():
         elif args.screen.startswith("tales-config"):
             panel._open_tales_config()
             panel._tales_config()._page = int(args.screen.rpartition("-")[2] or 0) if args.screen[-1].isdigit() else 0
+            panel._tales_config()._search = args.search
         elif args.screen == "completion":
             panel._completion = {"deployed": False, "elapsed_seconds": 5025, "mod_path": str(args.output.parent / "fixture-output" / "A very long project folder name")}
 

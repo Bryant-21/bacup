@@ -659,7 +659,7 @@ class SetupWizard:
 
             imgui.same_line()
             if imgui.button(browse_label, imgui.ImVec2(browse_w, 0)):
-                path = _pick_folder(f"Select {profile.display_name} Directory")
+                path = _pick_folder(f"Select {profile.display_name} Directory", gp["path"])
                 if path:
                     gp["path"] = path
                     gp["valid"] = validate_game_path(gid, path)
@@ -693,7 +693,7 @@ class SetupWizard:
 
                 imgui.same_line()
                 if imgui.button(browse_label, imgui.ImVec2(browse_w, 0)):
-                    path = _pick_folder("Select Extracted Data Directory")
+                    path = _pick_folder("Select Extracted Data Directory", self._extracted_dirs[gid])
                     if path:
                         self._extracted_dirs[gid] = path
                         self._extracted_valid[gid] = self._validate_extracted(path)
@@ -1151,10 +1151,10 @@ class SetupWizard:
         return bool(cache_path and cache_path.is_file())
 
 
-def _pick_folder(title: str = "Select Folder") -> str | None:
+def _pick_folder(title: str = "Select Folder", initial_dir: str = "") -> str | None:
     try:
         from creation_lib.ui.widgets.pick_folder import pick_folder
-        return pick_folder(title)
+        return pick_folder(title, initial_dir)
     except Exception as e:
         _log.warning("Folder picker failed: %s", e)
         return None

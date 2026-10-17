@@ -74,7 +74,7 @@ const REQUIRED_RUNTIME_DEPENDENCY_SIGNATURES: &[&str] = &[
     "CREA", "LVLC", "PACK", "CSTY", "SPEL", "MGEF", "ENCH", "ALCH", "AMEF", "WEAP", "PROJ", "AMMO",
     "ARMO", "ARMA", "BPTD", "BOOK", "CCRD", "CHIP", "CMNY", "IDLE", "IDLM", "ANIO", "FACT", "EYES",
     "HAIR", "HDPT", "IMOD", "KEYM", "LVLI", "LVSP", "MISC", "MSTT", "NOTE", "NPC_", "SCPT", "STAT",
-    "EFSH", "LIGH", "SOUN", "SNDR", "IMGS", "IPCT", "IPDS", "EXPL", "DEBR", "AVIF", "GLOB", "FLST",
+    "EFSH", "LIGH", "SOUN", "SNDR", "IMAD", "IMGS", "IPCT", "IPDS", "EXPL", "DEBR", "AVIF", "GLOB", "FLST",
     "KYWD", "TXST", "RGDL", "GMST",
 ];
 
@@ -470,6 +470,17 @@ pub fn build_creature_dependency_ledger_with_load_orders_and_exclusions(
         .map(|signature| signature.trim().to_ascii_uppercase())
         .collect::<BTreeSet<_>>();
     let winners = select_winners(records, interner)?;
+    let mut idle_children = BTreeMap::<StableFormKey, Vec<StableFormKey>>::new();
+    for (child, source) in winners.iter().filter(|(_, source)| source.record.sig.as_str() == "IDLE") {
+        if let Some(masters) = source_load_orders.get(&(source.provenance.game, source.provenance.source_plugin.as_str()))
+            && let Ok(references) = legacy_idle_embedded_references(source.record, legacy_condition_family(source.provenance.game), &source.provenance.source_plugin, masters, interner)
+        {
+            for reference in references.into_iter().filter(|reference| reference.locator == "ANAM[0].parent@0") {
+                let parent = StableFormKey { local: reference.form_key.local, plugin: interner.resolve(reference.form_key.plugin).unwrap_or("").to_string() };
+                idle_children.entry(parent).or_default().push(child.clone());
+            }
+        }
+    }
     let creature_keys = winners
         .iter()
         .filter_map(|(source, winner)| {
@@ -500,13 +511,13 @@ pub fn build_creature_dependency_ledger_with_load_orders_and_exclusions(
             .iter()
             .map(|reference| reference.target.clone())
             .collect::<Vec<_>>();
-        let mut queue = VecDeque::from([source.clone()]);
-        queue.extend(dependency_seed_form_keys.iter().cloned());
+        let mut queue = VecDeque::from([(source.clone(), false)]);
+        queue.extend(dependency_seed_form_keys.iter().cloned().map(|key| (key, false)));
         let mut visited = BTreeSet::new();
         let mut closure = BTreeSet::new();
         let mut blockers = BTreeSet::new();
-        while let Some(key) = queue.pop_front() {
-            if !visited.insert(key.clone()) {
+        while let Some((key, expand_idle_children)) = queue.pop_front() {
+            if !visited.insert((key.clone(), expand_idle_children)) {
                 continue;
             }
             let Some(dependency) = winners.get(&key) else {
@@ -514,13 +525,27 @@ pub fn build_creature_dependency_ledger_with_load_orders_and_exclusions(
                 continue;
             };
             if dependency.record.sig.as_str() != "CREA"
-                && !is_runtime_dependency_signature(dependency.record.sig.as_str())
+                && !is_runtime_dependency_record(dependency.record, interner)
             {
                 continue;
             }
             closure.insert(key.clone());
-            let receipt =
+            let mut receipt =
                 build_record_receipt(&key, dependency, &winners, &source_load_orders, interner)?;
+            if expand_idle_children && dependency.record.sig.as_str() == "IDLE"
+                && !dependency.record.fields.iter().any(|field| field.sig.as_str() == "MODL" && matches!(field.value, FieldValue::String(path) if interner.resolve(path).is_some_and(|path| path.to_ascii_lowercase().ends_with(".kf"))))
+            {
+                for child in idle_children.get(&key).into_iter().flatten() {
+                    if !receipt.references.iter().any(|reference| &reference.target == child) {
+                        receipt.references.push(DependencyReferenceReceipt {
+                            target: child.clone(),
+                            source_locators: vec!["IDLE.children:ANAM.parent".into()],
+                            resolution: DependencyReferenceResolution::Followed { signature: "IDLE".into() },
+                        });
+                    }
+                }
+                receipt.references.sort_by(|left, right| left.target.cmp(&right.target));
+            }
             let explicitly_excluded = excluded_signatures.contains(&receipt.signature);
             if !explicitly_excluded
                 && let PairRecordLoweringDisposition::Blocked { reason_codes } = &receipt.lowering
@@ -544,10 +569,21 @@ pub fn build_creature_dependency_ledger_with_load_orders_and_exclusions(
                         reference.resolution,
                         DependencyReferenceResolution::Followed { .. }
                     )
-                    .then(|| reference.target.clone())
+                    .then(|| {
+                        let selects_idle = receipt.signature == "PACK"
+                            || reference.source_locators.iter().any(|locator| locator.starts_with("SCDA.PlayIdle(") || locator == "IDLE.children:ANAM.parent");
+                        (reference.target.clone(), selects_idle)
+                    })
                 }));
             }
-            record_receipts.entry(key).or_insert(receipt);
+            record_receipts.entry(key).and_modify(|previous| {
+                for reference in &receipt.references {
+                    if !previous.references.iter().any(|existing| existing.target == reference.target) {
+                        previous.references.push(reference.clone());
+                    }
+                }
+                previous.references.sort_by(|left, right| left.target.cmp(&right.target));
+            }).or_insert(receipt);
         }
         let (ammo_effect_folds, owner_fold_blockers) =
             build_candidate_ammo_effect_folds(&closure, &winners, interner)?;
@@ -1085,12 +1121,27 @@ fn runtime_references(
     interner: &StringInterner,
 ) -> Result<Vec<DependencyReferenceReceipt>, CreatureDependencyError> {
     let mut occurrences = Vec::new();
+    if record.sig.as_str() == "SCPT" {
+        let names = super::legacy_idle_scripts::source_playidle_names(record, interner)
+            .map_err(CreatureDependencyError::InvalidLedger)?;
+        for name in names {
+            let matches = winners.values().filter(|source| source.provenance.game == provenance.game
+                && source.record.sig.as_str() == "IDLE"
+                && source.record.eid.and_then(|eid| interner.resolve(eid)).is_some_and(|eid| eid.eq_ignore_ascii_case(&name)))
+                .collect::<Vec<_>>();
+            let [source] = matches.as_slice() else { return Err(CreatureDependencyError::InvalidLedger(format!("source PlayIdle {name} does not resolve to one IDLE"))); };
+            occurrences.push((source.record.form_key, format!("SCDA.PlayIdle({name})")));
+        }
+    }
     let mut signature_indices = BTreeMap::<String, usize>::new();
     for field in &record.fields {
         let signature = field.sig.as_str().to_string();
         let occurrence = signature_indices.entry(signature.clone()).or_default();
         let locator = format!("{signature}[{occurrence}]");
         *occurrence += 1;
+        if is_nellis_callback_quest(record, interner) && signature != "SCRI" {
+            continue;
+        }
         if !is_runtime_owned_reference_field(record.sig.as_str(), &signature) {
             continue;
         }
@@ -1100,11 +1151,13 @@ fn runtime_references(
         && let Some(source_master_names) =
             source_load_orders.get(&(provenance.game, provenance.source_plugin.as_str()))
     {
-        let mut conto_index = 0usize;
+        let mut embedded_indices = BTreeMap::<&str, usize>::new();
         for field in &record.fields {
-            if field.sig.as_str() != "CNTO" {
+            let signature = field.sig.as_str();
+            if !matches!(signature, "CNTO" | "SNAM") {
                 continue;
             }
+            let index = embedded_indices.entry(signature).or_default();
             if let FieldValue::Bytes(bytes) = &field.value
                 && bytes.len() == 8
             {
@@ -1119,10 +1172,11 @@ fn runtime_references(
                     source_master_names,
                     interner,
                 ) {
-                    occurrences.push((form_key, format!("CNTO[{conto_index}].item@0")));
+                    let member = if signature == "CNTO" { "item" } else { "faction" };
+                    occurrences.push((form_key, format!("{signature}[{index}].{member}@0")));
                 }
             }
-            conto_index += 1;
+            *index += 1;
         }
     }
     if record.sig.as_str() == "AMMO"
@@ -1301,7 +1355,7 @@ fn runtime_references(
                     DependencyReferenceResolution::MissingSourceRecord,
                     |winner| {
                         let signature = winner.record.sig.as_str().to_string();
-                        if is_runtime_dependency_signature(&signature) {
+                        if is_runtime_dependency_record(winner.record, interner) {
                             DependencyReferenceResolution::Followed { signature }
                         } else {
                             DependencyReferenceResolution::OutOfRuntimeScope { signature }
@@ -1366,6 +1420,23 @@ fn lowering_disposition(
     interner: &StringInterner,
 ) -> PairRecordLoweringDisposition {
     let signature = record.sig.as_str();
+    if provenance.game == LegacyCreatureGame::Fnv && is_nellis_callback_quest(record, interner) {
+        return PairRecordLoweringDisposition::Ready {
+            mechanism: "legacy_nellis_creature_callback_quest".into(),
+        };
+    }
+    if provenance.game == LegacyCreatureGame::Fnv && signature == "IMAD" {
+        let mut target = record.clone();
+        return match super::creature_imagespace::lower(&mut target, interner) {
+            Ok(()) if super::creature_imagespace::is_lowered(&target, interner) => PairRecordLoweringDisposition::Ready {
+                mechanism: "source_creature_imagespace_curves_and_native_luminance".into(),
+            },
+            Ok(()) => PairRecordLoweringDisposition::Blocked {
+                reason_codes: vec!["legacy_imagespace_source_channels_unverified".into()],
+            },
+            Err(reason) => PairRecordLoweringDisposition::Blocked { reason_codes: vec![reason] },
+        };
+    }
     let ready = match signature {
         "CREA" => Some("source_rig_creature_projection"),
         "ARMO" | "ARMA" => Some("legacy_armor_pair_relayout"),
@@ -1927,6 +1998,22 @@ fn is_runtime_dependency_signature(signature: &str) -> bool {
     REQUIRED_RUNTIME_DEPENDENCY_SIGNATURES.contains(&signature)
 }
 
+fn is_runtime_dependency_record(record: &Record, interner: &StringInterner) -> bool {
+    is_runtime_dependency_signature(record.sig.as_str()) || is_nellis_callback_quest(record, interner)
+}
+
+fn is_nellis_callback_quest(record: &Record, interner: &StringInterner) -> bool {
+    if record.sig.as_str() != "QUST" || interner.resolve(record.form_key.plugin) != Some("FalloutNV.esm") {
+        return false;
+    }
+    let expected = match record.form_key.local {
+        0x0FED44 => "VFreeformNellis",
+        0x1083DE => "VNellisInfestation",
+        _ => return false,
+    };
+    record.eid.and_then(|eid| interner.resolve(eid)).is_some_and(|eid| eid.eq_ignore_ascii_case(expected))
+}
+
 fn stable_form_key(
     form_key: FormKey,
     interner: &StringInterner,
@@ -2312,6 +2399,28 @@ mod tests {
                         if signature == "MISC"
                 )
         }));
+    }
+
+    #[test]
+    fn raw_creature_faction_uses_source_master_index_and_preserves_row_locator() {
+        let interner = StringInterner::new();
+        let mut creature = record(&interner, "CREA", 0x100, "CreaturePatch.esp", &[]);
+        let mut faction_row = [0_u8;8];
+        faction_row[..4].copy_from_slice(&0x0100_0300_u32.to_le_bytes());
+        faction_row[4] = 255;
+        creature.fields.push(FieldEntry {sig:SubrecordSig(*b"SNAM"),value:FieldValue::Bytes(faction_row.to_vec().into())});
+        let faction = record(&interner, "FACT", 0x300, "FactionMaster.esm", &[]);
+        let decoy = record(&interner, "FACT", 0x300, "FalloutNV.esm", &[]);
+        let ledger = build_creature_dependency_ledger_with_load_orders(
+            &[source(&creature,LegacyCreatureGame::Fnv,2),source(&faction,LegacyCreatureGame::Fnv,1),source(&decoy,LegacyCreatureGame::Fnv,0)],
+            CreatureDependencyOptions { expected_creature_winners:Some(1) },
+            &[LegacyPluginLoadOrder {game:LegacyCreatureGame::Fnv,source_plugin:"CreaturePatch.esp".into(),source_master_names:vec!["FalloutNV.esm".into(),"FactionMaster.esm".into()]}],
+            &interner,
+        ).unwrap();
+        let receipt = ledger.records.iter().find(|record| record.signature == "CREA").unwrap();
+        assert!(receipt.references.iter().any(|reference| reference.target.local == 0x300
+            && reference.target.plugin == "FactionMaster.esm" && reference.source_locators == ["SNAM[0].faction@0"]));
+        assert!(!receipt.references.iter().any(|reference| reference.target.plugin == "FalloutNV.esm"));
     }
 
     #[test]
@@ -2876,6 +2985,32 @@ mod tests {
     }
 
     #[test]
+    fn nellis_creature_callback_closure_keeps_exact_quests_and_storage_script() {
+        let interner = StringInterner::new();
+        let creature = record(&interner, "CREA", 0x102AAD, "FalloutNV.esm", &[("FalloutNV.esm", 0x102AB3)]);
+        let mut script = record(&interner, "SCPT", 0x102AB3, "FalloutNV.esm", &[
+            ("FalloutNV.esm", 0x0FED44), ("FalloutNV.esm", 0x1083DE), ("Other.esm", 0x0FED44),
+        ]);
+        for field in &mut script.fields { field.sig = SubrecordSig(*b"SCRO"); }
+        let mut storage_quest = record(&interner, "QUST", 0x0FED44, "FalloutNV.esm", &[("FalloutNV.esm", 0x0FED40)]);
+        storage_quest.eid = Some(interner.intern("VFreeformNellis"));
+        storage_quest.fields[0].sig = SubrecordSig(*b"SCRI");
+        let storage = record(&interner, "SCPT", 0x0FED40, "FalloutNV.esm", &[]);
+        let mut objective_quest = record(&interner, "QUST", 0x1083DE, "FalloutNV.esm", &[]);
+        objective_quest.eid = Some(interner.intern("VNellisInfestation"));
+        let mut unrelated = record(&interner, "QUST", 0x0FED44, "Other.esm", &[]);
+        unrelated.eid = Some(interner.intern("VFreeformNellis"));
+        let records = [&creature, &script, &storage_quest, &storage, &objective_quest, &unrelated]
+            .into_iter().map(|record| source(record, LegacyCreatureGame::Fnv, 1)).collect::<Vec<_>>();
+        let ledger = build_creature_dependency_ledger(&records, CreatureDependencyOptions {expected_creature_winners: Some(1)}, &interner).unwrap();
+        assert!(ledger.candidates[0].blockers.is_empty(), "{:?}", ledger.candidates[0].blockers);
+        let closure = &ledger.candidates[0].closure_form_keys;
+        assert_eq!(closure.len(), 5);
+        assert!(closure.iter().any(|key| key.plugin == "FalloutNV.esm" && key.local == 0x0FED40));
+        assert!(!closure.iter().any(|key| key.plugin == "Other.esm"));
+    }
+
+    #[test]
     fn legacy_scro_player_ref_is_remapped_to_the_exact_fo4_intrinsic() {
         for (game, plugin) in [
             (LegacyCreatureGame::Fnv, "FalloutNV.esm"),
@@ -2952,6 +3087,35 @@ mod tests {
                         if source.local == 0x14
                 ))
             );
+        }
+    }
+
+    #[test]
+    fn playidle_container_expands_children_but_leaf_ancestry_does_not() {
+        let interner = StringInterner::new();
+        let creature = record(&interner, "CREA", 0x100, "FalloutNV.esm", &[("FalloutNV.esm", 0x200)]);
+        let mut script = record(&interner, "SCPT", 0x200, "FalloutNV.esm", &[]);
+        let make_idle = |local, name: &str, parent: u32, path: &str| {
+            let mut idle = record(&interner, "IDLE", local, "FalloutNV.esm", &[]);
+            idle.eid = Some(interner.intern(name));
+            idle.fields.extend([
+                FieldEntry { sig: SubrecordSig(*b"EDID"), value: FieldValue::String(interner.intern(name)) },
+                FieldEntry { sig: SubrecordSig(*b"MODL"), value: FieldValue::String(interner.intern(path)) },
+                FieldEntry { sig: SubrecordSig(*b"ANAM"), value: FieldValue::Bytes([parent.to_le_bytes(), 0u32.to_le_bytes()].concat().into()) },
+                FieldEntry { sig: SubrecordSig(*b"DATA"), value: FieldValue::Bytes(vec![7, 0, 0, 0, 0, 0, 0, 0].into()) },
+            ]);
+            idle
+        };
+        let parent = make_idle(0x300, "CreatureIdles", 0, "Characters\\_Male\\IdleAnims");
+        let selected = make_idle(0x301, "SelectedIdle", 0x300, "Characters\\_Male\\IdleAnims\\selected.kf");
+        let unrelated = make_idle(0x302, "UnrelatedIdle", 0x300, "Characters\\_Male\\IdleAnims\\unrelated.kf");
+        let orders = [LegacyPluginLoadOrder { game: LegacyCreatureGame::Fnv, source_plugin: "FalloutNV.esm".into(), source_master_names: Vec::new() }];
+        for (target, expected) in [("SelectedIdle", vec![0x100, 0x200, 0x300, 0x301]), ("CreatureIdles", vec![0x100, 0x200, 0x300, 0x301, 0x302])] {
+            script.fields.clear();
+            script.fields.push(FieldEntry { sig: SubrecordSig(*b"SCTX"), value: FieldValue::String(interner.intern(&format!("scn CreatureScript\nbegin GameMode\nPlayIdle {target}\nend"))) });
+            let records = [&creature, &script, &parent, &selected, &unrelated].map(|record| source(record, LegacyCreatureGame::Fnv, 1));
+            let ledger = build_creature_dependency_ledger_with_load_orders(&records, CreatureDependencyOptions { expected_creature_winners: Some(1) }, &orders, &interner).unwrap();
+            assert_eq!(ledger.candidates[0].closure_form_keys.iter().map(|key| key.local).collect::<Vec<_>>(), expected, "{target}");
         }
     }
 

@@ -165,6 +165,10 @@ fn representable_lvlc_entry(value: &FieldValue) -> bool {
 }
 
 fn lower_entry(value: &mut FieldValue, interner: &StringInterner) -> Result<(), String> {
+    if let FieldValue::Bytes(bytes) = value {
+        bytes[10] = 0;
+        return Ok(());
+    }
     let FieldValue::Struct(fields) = value else {
         return Ok(());
     };
@@ -182,6 +186,8 @@ fn lower_entry(value: &mut FieldValue, interner: &StringInterner) -> Result<(), 
             creature_count += 1;
         } else if *name == source_chance {
             *name = target_chance;
+            // Legacy entry padding is not a chance roll; only LVLD/LVLG own that roll.
+            *value = FieldValue::Uint(0);
         }
     }
     if creature_count != 1 {
@@ -291,5 +297,37 @@ mod tests {
                 .iter()
                 .any(|(name, _)| { interner.resolve(*name) == Some("chance_none") })
         );
+    }
+
+    #[test]
+    fn legacy_entry_padding_does_not_create_a_target_chance_none() {
+        let interner = StringInterner::new();
+        for decode in [false, true] {
+            let mut record = source_lvlc(&interner);
+            record.fields[1].value =
+                FieldValue::Bytes([7, 0, 1, 2, 0x34, 0x12, 0, 0, 3, 0, 8, 4].as_slice().into());
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig(*b"LVLD"),
+                value: FieldValue::Uint(25),
+            });
+            if decode {
+                decode_legacy_lvlc_entries(&mut record, "FalloutNV.esm", &[], &interner).unwrap();
+            }
+            lower_legacy_lvlc_to_lvln(&mut record, &interner).unwrap();
+            match &record.fields[2].value {
+                FieldValue::Bytes(bytes) => {
+                    assert_eq!(
+                        bytes.as_slice(),
+                        &[7, 0, 1, 2, 0x34, 0x12, 0, 0, 3, 0, 0, 4]
+                    );
+                }
+                FieldValue::Struct(fields) => assert!(fields.iter().any(|(name, value)| {
+                    interner.resolve(*name) == Some("chance_none")
+                        && matches!(value, FieldValue::Uint(0))
+                })),
+                _ => panic!("unexpected LVLO layout"),
+            }
+            assert!(matches!(record.fields[3].value, FieldValue::Uint(25)));
+        }
     }
 }

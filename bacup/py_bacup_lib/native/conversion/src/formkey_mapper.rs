@@ -1127,7 +1127,7 @@ impl<'a> FormKeyMapper<'a> {
             .source_form_key_for_raw_formid(raw, self.interner)
     }
 
-    fn raw_formid_for_target(&self, fk: FormKey) -> Option<u32> {
+    pub(crate) fn raw_formid_for_target(&self, fk: FormKey) -> Option<u32> {
         if fk.local == 0 {
             return Some(0);
         }

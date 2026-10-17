@@ -27,6 +27,12 @@ Function HerdBrahmin(Actor akHerder)
         Return
     EndIf
 
+    ; FO76's player-record Quests:E01B_Herd:PlayerScript.PlayShepherdsCrookAnim, which has
+    ; no FO4 carrier: the herder swings the crook (ActionHerdBrahmin).
+    Action herdAction = Game.GetFormFromFile(0x0041C991, "SeventySix.esm") as Action
+    If herdAction != None
+        akHerder.PlayIdleAction(herdAction)
+    EndIf
     If BellSound != None
         BellSound.Play(brahminRef)
     EndIf

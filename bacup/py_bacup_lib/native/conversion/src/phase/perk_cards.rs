@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use crate::fixups::rewrite_raw_object_template_formids::fo76_condition_references;
 use crate::ids::{FormKey, SigCode};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
+use crate::plugin_catalog;
 use crate::record::FieldValue;
 use crate::schema::AuthoringSchema;
 use crate::session::open_session;
@@ -18,9 +19,35 @@ use crate::translator::Game;
 
 pub struct PerkCardsPhase;
 
+#[path = "perk_card_abilities.rs"]
+pub(crate) mod abilities;
+
+#[path = "perk_card_loot.rs"]
+mod loot;
+
+#[path = "perk_card_weights.rs"]
+mod weights;
+
+#[path = "perk_card_document.rs"]
+mod document;
+
 const EFFECT_TYPES: &[&str] = &[
     "PERK", "SPEL", "MGEF", "CURV", "CNCY", "PPAK", "LVPC", "LVLP", "FLST", "GLOB", "AVIF", "CNDF",
-    "KYWD", "SNDR",
+    "KYWD", "SNDR", "LVLI", "MESG", "DFOB", "GMST", "DMGT",
+];
+
+const SUPPORT_METADATA: &[(u32, &str, &str)] = &[
+    (0x7B27B3, "MESG", "HelpStatDeflect"),
+    (0x7AE381, "DFOB", "DeflectDamageReduction_DO"),
+    (0x7ACE77, "AVIF", "STAT_DeflectDamageReduction"),
+    (0x7ACE7A, "KYWD", "ArmorTypeHeavy"),
+    (0x5F3A1F, "AVIF", "ReflectDamage"),
+    (0x7B27B2, "MESG", "HelpStatEvade"),
+    (0x7AE645, "AVIF", "STAT_EvadeCooldown"),
+    (0x7AE646, "DFOB", "STAT_EvadeCooldown_DO"),
+    (0x81A7D3, "GMST", "fEvadeUsesAPScale"),
+    (0x7BA77E, "DFOB", "EvadeCooldownModifierCurve_DO"),
+    (0x7BA77D, "CURV", "EvasiveHPPercentBonus"),
 ];
 
 fn error(message: impl Into<String>) -> PhaseError {
@@ -88,6 +115,28 @@ fn form_list(fields: &[ParsedSubrecord]) -> Result<Vec<u32>, PhaseError> {
         .filter(|f| f.signature == "LNAM")
         .map(|f| u32_value(&f.data))
         .collect()
+}
+
+fn perk_parameter_reference(
+    field: &ParsedSubrecord,
+    function_type: Option<u8>,
+    candidates: &BTreeMap<u32, (&str, String)>,
+) -> Result<Option<u32>, PhaseError> {
+    if (field.signature == "EPFD" && function_type == Some(5))
+        || (field.signature == "EPF3" && matches!(function_type, Some(3 | 8)))
+    {
+        return Ok(Some(u32_value(&field.data)?));
+    }
+    if matches!(field.signature.as_str(), "EPF2" | "EPF3") && field.data.len() == 4 {
+        let reference = u32_value(&field.data)?;
+        if candidates
+            .get(&reference)
+            .is_some_and(|(sig, _)| *sig == "CURV")
+        {
+            return Ok(Some(reference));
+        }
+    }
+    Ok(None)
 }
 
 fn curve_values_at(record: &Value, inputs: &[u64]) -> Result<Vec<f64>, PhaseError> {
@@ -361,6 +410,16 @@ impl Phase for PerkCardsPhase {
         if starting_deck.iter().any(|k| !cards.contains_key(k)) {
             return Err(error("starting deck includes ineligible card"));
         }
+        for (local, signature, editor_id) in SUPPORT_METADATA {
+            let raw = (masters.len() as u32) << 24 | local;
+            if !candidates
+                .get(&raw)
+                .is_some_and(|(sig, eid)| sig == signature && eid == editor_id)
+            {
+                return Err(error(format!("missing perk support metadata {editor_id}")));
+            }
+            pending.insert(raw);
+        }
         let source_root = ctx
             .run
             .config
@@ -370,6 +429,15 @@ impl Phase for PerkCardsPhase {
         let mut records = BTreeMap::new();
         let mut references = BTreeSet::new();
         let mut warnings = Vec::new();
+        let (loot_catalog, loot_references) = loot::collect(
+            &scan.raw_form_ids_of_sig(SigCode(*b"CONT")),
+            &candidates,
+            &pending,
+            |raw| scan.with_record(raw, |record| effective_subrecords_for_record(record).to_vec()),
+            &masters,
+            &plugin,
+        )?;
+        references.extend(loot_references);
         while let Some(raw) = pending.pop_first() {
             ctx.check_cancel()?;
             let source_key = key(raw, &masters, &plugin)?;
@@ -425,13 +493,17 @@ impl Phase for PerkCardsPhase {
                         function_type = f.data.first().copied();
                     }
                 }
+                let parameter_reference = if *signature == "PERK" {
+                    perk_parameter_reference(f, function_type, &candidates)?
+                } else {
+                    None
+                };
                 if *signature == "PERK" && f.signature == "DATA" && effect_type.is_some() {
                     if matches!(effect_type, Some(0 | 1)) && f.data.len() >= 4 {
                         links.push(u32_value(&f.data[..4])?);
                     }
-                } else if *signature == "PERK" && f.signature == "EPF3" && function_type == Some(8)
-                {
-                    links.push(u32_value(&f.data)?);
+                } else if let Some(reference) = parameter_reference {
+                    links.push(reference);
                 } else if f.signature == "CTDA" {
                     links.extend(fo76_condition_references(&f.data));
                 } else if *signature == "MGEF" && f.signature == "DATA" {
@@ -475,6 +547,25 @@ impl Phase for PerkCardsPhase {
             references.insert(raw);
             records.insert(source_key, saved);
         }
+        let weight_source_items: Vec<_> = weights::ITEM_TYPES
+            .iter()
+            .flat_map(|signature| {
+                scan.raw_form_ids_of_sig(SigCode::from_str(signature).unwrap())
+                    .into_iter()
+                    .map(|id| (id, *signature))
+            })
+            .collect();
+        let (mut weight_items, weight_refs) = weights::collect(
+            &weight_source_items,
+            &cards,
+            &records,
+            |raw| scan.with_record(raw, |record| {
+                (record.flags & 0x20 == 0).then(|| effective_subrecords_for_record(record).to_vec())
+            }).flatten(),
+            &masters,
+            &plugin,
+        )?;
+        references.extend(weight_refs);
         let mut rarity_rows = Vec::new();
         let mut assigned = BTreeSet::new();
         for (index, raw) in rarity_tables.iter().copied().enumerate() {
@@ -566,6 +657,8 @@ impl Phase for PerkCardsPhase {
             }
             targets.insert(source_key, binding);
         }
+        let native_weight_items = weights::native_items(&mut session, &ctx.run.master_handle_ids)?;
+        weights::bind(&mut weight_items, &targets, &native_weight_items);
         let mut missing_ranks = 0;
         for card in cards.values_mut() {
             for rank in card["ranks"].as_array_mut().unwrap() {
@@ -592,16 +685,44 @@ impl Phase for PerkCardsPhase {
                 "perk catalog has {missing_ranks} missing or aliased rank PERKs"
             )));
         }
-        let catalog = json!({"schema_version": 1, "source_plugin": plugin,
+        let (ability_materialization, ability_ranks_changed) = if ctx.run.mapper_state.is_some() {
+            abilities::materialize(
+                &mut session,
+                ctx.run.target_handle_id,
+                &cards,
+                &records,
+                &targets,
+                &masters,
+                &plugin,
+                &ctx.run.config.output_plugin_name,
+                &target_schema,
+                &ctx.run.interner,
+            )
+            .map_err(error)?
+        } else {
+            (Value::Null, 0)
+        };
+        let catalog = document::to_document(json!({"schema_version": 1, "source_plugin": plugin,
             "output_plugin": ctx.run.config.output_plugin_name, "mapping_available": ctx.run.mapper_state.is_some(),
             "cards": cards.into_values().collect::<Vec<_>>(), "starting_deck": starting_deck,
             "pack": pack,
             "roots": roots.into_iter().map(|(name, raw)| Ok((name, key(raw, &masters, &plugin)?))).collect::<Result<BTreeMap<_, _>, PhaseError>>()?,
             "excluded": excluded, "effect_records": records, "target_forms": targets,
+            "ability_materialization": ability_materialization,
+            "loot_catalog": loot_catalog,
+            "weight_item_schema": 1, "weight_items": weight_items,
             "missing_rank_bindings": missing_ranks, "warnings": warnings,
             "economy": {"pack_levels": [4, 6, 8, 10], "pack_interval_after_10": 5, "scrap_coins_per_unit": 2,
-                "allocation_cap": 56, "special_cap": 15, "starting_level": 1}});
-        let directory = ctx.mod_path.join("F4SE/Plugins/B21_TalesFromAppalachia");
+                "allocation_cap": 56, "special_cap": 15, "starting_level": 1}}));
+        let output_file = Path::new(&ctx.run.config.output_plugin_name)
+            .file_name()
+            .ok_or_else(|| error("missing output plugin filename"))?
+            .to_string_lossy()
+            .into_owned();
+        let destination = ctx
+            .mod_path
+            .join(plugin_catalog::catalog_path("PerkCards", &output_file));
+        let directory = destination.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&directory).map_err(|e| error(e.to_string()))?;
         let mut output =
             tempfile::NamedTempFile::new_in(&directory).map_err(|e| error(e.to_string()))?;
@@ -609,10 +730,11 @@ impl Phase for PerkCardsPhase {
             .write_all(&serde_json::to_vec_pretty(&catalog).map_err(|e| error(e.to_string()))?)
             .map_err(|e| error(e.to_string()))?;
         output
-            .persist(directory.join("PerkCards.json"))
+            .persist(destination)
             .map_err(|e| error(e.to_string()))?;
         Ok(PhaseReport {
             assets_written: 1,
+            records_changed: ability_ranks_changed,
             warnings: missing_ranks + warnings.len() as u32,
             ..PhaseReport::default()
         })
@@ -693,5 +815,36 @@ mod tests {
             vec![0.05, 0.2, 1.0]
         );
         assert!(curve_values_at(&record, &[3]).is_err());
+    }
+    #[test]
+    fn source_closure_follows_select_spell_and_curve_parameters_without_numeric_false_positives() {
+        let candidates = BTreeMap::from([
+            (0x801, ("CURV", "Scale".into())),
+            (0x802, ("SPEL", "Effect".into())),
+            (0x803, ("AVIF", "Input".into())),
+        ]);
+        for signature in ["EPF2", "EPF3"] {
+            assert_eq!(
+                perk_parameter_reference(&sub(signature, &0x801u32.to_le_bytes()), Some(1), &candidates).unwrap(),
+                Some(0x801)
+            );
+            assert_eq!(
+                perk_parameter_reference(&sub(signature, &0x802u32.to_le_bytes()), Some(1), &candidates).unwrap(),
+                None
+            );
+        }
+        assert_eq!(
+            perk_parameter_reference(&sub("EPFD", &0x802u32.to_le_bytes()), Some(5), &candidates).unwrap(),
+            Some(0x802)
+        );
+        assert_eq!(
+            perk_parameter_reference(&sub("EPFD", &0x802u32.to_le_bytes()), Some(1), &candidates).unwrap(),
+            None
+        );
+        assert_eq!(
+            perk_parameter_reference(&sub("EPF3", &0x803u32.to_le_bytes()), Some(3), &candidates).unwrap(),
+            Some(0x803)
+        );
+        assert!(perk_parameter_reference(&sub("EPFD", &[1, 2]), Some(5), &candidates).is_err());
     }
 }

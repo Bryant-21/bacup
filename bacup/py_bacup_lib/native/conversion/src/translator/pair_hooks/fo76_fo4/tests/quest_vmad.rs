@@ -211,6 +211,27 @@
     }
 
     #[test]
+    fn pre_translate_strips_root_shutdown_script_binding_from_any_seventysix_quest() {
+        let interner = StringInterner::new();
+        let mut record = make_record("QUST", &interner);
+        record.form_key.local = 0x0050_E622;
+        push_field(
+            &mut record,
+            "VMAD",
+            FieldValue::Bytes(SmallVec::from_vec(w05_mqs_205_vmad(true))),
+        );
+
+        Fo76Fo4Hook
+            .pre_translate(&mut make_ctx(&interner), &mut record)
+            .unwrap();
+
+        assert_eq!(
+            record.fields[0].value,
+            FieldValue::Bytes(SmallVec::from_vec(w05_mqs_205_vmad(false)))
+        );
+    }
+
+    #[test]
     fn pre_translate_keeps_matching_shutdown_script_on_other_plugins() {
         let interner = StringInterner::new();
         let mut record = make_record("QUST", &interner);
@@ -2071,6 +2092,51 @@
                 "{eid}"
             );
             assert_eq!(qust_alias_flags(&record), vec![0, 0], "{eid}");
+        }
+    }
+
+    #[test]
+    fn pre_translate_preserves_lite_ally_intro_hire_actor_event_alias() {
+        for (local, eid) in [
+            (0x0058_2172, "COMP_Quest_Intro_Lite_Beggar"),
+            (0x0058_2153, "COMP_Quest_Intro_Lite_Hunter"),
+            (0x0056_8CB2, "COMP_Quest_Intro_Lite_RaiderPunk"),
+            (0x0058_5BD2, "COMP_Quest_Intro_Lite_Scavenger"),
+            (0x0058_2173, "COMP_Quest_Intro_Lite_Wanderer"),
+        ] {
+            for (expected_local, expected_eid, preserved) in [
+                (local, eid, true),
+                (local, "COMP_Quest_Intro_Lite_Copy", false),
+                (local + 1, eid, false),
+            ] {
+                let interner = StringInterner::new();
+                let mut record = make_record("QUST", &interner);
+                record.form_key.local = expected_local;
+                record.eid = Some(interner.intern(expected_eid));
+                push_field(
+                    &mut record,
+                    "ANAM",
+                    FieldValue::Bytes(SmallVec::from_vec(8_u32.to_le_bytes().to_vec())),
+                );
+                push_qust_event_alias(&mut record, 3, 0, FO76_QUEST_EVENT_SCPT, FO4_QUEST_EVENT_REFERENCE1);
+
+                Fo76Fo4Hook
+                    .pre_translate(&mut make_ctx(&interner), &mut record)
+                    .unwrap();
+
+                let kept = record
+                    .fields
+                    .iter()
+                    .filter(|entry| entry.sig.0 == *b"ALFD")
+                    .filter_map(|entry| field_value_to_u32(&entry.value))
+                    .collect::<Vec<_>>();
+                if preserved {
+                    assert_eq!(kept, vec![FO4_QUEST_EVENT_REFERENCE1], "{expected_eid}");
+                    assert_eq!(qust_alias_flags(&record), vec![0], "{expected_eid}");
+                } else {
+                    assert!(kept.is_empty(), "{expected_local:06X} {expected_eid}");
+                }
+            }
         }
     }
 

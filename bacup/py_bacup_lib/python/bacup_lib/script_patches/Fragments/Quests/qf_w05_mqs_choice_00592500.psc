@@ -3,6 +3,9 @@ Function Fragment_Stage_0100_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    If IsObjectiveDisplayed(100) && !IsObjectiveCompleted(100)
+        SetObjectiveCompleted(100, True)
+    EndIf
     Actor playerRef = Game.GetPlayer()
     If W05_MQ_102P_A != None
         W05_MQ_102P_A.Stop()

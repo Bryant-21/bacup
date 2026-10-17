@@ -7,19 +7,6 @@ from pathlib import Path
 
 _log = logging.getLogger("conversion.target_masters")
 
-_OFFICIAL_TARGET_MASTER_NAME_OVERRIDES = {
-    "fo4": [
-        "Fallout4.esm",
-        "DLCRobot.esm",
-        "DLCworkshop01.esm",
-        "DLCCoast.esm",
-        "DLCworkshop02.esm",
-        "DLCworkshop03.esm",
-        "DLCNukaWorld.esm",
-    ],
-}
-
-
 def resolve_target_master_paths(
     target_game: str,
     *,
@@ -67,22 +54,18 @@ def resolve_target_master_paths(
 
 def official_target_master_names(target_game: str) -> list[str]:
     """Return official target-game masters in stable load-order preference."""
-    canonical_game = str(target_game).lower()
-    override = _OFFICIAL_TARGET_MASTER_NAME_OVERRIDES.get(canonical_game)
-    if override:
-        return list(override)
+    from bacup_lib.native_runtime import load_native_module
 
     try:
         from creation_lib.esp.schema.corpus import OFFICIAL_PLUGIN_ALLOWLISTS
     except Exception:
         OFFICIAL_PLUGIN_ALLOWLISTS = {}
 
-    names = list(OFFICIAL_PLUGIN_ALLOWLISTS.get(canonical_game, []))
-    if names:
-        return names
-
-    base_master = _target_base_master_name(target_game)
-    return [base_master] if base_master else []
+    return load_native_module().conversion_setup_official_target_master_names(
+        str(target_game),
+        list(OFFICIAL_PLUGIN_ALLOWLISTS.get(str(target_game).lower(), [])),
+        _target_base_master_name(target_game),
+    )
 
 
 def resolve_official_target_master_paths(

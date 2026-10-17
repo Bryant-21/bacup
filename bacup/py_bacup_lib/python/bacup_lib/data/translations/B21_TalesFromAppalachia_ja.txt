@@ -11,6 +11,9 @@ $B21_TFA_Capacity	定員
 $B21_TFA_Unlimited	無制限
 $B21_TFA_Legendary	レジェンダリー
 $B21_TFA_SemiAutomatic	セミオート
+$B21_TFA_Charging	チャージ
+$B21_TFA_ChargeTime	充満時間
+$B21_TFA_ChargeBonus	チャージボーナス
 $B21_TFA_VATSAccuracy	V.A.T.S. 精度
 $B21_TFA_WeaponType_Melee	メリー
 $B21_TFA_WeaponType_OneHanded	ワンハンド
@@ -50,7 +53,29 @@ $B21_TFA_AssignPermanentSPECIAL	永久的な SPECIAL を割り当てて下さい
 $B21_TFA_AssignSPECIAL	SPECIALを増加させる
 $B21_TFA_MoveSPECIAL	SPECIALポイントの移動
 $B21_TFA_AddLoadout	LOADOUT を追加
-$B21_PM_Salute	サルート(ライブタイムが必要です)
+$B21_PM_Salute	サルート
+$B21_PM_ExpressionAfraid	アレイド
+$B21_PM_ExpressionAmused	アミューズメント
+$B21_PM_ExpressionAngry	アングリ
+$B21_PM_ExpressionAwed	アワード
+$B21_PM_ExpressionConcerned	お問い合わせ
+$B21_PM_ExpressionConfident	コンプライアンス
+$B21_PM_ExpressionDisgust	ディスゴースト
+$B21_PM_ExpressionFlirting	フリル
+$B21_PM_ExpressionFriendly	よくある質問
+$B21_PM_ExpressionHappy	お問い合わせ
+$B21_PM_ExpressionImpressed	ログイン
+$B21_PM_ExpressionIrritated	エントリー
+$B21_PM_ExpressionNeutral	ニュートラル
+$B21_PM_ExpressionPuzzled	パズル
+$B21_PM_ExpressionSad	サッド
+$B21_PM_ExpressionSinisterSmile	シニスタースマイル
+$B21_PM_ExpressionSomber	ソムバー
+$B21_PM_ExpressionStern	スタン
+$B21_PM_ExpressionSurprised	サプライズ
+$B21_PM_ExpressionThinking	考えること
+$B21_PM_ExpressionTired	タイヤ
+$B21_PM_ExpressionWorried	ウォリード
 $B21_PM_FO4Poses	フォールアウト 4
 $B21_PM_Warm	ウォーム
 $B21_PM_Cool	クール
@@ -58,6 +83,30 @@ $B21_PM_Vintage	ヴィンテージ
 $B21_PM_Keepsake	こだわり
 $B21_PM_PhotoFrames	フォトギャラリー
 $B21_PM_FreezeTime	凍結時間
+$B21_PM_TimeOfDay	日 時
+$B21_PM_Weather	ふりがな
+$B21_PM_SkyCurrent	現在の位置:
+$B21_PM_WeatherClear	クリア
+$B21_PM_WeatherOvercast	オーバーキャスト
+$B21_PM_WeatherFoggy	フォギー
+$B21_PM_WeatherMisty	ミスティー
+$B21_PM_WeatherRain	ログイン
+$B21_PM_WeatherThunderstorm	雷雨
+$B21_PM_WeatherRadstorm	ラジスタム
+$B21_PM_WeatherSnow	スノーボード
+$B21_PM_WeatherAurora	オーロラ
+$B21_PM_WeatherRainbow	レインボー
+$B21_PM_WeatherBloodMoon	血の月
+$B21_PM_WeatherToxicValley	有毒谷
+$B21_PM_WeatherMire	ミレ
+$B21_PM_WeatherCranberryBog	クランベリー ボグ
+$B21_PM_WeatherAshHeap	アッシュ・ヒープ
+$B21_PM_WeatherNukeZone	ヌケゾーン
+$B21_PM_WeatherCommonwealthClear	Commonwealth クリア
+$B21_PM_WeatherCommonwealthOvercast	Commonwealth オーバーキャスト
+$B21_PM_WeatherCommonwealthFoggy	Commonwealth フォグ
+$B21_PM_WeatherCommonwealthRain	Commonwealth 雨
+$B21_PM_WeatherCommonwealthRadstorm	Commonwealth の Radstorm
 $B21_PM_Menu	フォトモード
 $B21_PM_Saturated	飽和
 $B21_PM_BlackAndWhite	黒と白
@@ -126,3 +175,79 @@ $B21_Settings_Ultra	ウルトラ
 $B21_Settings_Fullscreen	フルスクリーン
 $B21_Settings_Borderless	ボーダーレス
 $B21_Settings_Windowed	ウィンドウズ
+$B21_Settings_QuickBoy	Quick-Boy
+$B21_Settings_PipBoyView	Pip-Boyビュー
+$B21_Settings_QuickBoyColor	Quick-Boy色のモード
+$B21_Settings_QuickBoyR	Quick-Boy カラー R
+$B21_Settings_QuickBoyG	Quick-Boy 色 G
+$B21_Settings_QuickBoyB	Quick-Boy カラー B
+$B21_Settings_QuickBoySize	Quick-Boy サイズ
+$B21_Settings_QuickBoyBrightness	Quick-Boy 明るさ
+$B21_Settings_DamageNumbers	ダメージ番号を表示する
+$B21_Settings_WeaponCondition	武器条件を表示する
+$B21_Settings_AlwaysShowNeeds	常に飢餓と渇きを表示
+$B21_Settings_CorpseHighlight	ハイライトコークス
+$B21_Settings_UnhighlightMode	ストップハイライトコーパス
+$B21_Settings_HighlightPlayerKills	あなたのキルを強調するだけ
+$B21_Settings_MatchPipBoy	マッチPip-Boy
+$B21_Settings_MatchHUD	マッチHUD
+$B21_Settings_OwnColor	独自の色
+$B21_Settings_PipBoy	Pip-Boy
+$B21_Settings_OnLoot	ルートを取る後
+$B21_Settings_OnInspect	点検の後で
+$B21_Settings_WhenEmpty	空いているとき
+$B21_TFA_Lock	ログイン
+$B21_TFA_Unlock	アンロック
+$B21_TFA_Locked	ロック
+$B21_TFA_ItemLocked	この項目はロックされます。
+$B21_TFA_ItemUnlocked	アイテムのロック解除。
+$B21_TFA_LockUnavailable	このアイテムをロックできません。
+$B21_TFA_ScrapAllJunk	すべてのジャンクをSCRAP
+$B21_TFA_ScrapAllQuestion	すべてのロック解除されたジャンクをコンポーネントにScrap?
+$B21_TFA_JunkScrapped	ジャンクのロックを解除しました。
+$B21_TFA_NoJunkToScrap	あなたはスクラップにロック解除されたジャンクがありません。
+$B21_TFA_ScrapStale	選択した項目が変更されました。 スクラップする前にもう一度選択してください。
+$B21_TFA_NoScrapYield	この項目は、スクレープコンポーネントがありません。
+$B21_TFA_BuildMenuControls	メニュー制御
+$B21_TFA_BuildCameraControls	カメラ制御
+$B21_TFA_FilterAll	フィルター: すべて
+$B21_TFA_FilterKnown	フィルター: 知られている
+$B21_TFA_FilterBuildable	フィルター: 構築可能
+$B21_TFA_FilterRecent	フィルター: 最近
+$B21_TFA_UnsupportedBuildVariant	この variant にはビルド可能なオブジェクトはありません。
+$B21_TFA_CameraMove	交通アクセス
+$B21_TFA_CameraRiseFall	上昇/落下
+$B21_TFA_CameraSpeed	スピード
+$B21_TFA_CameraPadHelpTop	移動: LS   見る: RS
+$B21_TFA_CameraPadHelpBottom	RISE/FALL:Dパッドの上/下   SPEED:Dパッドの権利
+$B21_TFA_Deselect	選択解除
+$B21_TFA_BlueprintObjects	オブジェクト
+$B21_TFA_BlueprintUnavailable	利用不可
+$B21_TFA_BlueprintSelected	選択する
+$B21_TFA_TeamFullLeaves	チームフル。 <Name>はチームを離れます。
+$B21_TFA_TeamFullCantJoin	チームフル。 <Name>は参加できません。
+$B21_TFA_TeamAllyCantLead	味方はチームを導くことができません。
+$B21_TFA_TeamOwnSystem	<Name>は、独自のフォロワーシステムを使用しています。
+$B21_TFA_TeamNowLeads	<Name>はチームをリードします。
+$B21_TFA_TeamTookOverUCF	無制限のコンパニオンフレームワークの仲間がチームに参加しました。 保存すると、UCFは削除できます。
+$B21_TFA_TeamFullStaysUCF	チームフル。 <Name> は、無制限の Companion Framework で滞在します。
+$B21_TFA_TeamLeadAfterUCF	無制限のコンパニオンフレームワークを削除した後、リードを選択します。
+$B21_TFA_SetBonus	セットボーナス
+$B21_TFA_UniquePerkRank	{perk}のランク +{rank}
+$B21_TFA_Pets	ペット
+$B21_TFA_CompanionTitle	クーポン
+$B21_TFA_CompanionEmpty	一緒に旅行する仲間を募集します。
+$B21_TFA_CompanionLevel	レベル
+$B21_TFA_CompanionXP	ログイン
+$B21_TFA_CompanionHP	ログイン
+$B21_TFA_CompanionAffinity	アフィニティ
+$B21_TFA_CompanionNotTracked	追跡されていない
+$B21_TFA_CompanionBonuses	レベルボーナス
+$B21_TFA_CompanionPerks	コンパニオン特典
+$B21_TFA_CompanionShared	シェアカード
+$B21_TFA_CompanionMax	マックス
+$B21_TFA_CompanionSelect	[Up/Down] 仲間を選択   [D-pad] 仲間を選択
+$B21_TFA_CompanionVeteran	ベテラン:+25の損傷およびエネルギー抵抗
+$B21_TFA_CompanionPackMule	パックのMule:+50は重量を運びます
+$B21_TFA_CompanionCombatTraining	戦闘訓練:+10%の損傷
+$B21_TFA_CompanionEndurance	耐久性: +100 健康

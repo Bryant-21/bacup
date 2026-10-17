@@ -154,6 +154,9 @@ EndFunction
 Function Fragment_Stage_0120_Item_00()
     EN02_MarkPlayer(Alias_PlayerCollectedFood)
     SetObjectiveCompleted(130, True)
+    If IsObjectiveDisplayed(115) && !IsObjectiveCompleted(115)
+        SetObjectiveCompleted(115, True)
+    EndIf
     SetObjectiveDisplayed(140, True, True)
     SetObjectiveDisplayed(145, True, False)
     EN02_MQ_Us_0120_HandscanComplete.Start()

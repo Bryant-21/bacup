@@ -24,6 +24,7 @@ use crate::fixups::face::derive_pa_subgraph_blocks::{
     derive_pa_subgraph_blocks, merge_missing_bow_blocks,
 };
 use crate::fixups::face::rewrite_subgraph_block_formkeys::rewrite_subgraph_block_formkeys;
+use crate::fixups::master_record_numbering::record_decoded_in_master_for_target;
 use crate::fixups::prune_orphaned_records::is_creature_root_sig;
 use crate::fixups::{Fixup, FixupConfig, FixupContext, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
@@ -1103,7 +1104,8 @@ pub(crate) fn load_target_race_template_from_masters(
     target_base_fk: FormKey,
 ) -> Option<Record> {
     for &handle_id in &config.target_master_handle_ids {
-        if let Ok(record) = session.record_decoded_in_handle(
+        if let Ok(record) = record_decoded_in_master_for_target(
+            session,
             handle_id,
             &target_base_fk,
             target_schema,

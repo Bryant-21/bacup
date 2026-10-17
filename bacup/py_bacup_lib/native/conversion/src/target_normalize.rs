@@ -50,7 +50,7 @@ impl<'a> TargetRecordNormalizer<'a> {
     pub(crate) fn normalize(&self, mut record: Record) -> TargetRecordNormalization {
         let rec_sig = record.sig;
         let rec_local = record.form_key.local;
-        let Some(target_record_def) = self.target_schema.record_def(record.sig.as_str()) else {
+        let Some(target_record_lookup) = self.target_schema.record_lookup(record.sig.as_str()) else {
             crate::drop_trace::trace(
                 "normalize.drop_record",
                 rec_sig.as_str(),
@@ -60,6 +60,7 @@ impl<'a> TargetRecordNormalizer<'a> {
             );
             return TargetRecordNormalization::DropUnsupportedRecord;
         };
+        let target_record_def = target_record_lookup.definition();
 
         normalize_legacy_actor_core(&mut record, self.source_record_def, self.interner);
         normalize_legacy_armor_core(&mut record, self.source_record_def, self.interner);
@@ -91,17 +92,22 @@ impl<'a> TargetRecordNormalizer<'a> {
         drop_empty_leveled_item_override_name(&mut record, self.interner);
         strip_unsupported_qust_condition_groups(&mut record, target_record_def);
 
-        let supported_sigs = target_record_def
-            .subrecords
-            .iter()
-            .filter_map(|spec| crate::ids::SubrecordSig::from_str(&spec.id).ok())
-            .collect::<HashSet<_>>();
+        // Creature races carry no head data (NAM0) but can still carry bone scale
+        // rows. The generic scope walk fills each bone_scale_data def once, keeping
+        // two rows per gender and squeezing the second into the 16-byte Range def,
+        // so FO4 scales Head_skin to nothing (headless Overgrown Thorn).
         let race_late_start = (target_record_def.id == "RACE")
             .then(|| {
                 record
                     .fields
                     .iter()
                     .position(|entry| entry.sig.as_str() == "NAM0")
+                    .or_else(|| {
+                        record
+                            .fields
+                            .iter()
+                            .position(|entry| entry.sig.as_str() == "BSMP")
+                    })
             })
             .flatten();
         // TERM has two target SNAM slots. FO76 writes the late Marker Parameters
@@ -133,7 +139,10 @@ impl<'a> TargetRecordNormalizer<'a> {
                 });
                 continue;
             }
-            if supported_sigs.contains(&entry.sig) {
+            if target_record_lookup
+                .subrecord_def(entry.sig.as_str())
+                .is_some()
+            {
                 let indexed = IndexedFieldEntry {
                     original_index,
                     entry,
@@ -293,7 +302,7 @@ impl<'a> TargetRecordNormalizer<'a> {
                     // to keep each DSTD…DSTF stage group. FO76 allows several
                     // DMDL/DMDT model swaps per stage and FO4 only one, so keep the
                     // first model row per stage. FO76-only ENLT/ENLS/AUUV are
-                    // already filtered by supported_sigs.
+                    // already filtered by target_record_lookup.
                     self.emit_destructible_segment(segment, &mut fields_by_sig, &mut ordered);
                 } else if is_condition_anchor_segment(segment) {
                     self.emit_original_range_scoped_segment(
@@ -3635,18 +3644,27 @@ fn fo76_imgs_hdr_bytes_to_fo4_hnam(raw: &[u8]) -> Option<Vec<u8>> {
             .unwrap_or(fallback)
     };
 
-    let weather_percent_sunlight = read(6, 0.0).abs() > 20.0;
+    let weather_percent_sunlight = fo76_imgs_is_physical_exterior(read(6, 0.0));
     let bloom_scale_floor = if weather_percent_sunlight { 0.2 } else { 0.1 };
     let sunlight_floor = if weather_percent_sunlight { 4.5 } else { 1.8 };
     let sky_floor = if weather_percent_sunlight { 2.4 } else { 1.5 };
+
+    let (exposure_max, exposure_min) = if weather_percent_sunlight {
+        fo76_ev100_window_to_fo4_exposure(read(4, 6.0), read(5, 2.0))
+    } else {
+        (
+            positive_or_floor(read(4, 3.25), 3.25),
+            positive_or_floor(read(5, 1.6), 1.6),
+        )
+    };
 
     Some(encode_f32s(&[
         read(0, 3.0),
         read(1, 0.02),
         read(2, 0.5),
         positive_or_floor(read(3, bloom_scale_floor), bloom_scale_floor),
-        positive_or_floor(read(4, 3.25), 3.25),
-        positive_or_floor(read(5, 1.6), 1.6),
+        exposure_max,
+        exposure_min,
         fo76_scale_or_floor(read(6, sunlight_floor), sunlight_floor),
         fo76_scale_or_floor(read(7, sky_floor), sky_floor),
         read(8, 0.18),
@@ -3746,6 +3764,30 @@ fn encode_f32s(values: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&value.to_le_bytes());
     }
     out
+}
+
+/// FO76 weather imagespaces give sun and sky in lux-like units (300/100);
+/// interior and legacy ones keep FO4-scale multipliers.
+pub(crate) fn fo76_imgs_is_physical_exterior(sun_illuminance: f32) -> bool {
+    sun_illuminance.abs() > 20.0
+}
+
+/// FO76 stores the auto-exposure limits as EV100; FO4 reads the same HNAM
+/// slots as linear exposure multipliers, so raw EV 6/2 lifts every exterior
+/// into a washed-out haze. Same calibration as FO4CS's exterior meter
+/// (src/Post/Adaptation.h: anchor 1.6, calibration 1/1.2, 300/4.5 per FO4
+/// unit), so the engine and FO4CS agree. Returns (max, min) for HNAM +10/+14.
+pub(crate) fn fo76_ev100_window_to_fo4_exposure(max_ev: f32, min_ev: f32) -> (f32, f32) {
+    const FO4_EXPOSURE_ANCHOR: f32 = 1.6;
+    const EXPOSURE_CALIBRATION: f32 = 1.0 / 1.2;
+    const EXTERIOR_UNITS_PER_FO4_UNIT: f32 = 300.0 / 4.5;
+    let exposure = |ev: f32| {
+        FO4_EXPOSURE_ANCHOR * EXPOSURE_CALIBRATION * EXTERIOR_UNITS_PER_FO4_UNIT / ev.exp2()
+    };
+    (
+        exposure(max_ev.min(min_ev)),
+        exposure(max_ev.max(min_ev)),
+    )
 }
 
 fn positive_or_floor(value: f32, floor: f32) -> f32 {
@@ -4364,7 +4406,14 @@ fn relayout_legacy_actor_acbs(raw: &[u8], source_kind: LegacyActorSourceKind) ->
     target
 }
 
-fn relayout_legacy_actor_aidt(raw: &[u8]) -> Vec<u8> {
+pub(crate) fn legacy_creature_target_actor_flags(source_flags: u32) -> u32 {
+    let mut source = [0_u8; LEGACY_ACTOR_ACBS_SIZE];
+    source[..4].copy_from_slice(&source_flags.to_le_bytes());
+    let target = relayout_legacy_actor_acbs(&source, LegacyActorSourceKind::Creature);
+    u32::from_le_bytes(target[..4].try_into().expect("target ACBS has flags"))
+}
+
+pub(crate) fn relayout_legacy_actor_aidt(raw: &[u8]) -> Vec<u8> {
     let mut target = vec![0_u8; FO4_ACTOR_AIDT_SIZE];
     target[0] = raw[0].min(3);
     target[1] = raw[1].min(4);
@@ -6717,8 +6766,9 @@ mod tests {
             let values = decode_f32_prefix(bytes.as_slice());
             assert_eq!(values.len(), 9);
             assert_eq!(values[3], 0.2);
-            assert_eq!(values[4], 6.0);
-            assert_eq!(values[5], 2.0);
+            // EV100 2..6 as FO4 linear exposure: 22.2 max, 1.39 min.
+            assert!((values[4] - 22.222).abs() < 0.01);
+            assert!((values[5] - 1.3889).abs() < 0.001);
             assert_eq!(values[6], 4.5);
             assert_eq!(values[7], 2.4);
             assert!((values[8] - 0.18).abs() < 0.0001);
@@ -8125,6 +8175,56 @@ mod tests {
             panic!("RACE should survive final target normalization");
         };
         assert_layouts(&second);
+    }
+
+    #[test]
+    fn keeps_every_bone_scale_row_on_a_race_without_head_data() {
+        let interner = StringInterner::new();
+        let bones = ["Skull1_skin", "Head_skin", "Neck_skin"];
+        let scales = [
+            f32_bytes(&[1.0, 0.85, 0.85, 1.0, 0.55, 2.41, 1.0, 1.0, 0.57]),
+            f32_bytes(&[1.0, 1.0, 0.51, 1.0, 1.57, 1.96, 1.0, 0.37, 2.27]),
+            f32_bytes(&[1.0, 0.37, 0.78, 1.0, 1.37, 0.85, 1.0, 1.24, 1.42]),
+        ];
+        let mut fields = vec![
+            bytes_field("EDID", b"XPD_OvergrownThornRace\0".to_vec()),
+            bytes_field("MLSI", 17_u32.to_le_bytes().to_vec()),
+            uint_field("BSMP", 0),
+        ];
+        for (bone, scale) in bones.iter().zip(&scales) {
+            fields.push(string_field("BSMB", bone, &interner));
+            fields.push(bytes_field("BSMS", scale.clone()));
+        }
+        let record = record("RACE", fields, &interner);
+
+        let TargetRecordNormalization::Keep(first) =
+            normalize_from_fo76_source(record, "RACE", &interner)
+        else {
+            panic!("RACE should survive");
+        };
+        let TargetRecordNormalization::Keep(second) =
+            normalize_target_only_with_interner(first.clone(), &interner)
+        else {
+            panic!("RACE should remain stable");
+        };
+
+        assert_eq!(
+            sigs(&first),
+            vec![
+                "EDID", "MLSI", "BSMP", "BSMB", "BSMS", "BSMB", "BSMS", "BSMB", "BSMS",
+            ]
+        );
+        let payloads = first
+            .fields
+            .iter()
+            .filter(|entry| entry.sig.as_str() == "BSMS")
+            .map(|entry| match &entry.value {
+                FieldValue::Bytes(bytes) => bytes.to_vec(),
+                other => panic!("BSMS should stay a raw scale set, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(payloads, scales.to_vec());
+        assert_eq!(second.fields, first.fields);
     }
 
     #[test]

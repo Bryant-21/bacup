@@ -20,6 +20,8 @@ CustomEvent QuestTimerEnded
 
 Float TimerRemaining
 Bool TimerRunning
+; Tales holds a scheduled event's countdown until the player reaches it.
+Bool TimersHeld
 
 Event OnQuestInit()
     TimerRemaining = 0.0
@@ -44,7 +46,9 @@ Event OnTimer(Int aiTimerID)
     If aiTimerID != 7801 || !TimerRunning
         Return
     EndIf
-    TimerRemaining -= 1.0
+    If !TimersHeld
+        TimerRemaining -= 1.0
+    EndIf
     If TimerRemaining > 0.0
         StartTimer(1.0, 7801)
         Return
@@ -101,6 +105,11 @@ Function StopQuestTimer()
     CancelTimer(7801)
     TimerRunning = False
     TimerRemaining = 0.0
+EndFunction
+
+Bool Function HoldTimers(Bool abHold)
+    TimersHeld = abHold
+    Return True
 EndFunction
 
 Function EnsureQuestTimerRemaining(Float afSeconds)

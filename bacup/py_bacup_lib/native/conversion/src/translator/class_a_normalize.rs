@@ -293,7 +293,13 @@ fn normalize_subrecord(
     // RACE.DATA, EXPL.DATA, SNDR.LNAM, NPC_.AIDT, PROJ/HAZD.DNAM, REFR.XRDO,
     // LVLN/LVLI.LVLF, ...).
     if let FieldValue::Bytes(buf) = value {
-        mask_struct_bytes(buf, schema, rec_sig, sub_sig, report);
+        if sub_def.fields.iter().any(|field| field.enum_ref.is_some())
+            || sub_def.union_variants.iter().any(|variant| {
+                variant.fields.iter().any(|field| field.enum_ref.is_some())
+            })
+        {
+            mask_struct_bytes(buf, schema, rec_sig, sub_sig, report);
+        }
         return;
     }
 
@@ -551,6 +557,33 @@ mod tests {
     use crate::record::{FieldEntry, RecordFlags};
     use smallvec::SmallVec;
 
+    #[test]
+    fn raw_enum_filter_matches_unfiltered_masking_across_schemas() {
+        let interner = StringInterner::new();
+        for game in ["fo4", "fo76", "skyrimse", "fnv", "fo3", "starfield", "oblivion"] {
+            let schema = AuthoringSchema::for_game(game).unwrap();
+            for sig in schema.record_signatures() {
+                let Some(record) = schema.compiled_record_def(sig) else { continue };
+                let mut seen = std::collections::HashSet::new();
+                for sub in &record.subrecords {
+                    if !seen.insert(&sub.id) { continue; }
+                    for len in [0, 1, 4, 24, 256] {
+                        for fill in [0u8, 0x96, 0xff] {
+                            let mut expected = vec![fill; len];
+                            let mut expected_report = ClassANormalizeReport::default();
+                            mask_struct_bytes(&mut expected, &schema, sig, &sub.id, &mut expected_report);
+                            let mut actual = FieldValue::Bytes(SmallVec::from_vec(vec![fill; len]));
+                            let mut actual_report = ClassANormalizeReport::default();
+                            normalize_subrecord(&mut actual, sub, &schema, sig, &sub.id, &interner, &mut actual_report);
+                            let FieldValue::Bytes(actual) = actual else { unreachable!() };
+                            assert_eq!(actual.as_slice(), expected, "{game} {sig}.{} len={len} fill={fill}", sub.id);
+                            assert_eq!(actual_report.decisions, expected_report.decisions);
+                        }
+                    }
+                }
+            }
+        }
+    }
     fn efsh_record(dnam: Vec<u8>, interner: &StringInterner) -> Record {
         Record {
             sig: SigCode::from_str("EFSH").unwrap(),

@@ -59,7 +59,6 @@ const ALWAYS_GATED_BASE_EDIDS: &[&str] = &[
     "WorkshopCapturePointBorderCylinderHalf512Trigger",
     "WorkshopCapturePointBorderCylinder512Trigger",
 ];
-pub(crate) const NUKED_FLORA_BASE_MARKER: &str = "FloraRad";
 const CHALKLETTER_BASE_PREFIX: &str = "ChalkLetter_";
 const CHALKLETTER_GATED_CELL: (i32, i32) = (-26, 22);
 const EXTERIOR_CELL_SIZE: f32 = 4096.0;
@@ -77,7 +76,6 @@ struct GateSourceIndex {
     layer_gated_refs: u32,
     editor_only_base_gated_refs: u32,
     always_gated_base_refs: u32,
-    nuked_flora_base_gated_refs: u32,
     chalkletter_cell_gated_refs: u32,
     manual_disabled_refs: u32,
     manual_enabled_refs: u32,
@@ -133,7 +131,6 @@ enum GateEvidence {
     RuntimeLayer,
     EditorOnlyBase,
     AlwaysGatedBase,
-    NukedFloraBase,
     ChalkLetterCell,
 }
 
@@ -352,10 +349,6 @@ impl GateSourceIndex {
                 GateEvidence::AlwaysGatedBase => {
                     self.always_gated_base_refs = self.always_gated_base_refs.saturating_add(1);
                 }
-                GateEvidence::NukedFloraBase => {
-                    self.nuked_flora_base_gated_refs =
-                        self.nuked_flora_base_gated_refs.saturating_add(1);
-                }
                 GateEvidence::ChalkLetterCell => {
                     self.chalkletter_cell_gated_refs =
                         self.chalkletter_cell_gated_refs.saturating_add(1);
@@ -530,6 +523,7 @@ fn placed_record_gate_evidence(
     source_metadata: &SourceMetadata,
     runtime_layers: &FxHashSet<u32>,
 ) -> SmallVec<[GateEvidence; 3]> {
+    let record = crate::source_read::uncompressed_record_view(record);
     let mut evidence = SmallVec::new();
     for subrecord in &record.subrecords {
         match subrecord.signature.as_str() {
@@ -562,15 +556,8 @@ fn placed_record_gate_evidence(
                 if source_metadata
                     .edids
                     .get(&base_local)
-                    .is_some_and(|edid| is_nuked_flora_base_edid(edid))
-                {
-                    evidence.push(GateEvidence::NukedFloraBase);
-                }
-                if source_metadata
-                    .edids
-                    .get(&base_local)
                     .is_some_and(|edid| is_chalkletter_base_edid(edid))
-                    && placed_record_grid(record) == Some(CHALKLETTER_GATED_CELL)
+                    && placed_record_grid(&record) == Some(CHALKLETTER_GATED_CELL)
                 {
                     evidence.push(GateEvidence::ChalkLetterCell);
                 }
@@ -811,12 +798,6 @@ fn is_always_gated_base_edid(text: &str) -> bool {
         .any(|edid| text.eq_ignore_ascii_case(edid))
 }
 
-fn is_nuked_flora_base_edid(text: &str) -> bool {
-    text.as_bytes()
-        .windows(NUKED_FLORA_BASE_MARKER.len())
-        .any(|window| window.eq_ignore_ascii_case(NUKED_FLORA_BASE_MARKER.as_bytes()))
-}
-
 fn is_chalkletter_base_edid(text: &str) -> bool {
     text.starts_with(CHALKLETTER_BASE_PREFIX)
 }
@@ -893,7 +874,7 @@ fn push_summary_warning(
         return;
     }
     let message = format!(
-        "gate_runtime_controlled_placed_refs:lctns={} layers={} runtime_layers={} quests={} quest_aliases={} placed_refs={} candidates={} explicit={} quest_gated={} layer_gated={} editor_only_base_gated={} always_gated_base={} nuked_flora_base_gated={} chalkletter_cell_gated={} manual_disabled={} manual_enabled={} changed={} already_disabled={} enabled_changed={} already_enabled={} skipped_missing={} skipped_nonplaced={}",
+        "gate_runtime_controlled_placed_refs:lctns={} layers={} runtime_layers={} quests={} quest_aliases={} placed_refs={} candidates={} explicit={} quest_gated={} layer_gated={} editor_only_base_gated={} always_gated_base={} chalkletter_cell_gated={} manual_disabled={} manual_enabled={} changed={} already_disabled={} enabled_changed={} already_enabled={} skipped_missing={} skipped_nonplaced={}",
         source_index.lctns_scanned,
         source_index.layers_scanned,
         source_index.runtime_layers,
@@ -906,7 +887,6 @@ fn push_summary_warning(
         source_index.layer_gated_refs,
         source_index.editor_only_base_gated_refs,
         source_index.always_gated_base_refs,
-        source_index.nuked_flora_base_gated_refs,
         source_index.chalkletter_cell_gated_refs,
         source_index.manual_disabled_refs,
         source_index.manual_enabled_refs,
@@ -1157,6 +1137,44 @@ mod tests {
     }
 
     #[test]
+    fn compact_placed_payload_preserves_runtime_gating() {
+        let metadata = SourceMetadata {
+            edids: FxHashMap::from_iter([(0x800, "DoNotUseTest".to_string())]),
+            layer_locals: FxHashSet::default(),
+        };
+        let layers = FxHashSet::from_iter([0x900]);
+        let placed = record(
+            "REFR",
+            0x1000,
+            0,
+            vec![
+                sub("NAME", 0x800_u32.to_le_bytes().to_vec()),
+                sub("XLYR", 0x900_u32.to_le_bytes().to_vec()),
+            ],
+        );
+        let expected = placed_record_gate_evidence(&placed, &metadata, &layers);
+        assert_eq!(
+            expected.as_slice(),
+            &[GateEvidence::EditorOnlyBase, GateEvidence::RuntimeLayer],
+        );
+        let mut compact = placed.clone();
+        let mut payload = Vec::new();
+        for subrecord in &placed.subrecords {
+            payload.extend_from_slice(subrecord.signature.as_bytes());
+            payload.extend_from_slice(&(subrecord.data.len() as u16).to_le_bytes());
+            payload.extend_from_slice(&subrecord.data);
+        }
+        compact.raw_payload = Some(bytes::Bytes::from(payload));
+        compact.subrecords.clear();
+        assert_eq!(
+            placed_record_gate_evidence(&compact, &metadata, &layers),
+            expected,
+        );
+        compact.flags |= esp_authoring_core::plugin_runtime::COMPRESSED_RECORD_FLAG;
+        assert!(placed_record_gate_evidence(&compact, &metadata, &layers).is_empty());
+    }
+
+    #[test]
     fn runtime_layers_gate_placed_refs_ordinary_layers_do_not() {
         let layer = record(
             "LAYR",
@@ -1214,8 +1232,10 @@ mod tests {
         assert_eq!(index.layer_gated_refs, 0);
     }
 
+    // FO76 places FloraRad plants directly only outside Appalachia, enabled; nuke-zone flora rolls
+    // through leveled lists that Tales evaluates (849 on NukeRegionA/B/C).
     #[test]
-    fn placed_ref_with_nuked_flora_base_is_gated() {
+    fn placed_ref_with_nuked_flora_base_is_not_gated() {
         let nuked_base = record(
             "FLOR",
             0x00525646,
@@ -1255,9 +1275,8 @@ mod tests {
         let scan = session.handle_raw_scan(handle).unwrap();
         let index = GateSourceIndex::from_source_scan(&scan).unwrap();
 
-        assert!(index.gated_refs.contains(&0x311776));
+        assert!(!index.gated_refs.contains(&0x311776));
         assert!(!index.gated_refs.contains(&0x311777));
-        assert_eq!(index.nuked_flora_base_gated_refs, 1);
     }
 
     #[test]

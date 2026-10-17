@@ -16,8 +16,7 @@
 //! 4. **Drop** — nothing available; remove an empty hash subrecord and leave the
 //!    slot without `MODT`.
 //!
-//! The deployed-ESM reuse reads an eagerly-loaded handle (lazy/index-only
-//! handles have an empty tree).
+//! The deployed-ESM reader retains only model-bearing records while harvesting.
 //!
 //! ## Params (JSON)
 //! ```text
@@ -32,7 +31,7 @@
 //! the plugin-handle store (`bytes::Bytes` subrecords), like `build_esp`.
 
 use bytes::Bytes;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value as JsonValue;
 use smol_str::SmolStr;
 use std::path::{Path, PathBuf};
@@ -208,6 +207,30 @@ fn walk_records<'a>(items: &'a [ParsedItem], f: &mut impl FnMut(&'a ParsedRecord
     }
 }
 
+pub(super) fn referenced_precombined_models(items: &[ParsedItem]) -> FxHashSet<String> {
+    let mut paths = FxHashSet::default();
+    walk_records(items, &mut |record| {
+        let Some(slots) = fo4_model_slots().get(record.signature.as_str()) else {
+            return;
+        };
+        for subrecord in &record.subrecords {
+            if !slots
+                .iter()
+                .any(|slot| slot.path_sig == subrecord.signature.as_str())
+            {
+                continue;
+            }
+            if let Some(path) = model_path_string(subrecord.signature.as_str(), &subrecord.data) {
+                let path = normalize_model_path(&path);
+                if path.starts_with("precombined/") {
+                    paths.insert(path);
+                }
+            }
+        }
+    });
+    paths
+}
+
 /// Walk every record under `items` (recursing through groups), mutably.
 fn walk_records_mut(items: &mut [ParsedItem], f: &mut impl FnMut(&mut ParsedRecord)) {
     for item in items {
@@ -263,6 +286,16 @@ fn harvest_deployed_index(handle_id: u64) -> Result<FxHashMap<String, Vec<u8>>, 
         }
     });
     Ok(index)
+}
+
+fn load_deployed_index(path: &Path, game: &str) -> Result<FxHashMap<String, Vec<u8>>, PhaseError> {
+    let signatures: Vec<[u8; 4]> = fo4_model_slots()
+        .keys()
+        .map(|signature| signature.as_bytes().try_into().expect("record signature"))
+        .collect();
+    let deployed = OwnedPluginHandle::load_projection(path, game, &signatures)
+        .map_err(|error| PhaseError::BadParams(format!("regenerate_modt: {error}")))?;
+    harvest_deployed_index(deployed.id())
 }
 
 /// Apply the MODT precedence to a single record. Returns the number of slots
@@ -450,18 +483,10 @@ impl Phase for RegenerateModtPhase {
         let manifest = load_manifest(p)?;
         ctx.check_cancel()?;
 
-        let deployed = match (is_upgrade, deployed_path) {
-            (true, Some(path)) => Some(
-                OwnedPluginHandle::load(Path::new(path), ctx.run.target.as_str(), None)
-                    .map_err(|error| PhaseError::BadParams(format!("regenerate_modt: {error}")))?,
-            ),
-            _ => None,
+        let deployed_index = match (is_upgrade, deployed_path) {
+            (true, Some(path)) => load_deployed_index(Path::new(path), ctx.run.target.as_str())?,
+            _ => FxHashMap::default(),
         };
-        let deployed_index = deployed
-            .as_ref()
-            .map(|handle| harvest_deployed_index(handle.id()))
-            .transpose()?
-            .unwrap_or_default();
         ctx.check_cancel()?;
 
         let changed = apply_to_handle(
@@ -535,6 +560,101 @@ mod tests {
         data.push(0);
         data.push(has_collision);
         sr("DATA", &data)
+    }
+
+    #[test]
+    fn precombined_model_discovery_uses_all_model_slots_and_debris_paths() {
+        let records = vec![
+            ParsedItem::Record(record(
+                "RACE",
+                1,
+                vec![
+                    sr("MODL", b"Meshes\\PreCombined\\Out.esp\\male.nif\0"),
+                    sr("MODL", b"precombined/out.esp/female.nif\0"),
+                    sr("FULL", b"precombined/not_a_model.nif\0"),
+                ],
+            )),
+            ParsedItem::Record(record(
+                "DEBR",
+                2,
+                vec![
+                    debr_data(50, "PreCombined\\Out.esp\\debris.nif", 1),
+                    debr_data(50, "ordinary.nif", 1),
+                ],
+            )),
+            ParsedItem::Record(record(
+                "CELL",
+                3,
+                vec![sr("XCRI", b"precombined/not_a_model.nif\0")],
+            )),
+        ];
+        assert_eq!(
+            referenced_precombined_models(&records),
+            [
+                "precombined/out.esp/male.nif".to_string(),
+                "precombined/out.esp/female.nif".to_string(),
+                "precombined/out.esp/debris.nif".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn excluding_unreferenced_precombines_preserves_record_modt() {
+        let records = vec![
+            ParsedItem::Record(stat(1, vec![sr("MODL", b"ordinary.nif\0")])),
+            ParsedItem::Record(record(
+                "DEBR",
+                2,
+                vec![debr_data(100, "PreCombined\\Out.esp\\explicit.nif", 1)],
+            )),
+        ];
+        let required = referenced_precombined_models(&records);
+        let mut full = MeshModtManifest::default();
+        for path in [
+            "ordinary.nif",
+            "precombined/out.esp/explicit.nif",
+            "precombined/out.esp/generated.nif",
+        ] {
+            full.meshes.insert(path.into(), sample_entry());
+        }
+        let mut filtered = full.clone();
+        filtered
+            .meshes
+            .retain(|path, _| !path.starts_with("precombined/") || required.contains(path));
+        assert_eq!(filtered.meshes.len(), 2);
+        let temp = tempfile::tempdir().unwrap();
+        for item in records {
+            let ParsedItem::Record(mut original) = item else {
+                unreachable!()
+            };
+            let mut optimized = original.clone();
+            let apply = |record: &mut ParsedRecord, manifest: &MeshModtManifest| {
+                apply_record(
+                    record,
+                    manifest,
+                    &FxHashMap::default(),
+                    temp.path(),
+                    &FxHashMap::default(),
+                    false,
+                    &MaterialTextureCache::default(),
+                )
+            };
+            assert_eq!(
+                apply(&mut original, &full),
+                apply(&mut optimized, &filtered)
+            );
+            let bytes = |record: &ParsedRecord| {
+                record
+                    .subrecords
+                    .iter()
+                    .map(|subrecord| (subrecord.signature.clone(), subrecord.data.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(bytes(&original), bytes(&optimized));
+            assert!(modt_of(&original).is_some());
+        }
     }
 
     fn modt_of(rec: &ParsedRecord) -> Option<Vec<u8>> {
@@ -861,6 +981,88 @@ mod tests {
             "no MODT added"
         );
         plugin_handle_close_native(out);
+    }
+
+    #[test]
+    fn deployed_projection_matches_full_load_for_all_model_slots() {
+        use esp_authoring_core::plugin_runtime::{
+            COMPRESSED_RECORD_FLAG, ParsedGroup, compress_subrecords_payload,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Deployed.esm");
+        let fixture = OwnedPluginHandle::new("Deployed.esm", "fo4");
+        let hash = encode_modt(&sample_entry());
+        let mut items = Vec::new();
+        let mut expected = FxHashMap::default();
+        for (signature, slots) in fo4_model_slots() {
+            let mut subrecords = Vec::new();
+            for (index, slot) in slots.iter().enumerate() {
+                let path = format!("{signature}/{index}.nif");
+                subrecords.push(if slot.path_sig == "DATA" {
+                    debr_data(50, &path, 1)
+                } else {
+                    sr(&slot.path_sig, format!("{path}\0").as_bytes())
+                });
+                subrecords.push(sr(&slot.hash_sig, &hash));
+                expected.insert(normalize_model_path(&path), hash.clone());
+            }
+            items.push(ParsedItem::Record(record(
+                signature,
+                0x800 + items.len() as u32,
+                subrecords,
+            )));
+        }
+        let first = stat(
+            0x900,
+            vec![sr("MODL", b"duplicate.nif\0"), sr("MODT", &hash)],
+        );
+        let second_hash = encode_modt(&MeshModtEntry::default());
+        let second = stat(
+            0x900,
+            vec![sr("MODL", b"duplicate.nif\0"), sr("MODT", &second_hash)],
+        );
+        expected.insert("duplicate.nif".into(), hash.clone());
+        let compressed_subrecords = [sr("MODL", b"compressed.nif\0"), sr("MODT", &hash)];
+        let mut compressed = stat(0x901, Vec::new());
+        compressed.flags = COMPRESSED_RECORD_FLAG;
+        compressed.raw_payload = Some(Bytes::from(
+            compress_subrecords_payload(&compressed_subrecords).unwrap(),
+        ));
+        items.push(ParsedItem::Group(ParsedGroup {
+            label: *b"STAT",
+            group_type: 0,
+            tail: Bytes::new(),
+            children: vec![
+                ParsedItem::Record(first),
+                ParsedItem::Record(second),
+                ParsedItem::Record(compressed),
+            ],
+        }));
+        items.push(ParsedItem::Record(record(
+            "REFR",
+            0x902,
+            vec![sr("MODL", b"ignored.nif\0"), sr("MODT", &hash)],
+        )));
+        plugin_handle_store_ref()
+            .lock()
+            .unwrap()
+            .get_mut(&fixture.id())
+            .unwrap()
+            .parsed
+            .root_items = items;
+        plugin_handle_save_no_py(fixture.id(), path.to_str().unwrap()).unwrap();
+        drop(fixture);
+
+        let full = OwnedPluginHandle::load(&path, "fo4", None).unwrap();
+        let baseline = harvest_deployed_index(full.id()).unwrap();
+        drop(full);
+        assert_eq!(baseline, expected);
+        assert_eq!(load_deployed_index(&path, "fo4").unwrap(), baseline);
+        assert!(
+            plugin_handle_store_ref().lock().unwrap().values()
+                .all(|slot| slot.parsed.file_path != path.to_string_lossy())
+        );
     }
 
     #[test]

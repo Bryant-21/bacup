@@ -38,3 +38,21 @@ Int Function FindCheckpointStageIndex(Int aiCheckpointValue)
     EndWhile
     Return selectedIndex
 EndFunction
+
+; FO76 kept each player's quest progress in CheckpointAV so a new session could resume; the
+; terminals and dialogue of these quests also read it. A stage that is itself a checkpoint
+; value records it, never lowering it.
+Event OnStageSet(Int auiStageID, Int auiItemID)
+    Actor playerRef = Game.GetPlayer()
+    If playerRef == None || CheckpointAV == None || CheckpointStages == None
+        Return
+    EndIf
+    Int index = 0
+    While index < CheckpointStages.Length
+        If CheckpointStages[index].checkpointValue == auiStageID && playerRef.GetValue(CheckpointAV) < auiStageID
+            playerRef.SetValue(CheckpointAV, auiStageID)
+            currentCheckpointValue = auiStageID
+        EndIf
+        index += 1
+    EndWhile
+EndEvent

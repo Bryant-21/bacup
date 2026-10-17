@@ -85,3 +85,47 @@ def test_respawn_mode_falls_back_to_the_old_world_key():
     setting = next(s for s in tc.load_schema().settings() if s.key == "iRespawnMode")
     assert tc.read(tc.parse_ini("[World]\nbRespawn=0\n"), setting) == "0"
     assert tc.read(tc.parse_ini(""), setting) == "1"
+
+
+def test_quick_boy_own_color_is_one_row_over_three_channel_keys():
+    schema = tc.load_schema()
+    own = next(s for s in schema.settings() if s.id == "PipBoy/iColor")
+    mode = next(s for s in schema.settings() if s.id == "PipBoy/iQuickBoyColor")
+    assert own.kind == "color" and own.default == "7BAAD9" and own.selects == "iQuickBoyColor=1"
+    assert mode.kind == "choice" and mode.default == "1"
+    assert {c.value: c.label for c in mode.choices} == {"0": "Match Pip-Boy", "2": "Match HUD", "1": "Own Color"}
+
+    assert tc.read_color({}, own) == 0x7BAAD9
+    assert tc.read_color(tc.parse_ini("[PipBoy]\niColorR=300\niColorG=-4\niColorB=junk\n"), own) == 0xFF00D9
+    assert tc.parse_color("#7baad9") == 0x7BAAD9 and tc.parse_color("7BAAD") == 0
+    assert tc.format_color(0x0A0B0C) == "0A0B0C"
+
+    text = tc.apply_edits("[PipBoy]\nbQuickBoy=1\n", {"PipBoy/iColor": "E4E6A4", "PipBoy/iQuickBoyColor": "1"}, schema)
+    ini = tc.parse_ini(text)
+    assert [ini["pipboy"][k] for k in ("icolorr", "icolorg", "icolorb", "iquickboycolor")] == ["228", "230", "164", "1"]
+    assert tc.read_color(ini, own) == 0xE4E6A4 and not tc.is_default(ini, own)
+    assert tc.is_default(tc.parse_ini(tc.set_color("", own, 0x7BAAD9)), own)
+
+
+def _search(query: str) -> set[str]:
+    return {s.id for page in tc.load_schema().pages for group in page.groups for s in group.settings
+            if tc.matches_search(page, group, s, query)}
+
+
+def test_search_matches_the_tales_config_menu():
+    area_loot = _search("area loot")
+    assert {f"AreaLoot/{key}" for key in ("bEnabled", "bQuickLoot", "bHighlight", "bPlayerKillsOnly", "fDistance",
+                                          "fPollSeconds")} <= area_loot
+    assert "HUD/bQuickLoot" in _search("looting")
+    assert _search("fdistance") == {"AreaLoot/fDistance"}
+    assert _search("atlantic") == {"Menus/sMenuMusic"}
+    assert _search("AREA  Loot") == area_loot
+    assert not _search("quick zzz")
+    assert "World/iRespawnMode" not in _search("world")
+
+
+def test_carry_forward_keeps_hand_written_companion_cards():
+    existing = tc.template_text().replace("079249:Fallout4.esm=Chem Fiend", "001002:ellen.esp=random")
+    out = tc.carry_forward(existing)
+    assert "001002:ellen.esp=random" in out
+    assert "079249:Fallout4.esm=Chem Fiend" not in out

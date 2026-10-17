@@ -1577,6 +1577,8 @@ fn collect_deferred_inputs(
         })
         .collect::<std::collections::HashSet<_>>();
     let source_plugin = run.interner.intern(source_plugin_name);
+    let source_eid_index = crate::source_read::collect_eid_index(run.source_handle_id, &run.schema_source, &run.interner)
+        .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
 
     for fk in deferred {
         if run.config.fnv_quest_slice && fk.plugin != source_plugin {
@@ -1602,7 +1604,7 @@ fn collect_deferred_inputs(
         let mut payload = record_to_legacy_payload(&record, &legacy_key, &run.interner);
         expose_selected_sctx_source(&record, &mut payload);
         if record.sig.as_str() == "SCPT" {
-            attach_scpt_mapped_form_keys(run, &record, &mut payload)?;
+            attach_scpt_mapped_form_keys(run, &record, &mut payload, &source_eid_index)?;
         }
         let target_fk = run
             .mapper_state
@@ -1701,11 +1703,56 @@ fn attach_scpt_mapped_form_keys(
     run: &ConversionRun,
     record: &Record,
     payload: &mut Value,
+    index: &[(crate::sym::Sym, FormKey, SigCode)],
 ) -> Result<(), FnvScriptingError> {
     let state = run.mapper_state.as_ref().ok_or_else(|| {
         FnvScriptingError::Setup("SCPT dependency mapping requires mapper state".to_string())
     })?;
-    attach_scpt_mapped_form_keys_with_state(record, payload, state, &run.interner)
+    attach_scpt_mapped_form_keys_with_state(record, payload, state, &run.interner)?;
+    let names = crate::translator::pair_hooks::fnv_fo4::legacy_idle_scripts::source_playidle_names(record, &run.interner)
+        .map_err(FnvScriptingError::Setup)?;
+    attach_scpt_source_form_symbols(record, payload, index, &run.interner)?;
+    if names.is_empty() { return Ok(()); }
+    let mut symbols = serde_json::Map::new();
+    let mut targets = Vec::new();
+    for name in names {
+        let matches = index.iter().filter(|(eid, _, signature)| signature.as_str() == "IDLE"
+            && run.interner.resolve(*eid).is_some_and(|eid| eid.eq_ignore_ascii_case(&name))).collect::<Vec<_>>();
+        let [(_, source, signature)] = matches.as_slice() else { return Err(FnvScriptingError::Setup(format!("PlayIdle {name} does not resolve to one source IDLE"))); };
+        if !run.is_admitted_creature_dependency(*source, *signature) { return Err(FnvScriptingError::Setup(format!("PlayIdle {name} has no admitted creature behavior"))); }
+        let target = state.source_to_target.get(source).ok_or_else(|| FnvScriptingError::Setup(format!("PlayIdle {name} has no target IDLE mapping")))?;
+        let source_text = form_key_to_legacy_str(*source, &run.interner).ok_or_else(|| FnvScriptingError::Setup("PlayIdle source identity is unavailable".into()))?;
+        let target_text = form_key_to_legacy_str(*target, &run.interner).ok_or_else(|| FnvScriptingError::Setup("PlayIdle target identity is unavailable".into()))?;
+        symbols.insert(name, Value::String(source_text.clone()));
+        targets.push((source_text, Value::String(target_text)));
+    }
+    payload["__mapped_form_keys"].as_object_mut().unwrap().extend(targets);
+    payload.as_object_mut().unwrap().insert("__source_idle_symbols".into(), Value::Object(symbols));
+    Ok(())
+}
+
+fn attach_scpt_source_form_symbols(
+    record: &Record,
+    payload: &mut Value,
+    index: &[(crate::sym::Sym, FormKey, SigCode)],
+    interner: &StringInterner,
+) -> Result<(), FnvScriptingError> {
+    let mut dependencies = Vec::new();
+    for field in record.fields.iter().filter(|field| field.sig.as_str() == "SCRO") {
+        collect_field_value_form_keys(&field.value, &mut dependencies);
+    }
+    let mut symbols = serde_json::Map::new();
+    for (eid, source, signature) in index.iter().filter(|(_, source, _)| dependencies.contains(source)) {
+        let name = interner.resolve(*eid).ok_or_else(|| FnvScriptingError::Setup("SCPT dependency EditorID is unavailable".into()))?.to_ascii_lowercase();
+        let source_text = form_key_to_legacy_str(*source, interner).ok_or_else(|| FnvScriptingError::Setup("SCPT dependency source identity is unavailable".into()))?;
+        let value = serde_json::json!({"form_key": source_text, "signature": signature.as_str()});
+        if let Some(previous) = symbols.insert(name.clone(), value.clone()) && previous != value {
+            return Err(FnvScriptingError::Setup(format!("SCPT dependency EditorID {name} has conflicting source identities")));
+        }
+    }
+    payload.as_object_mut().ok_or_else(|| FnvScriptingError::Setup("SCPT payload is not an object".into()))?
+        .insert("__source_form_symbols".into(), Value::Object(symbols));
+    Ok(())
 }
 
 fn attach_scpt_mapped_form_keys_with_state(
@@ -1994,6 +2041,29 @@ fn field_value_to_json(value: &FieldValue, interner: &StringInterner) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_scro_symbols_match_identity_instead_of_index_order() {
+        use crate::ids::SubrecordSig;
+        use crate::record::FieldEntry;
+        let interner = StringInterner::new();
+        let spell = FormKey { local: 0x100, plugin: interner.intern("FalloutNV.esm") };
+        let explosion = FormKey { local: 0x200, plugin: spell.plugin };
+        let mut record = Record::new(SigCode::from_str("SCPT").unwrap(), FormKey { local: 0x300, plugin: spell.plugin });
+        for key in [spell, explosion] {
+            record.fields.push(FieldEntry { sig: SubrecordSig(*b"SCRO"), value: FieldValue::FormKey(key) });
+        }
+        let mut index = vec![
+            (interner.intern("SourceExplosion"), explosion, SigCode::from_str("EXPL").unwrap()),
+            (interner.intern("SourceSpell"), spell, SigCode::from_str("SPEL").unwrap()),
+        ];
+        let mut payload = serde_json::json!({});
+        attach_scpt_source_form_symbols(&record, &mut payload, &index, &interner).unwrap();
+        assert_eq!(payload["__source_form_symbols"]["sourcespell"], serde_json::json!({"form_key":"000100:FalloutNV.esm", "signature":"SPEL"}));
+        assert_eq!(payload["__source_form_symbols"]["sourceexplosion"]["form_key"], "000200:FalloutNV.esm");
+        index.push((interner.intern("SOURCESPELL"), explosion, SigCode::from_str("EXPL").unwrap()));
+        assert!(attach_scpt_source_form_symbols(&record, &mut payload, &index, &interner).unwrap_err().to_string().contains("conflicting source identities"));
+    }
+
     use super::*;
     use crate::formkey_mapper::{MapperOptions, MapperState};
     use crate::ids::{FormKey, SigCode, SubrecordSig};

@@ -7,15 +7,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import glm
 import moderngl
 import numpy as np
 
-from creation_lib.swf.types import RGBA, FillStyle, TWIPS_PER_PIXEL
 from creation_lib.swf.shapes import (
-    ShapeDef, ShapeRecord, StraightEdge, CurvedEdge, StyleChange, EndShape,
+    ShapeDef,
 )
 
 _log = logging.getLogger(__name__)
@@ -60,6 +59,7 @@ class SwfRenderer:
 
         # Shader programs
         self.fill_prog = self._load_program("fill")
+        self.fill_prog["u_opacity"].value = 1.0
         self.stroke_prog = self._load_program("stroke")
         self.grid_prog = self._load_program("grid")
 
@@ -71,6 +71,7 @@ class SwfRenderer:
         self._grid_vbo: moderngl.Buffer | None = None
         self._canvas_border_vao: moderngl.VertexArray | None = None
         self._canvas_border_vbo: moderngl.Buffer | None = None
+        self._canvas_key = None
 
         # Thumbnail FBO pool: list of (fbo, texture, depth, size)
         self._thumb_fbos: list = []
@@ -112,7 +113,8 @@ class SwfRenderer:
     def render(self, projection: glm.mat4, shapes: list[tuple[ShapeDef, glm.mat4]],
                bg_color: tuple[float, float, float] = (0.2, 0.2, 0.2),
                show_grid: bool = True,
-               canvas_width: int = 550, canvas_height: int = 400) -> None:
+               canvas_width: int = 550, canvas_height: int = 400,
+               canvas_color: tuple[float, float, float] = (0.2, 0.2, 0.2)) -> None:
         """Render all visible shapes to the FBO."""
         if not self.fbo:
             return
@@ -127,18 +129,23 @@ class SwfRenderer:
         proj_bytes = _mat4_to_bytes(projection)
 
         # Draw canvas background (#333333)
-        self._draw_canvas_rect(proj_bytes, canvas_width, canvas_height)
+        self.fill_prog["u_opacity"].value = 1.0
+        self._draw_canvas_rect(proj_bytes, canvas_width, canvas_height, canvas_color)
 
         # Draw shapes (bottom to top)
-        for shape, transform in shapes:
-            self._draw_shape(shape, proj_bytes)
+        for item in shapes:
+            shape, transform = item[:2]
+            self.fill_prog["u_opacity"].value = item[2] if len(item) > 2 else 1.0
+            self._draw_shape(shape, _mat4_to_bytes(projection * transform))
+        self.fill_prog["u_opacity"].value = 1.0
 
         # Grid overlay
         if show_grid:
             self._draw_grid(proj_bytes, canvas_width, canvas_height)
 
         self.ctx.disable(moderngl.BLEND)
-        self.ctx.screen.use()
+        if self.ctx.screen:
+            self.ctx.screen.use()
 
     def tessellate_shape(self, shape: ShapeDef) -> TessellatedShape:
         """Tessellate a shape into GPU-ready triangles."""
@@ -177,9 +184,15 @@ class SwfRenderer:
             self.fill_prog["u_projection"].write(proj_bytes)
             ts.vao.render(moderngl.TRIANGLES, vertices=ts.num_vertices)
 
-    def _draw_canvas_rect(self, proj_bytes: bytes, w: int, h: int) -> None:
+    def _draw_canvas_rect(self, proj_bytes: bytes, w: int, h: int, color=(0.2, 0.2, 0.2)) -> None:
         """Draw the SWF canvas background rectangle."""
-        if not self._canvas_border_vbo:
+        key = (w, h, color)
+        if self._canvas_key != key:
+            if self._canvas_border_vao:
+                self._canvas_border_vao.release()
+            if self._canvas_border_vbo:
+                self._canvas_border_vbo.release()
+            self._canvas_key = key
             # Two triangles for a filled rect
             verts = np.array([
                 0, 0,  0.2, 0.2, 0.2, 1.0,
@@ -189,6 +202,7 @@ class SwfRenderer:
                 w, h,  0.2, 0.2, 0.2, 1.0,
                 0, h,  0.2, 0.2, 0.2, 1.0,
             ], dtype="f4")
+            verts.reshape(-1, 6)[:, 2:5] = color
             self._canvas_border_vbo = self.ctx.buffer(verts.tobytes())
             self._canvas_border_vao = self.ctx.vertex_array(
                 self.fill_prog,
@@ -198,8 +212,23 @@ class SwfRenderer:
         self._canvas_border_vao.render(moderngl.TRIANGLES)
 
     def _draw_grid(self, proj_bytes: bytes, w: int, h: int) -> None:
-        """No-op; grid overlay is not implemented."""
-        pass
+        """A temporary line mesh follows the current canvas dimensions."""
+        vertices = []
+        for x in range(0, w + 1, 20):
+            vertices.extend([x, 0, 0.6, 0.6, 0.6, 0.18, x, h, 0.6, 0.6, 0.6, 0.18])
+        for y in range(0, h + 1, 20):
+            vertices.extend([0, y, 0.6, 0.6, 0.6, 0.18, w, y, 0.6, 0.6, 0.6, 0.18])
+        buffer = self.ctx.buffer(np.asarray(vertices, dtype="f4").tobytes())
+        vao = self.ctx.vertex_array(self.fill_prog, [(buffer, "2f 4f", "in_position", "in_color")])
+        self.fill_prog["u_projection"].write(proj_bytes)
+        vao.render(moderngl.LINES)
+        vao.release()
+        buffer.release()
+
+    def clear_cache(self) -> None:
+        for shape in self._cache.values():
+            shape.release()
+        self._cache.clear()
 
     def cleanup(self) -> None:
         """Release all GPU resources."""
@@ -222,6 +251,11 @@ class SwfRenderer:
             tex.release()
             depth.release()
         self._thumb_fbos.clear()
+        for resource in (self._canvas_border_vao, self._canvas_border_vbo,
+                         self._grid_vao, self._grid_vbo, self.fill_prog, self.stroke_prog, self.grid_prog):
+            if resource is not None:
+                resource.release()
+        self._canvas_border_vao = self._canvas_border_vbo = None
 
     def _get_thumb_fbo(
         self, size: int
@@ -239,7 +273,9 @@ class SwfRenderer:
         # Create a new one (up to pool cap — evict oldest if full)
         if len(self._thumb_fbos) >= self._THUMB_POOL_SIZE:
             old_fbo, old_tex, old_depth, _ = self._thumb_fbos.pop(0)
-            old_fbo.release(); old_tex.release(); old_depth.release()
+            old_fbo.release()
+            old_tex.release()
+            old_depth.release()
 
         tex = self.ctx.texture((size, size), 4)
         depth = self.ctx.depth_renderbuffer((size, size))
@@ -262,7 +298,6 @@ class SwfRenderer:
         Returns:
             (texture_glo, png_bytes): GL texture object name + raw PNG bytes
         """
-        import struct
         import numpy as np
         from PIL import Image
         import io
@@ -276,8 +311,8 @@ class SwfRenderer:
         if vertex_array:
             # Orthographic projection: pixel coords → clip space
             # Maps [0, size] → [-1, 1], Y flipped for OpenGL convention
-            l, r, b, t = 0.0, float(size), float(size), 0.0
-            proj = glm.ortho(l, r, b, t, -1.0, 1.0)
+            left, right, bottom, top = 0.0, float(size), float(size), 0.0
+            proj = glm.ortho(left, right, bottom, top, -1.0, 1.0)
             proj_bytes = _mat4_to_bytes(proj)
 
             data = np.array(vertex_array, dtype="f4")
@@ -293,7 +328,8 @@ class SwfRenderer:
             vbo.release()
 
         self.ctx.disable(moderngl.BLEND)
-        self.ctx.screen.use()
+        if self.ctx.screen:
+            self.ctx.screen.use()
 
         # Read back pixels (OpenGL stores rows bottom-up; flip for PNG)
         raw = fbo.read(components=4)
@@ -307,115 +343,59 @@ class SwfRenderer:
 
 
 def _tessellate_fills(shape: ShapeDef) -> list[float]:
-    """Tessellate filled subpaths to flat vertex array [x, y, r, g, b, a, ...].
+    """Stitch SWF edge soups by fill side; retain winding and stroke contours."""
+    import pyclipper
+    from earcut.earcut import earcut as earcut_fn
+    from creation_lib.swf.svg_io import _bucket_edges, _stitch, _fill_color
 
-    Uses even-odd fill rule: groups rings by fill style, then lets pyclipper's
-    PolyTree nesting depth distinguish outer contours from holes before
-    triangulating each with earcut, so eyes/mouth/detail cutouts render
-    correctly.
-    """
-    from earcut.earcut import earcut as _earcut
+    fills, lines = _bucket_edges(shape)
+    vertices = []
 
-    scale = 1.0 / TWIPS_PER_PIXEL
-    active_fills: list[FillStyle] = list(shape.fill_styles)
+    def rings_for(segments):
+        rings = []
+        for contour in _stitch(segments):
+            points = [(contour[0][0] / 20, contour[0][1] / 20)]
+            for sx, sy, ex, ey, cx, cy in contour:
+                if cx is None:
+                    points.append((ex / 20, ey / 20))
+                else:
+                    points.extend(_subdivide_quadratic(sx / 20, sy / 20, cx / 20, cy / 20, ex / 20, ey / 20)[1:])
+            rings.append(points)
+        return rings
 
-    # Phase 1: walk records, collect (ring, fill_style) pairs
-    rings: list[tuple[list[tuple[float, float]], FillStyle | None]] = []
-    current_path: list[tuple[float, float]] = []
-    cx, cy = 0.0, 0.0
-    current_fill: FillStyle | None = None
-
-    def _close_ring():
-        nonlocal current_path
-        if len(current_path) >= 3 and current_fill and current_fill.color:
-            rings.append((current_path, current_fill))
-        current_path = []
-
-    for rec in shape.records:
-        if isinstance(rec, StyleChange):
-            if rec.has_move:
-                _close_ring()
-                cx = rec.move_x * scale
-                cy = rec.move_y * scale
-                current_path.append((cx, cy))
-
-            if rec.new_fill_styles is not None:
-                active_fills = list(rec.new_fill_styles)
-
-            if rec.fill1 is not None and rec.fill1 > 0:
-                idx = rec.fill1 - 1
-                if idx < len(active_fills):
-                    current_fill = active_fills[idx]
-            elif rec.fill0 is not None and rec.fill0 > 0:
-                idx = rec.fill0 - 1
-                if idx < len(active_fills):
-                    current_fill = active_fills[idx]
-
-        elif isinstance(rec, StraightEdge):
-            cx += rec.dx * scale
-            cy += rec.dy * scale
-            current_path.append((cx, cy))
-
-        elif isinstance(rec, CurvedEdge):
-            segments = _subdivide_quadratic(
-                cx, cy,
-                cx + rec.cx * scale, cy + rec.cy * scale,
-                cx + (rec.cx + rec.ax) * scale, cy + (rec.cy + rec.ay) * scale,
-            )
-            for px, py in segments[1:]:
-                current_path.append((px, py))
-            cx = cx + (rec.cx + rec.ax) * scale
-            cy = cy + (rec.cy + rec.ay) * scale
-
-        elif isinstance(rec, EndShape):
-            _close_ring()
-
-    if not rings:
-        return []
-
-    # Phase 2: group rings by fill style, tessellate with holes
-    all_vertices: list[float] = []
-
-    # Group by fill style identity (same color = same group for even-odd)
-    fill_groups: dict[int, list[tuple[list[tuple[float, float]], FillStyle]]] = {}
-    for ring, fill in rings:
-        # Key by fill color to group same-fill rings
-        key = id(fill) if fill else 0
-        # Use color hash for grouping (different FillStyle objects with same color)
-        if fill and fill.color:
-            key = (fill.color.r, fill.color.g, fill.color.b, fill.color.a)
-        fill_groups.setdefault(key, []).append((ring, fill))
-
-    for group in fill_groups.values():
-        if not group:
+    for style, segments in fills.values():
+        color = _fill_color(style)
+        if color is None:
             continue
-        fill = group[0][1]
-        if not fill or not fill.color:
+        rings = [r for r in rings_for(segments) if len(r) >= 3]
+        if rings:
+            _tessellate_winding(rings, color.r / 255, color.g / 255, color.b / 255,
+                                color.a / 255, vertices, earcut_fn)
+    for style, segments in lines.values():
+        color = getattr(style, "color", None)
+        if color is None:
             continue
+        offset = pyclipper.PyclipperOffset()
+        for path in rings_for(segments):
+            if len(path) < 2:
+                continue
+            closed = path[0] == path[-1]
+            offset.AddPath(pyclipper.scale_to_clipper(path[:-1] if closed else path),
+                           pyclipper.JT_ROUND, pyclipper.ET_CLOSEDLINE if closed else pyclipper.ET_OPENROUND)
+        rings = pyclipper.scale_from_clipper(offset.Execute(pyclipper.scale_to_clipper(max(style.width / 20, 1) / 2)))
+        if rings:
+            _tessellate_winding(rings, color.r / 255, color.g / 255, color.b / 255,
+                                color.a / 255, vertices, earcut_fn)
+    return vertices
 
-        r = fill.color.r / 255.0
-        g = fill.color.g / 255.0
-        b = fill.color.b / 255.0
-        a = fill.color.a / 255.0
 
-        group_rings = [ring for ring, _ in group]
-        _tessellate_even_odd(group_rings, r, g, b, a, all_vertices, _earcut)
-
-    return all_vertices
-
-
-def _tessellate_even_odd(
+def _tessellate_winding(
     group_rings: list[list[tuple[float, float]]],
     r: float, g: float, b: float, a: float,
     out: list[float],
     earcut_fn,
 ) -> None:
-    """Tessellate rings with even-odd fill using pyclipper boolean XOR.
-
-    SWF uses even-odd fill: overlapping same-fill regions cancel out.
-    Pyclipper CT_UNION with PFT_EVENODD correctly handles this for any
-    configuration of overlapping, nested, or adjacent rings.
-    """
+    """Match the SVG edge-stitching pipeline's nonzero contour winding."""
     if len(group_rings) == 1:
         ring = group_rings[0]
         flat = [v for pt in ring for v in pt]
@@ -439,8 +419,8 @@ def _tessellate_even_odd(
     try:
         tree = pc.Execute2(
             pyclipper.CT_UNION,
-            pyclipper.PFT_EVENODD,
-            pyclipper.PFT_EVENODD,
+            pyclipper.PFT_NONZERO,
+            pyclipper.PFT_NONZERO,
         )
     except pyclipper.ClipperException:
         # Fallback: tessellate each ring independently
@@ -516,9 +496,9 @@ def _subdivide_quadratic(
         return [(x0, y0), (x1, y1)]
 
     # Split at t=0.5
-    c0x = (x0 + cx) / 2;  c0y = (y0 + cy) / 2
-    c1x = (cx + x1) / 2;  c1y = (cy + y1) / 2
-    mmx = (c0x + c1x) / 2; mmy = (c0y + c1y) / 2
+    c0x, c0y = (x0 + cx) / 2, (y0 + cy) / 2
+    c1x, c1y = (cx + x1) / 2, (cy + y1) / 2
+    mmx, mmy = (c0x + c1x) / 2, (c0y + c1y) / 2
 
     left = _subdivide_quadratic(x0, y0, c0x, c0y, mmx, mmy, depth + 1, max_depth)
     right = _subdivide_quadratic(mmx, mmy, c1x, c1y, x1, y1, depth + 1, max_depth)

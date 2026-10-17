@@ -122,13 +122,13 @@ class ArchlistCreatorTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##archlist_creator"):
-            _, clicked = draw_path_row("Source", self._input_dir)
+            self._input_dir, clicked = draw_path_row("Source", self._input_dir)
             if clicked:
-                path = pick_folder("Select source directory")
+                path = pick_folder("Select source directory", self._input_dir)
                 if path:
                     self._input_dir = path
 
-            _, clicked = draw_path_row("Save As", self._output_file)
+            self._output_file, clicked = draw_path_row("Save As", self._output_file)
             if clicked:
                 path = pick_save_file(
                     "Save archlist as",

@@ -103,10 +103,16 @@ Function Fragment_Stage_0100_Item_00()
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
+    If IsObjectiveDisplayed(100) && !IsObjectiveCompleted(100)
+        SetObjectiveCompleted(100, True)
+    EndIf
     SetObjectiveDisplayed(200)
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
+    If IsObjectiveDisplayed(200) && !IsObjectiveCompleted(200)
+        SetObjectiveCompleted(200, True)
+    EndIf
     SetObjectiveDisplayed(300)
 EndFunction
 
@@ -122,6 +128,9 @@ Function Fragment_Stage_0301_Item_00()
 EndFunction
 
 Function Fragment_Stage_0310_Item_00()
+    If IsObjectiveDisplayed(300) && !IsObjectiveCompleted(300)
+        SetObjectiveCompleted(300, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
 
     SetObjectiveDisplayed(310)
@@ -139,6 +148,9 @@ Function Fragment_Stage_0400_Item_00()
 EndFunction
 
 Function Fragment_Stage_0500_Item_00()
+    If IsObjectiveDisplayed(400) && !IsObjectiveCompleted(400)
+        SetObjectiveCompleted(400, True)
+    EndIf
     SetObjectiveDisplayed(500)
 EndFunction
 
@@ -158,6 +170,9 @@ Function Fragment_Stage_0550_Item_00()
 EndFunction
 
 Function Fragment_Stage_0600_Item_00()
+    If IsObjectiveDisplayed(500) && !IsObjectiveCompleted(500)
+        SetObjectiveCompleted(500, True)
+    EndIf
     SetObjectiveDisplayed(600)
 EndFunction
 
@@ -170,6 +185,9 @@ Function Fragment_Stage_0605_Item_00()
 EndFunction
 
 Function Fragment_Stage_0610_Item_00()
+    If IsObjectiveDisplayed(600) && !IsObjectiveCompleted(600)
+        SetObjectiveCompleted(600, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
 
     If raRaRef != None
@@ -192,6 +210,9 @@ Function Fragment_Stage_0620_Item_00()
 EndFunction
 
 Function Fragment_Stage_0630_Item_00()
+    If IsObjectiveDisplayed(620) && !IsObjectiveCompleted(620)
+        SetObjectiveCompleted(620, True)
+    EndIf
     DefaultQuestEncounterWaveScript waveController = (Self as Quest) as DefaultQuestEncounterWaveScript
 
     If waveController != None
@@ -216,6 +237,9 @@ Function Fragment_Stage_0700_Item_00()
 EndFunction
 
 Function Fragment_Stage_0750_Item_00()
+    If IsObjectiveDisplayed(700) && !IsObjectiveCompleted(700)
+        SetObjectiveCompleted(700, True)
+    EndIf
     ObjectReference securityRoomDoor
 
     If Alias_SectorAlphaDoor02 != None
@@ -237,10 +261,16 @@ Function Fragment_Stage_0800_Item_00()
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()
+    If IsObjectiveDisplayed(800) && !IsObjectiveCompleted(800)
+        SetObjectiveCompleted(800, True)
+    EndIf
     SetObjectiveDisplayed(900)
 EndFunction
 
 Function Fragment_Stage_0910_Item_00()
+    If IsObjectiveDisplayed(900) && !IsObjectiveCompleted(900)
+        SetObjectiveCompleted(900, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
 
     If raRaRef != None
@@ -253,12 +283,18 @@ Function Fragment_Stage_0920_Item_00()
 EndFunction
 
 Function Fragment_Stage_0930_Item_00()
+    If IsObjectiveDisplayed(920) && !IsObjectiveCompleted(920)
+        SetObjectiveCompleted(920, True)
+    EndIf
     If W05_MQR_202P_RaRa_004C_SnackEnd != None && !W05_MQR_202P_RaRa_004C_SnackEnd.IsPlaying()
         W05_MQR_202P_RaRa_004C_SnackEnd.Start()
     EndIf
 EndFunction
 
 Function Fragment_Stage_0940_Item_00()
+    If IsObjectiveDisplayed(900) && !IsObjectiveCompleted(900)
+        SetObjectiveCompleted(900, True)
+    EndIf
     SetObjectiveDisplayed(940)
     If W05_MQR_202P_RaRa_004C_SnackEnd != None && !W05_MQR_202P_RaRa_004C_SnackEnd.IsPlaying()
         W05_MQR_202P_RaRa_004C_SnackEnd.Start()
@@ -275,10 +311,16 @@ Function Fragment_Stage_0970_Item_00()
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()
+    If IsObjectiveDisplayed(970) && !IsObjectiveCompleted(970)
+        SetObjectiveCompleted(970, True)
+    EndIf
     SetObjectiveDisplayed(1000)
 EndFunction
 
 Function Fragment_Stage_1010_Item_00()
+    If IsObjectiveDisplayed(1000) && !IsObjectiveCompleted(1000)
+        SetObjectiveCompleted(1000, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
 
     If raRaRef != None
@@ -308,6 +350,9 @@ Function Fragment_Stage_1017_Item_00()
 EndFunction
 
 Function Fragment_Stage_1020_Item_00()
+    If IsObjectiveDisplayed(1000) && !IsObjectiveCompleted(1000)
+        SetObjectiveCompleted(1000, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
 
     If raRaRef != None
@@ -320,6 +365,9 @@ Function Fragment_Stage_1100_Item_00()
 EndFunction
 
 Function Fragment_Stage_1150_Item_00()
+    If IsObjectiveDisplayed(1100) && !IsObjectiveCompleted(1100)
+        SetObjectiveCompleted(1100, True)
+    EndIf
     ObjectReference sectorBravoDoor
 
     If Alias_SectorBravoEntranceDoor != None
@@ -363,10 +411,16 @@ Function Fragment_Stage_1300_Item_00()
 EndFunction
 
 Function Fragment_Stage_1400_Item_00()
+    If IsObjectiveDisplayed(1300) && !IsObjectiveCompleted(1300)
+        SetObjectiveCompleted(1300, True)
+    EndIf
     SetObjectiveDisplayed(1400)
 EndFunction
 
 Function Fragment_Stage_1500_Item_00()
+    If IsObjectiveDisplayed(1400) && !IsObjectiveCompleted(1400)
+        SetObjectiveCompleted(1400, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
     Actor playerRef = Game.GetPlayer()
 
@@ -400,6 +454,9 @@ Function Fragment_Stage_1511_Item_00()
 EndFunction
 
 Function Fragment_Stage_1520_Item_00()
+    If IsObjectiveDisplayed(1500) && !IsObjectiveCompleted(1500)
+        SetObjectiveCompleted(1500, True)
+    EndIf
     ObjectReference robotsEnableMarker
 
     If Alias_SectorCharlieRobotsEnableMarker != None
@@ -419,6 +476,9 @@ Function Fragment_Stage_1520_Item_00()
 EndFunction
 
 Function Fragment_Stage_1530_Item_00()
+    If IsObjectiveDisplayed(1510) && !IsObjectiveCompleted(1510)
+        SetObjectiveCompleted(1510, True)
+    EndIf
     ObjectReference sectorCharlieDoor
 
     If Alias_SectorCharlieDoor != None
@@ -448,6 +508,9 @@ Function Fragment_Stage_1610_Item_00()
 EndFunction
 
 Function Fragment_Stage_1650_Item_00()
+    If IsObjectiveDisplayed(1600) && !IsObjectiveCompleted(1600)
+        SetObjectiveCompleted(1600, True)
+    EndIf
     Actor raRaRef = Alias_RaRa.GetActorReference()
 
     If raRaRef != None && W05_MQR_202P_RaRaVent_1650_ExitVent != None && !W05_MQR_202P_RaRaVent_1650_ExitVent.IsPlaying()
@@ -460,6 +523,9 @@ Function Fragment_Stage_1700_Item_00()
 EndFunction
 
 Function Fragment_Stage_1800_Item_00()
+    If IsObjectiveDisplayed(1700) && !IsObjectiveCompleted(1700)
+        SetObjectiveCompleted(1700, True)
+    EndIf
     SetObjectiveDisplayed(1800)
 EndFunction
 
@@ -478,6 +544,10 @@ Function Fragment_Stage_1811_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    ; TODO(recipes): FO76 teaches co_mod_PowerArmor_t51_Helmet_Material_Paint_SteelMill at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
+    If IsObjectiveDisplayed(1800) && !IsObjectiveCompleted(1800)
+        SetObjectiveCompleted(1800, True)
+    EndIf
     ObjectReference playerRef
 
     If Alias_currentPlayer != None

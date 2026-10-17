@@ -1,11 +1,16 @@
-Event OnLoad()
-	AddInventoryEventFilter(BoSTechnicalDocument)
+; @extends ReferenceAlias
+; FO76 put this on the player's NPC_ record, which FO4 cannot carry. Tales'
+; B21_TFA_qust_PlayerScripts holds it on a PlayerRef alias instead.
+; BoSZ01 is repeatable while the player holds Technical Data. Its Story Manager node can still
+; refuse a start (BoS01 not finished), so the pickup is re-offered on load instead of polled.
+Event OnAliasInit()
+	ResetTechnicalDataFilter()
 	TryStartBoSZ01()
 EndEvent
 
-Event OnUnload()
-	RemoveInventoryEventFilter(BoSTechnicalDocument)
-	CancelTimer(1)
+Event OnPlayerLoadGame()
+	ResetTechnicalDataFilter()
+	TryStartBoSZ01()
 EndEvent
 
 Event OnItemAdded(Form akBaseItem, Int aiItemCount, ObjectReference akItemReference, ObjectReference akSourceContainer)
@@ -14,23 +19,20 @@ Event OnItemAdded(Form akBaseItem, Int aiItemCount, ObjectReference akItemRefere
 	EndIf
 EndEvent
 
-Event OnTimer(Int aiTimerID)
-	If aiTimerID == 1
-		TryStartBoSZ01()
+Function ResetTechnicalDataFilter()
+	RemoveAllInventoryEventFilters()
+	If BoSTechnicalDocument != None
+		AddInventoryEventFilter(BoSTechnicalDocument)
 	EndIf
-EndEvent
+EndFunction
 
 Function TryStartBoSZ01()
-	If BoSZ01 == None || BoSTechnicalDocument == None || BoSZ01.IsRunning()
+	Actor playerRef = GetActorReference()
+	If playerRef == None || BoSZ01 == None || BoSTechnicalDocument == None || BoSZ01_QuestStartKeyword == None
 		Return
 	EndIf
-	If GetItemCount(BoSTechnicalDocument) <= 0 || BoSZ01_QuestStartKeyword == None
+	If BoSZ01.IsRunning() || playerRef.GetItemCount(BoSTechnicalDocument) <= 0
 		Return
 	EndIf
-
-	CancelTimer(1)
-	BoSZ01_QuestStartKeyword.SendStoryEventAndWait(akRef1 = Self)
-	If !BoSZ01.IsRunning() && GetItemCount(BoSTechnicalDocument) > 0
-		StartTimer(1.0, 1)
-	EndIf
+	BoSZ01_QuestStartKeyword.SendStoryEventAndWait(None, playerRef, playerRef)
 EndFunction

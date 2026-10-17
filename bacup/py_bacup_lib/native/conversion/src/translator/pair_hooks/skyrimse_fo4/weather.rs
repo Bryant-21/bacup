@@ -497,8 +497,7 @@ fn rebuild_nam0(value: &mut FieldValue) {
         return;
     }
     // Skyrim's form-version gates produce 13-, 14-, or 17-row NAM0 blocks
-    // (208/224/272 bytes). Expand every complete row that exists and retain
-    // zeros only for target categories absent from that source record.
+    // (208/224/272 bytes). Expand every complete row that exists.
     if source.is_empty() || source.len() % 16 != 0 || source.len() > 272 {
         *value = raw_value(vec![0_u8; FO4_WTHR_NAM0_SIZE]);
         return;
@@ -509,6 +508,9 @@ fn rebuild_nam0(value: &mut FieldValue) {
             &expand_weather_periods(source_row, 4).expect("four source weather colors"),
         );
     }
+    // Full-sized output must supply TESWeather::Load's legacy high-fog defaults.
+    target.copy_within(32..64, 17 * 32);
+    target.copy_within(12 * 32..13 * 32, 18 * 32);
     *value = raw_value(target);
 }
 
@@ -1059,11 +1061,9 @@ mod tests {
                 ]
             );
         }
-        assert!(
-            self::bytes(&record, b"NAM0")[576..]
-                .iter()
-                .all(|byte| *byte == 0)
-        );
+        let colors = self::bytes(&record, b"NAM0");
+        assert_eq!(&colors[17 * 32..18 * 32], &colors[32..64]);
+        assert_eq!(&colors[18 * 32..], &colors[12 * 32..13 * 32]);
         let dalc = record
             .fields
             .iter()
@@ -1309,10 +1309,13 @@ mod tests {
                 );
             }
             assert!(
-                self::bytes(&record, b"NAM0")[source_rows * 32..]
+                self::bytes(&record, b"NAM0")[source_rows * 32..17 * 32]
                     .iter()
                     .all(|byte| *byte == 0)
             );
+            let colors = self::bytes(&record, b"NAM0");
+            assert_eq!(&colors[17 * 32..18 * 32], &colors[32..64]);
+            assert_eq!(&colors[18 * 32..], &colors[12 * 32..13 * 32]);
         }
 
         let mut interner = StringInterner::new();

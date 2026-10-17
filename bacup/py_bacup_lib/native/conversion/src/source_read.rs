@@ -16,6 +16,7 @@ use esp_authoring_core::plugin_runtime::{
     plugin_handle_store_ref,
 };
 use smol_str::SmolStr;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,6 +46,21 @@ fn normalized_index_plugin_name(plugin_name: &str) -> Arc<str> {
 }
 
 pub(crate) const TES4_FLAG_LOCALIZED: u32 = 0x0000_0080;
+
+pub(crate) fn uncompressed_record_view(record: &ParsedRecord) -> Cow<'_, ParsedRecord> {
+    // Preserve legacy readers' handling of compressed records while making the
+    // new file-backed uncompressed representation transparent to them.
+    if record.flags & esp_authoring_core::plugin_runtime::COMPRESSED_RECORD_FLAG == 0
+        && record.subrecords.is_empty()
+        && record.raw_payload.is_some()
+    {
+        let mut decoded = record.clone();
+        decoded.subrecords = effective_subrecords_for_record(record).into_owned();
+        Cow::Owned(decoded)
+    } else {
+        Cow::Borrowed(record)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -160,14 +176,14 @@ pub(crate) fn snapshot_records_by_form_keys(
                 raw_record,
             });
         }
-    } else if let Some((core, indexed_records)) = slot.cached_unique_core_records_sections() {
+    } else if let Some((core, indexed_records)) = slot.ensure_unique_core_records_sections() {
         for fk in fks {
             let lookup_fk = lookup_form_key(fk, interner)?;
-            let Some(raw_record) = core
+            let entry = core
                 .by_form_key
                 .get(&lookup_fk)
-                .and_then(|entry| indexed_records.record(&slot.parsed, entry.raw_form_id))
-            else {
+                .ok_or_else(|| RecordReadError::NotFound(not_found_form_key(fk, interner)))?;
+            let Some(raw_record) = indexed_records.record(&slot.parsed, entry.raw_form_id) else {
                 break;
             };
             records.push(SourceRecordSnapshot {
@@ -300,25 +316,26 @@ pub(crate) fn decode_record_in_slot(
         );
     }
 
-    if let Some((core, indexed_records)) = slot.cached_unique_core_records_sections()
-        && let Some(raw_record) = core
+    if let Some((core, indexed_records)) = slot.ensure_unique_core_records_sections() {
+        let entry = core
             .by_form_key
             .get(&lookup_fk)
-            .and_then(|entry| indexed_records.record(&slot.parsed, entry.raw_form_id))
-    {
-        let plugin_is_localized = (slot.parsed.header.flags & TES4_FLAG_LOCALIZED) != 0;
-        let strings = plugin_is_localized.then(|| slot.strings_ref());
-        return decode_record_from_parsed_relayout(
-            raw_record,
-            fk,
-            schema,
-            &slot.parsed.header.masters,
-            &slot.parsed.plugin_name,
-            strings,
-            plugin_is_localized,
-            interner,
-            relayout,
-        );
+            .ok_or_else(|| RecordReadError::NotFound(not_found()))?;
+        if let Some(raw_record) = indexed_records.record(&slot.parsed, entry.raw_form_id) {
+            let plugin_is_localized = (slot.parsed.header.flags & TES4_FLAG_LOCALIZED) != 0;
+            let strings = plugin_is_localized.then(|| slot.strings_ref());
+            return decode_record_from_parsed_relayout(
+                raw_record,
+                fk,
+                schema,
+                &slot.parsed.header.masters,
+                &slot.parsed.plugin_name,
+                strings,
+                plugin_is_localized,
+                interner,
+                relayout,
+            );
+        }
     }
 
     let locator = ensure_locator_section(slot);
@@ -415,7 +432,14 @@ pub(crate) fn decode_record_from_parsed_relayout(
     let is_term_record = raw_record.signature.as_str() == "TERM";
     let is_furn_record = raw_record.signature.as_str() == "FURN";
     let is_perk_record = raw_record.signature.as_str() == "PERK";
+    let is_legacy_idle = raw_record.signature.as_str() == "IDLE"
+        && schema.record_def("CREA").is_some();
+    let is_skyrim_schema = schema.record_def("MGEF")
+        .and_then(|record| record.subrecord_def("DATA"))
+        .is_some_and(|data| data.fields.iter().any(|field| field.id == "magic_skill"));
+    let is_skyrim_perk = is_perk_record && is_skyrim_schema;
     let mut perk_entry_type = None;
+    let mut perk_parameter_type = None;
     let mut in_pack_package_data = false;
     let mut after_pack_procedure_marker = false;
     let mut after_term_marker_model = false;
@@ -489,11 +513,14 @@ pub(crate) fn decode_record_from_parsed_relayout(
             && ((in_pack_package_data && subrec_sig_str == "CNAM")
                 || (after_pack_procedure_marker && subrec_sig_str == "PNAM")))
             || (is_qust_record && subrec_sig_str == "SNAM")
+            // Legacy IDLE admission and lowering resolve ANAM against the source load order.
+            || (is_legacy_idle && subrec_sig_str == "ANAM")
             || (is_term_record
                 && !sr.data.is_empty()
                 && ((subrec_sig_str == "ZNAM" && sr.data.len() % 24 == 0)
                     || (subrec_sig_str == "SNAM" && after_term_marker_model)))
-            || (is_furn_record && subrec_sig_str == "SNAM" && after_furn_marker_model);
+            || (is_furn_record && subrec_sig_str == "SNAM" && after_furn_marker_model)
+            || (is_skyrim_perk && subrec_sig_str == "DATA" && perk_entry_type == Some(2));
         let override_codec: Option<&str> = if scen_tnam_override_codec {
             Some("formid")
         } else if scen_phase_fnam_override_codec {
@@ -505,7 +532,37 @@ pub(crate) fn decode_record_from_parsed_relayout(
 
         let perk_reference_data =
             is_perk_record && subrec_sig_str == "DATA" && matches!(perk_entry_type, Some(0 | 1));
-        let value = if perk_reference_data && sr.data.len() >= 4 {
+        let value = if is_skyrim_schema && raw_record.signature.as_str() == "HAZD"
+            && subrec_sig_str == "DATA" && sr.data.len() == 40 {
+            let mut fields = vec![
+                (interner.intern("limit"), FieldValue::Uint(u32::from_le_bytes(sr.data[..4].try_into().unwrap()).into())),
+            ];
+            for (index, name) in ["radius", "lifetime", "image_space_radius", "target_interval"].into_iter().enumerate() {
+                let offset = (index + 1) * 4;
+                fields.push((interner.intern(name), FieldValue::Float(f32::from_le_bytes(sr.data[offset..offset + 4].try_into().unwrap()))));
+            }
+            fields.push((interner.intern("flags"), FieldValue::Uint(u32::from_le_bytes(sr.data[20..24].try_into().unwrap()).into())));
+            for (index, name) in ["spell", "light", "impact_data_set", "sound"].into_iter().enumerate() {
+                let offset = 24 + index * 4;
+                fields.push((interner.intern(name), decode_nullable_form_id_value(
+                    u32::from_le_bytes(sr.data[offset..offset + 4].try_into().unwrap()), masters, plugin_name, interner,
+                ).map_err(|error| RecordReadError::InvalidFormKey(error.to_string()))?));
+            }
+            FieldValue::Struct(fields)
+        } else if is_skyrim_schema && raw_record.signature.as_str() == "NPC_"
+            && subrec_sig_str == "PRKR" && sr.data.len() == 8 {
+            FieldValue::Struct(vec![
+                (interner.intern("perk"), decode_nullable_form_id_value(
+                    u32::from_le_bytes(sr.data[..4].try_into().unwrap()), masters, plugin_name, interner,
+                ).map_err(|error| RecordReadError::InvalidFormKey(error.to_string()))?),
+                (interner.intern("rank"), FieldValue::Uint(u64::from(sr.data[4]))),
+            ])
+        } else if is_skyrim_perk && subrec_sig_str == "EPFD"
+            && matches!(perk_parameter_type, Some(4 | 5)) && sr.data.len() == 4 {
+            decode_nullable_form_id_value(u32::from_le_bytes(sr.data[..4].try_into().unwrap()),
+                masters, plugin_name, interner)
+                .map_err(|error| RecordReadError::InvalidFormKey(error.to_string()))?
+        } else if perk_reference_data && sr.data.len() >= 4 {
             let reference = decode_nullable_form_id_value(
                 u32::from_le_bytes(sr.data[..4].try_into().unwrap()),
                 masters,
@@ -521,9 +578,62 @@ pub(crate) fn decode_record_from_parsed_relayout(
                     FieldValue::Bytes(sr.data[4..].iter().copied().collect()),
                 ])
             }
+        } else if is_skyrim_schema && raw_record.signature.as_str() == "LVSP"
+            && subrec_sig_str == "LVLO" && sr.data.len() == 12 {
+            FieldValue::Struct(vec![
+                (interner.intern("level"), FieldValue::Uint(u16::from_le_bytes(sr.data[..2].try_into().unwrap()).into())),
+                (interner.intern("reference"), decode_nullable_form_id_value(
+                    u32::from_le_bytes(sr.data[4..8].try_into().unwrap()), masters, plugin_name, interner,
+                ).map_err(|error| RecordReadError::InvalidFormKey(error.to_string()))?),
+                (interner.intern("count"), FieldValue::Uint(u16::from_le_bytes(sr.data[8..10].try_into().unwrap()).into())),
+            ])
+        } else if is_skyrim_schema && raw_record.signature.as_str() == "IDLE"
+            && subrec_sig_str == "CTDA" && sr.data.len() == 32
+            && matches!(u16::from_le_bytes(sr.data[8..10].try_into().unwrap()), 579 | 596) {
+            let shout = u16::from_le_bytes(sr.data[8..10].try_into().unwrap()) == 579;
+            let offset = if shout { 12 } else { 16 };
+            FieldValue::Struct(vec![
+                (interner.intern("raw"), FieldValue::Bytes(sr.data.iter().copied().collect())),
+                (interner.intern(if shout { "shout" } else { "keyword" }), decode_nullable_form_id_value(
+                    u32::from_le_bytes(sr.data[offset..offset + 4].try_into().unwrap()), masters, plugin_name, interner,
+                ).map_err(|error| RecordReadError::InvalidFormKey(error.to_string()))?),
+            ])
+        } else if matches!(raw_record.signature.as_str(), "LVLN" | "LVLC")
+            && subrec_sig_str == "LVLO" && sr.data.len() == 12 {
+            FieldValue::Struct(vec![
+                (interner.intern("level"), FieldValue::Uint(u16::from_le_bytes(sr.data[0..2].try_into().unwrap()).into())),
+                (interner.intern("unknown_u8_1"), FieldValue::Uint(sr.data[2].into())),
+                (interner.intern("unknown_u8_2"), FieldValue::Uint(sr.data[3].into())),
+                (interner.intern(if raw_record.signature.as_str() == "LVLC" { "creature" } else { "npc" }), decode_nullable_form_id_value(
+                    u32::from_le_bytes(sr.data[4..8].try_into().unwrap()), masters, plugin_name, interner,
+                ).map_err(|error| RecordReadError::InvalidFormKey(error.to_string()))?),
+                (interner.intern("count"), FieldValue::Uint(u16::from_le_bytes(sr.data[8..10].try_into().unwrap()).into())),
+                (interner.intern(if is_skyrim_schema || raw_record.signature.as_str() == "LVLC" { "unknown_u8_5" } else { "chance_none" }), FieldValue::Uint(sr.data[10].into())),
+                (interner.intern("unknown_u8_6"), FieldValue::Uint(sr.data[11].into())),
+            ])
+        } else if let Some(value) = crate::translator::pair_hooks::fnv_fo4::creature_imagespace::decode_source_data(
+            raw_record.signature.as_str(), subrec_sig_str, &sr.data, schema, interner,
+        ) {
+            value
         } else if force_raw_bytes {
             let bytes: smallvec::SmallVec<[u8; 32]> = sr.data.iter().copied().collect();
             FieldValue::Bytes(bytes)
+        } else if let Some(value) = crate::translator::pair_hooks::skyrimse_fo4::decode_source_magic_condition(
+            raw_record.signature.as_str(),
+            subrec_sig_str,
+            &sr.data,
+            schema,
+            &crate::translator::pair_hook::PairCtx::with_source(interner, plugin_name, masters),
+        ) {
+            value
+        } else if let Some(value) = crate::translator::pair_hooks::skyrimse_fo4::decode_source_contact_data(
+            raw_record.signature.as_str(),
+            subrec_sig_str,
+            &sr.data,
+            schema,
+            &crate::translator::pair_hook::PairCtx::with_source(interner, plugin_name, masters),
+        ) {
+            value
         } else {
             match effective_codec {
                 None => {
@@ -588,9 +698,17 @@ pub(crate) fn decode_record_from_parsed_relayout(
 
         if is_perk_record {
             match subrec_sig_str {
-                // FO76 has a two-byte header; legacy Fallout's converter owns its three-byte union.
-                "PRKE" => perk_entry_type = (sr.data.len() == 2).then(|| sr.data[0]),
-                "PRKF" => perk_entry_type = None,
+                // FO76 has a two-byte header; Skyrim and legacy Fallout use three.
+                "PRKE" => {
+                    perk_entry_type = (sr.data.len() == 2
+                        || (is_skyrim_perk && sr.data.len() == 3)).then(|| sr.data[0]);
+                    perk_parameter_type = None;
+                }
+                "EPFT" => perk_parameter_type = sr.data.first().copied(),
+                "PRKF" => {
+                    perk_entry_type = None;
+                    perk_parameter_type = None;
+                }
                 _ => {}
             }
         }
@@ -998,6 +1116,13 @@ pub(crate) fn decode_subrecord(
         // FO4 LLKC: array_struct:I,I (keyword FK, chance). No curve_table.
         "array_struct:I,I" if record_sig == "LVLI" && subrecord_sig == "LLKC" => {
             decode_lvli_llkc_fo4(data, masters, plugin_name, interner)
+        }
+        "struct:I,I,f" if record_sig == "SHOU" && subrecord_sig == "SNAM" && data.len() == 12 => {
+            Ok(FieldValue::Struct(vec![
+                (interner.intern("word"), decode_nullable_form_id_value(u32::from_le_bytes(data[0..4].try_into().unwrap()), masters, plugin_name, interner)?),
+                (interner.intern("spell"), decode_nullable_form_id_value(u32::from_le_bytes(data[4..8].try_into().unwrap()), masters, plugin_name, interner)?),
+                (interner.intern("recovery_time"), FieldValue::Float(f32::from_le_bytes(data[8..12].try_into().unwrap()))),
+            ]))
         }
         other if other.starts_with("struct:") => {
             if record_sig == "REGN"
@@ -1547,6 +1672,123 @@ mod tests {
     }
 
     #[test]
+    fn eager_reads_prime_records_from_core_without_a_second_locator() {
+        use esp_authoring_core::plugin_runtime::{
+            ensure_form_id_paths_section, plugin_handle_close_native,
+            plugin_handle_debug_section_loaded_native, plugin_handle_new_no_py,
+        };
+
+        let interner = StringInterner::new();
+        let fk = FormKey {
+            local: 0x100,
+            plugin: interner.intern("Source.esm"),
+        };
+        let schema = AuthoringSchema::for_game("fo76").unwrap();
+        for existing_paths in [false, true] {
+            for batch_read in [false, true] {
+                let handle = plugin_handle_new_no_py("Source.esm", Some("fo76"));
+                let paths = {
+                    let mut store = plugin_handle_store_ref().lock().unwrap();
+                    let slot = store.get_mut(&handle).unwrap();
+                    slot.parsed.root_items =
+                        vec![ParsedItem::Record(indexed_test_record(0x100, "First"))];
+                    ensure_core_section(slot);
+                    existing_paths.then(|| ensure_form_id_paths_section(slot))
+                };
+                assert!(!plugin_handle_debug_section_loaded_native(handle, "records").unwrap());
+
+                if batch_read {
+                    let batch = snapshot_records_by_form_keys(handle, &[fk], &interner).unwrap();
+                    assert_eq!(batch.records.len(), 1);
+                    assert_eq!(batch.records[0].raw_record.form_id, 0x100);
+                } else {
+                    let decoded =
+                        read_record_relayout_by_form_key(handle, &fk, &schema, &interner, None)
+                            .unwrap();
+                    assert_eq!(
+                        decoded.eid.and_then(|eid| interner.resolve(eid)),
+                        Some("First")
+                    );
+                }
+                assert!(plugin_handle_debug_section_loaded_native(handle, "records").unwrap());
+                assert!(!plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+                let missing = FormKey { local: 0x999, ..fk };
+                assert!(matches!(
+                    read_record_relayout_by_form_key(handle, &missing, &schema, &interner, None),
+                    Err(RecordReadError::NotFound(_))
+                ));
+                assert!(matches!(
+                    snapshot_records_by_form_keys(handle, &[fk, missing], &interner),
+                    Err(RecordReadError::NotFound(_))
+                ));
+                assert!(!plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+                if let Some(paths) = paths {
+                    let store = plugin_handle_store_ref().lock().unwrap();
+                    let (_, records) = store[&handle]
+                        .cached_unique_core_records_sections()
+                        .unwrap();
+                    assert!(Arc::ptr_eq(&paths.by_form_id, &records.locator));
+                }
+                assert!(plugin_handle_close_native(handle));
+            }
+        }
+    }
+
+    #[test]
+    fn eager_reads_release_an_existing_redundant_locator() {
+        use esp_authoring_core::plugin_runtime::{
+            plugin_handle_close_native, plugin_handle_debug_section_loaded_native,
+        };
+
+        let interner = StringInterner::new();
+        let fk = FormKey {
+            local: 0x100,
+            plugin: interner.intern("Source.esm"),
+        };
+        let schema = AuthoringSchema::for_game("fo76").unwrap();
+        for batch_read in [false, true] {
+            let handle = indexed_test_handle(
+                Vec::new(),
+                vec![
+                    indexed_test_record(0x100, "First"),
+                    indexed_test_record(0x100, "Duplicate"),
+                    indexed_test_record(0x101, "Unique"),
+                ],
+            );
+            let retained_locator = {
+                let mut store = plugin_handle_store_ref().lock().unwrap();
+                ensure_locator_section(store.get_mut(&handle).unwrap())
+            };
+            assert!(plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+            if batch_read {
+                let batch = snapshot_records_by_form_keys(handle, &[fk], &interner).unwrap();
+                assert_eq!(batch.records[0].raw_record.form_id, 0x100);
+            } else {
+                let decoded =
+                    read_record_relayout_by_form_key(handle, &fk, &schema, &interner, None)
+                        .unwrap();
+                assert_eq!(
+                    decoded.eid.and_then(|eid| interner.resolve(eid)),
+                    Some("First")
+                );
+            }
+            assert!(!plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+            assert_eq!(Arc::strong_count(&retained_locator), 1);
+            assert_eq!(retained_locator.by_form_key.len(), 2);
+            let unique = FormKey { local: 0x101, ..fk };
+            let decoded =
+                read_record_relayout_by_form_key(handle, &unique, &schema, &interner, None)
+                    .unwrap();
+            assert_eq!(
+                decoded.eid.and_then(|eid| interner.resolve(eid)),
+                Some("Unique")
+            );
+            assert!(!plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+            assert!(plugin_handle_close_native(handle));
+        }
+    }
+
+    #[test]
     fn duplicate_normalized_form_key_falls_back_to_first_locator_record() {
         use esp_authoring_core::plugin_runtime::{
             plugin_handle_close_native, plugin_handle_debug_section_loaded_native,
@@ -1573,6 +1815,9 @@ mod tests {
             Some("First")
         );
         assert!(plugin_handle_debug_section_loaded_native(handle, "locator").unwrap());
+        let batch = snapshot_records_by_form_keys(handle, &[fk], &interner).unwrap();
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.records[0].raw_record.form_id, 0x0000_0100);
         assert!(plugin_handle_close_native(handle));
     }
 
@@ -1627,6 +1872,94 @@ mod tests {
 
         assert_eq!(original.as_ref(), "seventysix.esm");
         assert!(Arc::ptr_eq(&original, &mixed));
+    }
+
+    #[test]
+    fn skyrim_shout_action_condition_keeps_override_master_context() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("skyrimse").unwrap();
+        let masters = vec!["Skyrim.esm".into(), "Other.esm".into()];
+        let fk = FormKey::parse("05A305@Skyrim.esm", &interner).unwrap();
+        for (raw, plugin) in [(0x0004_DBA5_u32, "Skyrim.esm"), (0x0104_DBA5, "Other.esm"), (0x0204_DBA5, "Patch.esp")] {
+            let mut condition = vec![0_u8; 32];
+            condition[4..8].copy_from_slice(&1.0_f32.to_le_bytes());
+            condition[8..10].copy_from_slice(&579_u16.to_le_bytes());
+            condition[12..16].copy_from_slice(&raw.to_le_bytes());
+            let raw_record = ParsedRecord {
+                signature: SmolStr::new_static("IDLE"), form_id: 0x05A305, flags: 0,
+                version_control: 0, form_version: Some(44), version2: Some(0),
+                subrecords: vec![parsed_subrecord("CTDA", condition.clone())],
+                raw_payload: None, parse_error: None,
+            };
+            let record = decode_record_from_parsed(&raw_record, &fk, &schema, &masters, "Patch.esp", None, false, &interner).unwrap();
+            let FieldValue::Struct(fields) = &record.fields[0].value else { panic!("missing source action condition provenance"); };
+            assert_eq!(field_value(fields, &interner, "raw"), &FieldValue::Bytes(condition.into_iter().collect()));
+            assert_eq!(field_value(fields, &interner, "shout"), &FieldValue::FormKey(FormKey { local: 0x4DBA5, plugin: interner.intern(plugin) }));
+        }
+    }
+
+    #[test]
+    fn skyrim_leveled_spell_rows_keep_override_master_context() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("skyrimse").unwrap();
+        let fk = FormKey::parse("000800@Skyrim.esm", &interner).unwrap();
+        let mut row = vec![0_u8; 12];
+        row[..2].copy_from_slice(&18_u16.to_le_bytes());
+        row[4..8].copy_from_slice(&0x0100_0123_u32.to_le_bytes());
+        row[8..10].copy_from_slice(&2_u16.to_le_bytes());
+        let raw_record = ParsedRecord {
+            signature: SmolStr::new_static("LVSP"), form_id: 0x800, flags: 0,
+            version_control: 0, form_version: Some(44), version2: Some(0),
+            subrecords: vec![parsed_subrecord("LVLO", row)], raw_payload: None, parse_error: None,
+        };
+        let record = decode_record_from_parsed(&raw_record, &fk, &schema, &["Skyrim.esm".into(), "SpellPack.esm".into()], "Patch.esp", None, false, &interner).unwrap();
+        let FieldValue::Struct(fields) = &record.fields[0].value else { panic!("missing leveled spell source context"); };
+        assert_eq!(field_value(fields, &interner, "reference"), &FieldValue::FormKey(FormKey::parse("000123@SpellPack.esm", &interner).unwrap()));
+        assert_eq!(field_value(fields, &interner, "level"), &FieldValue::Uint(18));
+        assert_eq!(field_value(fields, &interner, "count"), &FieldValue::Uint(2));
+    }
+
+    #[test]
+    fn skyrim_spell_keyword_idle_keeps_keyword_override_master_context() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("skyrimse").unwrap();
+        let key = FormKey::parse("070FD3@Skyrim.esm", &interner).unwrap();
+        let mut condition = vec![0_u8; 32];
+        condition[4..8].copy_from_slice(&1.0_f32.to_le_bytes());
+        condition[8..10].copy_from_slice(&596_u16.to_le_bytes());
+        condition[16..20].copy_from_slice(&0x0101_EA69_u32.to_le_bytes());
+        let parsed = ParsedRecord {
+            signature: SmolStr::new_static("IDLE"), form_id: key.local, flags: 0,
+            version_control: 0, form_version: Some(44), version2: Some(0),
+            subrecords: vec![parsed_subrecord("CTDA", condition)], raw_payload: None, parse_error: None,
+        };
+        let record = decode_record_from_parsed(&parsed, &key, &schema, &["Skyrim.esm".into(), "Magic.esp".into()], "Patch.esp", None, false, &interner).unwrap();
+        let FieldValue::Struct(fields) = &record.fields[0].value else { panic!("missing keyword source context") };
+        assert_eq!(field_value(fields, &interner, "keyword"), &FieldValue::FormKey(FormKey::parse("01EA69@Magic.esp", &interner).unwrap()));
+    }
+
+    #[test]
+    fn skyrim_leveled_template_entries_keep_override_master_context() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("skyrimse").unwrap();
+        let masters = vec!["Skyrim.esm".into(), "Dawnguard.esm".into()];
+        let key = FormKey::parse("000900@Skyrim.esm", &interner).unwrap();
+        for (raw, plugin) in [(0x0000_0800_u32, "Skyrim.esm"), (0x0100_0800, "Dawnguard.esm"), (0x0200_0800, "Patch.esp")] {
+            let mut payload = vec![0; 12];
+            payload[..2].copy_from_slice(&12_u16.to_le_bytes());
+            payload[4..8].copy_from_slice(&raw.to_le_bytes());
+            payload[8..10].copy_from_slice(&2_u16.to_le_bytes());
+            let parsed = ParsedRecord {
+                signature: SmolStr::new_static("LVLN"), form_id: key.local, flags: 0,
+                version_control: 0, form_version: Some(44), version2: Some(0),
+                subrecords: vec![parsed_subrecord("LVLO", payload)], raw_payload: None, parse_error: None,
+            };
+            let record = decode_record_from_parsed(&parsed, &key, &schema, &masters, "Patch.esp", None, false, &interner).unwrap();
+            let FieldValue::Struct(fields) = &record.fields[0].value else { panic!("untyped leveled template") };
+            assert_eq!(field_value(fields, &interner, "npc"), &FieldValue::FormKey(FormKey { local: 0x800, plugin: interner.intern(plugin) }));
+            assert_eq!(field_value(fields, &interner, "level"), &FieldValue::Uint(12));
+            assert_eq!(field_value(fields, &interner, "count"), &FieldValue::Uint(2));
+        }
     }
 
     #[test]

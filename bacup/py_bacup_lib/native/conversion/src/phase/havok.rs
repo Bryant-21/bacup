@@ -36,7 +36,9 @@ use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 
 use crate::anim_namespace::namespaced_anim_path;
+use crate::fo76_behaviors::assets::{clip_project_dir, clip_rig_bones};
 use crate::phase::progress::ProgressReporter;
+use havok_native::convert::fo76::{Fo76MigrationOptions, Fo76RigBones};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 
 pub struct ConvertHavokPhase;
@@ -278,6 +280,22 @@ impl Phase for ConvertHavokPhase {
         }
 
         let tv = target_version_id.clone();
+        // Clip tracks bind to bone indices of the rig they were authored on, and FO76's
+        // supermutant rig orders its bones differently from FO4's.
+        let mut clip_rigs: HashMap<String, Option<Arc<Fo76RigBones>>> = HashMap::new();
+        if let (true, Some(target_root)) = (fo76_to_fo4, ctx.target_extracted_dir) {
+            let source = crate::fo76_behaviors::meshes(ctx.source_extracted_dir);
+            let target = crate::fo76_behaviors::meshes(target_root);
+            for task in &tasks {
+                if let Some(dir) =
+                    clip_project_dir(&mesh_relative_asset_path(&task.asset.source_path))
+                {
+                    clip_rigs.entry(dir).or_insert_with_key(|dir| {
+                        clip_rig_bones(&source, &target, dir).map(Arc::new)
+                    });
+                }
+            }
+        }
         let reporter = Arc::new(ProgressReporter::new(
             "convert_havok",
             tasks.len() as u32,
@@ -295,16 +313,21 @@ impl Phase for ConvertHavokPhase {
                             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
                         }
                         if let Some(ref version) = tv {
-                            if fo76_to_fo4
-                                && should_rewrite_fo76_gauss_pistol_locomotion(&source_path)
-                            {
+                            if fo76_to_fo4 {
+                                let rewrite_spline =
+                                    should_rewrite_fo76_gauss_pistol_locomotion(&source_path);
+                                let rig_bones = clip_project_dir(&mesh_relative_asset_path(
+                                    &source_path,
+                                ))
+                                .and_then(|dir| clip_rigs.get(&dir).cloned().flatten());
                                 havok_native::api::havok_convert_file_report_with_fo76_options(
                                     src,
                                     &task.output_path,
                                     version,
-                                    havok_native::convert::fo76::Fo76MigrationOptions {
-                                        decompress_spline: true,
-                                        recompress: true,
+                                    Fo76MigrationOptions {
+                                        decompress_spline: rewrite_spline,
+                                        recompress: rewrite_spline,
+                                        rig_bones,
                                         ..Default::default()
                                     },
                                 )

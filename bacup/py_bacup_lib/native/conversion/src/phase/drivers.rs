@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use havok_native::hkx::types::HkxValue;
 use havok_native::hkx::{HkxFile, HkxMember};
 
+use crate::fixups::havok::postprocess_scan::{entry_is_dir, read_asset_dir};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 
 // ---------------------------------------------------------------------------
@@ -167,7 +168,17 @@ impl Phase for SynthesizeDriversPhase {
             s.add_existing_file(&rel_str, path).is_ok()
         };
 
+        let discovery_started = std::time::Instant::now();
         let hkx_files = find_behavior_hkx_files(&meshes_dir);
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: "synthesize_drivers",
+            level: crate::phase::LogLevel::Info,
+            message: format!(
+                "Behavior driver discovery: {} file(s) in {:.3}s",
+                hkx_files.len(),
+                discovery_started.elapsed().as_secs_f64()
+            ),
+        });
 
         let total = hkx_files.len() as u32;
 
@@ -363,20 +374,20 @@ fn find_behavior_hkx_files(meshes_dir: &Path) -> Vec<PathBuf> {
         return Vec::new();
     }
     let mut found = Vec::new();
-    visit_dir_for_behaviors(meshes_dir, &mut found);
+    visit_dir_for_behaviors(meshes_dir, meshes_dir, &mut found);
     found.sort();
     found
 }
 
-fn visit_dir_for_behaviors(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
+fn visit_dir_for_behaviors(dir: &Path, scan_root: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match read_asset_dir(dir, scan_root) {
         Ok(e) => e,
         Err(_) => return,
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            visit_dir_for_behaviors(&path, out);
+        if entry_is_dir(&entry) {
+            visit_dir_for_behaviors(&path, scan_root, out);
         } else if path
             .extension()
             .map_or(false, |e| e.eq_ignore_ascii_case("hkx"))
@@ -1542,6 +1553,37 @@ fn string_list_from_value(v: Option<&serde_json::Value>) -> Vec<String> {
 mod tests {
     use super::*;
     use havok_native::hkx::HkxObject;
+
+    #[test]
+    fn discovers_behaviors_without_generated_precombine_geometry() {
+        let temp = tempfile::tempdir().unwrap();
+        let meshes = temp.path().join("MeShEs");
+        let expected = [
+            "Actors/A/Behaviors/child/graph.HKX",
+            "Actors/Meshes/PreCombined/Behaviors/custom.hkx",
+            "Weapons/B/behaviors/graph.hkx",
+        ];
+        for relative in expected.iter().chain(
+            [
+                "PreCombined/Example.esm/generated.nif",
+                "PreCombined/Example.esm/Behaviors/ignored.hkx",
+                "Actors/A/animations/clip.hkx",
+                "Actors/A/Behaviors/notes.txt",
+            ]
+            .iter(),
+        ) {
+            let path = meshes.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, []).unwrap();
+        }
+        let mut expected: Vec<_> = expected
+            .iter()
+            .map(|relative| meshes.join(relative))
+            .collect();
+        expected.sort();
+        assert_eq!(find_behavior_hkx_files(&meshes), expected);
+        assert!(find_behavior_hkx_files(&meshes.join("missing")).is_empty());
+    }
 
     fn object(class_name: &str, members: Vec<(&str, HkxValue)>) -> HkxObject {
         HkxObject {

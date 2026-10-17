@@ -1647,6 +1647,8 @@ mod tests {
             }
         }
         CreatureRecordProjectionClosure {
+            equipment_slots: Vec::new(),
+            npc_scripts: Vec::new(),
             source_primary_identity: owner,
             projected_identities,
             required_target_records: Vec::new(),

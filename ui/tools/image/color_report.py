@@ -30,9 +30,9 @@ class ColorReportTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##color_report"):
-            _, clicked = draw_path_row("Input", self._input_path)
+            self._input_path, clicked = draw_path_row("Input", self._input_path)
             if clicked:
-                path = pick_folder("Select folder with images")
+                path = pick_folder("Select folder with images", self._input_path)
                 if not path:
                     path = pick_file("Select image", [("Images", "*.png *.jpg *.dds *.bmp"), ("All", "*.*")])
                 if path:

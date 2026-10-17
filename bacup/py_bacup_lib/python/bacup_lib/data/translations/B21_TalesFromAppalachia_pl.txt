@@ -11,6 +11,9 @@ $B21_TFA_Capacity	ZDOLNOŚĆ
 $B21_TFA_Unlimited	NIEOGRANICZONY
 $B21_TFA_Legendary	Legendarny
 $B21_TFA_SemiAutomatic	półautomatyczne
+$B21_TFA_Charging	Ładowanie
+$B21_TFA_ChargeTime	Czas ładowania
+$B21_TFA_ChargeBonus	Premia bonusowa
 $B21_TFA_VATSAccuracy	Dokładność V.A.T.S.
 $B21_TFA_WeaponType_Melee	Melee Przewodniczący
 $B21_TFA_WeaponType_OneHanded	Jeden
@@ -50,7 +53,29 @@ $B21_TFA_AssignPermanentSPECIAL	PRZYPISZ STAŁE SPECIAL
 $B21_TFA_AssignSPECIAL	ZWIĘKSZ SPECIAL
 $B21_TFA_MoveSPECIAL	PRZESUŃ PUNKT SPECIAL
 $B21_TFA_AddLoadout	DODAJ OBCIĄŻENIE
-$B21_PM_Salute	Salute (wymaga czasu życia)
+$B21_PM_Salute	Salute
+$B21_PM_ExpressionAfraid	Strach
+$B21_PM_ExpressionAmused	Rozbawione
+$B21_PM_ExpressionAngry	Zły
+$B21_PM_ExpressionAwed	Awed
+$B21_PM_ExpressionConcerned	Zainteresowany
+$B21_PM_ExpressionConfident	Pewność
+$B21_PM_ExpressionDisgust	Obrzydzenie
+$B21_PM_ExpressionFlirting	Flirtowanie
+$B21_PM_ExpressionFriendly	Przyjazny
+$B21_PM_ExpressionHappy	Happy
+$B21_PM_ExpressionImpressed	Impressed
+$B21_PM_ExpressionIrritated	Nawadniane
+$B21_PM_ExpressionNeutral	Neutralny
+$B21_PM_ExpressionPuzzled	Podpuchnięte
+$B21_PM_ExpressionSad	Smutne
+$B21_PM_ExpressionSinisterSmile	Złowieszczy uśmiech
+$B21_PM_ExpressionSomber	Somber Przewodniczący
+$B21_PM_ExpressionStern	Stern Przewodniczący
+$B21_PM_ExpressionSurprised	Zaskoczony
+$B21_PM_ExpressionThinking	Myślenie
+$B21_PM_ExpressionTired	Zmęczony
+$B21_PM_ExpressionWorried	Martwi się
 $B21_PM_FO4Poses	Fallout 4
 $B21_PM_Warm	Ciepłe
 $B21_PM_Cool	Super.
@@ -58,6 +83,30 @@ $B21_PM_Vintage	Vintage
 $B21_PM_Keepsake	Zachowanie
 $B21_PM_PhotoFrames	Fotografie
 $B21_PM_FreezeTime	Czas zamrożenia
+$B21_PM_TimeOfDay	Czas dnia
+$B21_PM_Weather	Pogoda
+$B21_PM_SkyCurrent	Bieżący
+$B21_PM_WeatherClear	Czysto.
+$B21_PM_WeatherOvercast	Agregat
+$B21_PM_WeatherFoggy	Foggy
+$B21_PM_WeatherMisty	Misty
+$B21_PM_WeatherRain	Deszcz
+$B21_PM_WeatherThunderstorm	Burza
+$B21_PM_WeatherRadstorm	Radstorm
+$B21_PM_WeatherSnow	Śnieg
+$B21_PM_WeatherAurora	Aurora
+$B21_PM_WeatherRainbow	Tęcza
+$B21_PM_WeatherBloodMoon	Krwawy Księżyc
+$B21_PM_WeatherToxicValley	Dolina toksyczna
+$B21_PM_WeatherMire	MIRE
+$B21_PM_WeatherCranberryBog	Bok żurawinowy
+$B21_PM_WeatherAshHeap	Ash Heap
+$B21_PM_WeatherNukeZone	Strefa atomowa
+$B21_PM_WeatherCommonwealthClear	Wspólnota czysta
+$B21_PM_WeatherCommonwealthOvercast	Commonwealth Overcast
+$B21_PM_WeatherCommonwealthFoggy	Mgła Wspólnoty
+$B21_PM_WeatherCommonwealthRain	Deszcz Wspólnoty
+$B21_PM_WeatherCommonwealthRadstorm	Wspólnota Radstorm
 $B21_PM_Menu	TRYB ZDJĘĆ
 $B21_PM_Saturated	Nasycone
 $B21_PM_BlackAndWhite	Czarno-białe
@@ -126,3 +175,79 @@ $B21_Settings_Ultra	Ultra
 $B21_Settings_Fullscreen	Pełny ekran
 $B21_Settings_Borderless	Bez granic
 $B21_Settings_Windowed	Ogrzewane
+$B21_Settings_QuickBoy	Quick-Boy
+$B21_Settings_PipBoyView	Widok Pip-Boy
+$B21_Settings_QuickBoyColor	Tryb koloru Quick-Boy
+$B21_Settings_QuickBoyR	Quick-Boy kolor R
+$B21_Settings_QuickBoyG	Quick-Boy kolor G
+$B21_Settings_QuickBoyB	Quick-Boy kolor B
+$B21_Settings_QuickBoySize	Rozmiar Quick-Boy
+$B21_Settings_QuickBoyBrightness	Quick-Boy Jasność
+$B21_Settings_DamageNumbers	Pokaż numery uszkodzeń
+$B21_Settings_WeaponCondition	Pokaż stan broni
+$B21_Settings_AlwaysShowNeeds	Zawsze pokaż głód i pragnienie
+$B21_Settings_CorpseHighlight	Podświetlenie trupów
+$B21_Settings_UnhighlightMode	Przestań podświetlać trupy
+$B21_Settings_HighlightPlayerKills	Tylko podświetl swoje śmierci
+$B21_Settings_MatchPipBoy	Mecz Pip-Boy
+$B21_Settings_MatchHUD	Dopasuj HUD
+$B21_Settings_OwnColor	Kolor własny
+$B21_Settings_PipBoy	Pip-Boy
+$B21_Settings_OnLoot	Po przyjęciu leku Loot
+$B21_Settings_OnInspect	Po kontroli
+$B21_Settings_WhenEmpty	Kiedy pusty
+$B21_TFA_Lock	ZABLOKUJ
+$B21_TFA_Unlock	ODBLOKUJ
+$B21_TFA_Locked	Zamknięte
+$B21_TFA_ItemLocked	Ten element jest zamknięty.
+$B21_TFA_ItemUnlocked	Obiekt otwarty.
+$B21_TFA_LockUnavailable	Nie można zablokować tego elementu.
+$B21_TFA_ScrapAllJunk	ZMIAŻDŻYĆ WSZYSTKIE ŚMIECI
+$B21_TFA_ScrapAllQuestion	Zrzucać wszystkie odblokowane śmieci na części?
+$B21_TFA_JunkScrapped	Twoje odblokowane śmieci zostały zezłomowane.
+$B21_TFA_NoJunkToScrap	Nie masz nic do złomowania.
+$B21_TFA_ScrapStale	Wybrany element się zmienił. Wybierz go jeszcze raz przed złomem.
+$B21_TFA_NoScrapYield	Pozycja ta nie zawiera składników złomu.
+$B21_TFA_BuildMenuControls	KONTROLA MENU
+$B21_TFA_BuildCameraControls	STEROWANIE KAMERĄ
+$B21_TFA_FilterAll	FILTR: WSZYSTKIE
+$B21_TFA_FilterKnown	FILTR: ZNANY
+$B21_TFA_FilterBuildable	FILTR: BUDOWY
+$B21_TFA_FilterRecent	FILTR: OSTATNI
+$B21_TFA_UnsupportedBuildVariant	Ten wariant nie ma obiektu budowlanego.
+$B21_TFA_CameraMove	PRZESUŃ
+$B21_TFA_CameraRiseFall	WZROST / UPADEK
+$B21_TFA_CameraSpeed	PRĘDKOŚĆ
+$B21_TFA_CameraPadHelpTop	RUCH: S   PATRZ: RS
+$B21_TFA_CameraPadHelpBottom	RISE / FALL: D- pad Up / Down   SPEED: D- pad Prawy
+$B21_TFA_Deselect	ODZNACZ
+$B21_TFA_BlueprintObjects	obiekty
+$B21_TFA_BlueprintUnavailable	niedostępny
+$B21_TFA_BlueprintSelected	wybrany
+$B21_TFA_TeamFullLeaves	Drużyna pełna. <Name> opuszcza zespół.
+$B21_TFA_TeamFullCantJoin	Drużyna pełna. <Name> nie może się przyłączyć.
+$B21_TFA_TeamAllyCantLead	Alianci nie mogą poprowadzić drużyny.
+$B21_TFA_TeamOwnSystem	<Name> używa własnego systemu śledzenia.
+$B21_TFA_TeamNowLeads	<Name> prowadzi teraz drużynę.
+$B21_TFA_TeamTookOverUCF	Do zespołu dołączyli twoi towarzysze. Zapisz, a UCF będzie można usunąć.
+$B21_TFA_TeamFullStaysUCF	Drużyna pełna. <Name> zostaje z Unlimited Companion Framework.
+$B21_TFA_TeamLeadAfterUCF	Wybierz prowadzenie po usunięciu Unlimited Companion Framework.
+$B21_TFA_SetBonus	PREMIA ZA ZESTAW
+$B21_TFA_UniquePerkRank	+{rank} do rangi profitu {perk}
+$B21_TFA_Pets	ZWIERZĘTA DOMOWE
+$B21_TFA_CompanionTitle	TOWARZYSZE
+$B21_TFA_CompanionEmpty	Rekrutuj towarzysza, by z tobą podróżował.
+$B21_TFA_CompanionLevel	POZIOM
+$B21_TFA_CompanionXP	XP
+$B21_TFA_CompanionHP	HP
+$B21_TFA_CompanionAffinity	ZALEŻNOŚĆ
+$B21_TFA_CompanionNotTracked	Nieśledzony
+$B21_TFA_CompanionBonuses	PREMIE POZIOMU
+$B21_TFA_CompanionPerks	KORZYŚCI TOWARZYSKIE
+$B21_TFA_CompanionShared	WSPÓLNA KARTA
+$B21_TFA_CompanionMax	MAX
+$B21_TFA_CompanionSelect	[Up/Down] Wybierz towarzysza   [D-pad] Wybierz towarzysza
+$B21_TFA_CompanionVeteran	Weteran: + 25 uszkodzeń i odporność na energię
+$B21_TFA_CompanionPackMule	Paczka Mule: + 50 nośna
+$B21_TFA_CompanionCombatTraining	Szkolenie bojowe: + 10% szkód
+$B21_TFA_CompanionEndurance	Wytrzymałość: + 100 zdrowie

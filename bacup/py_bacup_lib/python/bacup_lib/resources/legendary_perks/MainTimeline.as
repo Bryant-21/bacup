@@ -45,8 +45,18 @@ package LegendaryPerksMenu_fla {
                 colors.contrast = 0;
                 B21Publish("HUDColors", colors);
             }
+            if (payload.playerRace != undefined) {
+                var race:Object = new Object();
+                race.playerRace = payload.playerRace;
+                B21Publish("CharacterInfoData", race);
+            }
             this.LegendaryPerksMenu_mc.SetPlatform(gamepad ? 1 : 0, false, 0, 0);
             B21Publish("LegendaryPerksMenuData", payload);
+        }
+
+        // Tales sends the card's real race restriction only to bridges that publish playerRace.
+        public function B21RaceAware():Boolean {
+            return true;
         }
 
         public function B21Publish(providerName:String, payload:Object):void {

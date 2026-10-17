@@ -74,6 +74,86 @@ pub(crate) fn execute_pass_through(
         })
 }
 
+/// Raw-bank `_r`: FO76 ships 4x4 and 256x256 F0 maps, but the dense consumer's `_r` texture
+/// array needs one size, so every material is resampled to the bank's one `_r` edge. A
+/// TXST without `_r` gets the dielectric F0 the dense shader assumed before it read `_r`.
+pub(crate) fn execute_raw_reflectance(
+    input: Option<&TexturePathInput>,
+    output: &TexturePathOutput,
+    sink: Option<&TextureOutputSink<'_>>,
+) -> Result<(), String> {
+    use terrain_native::raw_terrain::{REFLECTANCE_FORMAT, REFLECTANCE_SIZE};
+    const DIELECTRIC_F0: u8 = 10;
+    let size = REFLECTANCE_SIZE as usize;
+    let f0 = match input {
+        Some(input) => {
+            let image = directxtex_native::read_dds_rgba_image(&input.path)
+                .map_err(|e| format!("read {}: {e}", input.path.display()))?;
+            let red: Vec<f32> = image.rgba.chunks_exact(4).map(|texel| f32::from(texel[0])).collect();
+            resample_wrapped(&red, image.width as usize, image.height as usize, size)
+        }
+        None => vec![f32::from(DIELECTRIC_F0); size * size],
+    };
+    let rgba: Vec<u8> = f0
+        .iter()
+        .flat_map(|&value| {
+            let value = value.round().clamp(0.0, 255.0) as u8;
+            [value, value, value, 255]
+        })
+        .collect();
+    let chain = directxtex_native::rgba8_box_mip_chain(REFLECTANCE_SIZE, REFLECTANCE_SIZE, &rgba)?;
+    let bytes = directxtex_native::encode_dds_from_rgba8_chain(&chain, REFLECTANCE_FORMAT, true, None)?;
+    write_output_bytes(output, &bytes, sink)
+}
+
+/// Tiling resample of one channel: box average when shrinking by an integer factor,
+/// otherwise bilinear with wrap-around at texel centres.
+fn resample_wrapped(source: &[f32], width: usize, height: usize, size: usize) -> Vec<f32> {
+    if width >= size && height >= size && width % size == 0 && height % size == 0 {
+        let (fx, fy) = (width / size, height / size);
+        let area = (fx * fy) as f32;
+        return (0..size * size)
+            .map(|index| {
+                let (x, y) = (index % size, index / size);
+                let mut sum = 0.0;
+                for sy in y * fy..(y + 1) * fy {
+                    sum += source[sy * width + x * fx..sy * width + (x + 1) * fx].iter().sum::<f32>();
+                }
+                sum / area
+            })
+            .collect();
+    }
+    let at = |x: isize, y: isize| source[y.rem_euclid(height as isize) as usize * width + x.rem_euclid(width as isize) as usize];
+    (0..size * size)
+        .map(|index| {
+            let u = ((index % size) as f32 + 0.5) * width as f32 / size as f32 - 0.5;
+            let v = ((index / size) as f32 + 0.5) * height as f32 / size as f32 - 0.5;
+            let (x0, y0) = (u.floor(), v.floor());
+            let (tx, ty) = (u - x0, v - y0);
+            let (x0, y0) = (x0 as isize, y0 as isize);
+            let top = at(x0, y0) * (1.0 - tx) + at(x0 + 1, y0) * tx;
+            let bottom = at(x0, y0 + 1) * (1.0 - tx) + at(x0 + 1, y0 + 1) * tx;
+            top * (1.0 - ty) + bottom * ty
+        })
+        .collect()
+}
+
+pub(crate) fn execute_native_copy(
+    input: &TexturePathInput,
+    output: &TexturePathOutput,
+    gpu: &GpuService,
+    gpu_min_pixels: u32,
+    sink: Option<&TextureOutputSink<'_>>,
+) -> Result<(), String> {
+    // FO4CS still needs signed BC5 repaired and missing mip chains generated.
+    if super::native_textures::can_copy_as_authored(&input.path) {
+        return execute_pass_through(input, output, sink);
+    }
+    let bc7 = bc7_via_service(gpu, gpu_min_pixels);
+    let bytes = super::native_textures::native_texture_bytes(&input.path, Some(&bc7))?;
+    write_output_bytes(output, &bytes, sink)
+}
+
 fn bc7_via_service<'a>(
     gpu: &'a GpuService,
     gpu_min_pixels: u32,
@@ -596,6 +676,49 @@ fn is_landscape_diffuse_output(output: &TexturePathOutput) -> bool {
         })
 }
 
+/// FO76's object LOD cutouts (`lod\generated\texturearrays\translucent|alphatested`). Their
+/// shipped mips are box-filtered 1-bit alpha that fills in solid a few levels down; FO4 alpha
+/// tests them at the shape's threshold, so a distant card turns into a dark slab that flashes
+/// as the mip changes.
+fn is_lod_cutout_array_output(output: &TexturePathOutput) -> bool {
+    let path = output.path.to_string_lossy().to_ascii_lowercase().replace('\\', "/");
+    output.role.eq_ignore_ascii_case("diffuse")
+        && (path.contains("lod/generated/texturearrays/translucent/")
+            || path.contains("lod/generated/texturearrays/alphatested/"))
+}
+
+/// The LOD shapes' default alpha-test threshold (lodgen's `alpha_threshold` fallback).
+const LOD_CUTOUT_ALPHA_REFERENCE: u8 = 128;
+
+/// Rebuilds the mips from the top level (`rgba8_cutout_mip_chain`).
+fn execute_lod_cutout_single(
+    input: &TexturePathInput,
+    output: &TexturePathOutput,
+    target_format: &str,
+    gpu: &GpuService,
+    gpu_min_pixels: u32,
+    sink: Option<&TextureOutputSink<'_>>,
+) -> Result<(), String> {
+    let decoded = directxtex_native::read_dds_mips_rgba8(&input.path)?;
+    let format = if target_format.is_empty() {
+        output_format_for_path(&output.role, decoded.dxgi_format, &output.format, &output.path)
+    } else {
+        target_format.to_string()
+    };
+    let (width, height, base) = decoded
+        .mips
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{}: no mips", input.path.display()))?;
+    let output_format = directxtex_native::mip_flood_output_format(&format, &base).to_string();
+    let chain =
+        directxtex_native::rgba8_cutout_mip_chain(width, height, &base, LOD_CUTOUT_ALPHA_REFERENCE)?;
+    let bc7 = bc7_via_service(gpu, gpu_min_pixels);
+    let bytes =
+        directxtex_native::encode_dds_from_owned_rgba8_chain(chain, &output_format, false, Some(&bc7))?;
+    write_output_bytes(output, &bytes, sink)
+}
+
 fn execute_mip_flooded_single(
     input: &TexturePathInput,
     output: &TexturePathOutput,
@@ -672,6 +795,11 @@ pub(crate) fn execute_task_with_landscape_mip_flooding(
             normal_kernel,
         } => {
             let mip_flooding = landscape_mip_flooding && is_landscape_diffuse_output(output);
+            if is_lod_cutout_array_output(output) {
+                let min_pixels = if use_gpu { gpu_min_pixels } else { u32::MAX };
+                return execute_lod_cutout_single(input, output, target_format, gpu, min_pixels, sink)
+                    .map(|()| (1, 0, false, 1));
+            }
             match class {
                 TriageClass::PassThrough if mip_flooding => {
                     let min_pixels = if use_gpu { gpu_min_pixels } else { u32::MAX };
@@ -947,6 +1075,94 @@ mod tests {
             assert!(timings.encode_ns > 0);
             assert!(timings.write_ns > 0);
             assert_eq!(timings.gpu_wait_ns, 0);
+        }
+    }
+
+    #[test]
+    fn unchanged_native_dds_uses_file_copy_instead_of_buffered_rewrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tex(tmp.path(), "source.dds", 16, 16, "BC7_UNORM", true);
+        let input = TexturePathInput {
+            role: "diffuse".into(),
+            path: tmp.path().join("source.dds"),
+        };
+        let output = TexturePathOutput {
+            role: "diffuse".into(),
+            path: tmp.path().join("out/copy.dds"),
+            format: String::new(),
+        };
+        let gpu = GpuService::start_cpu_only();
+        let (result, timings) = directxtex_native::profiling::capture(|| {
+            execute_native_copy(&input, &output, &gpu, u32::MAX, None)
+        });
+        result.unwrap();
+        assert_eq!(
+            std::fs::read(&input.path).unwrap(),
+            std::fs::read(&output.path).unwrap(),
+        );
+        assert_eq!(timings.write_calls, 0);
+        assert_eq!(timings.encode_ns, 0);
+        assert_eq!(timings.decode_ns, 0);
+    }
+
+    #[test]
+    fn native_copy_repairs_a_missing_mip_count_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tex(tmp.path(), "source.dds", 16, 16, "BC7_UNORM", true);
+        let input = TexturePathInput {
+            role: "diffuse".into(),
+            path: tmp.path().join("source.dds"),
+        };
+        let mut source = std::fs::read(&input.path).unwrap();
+        let flags = u32::from_le_bytes(source[8..12].try_into().unwrap());
+        source[8..12].copy_from_slice(&(flags & !0x2_0000).to_le_bytes());
+        std::fs::write(&input.path, source).unwrap();
+        let output = TexturePathOutput {
+            role: "diffuse".into(),
+            path: tmp.path().join("out/copy.dds"),
+            format: String::new(),
+        };
+        let gpu = GpuService::start_cpu_only();
+        execute_native_copy(&input, &output, &gpu, u32::MAX, None).unwrap();
+        let written = std::fs::read(&output.path).unwrap();
+        let flags = u32::from_le_bytes(written[8..12].try_into().unwrap());
+        assert_ne!(flags & 0x2_0000, 0);
+    }
+
+    #[test]
+    fn native_copy_still_repairs_signed_normals_and_missing_mips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gpu = GpuService::start_cpu_only();
+        for (name, format, signed) in [
+            ("normal.dds", "BC5_UNORM", true),
+            ("diffuse.dds", "BC7_UNORM", false),
+        ] {
+            write_tex(tmp.path(), name, 16, 16, format, signed);
+            let input = TexturePathInput {
+                role: if signed { "normal" } else { "diffuse" }.into(),
+                path: tmp.path().join(name),
+            };
+            if signed {
+                let mut source = std::fs::read(&input.path).unwrap();
+                assert_eq!(&source[84..88], b"ATI2");
+                source[84..88].copy_from_slice(b"DX10");
+                source.splice(128..128, [84u32, 3, 0, 1, 0].into_iter().flat_map(u32::to_le_bytes));
+                std::fs::write(&input.path, source).unwrap();
+                assert_eq!(directxtex_native::read_dds_probe(&input.path).unwrap().dxgi_format, 84);
+            }
+            let output = TexturePathOutput {
+                role: input.role.clone(),
+                path: tmp.path().join("out").join(name),
+                format: String::new(),
+            };
+            execute_native_copy(&input, &output, &gpu, u32::MAX, None).unwrap();
+            let probe = directxtex_native::read_dds_probe(&output.path).unwrap();
+            assert_eq!(probe.mip_levels, directxtex_native::full_mip_count(16, 16));
+            assert_eq!(probe.dxgi_format, if signed { 83 } else { 98 });
+            assert_ne!(
+                std::fs::read(&input.path).unwrap(),
+                std::fs::read(&output.path).unwrap(),
+            );
         }
     }
 

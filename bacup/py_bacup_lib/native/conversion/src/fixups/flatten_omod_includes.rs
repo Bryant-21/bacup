@@ -48,17 +48,17 @@ const OBJECT_TEMPLATE_MOD_ASSOCIATION_RECORD_SIGS: &[&str] = &["WEAP", "ARMO", "
 const KEYWORD_TYPE_MOD_ASSOCIATION: u64 = 5;
 
 #[derive(Clone, Copy, Debug)]
-struct DataLayout {
+pub(crate) struct DataLayout {
     include_count: usize,
-    property_count: usize,
+    pub(crate) property_count: usize,
     includes_start: usize,
     #[cfg(test)]
     includes_end: usize,
-    properties_start: usize,
-    properties_end: usize,
+    pub(crate) properties_start: usize,
+    pub(crate) properties_end: usize,
 }
 
-fn parse_data_layout(bytes: &[u8]) -> Option<DataLayout> {
+pub(crate) fn parse_data_layout(bytes: &[u8]) -> Option<DataLayout> {
     if bytes.len() < HEADER_LEN + ATTACH_PARENT_SLOT_COUNT_LEN + ITEM_COUNT_LEN {
         return None;
     }

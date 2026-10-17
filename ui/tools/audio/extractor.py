@@ -46,21 +46,21 @@ class AudioExtractorTool(BaseTool):
 
         if begin_form("##extractor"):
             if self._mode == 0:
-                _, clicked = draw_path_row("Input Folder", self._input_path)
+                self._input_path, clicked = draw_path_row("Input Folder", self._input_path)
                 if clicked:
-                    path = pick_folder("Select folder with FUZ/XWM files")
+                    path = pick_folder("Select folder with FUZ/XWM files", self._input_path)
                     if path:
                         self._input_path = path
             else:
-                _, clicked = draw_path_row("Input File", self._input_path)
+                self._input_path, clicked = draw_path_row("Input File", self._input_path)
                 if clicked:
                     path = pick_file("Select audio file", [("Audio", "*.fuz *.xwm")])
                     if path:
                         self._input_path = path
 
-            _, clicked = draw_path_row("Output Dir", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output Dir", self._output_dir)
             if clicked:
-                path = pick_folder("Select output directory (optional)")
+                path = pick_folder("Select output directory (optional)", self._output_dir)
                 if path:
                     self._output_dir = path
             end_form()

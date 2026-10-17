@@ -8,11 +8,11 @@ from bacup_lib.source_pairs import get_pair
 from bacup_ui.conversion.panels.regen_panel import RegenPanel
 
 
-def _workspace(game_paths):
+def _workspace(game_paths, workspace_settings=None):
     return SimpleNamespace(
         _toolkit_settings=SimpleNamespace(
             get_game_paths=lambda game_id: dict(game_paths.get(game_id, {})),
-            get_workspace_settings=lambda _workspace_id: {},
+            get_workspace_settings=lambda _workspace_id: dict(workspace_settings or {}),
             set_workspace_settings=lambda _workspace_id, _values: None,
         ),
         _runner=None,
@@ -198,3 +198,13 @@ def test_non_default_start_passes_pair_and_supports_pair_upgrade(
         tmp_path / "Fallout3" / "Data",
     )
     assert captured["complete"][1]["companion_deployed"] == []
+
+
+def test_install_fo4cs_defaults_on(tmp_path):
+    assert RegenPanel(_workspace(_game_paths(tmp_path))).install_fo4cs is True
+
+
+def test_install_fo4cs_keeps_a_saved_opt_out(tmp_path):
+    panel = RegenPanel(_workspace(_game_paths(tmp_path), {"install_fo4cs": False}))
+
+    assert panel.install_fo4cs is False

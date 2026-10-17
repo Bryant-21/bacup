@@ -1,9 +1,14 @@
+mod ammo;
 mod armor;
+mod imagespace;
+mod lights;
+mod magic_conditions;
 mod misc;
 mod npc;
 mod runtime_magic;
 mod sound;
 mod weather;
+mod weapon;
 mod world;
 
 use super::fo4_layouts::{self, SourceFamily};
@@ -21,34 +26,46 @@ pub(crate) use runtime_magic::{
     MagicSupport, MagicUnsupportedReason, MagicVmadIntent, classify_magic_component,
     lower_magic_record_for_fo4, lower_supported_magic_record, magic_donor_identity,
     normalize_standalone_vmad_for_fo4, strip_source_vmad,
+    skyrim_actor_value_for_fo4,
+    decode_source_contact_data,
 };
 pub(crate) use weather::{
     normalize_skyrim_weather, rewrite_skyrim_weather_master_refs,
     skyrimse_fo4_voli_gdry_substitution_mappings,
 };
+pub(crate) use magic_conditions::{decode_source_magic_condition, lowered_magic_condition_actor_value};
 
 pub struct SkyrimSeFo4Hook;
 impl PairHook for SkyrimSeFo4Hook {
     fn pre_translate(&self, ctx: &mut PairCtx<'_>, record: &mut Record) -> HookResult {
-        crate::skyrimse_fo4_runtime::weapon::project_simple_melee_weapon(record, ctx.interner);
+        ammo::normalize_skyrim_ammo(record, ctx)?;
+        if !crate::skyrimse_fo4_runtime::weapon::project_simple_melee_weapon(record, ctx.interner) {
+            weapon::normalize_skyrim_weapon(record, ctx)?;
+        }
         runtime_magic::lower_magic_record_for_fo4(record, ctx.interner)
             .map_err(|error| HookError::Runtime(error.to_string()))?;
         if matches!(
             &record.sig.0,
             b"QUST" | b"DIAL" | b"INFO" | b"SCEN" | b"SMBN" | b"SMEN" | b"SMQN"
         ) {
-            runtime_magic::strip_source_vmad(record);
+            if !crate::skyrimse_fo4_runtime::creature_attack_scripts::retain_creature_callback_quest_script(record).map_err(HookError::Runtime)? {
+                runtime_magic::strip_source_vmad(record);
+            }
         }
         runtime_magic::normalize_standalone_vmad_for_fo4(record);
+        crate::skyrimse_fo4_runtime::creature_attack_scripts::rewrite_attack_script_bindings(record)
+            .map_err(HookError::Runtime)?;
         Self::drop_incompatible_debr_modt(record);
         Self::normalize_refr_map_marker_tnam(record);
         Self::normalize_sopm_attenuation(record);
+        lights::lower_skyrim_light(record);
         match record.sig.0 {
             sig if sig == *b"REFR" => fo4_layouts::normalize_refr_xloc(record, ctx.interner),
             sig if sig == *b"EFSH" => {
                 fo4_layouts::normalize_efsh(record, SourceFamily::SkyrimSe, ctx.interner)
             }
             sig if sig == *b"WTHR" => normalize_skyrim_weather(record, ctx.interner),
+            sig if sig == *b"IMGS" => imagespace::lower_skyrim_imagespace(record),
             sig if sig == *b"PROJ" => fo4_layouts::normalize_skyrim_proj(record),
             _ => {}
         }
@@ -88,10 +105,17 @@ mod tests {
 
     include!("tests/misc.rs");
     include!("tests/armor.rs");
+    include!("tests/ammo.rs");
     include!("tests/npc.rs");
     include!("tests/magic.rs");
     include!("tests/runtime_magic.rs");
+    include!("tests/contact_magic.rs");
+    include!("tests/magic_conditions.rs");
+    include!("tests/cost_perks.rs");
+    include!("tests/hazard.rs");
     include!("tests/world.rs");
     include!("tests/sound.rs");
+    include!("tests/lights.rs");
+    include!("tests/imagespace.rs");
     include!("tests/weapon.rs");
 }

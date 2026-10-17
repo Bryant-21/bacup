@@ -1,3 +1,13 @@
+IDLE:
+  fields:
+    EDID: EDID
+    CTDA: CTDA
+    CTDT: CTDA
+    DNAM: DNAM
+    ENAM: ENAM
+    ANAM: ANAM
+    DATA: DATA
+
 skip_records:
   # FO4 NAVI is rebuilt from the emitted NAVM graph with NVER=15. Copying the
   # Gamebryo NVER=11/NVMI byte layout into FO4 is structurally invalid.

@@ -24,10 +24,10 @@ def _open_file_dialog(title: str, filetypes=None) -> str | None:
         return None
 
 
-def _open_dir_dialog(title: str) -> str | None:
+def _open_dir_dialog(title: str, initial_dir: str = "") -> str | None:
     try:
         from creation_lib.ui.widgets.pick_folder import pick_folder
-        return pick_folder(title)
+        return pick_folder(title, initial_dir)
     except Exception:
         return None
 
@@ -155,7 +155,7 @@ class SetupPanel:
             self._refresh_anim_count()
         imgui.same_line()
         if imgui.button("Browse##af"):
-            p = _open_dir_dialog("Select Animation Folder")
+            p = _open_dir_dialog("Select Animation Folder", self._anim_folder_path)
             if p:
                 self._anim_folder_path = p
                 self._refresh_anim_count()
@@ -175,7 +175,7 @@ class SetupPanel:
         _, self._output_folder_path = imgui.input_text("##of", self._output_folder_path, 512)
         imgui.same_line()
         if imgui.button("Browse##of"):
-            p = _open_dir_dialog("Select Output Folder")
+            p = _open_dir_dialog("Select Output Folder", self._output_folder_path)
             if p:
                 self._output_folder_path = p
 

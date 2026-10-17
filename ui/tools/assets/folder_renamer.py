@@ -72,9 +72,9 @@ class FolderRenamerTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##folder_renamer"):
-            _, clicked = draw_path_row("Source", self._source_folder)
+            self._source_folder, clicked = draw_path_row("Source", self._source_folder)
             if clicked:
-                path = pick_folder("Select source folder")
+                path = pick_folder("Select source folder", self._source_folder)
                 if path:
                     self._source_folder = path
 

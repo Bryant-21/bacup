@@ -34,6 +34,7 @@ class PrevisRequest:
     # Leave exterior CELLs out when previs rewrites the index (see
     # PrecombineRequest.interior_cdx_only).
     interior_cdx_only: bool = False
+    index_resources: object | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -48,7 +49,7 @@ class PrevisResult:
 
 
 def _native():
-    from bacup_lib._native import previs_native
+    from creation_lib._native import previs_native
 
     return previs_native
 
@@ -95,6 +96,7 @@ def generate_previs(request: PrevisRequest, *, log, progress=None) -> PrevisResu
         str(request.work_dir / "previs_timing.json"),
         workers=request.workers,
         progress=stage_progress(log, progress, stage="previs", noun="clusters", item="Solving visibility clusters"),
+        index_resources=request.index_resources,
     )
     if progress:
         progress(1, 1, "Stamping previs cells")

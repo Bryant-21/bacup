@@ -33,12 +33,24 @@ const CARDS: &[&str] = &[
     "SurvivalShortcut",
     "TakingOneForTheTeam",
     "WhatRads",
+    "ActionDiet",
+    "FeralRage",
 ];
+// Tales implements these natively, so their generated perks are entry-less markers.
+const GHOUL_CARDS: &[&str] = &["ActionDiet", "FeralRage"];
 
 pub struct LegendaryPerksFixup;
 
 fn released_rank(eid: &str) -> Option<(&str, u8)> {
-    let (key, rank) = eid.strip_prefix("LGN_")?.rsplit_once("_Perk")?;
+    let (key, rank) = match eid.strip_prefix("GHL_LGN_") {
+        // FO76's ghoul cards have no _Perk separator: GHL_LGN_FeralRage01.
+        Some(rest) => {
+            let split = rest.len().checked_sub(2)?;
+            let key = rest.get(..split)?;
+            GHOUL_CARDS.contains(&key).then_some((key, rest.get(split..)?))?
+        }
+        None => eid.strip_prefix("LGN_")?.rsplit_once("_Perk")?,
+    };
     let rank = match rank {
         "01" => 1,
         "02" => 2,
@@ -493,7 +505,7 @@ impl Fixup for LegendaryPerksFixup {
 mod tests {
     use super::*;
     #[test]
-    fn excludes_ghoul_and_development_cards() {
+    fn accepts_ghoul_cards_and_excludes_development_cards() {
         assert_eq!(
             released_rank("LGN_LegendaryStrength_Perk01"),
             Some(("LegendaryStrength", 1))
@@ -503,10 +515,37 @@ mod tests {
             "LGN_TakingOneForTheTeam_DamageIncrease_Perk01",
             "LGN_AmmoFactory_Perk05",
             "LGN_AmmoFactory_Perk1",
+            "GHL_LGN_FeralRageBonusPerk",
+            "GHL_LGN_ActionDiet_Card",
+            "GHL_LGN_ActionDiet05",
+            "GHL_LGN_AmmoFactory01",
+            "zzz_GHL_LGN_WildCardLastShotPerk01",
+            "GHL_LGN_",
         ] {
             assert_eq!(released_rank(eid), None);
         }
-        assert_eq!(CARDS.len(), 26);
+        assert_eq!(
+            released_rank("GHL_LGN_ActionDiet04"),
+            Some(("ActionDiet", 4))
+        );
+        assert_eq!(
+            released_rank("GHL_LGN_FeralRage01"),
+            Some(("FeralRage", 1))
+        );
+        assert_eq!(CARDS.len(), 28);
+    }
+    #[test]
+    fn ghoul_cards_become_entry_less_markers() {
+        let fields = vec![
+            (*b"PRKE", vec![2, 0, 0]),
+            (*b"DATA", vec![187, 3, 2]),
+            (*b"PRKF", vec![]),
+        ];
+        for key in GHOUL_CARDS {
+            let entries = native_entries(key, &fields, |_| panic!("ghoul cards map no spells"))
+                .unwrap();
+            assert!(entries.is_empty());
+        }
     }
     #[test]
     fn native_entries_restore_abilities_parameters_and_skill_gates() {

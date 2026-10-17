@@ -55,7 +55,7 @@ _MOD_FOLDER = "mod_folder"
         ("  NONE  ", "", True, (False, None, None, None)),
         ("vortex", _VORTEX, True, (True, Path(_VORTEX), _DOCS_INI, None)),
         ("vortex", "   ", True, (False, None, None, "Vortex install folder not set")),
-        ("mo2", "", True, (False, None, None, "MO2 mod folder not set")),
+        ("mo2", "", True, (False, None, None, "Install folder not set")),
         ("mo2", "mods", True, (True, _MOD_FOLDER, _PROFILE_INI, None)),
         ("mo2", "mods", False, (True, _MOD_FOLDER, _DOCS_INI, None)),
         ("mo2", "other", False, (True, _MOD_FOLDER, _DOCS_INI, None)),
@@ -66,8 +66,8 @@ _MOD_FOLDER = "mod_folder"
             (
                 True,
                 _MOD_FOLDER,
+                _DOCS_INI,
                 None,
-                "Could not derive MO2 profile INI: expected a .../mods/<Name> folder",
             ),
         ),
     ],

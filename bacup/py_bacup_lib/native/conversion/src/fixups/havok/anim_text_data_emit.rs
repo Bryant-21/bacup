@@ -164,7 +164,7 @@ fn weapon_subgraph_profiles_from_race_record(
                 role: u16::from_le_bytes(flags.get(0..2)?.try_into().ok()?),
                 perspective: u16::from_le_bytes(flags.get(2..4)?.try_into().ok()?),
             };
-            let perspective = if sraf.perspective != 0 || sakd.is_empty() {
+            let perspective = if sraf.perspective != 0 {
                 StancePerspective::FirstPerson
             } else {
                 StancePerspective::ThirdPerson
@@ -635,6 +635,40 @@ mod tests {
         let via_session = decode_anim_text_data_inputs_for_handle(handle.0, &[]).unwrap();
         assert_eq!(via_ck.event_candidates, ["sitStartFromStand", "standStart"]);
         assert_eq!(via_ck, via_session);
+    }
+
+    #[test]
+    fn no_stance_keywords_do_not_change_sraf_perspective() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("B21_WeaponPerspectives.esp");
+        let handle = PluginHandle(
+            plugin_handle_new_native("B21_WeaponPerspectives.esp", Some("fo4")).unwrap(),
+        );
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle.0).unwrap();
+            slot.parsed.header.masters = vec!["Fallout4.esm".to_string()];
+            let mut fields = vec![raw_zstring("EDID", "B21_WeaponPerspectiveRace")];
+            for perspective in [0, 1] {
+                fields.extend([
+                    raw_form_id("STKD", 0x0100_0900),
+                    raw_zstring("SGNM", r"Actors\Character\Behaviors\WeaponBehavior.hkx"),
+                    raw_zstring("SAPT", r"Actors\B21_FNV\Animations"),
+                    raw_bytes("SRAF", &[1, 0, perspective, 0]),
+                ]);
+            }
+            insert_parsed_record_in_slot(slot, raw_record("RACE", 0x0100_0800, fields));
+        }
+        plugin_handle_save_no_py(handle.0, path.to_str().unwrap()).unwrap();
+        let native = decode_anim_text_data_inputs_for_handle(handle.0, &[]).unwrap();
+        let standalone = AnimTextDataInputs::from(
+            subgraph_inputs_from_plugin(&path, "fo4", &[]).unwrap(),
+        );
+        assert_eq!(native, standalone);
+        let perspectives: Vec<_> = native.weapon_profiles.iter()
+            .map(|profile| profile.stance.perspective).collect();
+        assert_eq!(perspectives, [StancePerspective::ThirdPerson, StancePerspective::FirstPerson]);
+        assert!(native.weapon_profiles.iter().all(|profile| profile.stance.sakd.is_empty()));
     }
 
     #[test]

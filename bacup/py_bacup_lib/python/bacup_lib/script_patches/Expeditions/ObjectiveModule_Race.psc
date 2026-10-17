@@ -29,7 +29,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		If CPArray == None || CPArray.Length == 0
 			PrepareLocalRace()
 		Else
@@ -69,21 +69,18 @@ Event OnTimer(Int aiTimerID)
 EndEvent
 
 Function InitializeLocalRaceStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 	SetObjectiveDisplayed(300, True)
 EndFunction
 
 Function PrepareLocalRace()
-	If IsStageDone(CompleteStage) || RacePaths == None || RacePaths.Length == 0
+	If IsStageDone(GetCompleteStage()) || RacePaths == None || RacePaths.Length == 0
 		Return
 	EndIf
 
@@ -158,6 +155,6 @@ Function HandleLocalRaceCheckpoint(ObjectReference checkpointRef)
 		RaceActive = False
 		CancelTimer(1)
 		SetObjectiveCompleted(Obj_CompleteRace, True)
-		SetStage(CompleteStage)
+		SetStage(GetCompleteStage())
 	EndIf
 EndFunction

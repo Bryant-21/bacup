@@ -676,9 +676,9 @@ fn validate_root_node(
     rig: &CreatureManifest,
     projection: &CreatureRecordProjectionManifest,
 ) -> Result<(), SourceRigRecipeError> {
-    let super::CreatureBodyPartProjection::RootOnly32 {
-        node, vats_target, ..
-    } = &projection.body_parts;
+    let root = projection.body_parts.profile();
+    let node = &root.node;
+    let vats_target = &root.vats_target;
     if node.trim().is_empty()
         || node.contains('/')
         || node.contains('\\')
@@ -914,6 +914,13 @@ fn actor_action_dependencies(
             form_key: record.requirement.parent_form_key(),
         })
         .collect::<Vec<_>>();
+    dependencies.extend(actor_action_records.iter().flat_map(|record| &record.weapon_exclusions).map(|weapon| CreatureTargetRecordReference {
+        signature: "WEAP".to_string(), form_key: weapon.clone(),
+    }));
+    dependencies.extend(actor_action_records.iter().filter_map(|record| record.weapon_condition.as_ref()).map(|condition| CreatureTargetRecordReference {
+        signature: "WEAP".to_string(),
+        form_key: condition.weapon.clone(),
+    }));
     sort_dependencies(&mut dependencies);
     dependencies
 }
@@ -922,6 +929,8 @@ pub(crate) fn projection_dependencies(
     projection: &CreatureRecordProjectionManifest,
 ) -> Vec<CreatureTargetRecordReference> {
     let mut dependencies = Vec::new();
+    dependencies.extend(projection.templates.iter().flat_map(|templates| templates.dependencies()));
+    dependencies.extend(projection.body_parts.dependencies());
     for entry in projection.npc_inventory.iter().chain(
         projection
             .variants
@@ -943,6 +952,8 @@ pub(crate) fn projection_dependencies(
     }
     dependencies.extend(projection.npc_equipment.iter().cloned());
     dependencies.extend(projection.npc_spells.iter().cloned());
+    dependencies.extend(projection.variants.iter().flat_map(|variant| variant.actor_data.iter().flat_map(|data| data.dependencies())));
+    dependencies.extend(projection.variants.iter().flat_map(|variant| variant.npc_perks.iter().map(|entry| entry.perk.clone())));
     dependencies.extend(projection.npc_death_item.iter().cloned());
     dependencies.extend(
         projection
@@ -1248,12 +1259,16 @@ fn projection_field_values(
     projection: &CreatureRecordProjectionManifest,
 ) -> BTreeMap<String, Value> {
     let mut values = BTreeMap::new();
+    if let Some(templates) = &projection.templates {
+        values.insert("profile.templates".to_string(), json!(templates));
+    }
     let root = match &projection.body_parts {
+        super::CreatureBodyPartProjection::SourceParts { root_node, .. } => ("Root", root_node.as_str(), root_node.as_str()),
         super::CreatureBodyPartProjection::RootOnly32 {
             name,
             node,
             vats_target,
-        } => (name, node, vats_target),
+        } => (name.as_str(), node.as_str(), vats_target.as_str()),
     };
     values.insert("profile.root_body_part.name".to_string(), json!(root.0));
     values.insert("profile.root_body_part.node".to_string(), json!(root.1));
@@ -1291,8 +1306,12 @@ fn projection_field_values(
             json!(attack.target_data.attack_angle),
         );
         values.insert(
-            format!("{prefix}.stagger"),
-            json!(attack.target_data.stagger),
+            format!("{prefix}.attack_type"),
+            json!(attack.target_data.attack_type),
+        );
+        values.insert(
+            format!("{prefix}.contact_spell"),
+            json!(attack.target_data.contact_spell),
         );
         values.insert(
             format!("{prefix}.knockdown"),

@@ -18,15 +18,13 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::fixups::ref_index::remap_struct_fk_fields;
 use crate::fixups::rewrite_raw_object_template_formids::{
-    encode_target_form_id, encoded_targets_by_source_object_id, rewrite_formid_at,
+    encoded_targets_by_source_object_id, rewrite_formid_at,
 };
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
-use crate::ids::SigCode;
 use crate::record::{FieldValue, Record};
 use crate::schema::{AuthoringSchema, FieldDef, SubrecordDef};
 use crate::session::PluginSession;
-use crate::sym::StringInterner;
 
 /// FO4 record form version. Every record in the conversion output is FV 131, so
 /// struct-FK layouts and the divergence guard resolve at 131 to honor
@@ -35,38 +33,10 @@ use crate::sym::StringInterner;
 /// (RACE/WEAP/MGEF/ALCH/BPTD/QUST/WTHR/EFSH). A source with FV ≥ 143 records would
 /// need the per-record `ParsedRecord.form_version` (a session accessor) instead.
 pub const FO4_TARGET_FORM_VERSION: u16 = 131;
+#[cfg(test)]
 const RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET: usize = 24;
 
 pub struct RemapStructInternalFormIdsFixup;
-
-pub(crate) fn encoded_target_formids_of_signature(
-    session: &mut PluginSession,
-    config: &FixupConfig,
-    interner: &StringInterner,
-    target_masters: &[String],
-    signature: SigCode,
-) -> Result<FxHashSet<u32>, FixupError> {
-    let mut encoded = FxHashSet::default();
-    for (load_index, handle_id) in config.target_master_handle_ids.iter().copied().enumerate() {
-        let signatures = session
-            .own_record_signatures_in_handle(handle_id)
-            .map_err(|error| FixupError::HandleError(error.to_string()))?;
-        for (local, record_signature) in signatures {
-            if record_signature == signature && load_index <= u8::MAX as usize {
-                encoded.insert(((load_index as u32) << 24) | local);
-            }
-        }
-    }
-    let target_form_keys = session
-        .form_keys_of_sig(signature, interner)
-        .map_err(|error| FixupError::HandleError(error.to_string()))?;
-    for form_key in target_form_keys {
-        if let Some(form_id) = encode_target_form_id(form_key, interner, target_masters) {
-            encoded.insert(form_id);
-        }
-    }
-    Ok(encoded)
-}
 
 pub(crate) fn candidate_signatures(
     session: &mut PluginSession,
@@ -171,13 +141,6 @@ impl Fixup for RemapStructInternalFormIdsFixup {
 
         let target_masters = session.target_masters().to_vec();
         let encoded_targets = encoded_targets_by_source_object_id(mapper, &target_masters);
-        let encoded_target_keywords = encoded_target_formids_of_signature(
-            session,
-            config,
-            mapper.interner,
-            &target_masters,
-            SigCode::from_str("KYWD").expect("valid KYWD signature"),
-        )?;
         // Source-local id → target FormKey, for remapping FormKey leaves inside
         // List/Struct-decoded subrecords (LCEP/LCUN) the Bytes path can't reach.
         let target_by_source_form_key: rustc_hash::FxHashMap<
@@ -230,11 +193,6 @@ impl Fixup for RemapStructInternalFormIdsFixup {
                     remap.remapped +=
                         remap_value_selected_union_formids(&mut record, &encoded_targets);
                 }
-                remap.remapped += remap_race_atkd_attack_type_keywords(
-                    &mut record,
-                    &encoded_targets,
-                    &encoded_target_keywords,
-                );
                 if remap.changed() {
                     changed_records.push(record);
                 }
@@ -325,51 +283,6 @@ pub(crate) fn remap_value_selected_union_formids(
     remapped
 }
 
-/// Remap the attack-type keyword hidden at byte 24 of a RACE `ATKD` row.
-///
-/// The generated FO4 schema labels this word as a float, but the engine and CK
-/// treat it as a KYWD FormID. Restricting the rewrite to source-local values
-/// whose mapped target is an emitted KYWD prevents legitimate float words from
-/// being mistaken for FormIDs.
-pub(crate) fn remap_race_atkd_attack_type_keywords(
-    record: &mut Record,
-    encoded_targets: &FxHashMap<u32, u32>,
-    encoded_target_keywords: &FxHashSet<u32>,
-) -> u32 {
-    if record.sig.as_str() != "RACE" {
-        return 0;
-    }
-
-    let mut remapped = 0u32;
-    for entry in record.fields.iter_mut() {
-        if entry.sig.as_str() != "ATKD" {
-            continue;
-        }
-        let FieldValue::Bytes(bytes) = &mut entry.value else {
-            continue;
-        };
-        let Some(raw_bytes) = bytes
-            .get(RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET..RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET + 4)
-        else {
-            continue;
-        };
-        let raw = u32::from_le_bytes(raw_bytes.try_into().expect("four-byte ATKD word"));
-        if raw == 0 || raw >> 24 != 0 {
-            continue;
-        }
-        let Some(&mapped) = encoded_targets.get(&raw) else {
-            continue;
-        };
-        if mapped == raw || !encoded_target_keywords.contains(&mapped) {
-            continue;
-        }
-        bytes[RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET..RACE_ATKD_ATTACK_TYPE_KEYWORD_OFFSET + 4]
-            .copy_from_slice(&mapped.to_le_bytes());
-        remapped += 1;
-    }
-    remapped
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,33 +355,32 @@ mod tests {
     }
 
     #[test]
-    fn race_atkd_attack_type_remaps_only_to_target_keywords() {
-        let mut encoded_targets = FxHashMap::default();
-        encoded_targets.insert(0x0085_4686, 0x0885_4686);
-        let encoded_target_keywords = FxHashSet::from_iter([0x0885_4686]);
-        let mut record = race_atkd(0x0085_4686);
-
-        let remapped = remap_race_atkd_attack_type_keywords(
-            &mut record,
-            &encoded_targets,
-            &encoded_target_keywords,
-        );
-
-        assert_eq!(remapped, 1);
-        assert_eq!(race_atkd_keyword(&record), 0x0885_4686);
-
-        let mut encoded_targets = FxHashMap::default();
-        encoded_targets.insert(0x0085_4686, 0x0885_4686);
-        let mut record = race_atkd(0x0085_4686);
-
-        let remapped = remap_race_atkd_attack_type_keywords(
-            &mut record,
-            &encoded_targets,
-            &FxHashSet::default(),
-        );
-
-        assert_eq!(remapped, 0);
-        assert_eq!(race_atkd_keyword(&record), 0x0085_4686);
+    fn atkd_attack_type_uses_schema_remapping_and_preserves_base_game_keywords() {
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let encoded_targets = FxHashMap::from_iter([
+            (0x0085_4686, 0x0000_1234),
+            (0x0000_1234, 0x0885_4686),
+        ]);
+        let target_signatures = FxHashMap::from_iter([
+            (0x0000_1234, SigCode::from_str("KYWD").unwrap()),
+        ]);
+        for signature in ["RACE", "NPC_"] {
+            for (source, expected_count) in [(0x0085_4686, 1), (0x0000_1234, 0)] {
+                let mut record = race_atkd(source);
+                record.sig = SigCode::from_str(signature).unwrap();
+                let remapped = remap_struct_fk_fields(
+                    &mut record,
+                    &schema,
+                    Some(&schema),
+                    Some(FO4_TARGET_FORM_VERSION),
+                    Some(&target_signatures),
+                    &encoded_targets,
+                    &FxHashMap::default(),
+                );
+                assert_eq!(remapped.remapped, expected_count);
+                assert_eq!(race_atkd_keyword(&record), 0x0000_1234);
+            }
+        }
     }
 
     #[test]

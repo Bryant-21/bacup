@@ -6,18 +6,27 @@ import struct
 from pathlib import Path
 
 from bacup_lib.daily_ops_ui import empty_hud_timeline
+from bacup_lib.death_screen_ui import pick_translations
 from bacup_lib.inspect_ui import fo4_stage, keep_imports, rebuild
 from bacup_lib.legendary_perks_ui import imports, remap_menu_fonts, swf_tags, verify_script_only
+from bacup_lib.translations import merge_ui_translations
 from bacup_lib.ui_contract import render_as3_template, resolve_numbered_name
 
 MENU = "radialmenu.swf"
 OUTPUT = Path("Interface/FavoritesMenu.swf")
 STOCK_OUTPUT = Path("Interface/B21_TFAStockFavoritesMenu.swf")
 RESOURCES = Path(__file__).with_name("resources") / "favorites"
-CLASSES = ("RadialMenu", "RadialMenuRingInner", "RadialMenuEntryInner")
+BUTTON_HINTS = RESOURCES.parent / "shared" / "B21ButtonHints.as"
+# FO76's quick-inventory panel and row art are kept; their list plumbing is replaced.
+CLASSES = ("RadialMenu", "RadialMenuRingInner", "RadialMenuEntryInner", "PlayerListEntry", "SecureTradePlayerInventory")
 MANIFEST = Path("Interface/B21/TalesFromAppalachia/Favorites/conversion.json")
 BACKGROUND_CLASS_STEM = "RadialMenu_fla.radialBackground_mc_"
 CENTER_CLASS_STEM = "RadialMenu_fla.radialCenterGroup_mc_"
+TAB_CLASS_STEM = "RadialMenu_fla.radialTab_"
+# FO76 text the wheel shows. $SELECT, $INSPECT and $BACK already resolve through FO4's own table.
+TEXT_KEYS = ("$SCROLL", "$RADIAL_MENU_USE", "$CHANGE", "$INSPECT/REPAIR", "$FAVORITES", "$QUICKINVENTORY",
+             "$NO_ITEMS")
+SHAPE_TAGS = (2, 22, 32, 83)
 
 
 def read_icon_keywords(source_plugin: Path) -> dict[str, str]:
@@ -35,16 +44,70 @@ def read_icon_keywords(source_plugin: Path) -> dict[str, str]:
     return dict(sorted(icons.items()))
 
 
-def wheel_timeline(source: bytes) -> bytes:
+def sprite_tags(sprite: bytes) -> list[tuple[int, bytes]]:
+    tags, offset = [], 4
+    while offset < len(sprite):
+        head, = struct.unpack_from("<H", sprite, offset)
+        offset += 2
+        code, length = head >> 6, head & 63
+        if length == 63:
+            length, = struct.unpack_from("<I", sprite, offset)
+            offset += 4
+        tags.append((code, sprite[offset:offset + length]))
+        offset += length
+    return tags
+
+
+def without_class_placements(movie: bytes, character: int) -> bytes:
+    """Drop a sprite's place-by-class-name children; Ruffle rejects them and the bridge never uses them."""
+    tags = []
+    for code, payload in swf_tags(movie):
+        if code == 39 and struct.unpack_from("<H", payload)[0] == character:
+            kept = [(c, t) for c, t in sprite_tags(payload) if not (c == 70 and t[1] & 8 and not t[0] & 2)]
+            payload = payload[:4] + b"".join(struct.pack("<HI", c << 6 | 63, len(t)) + t for c, t in kept)
+        tags.append((code, payload))
+    return rebuild(movie, tags)
+
+
+def ring_disk(sprite: bytes, shapes: set[int]) -> int:
+    """The lowest shape on the wheel sprite's first frame: FO76's filled disk behind the slots."""
+    placed = {}
+    for code, tag in sprite_tags(sprite):
+        if code in (0, 1):
+            break
+        if code in (26, 70) and tag[0] & 2:
+            depth_at = 1 if code == 26 else 2
+            start = depth_at + 2
+            if code == 70 and tag[1] & 8:
+                start = tag.index(b"\0", start) + 1
+            character, = struct.unpack_from("<H", tag, start)
+            if character in shapes:
+                placed[struct.unpack_from("<H", tag, depth_at)[0]] = character
+    if not placed:
+        raise ValueError("Favorites source wheel places no disk shape on its first frame")
+    return placed[min(placed)]
+
+
+def wheel_symbol_and_disk(source: bytes) -> tuple[int, int]:
     from creation_lib.swf.native_runtime import list_symbols
 
     symbol = dict((name, character) for character, name in list_symbols(source))["RadialMenu"]
+    tags = swf_tags(source)
+    shapes = {struct.unpack_from("<H", payload)[0] for code, payload in tags if code in SHAPE_TAGS}
+    sprite = next(payload for code, payload in tags
+                  if code == 39 and struct.unpack_from("<H", payload)[0] == symbol)
+    return symbol, ring_disk(sprite, shapes)
+
+
+def wheel_timeline(source: bytes) -> bytes:
+    symbol, disk = wheel_symbol_and_disk(source)
     movie = empty_hud_timeline(source)
     tags = []
     for code, payload in swf_tags(movie):
         if code == 39 and struct.unpack_from("<H", payload)[0] == symbol:
-            # Construct only the favorites clips, never the trading/emotes/client-data UI.
-            payload = struct.pack("<HHHH", symbol, 1, 64, 0)
+            # Construct only the favorites clips and the wheel's disk, never the trading/emotes/client-data UI.
+            payload = (struct.pack("<HH", symbol, 1) + struct.pack("<HBHH", 26 << 6 | 5, 0x02, 1, disk)
+                       + struct.pack("<HH", 1 << 6, 0))
         if code not in (0, 1):
             tags.append((code, payload))
     # FO4 binds its code object and favorite data to root.Menu_mc.
@@ -72,13 +135,25 @@ def bridge_sources(symbols: set[str], icon_keywords: dict[str, str]) -> tuple[di
             symbols, BACKGROUND_CLASS_STEM, "favorites background class"
         ),
         "center": resolve_numbered_name(symbols, CENTER_CLASS_STEM, "favorites center class"),
+        "tab": resolve_numbered_name(symbols, TAB_CLASS_STEM, "favorites corner tab class"),
     }
     bridges = {name: (RESOURCES / f"{name}.as").read_text(encoding="utf-8") for name in CLASSES}
     bridges["RadialMenu"] = render_as3_template(render_icon_resolver(bridges["RadialMenu"], icon_keywords), {
         "__B21_RADIAL_BACKGROUND_CLASS__": source_classes["background"],
         "__B21_RADIAL_CENTER_CLASS__": source_classes["center"],
+        "__B21_RADIAL_TAB_CLASS__": source_classes["tab"],
     })
     return bridges, source_classes
+
+
+def with_button_hints(movie: bytes) -> bytes:
+    """Compile Tales' FO4-style hint bar ahead of the movie's scripts so the bridge can name it."""
+    from creation_lib.swf.native_runtime import compile_as3_do_abc
+
+    tags = swf_tags(movie)
+    first_script = next(i for i, (code, _) in enumerate(tags) if code == 82)
+    tags.insert(first_script, (82, compile_as3_do_abc([BUTTON_HINTS.read_text(encoding="utf-8")])))
+    return rebuild(movie, tags)
 
 
 def convert_favorites_ui(source_root: Path, output_data: Path, *, source_plugin: Path, target_data_dir: Path) -> dict:
@@ -95,13 +170,17 @@ def convert_favorites_ui(source_root: Path, output_data: Path, *, source_plugin:
         raise FileNotFoundError(f"Missing stock favorites menu in {stock_archive}")
     source = files[MENU].read_bytes()
     source_keywords = read_icon_keywords(source_plugin)
-    symbols = {name for _, name in native_runtime.list_symbols(source)}
+    characters = {name: character for character, name in native_runtime.list_symbols(source)}
+    symbols = set(characters)
     icon_keywords = resolve_icon_keywords(source_keywords, symbols)
     unavailable = {name: icon for name, icon in source_keywords.items() if name not in icon_keywords}
     missing_wheel_icons = {name: icon for name, icon in unavailable.items() if name.startswith("UI_")}
     if missing_wheel_icons:
         raise ValueError(f"Favorites source lacks keyword-linked artwork: {missing_wheel_icons}")
+    translations = pick_translations(interface, TEXT_KEYS, "Favorites wheel")
+    _, disk = wheel_symbol_and_disk(source)
     movie = keep_imports(wheel_timeline(source), ("fonts_en.swf",))
+    movie = with_button_hints(without_class_placements(movie, characters["SecureTradePlayerInventory"]))
     closure = {}
     pending = imports(movie)
     while pending:
@@ -121,8 +200,10 @@ def convert_favorites_ui(source_root: Path, output_data: Path, *, source_plugin:
                                   b"B21/TalesFromAppalachia/Favorites/" + payload.split(b"\0", 1)[0], 1))
             if code in (57, 71) else (code, payload) for code, payload in swf_tags(movie)]
     movie = rebuild(movie, tags)
-    manifest = {"schema_version": 3, "source": MENU, "source_sha256": hashlib.sha256(source).hexdigest(),
+    manifest = {"schema_version": 4, "source": MENU, "source_sha256": hashlib.sha256(source).hexdigest(),
                 "menu": OUTPUT.as_posix(), "code_object": "root.Menu_mc", "slots": 12,
+                "ring_disk_character": disk, "translation_keys": list(TEXT_KEYS),
+                "button_hints_sha256": hashlib.sha256(BUTTON_HINTS.read_bytes()).hexdigest(),
                 "stock_menu": STOCK_OUTPUT.as_posix(), "stock_source_archive": stock_archive.name,
                 "icon_keywords": icon_keywords,
                 "non_wheel_icon_keywords": unavailable,
@@ -143,6 +224,7 @@ def convert_favorites_ui(source_root: Path, output_data: Path, *, source_plugin:
     receipt = Path(output_data) / MANIFEST
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    merge_ui_translations(output_data, translations)
     return manifest
 
 

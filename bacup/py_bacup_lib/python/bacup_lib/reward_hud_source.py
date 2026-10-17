@@ -32,7 +32,9 @@ def reward_symbols(symbols):
     return {resolve_numbered_name(symbols, "HUDMenu_fla." + stem + "_", "HUD reward"): name
             for stem, name in (("uniqueItemContainer_mc", "B21_StatusRewardItem"),
                                ("questRewardContainer_mc", "B21_StatusRewardList"),
-                               ("questCompleteContainer_mc", "B21_StatusRewardQuest"))}
+                               ("questCompleteContainer_mc", "B21_StatusRewardQuest"),
+                               ("AnnounceActiveQuestNew", "B21_StatusRewardActive"),
+                               ("AnnounceLocationDiscovered", "B21_StatusRewardLocation"))}
 
 
 def frame_actions(method):
@@ -101,20 +103,32 @@ def reward_contract(source, tags, symbols, wanted):
                 match = re.fullmatch(r"HUDMenu_fla.frame(\d+)", method["method"])
                 if match:
                     actions[match[1]] = frame_actions(method)
-                if "__setProp_ClipContainer_mc_questAnimCatcher_mc" in method["method"]:
+                # FO76's VaultBoyImageLoader inspectables: the completion banner's catcher and the started
+                # banner's own loader size the quest image differently.
+                for marker, kind in (("__setProp_ClipContainer_mc_questAnimCatcher_mc", "quest"),
+                                     ("__setProp_QuestVaultBoy_mc_AnnounceActiveQuestNew", "active")):
+                    if marker not in method["method"]:
+                        continue
+                    sizing = loader.setdefault(kind, {})
                     for index, line in enumerate(method["code"]):
                         field = line.strip().split("SetProperty ")[-1]
+                        previous = method["code"][index-1].strip()
                         if field in ("maxClipHeight", "questAnimStageHeight", "questAnimStageWidth"):
-                            loader[field] = int(re.search(r"value: (\d+)", method["code"][index-1])[1])
+                            sizing[field] = int(re.search(r"value: (\d+)", previous)[1])
+                        elif field == "bUseFixedQuestStageSize":
+                            sizing[field] = previous.endswith("PushTrue")
         timelines[str(cid)] = {"labels": labels, "actions": actions}
     root = states(tags)[0]["AnnounceEventWidget_mc"]
     children = states(sprite_tags(sprites[symbols["HUDAnnounceEventWidget"]]))[0]
     layout = {}
     for key, child in (("item", "UniqueItemContainer_mc"), ("list", "QuestRewardContainer_mc"),
-                       ("quest", "QuestCompleteContainer_mc")):
+                       ("quest", "QuestCompleteContainer_mc"), ("active", "AnnounceActiveQuest_mc"),
+                       ("location", "AnnounceLocationDiscovered_mc")):
         a, b, c, d, x, y = transform(root)
         e, f, g, h, u, v = transform(children[child])
         layout[key] = [a*e+c*f, b*e+d*f, a*g+c*h, b*g+d*h, a*u+c*v+x, b*u+d*v+y]
-    if set(loader) != {"maxClipHeight", "questAnimStageHeight", "questAnimStageWidth"}:
+    if set(loader) != {"quest", "active"} or any(
+            set(sizing) != {"maxClipHeight", "questAnimStageHeight", "questAnimStageWidth", "bUseFixedQuestStageSize"}
+            for sizing in loader.values()):
         raise ValueError("Missing source reward quest-image sizing")
     return ids, {"timelines": timelines, "layout": layout, "fps": 30, "loader": loader}

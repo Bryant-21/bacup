@@ -1,0 +1,1868 @@
+{
+  "records": {
+    "8806312": {
+      "signature": "QUST",
+      "editor_id": "HTO_HostileTakeOver_Master_Quest",
+      "value": {
+        "fields": [
+          {
+            "VirtualMachineAdapter": {
+              "Scripts": [
+                {
+                  "ScriptName": "HostileTakeovers:HTO_MasterScript",
+                  "Properties": [
+                    {
+                      "propertyName": "MobKillPercentToSpawnBoss",
+                      "Value": 0.8
+                    },
+                    {
+                      "propertyName": "MobKillPercentToShowRemainingObjective",
+                      "Value": 0.5
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "9065984": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_QuestExpireGlobal_5Hrs",
+      "value": {
+        "fields": [
+          {
+            "Value": 18000.0
+          }
+        ]
+      }
+    },
+    "9065985": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_TargetRadius_Marker",
+      "value": {
+        "fields": [
+          {
+            "Value": 35000.0
+          }
+        ]
+      }
+    },
+    "9065986": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_TargetRadius_Location",
+      "value": {
+        "fields": [
+          {
+            "Value": 35000.0
+          }
+        ]
+      }
+    },
+    "8978432": {
+      "signature": "MESG",
+      "editor_id": "HTO_HostileTakeOver_QuestMessage_Started",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978433": {
+      "signature": "MESG",
+      "editor_id": "HTO_HostileTakeOver_QuestMessage_Ended",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978434": {
+      "signature": "MESG",
+      "editor_id": "HTO_HostileTakeOver_QuestMessage_BossSpawn",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978435": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_QuestMessage_Toggle",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978436": {
+      "signature": "EXPL",
+      "editor_id": "HTO_crBossSpawnExplosionVFX",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978437": {
+      "signature": "SNDR",
+      "editor_id": "HTO_crBossSpawnRoarSFX",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978438": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_QuestReward_XP",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978439": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_QuestReward_Caps",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978440": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_QuestReward_LegendaryTokens",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978441": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_QuestReward_Toggle",
+      "value": {
+        "fields": []
+      }
+    },
+    "8978442": {
+      "signature": "CNCY",
+      "editor_id": "LegendaryTokens",
+      "value": {
+        "fields": []
+      }
+    },
+    "128015": {
+      "signature": "LCRT",
+      "editor_id": "LocationCenterMarker",
+      "value": {
+        "fields": []
+      }
+    },
+    "141087": {
+      "signature": "LCRT",
+      "editor_id": "MapMarkerRefType",
+      "value": {
+        "fields": []
+      }
+    },
+    "3507525": {
+      "signature": "LCRT",
+      "editor_id": "Boss",
+      "value": {
+        "fields": []
+      }
+    },
+    "14678": {
+      "signature": "LCRT",
+      "editor_id": "LocationClearActor",
+      "value": {
+        "fields": []
+      }
+    },
+    "2480661": {
+      "signature": "WRLD",
+      "editor_id": "APPALACHIA",
+      "value": {
+        "fields": []
+      }
+    },
+    "65536": {
+      "signature": "LCTN",
+      "editor_id": "RegionForestFloodlandsLocation",
+      "value": {
+        "fields": []
+      }
+    },
+    "9068449": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_EventToggle_TheForestRegion",
+      "value": {
+        "fields": []
+      }
+    },
+    "65537": {
+      "signature": "LCTN",
+      "editor_id": "RegionToxicValleyLocation",
+      "value": {
+        "fields": []
+      }
+    },
+    "9068450": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_EventToggle_ToxicValleyRegion",
+      "value": {
+        "fields": []
+      }
+    },
+    "65538": {
+      "signature": "LCTN",
+      "editor_id": "RegionCranberryBogLocation",
+      "value": {
+        "fields": []
+      }
+    },
+    "9068451": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_EventToggle_CranberryBogRegion",
+      "value": {
+        "fields": []
+      }
+    },
+    "65539": {
+      "signature": "LCTN",
+      "editor_id": "RegionSwampForestLocation",
+      "value": {
+        "fields": []
+      }
+    },
+    "9068452": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_EventToggle_TheMireRegion",
+      "value": {
+        "fields": []
+      }
+    },
+    "65540": {
+      "signature": "LCTN",
+      "editor_id": "RegionMountainLocation",
+      "value": {
+        "fields": []
+      }
+    },
+    "9068453": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_EventToggle_SavageDivideRegion",
+      "value": {
+        "fields": []
+      }
+    },
+    "65541": {
+      "signature": "LCTN",
+      "editor_id": "RegionMTRLocation",
+      "value": {
+        "fields": []
+      }
+    },
+    "9068454": {
+      "signature": "GLOB",
+      "editor_id": "HTO_LCP_HostileTakeOver_EventToggle_AshHeapRegion",
+      "value": {
+        "fields": []
+      }
+    },
+    "9060688": {
+      "signature": "KYWD",
+      "editor_id": "HTO_FactionSelection_Scorched",
+      "value": {
+        "fields": []
+      }
+    },
+    "8758016": {
+      "signature": "LVLN",
+      "editor_id": "HTO_LChar_Faction_Scorched",
+      "value": {
+        "fields": []
+      }
+    },
+    "8758017": {
+      "signature": "LVLN",
+      "editor_id": "HTO_LChar_Faction_Scorched_Boss",
+      "value": {
+        "fields": []
+      }
+    },
+    "9060689": {
+      "signature": "KYWD",
+      "editor_id": "SDOW_HTO_FactionSelection_SlasherShadow",
+      "value": {
+        "fields": []
+      }
+    },
+    "8758018": {
+      "signature": "LVLN",
+      "editor_id": "SDOW_HTO_LChar_Faction_Slasher",
+      "value": {
+        "fields": []
+      }
+    },
+    "8758019": {
+      "signature": "LVLN",
+      "editor_id": "SDOW_HTO_LChar_Faction_Slasher_Boss",
+      "value": {
+        "fields": []
+      }
+    },
+    "9060690": {
+      "signature": "FLST",
+      "editor_id": "HTO_FactionSelection_FormList",
+      "value": {
+        "fields": [
+          {
+            "FormID": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "8A4150"
+              }
+            }
+          },
+          {
+            "FormID": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "8A4151"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "6056937": {
+      "signature": "SPEL",
+      "editor_id": "Mutation_A",
+      "value": {
+        "fields": []
+      }
+    },
+    "6056938": {
+      "signature": "SPEL",
+      "editor_id": "Mutation_Missing",
+      "value": {
+        "fields": []
+      }
+    },
+    "9008128": {
+      "signature": "FLST",
+      "editor_id": "HTO_BossMutation_Valid_FormList",
+      "value": {
+        "fields": [
+          {
+            "FormID": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "5C6BE9"
+              }
+            }
+          },
+          {
+            "FormID": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "5C6BEA"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "131072": {
+      "signature": "LCTN",
+      "editor_id": "ForestSubRegion",
+      "value": {
+        "fields": [
+          {
+            "ParentLocation": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "010000"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "196608": {
+      "signature": "LCTN",
+      "editor_id": "GoodSite",
+      "value": {
+        "fields": [
+          {
+            "ParentLocation": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "020000"
+              }
+            }
+          },
+          {
+            "MasterSpecialReferences": [
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "01F40F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "700000"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "02271F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "700001"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "358545"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "700002"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "70000A"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "70000B"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "70000C"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "70000D"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "70000E"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "196609": {
+      "signature": "LCTN",
+      "editor_id": "FewActors",
+      "value": {
+        "fields": [
+          {
+            "ParentLocation": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "010001"
+              }
+            }
+          },
+          {
+            "MasterSpecialReferences": [
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "01F40F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "710000"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "02271F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "710001"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "358545"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "710002"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "71000A"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "71000B"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "71000C"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "196610": {
+      "signature": "LCTN",
+      "editor_id": "OtherWorld",
+      "value": {
+        "fields": [
+          {
+            "ParentLocation": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "010001"
+              }
+            }
+          },
+          {
+            "MasterSpecialReferences": [
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "01F40F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "720000"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "000100"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "02271F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "720001"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "000100"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "358545"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "720002"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "000100"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "72000A"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "000100"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "72000B"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "000100"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "72000C"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "000100"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "72000D"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "000100"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "196611": {
+      "signature": "LCTN",
+      "editor_id": "NoBoss",
+      "value": {
+        "fields": [
+          {
+            "ParentLocation": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "010002"
+              }
+            }
+          },
+          {
+            "MasterSpecialReferences": [
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "01F40F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "730000"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "02271F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "730001"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "73000A"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "73000B"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "73000C"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "73000D"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "196612": {
+      "signature": "LCTN",
+      "editor_id": "Unconverted",
+      "value": {
+        "fields": [
+          {
+            "ParentLocation": {
+              "reference": {
+                "plugin": "SeventySix.esm",
+                "object_id": "010003"
+              }
+            }
+          },
+          {
+            "MasterSpecialReferences": [
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "01F40F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "740000"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "02271F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "740001"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "358545"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "740002"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "74000A"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "74000B"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "74000C"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "74000D"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "196613": {
+      "signature": "LCTN",
+      "editor_id": "NoRegion",
+      "value": {
+        "fields": [
+          {
+            "MasterSpecialReferences": [
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "01F40F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "750000"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "02271F"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "750001"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "358545"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "750002"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "75000A"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "75000B"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "75000C"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              },
+              {
+                "MasterSpecialReferencesLocRefType": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "003956"
+                  }
+                },
+                "MasterSpecialReferencesRef": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "75000D"
+                  }
+                },
+                "MasterSpecialReferencesWorldCell": {
+                  "reference": {
+                    "plugin": "SeventySix.esm",
+                    "object_id": "25DA15"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "converted": {
+    "14678": {
+      "signature": "LCRT",
+      "position": null,
+      "has_entries": false
+    },
+    "65536": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "65537": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "65538": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "65539": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "65540": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "65541": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "128015": {
+      "signature": "LCRT",
+      "position": null,
+      "has_entries": false
+    },
+    "131072": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "141087": {
+      "signature": "LCRT",
+      "position": null,
+      "has_entries": false
+    },
+    "196608": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "196609": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "196610": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "196611": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "196612": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "196613": {
+      "signature": "LCTN",
+      "position": null,
+      "has_entries": false
+    },
+    "2480661": {
+      "signature": "WRLD",
+      "position": null,
+      "has_entries": false
+    },
+    "3507525": {
+      "signature": "LCRT",
+      "position": null,
+      "has_entries": false
+    },
+    "6056937": {
+      "signature": "SPEL",
+      "position": null,
+      "has_entries": false
+    },
+    "7340032": {
+      "signature": "REFR",
+      "position": [
+        100.0,
+        -200.0,
+        5.0
+      ],
+      "has_entries": false
+    },
+    "7340033": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7340034": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7340042": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7340043": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7340044": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7340045": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7340046": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7405568": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7405569": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7405570": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7405578": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7405579": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7405580": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7471104": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7471105": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7471106": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7471114": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7471115": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7471116": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7471117": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7536640": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7536641": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7536650": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7536651": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7536652": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7536653": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7602176": {
+      "signature": "REFR",
+      "position": [
+        1.0,
+        2.0,
+        3.0
+      ],
+      "has_entries": false
+    },
+    "7602177": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7602178": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7602188": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7602189": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7667712": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7667713": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7667714": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7667722": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7667723": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7667724": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "7667725": {
+      "signature": "REFR",
+      "position": null,
+      "has_entries": false
+    },
+    "8758016": {
+      "signature": "LVLN",
+      "position": null,
+      "has_entries": true
+    },
+    "8758017": {
+      "signature": "LVLN",
+      "position": null,
+      "has_entries": true
+    },
+    "8758018": {
+      "signature": "LVLN",
+      "position": null,
+      "has_entries": true
+    },
+    "8758019": {
+      "signature": "LVLN",
+      "position": null,
+      "has_entries": true
+    },
+    "8806312": {
+      "signature": "QUST",
+      "position": null,
+      "has_entries": false
+    },
+    "8978432": {
+      "signature": "MESG",
+      "position": null,
+      "has_entries": false
+    },
+    "8978433": {
+      "signature": "MESG",
+      "position": null,
+      "has_entries": false
+    },
+    "8978434": {
+      "signature": "MESG",
+      "position": null,
+      "has_entries": false
+    },
+    "8978435": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "8978436": {
+      "signature": "EXPL",
+      "position": null,
+      "has_entries": false
+    },
+    "8978437": {
+      "signature": "SNDR",
+      "position": null,
+      "has_entries": false
+    },
+    "8978438": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "8978439": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "8978440": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "8978441": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "8978442": {
+      "signature": "MISC",
+      "position": null,
+      "has_entries": false
+    },
+    "9008128": {
+      "signature": "FLST",
+      "position": null,
+      "has_entries": false
+    },
+    "9060688": {
+      "signature": "KYWD",
+      "position": null,
+      "has_entries": false
+    },
+    "9060689": {
+      "signature": "KYWD",
+      "position": null,
+      "has_entries": false
+    },
+    "9060690": {
+      "signature": "FLST",
+      "position": null,
+      "has_entries": false
+    },
+    "9065984": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9065985": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9065986": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9068449": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9068450": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9068451": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9068452": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9068453": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    },
+    "9068454": {
+      "signature": "GLOB",
+      "position": null,
+      "has_entries": false
+    }
+  },
+  "expected": {
+    "version": 1,
+    "plugin": "SeventySix.esm",
+    "source": {
+      "quest": "865FA8",
+      "data_version": "1.7.26.13"
+    },
+    "tuning": {
+      "expire_seconds": 18000.0,
+      "marker_radius": 35000.0,
+      "location_radius": 35000.0,
+      "boss_kill_fraction": 0.8,
+      "remaining_fraction": 0.5
+    },
+    "forms": {
+      "quest": "865FA8",
+      "started_message": "890000",
+      "ended_message": "890001",
+      "boss_message": "890002",
+      "announce_toggle": "890003",
+      "boss_explosion": "890004",
+      "boss_roar": "890005"
+    },
+    "reward": {
+      "xp_global": "890006",
+      "caps_global": "890007",
+      "scrip_global": "890008",
+      "toggle": "890009",
+      "scrip_item": "89000A",
+      "boss_rank": 4
+    },
+    "mutations": [
+      "5C6BE9"
+    ],
+    "factions": [
+      {
+        "key": "Scorched",
+        "keyword": "8A4150",
+        "mob": "85A300",
+        "boss": "85A301"
+      },
+      {
+        "key": "SlasherShadow",
+        "keyword": "8A4151",
+        "mob": "85A302",
+        "boss": "85A303"
+      }
+    ],
+    "regions": [
+      {
+        "key": "Forest",
+        "location": "010000",
+        "toggle": "8A5FA1"
+      },
+      {
+        "key": "ToxicValley",
+        "location": "010001",
+        "toggle": "8A5FA2"
+      },
+      {
+        "key": "CranberryBog",
+        "location": "010002",
+        "toggle": "8A5FA3"
+      },
+      {
+        "key": "Mire",
+        "location": "010003",
+        "toggle": "8A5FA4"
+      },
+      {
+        "key": "SavageDivide",
+        "location": "010004",
+        "toggle": "8A5FA5"
+      },
+      {
+        "key": "AshHeap",
+        "location": "010005",
+        "toggle": "8A5FA6"
+      }
+    ],
+    "sites": [
+      {
+        "location": "030000",
+        "editor_id": "GoodSite",
+        "region": "010000",
+        "world": "25DA15",
+        "center": [
+          100.0,
+          -200.0,
+          5.0
+        ],
+        "marker": "700001",
+        "clear": [
+          "70000A",
+          "70000B",
+          "70000C",
+          "70000D",
+          "70000E"
+        ],
+        "boss": [
+          "700002"
+        ]
+      }
+    ],
+    "skipped": {
+      "few_clear_actors": 1,
+      "no_boss": 1,
+      "not_converted": 1,
+      "outside_world": 2
+    }
+  }
+}

@@ -69,6 +69,9 @@ Function Fragment_Stage_0100_Item_00()
     SetObjectiveCompleted(60, True)
     SetObjectiveCompleted(70, True)
     SetObjectiveDisplayed(100, True)
+    ; "Player has acquired credentials. Shove them in the proper alias": PlayerIsExec carries
+    ; MTR05_Main_PlayerIsExecKeyword, the gate on laser grids 3801B9 and 33C51A.
+    Alias_PlayerIsExec.ForceRefTo(Game.GetPlayer())
 EndFunction
 
 Function Fragment_Stage_0150_Item_00()
@@ -116,6 +119,8 @@ EndEvent
 Function Fragment_Stage_0240_Item_00()
     SetObjectiveCompleted(210, True)
     SetObjectiveDisplayed(240, True)
+    ; PlayerAcquiredBeacon carries MTR05_Main_PlayerAcquiredBeaconKeyword, the gate on laser grid 33C525.
+    Alias_PlayerAcquiredBeacon.ForceRefTo(Game.GetPlayer())
 EndFunction
 
 Function Fragment_Stage_0250_Item_00()

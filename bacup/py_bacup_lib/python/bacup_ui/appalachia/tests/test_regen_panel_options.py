@@ -11,6 +11,8 @@ from bacup_ui.conversion.panels.regen_panel import (
     _COMPANION_MOD_NAME,
     _FULL_SCREEN_MAP_MOD_NAME,
     _UNLIMITED_ARCHIVE_MAX_BYTES,
+    _enable_fo4cs_bgsm22,
+    _set_fo4cs_ini_keys,
     _project_disk_space,
     RegenPanel,
 )
@@ -161,6 +163,58 @@ def test_interior_only_cdx_is_off_by_default_and_reaches_regen_options():
     assert panel.build_options().interior_cdx_only is False
     panel.interior_cdx_only = True
     assert panel.build_options().interior_cdx_only is True
+
+
+def test_native_assets_is_off_by_default_and_reaches_regen_options():
+    assert RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76")).native_assets is False
+    saved = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"native_assets": True}))
+    assert saved.native_assets is True
+
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.upgrade = True
+    panel._upgrade_requires_full_build = lambda _manifest: False
+    assert panel.build_options().native_assets is False
+    panel.native_assets = True
+    assert panel.build_options().native_assets is True
+
+
+def test_native_assets_turns_on_btd4_terrain():
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.upgrade = True
+    panel._upgrade_requires_full_build = lambda _manifest: False
+    assert panel.build_options().emit_btd4 is False
+    panel.native_assets = True
+    assert panel.build_options().emit_btd4 is True
+
+
+def test_replace_fo4_materials_is_saved_and_reaches_regen_options_only_in_native_mode():
+    assert RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76")).replace_fo4_materials is True
+    saved = RegenPanel(
+        _ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"replace_fo4_materials": False})
+    )
+    assert saved.replace_fo4_materials is False
+
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.upgrade = True
+    panel._upgrade_requires_full_build = lambda _manifest: False
+    panel.replace_fo4_materials = True
+    assert panel.build_options().replace_fo4_materials is False
+    panel.native_assets = True
+    assert panel.build_options().replace_fo4_materials is True
+
+
+def test_upgrade_fo4_materials_is_saved_and_reaches_regen_options_only_in_native_mode():
+    assert RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76")).upgrade_fo4_materials is False
+    saved = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"upgrade_fo4_materials": True}))
+    assert saved.upgrade_fo4_materials is True
+
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.upgrade = True
+    panel._upgrade_requires_full_build = lambda _manifest: False
+    panel.upgrade_fo4_materials = True
+    assert panel.build_options().upgrade_fo4_materials is False
+    panel.native_assets = True
+    assert panel.build_options().upgrade_fo4_materials is True
 
 
 @pytest.mark.parametrize("free_gib, expect_warning", [(10, True), (450, False)])
@@ -416,6 +470,163 @@ def test_deploy_companion_mod_installs_devtools_only_when_opted_in(
     assert user_ini.read_text(encoding="utf-8") == "[Hotkeys]\niWorkbench=0\n"
 
 
+@pytest.mark.parametrize(
+    ("install_fo4cs", "native_assets", "expected"),
+    [(True, True, True), (True, False, True), (False, True, True), (False, False, False)],
+)
+def test_deploy_companion_mod_installs_fo4cs_when_opted_in_or_forced_by_native_assets(
+    tmp_path, monkeypatch, install_fo4cs, native_assets, expected
+):
+    exe_dir = tmp_path / "app"
+    companion = exe_dir / "mods" / _COMPANION_MOD_NAME
+    fo4cs = exe_dir / "mods" / "fallout4-community-shaders"
+    fo4_root = tmp_path / "Fallout4"
+    data = fo4_root / "Data"
+
+    (companion / "data").mkdir(parents=True)
+    (companion / "F4SE" / "Plugins").mkdir(parents=True)
+    (companion / f"{_COMPANION_MOD_NAME}.esm").write_bytes(b"esm")
+    (exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME / "data").mkdir(parents=True)
+    (exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME / "F4SE").mkdir(parents=True)
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS").mkdir(parents=True)
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS.dll").write_bytes(b"fo4cs-dll")
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS.ini").write_text("[Shipped]\n", encoding="utf-8")
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS" / "ShaderReplacement.json").write_text("{}", encoding="utf-8")
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS" / "Cubemaps").mkdir()
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS" / "Cubemaps" / "cube.dds").write_bytes(b"dds")
+    (data / "F4SE" / "Plugins").mkdir(parents=True)
+    user_ini = data / "F4SE" / "Plugins" / "FO4CS.ini"
+    user_ini.write_bytes(b"[Frame]\r\nbX = 1\r\n[Bgsm22Materials]\r\n; note\r\nbEnabled = 0\r\n[Next]\r\nbEnabled = 0\r\n")
+
+    panel = _panel(_ws(str(fo4_root), "C:/FO76", "C:/x/fo76"))
+    panel.install_fo4cs = install_fo4cs
+    panel.native_assets = native_assets
+    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: exe_dir)
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel.pack_mod",
+        lambda mod_name, **kwargs: (companion / f"{_COMPANION_MOD_NAME} - Main.ba2").write_bytes(b"ba2"),
+    )
+
+    deployed = panel._deploy_companion_mod(panel.build_paths())
+
+    assert ("F4SE/Plugins/FO4CS.dll" in deployed) is expected
+    assert (data / "F4SE" / "Plugins" / "FO4CS" / "ShaderReplacement.json").exists() is expected
+    assert (data / "F4SE" / "Plugins" / "FO4CS" / "Cubemaps" / "cube.dds").exists() is expected
+    # The user's ini is kept; a deploy turns the distant terrain fixes on, and native
+    # assets also force BGSM v22+ materials on.
+    bgsm22 = b"1" if native_assets else b"0"
+    distant = b"[Terrain.LODDepth]\r\nbEnabled = 1\r\n[Terrain.FarDistance]\r\nbEnabled = 1\r\n[Terrain.Dense]\r\nbEnabled = 0\r\n" if expected else b""
+    assert user_ini.read_bytes() == (
+        b"[Frame]\r\nbX = 1\r\n[Bgsm22Materials]\r\n; note\r\nbEnabled = " + bgsm22
+        + b"\r\n[Next]\r\nbEnabled = 0\r\n" + distant
+    )
+
+
+def test_enable_fo4cs_bgsm22_adds_a_missing_section(tmp_path):
+    ini = tmp_path / "FO4CS.ini"
+    ini.write_text("[Frame]\nbX = 1", encoding="utf-8")
+
+    _enable_fo4cs_bgsm22(ini)
+
+    assert ini.read_text(encoding="utf-8") == "[Frame]\nbX = 1\n[Bgsm22Materials]\nbEnabled = 1\n"
+
+
+def test_dense_land_is_saved_and_on_by_default():
+    assert RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76")).dense_land is True
+    saved = RegenPanel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76", {"dense_land": False}))
+    assert saved.dense_land is False
+
+
+def test_dense_land_forces_hybrid_instanced_only_with_native_assets_on_fo76():
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.upgrade = True
+    panel._upgrade_requires_full_build = lambda _manifest: False
+    panel.dense_land = True
+    assert panel._dense_land_effective() is False
+    assert panel.build_options().lod_mode == "hybrid-atlas"
+    panel.native_assets = True
+    assert panel._dense_land_effective() is True
+    assert panel.build_options().lod_mode == "hybrid-instanced"
+    assert panel.lod_mode == "hybrid-atlas"
+    panel.dense_land = False
+    assert panel.build_options().lod_mode == "hybrid-atlas"
+
+
+def test_dense_land_does_not_apply_to_other_pairs():
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.native_assets = True
+    panel.dense_land = True
+    panel._pair = lambda: SimpleNamespace(pair_id="starfield:fo4")
+    assert panel._dense_land_effective() is False
+    assert panel._effective_lod_mode() == "hybrid-atlas"
+
+
+@pytest.mark.parametrize(
+    ("dense_land", "ini", "expected"),
+    [
+        (True, b"[Frame]\r\nbX = 1\r\n", b"[Terrain.Dense]\r\nbEnabled = 1\r\nbDenseAlpha = 1\r\nbDenseColors = 1\r\nbGroundCover = 1\r\n"),
+        (False, b"[Frame]\r\nbX = 1\r\n", b"[Terrain.Dense]\r\nbEnabled = 0\r\n"),
+        (
+            True,
+            b"[Terrain.Dense]\r\nbEnabled = 0\r\nbDenseAlpha = 0\r\nfGroundCoverDensity = 0.5\r\n[Next]\r\nbEnabled = 0\r\n",
+            b"[Terrain.Dense]\r\nbDenseColors = 1\r\nbGroundCover = 1\r\nbEnabled = 1\r\nbDenseAlpha = 1\r\nfGroundCoverDensity = 0.5\r\n[Next]\r\nbEnabled = 0\r\n",
+        ),
+        (
+            False,
+            b"[Terrain.Dense]\r\nbEnabled = 1\r\nbDenseAlpha = 1\r\n",
+            b"[Terrain.Dense]\r\nbEnabled = 0\r\nbDenseAlpha = 1\r\n",
+        ),
+    ],
+)
+def test_deploy_writes_terrain_dense_keys(tmp_path, monkeypatch, dense_land, ini, expected):
+    exe_dir = tmp_path / "app"
+    companion = exe_dir / "mods" / _COMPANION_MOD_NAME
+    fo4cs = exe_dir / "mods" / "fallout4-community-shaders"
+    fo4_root = tmp_path / "Fallout4"
+    data = fo4_root / "Data"
+    (companion / "data").mkdir(parents=True)
+    (companion / "F4SE" / "Plugins").mkdir(parents=True)
+    (companion / f"{_COMPANION_MOD_NAME}.esm").write_bytes(b"esm")
+    (exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME / "data").mkdir(parents=True)
+    (exe_dir / "mods" / _FULL_SCREEN_MAP_MOD_NAME / "F4SE").mkdir(parents=True)
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS").mkdir(parents=True)
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS.dll").write_bytes(b"fo4cs-dll")
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS.ini").write_text("[Shipped]\n", encoding="utf-8")
+    (fo4cs / "F4SE" / "Plugins" / "FO4CS" / "ShaderReplacement.json").write_text("{}", encoding="utf-8")
+    (data / "F4SE" / "Plugins").mkdir(parents=True)
+    user_ini = data / "F4SE" / "Plugins" / "FO4CS.ini"
+    user_ini.write_bytes(ini)
+
+    panel = _panel(_ws(str(fo4_root), "C:/FO76", "C:/x/fo76"))
+    panel.install_fo4cs = True
+    panel.native_assets = True
+    panel.dense_land = dense_land
+    monkeypatch.setattr("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: exe_dir)
+    monkeypatch.setattr(
+        "bacup_ui.conversion.panels.regen_panel.pack_mod",
+        lambda mod_name, **kwargs: (companion / f"{_COMPANION_MOD_NAME} - Main.ba2").write_bytes(b"ba2"),
+    )
+
+    panel._deploy_companion_mod(panel.build_paths())
+
+    text = user_ini.read_bytes()
+    dense_start = text.index(b"[Terrain.Dense]")
+    dense_end = text.find(b"[", dense_start + 1)
+    section = text[dense_start:] if dense_end == -1 else text[dense_start:dense_end]
+    expected_end = expected.find(b"[Next]")
+    expected_section = expected if expected_end == -1 else expected[:expected_end]
+    assert section == expected_section
+
+
+def test_set_fo4cs_ini_keys_preserves_other_keys_and_adds_section(tmp_path):
+    ini = tmp_path / "FO4CS.ini"
+    ini.write_text("[Terrain.Dense]\nfGroundCoverDensity = 0.5\n", encoding="utf-8")
+    _set_fo4cs_ini_keys(ini, "Terrain.Dense", {"bEnabled": 1, "bGroundCover": 1})
+    assert ini.read_text(encoding="utf-8") == (
+        "[Terrain.Dense]\nbEnabled = 1\nbGroundCover = 1\nfGroundCoverDensity = 0.5\n"
+    )
+
+
 def test_undeploy_bundled_mods_removes_every_bundled_file_and_nothing_else(
     tmp_path, monkeypatch
 ):
@@ -437,6 +648,10 @@ def test_undeploy_bundled_mods_removes_every_bundled_file_and_nothing_else(
         "F4SE/Plugins/B21_DevTools.dll",
         "F4SE/Plugins/B21_DevTools.ini",
         "F4SE/Plugins/B21_DevTools/fonts/Roboto-Regular.ttf",
+        "F4SE/Plugins/FO4CS.dll",
+        "F4SE/Plugins/FO4CS.ini",
+        "F4SE/Plugins/FO4CS/ShaderReplacement.json",
+        "Textures/FO4CS/Cubemaps/FO4CS_PBR_DefaultOutside1_prefiltered.dds",
         "Interface/B21/TalesFromAppalachia/QuickBoy.swf",
         "Scripts/B21_FullScreenMap.pex",
     ]
@@ -461,3 +676,17 @@ def test_undeploy_bundled_mods_removes_every_bundled_file_and_nothing_else(
     assert all((data / rel).exists() for rel in unrelated)
     assert not (data / "F4SE" / "Plugins" / _COMPANION_MOD_NAME).exists()
     assert not (data / "Interface" / "B21" / "TalesFromAppalachia").exists()
+
+
+def test_upgrade_fo4_materials_adds_its_space_and_progress_phase():
+    from bacup_ui.conversion.panels.regen_panel import _UPGRADE_FO4_MATERIALS_BYTES
+    from bacup_ui.conversion.progress import estimated_phase_weights
+
+    panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    base = panel._space_estimates()
+    panel.upgrade_fo4_materials = True
+    assert panel._space_estimates() == base, "only with Native Materials on"
+    panel.native_assets = True
+    assert panel._space_estimates() == (base[0] + _UPGRADE_FO4_MATERIALS_BYTES, base[1] + _UPGRADE_FO4_MATERIALS_BYTES)
+    assert "upgrade_fo4_materials" in estimated_phase_weights("fo76:fo4", upgrade_fo4_materials=True)
+    assert "upgrade_fo4_materials" not in estimated_phase_weights("fo76:fo4")

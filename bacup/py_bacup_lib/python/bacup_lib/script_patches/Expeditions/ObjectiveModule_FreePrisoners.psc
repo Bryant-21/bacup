@@ -40,7 +40,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		ResetDoorKeyInventoryListener(akSender)
 		ReconcileLocalPrisonState()
 	EndIf
@@ -72,21 +72,18 @@ Event ObjectReference.OnLockStateChanged(ObjectReference akSender)
 EndEvent
 
 Function InitializeLocalPrisonStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 	SetObjectiveDisplayed(300, True)
 EndFunction
 
 Function ReconcileLocalPrisonState()
-	If IsStageDone(CompleteStage)
+	If IsStageDone(GetCompleteStage())
 		Return
 	EndIf
 
@@ -128,7 +125,7 @@ Function ReconcileLocalPrisonState()
 EndFunction
 
 Function ReconcileLocalPrisonDoors()
-	If IsStageDone(CompleteStage) || PrisonDoors_RefColAlias == None
+	If IsStageDone(GetCompleteStage()) || PrisonDoors_RefColAlias == None
 		Return
 	EndIf
 
@@ -153,7 +150,7 @@ Function ReconcileLocalPrisonDoors()
 
 	If DoorsToUnlockTotal > 0 && DoorsUnlocked >= DoorsToUnlockTotal
 		SetObjectiveCompleted(600, True)
-		SetStage(CompleteStage)
+		SetStage(GetCompleteStage())
 	EndIf
 EndFunction
 

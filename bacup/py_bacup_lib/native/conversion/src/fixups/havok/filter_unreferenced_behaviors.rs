@@ -13,9 +13,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use havok_native::hkx::read_packfile;
-use havok_native::hkx::types::HkxValue;
-
 use crate::fixups::{Fixup, FixupConfig, FixupError, FixupReport};
 use crate::formkey_mapper::FormKeyMapper;
 use crate::full_plugin::{AssetPhaseFlags, FixupScope};
@@ -101,6 +98,14 @@ pub(crate) fn filter_unreferenced_behaviors_preserving(
     mod_path: &Path,
     preserved_files: &[PathBuf],
 ) -> Result<FixupReport, FixupError> {
+    filter_unreferenced_behaviors_with_cache(mod_path, preserved_files, &mut Default::default())
+}
+
+pub(crate) fn filter_unreferenced_behaviors_with_cache(
+    mod_path: &Path,
+    preserved_files: &[PathBuf],
+    cache: &mut super::postprocess_scan::BehaviorNamesCache,
+) -> Result<FixupReport, FixupError> {
     let preserved: HashSet<_> = preserved_files.iter().map(|path| path_key(path)).collect();
     let mut removed = 0u32;
     for meshes_root in mesh_roots_for_mod_path(mod_path) {
@@ -109,7 +114,7 @@ pub(crate) fn filter_unreferenced_behaviors_preserving(
             behavior_dirs.push(behavior_dir.to_path_buf());
         });
         let mounted =
-            behaviors_mounted_by_surviving_graphs(&meshes_root, &behavior_dirs, &preserved);
+            behaviors_mounted_by_surviving_graphs(&meshes_root, &behavior_dirs, &preserved, cache);
         for behavior_dir in &behavior_dirs {
             removed += remove_fo76_only_behaviors(behavior_dir, &mounted);
         }
@@ -212,6 +217,7 @@ fn behaviors_mounted_by_surviving_graphs(
     meshes_root: &Path,
     behavior_dirs: &[PathBuf],
     preserved: &HashSet<String>,
+    cache: &mut super::postprocess_scan::BehaviorNamesCache,
 ) -> HashSet<String> {
     let mut candidates: HashSet<String> = HashSet::new();
     let mut frontier: Vec<PathBuf> = Vec::new();
@@ -227,7 +233,7 @@ fn behaviors_mounted_by_surviving_graphs(
 
     let mut mounted = preserved.clone();
     while let Some(path) = frontier.pop() {
-        for reference in referenced_behavior_names(&path) {
+        for reference in &cache.get(&path).mounted {
             for target in resolve_behavior_reference(meshes_root, &path, &reference) {
                 let key = path_key(&target);
                 if candidates.contains(&key) && mounted.insert(key) {
@@ -237,41 +243,6 @@ fn behaviors_mounted_by_surviving_graphs(
         }
     }
     mounted
-}
-
-/// `hkbBehaviorReferenceGenerator::behaviorName` values in a behavior packfile,
-/// with the `.hkx` extension forced — unconverted FO76 graphs author it bare.
-fn referenced_behavior_names(path: &Path) -> Vec<String> {
-    let Ok(data) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    let Ok(hkx) = read_packfile(&data) else {
-        return Vec::new();
-    };
-    let mut names = Vec::new();
-    for object in hkx.objects() {
-        if object.class_name != "hkbBehaviorReferenceGenerator" {
-            continue;
-        }
-        for member in &object.members {
-            if member.name != "behaviorName" {
-                continue;
-            }
-            let HkxValue::String { value, .. } = &member.value else {
-                continue;
-            };
-            if value.is_empty() {
-                continue;
-            }
-            let normalized = value.replace('/', "\\");
-            names.push(if normalized.to_lowercase().ends_with(".hkx") {
-                normalized
-            } else {
-                format!("{normalized}.hkx")
-            });
-        }
-    }
-    names
 }
 
 /// Candidate on-disk targets for a `behaviorName`. FO76 authors these relative to
@@ -301,12 +272,16 @@ fn resolve_behavior_reference(
 /// Walk `dir` recursively, calling `f` on every directory named `behaviors`
 /// (case-insensitive).
 fn walk_behavior_dirs(dir: &Path, f: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_behavior_dirs_in_root(dir, f, dir);
+}
+
+fn walk_behavior_dirs_in_root(dir: &Path, f: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if super::postprocess_scan::entry_is_dir(&entry) {
             let dname = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -315,7 +290,7 @@ fn walk_behavior_dirs(dir: &Path, f: &mut impl FnMut(&Path)) {
             if dname == "behaviors" {
                 f(&path);
             }
-            walk_behavior_dirs(&path, f);
+            walk_behavior_dirs_in_root(&path, f, scan_root);
         }
     }
 }
@@ -327,6 +302,7 @@ fn walk_behavior_dirs(dir: &Path, f: &mut impl FnMut(&Path)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use havok_native::hkx::types::HkxValue;
 
     #[test]
     fn remove_fo76_only_behaviors_in_temp_dir() {
@@ -386,6 +362,27 @@ mod tests {
         assert_eq!(report.records_dropped, 1);
         assert!(generated.is_file());
         assert!(dependency.is_file());
+        assert!(!unused.exists());
+    }
+
+    #[test]
+    fn animation_name_scan_retains_mounts_for_the_following_filter() {
+        let root = tempfile::tempdir().unwrap();
+        let behaviors = root.path().join("data/Meshes/Actors/Generated/Behaviors");
+        std::fs::create_dir_all(&behaviors).unwrap();
+        let generated = behaviors.join("SharedCoreBehavior.hkx");
+        let dependency = behaviors.join("DialogueBehavior.hkx");
+        let unused = behaviors.join("AmbushBehavior.hkx");
+        write_graph_mounting(&generated, &["Behaviors/DialogueBehavior"]);
+        write_graph_mounting(&dependency, &[]);
+        write_graph_mounting(&unused, &[]);
+        let mut cache = super::super::postprocess_scan::BehaviorNamesCache::default();
+        cache.clips_in(&behaviors);
+        let report = filter_unreferenced_behaviors_with_cache(root.path(), &[generated.clone()], &mut cache).unwrap();
+        assert_eq!(report.records_dropped, 1);
+        assert_eq!(cache.files(), 3);
+        assert!(cache.hits >= 2);
+        assert!(generated.is_file() && dependency.is_file());
         assert!(!unused.exists());
     }
 

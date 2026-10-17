@@ -11,6 +11,9 @@ $B21_TFA_Capacity	ВМЕСТИМОСТЬ
 $B21_TFA_Unlimited	НЕОГРАНИЧЕННЫЙ
 $B21_TFA_Legendary	легендарный
 $B21_TFA_SemiAutomatic	Полуавтоматический
+$B21_TFA_Charging	Зарядка
+$B21_TFA_ChargeTime	Время зарядки
+$B21_TFA_ChargeBonus	Бонус за зарядку
 $B21_TFA_VATSAccuracy	Точность V.A.T.S.
 $B21_TFA_WeaponType_Melee	Мели
 $B21_TFA_WeaponType_OneHanded	Одноручный
@@ -50,7 +53,29 @@ $B21_TFA_AssignPermanentSPECIAL	НАЗНАЧЕНИЕ ПОСТОЯННОГО SPEC
 $B21_TFA_AssignSPECIAL	УВЕЛИЧИТЬ SPECIAL
 $B21_TFA_MoveSPECIAL	ПЕРЕМЕСТИТЬ ТОЧКУ SPECIAL
 $B21_TFA_AddLoadout	ДОБАВИТЬ ЗАГРУЗКУ
-$B21_PM_Salute	Приветствие (требуется время)
+$B21_PM_Salute	Салют
+$B21_PM_ExpressionAfraid	бояться
+$B21_PM_ExpressionAmused	веселый
+$B21_PM_ExpressionAngry	сердитый
+$B21_PM_ExpressionAwed	благоговейный
+$B21_PM_ExpressionConcerned	обеспокоенный
+$B21_PM_ExpressionConfident	уверенный
+$B21_PM_ExpressionDisgust	отвращение
+$B21_PM_ExpressionFlirting	флиртовать
+$B21_PM_ExpressionFriendly	дружелюбный
+$B21_PM_ExpressionHappy	Счастливо
+$B21_PM_ExpressionImpressed	впечатлённый
+$B21_PM_ExpressionIrritated	раздраженный
+$B21_PM_ExpressionNeutral	нейтральный
+$B21_PM_ExpressionPuzzled	озадаченный
+$B21_PM_ExpressionSad	грустно
+$B21_PM_ExpressionSinisterSmile	Зловещая улыбка
+$B21_PM_ExpressionSomber	мрачный
+$B21_PM_ExpressionStern	Стерн
+$B21_PM_ExpressionSurprised	удивленный
+$B21_PM_ExpressionThinking	мышление
+$B21_PM_ExpressionTired	уставший
+$B21_PM_ExpressionWorried	обеспокоенный
 $B21_PM_FO4Poses	Fallout 4
 $B21_PM_Warm	теплый
 $B21_PM_Cool	Круто
@@ -58,6 +83,30 @@ $B21_PM_Vintage	винтажный
 $B21_PM_Keepsake	Хранить
 $B21_PM_PhotoFrames	Фотографии
 $B21_PM_FreezeTime	Время заморозки
+$B21_PM_TimeOfDay	Время суток
+$B21_PM_Weather	Погода
+$B21_PM_SkyCurrent	текущий
+$B21_PM_WeatherClear	Чисто.
+$B21_PM_WeatherOvercast	переполненный
+$B21_PM_WeatherFoggy	туманный
+$B21_PM_WeatherMisty	грязный
+$B21_PM_WeatherRain	дождь
+$B21_PM_WeatherThunderstorm	гроза
+$B21_PM_WeatherRadstorm	гроза
+$B21_PM_WeatherSnow	снег
+$B21_PM_WeatherAurora	Аврора
+$B21_PM_WeatherRainbow	Радуга
+$B21_PM_WeatherBloodMoon	Кровавая Луна
+$B21_PM_WeatherToxicValley	Токсическая долина
+$B21_PM_WeatherMire	Проклятие
+$B21_PM_WeatherCranberryBog	Клюквенный болото
+$B21_PM_WeatherAshHeap	Пепельница
+$B21_PM_WeatherNukeZone	Ядерная зона
+$B21_PM_WeatherCommonwealthClear	Содружество ясно
+$B21_PM_WeatherCommonwealthOvercast	Обсуждение Commonwealth Overcast
+$B21_PM_WeatherCommonwealthFoggy	Туман Содружества
+$B21_PM_WeatherCommonwealthRain	Дождь Содружества
+$B21_PM_WeatherCommonwealthRadstorm	Редкий шторм Содружества
 $B21_PM_Menu	ФОТОРЕЖИМ
 $B21_PM_Saturated	насыщенный
 $B21_PM_BlackAndWhite	Черный и белый
@@ -126,3 +175,79 @@ $B21_Settings_Ultra	Урал
 $B21_Settings_Fullscreen	Полный экран
 $B21_Settings_Borderless	без границ
 $B21_Settings_Windowed	оконный
+$B21_Settings_QuickBoy	Quick-Boy
+$B21_Settings_PipBoyView	Посмотреть Pip-Boy View
+$B21_Settings_QuickBoyColor	Цветовой режим Quick-Boy
+$B21_Settings_QuickBoyR	Quick-Boy Цвет R
+$B21_Settings_QuickBoyG	Quick-Boy Цвет G
+$B21_Settings_QuickBoyB	Quick-Boy Цвет B
+$B21_Settings_QuickBoySize	Размер Quick-Boy
+$B21_Settings_QuickBoyBrightness	Quick-Boy Яркость
+$B21_Settings_DamageNumbers	Показать номера повреждений
+$B21_Settings_WeaponCondition	Показать состояние оружия
+$B21_Settings_AlwaysShowNeeds	Всегда демонстрировать голод и жажду
+$B21_Settings_CorpseHighlight	Основные корпуса
+$B21_Settings_UnhighlightMode	Перестаньте выделять трупы
+$B21_Settings_HighlightPlayerKills	Выделите только свои убийства
+$B21_Settings_MatchPipBoy	Матч Pip-Boy
+$B21_Settings_MatchHUD	Матч HUD
+$B21_Settings_OwnColor	Собственный цвет
+$B21_Settings_PipBoy	Pip-Boy
+$B21_Settings_OnLoot	После взятия лута
+$B21_Settings_OnInspect	После осмотра
+$B21_Settings_WhenEmpty	Когда пустой
+$B21_TFA_Lock	ЗАМОК
+$B21_TFA_Unlock	РАЗБЛОКИРОВАТЬ
+$B21_TFA_Locked	Запертый
+$B21_TFA_ItemLocked	Этот предмет заблокирован.
+$B21_TFA_ItemUnlocked	Предмет разблокирован.
+$B21_TFA_LockUnavailable	Не удается запереть этот предмет.
+$B21_TFA_ScrapAllJunk	УНИЧТОЖИТЬ ВЕСЬ МУСОР
+$B21_TFA_ScrapAllQuestion	Все разблокированные хлама в компоненты?
+$B21_TFA_JunkScrapped	Твой незапертый хлам был утилизирован.
+$B21_TFA_NoJunkToScrap	У тебя нет незапертого мусора.
+$B21_TFA_ScrapStale	Изменился выбранный пункт. Выберите его еще раз, прежде чем ломать.
+$B21_TFA_NoScrapYield	Этот элемент не имеет компонентов лома.
+$B21_TFA_BuildMenuControls	КОНТРОЛЬ МЕНЮ
+$B21_TFA_BuildCameraControls	УПРАВЛЕНИЕ КАМЕРОЙ
+$B21_TFA_FilterAll	ФИЛЬТР: ВСЕ
+$B21_TFA_FilterKnown	ФИЛЬТР: ИЗВЕСТНЫЙ
+$B21_TFA_FilterBuildable	ФИЛЬТР: ПОСТРОЕННЫЙ
+$B21_TFA_FilterRecent	ФИЛЬТР: НЕДАВНИЙ
+$B21_TFA_UnsupportedBuildVariant	Этот вариант не имеет строительного объекта.
+$B21_TFA_CameraMove	ДВИГАТЬСЯ
+$B21_TFA_CameraRiseFall	ВЗЛЕТ / ПАДЕНИЕ
+$B21_TFA_CameraSpeed	СКОРОСТЬ
+$B21_TFA_CameraPadHelpTop	ДВИГАТЬСЯ: LS   СМОТРИ: RS
+$B21_TFA_CameraPadHelpBottom	Оригинальное название: D-pad Up / Down   Оригинальное название: D-pad Right
+$B21_TFA_Deselect	ИЗБРАННЫЙ
+$B21_TFA_BlueprintObjects	объекты
+$B21_TFA_BlueprintUnavailable	недоступный
+$B21_TFA_BlueprintSelected	выбранный
+$B21_TFA_TeamFullLeaves	Команда полная. <Name> покидает команду.
+$B21_TFA_TeamFullCantJoin	Команда полная. <Name> не может присоединиться.
+$B21_TFA_TeamAllyCantLead	Союзники не могут руководить командой.
+$B21_TFA_TeamOwnSystem	<Name> использует собственную систему.
+$B21_TFA_TeamNowLeads	Теперь <Name> возглавляет команду.
+$B21_TFA_TeamTookOverUCF	Ваши партнеры по Unlimited Companion Framework присоединились к команде. После этого UCF может быть удален.
+$B21_TFA_TeamFullStaysUCF	Команда полная. <Name> поддерживает Unlimited Companion Framework.
+$B21_TFA_TeamLeadAfterUCF	Выберите лид после удаления Unlimited Companion Framework.
+$B21_TFA_SetBonus	БОНУС КОМПЛЕКТА
+$B21_TFA_UniquePerkRank	+{rank} к рангу способности {perk}
+$B21_TFA_Pets	ПИТОМЦЫ
+$B21_TFA_CompanionTitle	КОМПАНЬОНЫ
+$B21_TFA_CompanionEmpty	Наймите компаньона, чтобы путешествовать с вами.
+$B21_TFA_CompanionLevel	УРОВЕНЬ
+$B21_TFA_CompanionXP	XPP
+$B21_TFA_CompanionHP	HP
+$B21_TFA_CompanionAffinity	РОДСТВО
+$B21_TFA_CompanionNotTracked	Не отслеживается
+$B21_TFA_CompanionBonuses	БОНУСЫ УРОВНЯ
+$B21_TFA_CompanionPerks	КОМПАНЬОНСКИЕ ЛЬГОТЫ
+$B21_TFA_CompanionShared	ОБЩАЯ КАРТА
+$B21_TFA_CompanionMax	МАКС
+$B21_TFA_CompanionSelect	[Up/Down] Выберите партнера   [D-pad] Выберите партнера
+$B21_TFA_CompanionVeteran	Ветеран: +25 повреждений и энергостойкость
+$B21_TFA_CompanionPackMule	Пакет мула: +50 нести вес
+$B21_TFA_CompanionCombatTraining	Боевая подготовка: +10% ущерба
+$B21_TFA_CompanionEndurance	Выносливость: +100 здоровья

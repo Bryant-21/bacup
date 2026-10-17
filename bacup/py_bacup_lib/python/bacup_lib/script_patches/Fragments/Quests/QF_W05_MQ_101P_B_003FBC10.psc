@@ -169,6 +169,9 @@ Function Fragment_Stage_0700_Item_00()
 EndFunction
 
 Function Fragment_Stage_9000_Item_00()
+    If IsObjectiveDisplayed(60) && !IsObjectiveCompleted(60)
+        SetObjectiveCompleted(60, True)
+    EndIf
     If W05_MQ_101P && !W05_MQ_101P.IsStageDone(300)
         W05_MQ_101P.SetStage(300)
     EndIf

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from bacup_lib import emotes
+from bacup_lib.tests.catalog_schema_validation import validate_catalog
 from bacup_lib.workflows import unified
 from bacup_lib.translations import read_table, TRANSLATIONS
 from creation_lib.havok.native_runtime import load_native_module
@@ -83,7 +84,9 @@ def test_catalog_carries_every_emote_in_fo76_category_order(converted):
     assert ranks == sorted(ranks)
     translations = dict(line.split("\t", 1) for line in read_table(output / TRANSLATIONS))
     assert translations["$B21_TFA_EmoteTab"] == "EMOTES" and translations["$B21_TFA_EmoteScroll"] == "SCROLL"
-    assert json.loads((output / emotes.CATALOG).read_text()) == manifest
+    written = json.loads((output / "F4SE/Plugins/B21_TalesFromAppalachia/Emotes/SeventySix.esm.json").read_text(encoding="utf-8"))
+    assert written == emotes.to_document(manifest)
+    validate_catalog("Emotes", written)
 
 
 def test_every_catalog_clip_is_written_and_binds_its_fo4_skeleton(converted):
@@ -99,7 +102,11 @@ def test_every_catalog_clip_is_written_and_binds_its_fo4_skeleton(converted):
     for path, tracks in (("Actors\\Character\\Animations\\B21\\Emotes\\Salute.hkx", 95),
                          ("Actors\\PowerArmor\\Animations\\B21\\Emotes\\Salute.hkx", 110)):
         xml = havok.hkx_to_xml((output / "data/Meshes" / path.replace("\\", "/")).read_bytes())
-        assert emotes.animation_metadata(xml, tracks)["tracks"] == tracks
+        animation = next(node for node in emotes.ET.fromstring(xml).findall(".//hkobject")
+                         if node.get("class") in ("hkaSplineCompressedAnimation", "hkaInterleavedUncompressedAnimation"))
+        assert int(animation.find("hkparam[@name='numberOfTransformTracks']").text) == tracks
+        binding = emotes.ET.fromstring(xml).find(".//hkobject[@class='hkaAnimationBinding']")
+        assert list(map(int, binding.find("hkparam[@name='transformTrackToBoneIndices']").text.split())) == list(range(tracks))
     assert all(row["reason"] for row in manifest["skipped"])
 
 
@@ -114,7 +121,8 @@ def test_movie_ships_ring_disk_badge_bitmaps_icons_and_bridge(converted):
     assert {"B21Emotes_RadialMenuRingInner", "B21Emotes_RadialMenuRingOuter", "B21Emotes_B21EmoteMenu",
             "B21Emotes." + manifest["ui"]["corner_tab"]} <= symbols
     assert "LuckyDice1" in manifest["ui"]["text_stripped_icons"]
-    assert sum(code == 36 for code, _ in emotes.swf_tags(movie)) == 6, "sector backer bitmaps"
+    assert sum(code == 36 for code, _ in emotes.swf_tags(movie)) == 7, "sector backers and ImSelling1's art"
+    assert swf.dangling_bitmap_fills(movie) == []
     root = swf.abc_class_outline(movie, "B21Emotes_B21EmoteMenu")
     assert {"SetData", "Navigate", "PointAt", "Present", "BGSCodeObj", "EmoteVersion", "SetPlatform",
             "SetInputMode", "ControllerMode"} <= {trait["name"] for trait in root["instance_traits"]}
@@ -185,3 +193,17 @@ def test_workflow_registers_only_fo76_to_fo4(monkeypatch, tmp_path):
     assert calls[0][1]["target_root"] == ctx.target_extracted_dir
     request.source_game = "skyrimse"
     assert unified._convert_fo76_emotes(request, ctx) == 0
+
+
+def test_document_uses_formkeys_and_validates():
+    manifest = {"event_name": "B21EmoteV1", "source_plugin": "SeventySix.esm", "source_plugin_sha256": "x",
+                "playback_route": {"event": "e"}, "ui": {"bridge_version": 3}, "power_armor_dropped_tracks": [], "files": [],
+                "skipped": [{"source_id": "5CA061", "editor_id": "A", "reason": "r"}], "excluded": [],
+                "categories": [{"id": "005741", "editor_id": "C", "name": "Hello", "icon": "Wave1"}],
+                "entries": [{"source_id": "11016C", "editor_id": "Emote_Wave1", "name": "Wave", "category_id": "005741",
+                             "kind": "human", "icon": "Wave1", "idle_id": "3AC5F1", "animation": "", "duration": 4.9,
+                             "dice_faces": 0, "sound_ids": ["37D1D3"]}]}
+    document = emotes.to_document(manifest)
+    assert document["entries"][0]["form"] == "SeventySix.esm:11016C" and "source_id" not in document["entries"][0]
+    assert document["entries"][0]["sound_ids"] == ["SeventySix.esm:37D1D3"]
+    validate_catalog("Emotes", document)

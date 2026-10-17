@@ -50,11 +50,14 @@ class AppalachiaWorkspace(BaseWorkspace):
         self._setup_confirm_pending = False
         self._navigation_state = InteractionState()
         self._music_controls_height = 0.0
+        self._catalog_tool = None
+        self._texture_tool = None
         workspace_settings = (
             toolkit_settings.get_workspace_settings(self.id)
             if toolkit_settings is not None else {}
         )
         self.show_logs = bool(workspace_settings.get("show_logs", False))
+        self._catalog_settings = dict(workspace_settings.get("catalog_editor", {}))
 
     def get_dockable_windows(self):
         return [
@@ -190,6 +193,45 @@ class AppalachiaWorkspace(BaseWorkspace):
             if imgui.menu_item("Re-run Setup / Re-extract Game Data...", "", False)[0]:
                 self._setup_confirm_pending = True
             imgui.end_menu()
+        if imgui.begin_menu("Tools"):
+            if imgui.menu_item("Tales Catalogs...", "", False)[0]:
+                self.open_catalog_editor()
+            if imgui.menu_item("Texture Upgrader...", "", False)[0]:
+                self.open_texture_upgrader()
+            imgui.end_menu()
+
+    def open_catalog_editor(self) -> None:
+        if self._catalog_tool is None:
+            from ui.tools.catalog_editor.tool import CatalogEditorTool
+
+            tool = CatalogEditorTool()
+            tool._toolkit_settings = self._toolkit_settings
+            tool.bacup_output_dir_provider = self._catalog_output_dir
+            tool.apply_settings(self._catalog_settings)
+            tool.initialize()
+            self._catalog_tool = tool
+        self._catalog_tool.visible = True
+
+    def open_texture_upgrader(self) -> None:
+        if self._texture_tool is None:
+            from ui.tools.materials.texture_upgrader import TextureUpgraderTool
+
+            tool = TextureUpgraderTool()
+            tool._toolkit_settings = self._toolkit_settings
+            tool.initialize()
+            self._texture_tool = tool
+        self._texture_tool.visible = True
+
+    def _catalog_output_dir(self) -> str:
+        try:
+            return str(self._regen_panel.build_paths().output_root)
+        except Exception:
+            return ""
+
+    def collect_settings(self) -> dict:
+        if self._catalog_tool is not None:
+            self._catalog_settings = self._catalog_tool.collect_settings()
+        return {"catalog_editor": self._catalog_settings}
 
     def draw(self) -> None:
         if not self.active or not self._initialized:
@@ -208,6 +250,10 @@ class AppalachiaWorkspace(BaseWorkspace):
         self._draw_changelog_popup()
         self._draw_known_issues_popup()
         self._draw_setup_confirm_popup()
+        if self._catalog_tool is not None:
+            self._catalog_tool.draw_window()
+        if self._texture_tool is not None:
+            self._texture_tool.draw_window()
 
     def _changelog_entries(self) -> list[tuple[str, bool, tuple[str, ...]]]:
         from bacup_lib.upgrade_manifest import (
@@ -383,6 +429,10 @@ class AppalachiaWorkspace(BaseWorkspace):
         hello_imgui.get_runner_params().app_shall_exit = True
 
     def cleanup(self) -> None:
+        if self._catalog_tool is not None:
+            self._catalog_tool.cleanup()
+        if self._texture_tool is not None:
+            self._texture_tool.cleanup()
         if self._runner and not self._runner.done:
             self._runner.cancel()
         for panel in self._regen_panels.values():

@@ -10,12 +10,13 @@ class FakeNative:
         self.data_dir = data_dir
         self.finalized = False
 
-    def prepare_previs(self, request_json, report_path, timing_path, workers=None, progress=None):
+    def prepare_previs(self, request_json, report_path, timing_path, workers=None, progress=None, index_resources=None):
         request = json.loads(request_json)
         progress(1, 2)
         progress(2, 2)
         assert request["solve_into"] == str(self.data_dir)
         assert workers == 3
+        assert index_resources is self.index_resources
         # The stale tree is gone before the planner writes new tomes.
         assert not (self.data_dir / "Vis" / "Mod.esm" / "old.uvd").exists()
         uvd = self.data_dir / "Vis" / "Mod.esm" / "00000001.uvd"
@@ -51,6 +52,7 @@ def test_rust_previs_writes_solved_tomes_and_stamps_only_their_cells(tmp_path, m
     stale.mkdir(parents=True)
     (stale / "old.uvd").write_bytes(b"old")
     native = FakeNative(data)
+    native.index_resources = object()
     monkeypatch.setattr(previs_generation, "_native", lambda: native)
     class DateAfterPlanning:
         @staticmethod
@@ -64,7 +66,7 @@ def test_rust_previs_writes_solved_tomes_and_stamps_only_their_cells(tmp_path, m
 
     result = generate_previs(
         PrevisRequest(plugin_path=plugin, mod_data_dir=data, master_dirs=[], loose_roots=[],
-                      archives=[], work_dir=tmp_path / "work", workers=3),
+                      archives=[], work_dir=tmp_path / "work", workers=3, index_resources=native.index_resources),
         log=lambda *message: messages.append(message),
         progress=lambda *item: progress.append(item),
     )

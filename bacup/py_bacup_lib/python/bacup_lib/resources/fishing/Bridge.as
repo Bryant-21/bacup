@@ -1,5 +1,7 @@
 package {
    import flash.events.Event;
+   import flash.display.DisplayObject;
+   import flash.geom.ColorTransform;
    import Shared.AS3.IMenu;
    import Shared.AS3.Data.BSUIDataManager;
    import Shared.AS3.Data.FromClientDataEvent;
@@ -46,6 +48,7 @@ package {
          provider.SetReady(false);
          this.onFishingData(new FromClientDataEvent(provider));
          this.updateBaitList();
+         if(payload.hasOwnProperty("hudColor")) this.B21SetHUDColor(uint(payload.hudColor));
          if(this.m_GameState == GAME_STATE_BOBBERING && payload.hasOwnProperty("canHook"))
          {
             this.SelectBtn.ButtonText = payload.canHook ? "$B21_FISHING_HOOK_NOW" : "$B21_FISHING_WAIT_FOR_BITE";
@@ -60,6 +63,26 @@ package {
             var payload:Object = event is Shared.AS3.Events.CustomEvent ? Shared.AS3.Events.CustomEvent(event).params : new Object();
             this.BGSCodeObj.FishingEvent(event.type, payload);
          }
+      }
+
+      public function B21SetHUDColor(color:uint):void
+      {
+         this.B21Tint(this.ButtonHintBar_mc, color);
+         this.B21Tint(this.MainModal_mc, color);
+         for each(var name:String in ["DialBackground_mc", "Fish_mc", "Line_mc", "Dot_mc"])
+         {
+            this.B21Tint(this.MinigameDial_mc[name] as DisplayObject, color);
+         }
+      }
+
+      private function B21Tint(clip:DisplayObject, color:uint):void
+      {
+         if(clip == null) return;
+         var tint:ColorTransform = clip.transform.colorTransform;
+         tint.redMultiplier = ((color >> 16) & 255) / 255;
+         tint.greenMultiplier = ((color >> 8) & 255) / 255;
+         tint.blueMultiplier = (color & 255) / 203;
+         clip.transform.colorTransform = tint;
       }
    }
 }

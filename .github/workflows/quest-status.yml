@@ -1,0 +1,97 @@
+name: Quest status
+# Comment commands on quest-board issues (created by devtools/quest_board.py):
+#   anyone:      /broken  /issues  /completed
+#   maintainers: /fixing  /untested
+# Swaps the issue's "status: ..." label and moves its card on the FO76 Quest Testing board
+# ("quest" issues) or the FO76 Workshop Testing board ("workshop" issues).
+# Moving the card needs a QUEST_BOARD_TOKEN secret (classic PAT with the `project` scope);
+# without it only the label changes.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: quest-status-${{ github.event.issue.number }}
+
+jobs:
+  status:
+    if: >-
+      !github.event.issue.pull_request &&
+      (contains(github.event.issue.labels.*.name, 'quest') || contains(github.event.issue.labels.*.name, 'workshop')) &&
+      startsWith(github.event.comment.body, '/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          BOARD_TOKEN: ${{ secrets.QUEST_BOARD_TOKEN }}
+        with:
+          script: |
+            const BOARD_OWNER = 'Bryant-21';
+            const BOARD_NUMBER = context.payload.issue.labels.some((l) => l.name === 'workshop') ? 6 : 5;
+            const COMMANDS = {
+              broken: { column: 'Broken', label: 'status: broken' },
+              issues: { column: 'Completed with issues', label: 'status: completed with issues' },
+              completed: { column: 'Completed', label: 'status: completed' },
+              fixing: { column: 'Fixing', label: 'status: fixing', maintainer: true },
+              untested: { column: 'Untested', label: 'status: untested', maintainer: true },
+            };
+            const MAINTAINERS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+
+            const { comment, issue } = context.payload;
+            const word = comment.body.trim().split(/\s+/)[0].slice(1).toLowerCase();
+            const command = COMMANDS[word];
+            if (!command) return;
+
+            const react = (content) => github.rest.reactions.createForIssueComment({
+              ...context.repo, comment_id: comment.id, content,
+            });
+            if (command.maintainer && !MAINTAINERS.includes(comment.author_association)) {
+              await react('-1');
+              return;
+            }
+
+            for (const label of issue.labels.map((l) => l.name)) {
+              if (label.startsWith('status: ') && label !== command.label) {
+                await github.rest.issues.removeLabel({ ...context.repo, issue_number: issue.number, name: label });
+              }
+            }
+            await github.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: [command.label] });
+
+            if (process.env.BOARD_TOKEN) {
+              const board = getOctokit(process.env.BOARD_TOKEN);
+              const { user } = await board.graphql(`
+                query($owner: String!, $number: Int!) {
+                  user(login: $owner) { projectV2(number: $number) {
+                    id
+                    field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } }
+                  } }
+                }`, { owner: BOARD_OWNER, number: BOARD_NUMBER });
+              const project = user.projectV2;
+              const option = project.field.options.find((o) => o.name === command.column);
+
+              const { node } = await board.graphql(`
+                query($id: ID!) { node(id: $id) { ... on Issue {
+                  projectItems(first: 20) { nodes { id project { id } } }
+                } } }`, { id: issue.node_id });
+              let item = node.projectItems.nodes.find((i) => i.project.id === project.id);
+              if (!item) {
+                const added = await board.graphql(`
+                  mutation($project: ID!, $content: ID!) {
+                    addProjectV2ItemById(input: { projectId: $project, contentId: $content }) { item { id } }
+                  }`, { project: project.id, content: issue.node_id });
+                item = added.addProjectV2ItemById.item;
+              }
+              await board.graphql(`
+                mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $project, itemId: $item, fieldId: $field,
+                    value: { singleSelectOptionId: $option }
+                  }) { projectV2Item { id } }
+                }`, { project: project.id, item: item.id, field: project.field.id, option: option.id });
+            } else {
+              core.warning('QUEST_BOARD_TOKEN is not set; updated the label only.');
+            }
+            await react('+1');

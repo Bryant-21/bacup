@@ -18,10 +18,12 @@ package
     import flash.text.TextField;
     import flash.text.Font;
     import flash.text.TextFormat;
+    import flash.text.TextFieldAutoSize;
 
     public class ContainerMenu extends IMenu
     {
         public var B21Ready:Boolean;
+        public var B21NativeWheelEnabled:Boolean;
         public var B21Error:String;
         public var B21Decor:MovieClip;
         public var B21Card:Loader;
@@ -43,6 +45,7 @@ package
 
         public function B21Initialize():void
         {
+            ContainerList_mc.numListItems = 13;
             B21Ready = false;
             B21Error = "";
             B21LastFilter = -1;
@@ -137,16 +140,9 @@ package
             object.y += (top - bounds.y) / object.parent.scaleY;
         }
 
-        private function B21Footer(inventory:MovieClip, left:Number):void
+        private function B21Footer(inventory:MovieClip, panel:MovieClip, left:Number):void
         {
             // Barter draws the footer as one backer; the container menu splits it into weight and caps halves.
-            var row:Rectangle = null;
-            for (var i:int = 0; i < inventory.numChildren; i++)
-            {
-                var bounds:Rectangle = inventory.getChildAt(i).getBounds(this);
-                if (bounds.y >= 480 && bounds.bottom <= 516) row = row == null ? bounds : row.union(bounds);
-            }
-            if (row == null || row.width <= 280) return;
             var icon:DisplayObject;
             for (var j:int = 0; j < inventory.numChildren; j++)
             {
@@ -175,8 +171,16 @@ package
             weight.mouseEnabled = weight.selectable = false;
             weight.text = inventory == PlayerInventory_mc ? "" : "0 / 0";
             B21Decor.addChild(weight);
-            B21Footers.push({source:inventory == PlayerInventory_mc ? inventory.PlayerCaps_tf : inventory.VendorCaps_tf,
-                currency:currency,weight:weight});
+            var weightIcon:DisplayObject = panel.getChildByName("OfferWeightIcon");
+            if (weightIcon == null)
+                for (var i:int = 0; i < panel.numChildren; i++)
+                {
+                    var child:DisplayObject = panel.getChildAt(i);
+                    var bounds:Rectangle = child.getBounds(panel);
+                    if (bounds.y > 600 && bounds.width < 40 && bounds.height < 40) weightIcon = child;
+                }
+            B21Footers.push({source:inventory.getChildByName(inventory == PlayerInventory_mc ? "PlayerCaps_tf" : "VendorCaps_tf"),
+                currency:currency,weight:weight,weightIcon:weightIcon,currencyIcon:icon});
         }
 
         private function B21CardPlatform(event:Event):void
@@ -192,10 +196,32 @@ package
             if (B21Footers.length > 0) B21Footers[0].weight.text = Math.floor(current) + " / " + Math.floor(maximum);
         }
 
+        public function B21SetContainerWeight(current:Number, maximum:Number):void
+        {
+            if (B21Footers.length > 1) B21Footers[1].weight.text = Math.floor(current) + " / " + Math.floor(maximum);
+        }
+
         public function B21SortHint(button:Object):Object
         {
-            if (B21Ready) button.SetButtons("Q", button.PSNButton, button.XenonButton);
+            if (B21Ready) {
+                button.SetButtons("Q", button.PSNButton, button.XenonButton);
+                button.onTextClick = B21RequestSort;
+            }
             return button;
+        }
+
+        public function B21RequestSort():void
+        {
+            if (QuantityMenu_mc.opened || MessageBoxIsActive || InspectingFeaturedItem) return;
+            var list:Object = stage && stage.focus == ContainerList_mc ? ContainerList_mc : PlayerInventory_mc.PlayerList_mc;
+            if (Boolean(list.B21Enabled)) list.B21Sort((uint(list.B21Mode) + 1) % 5);
+            else requestSort();
+        }
+
+        // Tales' native Q-sort and search shortcuts find the focused trade list through this.
+        public function B21SelectionState():Object
+        {
+            return {container: containerIsSelected};
         }
 
         public function B21InvestHint(button:Object):Object
@@ -206,8 +232,10 @@ package
 
         private function B21ClearTint(target:DisplayObject):void
         {
-            target.filters = [];
+            if (target.filters.length) target.filters = [];
             var color:ColorTransform = target.transform.colorTransform;
+            if (color.redMultiplier == 1 && color.greenMultiplier == 1 && color.blueMultiplier == 1 &&
+                color.redOffset == 0 && color.greenOffset == 0 && color.blueOffset == 0) return;
             color.redMultiplier = color.greenMultiplier = color.blueMultiplier = 1;
             color.redOffset = color.greenOffset = color.blueOffset = 0;
             target.transform.colorTransform = color;
@@ -219,18 +247,28 @@ package
             for (var i:int = 0; i < target.numChildren; i++)
             {
                 var child:DisplayObject = target.getChildAt(i);
+                if (child.name == "B21InventoryRow") continue;
                 B21ClearTint(child);
                 if (child is TextField)
                 {
                     var field:TextField = child as TextField;
-                    field.embedFonts = true;
                     var format:TextFormat = field.getTextFormat();
-                    format.font = "Roboto Condensed";
-                    format.bold = false; format.italic = false;
-                    field.defaultTextFormat = format;
-                    field.setTextFormat(format);
+                    if (!field.embedFonts || format.font != "Roboto Condensed" || format.bold || format.italic)
+                    {
+                        field.embedFonts = true;
+                        format.font = "Roboto Condensed";
+                        format.bold = false; format.italic = false;
+                        field.defaultTextFormat = format;
+                        field.setTextFormat(format);
+                    }
                 }
                 else if (child is DisplayObjectContainer) B21Style(child as DisplayObjectContainer);
+            }
+            if (target is ItemListEntry)
+            {
+                var row:ItemListEntry = target as ItemListEntry;
+                var rowBounds:Rectangle = row.border.getBounds(row);
+                row.textField.y = rowBounds.y + (rowBounds.height - row.textField.textHeight) / 2 - 2;
             }
         }
 
@@ -240,8 +278,7 @@ package
             B21Decor.mouseEnabled = false;
             B21Decor.mouseChildren = true;
             addChildAt(B21Decor, 0);
-            B21Panel("/* ART_0 */", 88);
-            var offer:MovieClip = B21Panel("/* ART_1 */", 876);
+            var panels:Array = [B21Panel("/* ART_0 */", 88), B21Panel("/* ART_1 */", 876)];
             var sourceBar:MovieClip = B21Art("/* ART_2 */");
             var backer:DisplayObject = sourceBar.getChildByName("BackerBar_mc");
             B21Selector = sourceBar.getChildByName("Selector_mc");
@@ -265,6 +302,7 @@ package
                 field.setTextFormat(field.defaultTextFormat);
                 field.width = 112;
                 field.height = 32;
+                field.autoSize = TextFieldAutoSize.LEFT;
                 field.mouseEnabled = field.selectable = false;
                 tab.addChild(field);
                 tab.addEventListener(MouseEvent.CLICK, B21FilterClick);
@@ -278,6 +316,7 @@ package
                 var hint:TextField = new TextField();
                 hint.defaultTextFormat = new TextFormat("$MAIN_Font", 18, 0xffffff, false, false, false, null, null, "center");
                 hint.x = hintIndex == 0 ? 48 : 1184; hint.y = 29; hint.width = 48; hint.height = 30;
+                hint.autoSize = TextFieldAutoSize.LEFT;
                 hint.mouseEnabled = hint.selectable = false;
                 B21Decor.addChild(hint); B21Hints.push(hint);
             }
@@ -301,7 +340,7 @@ package
                     var object:DisplayObject = inventory.getChildByName(part);
                     if (object != null) object.visible = false;
                 }
-                B21Footer(inventory, column == 0 ? 100 : 888);
+                B21Footer(inventory, panels[column], column == 0 ? 100 : 888);
                 // FO76 draws the title on a darker band than the list; the panel artwork has none of its own.
                 var band:Sprite = new Sprite();
                 band.graphics.beginFill(0, 0.45);
@@ -320,9 +359,6 @@ package
                 B21Headings.push(heading);
                 column++;
             }
-            // A container has no footer of its own, so the FO76 offer panel's weight icon would stand alone.
-            var offerWeight:DisplayObject = offer.getChildByName("OfferWeightIcon");
-            if (offerWeight != null && B21Footers.length < 2) offerWeight.visible = false;
             var transfer:DisplayObject = getChildByName("CapsTransferInfo_mc");
             if (transfer != null) B21Place(transfer, 580, 590, 120, 49);
             addChild(B21Card);
@@ -336,20 +372,38 @@ package
 
         private function B21SizeList(list:ItemList, left:Number):void
         {
+            // The source panel bakes thirteen 36px cells at a 43px pitch into its 682.3px backer, so
+            // rows keep that pitch; with enhancements on, the first cell holds the headings and search.
+            var enhanced:Boolean = "B21Enabled" in list && Object(list).B21Enabled;
+            Object(list).B21LayoutEnabled = enhanced;
+            var artScale:Number = 454 / 682.3;
+            var shownRows:int = enhanced ? 12 : 13;
             list.scaleX = list.scaleY = 290 / list.border.width;
-            list.border.height = 350 / list.scaleY;
+            Object(list).B21HeadingCenter = (43 - 18) * artScale / list.scaleY;
+            list.border.height = (((shownRows - 1) * 43 + 36) * artScale + 4) / list.scaleY;
+            list.verticalSpacing = (7 * artScale - 4) / list.scaleY;
             for (var i:int = 0; i < list.numListItems; i++)
             {
                 var row:ItemListEntry = list.GetClipByIndex(i) as ItemListEntry;
                 if (row == null) continue;
-                row.ORIG_BORDER_HEIGHT = 26 / list.scaleY;
+                row.ORIG_BORDER_HEIGHT = 36 * artScale / list.scaleY;
                 row.border.height = row.ORIG_BORDER_HEIGHT;
-                row.textField.height = 25 / list.scaleY;
-                row.textField.defaultTextFormat = new TextFormat("Roboto Condensed", 20 / list.scaleY, 0xffffff, false, false);
+                row.border.width = 290 / list.scaleX;
+                var rowBounds:Rectangle = row.border.getBounds(row);
+                row.border.x -= rowBounds.x;
+                row.border.y -= rowBounds.y;
+                row.BaseTextFieldWidth = row.border.width - row.textField.x - 4 / list.scaleX;
+                row.textField.height = row.ORIG_BORDER_HEIGHT + 4 / list.scaleY;
+                row.textField.y = -2 / list.scaleY;
+                row.textField.defaultTextFormat = new TextFormat("Roboto Condensed", 16 / list.scaleY, 0xffffff, false, false);
                 row.textField.setTextFormat(row.textField.defaultTextFormat);
             }
             if (list.ScrollDown != null) list.ScrollDown.y = list.border.y + list.border.height;
-            B21Move(list, left, 202);
+            var first:ItemListEntry = list.GetClipByIndex(0) as ItemListEntry;
+            first.y = list.border.y;
+            var bounds:Rectangle = first.border.getBounds(this);
+            list.x += (left - bounds.x) / list.parent.scaleX;
+            list.y += (194.6 + (13 - shownRows) * 43 * artScale - bounds.y) / list.parent.scaleY;
             list.InvalidateData();
         }
 
@@ -498,25 +552,45 @@ package
 
         private function B21Wheel(event:MouseEvent):void
         {
-            if (QuantityMenu_mc.opened || MessageBoxIsActive || InspectingFeaturedItem || event.delta == 0) return;
-            var list:ItemList = B21PointerList(event.target as DisplayObject);
-            if (list == null || list.disableInput || list.disableSelection) return;
-            B21WheelX = stage.mouseX; B21WheelY = stage.mouseY;
-            if (list == ContainerList_mc) SwitchToContainerList(false);
-            else SwitchToPlayerList(false);
-            list.dispatchEvent(new KeyboardEvent(KeyboardEvent.KEY_DOWN, true, true, 0, event.delta < 0 ? 40 : 38));
-            event.stopImmediatePropagation();
+            if (B21ScrollWheel(event.delta)) event.stopImmediatePropagation();
+        }
+
+        public function B21ScrollWheel(delta:int, nativeInput:Boolean = false):Boolean
+        {
+            if (!B21Ready || !visible || QuantityMenu_mc.opened || MessageBoxIsActive || InspectingFeaturedItem || delta == 0) return false;
+            for each (var list:ItemList in [PlayerInventory_mc.PlayerList_mc, ContainerList_mc])
+            {
+                var bounds:Rectangle = list.border.getBounds(this);
+                if (!bounds.contains(mouseX, mouseY) || list.disableInput || list.disableSelection) continue;
+                if (nativeInput) B21NativeWheelEnabled = true;
+                if (!B21NativeWheelEnabled || nativeInput)
+                {
+                    B21WheelX = stage.mouseX; B21WheelY = stage.mouseY;
+                    if (list == ContainerList_mc) SwitchToContainerList(false);
+                    else SwitchToPlayerList(false);
+                    list.dispatchEvent(new KeyboardEvent(KeyboardEvent.KEY_DOWN, true, true, 0, delta < 0 ? 40 : 38));
+                }
+                return true;
+            }
+            return false;
+        }
+
+        // Turning the wheel nudges a held mouse (a third of a movie pixel per screen pixel at 4K). Treating that
+        // drift as a move handed selection back to the row under the pointer after every notch.
+        private function B21PointerParked():Boolean
+        {
+            return Math.abs(stage.mouseX - B21WheelX) <= 6 && Math.abs(stage.mouseY - B21WheelY) <= 6;
         }
 
         private function B21GuardHover(event:MouseEvent):void
         {
-            if (stage.mouseX == B21WheelX && stage.mouseY == B21WheelY && B21PointerList(event.target as DisplayObject) != null)
+            if (B21PointerParked() && B21PointerList(event.target as DisplayObject) != null)
                 event.stopImmediatePropagation();
         }
 
         private function B21ResumePointer(event:MouseEvent):void
         {
-            if (isNaN(B21WheelX) || stage.mouseX == B21WheelX && stage.mouseY == B21WheelY ||
+            if (isNaN(B21WheelX) || B21PointerParked() ||
                 QuantityMenu_mc.opened || MessageBoxIsActive || InspectingFeaturedItem) return;
             var list:ItemList = B21PointerList(event.target as DisplayObject);
             if (list == null || list.disableInput || list.disableSelection) return;
@@ -524,7 +598,11 @@ package
             for (var i:int = 0; i < list.itemsShown; i++)
             {
                 var row:ItemListEntry = list.GetClipByIndex(i) as ItemListEntry;
-                if (row != null && row.hitTestPoint(stage.mouseX, stage.mouseY, false)) list.selectedIndex = row.itemIndex;
+                if (row != null && row.hitTestPoint(stage.mouseX, stage.mouseY, false))
+                {
+                    if ("B21ViewIndex" in list) list["B21ViewIndex"] = row.itemIndex;
+                    else list.selectedIndex = row.itemIndex;
+                }
             }
         }
 
@@ -544,6 +622,9 @@ package
 
         private function B21Refresh(event:Event):void
         {
+            for each (var inventory:Object in [PlayerInventory_mc.PlayerList_mc,ContainerList_mc])
+                if ("B21Enabled" in inventory && inventory.B21LayoutEnabled != inventory.B21Enabled)
+                    B21SizeList(inventory as ItemList, inventory == ContainerList_mc ? 888 : 100);
             if (stage.focus == PlayerInventory_mc.PlayerList_mc || stage.focus == ContainerList_mc)
                 B21ActiveList = stage.focus as ItemList;
             var bridge:Object = B21Card != null ? B21Card.content : null;
@@ -569,9 +650,33 @@ package
                 B21Place(B21Selector, 164 + index * 120, 25, 112, 32);
                 B21PaintTabs();
             }
+            for each (var tab:Sprite in B21Tabs)
+            {
+                var label:TextField = tab.getChildAt(0) as TextField;
+                label.x = (112 - label.width) / 2;
+                label.y = (32 - label.height) / 2;
+            }
             B21Hints[0].text = uiPlatform == 0 ? "Z)" : "LB)";
             B21Hints[1].text = uiPlatform == 0 ? "C)" : "RB)";
-            for each (var footer:Object in B21Footers) footer.currency.text = footer.source != null ? footer.source.text : "";
+            for (var hintIndex:int = 0; hintIndex < B21Hints.length; hintIndex++)
+            {
+                var hint:TextField = B21Hints[hintIndex];
+                hint.x = (hintIndex == 0 ? 48 : 1184) + (48 - hint.width) / 2;
+                hint.y = 25 + (32 - hint.height) / 2;
+            }
+            for each (var footer:Object in B21Footers)
+            {
+                footer.currency.text = footer.source != null ? footer.source.text : "";
+                for each (var kind:String in ["weight", "currency"])
+                {
+                    var icon:DisplayObject = footer[kind + "Icon"];
+                    if (icon == null) continue;
+                    var field:TextField = footer[kind];
+                    var bounds:Rectangle = icon.getBounds(this);
+                    var left:Number = kind == "weight" ? field.x - bounds.width - 4 : bounds.x;
+                    B21Move(icon, left, field.y + 2 + (field.textHeight - bounds.height) / 2);
+                }
+            }
             B21Headings[0].text = FilterInfoA[uiPlayerFilterIndex].text + "Mine";
             B21Headings[1].text = uiContainerFilterIndex == 0 ? String(FilterInfoA[0].containerText || FilterInfoA[0].text) : FilterInfoA[uiContainerFilterIndex].text;
             for each (var heading:TextField in B21Headings)

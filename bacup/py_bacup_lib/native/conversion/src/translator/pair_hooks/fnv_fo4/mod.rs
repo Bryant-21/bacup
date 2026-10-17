@@ -9,14 +9,24 @@
 mod acre;
 mod armor;
 mod common;
+pub(crate) mod creature_attack_chains;
 pub(crate) mod creature_catalog;
+pub(crate) mod creature_idle_projection;
+pub(crate) mod creature_imagespace;
 pub(crate) mod creature_dependencies;
 pub(crate) mod creature_live_builder;
 pub(crate) mod creature_live_preparations;
 pub(crate) mod creature_motion;
+pub(crate) mod creature_magic_runtime;
+pub(crate) mod creature_actor_stats;
+pub(crate) mod creature_muzzle;
 pub(crate) mod creature_mvp_adapter;
 pub(crate) mod creature_race_data;
+pub(crate) mod creature_profile_race_data;
 pub(crate) mod creature_recipe;
+pub(crate) mod creature_source_idles;
+pub(crate) mod creature_templates;
+pub(crate) mod creature_weapon_attacks;
 pub(crate) mod gecko_creature;
 mod landscape;
 mod legacy_ammo;
@@ -28,10 +38,12 @@ mod legacy_debris;
 mod legacy_explosions;
 mod legacy_factions;
 mod legacy_idles;
+pub(crate) mod legacy_idle_scripts;
 mod legacy_impact_datasets;
 mod legacy_impacts;
 mod legacy_keys;
 mod legacy_leveled_items;
+mod legacy_lights;
 mod legacy_misc;
 mod legacy_npc_appearance;
 mod legacy_package_references;
@@ -70,6 +82,7 @@ use legacy_factions::lower_legacy_faction;
 use legacy_impact_datasets::lower_legacy_impact_dataset;
 use legacy_impacts::{lower_legacy_impact, lower_legacy_texture_set};
 use legacy_leveled_items::decode_legacy_leveled_item_entries;
+use legacy_lights::lower_legacy_light;
 use legacy_packages::lower_generic_legacy_package;
 use legacy_statics::repair_legacy_static_model;
 use legacy_trees::rewrite_legacy_speedtree_model;
@@ -137,6 +150,7 @@ impl FnvFo4Hook {
                 rewrite_term_menu_rows(record, interner);
             }
             sig if sig == *b"WEAP" => {
+                creature_muzzle::bind_embedded_weapon_slot(record, interner);
                 record.fields.retain(|entry| entry.sig.0 != *b"NNAM");
                 relayout_weap_equipment_type(record, interner);
             }
@@ -174,6 +188,7 @@ impl FnvFo4Hook {
                 fo4_layouts::normalize_efsh(record, SourceFamily::LegacyFallout, interner)
             }
             sig if sig == *b"WTHR" => fo4_layouts::normalize_legacy_wthr(record, interner),
+            sig if sig == *b"IMGS" => fo4_layouts::normalize_legacy_imgs(record),
             sig if sig == *b"WATR" => fo4_layouts::normalize_legacy_watr(record, interner),
             sig if sig == *b"LTEX" => relayout_legacy_ltex(record, interner),
             sig if sig == *b"LAND" => normalize_legacy_land_layers(record, interner),
@@ -211,6 +226,8 @@ impl FnvFo4Hook {
 impl PairHook for FnvFo4Hook {
     /// Drop FNV-only global fields (`SCRI`) before field translation begins.
     fn pre_translate(&self, ctx: &mut PairCtx<'_>, record: &mut Record) -> HookResult {
+        creature_imagespace::lower(record, ctx.interner)
+            .map_err(crate::translator::pair_hook::HookError::Runtime)?;
         if record.sig.0 == *b"LVLC" {
             lower_legacy_lvlc_to_lvln(record, ctx.interner)
                 .map_err(crate::translator::pair_hook::HookError::Runtime)?;
@@ -257,6 +274,7 @@ impl PairHook for FnvFo4Hook {
         lower_legacy_debris(record, "fnv", ctx.interner)
             .map_err(crate::translator::pair_hook::HookError::Runtime)?;
         lower_legacy_explosion(record);
+        lower_legacy_light(record);
         if record.sig.0 == *b"FACT"
             && let Some(source_plugin_name) = ctx.source_plugin_name
         {
@@ -318,6 +336,7 @@ impl PairHook for Fo3Fo4Hook {
         lower_legacy_debris(record, "fo3", ctx.interner)
             .map_err(crate::translator::pair_hook::HookError::Runtime)?;
         lower_legacy_explosion(record);
+        lower_legacy_light(record);
         if record.sig.0 == *b"FACT"
             && let Some(source_plugin_name) = ctx.source_plugin_name
         {
@@ -383,6 +402,7 @@ impl PairHook for Fo3Fo4Hook {
                 fo4_layouts::normalize_efsh(record, SourceFamily::LegacyFallout, ctx.interner)
             }
             sig if sig == *b"WTHR" => fo4_layouts::normalize_legacy_wthr(record, ctx.interner),
+            sig if sig == *b"IMGS" => fo4_layouts::normalize_legacy_imgs(record),
             sig if sig == *b"WATR" => fo4_layouts::normalize_legacy_watr(record, ctx.interner),
             sig if sig == *b"LTEX" => relayout_legacy_ltex(record, ctx.interner),
             sig if sig == *b"LAND" => normalize_legacy_land_layers(record, ctx.interner),
@@ -417,6 +437,7 @@ mod tests {
     include!("tests/test_support.rs");
     include!("tests/misc.rs");
     include!("tests/projectiles.rs");
+    include!("tests/lights.rs");
     include!("tests/armor.rs");
     include!("tests/weapon_equipment_type.rs");
     include!("tests/acre.rs");

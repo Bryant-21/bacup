@@ -180,6 +180,7 @@ pub(crate) fn canonical_skyrim_wolf_runtime_contract()
         character_properties: Vec::new(),
     };
     let rig = CreatureManifest {
+        property_sequences: Vec::new(),
         creature_name: "B21_SkyrimWolf".to_string(),
         visual_skeleton_nif: format!("{runtime_root}\\CharacterAssets\\Skeleton.nif"),
         animation_skeleton: SkeletonDecl {

@@ -17,7 +17,10 @@ use crate::fixups::attach_fo76_furniture_buffs::AttachFo76FurnitureBuffsFixup;
 use crate::fixups::attach_fo76_quest_start_keyword::AttachFo76QuestStartKeywordFixup;
 use crate::fixups::attach_fo76_quest_timers::AttachFo76QuestTimersFixup;
 use crate::fixups::attach_fo76_quest_variables::AttachFo76QuestVariablesFixup;
+use crate::fixups::fill_fo76_vault_status_token::FillFo76VaultStatusTokenFixup;
 use crate::fixups::bridge_fo76_combat_music::BridgeFo76CombatMusicFixup;
+use crate::fixups::bridge_fo76_enemy_music_keywords::BridgeFo76EnemyMusicKeywordsFixup;
+use crate::fixups::bridge_fo76_power_armor_paint_slots::BridgeFo76PowerArmorPaintSlotsFixup;
 use crate::fixups::bridge_fo76_weapon_object_templates::BridgeFo76WeaponObjectTemplatesFixup;
 use crate::fixups::clean_leveled_item_entries::CleanLeveledItemEntriesFixup;
 use crate::fixups::clear_interior_hand_changed::ClearInteriorHandChangedFixup;
@@ -44,7 +47,6 @@ use crate::fixups::face::generate_additive_races::GenerateAdditiveRacesFixup;
 use crate::fixups::face::inject_human_npc_head_parts::InjectHumanNpcHeadPartsFixup;
 use crate::fixups::face::materialize_leveled_template_npcs::MaterializeLeveledTemplateNpcsFixup;
 use crate::fixups::face::strip_invalid_npc_face_morphs::StripInvalidNpcFaceMorphsFixup;
-use crate::fixups::face::strip_unbaked_human_npc_face_morphs::StripUnbakedHumanNpcFaceMorphsFixup;
 use crate::fixups::filter_non_vanilla_races_for_weapon_roots::FilterNonVanillaRacesForWeaponRootsFixup;
 use crate::fixups::fix_invalid_target_formkeys::FixInvalidTargetFormKeysFixup;
 use crate::fixups::fix_stag_sound_refs::FixStagSoundRefsFixup;
@@ -75,9 +77,12 @@ use crate::fixups::inject_required_child_blocks::InjectRequiredChildBlocksFixup;
 use crate::fixups::inject_weap_extra_data::InjectWeapExtraDataFixup;
 use crate::fixups::ltex_txst_synth::LtexTxstSynthFixup;
 use crate::fixups::mark_shelter_workshop_surfaces::MarkShelterWorkshopSurfacesFixup;
+use crate::fixups::mark_workshop_resource_objects::MarkWorkshopResourceObjectsFixup;
 use crate::fixups::materialize_fo76_local_encounter_waves::MaterializeFo76LocalEncounterWavesFixup;
 use crate::fixups::materialize_inherited_npc_object_templates::MaterializeInheritedNpcObjectTemplatesFixup;
 use crate::fixups::materialize_legacy_npc_outfits::MaterializeLegacyNpcOutfitsFixup;
+use crate::fixups::preserve_fo76_aim_models::PreserveFo76AimModelsFixup;
+use crate::fixups::normalize_fo76_omod_properties::NormalizeFo76OmodPropertiesFixup;
 use crate::fixups::normalize_fo76_pack_templates::NormalizeFo76PackTemplatesFixup;
 use crate::fixups::normalize_fo76_weather::NormalizeFo76WeatherFixup;
 use crate::fixups::null_dangling_own_plugin_refs::NullDanglingOwnPluginRefsFixup;
@@ -87,7 +92,6 @@ use crate::fixups::prune_orphaned_records::PruneOrphanedRecordsFixup;
 use crate::fixups::recover_fo76_leveled_list_values::RecoverFo76LeveledListValuesFixup;
 use crate::fixups::remap_creature_weapon_to_playable_twin::RemapCreatureWeaponToPlayableTwinFixup;
 use crate::fixups::remap_idle_anchor_actions::RemapIdleAnchorActionsFixup;
-use crate::fixups::remap_light_gobo_to_fo4_base::RemapLightGoboToFo4BaseFixup;
 use crate::fixups::remap_nonplayable_armor_to_playable_twin::RemapNonplayableArmorToPlayableTwinFixup;
 use crate::fixups::repair_expedition_mission_rewards::RepairExpeditionMissionRewardsFixup;
 use crate::fixups::repair_fo76_ingestible_effects::RepairFo76IngestibleEffectsFixup;
@@ -106,6 +110,7 @@ use crate::fixups::strip_alias_created_base_loc_ref_types::StripAliasCreatedBase
 use crate::fixups::strip_perk_leveled_lists_from_containers::StripPerkLeveledListsFromContainersFixup;
 use crate::fixups::sweep_unmapped_formkeys::SweepUnmappedFormKeysFixup;
 use crate::fixups::sync_armo_hand_slots_from_addons::SyncArmoHandSlotsFromAddonsFixup;
+use crate::fixups::project_starfield_armor_slots::ProjectStarfieldArmorSlotsFixup;
 use crate::fixups::synthesize_legacy_music::SynthesizeLegacyMusicFixup;
 use crate::fixups::synthesize_weap_data_blocks::SynthesizeWeapDataBlocksFixup;
 use crate::fixups::validate_reference_target_types::ValidateReferenceTargetTypesFixup;
@@ -168,32 +173,42 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
         Segment::Fixup(|| Box::new(AttachFo76QuestTimersFixup)),
         Segment::Fixup(|| Box::new(AttachFo76QuestStartKeywordFixup)),
         Segment::Fixup(|| Box::new(AttachFo76QuestVariablesFixup)),
+        Segment::Fixup(|| Box::new(FillFo76VaultStatusTokenFixup)),
         Segment::Fixup(|| Box::new(LtexTxstSynthFixup)),
         Segment::Fixup(|| Box::new(SynthesizeLegacyMusicFixup)),
         Segment::Fixup(|| Box::new(AssignLegacyWorldspaceMusicFixup)),
         Segment::Fixup(|| Box::new(BridgeFo76CombatMusicFixup)),
+        Segment::Fixup(|| Box::new(BridgeFo76EnemyMusicKeywordsFixup)),
+        Segment::Fixup(|| Box::new(BridgeFo76PowerArmorPaintSlotsFixup)),
         Segment::Fixup(|| Box::new(ClearInteriorHandChangedFixup)),
         Segment::Fixup(|| Box::new(SweepUnmappedFormKeysFixup)),
         Segment::Fixup(|| Box::new(RewriteRawLctnFormIdsFixup)),
         Segment::Fixup(|| Box::new(RewriteRawWrldLargeRefsFixup)),
         Segment::Fixup(|| Box::new(RewriteRawObjectTemplateFormIdsFixup)),
         Segment::Fixup(|| Box::new(BridgeFo76WeaponObjectTemplatesFixup)),
+        Segment::Fixup(|| Box::new(PreserveFo76AimModelsFixup)),
         Segment::Sweep("sweep@12", || {
             vec![Box::new(RemapStructInternalFormIdsVisitor)]
         }),
+        // Before FlattenOmodIncludes, so the parent rows it inlines are already converted.
+        Segment::Fixup(|| Box::new(NormalizeFo76OmodPropertiesFixup)),
         Segment::Fixup(|| Box::new(FlattenOmodIncludesFixup)),
         Segment::Fixup(|| Box::new(NormalizeFo76PackTemplatesFixup)),
         Segment::Fixup(|| Box::new(NormalizeFo76WeatherFixup)),
+        Segment::Fixup(|| Box::new(crate::fixups::project_legacy_weather_image_spaces::ProjectLegacyWeatherImageSpacesFixup)),
         Segment::Fixup(|| {
             Box::new(crate::fixups::normalize_light_radii::NormalizeStarfieldLightRadiiFixup)
         }),
         Segment::Fixup(|| Box::new(ApplyFo76WorkshopCatalogFixup)),
         Segment::Fixup(|| Box::new(MarkShelterWorkshopSurfacesFixup)),
+        // After the catalog, whose expanded recipes name each variant directly.
+        Segment::Fixup(|| Box::new(MarkWorkshopResourceObjectsFixup)),
         // Reads the source RESO records, so it must run while the source handle
         // is still open, and before the VMAD sweep that validates the script
         // properties it attaches.
         Segment::Fixup(|| Box::new(AttachFo76CampCollectorsFixup)),
         Segment::Fixup(|| Box::new(SyncArmoHandSlotsFromAddonsFixup)),
+        Segment::Fixup(|| Box::new(ProjectStarfieldArmorSlotsFixup)),
         Segment::Fixup(|| Box::new(ExpandArmaRacesFromArmorRaceFixup)),
         Segment::Fixup(|| Box::new(MaterializeLegacyNpcOutfitsFixup)),
         Segment::Fixup(|| Box::new(RepairFo76IngestibleEffectsFixup)),
@@ -227,6 +242,14 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
         Segment::Fixup(|| {
             Box::new(crate::fixups::gate_event_quest_barks::GateEventQuestBarksFixup)
         }),
+        // After the raw-FormID rewrite passes and the condition sweep, which would
+        // read the FO4 rows it keeps as FO76 FormIDs. After the bark gate, which
+        // would treat its non-autostart master quests as FO76-owned.
+        Segment::Fixup(|| {
+            Box::new(
+                crate::fixups::carry_fo76_vanilla_info_conditions::CarryFo76VanillaInfoConditionsFixup,
+            )
+        }),
         // Must follow the Story Manager emission and the condition sweep above:
         // it reads the final SMBN set to find the FO76 random-encounter branch,
         // and appends the Appalachia gate after the rows that sweep validates.
@@ -259,7 +282,6 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
         // repoint and null-out has to have settled first.
         Segment::Fixup(|| Box::new(CollapseProjectileCompoundLoopSoundsFixup)),
         Segment::Fixup(|| Box::new(RemapIdleAnchorActionsFixup)),
-        Segment::Fixup(|| Box::new(RemapLightGoboToFo4BaseFixup)),
         Segment::Fixup(|| {
             Box::new(crate::fixups::strip_orphan_race_properties::StripOrphanRacePropertiesFixup)
         }),
@@ -279,7 +301,6 @@ pub fn build_default_segment_plan() -> Vec<Segment> {
         Segment::Fixup(|| Box::new(ClearProtectedOnHostileActorsFixup)),
         Segment::Fixup(|| Box::new(RestrictTranslatedNpcForSliceFixup)),
         Segment::Fixup(|| Box::new(InjectHumanNpcHeadPartsFixup)),
-        Segment::Fixup(|| Box::new(StripUnbakedHumanNpcFaceMorphsFixup)),
         Segment::Fixup(|| Box::new(StripInvalidNpcFaceMorphsFixup)),
         Segment::Fixup(|| Box::new(FixCreatureNpcRecordsFixup)),
         Segment::Fixup(|| Box::new(NormalizeCreatureLvlnTemplateChainsFixup)),
@@ -379,6 +400,7 @@ mod tests {
         assert!(plan_names.contains(&"materialize_leveled_template_npcs"));
         assert!(plan_names.contains(&"materialize_inherited_npc_object_templates"));
         assert!(plan_names.contains(&"materialize_legacy_npc_outfits"));
+        assert!(plan_names.contains(&"preserve_fo76_aim_models"));
         assert!(
             plan_names
                 .iter()
@@ -430,6 +452,14 @@ mod tests {
         assert!(plan_names.contains(&"normalize_fo76_weather"));
         assert!(plan_names.contains(&"apply_fo76_workshop_catalog"));
         assert!(plan_names.contains(&"bridge_fo76_combat_music"));
+        assert!(
+            plan_names
+                .iter()
+                .position(|name| *name == "rewrite_raw_object_template_formids")
+                < plan_names
+                    .iter()
+                    .position(|name| *name == "carry_fo76_vanilla_info_conditions")
+        );
         assert_eq!(
             plan_names
                 .iter()
@@ -440,6 +470,10 @@ mod tests {
                 .map(|index| index + 1)
         );
         assert!(plan_names.contains(&"mark_shelter_workshop_surfaces"));
+        assert!(
+            plan_names.iter().position(|name| *name == "apply_fo76_workshop_catalog")
+                < plan_names.iter().position(|name| *name == "mark_workshop_resource_objects")
+        );
         assert!(plan_names.contains(&"repair_quest_completion_xp"));
         assert!(plan_names.contains(&"repair_quest_completion_rewards"));
         assert!(plan_names.contains(&"repair_expedition_mission_rewards"));

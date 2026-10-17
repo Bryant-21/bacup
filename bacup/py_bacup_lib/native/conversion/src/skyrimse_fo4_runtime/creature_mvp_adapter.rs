@@ -25,11 +25,11 @@ pub const SKYRIM_CURATED_EXCLUSION_COUNT: usize = 4;
 pub const SKYRIM_CREATURE_FAMILY_COUNT: usize = 46;
 
 const REQUIRED_SIGNATURES: &[&str] = &[
-    "ACTI", "ALCH", "AMMO", "ARMA", "ARMO", "ARTO", "AVIF", "BOOK", "BPTD", "CLAS", "CSTY", "EFSH",
-    "ENCH", "EQUP", "EXPL", "FACT", "FLST", "GLOB", "HAZD", "IDLE", "IMAD", "INGR", "IPCT", "IPDS",
-    "KYWD", "KEYM", "LIGH", "LVLI", "LVLN", "MGEF", "MISC", "MOVT", "MSTT", "NPC_", "OTFT", "PACK",
-    "PERK", "PROJ", "RACE", "SCOL", "SCRL", "SHOU", "SLGM", "SNCT", "SNDR", "SPEL", "STAT", "TXST",
-    "VTYP", "WEAP",
+    "AACT", "ACTI", "ALCH", "AMMO", "ARMA", "ARMO", "ARTO", "AVIF", "BOOK", "BPTD", "CLAS", "CSTY", "EFSH",
+    "DEBR", "ENCH", "EQUP", "EXPL", "FACT", "FLST", "GLOB", "GMST", "HAZD", "IDLE", "IMAD", "INGR", "IPCT", "IPDS",
+    "KYWD", "KEYM", "LIGH", "LVLI", "LVLN", "LVSP", "MGEF", "MISC", "MOVT", "MSTT", "NPC_", "OTFT", "PACK",
+    "PERK", "PROJ", "QUST", "RACE", "RFCT", "SCEN", "SCOL", "SCRL", "SHOU", "SLGM", "SNCT", "SNDR", "SPEL", "STAT",
+    "TXST", "VTYP", "WEAP",
 ];
 const CNTO_REFERENCE_OFFSET: usize = 0;
 const LVLO_REFERENCE_OFFSET: usize = 4;
@@ -320,6 +320,25 @@ pub fn build_skyrim_creature_dependency_ledger(
     catalog: &CreatureCorpusPlan,
     interner: &StringInterner,
 ) -> Result<SkyrimCreatureDependencyLedger, SkyrimCreatureMvpAdapterError> {
+    build_dependency_ledger(records, catalog, interner, None)
+}
+
+pub(crate) fn build_skyrim_creature_dependency_ledger_with_context(
+    records: &[Record],
+    catalog: &CreatureCorpusPlan,
+    interner: &StringInterner,
+    plugin_name: &str,
+    masters: &[String],
+) -> Result<SkyrimCreatureDependencyLedger, SkyrimCreatureMvpAdapterError> {
+    build_dependency_ledger(records, catalog, interner, Some((plugin_name, masters)))
+}
+
+fn build_dependency_ledger(
+    records: &[Record],
+    catalog: &CreatureCorpusPlan,
+    interner: &StringInterner,
+    source_context: Option<(&str, &[String])>,
+) -> Result<SkyrimCreatureDependencyLedger, SkyrimCreatureMvpAdapterError> {
     validate_catalog_shape(catalog)?;
     let source_schema =
         AuthoringSchema::for_game("skyrimse").map_err(SkyrimCreatureMvpAdapterError::Schema)?;
@@ -354,10 +373,34 @@ pub fn build_skyrim_creature_dependency_ledger(
     let mut owners = HashMap::<FormKey, BTreeSet<String>>::new();
     let mut all_references = HashMap::<FormKey, Vec<SkyrimSourceReferenceLocator>>::new();
     for record in records {
-        all_references.insert(
-            record.form_key,
-            record_references(record, &records_by_key, interner),
-        );
+        let mut references = record_references(record, &records_by_key, interner);
+        if let Some((plugin_name, masters)) = source_context {
+            for (field_path, target) in crate::source_rig::body_parts::source_body_part_form_references(record, "skyrimse", plugin_name, masters, interner).map_err(SkyrimCreatureMvpAdapterError::Accounting)? {
+                let target_signature = records_by_key.get(&target).map(|record| record.sig.as_str().to_string()).or_else(|| {
+                    if field_path.ends_with("debris") { Some("DEBR".into()) } else if field_path.ends_with("explosion") { Some("EXPL".into()) } else if field_path.ends_with("impact_dataset") { Some("IPDS".into()) } else { None }
+                });
+                references.push(SkyrimSourceReferenceLocator { owner: locator(record), field_path, target, target_signature });
+            }
+            for (field_path, target) in
+                super::creature_attack_scripts::attack_script_form_references(
+                    record,
+                    plugin_name,
+                    masters,
+                    interner,
+                )
+                .map_err(SkyrimCreatureMvpAdapterError::Accounting)?
+            {
+                references.push(SkyrimSourceReferenceLocator {
+                    owner: locator(record),
+                    field_path,
+                    target,
+                    target_signature: records_by_key
+                        .get(&target)
+                        .map(|record| record.sig.as_str().to_string()),
+                });
+            }
+        }
+        all_references.insert(record.form_key, references);
     }
 
     for race in &catalog.races {
@@ -1043,9 +1086,19 @@ fn dependency_closure(
 ) -> (Vec<FormKey>, Vec<SkyrimCreatureDependencyBlocker>) {
     let mut queue = VecDeque::from_iter(seeds.iter().copied());
     let mut closure = HashSet::new();
+    let mut expanded_shouts = HashSet::new();
     let mut blockers = Vec::new();
     while let Some(current) = queue.pop_front() {
         if current.local == 0 {
+            continue;
+        }
+        if let Some(record) = records.get(&current).filter(|record| record.sig.0 == *b"SHOU") {
+            if expanded_shouts.insert(current) {
+                match super::creature_casting::shout_words(record, interner) {
+                    Ok(words) => queue.extend(words.into_iter().map(|word| word.spell)),
+                    Err(_) => blockers.push(SkyrimCreatureDependencyBlocker::UnsupportedMagicLowering { signature: "SHOU".to_string() }),
+                }
+            }
             continue;
         }
         if records
@@ -1066,7 +1119,9 @@ fn dependency_closure(
             queue.extend(
                 edges
                     .iter()
-                    .filter(|edge| edge.target_signature.is_some())
+                    .filter(|edge| {
+                        edge.target_signature.is_some() || edge.field_path.starts_with("VMAD[")
+                    })
                     .map(|edge| edge.target),
             );
         }
@@ -1077,13 +1132,8 @@ fn dependency_closure(
     (closure, blockers)
 }
 
-fn is_source_only_optional_record(record: &Record, interner: &StringInterner) -> bool {
-    record.sig.as_str() == "SHOU"
-        || (matches!(record.sig.as_str(), "SPEL" | "MGEF" | "SCRL")
-            && matches!(
-                classify_magic_component(record, interner),
-                MagicSupport::Unsupported { .. }
-            ))
+fn is_source_only_optional_record(record: &Record, _interner: &StringInterner) -> bool {
+    matches!(record.sig.as_str(), "SHOU" | "WOOP")
 }
 
 fn record_references(
@@ -1103,6 +1153,19 @@ fn record_references(
             interner,
             &mut references,
         );
+        if matches!(record.sig.as_str(), "SPEL" | "MGEF" | "PERK")
+            && field.sig.as_str() == "CTDA"
+            && let Some(target) =
+                crate::translator::pair_hooks::skyrimse_fo4::lowered_magic_condition_actor_value(
+                    &field.value,
+                    interner,
+                )
+        {
+            let operand_path = format!("CTDA[{field_index}].parameter_1");
+            references.retain(|reference| {
+                reference.target != target || reference.field_path != operand_path
+            });
+        }
         if references.len() == reference_count {
             let raw_layout = match field.sig.as_str() {
                 "CNTO" => Some((CNTO_REFERENCE_OFFSET, 0, "item")),
@@ -1254,6 +1317,13 @@ fn record_lowering(
         };
     }
     if matches!(signature, "SPEL" | "MGEF" | "SCRL") {
+        if signature == "MGEF"
+            && super::creature_attack_scripts::has_unported_attack_scripts(record)
+        {
+            return SkyrimRecordLoweringDisposition::Blocked {
+                blockers: vec![SkyrimCreatureDependencyBlocker::SourceScriptLoweringUnavailable],
+            };
+        }
         return match classify_magic_component(record, interner) {
             MagicSupport::Supported(_) | MagicSupport::RequiresLinkedRecords(_) => {
                 SkyrimRecordLoweringDisposition::Ready {
@@ -1443,6 +1513,8 @@ mod tests {
     use super::*;
     use crate::ids::{SigCode, SubrecordSig};
     use crate::record::FieldEntry;
+
+    include!("creature_magic_condition_dependency_tests.rs");
 
     #[test]
     fn dependency_ledger_joins_inventory_raw_ids_and_package_edges() {
@@ -1649,7 +1721,7 @@ mod tests {
     }
 
     #[test]
-    fn source_only_shout_attack_is_omitted_from_the_target_closure() {
+    fn malformed_shout_attack_is_blocked_instead_of_silently_omitted() {
         let interner = StringInterner::new();
         let (mut records, mut catalog) = fixture(&interner);
         let shout = key(&interner, 0x103);
@@ -1669,7 +1741,7 @@ mod tests {
         );
         assert!(matches!(
             ledger.candidates[0].disposition,
-            SkyrimCreatureDependencyCandidateDisposition::Ready
+            SkyrimCreatureDependencyCandidateDisposition::Blocked { .. }
         ));
     }
 

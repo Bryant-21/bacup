@@ -91,9 +91,11 @@ def test_quest_slice_and_world_only_mvp_gates(tmp_path: Path) -> None:
     }
     assert runtime._is_fnv_quest_slice()
 
-    # The world-only fence overrides the UI's convert_scripts default.
     runtime._req.options.exclude_signatures = FNV_MVP_EXCLUDE_SIGNATURES
     runtime._req.options.fnv_quest_slice = False
+    assert runtime._active_mvp_creature_corpus_policy() is not None
+    assert not runtime._is_fnv_world_only_mvp()
+    runtime._req.options.mvp_melee_only = True
     assert runtime._is_fnv_world_only_mvp()
     assert not runtime._is_fnv_quest_slice()
 

@@ -102,6 +102,14 @@ def test_world_viewer_variant_is_registered():
     assert variant.default_workspace == "world_viewer"
 
 
+def test_previs_variant_is_registered():
+    variant = get_variant("previs")
+
+    assert variant.exe_name == "ModBox21-Previs"
+    assert variant.workspace_ids == ("previs",)
+    assert variant_id_from_exe_name("ModBox21-Previs") == "previs"
+
+
 def test_main_args_infer_variant_from_executable_name():
     variant_id, launch_path = _parse_main_args([], "ModBox21-BSAViewer.exe")
 
@@ -171,6 +179,7 @@ def test_all_variants_have_placeholder_icon_paths():
         for variant_id, variant in VARIANTS.items()
     } == {
         "full": "resource/icon.ico",
+        "mod_manager": "resource/icon.ico",
         "nif": "resource/icons/modbox21-nif.ico",
         "bsa_viewer": "resource/icons/modbox21-bsa-viewer.ico",
         "cloth_maker": "resource/icons/modbox21-cloth.ico",
@@ -179,5 +188,6 @@ def test_all_variants_have_placeholder_icon_paths():
         "materials": "resource/icons/modbox21-materials.ico",
         "esp_editor": "resource/icons/modbox21-esp-editor.ico",
         "world_viewer": "resource/icon.ico",
+        "previs": "resource/icon.ico",
         "playstation_converter": "resource/icon.ico",
     }

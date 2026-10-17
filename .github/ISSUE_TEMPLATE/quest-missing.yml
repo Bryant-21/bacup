@@ -1,0 +1,42 @@
+name: Quest missing from the testing board
+description: A Fallout 76 quest or event that has no ticket on the FO76 Quest Testing board yet.
+title: "[Quest] "
+labels: ["quest", "status: untested", "game: fo76"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search the [FO76 Quest Testing board](https://github.com/users/Bryant-21/projects/5) first. If the quest already has a ticket, comment there with `/broken`, `/issues` or `/completed` instead.
+  - type: input
+    id: name
+    attributes:
+      label: Quest or event name
+      placeholder: Reach the Mayor's Office
+    validations:
+      required: true
+  - type: input
+    id: wiki
+    attributes:
+      label: Wiki link
+      placeholder: https://fallout.wiki/wiki/...
+  - type: input
+    id: editor-id
+    attributes:
+      label: Editor ID or Form ID, if you know it
+      placeholder: CB04_Mayor / 002A93F5
+  - type: dropdown
+    id: result
+    attributes:
+      label: What happened when you played it?
+      options:
+        - Haven't played it yet
+        - Broken (couldn't finish it)
+        - Completed, but something was wrong
+        - Completed with no issues
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Where it went wrong (stage/objective), what you expected, and your Tales version. Attach a save if you can.

@@ -35,6 +35,8 @@ Function TargetPipBoyObjective()
 	EndIf
 	; FO4 draws compass markers only for the tracked quest; Reclamation Day starts first.
 	SetActive(True)
+	; CharGen HUD mode 1 (CharGen_Init) hides the compass and quest HUD; 2 is MQ101's walk to the vault.
+	Game.SetCharGenHUDMode(2)
 	Debug.Trace("76CharGenQuest: Pip-Boy objective target=" + objective.GetRef() + " console=" + console)
 EndFunction
 

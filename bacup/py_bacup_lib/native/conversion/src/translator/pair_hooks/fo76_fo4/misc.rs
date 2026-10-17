@@ -77,6 +77,34 @@ pub(crate) fn rewritten_fo76_font_aliases_for_fo4(text: &str) -> Option<String> 
     Some(rewritten)
 }
 
+/// FO76 numeric text tokens that a script fills digit by digit in FO4, which only
+/// replaces tokens with a form's name (`AddTextReplacementData`). Each becomes
+/// `<Token.Name=Label1>`..`<Token.Name=LabelN>`, most significant digit first.
+pub(super) const FO76_DIGIT_TEXT_TOKENS: [(&str, usize); 2] =
+    [("StoredCandy", 5), ("PlayerCandy", 5)];
+
+/// FO76 writes a form-name token as `<Token=Label>`; FO4 spells it `<Token.Name=Label>`.
+pub(crate) fn rewritten_fo76_text_tokens_for_fo4(text: &str) -> Option<String> {
+    if !text.contains("<Token=") {
+        return None;
+    }
+    let mut rewritten = text.to_string();
+    for (label, digits) in FO76_DIGIT_TEXT_TOKENS {
+        let expanded = (1..=digits)
+            .map(|digit| format!("<Token.Name={label}{digit}>"))
+            .collect::<String>();
+        rewritten = rewritten.replace(&format!("<Token={label}>"), &expanded);
+    }
+    Some(rewritten.replace("<Token=", "<Token.Name="))
+}
+
+pub(crate) fn rewritten_fo76_text_markup_for_fo4(text: &str) -> Option<String> {
+    match rewritten_fo76_font_aliases_for_fo4(text) {
+        Some(fonts) => Some(rewritten_fo76_text_tokens_for_fo4(&fonts).unwrap_or(fonts)),
+        None => rewritten_fo76_text_tokens_for_fo4(text),
+    }
+}
+
 pub(super) fn rewrite_fo76_font_aliases_in_record(
     record: &mut Record,
     interner: &crate::sym::StringInterner,
@@ -87,7 +115,7 @@ pub(super) fn rewrite_fo76_font_aliases_in_record(
         };
         if let Some(rewritten) = interner
             .resolve(*symbol)
-            .and_then(rewritten_fo76_font_aliases_for_fo4)
+            .and_then(rewritten_fo76_text_markup_for_fo4)
         {
             *symbol = interner.intern(&rewritten);
         }

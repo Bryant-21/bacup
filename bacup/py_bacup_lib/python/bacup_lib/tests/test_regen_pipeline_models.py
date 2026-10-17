@@ -162,3 +162,7 @@ def test_regen_result_holds_exit_code():
         warnings=[],
     )
     assert r.exit_code == 0 and r.deployed is False
+
+
+def test_default_lod_mode_is_still_hybrid_atlas():
+    assert RegenOptions().lod_mode == "hybrid-atlas"

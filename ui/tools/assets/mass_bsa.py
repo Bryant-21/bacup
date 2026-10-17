@@ -230,7 +230,11 @@ class MassBSATool(BaseTool):
         if self._running:
             imgui.begin_disabled()
         if begin_form("##mass_bsa"):
-            _, clicked = draw_path_row("MO2 Mods", self._mods_root, btn_label=getattr(fa, "ICON_FA_FOLDER_OPEN", "Open"))
+            path, clicked = draw_path_row("MO2 Mods", self._mods_root, btn_label=getattr(fa, "ICON_FA_FOLDER_OPEN", "Open"))
+            if path != self._mods_root:
+                self._mods_root = path
+                if path and Path(path).is_dir():
+                    self._start_scan()
             if clicked:
                 self.open_folder_dialog()
             _, self._default_game_idx = draw_combo_field(
@@ -306,7 +310,7 @@ class MassBSATool(BaseTool):
     def open_folder_dialog(self) -> None:
         if self._running:
             return
-        path = pick_folder("Select Mod Organizer mods folder")
+        path = pick_folder("Select Mod Organizer mods folder", self._mods_root)
         if path:
             self._mods_root = path
             self._start_scan()

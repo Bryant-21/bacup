@@ -6,7 +6,7 @@ from pathlib import Path
 
 from bacup_lib.inspect_ui import rebuild
 from bacup_lib.legendary_perks_ui import imports, remap_menu_fonts, swf_tags, verify_script_only
-from bacup_lib.ui_contract import resolve_numbered_as3_call
+from bacup_lib.ui_contract import resolve_numbered_as3_call, resolve_numbered_name
 from bacup_lib.workshop_ui import art_library, uncompressed
 
 SOURCE = "securetrade.swf"
@@ -29,7 +29,26 @@ def convert_barter_ui(source_root: Path, output_data: Path, *, target_data_dir: 
 
 
 def _patch_trade_menu(native, stock: bytes, bridge: str, document: str, sort_hint: tuple[list, list]) -> tuple[bytes, str]:
-    movie = native.augment_as3_classes(stock, {"ContainerMenu": bridge})
+    player_class = resolve_numbered_name(
+        (name for _, name in native.list_symbols(stock)),
+        f"{document}_fla.PlayerInventory_",
+        f"{document} player inventory class",
+    )
+    player_setter = resolve_numbered_as3_call(
+        native, stock, player_class, "$constructor",
+        f"{document}_fla.__setProp_PlayerList_mc_PlayerInventory_Layer1_",
+        f"{document} player-list setter",
+    )
+    player_bridge = f"""package {document}_fla {{
+        import flash.display.MovieClip;
+        public class {player_class.rsplit('.', 1)[1]} extends MovieClip {{
+            public function B21InitializeList():void {{ PlayerList_mc.numListItems = 13; }}
+        }}
+    }}"""
+    movie = native.augment_as3_classes(stock, {"ContainerMenu": bridge, player_class: player_bridge})
+    movie = native.patch_as3_method(movie, player_class, "$constructor",
+        [["getlocal", 0], ["callpropvoid", player_setter, 0]],
+        [["keep", 0], ["keep", 1], ["getlocal", 0], ["callpropvoid", "B21InitializeList", 0]])
     movie = native.patch_as3_method(movie, document, "UpdateButtonHints", *sort_hint)
     container_list_setter = resolve_numbered_as3_call(
         native,
@@ -82,6 +101,8 @@ def build_barter_ui(source_root: Path, output_data: Path, stock: bytes, containe
         menus.append((CONTAINER_MENU, container, container_stock))
     for _, patched, original in menus:
         verify_script_only(original, patched)
+    from bacup_lib.inventory_lists_ui import patch_inventory_list
+    menus = [(path, patch_inventory_list(patched), original) for path, patched, original in menus]
     files = {path.name.casefold(): path for path in interface.iterdir() if path.is_file()}
     pending, dependencies = imports(library), {}
     while pending:

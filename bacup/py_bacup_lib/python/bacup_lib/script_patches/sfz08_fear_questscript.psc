@@ -38,6 +38,12 @@ Event OnQuestInit()
     EndIf
 EndEvent
 
+Event OnStageSet(Int auiStageID, Int auiItemID)
+    If auiStageID == 500 && SFZ08_Fear_BeckhamDialogue != None
+        SFZ08_Fear_BeckhamDialogue.SetStage(100)
+    EndIf
+EndEvent
+
 Event B21:QuestTimer.QuestTimerEnded(B21:QuestTimer akSender, Var[] akArgs)
     If !IsRunning() || IsStageDone(400) || IsStageDone(500) || IsStageDone(1100) || IsStageDone(1110)
         Return

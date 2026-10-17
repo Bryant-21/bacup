@@ -11,6 +11,9 @@ $B21_TFA_Capacity	能力
 $B21_TFA_Unlimited	無限制
 $B21_TFA_Legendary	傳奇
 $B21_TFA_SemiAutomatic	半自动
+$B21_TFA_Charging	充電
+$B21_TFA_ChargeTime	充電時間
+$B21_TFA_ChargeBonus	充值
 $B21_TFA_VATSAccuracy	V.A.T.S. 精确度
 $B21_TFA_WeaponType_Melee	梅莉
 $B21_TFA_WeaponType_OneHanded	單手
@@ -50,7 +53,29 @@ $B21_TFA_AssignPermanentSPECIAL	指定永久 SPECIAL
 $B21_TFA_AssignSPECIAL	增加 SPECIAL
 $B21_TFA_MoveSPECIAL	移動 SPECIAL 點
 $B21_TFA_AddLoadout	新增載出
-$B21_PM_Salute	敬禮( 需要直播 )
+$B21_PM_Salute	敬禮
+$B21_PM_ExpressionAfraid	害怕
+$B21_PM_ExpressionAmused	有趣
+$B21_PM_ExpressionAngry	憤怒
+$B21_PM_ExpressionAwed	已退出
+$B21_PM_ExpressionConcerned	关切
+$B21_PM_ExpressionConfident	自信
+$B21_PM_ExpressionDisgust	噁心
+$B21_PM_ExpressionFlirting	旋轉
+$B21_PM_ExpressionFriendly	友好
+$B21_PM_ExpressionHappy	快樂
+$B21_PM_ExpressionImpressed	印象
+$B21_PM_ExpressionIrritated	刺激
+$B21_PM_ExpressionNeutral	中立
+$B21_PM_ExpressionPuzzled	拼圖
+$B21_PM_ExpressionSad	悲傷
+$B21_PM_ExpressionSinisterSmile	微笑
+$B21_PM_ExpressionSomber	桑伯
+$B21_PM_ExpressionStern	斯特恩
+$B21_PM_ExpressionSurprised	驚喜
+$B21_PM_ExpressionThinking	思考
+$B21_PM_ExpressionTired	累
+$B21_PM_ExpressionWorried	擔心
 $B21_PM_FO4Poses	倒塌 4
 $B21_PM_Warm	溫度
 $B21_PM_Cool	酷
@@ -58,6 +83,30 @@ $B21_PM_Vintage	溫度
 $B21_PM_Keepsake	保留
 $B21_PM_PhotoFrames	照片
 $B21_PM_FreezeTime	站住
+$B21_PM_TimeOfDay	天亮
+$B21_PM_Weather	天气
+$B21_PM_SkyCurrent	目前
+$B21_PM_WeatherClear	清除
+$B21_PM_WeatherOvercast	重播
+$B21_PM_WeatherFoggy	福吉
+$B21_PM_WeatherMisty	迷雾
+$B21_PM_WeatherRain	雨
+$B21_PM_WeatherThunderstorm	雷暴
+$B21_PM_WeatherRadstorm	風暴
+$B21_PM_WeatherSnow	雪
+$B21_PM_WeatherAurora	奧羅拉
+$B21_PM_WeatherRainbow	彩虹
+$B21_PM_WeatherBloodMoon	血月
+$B21_PM_WeatherToxicValley	有毒谷
+$B21_PM_WeatherMire	米雷
+$B21_PM_WeatherCranberryBog	香莓波格
+$B21_PM_WeatherAshHeap	灰堆
+$B21_PM_WeatherNukeZone	努克區
+$B21_PM_WeatherCommonwealthClear	英联邦清除
+$B21_PM_WeatherCommonwealthOvercast	聯邦覆播
+$B21_PM_WeatherCommonwealthFoggy	英联邦之雾
+$B21_PM_WeatherCommonwealthRain	英联邦雨
+$B21_PM_WeatherCommonwealthRadstorm	英联邦拉德暴
 $B21_PM_Menu	照片模式
 $B21_PM_Saturated	饱和
 $B21_PM_BlackAndWhite	黑白
@@ -126,3 +175,79 @@ $B21_Settings_Ultra	超級
 $B21_Settings_Fullscreen	全屏
 $B21_Settings_Borderless	無邊界
 $B21_Settings_Windowed	窗口
+$B21_Settings_QuickBoy	Quick-Boy
+$B21_Settings_PipBoyView	Pip-Boy 檢視
+$B21_Settings_QuickBoyColor	Quick-Boy 顏色模式
+$B21_Settings_QuickBoyR	Quick-Boy 顏色 R
+$B21_Settings_QuickBoyG	Quick-Boy 顏色 G
+$B21_Settings_QuickBoyB	Quick-Boy 顏色 B
+$B21_Settings_QuickBoySize	Quick-Boy 大小
+$B21_Settings_QuickBoyBrightness	Quick-Boy 亮度
+$B21_Settings_DamageNumbers	顯示損失數字
+$B21_Settings_WeaponCondition	顯示武器條件
+$B21_Settings_AlwaysShowNeeds	總是顯示饥饿和渴渴
+$B21_Settings_CorpseHighlight	突出亮度
+$B21_Settings_UnhighlightMode	停止突出亮度
+$B21_Settings_HighlightPlayerKills	只突出你的殺害
+$B21_Settings_MatchPipBoy	符合 Pip-Boy
+$B21_Settings_MatchHUD	符合 HUD
+$B21_Settings_OwnColor	自有顏色
+$B21_Settings_PipBoy	Pip-Boy
+$B21_Settings_OnLoot	搶劫之後
+$B21_Settings_OnInspect	檢查之後
+$B21_Settings_WhenEmpty	當空
+$B21_TFA_Lock	鎖定
+$B21_TFA_Unlock	解鎖
+$B21_TFA_Locked	已鎖定
+$B21_TFA_ItemLocked	此項目已鎖定 。
+$B21_TFA_ItemUnlocked	項目已解鎖 。
+$B21_TFA_LockUnavailable	無法鎖定此項目 。
+$B21_TFA_ScrapAllJunk	廢棄所有垃圾
+$B21_TFA_ScrapAllQuestion	把所有解鎖的垃圾拆成元件?
+$B21_TFA_JunkScrapped	你那沒鎖的垃圾被拆了
+$B21_TFA_NoJunkToScrap	你沒有可以拆卸的垃圾
+$B21_TFA_ScrapStale	選項已變更 。 在拆掉前再選擇它 。
+$B21_TFA_NoScrapYield	此項目沒有廢品元件 。
+$B21_TFA_BuildMenuControls	選單控制
+$B21_TFA_BuildCameraControls	相機控制
+$B21_TFA_FilterAll	过滤器: 全部
+$B21_TFA_FilterKnown	过滤器:已知
+$B21_TFA_FilterBuildable	过滤器: 可建構
+$B21_TFA_FilterRecent	滤镜: 最近
+$B21_TFA_UnsupportedBuildVariant	此變體沒有可建的物件 。
+$B21_TFA_CameraMove	走
+$B21_TFA_CameraRiseFall	起/ 落
+$B21_TFA_CameraSpeed	速度
+$B21_TFA_CameraPadHelpTop	移動: 是   你看:
+$B21_TFA_CameraPadHelpBottom	D- 貼上/ 下   表示: D- pad 右
+$B21_TFA_Deselect	取消選取
+$B21_TFA_BlueprintObjects	物件
+$B21_TFA_BlueprintUnavailable	不可用
+$B21_TFA_BlueprintSelected	已選擇
+$B21_TFA_TeamFullLeaves	全隊 <Name>出隊了
+$B21_TFA_TeamFullCantJoin	全隊 <Name>不能加入
+$B21_TFA_TeamAllyCantLead	盟軍不能領隊
+$B21_TFA_TeamOwnSystem	<Name>使用自己的跟蹤系統.
+$B21_TFA_TeamNowLeads	<Name>現在領隊了
+$B21_TFA_TeamTookOverUCF	你們的無限伴侶框架夥伴加入團隊 保存, 然後 UCF 可以移除 。
+$B21_TFA_TeamFullStaysUCF	全隊 <Name> 留在無限伴奏框架 。
+$B21_TFA_TeamLeadAfterUCF	移除無限的伴奏框架後選擇主題 。
+$B21_TFA_SetBonus	套裝加成
+$B21_TFA_UniquePerkRank	{perk} 等級 +{rank}
+$B21_TFA_Pets	宠物
+$B21_TFA_CompanionTitle	同伴
+$B21_TFA_CompanionEmpty	招募同伴陪你旅行
+$B21_TFA_CompanionLevel	等級
+$B21_TFA_CompanionXP	XP
+$B21_TFA_CompanionHP	赫普
+$B21_TFA_CompanionAffinity	至极
+$B21_TFA_CompanionNotTracked	未追蹤
+$B21_TFA_CompanionBonuses	等級獎金
+$B21_TFA_CompanionPerks	伴奏
+$B21_TFA_CompanionShared	共享牌
+$B21_TFA_CompanionMax	最大
+$B21_TFA_CompanionSelect	[Up/Down] 選擇伴奏   [D-pad] 選擇伴奏
+$B21_TFA_CompanionVeteran	退伍兵:+25 破坏和耐能量
+$B21_TFA_CompanionPackMule	Pack Mule: +50 携带重量
+$B21_TFA_CompanionCombatTraining	戰鬥訓練:+10%的損失
+$B21_TFA_CompanionEndurance	耐力:+100 健康

@@ -108,7 +108,7 @@ fn read_formid(buf: &[u8], offset: usize) -> Option<u32> {
 pub(crate) struct PlacedRefrDiscovery {
     repair_applicable: bool,
     pub(crate) shared_candidates_available: bool,
-    pub(crate) all_refr_fks: Vec<FormKey>,
+    referenced_object_ids: FxHashSet<u32>,
     pub(crate) teleport_candidates: Vec<FormKey>,
     pub(crate) light_radius_candidates: Vec<FormKey>,
     pub(crate) xezn_candidates: Vec<FormKey>,
@@ -134,49 +134,72 @@ pub(crate) fn discover_placed_refr_candidates(
     }
 
     let refr_sig = SigCode::from_str("REFR").map_err(|e| FixupError::SchemaError(e.to_string()))?;
-    let all_refr_fks = session
-        .form_keys_of_sig(refr_sig, interner)
+    let scan = session
+        .handle_raw_scan(session.target_id())
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
     let mut discovery = PlacedRefrDiscovery {
         repair_applicable: true,
         shared_candidates_available: true,
-        records_seen: all_refr_fks.len(),
-        all_refr_fks,
         ..Default::default()
     };
-
-    for fk in &discovery.all_refr_fks {
-        let Ok(raw_form_id) = session.raw_form_id_for_form_key(fk) else {
-            discovery.light_radius_candidates.push(*fk);
+    let mut seen = FxHashSet::default();
+    for (key, raw_form_id) in scan.record_identities_of_sig(refr_sig) {
+        if !seen.insert(raw_form_id) {
             continue;
-        };
-        let Ok(record) = session.record(raw_form_id) else {
-            discovery.light_radius_candidates.push(*fk);
-            continue;
-        };
-        discovery.records_inspected += 1;
-        let mut teleport = false;
-        let mut light_radius = false;
-        let mut xezn = false;
-        for subrecord in &record.subrecords {
-            match subrecord.signature.as_str() {
-                "XTEL" | "XASP" | "XCZR" | "XOWN" => teleport = true,
-                "XRDS" => light_radius = true,
-                "XEZN" => xezn = true,
-                _ => {}
-            }
         }
+        discovery.records_seen += 1;
+        let (teleport, light_radius, xezn) = scan.with_record(raw_form_id, |record| {
+            discovery.records_inspected += 1;
+            let mut teleport = false;
+            let mut light_radius = false;
+            let mut xezn = false;
+            for subrecord in &record.subrecords {
+                match subrecord.signature.as_str() {
+                    "XTEL" | "XASP" | "XCZR" | "XOWN" => {
+                        teleport = true;
+                        if let Some(raw) = read_formid(&subrecord.data, 0) {
+                            discovery.referenced_object_ids.insert(raw & 0x00FF_FFFF);
+                        }
+                        if subrecord.signature.as_str() == "XTEL" {
+                            if let Some(raw) = read_formid(&subrecord.data, XTEL_TRANSITION_OFFSET) {
+                                discovery.referenced_object_ids.insert(raw & 0x00FF_FFFF);
+                            }
+                        }
+                    }
+                    "XRDS" | "XLIG" => light_radius = true,
+                    "XEZN" => xezn = true,
+                    _ => {}
+                }
+            }
+            (teleport, light_radius, xezn)
+        }).unwrap_or((false, true, false));
+        if !teleport && !light_radius && !xezn {
+            continue;
+        }
+        let fk = FormKey {
+            local: key.object_id,
+            plugin: interner.intern(&key.plugin),
+        };
         if teleport {
-            discovery.teleport_candidates.push(*fk);
+            discovery.teleport_candidates.push(fk);
         }
         if light_radius {
-            discovery.light_radius_candidates.push(*fk);
+            discovery.light_radius_candidates.push(fk);
         }
         if xezn {
-            discovery.xezn_candidates.push(*fk);
+            discovery.xezn_candidates.push(fk);
         }
     }
-
+    drop(scan);
+    drop(seen);
+    for fk in discovery.teleport_candidates.iter()
+        .chain(&discovery.light_radius_candidates)
+        .chain(&discovery.xezn_candidates)
+    {
+        session
+            .indexed_raw_form_id_and_signature(fk, interner)
+            .map_err(|e| FixupError::HandleError(e.to_string()))?;
+    }
     Ok(discovery)
 }
 
@@ -186,6 +209,16 @@ pub(crate) fn discover_placed_refr_candidates(
 /// (no schema decode of the millions of placed refs). Scoped to FO76/Starfield→FO4
 /// by the caller (`ConversionRun::repair_placed_child_refs`).
 pub fn repair_placed_references(
+    session: &mut PluginSession,
+    mapper: &mut FormKeyMapper,
+    config: &FixupConfig,
+) -> Result<FixupReport, FixupError> {
+    let discovery = discover_placed_refr_candidates(session, mapper.interner)?;
+    repair_placed_references_with_candidates(session, mapper, config, &discovery)
+}
+
+#[cfg(test)]
+fn repair_placed_references_legacy(
     session: &mut PluginSession,
     mapper: &mut FormKeyMapper,
     config: &FixupConfig,
@@ -203,7 +236,7 @@ pub fn repair_placed_references(
     let refr_fks = session
         .form_keys_of_sig(refr_sig, mapper.interner)
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
-    repair_placed_references_with_refr_inputs(session, mapper, config, &refr_fks, None)
+    repair_placed_references_with_refr_inputs(session, mapper, config, &refr_fks, None, None)
 }
 
 pub(crate) fn repair_placed_references_with_candidates(
@@ -219,8 +252,9 @@ pub(crate) fn repair_placed_references_with_candidates(
         session,
         mapper,
         config,
-        &discovery.all_refr_fks,
+        &[],
         Some(&discovery.teleport_candidates),
+        Some(&discovery.referenced_object_ids),
     )
 }
 
@@ -230,6 +264,7 @@ fn repair_placed_references_with_refr_inputs(
     config: &FixupConfig,
     all_refr_fks: &[FormKey],
     teleport_candidates: Option<&[FormKey]>,
+    wanted: Option<&FxHashSet<u32>>,
 ) -> Result<FixupReport, FixupError> {
     let mut report = FixupReport::empty();
     let interner = mapper.interner;
@@ -241,23 +276,16 @@ fn repair_placed_references_with_refr_inputs(
     let own_sym = interner.intern(&session.target_slot().parsed.plugin_name);
 
     let refr_sig = SigCode::from_str("REFR").map_err(|e| FixupError::SchemaError(e.to_string()))?;
-    let cell_sig = SigCode::from_str("CELL").map_err(|e| FixupError::SchemaError(e.to_string()))?;
-
-    let own_refr_objids: FxHashSet<u32> = all_refr_fks
-        .iter()
-        .filter(|fk| fk.plugin == own_sym)
-        .map(|fk| fk.local & 0x00FF_FFFF)
-        .collect();
+    let own_plugin = interner.resolve(own_sym).unwrap();
+    let own_refr_objids = collect_objids_for_sigs_in_handle(
+        session, session.target_id(), &["REFR"], wanted, Some(own_plugin),
+    )?;
     let target_handle_id = session.target_id();
     let own_persistent_refr_objids =
-        collect_persistent_objids_for_sig_in_handle(session, target_handle_id, refr_sig)?;
-    let own_cell_objids: FxHashSet<u32> = session
-        .form_keys_of_sig(cell_sig, interner)
-        .map_err(|e| FixupError::HandleError(e.to_string()))?
-        .iter()
-        .filter(|fk| fk.plugin == own_sym)
-        .map(|fk| fk.local & 0x00FF_FFFF)
-        .collect();
+        collect_persistent_objids_for_sig_in_handle(session, target_handle_id, refr_sig, wanted)?;
+    let own_cell_objids = collect_objids_for_sigs_in_handle(
+        session, session.target_id(), &["CELL"], wanted, Some(own_plugin),
+    )?;
 
     let mut master_refr_objids = Vec::with_capacity(config.target_master_handle_ids.len());
     let mut master_persistent_refr_objids =
@@ -269,45 +297,39 @@ fn repair_placed_references_with_refr_inputs(
         session,
         session.target_id(),
         XCZR_TARGET_SIGS,
-        interner,
+        wanted,
+        None,
     )?;
     let own_xown_objids = collect_objids_for_sigs_in_handle(
         session,
         session.target_id(),
         XOWN_TARGET_SIGS,
-        interner,
+        wanted,
+        None,
     )?;
     for &handle_id in &config.target_master_handle_ids {
         master_refr_objids.push(
-            session
-                .form_keys_of_sig_in_handle(handle_id, refr_sig, interner)
-                .map_err(|e| FixupError::HandleError(e.to_string()))?
-                .into_iter()
-                .map(|fk| fk.local & 0x00FF_FFFF)
-                .collect(),
+            collect_objids_for_sigs_in_handle(session, handle_id, &["REFR"], wanted, None)?,
         );
         master_persistent_refr_objids.push(collect_persistent_objids_for_sig_in_handle(
-            session, handle_id, refr_sig,
+            session, handle_id, refr_sig, wanted,
         )?);
         master_cell_objids.push(
-            session
-                .form_keys_of_sig_in_handle(handle_id, cell_sig, interner)
-                .map_err(|e| FixupError::HandleError(e.to_string()))?
-                .into_iter()
-                .map(|fk| fk.local & 0x00FF_FFFF)
-                .collect(),
+            collect_objids_for_sigs_in_handle(session, handle_id, &["CELL"], wanted, None)?,
         );
         master_xczr_objids.push(collect_objids_for_sigs_in_handle(
             session,
             handle_id,
             XCZR_TARGET_SIGS,
-            interner,
+            wanted,
+            None,
         )?);
         master_xown_objids.push(collect_objids_for_sigs_in_handle(
             session,
             handle_id,
             XOWN_TARGET_SIGS,
-            interner,
+            wanted,
+            None,
         )?);
     }
 
@@ -369,13 +391,15 @@ fn collect_persistent_objids_for_sig_in_handle(
     session: &mut PluginSession,
     handle_id: u64,
     sig: SigCode,
+    wanted: Option<&FxHashSet<u32>>,
 ) -> Result<FxHashSet<u32>, FixupError> {
     let scan = session
         .handle_raw_scan(handle_id)
         .map_err(|e| FixupError::HandleError(e.to_string()))?;
     Ok(scan
-        .raw_form_ids_of_sig(sig)
-        .into_iter()
+        .record_identities_of_sig(sig)
+        .map(|(_, raw)| raw)
+        .filter(|raw| wanted.is_none_or(|wanted| wanted.contains(&(raw & 0x00FF_FFFF))))
         .filter(|raw| {
             scan.with_record(*raw, |record| record.flags & RECORD_FLAG_PERSISTENT != 0)
                 .unwrap_or(false)
@@ -388,16 +412,22 @@ fn collect_objids_for_sigs_in_handle(
     session: &mut PluginSession,
     handle_id: u64,
     sigs: &[&str],
-    interner: &crate::sym::StringInterner,
+    wanted: Option<&FxHashSet<u32>>,
+    own_plugin: Option<&str>,
 ) -> Result<FxHashSet<u32>, FixupError> {
     let mut object_ids = FxHashSet::default();
+    let scan = session
+        .handle_raw_scan(handle_id)
+        .map_err(|e| FixupError::HandleError(e.to_string()))?;
     for sig in sigs {
         let sig = SigCode::from_str(sig).map_err(|e| FixupError::SchemaError(e.to_string()))?;
-        for fk in session
-            .form_keys_of_sig_in_handle(handle_id, sig, interner)
-            .map_err(|e| FixupError::HandleError(e.to_string()))?
-        {
-            object_ids.insert(fk.local & 0x00FF_FFFF);
+        for (fk, _) in scan.record_identities_of_sig(sig) {
+            let local = fk.object_id & 0x00FF_FFFF;
+            if wanted.is_none_or(|wanted| wanted.contains(&local))
+                && own_plugin.is_none_or(|plugin| fk.plugin.as_ref() == plugin)
+            {
+                object_ids.insert(local);
+            }
         }
     }
     Ok(object_ids)
@@ -1237,7 +1267,7 @@ mod tests {
                     )
                     .unwrap()
                 } else {
-                    repair_placed_references(&mut session, &mut mapper, &config).unwrap()
+                    repair_placed_references_legacy(&mut session, &mut mapper, &config).unwrap()
                 }
             };
             plugin_handle_save_no_py(handle, output.to_str().unwrap()).unwrap();

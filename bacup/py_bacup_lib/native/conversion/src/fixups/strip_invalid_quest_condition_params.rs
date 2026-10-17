@@ -585,6 +585,14 @@ pub fn repair_final_quest_reference_conditions(
     let mut changed_records = Vec::new();
 
     for fk in quest_keys {
+        if session
+            .raw_form_id_for_form_key(&fk)
+            .ok()
+            .and_then(|raw_id| session.record(raw_id).ok())
+            .is_some_and(|record| !final_quest_alias_repair_candidate(record, &index))
+        {
+            continue;
+        }
         let mut record = match session.record_decoded(&fk, target_schema, interner) {
             Ok(record) => record,
             Err(_) => continue,
@@ -641,7 +649,12 @@ fn collect_final_persistent_reference_index(
         .as_deref()
         .ok_or_else(|| FixupError::Other("missing target schema in fixup config".into()))?;
     for &handle_id in &config.target_master_handle_ids {
-        let form_keys = match session.form_keys_of_sig_in_handle(handle_id, refr_sig, interner) {
+        let form_keys = match session.form_keys_of_sig_with_flags_in_handle(
+            handle_id,
+            refr_sig,
+            RecordFlags::PERSISTENT.bits(),
+            interner,
+        ) {
             Ok(form_keys) => form_keys,
             Err(e) => {
                 report.warnings.push(interner.intern(&format!(
@@ -1513,6 +1526,37 @@ fn repair_or_reject_worldspace_parameter(
     (false, true)
 }
 
+fn final_reference_condition_needs_repair(
+    bytes: &[u8],
+    index: &FinalPersistentReferenceIndex,
+) -> bool {
+    FINAL_PERSISTENT_REFERENCE_FUNCTION_IDS.contains(&raw_condition_function_id(bytes).unwrap_or(0))
+        && !condition_parameter_1_is_alias_index(bytes)
+        && !index
+            .valid_encoded_ids
+            .contains(&raw_condition_parameter_1(bytes).unwrap_or(0))
+}
+
+fn final_quest_alias_repair_candidate(
+    record: &esp_authoring_core::plugin_runtime::ParsedRecord,
+    index: &FinalPersistentReferenceIndex,
+) -> bool {
+    let mut in_alias = false;
+    for entry in effective_subrecords_for_record(record).iter() {
+        match entry.signature.as_str() {
+            "ALST" | "ALLS" | "ALCS" => in_alias = true,
+            "ALED" => in_alias = false,
+            "CTDA" | "CTDT"
+                if in_alias && final_reference_condition_needs_repair(&entry.data, index) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn repair_final_quest_alias_conditions(
     record: &mut Record,
     index: &FinalPersistentReferenceIndex,
@@ -1540,26 +1584,18 @@ fn repair_final_quest_alias_conditions(
         if in_alias && matches!(&entry.sig.0, b"CTDA" | b"CTDT") {
             let drop = match &mut entry.value {
                 FieldValue::Bytes(bytes) => {
-                    let function_id = raw_condition_function_id(bytes).unwrap_or(0);
-                    if !FINAL_PERSISTENT_REFERENCE_FUNCTION_IDS.contains(&function_id)
-                        || condition_parameter_1_is_alias_index(bytes)
-                    {
+                    if !final_reference_condition_needs_repair(bytes, index) {
                         false
                     } else {
                         let parameter_1 = raw_condition_parameter_1(bytes).unwrap_or(0);
-                        if index.valid_encoded_ids.contains(&parameter_1) {
+                        let object_id = parameter_1 & 0x00FF_FFFF;
+                        if let Some(&output_id) = index.output_encoded_by_object_id.get(&object_id)
+                        {
+                            bytes[12..16].copy_from_slice(&output_id.to_le_bytes());
+                            changed = true;
                             false
                         } else {
-                            let object_id = parameter_1 & 0x00FF_FFFF;
-                            if let Some(&output_id) =
-                                index.output_encoded_by_object_id.get(&object_id)
-                            {
-                                bytes[12..16].copy_from_slice(&output_id.to_le_bytes());
-                                changed = true;
-                                false
-                            } else {
-                                true
-                            }
+                            true
                         }
                     }
                 }
@@ -4223,6 +4259,56 @@ mod tests {
             "quest-level conditions outside an alias block are untouched"
         );
         assert_eq!(sigs(&rec), vec!["CTDA"]);
+    }
+
+    #[test]
+    fn raw_final_alias_filter_matches_decoded_repair_candidates() {
+        let index =
+            final_reference_index(&[0x0000_1234, 0x0700_5678], &[(0x0000_5678, 0x0700_5678)]);
+        for anchor in ["ALST", "ALLS", "ALCS", "EDID"] {
+            for function in [1, 639, 47] {
+                for parameter in [0, 0x0000_1234, 0x0000_5678, 0x0700_5678, 0x0700_BEEF] {
+                    for alias in [false, true] {
+                        for ended in [false, true] {
+                            let mut condition = ctda(function, parameter);
+                            if alias {
+                                let FieldValue::Bytes(bytes) = &mut condition.value else {
+                                    panic!()
+                                };
+                                bytes[0] |= CTDA_USE_ALIASES_FLAG;
+                            }
+                            let mut fields = vec![field(anchor, &1u32.to_le_bytes())];
+                            if ended {
+                                fields.push(field("ALED", &[]));
+                            }
+                            fields.push(condition);
+                            fields.push(field("CIS1", b"condition\0"));
+                            let mut decoded = record("QUST", fields);
+                            let mut raw = parsed_record("QUST", 0x0700_0800, 0);
+                            raw.subrecords = decoded
+                                .fields
+                                .iter()
+                                .map(|field| {
+                                    let FieldValue::Bytes(bytes) = &field.value else {
+                                        panic!()
+                                    };
+                                    esp_authoring_core::plugin_runtime::ParsedSubrecord {
+                                        signature: smol_str::SmolStr::new(field.sig.as_str()),
+                                        data: bytes::Bytes::copy_from_slice(bytes),
+                                        semantic_type: None,
+                                    }
+                                })
+                                .collect();
+                            assert_eq!(
+                                final_quest_alias_repair_candidate(&raw, &index),
+                                repair_final_quest_alias_conditions(&mut decoded, &index),
+                                "anchor={anchor} function={function} parameter={parameter:X} alias={alias} ended={ended}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -24,6 +24,12 @@ $B21_TFA_Legendary	Legendary
 
 $B21_TFA_SemiAutomatic	Semi-Automatic
 
+$B21_TFA_Charging	Charging
+
+$B21_TFA_ChargeTime	Charge Time
+
+$B21_TFA_ChargeBonus	Charge Bonus
+
 $B21_TFA_VATSAccuracy	V.A.T.S. Accuracy
 
 $B21_TFA_WeaponType_Melee	Melee
@@ -98,7 +104,29 @@ $B21_TFA_MoveSPECIAL	MOVE SPECIAL POINT
 
 $B21_TFA_AddLoadout	ADD LOADOUT
 
-$B21_PM_Salute	Salute (requires live time)
+$B21_PM_Salute	Salute
+$B21_PM_ExpressionAfraid	Afraid
+$B21_PM_ExpressionAmused	Amused
+$B21_PM_ExpressionAngry	Angry
+$B21_PM_ExpressionAwed	Awed
+$B21_PM_ExpressionConcerned	Concerned
+$B21_PM_ExpressionConfident	Confident
+$B21_PM_ExpressionDisgust	Disgust
+$B21_PM_ExpressionFlirting	Flirting
+$B21_PM_ExpressionFriendly	Friendly
+$B21_PM_ExpressionHappy	Happy
+$B21_PM_ExpressionImpressed	Impressed
+$B21_PM_ExpressionIrritated	Irritated
+$B21_PM_ExpressionNeutral	Neutral
+$B21_PM_ExpressionPuzzled	Puzzled
+$B21_PM_ExpressionSad	Sad
+$B21_PM_ExpressionSinisterSmile	Sinister Smile
+$B21_PM_ExpressionSomber	Somber
+$B21_PM_ExpressionStern	Stern
+$B21_PM_ExpressionSurprised	Surprised
+$B21_PM_ExpressionThinking	Thinking
+$B21_PM_ExpressionTired	Tired
+$B21_PM_ExpressionWorried	Worried
 $B21_PM_FO4Poses	Fallout 4
 $B21_PM_Warm	Warm
 $B21_PM_Cool	Cool
@@ -106,6 +134,30 @@ $B21_PM_Vintage	Vintage
 $B21_PM_Keepsake	Keepsake
 $B21_PM_PhotoFrames	Photographs
 $B21_PM_FreezeTime	Freeze Time
+$B21_PM_TimeOfDay	Time of Day
+$B21_PM_Weather	Weather
+$B21_PM_SkyCurrent	Current
+$B21_PM_WeatherClear	Clear
+$B21_PM_WeatherOvercast	Overcast
+$B21_PM_WeatherFoggy	Foggy
+$B21_PM_WeatherMisty	Misty
+$B21_PM_WeatherRain	Rain
+$B21_PM_WeatherThunderstorm	Thunderstorm
+$B21_PM_WeatherRadstorm	Radstorm
+$B21_PM_WeatherSnow	Snow
+$B21_PM_WeatherAurora	Aurora
+$B21_PM_WeatherRainbow	Rainbow
+$B21_PM_WeatherBloodMoon	Blood Moon
+$B21_PM_WeatherToxicValley	Toxic Valley
+$B21_PM_WeatherMire	The Mire
+$B21_PM_WeatherCranberryBog	Cranberry Bog
+$B21_PM_WeatherAshHeap	Ash Heap
+$B21_PM_WeatherNukeZone	Nuke Zone
+$B21_PM_WeatherCommonwealthClear	Commonwealth Clear
+$B21_PM_WeatherCommonwealthOvercast	Commonwealth Overcast
+$B21_PM_WeatherCommonwealthFoggy	Commonwealth Fog
+$B21_PM_WeatherCommonwealthRain	Commonwealth Rain
+$B21_PM_WeatherCommonwealthRadstorm	Commonwealth Radstorm
 $B21_PM_Menu	PHOTO MODE
 $B21_PM_Saturated	Saturated
 $B21_PM_BlackAndWhite	Black and White
@@ -174,3 +226,80 @@ $B21_Settings_Ultra	Ultra
 $B21_Settings_Fullscreen	Fullscreen
 $B21_Settings_Borderless	Borderless
 $B21_Settings_Windowed	Windowed
+$B21_Settings_QuickBoy	Quick-Boy
+$B21_Settings_PipBoyView	Pip-Boy View
+$B21_Settings_QuickBoyColor	Quick-Boy Color Mode
+$B21_Settings_QuickBoyR	Quick-Boy Color R
+$B21_Settings_QuickBoyG	Quick-Boy Color G
+$B21_Settings_QuickBoyB	Quick-Boy Color B
+$B21_Settings_QuickBoySize	Quick-Boy Size
+$B21_Settings_QuickBoyBrightness	Quick-Boy Brightness
+$B21_Settings_DamageNumbers	Show Damage Numbers
+$B21_Settings_WeaponCondition	Show Weapon Condition
+$B21_Settings_AlwaysShowNeeds	Always Show Hunger and Thirst
+$B21_Settings_CorpseHighlight	Highlight Corpses
+$B21_Settings_UnhighlightMode	Stop Highlighting Corpses
+$B21_Settings_HighlightPlayerKills	Only Highlight Your Kills
+$B21_Settings_MatchPipBoy	Match Pip-Boy
+$B21_Settings_MatchHUD	Match HUD
+$B21_Settings_OwnColor	Own Color
+$B21_Settings_PipBoy	Pip-Boy
+$B21_Settings_OnLoot	After Taking Loot
+$B21_Settings_OnInspect	After Inspecting
+$B21_Settings_WhenEmpty	When Empty
+$B21_TFA_Lock	LOCK
+$B21_TFA_Unlock	UNLOCK
+$B21_TFA_Locked	Locked
+$B21_TFA_ItemLocked	This item is locked.
+$B21_TFA_ItemUnlocked	Item unlocked.
+$B21_TFA_LockUnavailable	Unable to lock this item.
+$B21_TFA_ScrapAllJunk	SCRAP ALL JUNK
+$B21_TFA_ScrapAllQuestion	Scrap all unlocked junk into components?
+$B21_TFA_JunkScrapped	Your unlocked junk was scrapped.
+$B21_TFA_NoJunkToScrap	You have no unlocked junk to scrap.
+$B21_TFA_ScrapStale	The selected item changed. Select it again before scrapping.
+$B21_TFA_NoScrapYield	This item has no scrap components.
+$B21_TFA_BuildMenuControls	MENU CONTROLS
+$B21_TFA_BuildCameraControls	CAMERA CONTROLS
+$B21_TFA_FilterAll	FILTER: ALL
+$B21_TFA_FilterKnown	FILTER: KNOWN
+$B21_TFA_FilterBuildable	FILTER: BUILDABLE
+$B21_TFA_FilterRecent	FILTER: RECENT
+$B21_TFA_UnsupportedBuildVariant	This variant has no buildable object.
+$B21_TFA_CameraMove	MOVE
+$B21_TFA_CameraRiseFall	RISE / FALL
+$B21_TFA_CameraSpeed	SPEED
+$B21_TFA_CameraPadHelpTop	MOVE: LS   LOOK: RS
+$B21_TFA_CameraPadHelpBottom	RISE / FALL: D-pad Up / Down   SPEED: D-pad Right
+$B21_TFA_Deselect	DESELECT
+$B21_TFA_BlueprintObjects	objects
+$B21_TFA_BlueprintUnavailable	unavailable
+$B21_TFA_BlueprintSelected	selected
+
+$B21_TFA_TeamFullLeaves	Team full. <Name> leaves the team.
+$B21_TFA_TeamFullCantJoin	Team full. <Name> can't join.
+$B21_TFA_TeamAllyCantLead	Allies can't lead the team.
+$B21_TFA_TeamOwnSystem	<Name> uses their own follower system.
+$B21_TFA_TeamNowLeads	<Name> now leads the team.
+$B21_TFA_TeamTookOverUCF	Your Unlimited Companion Framework companions joined the team. Save, then UCF can be removed.
+$B21_TFA_TeamFullStaysUCF	Team full. <Name> stays with Unlimited Companion Framework.
+$B21_TFA_TeamLeadAfterUCF	Choose the lead after removing Unlimited Companion Framework.
+$B21_TFA_SetBonus	SET BONUS
+$B21_TFA_UniquePerkRank	+{rank} Rank to Perk {perk}
+$B21_TFA_Pets	PETS
+$B21_TFA_CompanionTitle	COMPANIONS
+$B21_TFA_CompanionEmpty	Recruit a companion to travel with you.
+$B21_TFA_CompanionLevel	LEVEL
+$B21_TFA_CompanionXP	XP
+$B21_TFA_CompanionHP	HP
+$B21_TFA_CompanionAffinity	AFFINITY
+$B21_TFA_CompanionNotTracked	Not tracked
+$B21_TFA_CompanionBonuses	LEVEL BONUSES
+$B21_TFA_CompanionPerks	COMPANION PERKS
+$B21_TFA_CompanionShared	SHARED CARD
+$B21_TFA_CompanionMax	MAX
+$B21_TFA_CompanionSelect	[Up/Down] Select companion   [D-pad] Select companion
+$B21_TFA_CompanionVeteran	Veteran: +25 damage and energy resistance
+$B21_TFA_CompanionPackMule	Pack Mule: +50 carry weight
+$B21_TFA_CompanionCombatTraining	Combat Training: +10% damage
+$B21_TFA_CompanionEndurance	Endurance: +100 health

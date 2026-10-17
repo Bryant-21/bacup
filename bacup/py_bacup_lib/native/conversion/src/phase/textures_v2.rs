@@ -72,6 +72,9 @@ impl Phase for ConvertTexturesV2Phase {
 
     fn run(&self, ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
         ctx.check_cancel()?;
+        if crate::native_starfield::active(ctx.run) {
+            return crate::native_starfield::copy_textures(ctx);
+        }
         let p = ctx.params;
         let source_extracted: PathBuf = p
             .get("source_extracted")
@@ -159,6 +162,7 @@ impl Phase for ConvertTexturesV2Phase {
             target_dirs,
             target_assets: ctx.run.target_assets.clone(),
             base_overwrite_prefixes: crate::run::base_overwrite_prefixes_for_run(ctx.run),
+            base_overwrite_paths: ctx.run.native_overwrite_paths.clone(),
             skip_existing: p
                 .get("skip_existing")
                 .and_then(|v| v.as_bool())
@@ -181,13 +185,15 @@ impl Phase for ConvertTexturesV2Phase {
             // Full-run texture archives direct-pack from the loose DDS tree at
             // the unified join, not through the incremental DX10 spill.
             sink: None,
+            native_copy: crate::run::native_assets_active(ctx.run),
         };
 
         let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
             phase: "convert_textures_v2",
             level: LogLevel::Info,
             message: format!(
-                "textures_v2: starting; terrain_bundles={} landscape_mip_flooding={}",
+                "textures_v2: starting; native_copy={} terrain_bundles={} landscape_mip_flooding={}",
+                engine_params.native_copy,
                 engine_params.terrain_jobs.len(),
                 engine_params.landscape_mip_flooding,
             ),
@@ -219,8 +225,31 @@ impl Phase for ConvertTexturesV2Phase {
             }
         };
 
-        let report = run_texture_engine(&engine_params, ctx.cancel, Some(&progress_cb))
-            .map_err(PhaseError::Internal)?;
+        let overwrites = crate::native_overwrites::begin_phase(ctx, "convert_textures_v2");
+        let report = run_texture_engine(&engine_params, ctx.cancel, Some(&progress_cb));
+        crate::native_overwrites::finish_phase(ctx, "convert_textures_v2", &overwrites);
+        let report = report.map_err(PhaseError::Internal)?;
+
+        if engine_params.native_copy {
+            let (level, message) = match crate::texture_engine::native_textures::copy_advanced_lighting_global_cubes(
+                &engine_params.source_extracted,
+                &engine_params.data_root,
+            ) {
+                Ok(count) => (
+                    LogLevel::Info,
+                    format!("textures_v2: {count} Advanced Lighting global cube(s) -> Textures/FO4CS/Cubemaps/AdvancedLighting"),
+                ),
+                Err(error) => (
+                    LogLevel::Error,
+                    format!("textures_v2: Advanced Lighting global cubes: {error}"),
+                ),
+            };
+            let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+                phase: "convert_textures_v2",
+                level,
+                message,
+            });
+        }
 
         for error in &report.errors {
             let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {

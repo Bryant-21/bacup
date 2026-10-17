@@ -114,12 +114,16 @@ fn target_character_file(target_extracted_dir: &Path) -> Option<PathBuf> {
 /// the same signal the behavior-contract fixup keys on. Creature ports that
 /// ship a self-consistent graph stack are left alone.
 fn walk_humanoid_character_dirs(dir: &Path, visit: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_humanoid_character_dirs_in_root(dir, visit, dir);
+}
+
+fn walk_humanoid_character_dirs_in_root(dir: &Path, visit: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        if !super::postprocess_scan::entry_is_dir(&entry) {
             continue;
         }
         let is_characters = path
@@ -127,7 +131,7 @@ fn walk_humanoid_character_dirs(dir: &Path, visit: &mut impl FnMut(&Path)) {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.eq_ignore_ascii_case("Characters"));
         if !is_characters {
-            walk_humanoid_character_dirs(&path, visit);
+            walk_humanoid_character_dirs_in_root(&path, visit, scan_root);
             continue;
         }
         let humanoid = path

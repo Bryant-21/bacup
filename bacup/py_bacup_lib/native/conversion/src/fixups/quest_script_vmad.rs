@@ -119,6 +119,115 @@ fn skip_property_value(
     }
 }
 
+pub(crate) fn map_top_level_script_names(
+    existing: &mut Vec<u8>,
+    map_name: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<usize> {
+    let mut reader = VmadReader::new(existing);
+    if !matches!(reader.u16()?, 5 | 6) {
+        return None;
+    }
+    let object_format = reader.u16()?;
+    if !matches!(object_format, 1 | 2) {
+        return None;
+    }
+    let count = reader.u16()?;
+    let mut replacements = Vec::new();
+    for _ in 0..count {
+        let start = reader.offset;
+        let name = std::str::from_utf8(reader.string_bytes()?).ok()?;
+        let end = reader.offset;
+        if let Some(name) = map_name(name) {
+            let length = u16::try_from(name.len()).ok()?;
+            let mut encoded = length.to_le_bytes().to_vec();
+            encoded.extend_from_slice(name.as_bytes());
+            replacements.push((start..end, encoded));
+        }
+        reader.u8()?;
+        let properties = reader.u16()?;
+        for _ in 0..properties {
+            reader.string_bytes()?;
+            let kind = reader.u8()?;
+            reader.u8()?;
+            skip_property_value(&mut reader, kind, object_format)?;
+        }
+    }
+    let changed = replacements.len();
+    for (span, encoded) in replacements.into_iter().rev() {
+        existing.splice(span, encoded);
+    }
+    Some(changed)
+}
+
+pub(crate) fn add_top_level_object_properties(
+    existing: &mut Vec<u8>,
+    properties: &mut dyn FnMut(&str) -> Option<Vec<(String, u32)>>,
+) -> Option<()> {
+    let mut reader = VmadReader::new(existing);
+    if reader.u16()? != VMAD_VERSION || reader.u16()? != VMAD_OBJECT_FORMAT { return None; }
+    let count = reader.u16()?;
+    let mut replacements = Vec::new();
+    for _ in 0..count {
+        let name = std::str::from_utf8(reader.string_bytes()?).ok()?;
+        let additions = properties(name)?;
+        reader.u8()?;
+        let start = reader.offset;
+        let property_count = reader.u16()?;
+        let mut present = std::collections::BTreeSet::new();
+        for _ in 0..property_count {
+            present.insert(std::str::from_utf8(reader.string_bytes()?).ok()?.to_ascii_lowercase());
+            let kind = reader.u8()?;
+            reader.u8()?;
+            skip_property_value(&mut reader, kind, VMAD_OBJECT_FORMAT)?;
+        }
+        if additions.is_empty() { continue; }
+        let new_count = property_count.checked_add(u16::try_from(additions.len()).ok()?)?;
+        let mut encoded = new_count.to_le_bytes().to_vec();
+        encoded.extend_from_slice(&existing[start + 2..reader.offset]);
+        for (property, raw_form_id) in additions {
+            if !present.insert(property.to_ascii_lowercase()) { return None; }
+            encoded.extend_from_slice(&u16::try_from(property.len()).ok()?.to_le_bytes());
+            encoded.extend_from_slice(property.as_bytes());
+            encoded.extend_from_slice(&[1, 1]);
+            encoded.extend_from_slice(&0u16.to_le_bytes());
+            encoded.extend_from_slice(&(-1i16).to_le_bytes());
+            encoded.extend_from_slice(&raw_form_id.to_le_bytes());
+        }
+        replacements.push((start..reader.offset, encoded));
+    }
+    for (span, encoded) in replacements.into_iter().rev() { existing.splice(span, encoded); }
+    Some(())
+}
+
+pub(crate) fn retain_standalone_scripts(
+    existing: &mut Vec<u8>,
+    keep: &dyn Fn(&str) -> bool,
+) -> Option<usize> {
+    let mut reader = VmadReader::new(existing);
+    if !matches!(reader.u16()?, 5 | 6) { return None; }
+    let format = reader.u16()?;
+    if !matches!(format, 1 | 2) { return None; }
+    let count = reader.u16()?;
+    let mut spans = Vec::new();
+    for _ in 0..count {
+        let start = reader.offset;
+        let name = std::str::from_utf8(reader.string_bytes()?).ok()?;
+        reader.u8()?;
+        for _ in 0..reader.u16()? {
+            reader.string_bytes()?;
+            let kind = reader.u8()?;
+            reader.u8()?;
+            skip_property_value(&mut reader, kind, format)?;
+        }
+        if keep(name) { spans.push(start..reader.offset); }
+    }
+    let mut output = existing[..4].to_vec();
+    output.extend_from_slice(&u16::try_from(spans.len()).ok()?.to_le_bytes());
+    for span in &spans { output.extend_from_slice(&existing[span.clone()]); }
+    *existing = output;
+    Some(spans.len())
+}
+
 /// True when any top-level script in the VMAD satisfies the predicate; `None`
 /// when the VMAD could not be walked.
 pub(crate) fn has_top_level_script(

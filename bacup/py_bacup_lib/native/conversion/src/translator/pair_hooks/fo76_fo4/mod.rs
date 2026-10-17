@@ -37,6 +37,7 @@ mod quest_vmad;
 mod quests;
 mod repair_kits;
 mod sound;
+mod super_mutant_merchant;
 mod textures;
 mod vendors;
 mod weather;
@@ -69,7 +70,7 @@ pub(crate) use conditions::{ConditionFormCatalog, fo76_catalog_test_guard};
 pub(crate) use conditions::{
     FO76_REMAPPED_CONDITION_FUNCTION_IDS, build_condition_form_catalog,
     expand_source_condition_form_rows, install_condition_form_catalog,
-    is_fo4_incompatible_condition_function_id,
+    is_fo4_incompatible_condition_function_id, normalize_fo76_raw_condition_rows,
 };
 #[allow(unused_imports)]
 pub(crate) use dialogue::{
@@ -80,8 +81,11 @@ pub(crate) use dialogue::{
     split_fo76_combined_player_dialogue_info,
 };
 pub use magic::{EFFECTS_SYNTHETIC_RECORD_SIGS, EffectsKeyRoute};
-pub(crate) use misc::{fo76_misc_static_model_variant, rewritten_fo76_font_aliases_for_fo4};
-pub(crate) use object_mods::strip_raw_weapon_object_template_property_rows;
+pub(crate) use misc::{fo76_misc_static_model_variant, rewritten_fo76_text_markup_for_fo4};
+pub(crate) use object_mods::{
+    FO76_POWER_ARMOR_PART_ATTACH_POINT_OBJECT_IDS, omod_property_target,
+    strip_raw_weapon_object_template_property_rows, valid_object_mod_property,
+};
 pub(crate) use object_template_inherit::{
     build_inherited_object_template_catalog, install_inherited_object_template_catalog,
 };
@@ -191,10 +195,8 @@ impl PairHook for Fo76Fo4Hook {
         Self::clear_invalid_furniture_active_marker_bits(record);
         Self::ensure_terminal_player_path_keyword(ctx.interner, record);
         Self::ensure_light_radius(ctx.interner, record);
-        Self::normalize_sunlight_radius_for_fo4(ctx.interner, record);
         Self::normalize_light_data_for_fo4(ctx.interner, record);
         Self::normalize_cage_bulb_gobo_light_for_fo4(ctx.interner, record);
-        Self::clamp_shadow_caster_radius_for_fo4(ctx.interner, record);
         Self::ensure_light_fade_value(record);
         Self::translate_weather_visual_effect(ctx.interner, record);
         Self::ensure_flora_ingredient_production(record);

@@ -2,253 +2,27 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import struct
 import zlib
 from collections import Counter
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Iterable
 
-from bacup_lib.reputation_catalog import NativeReader, fields_by_name, first, load_esp_native, plugin_masters
+from bacup_lib.native_runtime import load_native_module
+from bacup_lib.plugin_catalog import catalog_path, form_key, write_document
 
 SCHEMA_VERSION = 1
+FEATURE = "Infestations"
 PLUGIN = "SeventySix.esm"
-CATALOG = Path("F4SE/Plugins/B21_TalesFromAppalachia/infestations.json")
-OUTPUT = Path("PrismaUI_F4/views/B21_FullScreenMap/tales/infestations")
-RESOURCES = Path(__file__).with_name("resources") / "infestations"
+CATALOG = catalog_path(FEATURE, PLUGIN)
+OUTPUT = Path("F4SE/Plugins/B21_FullScreenMap/infestations")
+LEGACY_OUTPUT = Path("PrismaUI_F4/views/B21_FullScreenMap/tales/infestations")
 MAP_MOVIE = Path("interface/mapmenu.swf")
 FOG_SYMBOL = "MapCloud"
 RADIUS_CLIP = "RadiusCheck_mc"
-MIN_CLEAR_ACTORS = 4
-
-QUEST = "HTO_HostileTakeOver_Master_Quest"
-WORLD = "APPALACHIA"
-# HTO_MarkerScript's region toggles; the region locations carry the LocTypeRegion keyword.
-REGIONS = (
-    ("Forest", "RegionForestFloodlandsLocation", "HTO_LCP_HostileTakeOver_EventToggle_TheForestRegion"),
-    ("ToxicValley", "RegionToxicValleyLocation", "HTO_LCP_HostileTakeOver_EventToggle_ToxicValleyRegion"),
-    ("CranberryBog", "RegionCranberryBogLocation", "HTO_LCP_HostileTakeOver_EventToggle_CranberryBogRegion"),
-    ("Mire", "RegionSwampForestLocation", "HTO_LCP_HostileTakeOver_EventToggle_TheMireRegion"),
-    ("SavageDivide", "RegionMountainLocation", "HTO_LCP_HostileTakeOver_EventToggle_SavageDivideRegion"),
-    ("AshHeap", "RegionMTRLocation", "HTO_LCP_HostileTakeOver_EventToggle_AshHeapRegion"),
-)
-FACTION_LIST = "HTO_FactionSelection_FormList"
-MUTATION_LIST = "HTO_BossMutation_Valid_FormList"
-FORMS = {
-    "started_message": ("MESG", "HTO_HostileTakeOver_QuestMessage_Started"),
-    "ended_message": ("MESG", "HTO_HostileTakeOver_QuestMessage_Ended"),
-    "boss_message": ("MESG", "HTO_HostileTakeOver_QuestMessage_BossSpawn"),
-    "announce_toggle": ("GLOB", "HTO_LCP_HostileTakeOver_QuestMessage_Toggle"),
-    "boss_explosion": ("EXPL", "HTO_crBossSpawnExplosionVFX"),
-    "boss_roar": ("SNDR", "HTO_crBossSpawnRoarSFX"),
-}
-REWARD = {
-    "xp_global": ("GLOB", "HTO_LCP_QuestReward_XP"),
-    "caps_global": ("GLOB", "HTO_LCP_QuestReward_Caps"),
-    "scrip_global": ("GLOB", "HTO_LCP_QuestReward_LegendaryTokens"),
-    "toggle": ("GLOB", "HTO_LCP_QuestReward_Toggle"),
-    "scrip_item": ("CNCY", "LegendaryTokens"),
-}
-TUNING_GLOBALS = {
-    "expire_seconds": "HTO_LCP_HostileTakeOver_QuestExpireGlobal_5Hrs",
-    "marker_radius": "HTO_LCP_HostileTakeOver_TargetRadius_Marker",
-    "location_radius": "HTO_LCP_HostileTakeOver_TargetRadius_Location",
-}
-MASTER_SCRIPT = "HostileTakeovers:HTO_MasterScript"
-MASTER_PROPERTIES = {
-    "boss_kill_fraction": "MobKillPercentToSpawnBoss",
-    "remaining_fraction": "MobKillPercentToShowRemainingObjective",
-}
-# The legendary rank comes from the boss reward lists HTO_LegendaryItems_*_Rank4.
-BOSS_RANK = 4
-
-
-class Source(Protocol):
-    def lookup(self, signature: str, editor_id: str) -> tuple[int, dict[str, list]]: ...
-    def fields(self, object_id: int) -> tuple[str, str, dict[str, list]]: ...
-    def ids(self, signature: str) -> list[int]: ...
-
-
-class Converted(Protocol):
-    def record(self, object_id: int) -> tuple[str, dict[str, list]] | None: ...
-
-
-def local(value) -> int | None:
-    try:
-        return int(value["reference"]["object_id"], 16)
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def hex_id(object_id: int) -> str:
-    return f"{object_id:06X}"
-
-
-def position(fields: dict[str, list]) -> list[float] | None:
-    data = first(fields, "DATA")
-    if not isinstance(data, dict):
-        return None
-    point = [data.get(f"PositionRotationPosition{axis}") for axis in "XYZ"]
-    return [float(value) for value in point] if all(isinstance(v, (int, float)) and math.isfinite(v) for v in point) else None
-
-
-def converted_record(converted: Converted, object_id: int, signature: str | None = None) -> dict[str, list]:
-    found = converted.record(object_id)
-    if not found or (signature and found[0] != signature):
-        raise ValueError(f"Converted {signature or 'record'} {hex_id(object_id)} is missing")
-    return found[1]
-
-
-def global_value(source: Source, editor_id: str) -> float:
-    value = first(source.lookup("GLOB", editor_id)[1], "Value")
-    if not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"Global {editor_id} has no value")
-    return float(value)
-
-
-def script_properties(fields: dict[str, list], script: str) -> dict[str, object]:
-    adapter = first(fields, "VirtualMachineAdapter") or {}
-    for entry in adapter.get("Scripts", []):
-        if entry.get("ScriptName") == script:
-            return {item["propertyName"]: item.get("Value") for item in entry.get("Properties", [])}
-    raise ValueError(f"{script} is not attached to {QUEST}")
-
-
-def form_list(source: Source, editor_id: str) -> list[int]:
-    return [object_id for object_id in (local(item) for item in source.lookup("FLST", editor_id)[1].get("FormID", [])) if object_id]
-
-
-def faction_lists(keyword: str) -> tuple[str, str]:
-    if keyword.startswith("SDOW_HTO_FactionSelection_"):
-        name = keyword.removeprefix("SDOW_HTO_FactionSelection_").removesuffix("Shadow")
-        return f"SDOW_HTO_LChar_Faction_{name}", f"SDOW_HTO_LChar_Faction_{name}_Boss"
-    name = keyword.removeprefix("HTO_FactionSelection_")
-    return f"HTO_LChar_Faction_{name}", f"HTO_LChar_Faction_{name}_Boss"
-
-
-def build_factions(source: Source, converted: Converted) -> list[dict]:
-    factions = []
-    for keyword_id in form_list(source, FACTION_LIST):
-        _, keyword, _ = source.fields(keyword_id)
-        mob_name, boss_name = faction_lists(keyword)
-        mob, _ = source.lookup("LVLN", mob_name)
-        boss, _ = source.lookup("LVLN", boss_name)
-        for object_id in (mob, boss):
-            if not converted_record(converted, object_id, "LVLN").get("LVLO"):
-                raise ValueError(f"Converted faction list {hex_id(object_id)} is empty")
-        factions.append({"key": keyword.split("_FactionSelection_")[-1], "keyword": hex_id(keyword_id),
-                         "mob": hex_id(mob), "boss": hex_id(boss)})
-    if not factions:
-        raise ValueError("The FO76 Infestation faction list is empty")
-    return factions
-
-
-def build_sites(source: Source, converted: Converted, regions: dict[int, str], world: int) -> tuple[list[dict], Counter]:
-    ref_types = {name: source.lookup("LCRT", name)[0]
-                 for name in ("LocationCenterMarker", "MapMarkerRefType", "Boss", "LocationClearActor")}
-    records = {object_id: source.fields(object_id) for object_id in source.ids("LCTN")}
-
-    def region_of(object_id: int | None) -> int | None:
-        for _ in range(24):
-            if object_id is None or object_id in regions:
-                return object_id
-            parent = first(records.get(object_id, ("", "", {}))[2], "ParentLocation")
-            object_id = local(parent)
-        return None
-
-    skipped: Counter = Counter()
-    sites = []
-    for object_id, (_, editor_id, fields) in sorted(records.items()):
-        region = region_of(object_id)
-        if region is None or object_id == region:
-            continue
-        refs = first(fields, "MasterSpecialReferences") or []
-        by_type: dict[int, list[int]] = {}
-        worlds = set()
-        for row in refs:
-            kind, ref = local(row.get("MasterSpecialReferencesLocRefType")), local(row.get("MasterSpecialReferencesRef"))
-            worlds.add(local(row.get("MasterSpecialReferencesWorldCell")))
-            if kind and ref:
-                by_type.setdefault(kind, []).append(ref)
-        centers = by_type.get(ref_types["LocationCenterMarker"], [])
-        if worlds != {world}:
-            skipped["outside_world"] += 1
-        elif not centers:
-            skipped["no_center"] += 1
-        elif not by_type.get(ref_types["MapMarkerRefType"]):
-            skipped["no_map_marker"] += 1
-        elif not by_type.get(ref_types["Boss"]):
-            skipped["no_boss"] += 1
-        elif len(by_type.get(ref_types["LocationClearActor"], [])) < MIN_CLEAR_ACTORS:
-            skipped["few_clear_actors"] += 1
-        else:
-            try:
-                converted_record(converted, object_id, "LCTN")
-                center = position(converted_record(converted, centers[0]))
-                clear = [ref for ref in by_type[ref_types["LocationClearActor"]] if converted.record(ref)]
-                boss = [ref for ref in by_type[ref_types["Boss"]] if converted.record(ref)]
-            except ValueError:
-                skipped["not_converted"] += 1
-                continue
-            if center is None or len(clear) < MIN_CLEAR_ACTORS or not boss:
-                skipped["not_converted"] += 1
-                continue
-            sites.append({"location": hex_id(object_id), "editor_id": editor_id, "region": hex_id(region),
-                          "world": hex_id(world), "center": center,
-                          "marker": hex_id(by_type[ref_types["MapMarkerRefType"]][0]),
-                          "clear": [hex_id(ref) for ref in sorted(set(clear))],
-                          "boss": [hex_id(ref) for ref in sorted(set(boss))]})
-    if not sites:
-        raise ValueError("No FO76 location qualifies as an Infestation site")
-    return sites, skipped
-
-
-def build_catalog(source: Source, converted: Converted, data_version: str = "") -> dict:
-    quest_id, quest = source.lookup("QUST", QUEST)
-    converted_record(converted, quest_id, "QUST")
-    properties = script_properties(quest, MASTER_SCRIPT)
-    tuning = {key: global_value(source, name) for key, name in TUNING_GLOBALS.items()}
-    for key, name in MASTER_PROPERTIES.items():
-        value = properties.get(name)
-        if not isinstance(value, (int, float)) or not 0 < value <= 1:
-            raise ValueError(f"{MASTER_SCRIPT}.{name} is not a kill fraction")
-        tuning[key] = round(float(value), 6)
-
-    def resolved(table: dict[str, tuple[str, str]]) -> dict[str, str]:
-        result = {}
-        for key, (signature, editor_id) in table.items():
-            object_id, _ = source.lookup(signature, editor_id)
-            # FO76 currencies convert to FO4 miscellaneous items.
-            converted_record(converted, object_id, "MISC" if signature == "CNCY" else signature)
-            result[key] = hex_id(object_id)
-        return result
-
-    regions, region_ids = [], {}
-    for key, location_name, toggle_name in REGIONS:
-        location_id, fields = source.lookup("LCTN", location_name)
-        toggle_id, _ = source.lookup("GLOB", toggle_name)
-        converted_record(converted, location_id, "LCTN")
-        converted_record(converted, toggle_id, "GLOB")
-        regions.append({"key": key, "location": hex_id(location_id), "toggle": hex_id(toggle_id)})
-        region_ids[location_id] = key
-    world, _ = source.lookup("WRLD", WORLD)
-    converted_record(converted, world, "WRLD")
-    mutations = [object_id for object_id in form_list(source, MUTATION_LIST) if converted.record(object_id)]
-    sites, skipped = build_sites(source, converted, region_ids, world)
-    return {
-        "version": SCHEMA_VERSION,
-        "plugin": PLUGIN,
-        "source": {"quest": hex_id(quest_id), "data_version": data_version},
-        "tuning": tuning,
-        "forms": {"quest": hex_id(quest_id), **resolved(FORMS)},
-        "reward": {**resolved(REWARD), "boss_rank": BOSS_RANK},
-        "mutations": [hex_id(object_id) for object_id in mutations],
-        "factions": build_factions(source, converted),
-        "regions": regions,
-        "sites": sites,
-        "skipped": dict(sorted(skipped.items())),
-    }
 
 
 def png(width: int, height: int, rgba: bytes) -> bytes:
@@ -385,33 +159,6 @@ def extract_fog(movie: bytes) -> tuple[dict, dict[str, bytes]]:
     return {"symbol": FOG_SYMBOL, "layers": layers}, files
 
 
-class NativeSource:
-    def __init__(self, native, handle: int):
-        self.native, self.handle, self.reader = native, handle, NativeReader(native, handle)
-
-    def lookup(self, signature, editor_id):
-        return self.reader.lookup(signature, editor_id)
-
-    def fields(self, object_id):
-        return self.reader.fields(object_id)
-
-    def ids(self, signature):
-        return [raw & 0xFFFFFF for raw in self.native.plugin_handle_record_form_ids(self.handle, [signature])]
-
-
-class NativeConverted:
-    def __init__(self, native, handle: int):
-        self.native, self.handle = native, handle
-        # Converted records carry the plugin's own master index in their raw FormID.
-        self.own = len(plugin_masters(native, handle)) << 24
-        self.cache: dict[int, tuple[str, dict[str, list]] | None] = {}
-
-    def record(self, object_id):
-        if object_id not in self.cache:
-            payload = self.native.plugin_handle_inspect_record(self.handle, self.own | object_id)
-            data = json.loads(payload) if payload else None
-            self.cache[object_id] = (data["signature"], fields_by_name(data["record"])) if data else None
-        return self.cache[object_id]
 
 
 def data_version(source_root: Path) -> str:
@@ -425,18 +172,72 @@ def data_version(source_root: Path) -> str:
     return ""
 
 
+def to_document(catalog: dict) -> dict:
+    """Tales layout: tuning and form roles in `settings`; sites (SeventySix.esm only), factions, regions and
+    boss mutations as keyed sections. The native catalog's bare hex ids are relative to its plugin."""
+    plugin = catalog.get("plugin", PLUGIN)
+
+    def key(value):
+        return form_key(plugin, int(value, 16)) if isinstance(value, str) and value else value
+
+    def keyed(rows, *fields):
+        return [{**row, **{field: key(row[field]) for field in fields if field in row}} for row in rows]
+
+    settings = {name: catalog[name] for name in ("plugin", "tuning", "fog_sha256", "skipped") if name in catalog}
+    if "source" in catalog:
+        settings["source"] = {**catalog["source"], **({"quest": key(catalog["source"]["quest"])} if "quest" in catalog["source"] else {})}
+    for name in ("forms", "reward"):
+        if name in catalog:
+            settings[name] = {field: key(value) for field, value in catalog[name].items()}
+    document = {"version": catalog["version"], "settings": settings}
+    if "sites" in catalog:
+        sites = keyed(catalog["sites"], "location", "region", "world", "marker")
+        document["sites"] = [{**row, "clear": [key(v) for v in row["clear"]], "boss": [key(v) for v in row["boss"]]} for row in sites]
+    if "factions" in catalog:
+        document["factions"] = keyed(catalog["factions"], "keyword", "mob", "boss")
+    if "regions" in catalog:
+        document["regions"] = keyed(catalog["regions"], "location", "toggle")
+    if "mutations" in catalog:
+        document["mutations"] = [{"form": key(value)} for value in catalog["mutations"]]
+    return document
+
+
 def write_bundle(output_mod: Path, catalog: dict, fog: dict, images: dict[str, bytes]) -> dict:
+    from PIL import Image
+    from bacup_lib.fullscreen_map import align_to_blocks, write_ui_dds
+
     bundle = Path(output_mod) / OUTPUT
     bundle.mkdir(parents=True, exist_ok=True)
-    manifest = {"version": SCHEMA_VERSION, "fog": fog, "files": []}
-    for name, content in [*images.items(), ("map-extension.js", (RESOURCES / "map-extension.js").read_bytes())]:
-        (bundle / name).write_bytes(content)
-        manifest["files"].append({"path": (OUTPUT / name).as_posix(), "sha256": hashlib.sha256(content).hexdigest()})
+    manifest = {"version": SCHEMA_VERSION, "fog": {"symbol": fog["symbol"], "layers": []}, "files": []}
+    for layer in fog["layers"]:
+        with Image.open(io.BytesIO(images[layer["file"]])) as image:
+            pixels = align_to_blocks(image)
+            destination = write_ui_dds(pixels, bundle / layer["file"])
+        digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+        manifest["fog"]["layers"].append({**layer, "file": destination.name,
+            "width": pixels.width, "height": pixels.height, "sha256": digest})
+        manifest["files"].append({"path": (OUTPUT / destination.name).as_posix(), "sha256": digest})
     (bundle / "presentation.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    target = Path(output_mod) / CATALOG
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    write_document(FEATURE, PLUGIN, to_document(catalog), output_mod)
+    remove_legacy_bundle(output_mod)
     return manifest
+
+
+def remove_legacy_bundle(output_mod: Path) -> None:
+    legacy = Path(output_mod) / LEGACY_OUTPUT
+    for name in ("fog0.png", "fog1.png", "fog2.png", "presentation.json", "map-extension.js"):
+        (legacy / name).unlink(missing_ok=True)
+    for relative in (LEGACY_OUTPUT, *LEGACY_OUTPUT.parents[:-1]):
+        try:
+            (Path(output_mod) / relative).rmdir()
+        except OSError:
+            break
+
+
+def build_catalog(source_plugin: Path, converted_plugin: Path, data_version: str = "") -> dict:
+    return json.loads(load_native_module().build_infestation_catalog(
+        str(source_plugin), str(converted_plugin), data_version,
+    ))
 
 
 def convert_infestations(source_root: Path, output_mod: Path, *, source_plugin: Path, converted_plugin: Path) -> dict:
@@ -444,16 +245,7 @@ def convert_infestations(source_root: Path, output_mod: Path, *, source_plugin: 
     if not movie.is_file():
         raise FileNotFoundError(f"Infestation fog requires the extracted FO76 map movie: {movie}")
     fog, images = extract_fog(movie.read_bytes())
-    native = load_esp_native()
-    handles: list[int] = []
-    try:
-        handles.append(native.plugin_handle_load_index(str(source_plugin), game="fo76"))
-        handles.append(native.plugin_handle_load_index(str(converted_plugin), game="fo4"))
-        catalog = build_catalog(NativeSource(native, handles[0]), NativeConverted(native, handles[1]),
-                                data_version(source_root))
-    finally:
-        for handle in reversed(handles):
-            native.plugin_handle_close(handle)
+    catalog = build_catalog(source_plugin, converted_plugin, data_version(source_root))
     catalog["fog_sha256"] = [layer["sha256"] for layer in fog["layers"]]
     return {"catalog": catalog, "presentation": write_bundle(output_mod, catalog, fog, images)}
 

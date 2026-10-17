@@ -1,6 +1,8 @@
 use super::*;
 use crate::fixups::havok::normalize_weapon_behavior_contracts::merge_behavior_contracts;
+use havok_native::convert::fo76::{Fo76MigrationOptions, Fo76RigBones};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -8,15 +10,64 @@ thread_local! {
     static SERIALIZED_CONVERSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Converted clips keep FO76's AimSource track; `ship_restored_rig` ships the bone it binds to.
+fn fo76_options() -> Fo76MigrationOptions {
+    Fo76MigrationOptions {
+        keep_aim_source: true,
+        ..Default::default()
+    }
+}
+
 fn convert(path: &Path) -> Result<HkxFile, String> {
+    convert_with(path, fo76_options())
+}
+
+fn convert_with(path: &Path, options: Fo76MigrationOptions) -> Result<HkxFile, String> {
     #[cfg(test)]
     if SERIALIZED_CONVERSION.get() {
-        let report = havok_native::api::havok_convert_bytes_report(&source_bytes(path)?, VERSION)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let report = havok_native::api::havok_convert_bytes_report_with_fo76_options(
+            &source_bytes(path)?,
+            VERSION,
+            options,
+        )
+        .map_err(|e| format!("{}: {e}", path.display()))?;
         return HkxFile::read(&report.bytes).map_err(|e| e.to_string());
     }
-    havok_native::api::havok_convert_for_editing(&source_bytes(path)?, VERSION)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    havok_native::api::havok_convert_for_editing_with_fo76_options(
+        &source_bytes(path)?,
+        VERSION,
+        options,
+    )
+    .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Actor folder a clip was authored in: everything before its `animations` folder.
+pub fn clip_project_dir(clip: &str) -> Option<String> {
+    let clip = clean(clip);
+    clip.find("/animations/").map(|end| clip[..end].to_string())
+}
+
+/// FO76 clip folders that ship no rig of their own, and the actor whose rig they play on.
+const RIGLESS_CLIP_FOLDERS: &[(&str, &str)] =
+    &[("actors/supermutant_rustking", "actors/supermutant")];
+
+/// Rig pair to convert a FO76 clip for: the rig of the actor folder it was authored in,
+/// and the rig that folder plays on after conversion. That is FO4's rig with restored
+/// FO76 bones, or the converted FO76 rig itself when FO4 has no such actor.
+pub fn clip_rig_bones(source: &Path, target: &Path, dir: &str) -> Option<Fo76RigBones> {
+    let dir = RIGLESS_CLIP_FOLDERS
+        .iter()
+        .find(|(folder, _)| *folder == dir)
+        .map_or(dir, |(_, actor)| actor);
+    let source_bones = skeleton_bones(&project_rig(source, dir).ok()?);
+    let target_bones = match shipped_rig(source, target, dir) {
+        Ok((rig, _)) => skeleton_bones(&rig),
+        Err(_) => source_bones.clone(),
+    };
+    (!source_bones.is_empty() && !target_bones.is_empty()).then_some(Fo76RigBones {
+        source: source_bones,
+        target: target_bones,
+    })
 }
 fn write(root: &Path, relative: &str, file: &HkxFile) -> Result<(), String> {
     let path = root.join(relative.replace('\\', "/"));
@@ -44,6 +95,7 @@ struct ParsedInputs {
     shared_converted: HashMap<String, HkxFile>,
     parsed: BTreeMap<PathBuf, HkxFile>,
     bone_orders: HashMap<String, Vec<Option<usize>>>,
+    clip_rigs: HashMap<String, Option<Arc<Fo76RigBones>>>,
     parsing: Duration,
     writes: Duration,
     parsed_inputs: u32,
@@ -61,6 +113,15 @@ impl ParsedInputs {
     }
 
     fn convert(&mut self, source: &Path, relative: &str) -> Result<HkxFile, String> {
+        self.convert_with(source, relative, fo76_options())
+    }
+
+    fn convert_with(
+        &mut self,
+        source: &Path,
+        relative: &str,
+        options: Fo76MigrationOptions,
+    ) -> Result<HkxFile, String> {
         if self.reuse_shared_inputs {
             if let Some(file) = self.shared_converted.get(relative) {
                 self.shared_input_cache_hits += 1;
@@ -68,7 +129,7 @@ impl ParsedInputs {
             }
         }
         let started = Instant::now();
-        let file = convert(&source.join(relative))?;
+        let file = convert_with(&source.join(relative), options)?;
         self.parsing += started.elapsed();
         self.parsed_inputs += 1;
         if self.reuse_shared_inputs {
@@ -78,9 +139,14 @@ impl ParsedInputs {
         Ok(file)
     }
 
-    fn convert_transient(&mut self, source: &Path, relative: &str) -> Result<HkxFile, String> {
+    fn convert_transient(
+        &mut self,
+        source: &Path,
+        relative: &str,
+        options: Fo76MigrationOptions,
+    ) -> Result<HkxFile, String> {
         let started = Instant::now();
-        let file = convert(&source.join(relative))?;
+        let file = convert_with(&source.join(relative), options)?;
         self.parsing += started.elapsed();
         self.parsed_inputs += 1;
         Ok(file)
@@ -127,12 +193,29 @@ impl ParsedInputs {
         Ok(file)
     }
 
-    fn convert_animation(&mut self, source: &Path, relative: &str) -> Result<HkxFile, String> {
+    fn convert_animation(
+        &mut self,
+        source: &Path,
+        target: &Path,
+        relative: &str,
+    ) -> Result<HkxFile, String> {
+        let options = Fo76MigrationOptions {
+            rig_bones: self.clip_rig(source, target, relative),
+            ..fo76_options()
+        };
         if self.cache_animation_inputs {
-            self.convert(source, relative)
+            self.convert_with(source, relative, options)
         } else {
-            self.convert_transient(source, relative)
+            self.convert_transient(source, relative, options)
         }
+    }
+
+    fn clip_rig(&mut self, source: &Path, target: &Path, clip: &str) -> Option<Arc<Fo76RigBones>> {
+        let dir = clip_project_dir(clip)?;
+        self.clip_rigs
+            .entry(dir)
+            .or_insert_with_key(|dir| clip_rig_bones(source, target, dir).map(Arc::new))
+            .clone()
     }
 
     fn read_animation(&mut self, path: &Path) -> Result<HkxFile, String> {
@@ -278,9 +361,17 @@ fn skeleton_bones(file: &HkxFile) -> Vec<String> {
         .unwrap_or_default()
 }
 pub(super) fn project_rig(root: &Path, dir: &str) -> Result<HkxFile, String> {
-    let conventional = root.join(format!("{dir}/characterassets/skeleton.hkx"));
-    if conventional.try_exists().map_err(|e| e.to_string())? {
-        return read(&conventional);
+    read(&root.join(project_rig_path(root, dir)?))
+}
+
+fn project_rig_path(root: &Path, dir: &str) -> Result<String, String> {
+    let conventional = format!("{dir}/characterassets/skeleton.hkx");
+    if root
+        .join(&conventional)
+        .try_exists()
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(conventional);
     }
     // RoboBrain's character references the shared CreateABot rig outside its project directory.
     let mut rigs = BTreeSet::new();
@@ -308,7 +399,118 @@ pub(super) fn project_rig(root: &Path, dir: &str) -> Result<HkxFile, String> {
     if rigs.len() != 1 {
         return Err(format!("{dir}: expected one character rig, found {rigs:?}"));
     }
-    read(&root.join(rigs.first().unwrap()))
+    Ok(rigs.into_iter().next().unwrap())
+}
+
+/// FO76 bones absent from FO4's rigs that the converted graphs still drive: the 3P gun
+/// BSDirectAtModifier aims the `AimSource` character property, a Chest child FO76 animates
+/// to face model-forward. Any FO4 bone in its place makes the spine chase it.
+const RESTORED_BONES: &[&str] = &["AimSource"];
+
+/// Appends `RESTORED_BONES` from the FO76 rig to the FO4 rig and returns their target
+/// indices. Appending keeps every FO4 bone index, so vanilla clips and masks still bind.
+fn restore_rig_bones(source: &HkxFile, target: &mut HkxFile) -> Result<Vec<usize>, String> {
+    let skeleton = |file: &HkxFile| {
+        file.objects()
+            .iter()
+            .position(|o| o.class_name == "hkaSkeleton")
+    };
+    let (Some(source_skeleton), Some(target_skeleton)) = (skeleton(source), skeleton(target))
+    else {
+        return Ok(vec![]);
+    };
+    let source_object = &source.objects()[source_skeleton];
+    let source_bones = skeleton_bones(source);
+    let mut target_bones = skeleton_bones(target);
+    let mut object = target.objects()[target_skeleton].clone();
+    let mut bones = array(&object, "bones");
+    let mut parents = array(&object, "parentIndices");
+    let mut pose = array(&object, "referencePose");
+    let mut restored = vec![];
+    for name in RESTORED_BONES {
+        let Some(bone) = source_bones.iter().position(|b| b == name) else {
+            continue;
+        };
+        if target_bones.iter().any(|b| b == name) {
+            continue;
+        }
+        let parent = array(source_object, "parentIndices")
+            .get(bone)
+            .and_then(number)
+            .ok_or_else(|| format!("{name}: missing source parent"))? as usize;
+        let parent_name = &source_bones[parent];
+        let parent = target_bones
+            .iter()
+            .position(|b| b == parent_name)
+            .ok_or_else(|| format!("{name}: FO4 rig lacks parent {parent_name}"))?;
+        bones.push(array(source_object, "bones")[bone].clone());
+        parents.push(HkxValue::I16(parent as i16));
+        pose.push(array(source_object, "referencePose")[bone].clone());
+        restored.push(target_bones.len());
+        target_bones.push(name.to_string());
+    }
+    if restored.is_empty() {
+        return Ok(restored);
+    }
+    set(&mut object, "bones", HkxValue::Array(bones));
+    set(&mut object, "parentIndices", HkxValue::Array(parents));
+    set(&mut object, "referencePose", HkxValue::Array(pose));
+    target.objects_mut()[target_skeleton] = object;
+    // Ragdoll-driven poses keep unmapped animation bones local; FO76 lists AimSource there.
+    for mapper in target
+        .objects_mut()
+        .iter_mut()
+        .filter(|o| o.class_name == "hkaSkeletonMapper")
+    {
+        let Some(HkxValue::Object(mapping)) = mapper
+            .members
+            .iter_mut()
+            .find(|m| m.name == "mapping")
+            .map(|m| &mut m.value)
+        else {
+            continue;
+        };
+        let maps_into_animation = mapping
+            .iter()
+            .any(|m| m.name == "skeletonB" && m.value == HkxValue::Pointer(Some(target_skeleton)));
+        if let Some(HkxValue::Array(unmapped)) = mapping
+            .iter_mut()
+            .find(|m| m.name == "unmappedBones")
+            .map(|m| &mut m.value)
+            .filter(|_| maps_into_animation)
+        {
+            unmapped.extend(restored.iter().map(|&bone| HkxValue::I16(bone as i16)));
+        }
+    }
+    Ok(restored)
+}
+
+/// The FO4 rig the converted project ships, with `RESTORED_BONES` appended.
+pub(super) fn shipped_rig(
+    source: &Path,
+    target: &Path,
+    dir: &str,
+) -> Result<(HkxFile, Vec<usize>), String> {
+    let mut rig = project_rig(target, dir)?;
+    let restored = restore_rig_bones(&project_rig(source, dir)?, &mut rig)?;
+    Ok((rig, restored))
+}
+
+fn ship_restored_rig(
+    source: &Path,
+    target: &Path,
+    output: &Path,
+    dir: &str,
+    written: &mut BTreeSet<String>,
+    inputs: &mut ParsedInputs,
+) -> Result<(), String> {
+    let (rig, restored) = shipped_rig(source, target, dir)?;
+    if !restored.is_empty() {
+        let relative = project_rig_path(target, dir)?;
+        inputs.write(output, &relative, &rig)?;
+        written.insert(relative);
+    }
+    Ok(())
 }
 
 pub(super) fn bone_order(
@@ -316,29 +518,32 @@ pub(super) fn bone_order(
     target: &Path,
     dir: &str,
 ) -> Result<Vec<Option<usize>>, String> {
-    let source = project_rig(source, dir)?;
-    let target = project_rig(target, dir)?;
-    let source = skeleton_bones(&source);
-    let target = skeleton_bones(&target);
-    if source.is_empty() || target.is_empty() {
+    let source_bones = skeleton_bones(&project_rig(source, dir)?);
+    let target_bones = skeleton_bones(&shipped_rig(source, target, dir)?.0);
+    if source_bones.is_empty() || target_bones.is_empty() {
         return Err(format!("{dir}: missing skeleton bone table"));
     }
-    Ok(target
+    Ok(target_bones
         .iter()
-        .map(|name| source.iter().position(|s| s == name))
+        .map(|name| source_bones.iter().position(|s| s == name))
         .collect())
 }
+
+fn bone_weights(object: &HkxObject) -> Vec<f32> {
+    match value(object, "boneWeights") {
+        Some(HkxValue::F32List(values)) => values.clone(),
+        Some(HkxValue::Array(values)) => values.iter().filter_map(number).collect(),
+        _ => vec![],
+    }
+}
+
 fn remap_masks(file: &mut HkxFile, order: &[Option<usize>]) {
     for object in file
         .objects_mut()
         .iter_mut()
         .filter(|o| o.class_name == "hkbBoneWeightArray")
     {
-        let weights: Vec<_> = match value(object, "boneWeights") {
-            Some(HkxValue::F32List(values)) => values.clone(),
-            Some(HkxValue::Array(values)) => values.iter().filter_map(number).collect(),
-            _ => vec![],
-        };
+        let weights = bone_weights(object);
         if weights.is_empty() {
             continue;
         }
@@ -348,19 +553,21 @@ fn remap_masks(file: &mut HkxFile, order: &[Option<usize>]) {
             HkxValue::Array(
                 order
                     .iter()
-                    .map(|i| HkxValue::F32(i.and_then(|i| weights.get(i).copied()).unwrap_or(0.0)))
+                    // Havok weights bones past the end of a mask at 1.0, so short FO76
+                    // masks keep their trailing bones on.
+                    .map(|i| HkxValue::F32(i.map_or(0.0, |i| *weights.get(i).unwrap_or(&1.0))))
                     .collect(),
             ),
         );
     }
 }
 
-fn property_bone_weights(
+fn property_mask(
     file: &HkxFile,
     info: &HkxValue,
     word: &HkxValue,
     variants: &[HkxValue],
-) -> Option<Vec<HkxValue>> {
+) -> Option<usize> {
     let member_number = |value: &HkxValue, name: &str| {
         value
             .as_object_members()?
@@ -375,14 +582,60 @@ fn property_bone_weights(
     let HkxValue::Pointer(Some(index)) = variants.get(slot)? else {
         return None;
     };
-    let object = file.objects().get(*index)?;
-    (object.class_name == "hkbBoneWeightArray").then(|| array(object, "boneWeights"))
+    (file.objects().get(*index)?.class_name == "hkbBoneWeightArray").then_some(*index)
+}
+
+fn property_bone_weights(
+    file: &HkxFile,
+    info: &HkxValue,
+    word: &HkxValue,
+    variants: &[HkxValue],
+) -> Option<Vec<HkxValue>> {
+    property_mask(file, info, word, variants)
+        .map(|index| array(&file.objects()[index], "boneWeights"))
+}
+
+/// Copies a kept FO4 mask with the FO76 weights of the bones restored to the shipped rig.
+/// Returns the copy, or `None` when the mask already weights them like the source.
+fn restore_mask_weights(
+    target: &mut HkxFile,
+    target_mask: usize,
+    source_weights: &[f32],
+    restored: &[usize],
+) -> Option<usize> {
+    let mut weights = bone_weights(&target.objects()[target_mask]);
+    if weights.is_empty() {
+        return None;
+    }
+    let mut changed = false;
+    for &bone in restored {
+        let weight = *source_weights.get(bone).unwrap_or(&1.0);
+        if *weights.get(bone).unwrap_or(&1.0) != weight {
+            if weights.len() <= bone {
+                weights.resize(bone + 1, 1.0);
+            }
+            weights[bone] = weight;
+            changed = true;
+        }
+    }
+    if !changed {
+        return None;
+    }
+    // FO4 masks can back several properties; only this one takes the FO76 weights.
+    let mut mask = target.objects()[target_mask].clone();
+    set(
+        &mut mask,
+        "boneWeights",
+        HkxValue::Array(weights.into_iter().map(HkxValue::F32).collect()),
+    );
+    Some(add(target, mask))
 }
 
 fn append_property_values(
     target: &mut HkxFile,
     source: &HkxFile,
     bone_order: Option<&[Option<usize>]>,
+    restored: &[usize],
 ) -> Result<(), String> {
     let data_index = |f: &HkxFile| {
         f.objects()
@@ -434,14 +687,45 @@ fn append_property_values(
                 .zip(source_mask)
                 .is_some_and(|(target, source)| target.is_empty() && !source.is_empty())
             {
+                let masks = property_mask(
+                    target,
+                    &target_infos[index],
+                    &target_words[index],
+                    &target_variants,
+                )
+                .zip(property_mask(source, &infos[i], &words[i], &variants));
+                if let Some((target_mask, source_mask)) = masks {
+                    let source_weights = bone_weights(&source.objects()[source_mask]);
+                    if let Some(copy) =
+                        restore_mask_weights(target, target_mask, &source_weights, restored)
+                    {
+                        let slot = target_words[index]
+                            .as_object_members_mut()
+                            .and_then(|members| members.iter_mut().find(|m| m.name == "value"))
+                            .ok_or("missing character property word")?;
+                        slot.value = HkxValue::I32(target_variants.len() as i32);
+                        target_variants.push(HkxValue::Pointer(Some(copy)));
+                    }
+                }
                 continue;
             }
         }
         let mut word = words[i].clone();
-        // FO76's AimSource bone is absent on the FO4 rig; its numeric index is Neck there.
         if text(name).is_some_and(|s| s.eq_ignore_ascii_case("AimSource")) {
-            if let Some(target_word) = &target_aim_source {
-                word = target_word.clone();
+            // The rig order maps AimSource onto the bone the shipped rig restores; rigs
+            // without it (first person) aim from the weapon bone.
+            let value = word
+                .as_object_members_mut()
+                .and_then(|members| members.iter_mut().find(|m| m.name == "value"))
+                .ok_or("missing bone property value")?;
+            let restored = bone_order.and_then(|order| {
+                let index = number(&value.value).filter(|index| *index >= 0.0)? as usize;
+                order.iter().position(|bone| *bone == Some(index))
+            });
+            match (restored, &target_aim_source) {
+                (Some(bone), _) => value.value = HkxValue::I32(bone as i32),
+                (None, Some(target_word)) => word = target_word.clone(),
+                (None, None) => {}
             }
         } else if let Some(order) =
             bone_order.filter(|_| text(name).is_some_and(|s| s.ends_with("BoneIndex")))
@@ -569,6 +853,7 @@ fn remove_shredder_swing_events(animation: &mut HkxFile, origin: &str) {
 
 fn copy_animation(
     source: &Path,
+    target: &Path,
     output: &Path,
     project: &Project,
     origin: &str,
@@ -580,7 +865,7 @@ fn copy_animation(
         return Ok(());
     }
     let mut animation = if project.vanilla {
-        inputs.convert_animation(source, origin)?
+        inputs.convert_animation(source, target, origin)?
     } else {
         inputs.read_animation(&source.join(origin))?
     };
@@ -664,6 +949,7 @@ fn build_with_profile(
     let vanilla_blends =
         inputs.read(&target.join("actors/character/behaviors/weaponbehavior.hkx"))?;
     let mut written = BTreeSet::new();
+    let mut shipped_rigs = BTreeSet::new();
     let mut contracts: BTreeMap<String, Vec<HkxFile>> = BTreeMap::new();
     for route in &plan.routes {
         let project = &plan.projects[&route.project];
@@ -683,10 +969,23 @@ fn build_with_profile(
                 clean(origin)
             )
         };
+        if project.vanilla
+            && !project.source.contains("_1stperson")
+            && shipped_rigs.insert(project.source.clone())
+        {
+            ship_restored_rig(
+                &source,
+                &target,
+                &output,
+                &project.source,
+                &mut written,
+                &mut inputs,
+            )?;
+        }
         let order = if bow_retarget.as_ref().is_some_and(|rig| !rig.is_identity()) {
             let source_rig =
                 project_rig(&source, &project.source.replace("powerarmor", "character"))?;
-            let target_rig = project_rig(&target, &project.source)?;
+            let (target_rig, _) = shipped_rig(&source, &target, &project.source)?;
             let source_bones = skeleton_bones(&source_rig);
             Some(
                 skeleton_bones(&target_rig)
@@ -791,7 +1090,7 @@ fn build_with_profile(
                 let destination = animation_destination(origin);
                 if written.insert(destination.clone()) {
                     let mut animation = if retarget.is_identity() {
-                        inputs.convert_animation(&source, origin)?
+                        inputs.convert_animation(&source, &target, origin)?
                     } else {
                         let mut animation = inputs.read_animation(&source.join(origin))?;
                         retarget
@@ -803,7 +1102,15 @@ fn build_with_profile(
                     inputs.write(&output, &destination, &animation)?;
                 }
             } else {
-                copy_animation(&source, &output, project, origin, &mut written, &mut inputs)?;
+                copy_animation(
+                    &source,
+                    &target,
+                    &output,
+                    project,
+                    origin,
+                    &mut written,
+                    &mut inputs,
+                )?;
             }
         }
     }
@@ -813,10 +1120,13 @@ fn build_with_profile(
             if graphs.is_empty() {
                 continue;
             }
-            let order = if !project.source.contains("_1stperson") {
-                Some(inputs.bone_order(&source, &target, &project.source)?)
+            let (order, restored) = if !project.source.contains("_1stperson") {
+                (
+                    Some(inputs.bone_order(&source, &target, &project.source)?),
+                    shipped_rig(&source, &target, &project.source)?.1,
+                )
             } else {
-                None
+                (None, vec![])
             };
             for relative in project_roots(&target, &project.source)? {
                 let path = target.join(&relative);
@@ -851,7 +1161,7 @@ fn build_with_profile(
                     remap_masks(&mut donor, order);
                 }
                 let mut character = inputs.read(&path)?;
-                append_property_values(&mut character, &donor, order.as_deref())?;
+                append_property_values(&mut character, &donor, order.as_deref(), &restored)?;
                 inputs.write(&output, &relative, &character)?;
                 written.insert(relative);
             }
@@ -926,6 +1236,7 @@ fn build_with_profile(
                             {
                                 copy_animation(
                                     &source,
+                                    &target,
                                     &output,
                                     project,
                                     &origin,
@@ -1014,6 +1325,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let (source, origin) = converted_fixture(temp.path());
+            let target = temp.path().join("target");
             let output = temp.path().join("output");
             let mut inputs = ParsedInputs::new(true, false);
             let mut written = BTreeSet::new();
@@ -1030,6 +1342,7 @@ mod tests {
 
             copy_animation(
                 &source,
+                &target,
                 &output,
                 &vanilla,
                 &origin,
@@ -1039,6 +1352,7 @@ mod tests {
             .unwrap();
             copy_animation(
                 &source,
+                &target,
                 &output,
                 &custom,
                 &origin,
@@ -1055,6 +1369,7 @@ mod tests {
             let parsed_inputs = inputs.parsed_inputs;
             copy_animation(
                 &source,
+                &target,
                 &output,
                 &vanilla,
                 &origin,
@@ -1064,6 +1379,7 @@ mod tests {
             .unwrap();
             copy_animation(
                 &source,
+                &target,
                 &output,
                 &custom,
                 &origin,
@@ -1180,7 +1496,7 @@ mod tests {
                     ("Other", 7),
                 ]);
                 for _ in 0..2 {
-                    append_property_values(&mut target, &source, None).unwrap();
+                    append_property_values(&mut target, &source, None, &[]).unwrap();
                     for (index, member) in [
                         (0, "characterPropertyInfos"),
                         (1, "characterPropertyNames"),
@@ -1202,11 +1518,11 @@ mod tests {
             ] {
                 let mut target = character_properties(&properties);
                 let before = array(&target.objects()[2], "wordVariableValues");
-                append_property_values(&mut target, &source, None).unwrap();
+                append_property_values(&mut target, &source, None, &[]).unwrap();
                 assert_eq!(array(&target.objects()[2], "wordVariableValues"), before);
             }
             let mut target = character_properties(&[]);
-            append_property_values(&mut target, &source, None).unwrap();
+            append_property_values(&mut target, &source, None, &[]).unwrap();
             assert_eq!(
                 array(&target.objects()[2], "wordVariableValues"),
                 array(&source.objects()[2], "wordVariableValues")
@@ -1238,7 +1554,7 @@ mod tests {
                 let expected_grip = if existing.len() == 1 { 84 } else { 85 };
                 let mut target = character_properties(&existing);
                 for _ in 0..2 {
-                    append_property_values(&mut target, &source, Some(&order)).unwrap();
+                    append_property_values(&mut target, &source, Some(&order), &[]).unwrap();
                     let expected = character_properties(&[
                         ("DirectAtWeaponBoneIndex", 28),
                         ("WeaponGripMirroredBoneIndex", expected_grip),
@@ -1251,7 +1567,7 @@ mod tests {
                 }
             }
             let mut unchanged = character_properties(&[]);
-            append_property_values(&mut unchanged, &source, None).unwrap();
+            append_property_values(&mut unchanged, &source, None, &[]).unwrap();
             assert_eq!(
                 array(&unchanged.objects()[2], "wordVariableValues"),
                 array(&source.objects()[2], "wordVariableValues")
@@ -1275,13 +1591,14 @@ mod tests {
                 HkxValue::Array(vec![HkxValue::F32(0.25), HkxValue::F32(1.0)]),
             );
             let mut file = HkxFile::from_tagxml(11, VERSION, vec![object]);
-            remap_masks(&mut file, &[Some(1), None, Some(0)]);
+            remap_masks(&mut file, &[Some(1), None, Some(0), Some(5)]);
             let packed = HkxFile::read(&file.save()).unwrap();
             let weights: Vec<_> = array(&packed.objects()[0], "boneWeights")
                 .iter()
                 .filter_map(number)
                 .collect();
-            assert_eq!(weights, [1.0, 0.0, 0.25]);
+            // Source bone 5 lies past the end of the FO76 mask, which Havok weights at 1.0.
+            assert_eq!(weights, [1.0, 0.0, 0.25, 1.0]);
         }
         {
             let mut source = masked_character(vec![0.25, 1.0]);
@@ -1300,7 +1617,7 @@ mod tests {
                 );
             }
             remap_masks(&mut source, &[Some(1), None, Some(0)]);
-            append_property_values(&mut target, &source, None).unwrap();
+            append_property_values(&mut target, &source, None, &[]).unwrap();
             assert_eq!(target.objects().len(), 5);
             assert_eq!(
                 array(&target.objects()[4], "boneWeights"),
@@ -1314,7 +1631,7 @@ mod tests {
                 array(&expected.objects()[2], "wordVariableValues")
             );
             let once = target.save();
-            append_property_values(&mut target, &source, None).unwrap();
+            append_property_values(&mut target, &source, None, &[]).unwrap();
             assert_eq!(target.save(), once);
         }
         {
@@ -1324,14 +1641,148 @@ mod tests {
                 character_properties(&[("UpperBodyFeatheredSpine00", 0), ("OtherMask", 0)]),
             ] {
                 let before = target.save();
-                append_property_values(&mut target, &source, None).unwrap();
+                append_property_values(&mut target, &source, None, &[]).unwrap();
                 assert_eq!(target.save(), before);
             }
             let mut target = masked_character(vec![]);
             let before = target.save();
-            append_property_values(&mut target, &masked_character(vec![]), None).unwrap();
+            append_property_values(&mut target, &masked_character(vec![]), None, &[]).unwrap();
             assert_eq!(target.save(), before);
         }
+    }
+
+    #[test]
+    fn shipped_rig_appends_aim_source_and_keeps_fo4_physics() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+        let fo4 =
+            read(&repo.join("py_creation_lib/native/havok/tests/fixtures/skeleton.hkx")).unwrap();
+        let skeleton = fo4
+            .objects()
+            .iter()
+            .position(|o| o.class_name == "hkaSkeleton")
+            .unwrap();
+        // FO76 = FO4 + AimSource under Chest (11) with its own rest pose.
+        let mut fo76 = fo4.clone();
+        let object = &mut fo76.objects_mut()[skeleton];
+        let mut bones = array(object, "bones");
+        let mut aim_source = bones[11].clone();
+        for member in aim_source.as_object_members_mut().unwrap() {
+            if member.name == "name" {
+                member.value = HkxValue::String {
+                    value: "AimSource".into(),
+                    is_null: false,
+                };
+            }
+        }
+        bones.push(aim_source);
+        let mut parents = array(object, "parentIndices");
+        parents.push(HkxValue::I16(11));
+        let mut pose = array(object, "referencePose");
+        pose.push(pose[3].clone());
+        set(object, "bones", HkxValue::Array(bones));
+        set(object, "parentIndices", HkxValue::Array(parents));
+        set(object, "referencePose", HkxValue::Array(pose.clone()));
+
+        let mut shipped = fo4.clone();
+        assert_eq!(restore_rig_bones(&fo76, &mut shipped).unwrap(), [95]);
+        assert!(restore_rig_bones(&fo76, &mut shipped).unwrap().is_empty());
+        let shipped = HkxFile::read(&shipped.save()).unwrap();
+        let bones = skeleton_bones(&shipped);
+        assert_eq!((bones.len(), bones[95].as_str()), (96, "AimSource"));
+        let object = &shipped.objects()[skeleton];
+        assert_eq!(number(&array(object, "parentIndices")[95]), Some(11.0));
+        assert_eq!(array(object, "referencePose")[95], pose[95]);
+        let unmapped: Vec<_> = shipped
+            .objects()
+            .iter()
+            .filter(|o| o.class_name == "hkaSkeletonMapper")
+            .map(|mapper| {
+                let mapping = value(mapper, "mapping")
+                    .unwrap()
+                    .as_object_members()
+                    .unwrap();
+                let field = |name: &str| &mapping.iter().find(|m| m.name == name).unwrap().value;
+                let HkxValue::Array(bones) = field("unmappedBones") else {
+                    panic!("unmappedBones")
+                };
+                (
+                    *field("skeletonB") == HkxValue::Pointer(Some(skeleton)),
+                    bones.iter().filter_map(number).any(|bone| bone == 95.0),
+                )
+            })
+            .collect();
+        assert_eq!(unmapped.len(), 2);
+        assert_eq!(unmapped.iter().filter(|(_, has)| *has).count(), 1);
+        assert!(
+            unmapped
+                .iter()
+                .all(|(into_animation, has)| into_animation == has)
+        );
+        // Everything else, including the ragdoll's half-float materials, survives unchanged.
+        for (index, (before, after)) in fo4.objects().iter().zip(shipped.objects()).enumerate() {
+            if index != skeleton && before.class_name != "hkaSkeletonMapper" {
+                assert_eq!(before.members, after.members, "{}", before.class_name);
+            }
+        }
+    }
+
+    #[test]
+    fn aim_source_and_kept_masks_follow_the_restored_bone() {
+        let mut order = vec![None; 96];
+        order[28] = Some(29);
+        order[95] = Some(12);
+        let mut target = character_properties(&[("DirectAtWeaponBoneIndex", 28)]);
+        append_property_values(
+            &mut target,
+            &character_properties(&[("AimSource", 12)]),
+            Some(&order),
+            &[95],
+        )
+        .unwrap();
+        assert_eq!(
+            array(&target.objects()[2], "wordVariableValues"),
+            array(
+                &character_properties(&[("DirectAtWeaponBoneIndex", 28), ("AimSource", 95)])
+                    .objects()[2],
+                "wordVariableValues"
+            )
+        );
+
+        // FO4 keeps its own short mask, shared by both properties; only the property the
+        // source supplies gets a copy carrying the source's AimSource weight.
+        let mut source_weights = vec![1.0; 96];
+        source_weights[95] = 0.0;
+        let mut source = masked_character(source_weights);
+        for (index, member) in [
+            (0, "characterPropertyInfos"),
+            (1, "characterPropertyNames"),
+            (2, "wordVariableValues"),
+        ] {
+            let values = array(&source.objects()[index], member);
+            set(
+                &mut source.objects_mut()[index],
+                member,
+                HkxValue::Array(values[..1].to_vec()),
+            );
+        }
+        let mut target = masked_character(vec![0.5; 48]);
+        append_property_values(&mut target, &source, None, &[95]).unwrap();
+        let variants = pointers(&target.objects()[2], "variantVariableValues");
+        let slot = |property: usize| {
+            let words = array(&target.objects()[2], "wordVariableValues");
+            let value = words[property].as_object_members().unwrap()[0]
+                .value
+                .clone();
+            variants[number(&value).unwrap() as usize]
+        };
+        let mut expected = vec![0.5; 48];
+        expected.resize(95, 1.0);
+        expected.push(0.0);
+        assert_eq!(bone_weights(&target.objects()[slot(0)]), expected);
+        assert_eq!(bone_weights(&target.objects()[slot(1)]), vec![0.5; 48]);
+        let once = target.save();
+        append_property_values(&mut target, &source, None, &[95]).unwrap();
+        assert_eq!(target.save(), once);
     }
 
     fn masked_character(weights: Vec<f32>) -> HkxFile {

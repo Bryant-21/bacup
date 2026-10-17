@@ -1,7 +1,8 @@
 """Conversion-local ESP registry (bacup_lib._native.esp_authoring_core).
 
 Handles from creation_lib._native must NEVER be passed here, nor vice versa —
-the two extensions have independent handle registries.
+development extensions have independent handle registries. Packaged BACUP shares
+the registry, but callers still own and close only their own handles.
 """
 from __future__ import annotations
 

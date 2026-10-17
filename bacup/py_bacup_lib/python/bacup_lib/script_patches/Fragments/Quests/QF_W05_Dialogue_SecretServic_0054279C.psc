@@ -7,5 +7,8 @@ Function Fragment_Stage_0000_Item_00()
     If W05_MQA_206P != None && !W05_MQA_206P.IsRunning()
         Return
     EndIf
-    playerActor.SetValue(W05_MQS_206P_Checkpoint, 1.0)
+    ; W05_MQA_206P stage 600 raises this to 2 to open grid 547A4B; entering Operations must not lower it.
+    If playerActor.GetValue(W05_MQS_206P_Checkpoint) < 1.0
+        playerActor.SetValue(W05_MQS_206P_Checkpoint, 1.0)
+    EndIf
 EndFunction

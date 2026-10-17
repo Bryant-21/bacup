@@ -251,33 +251,21 @@ const FO4_MGEF_ARCHETYPES_REQUIRING_ACTOR_VALUE: &[u32] = &[
     5,  // Dual Value Modifier
     34, // Peak Value Modifier
 ];
-pub(crate) const FO4_HARDCODED_AVIF_LOCAL_IDS: &[u32] = &[
-    0x0002D2, // AnimationMult
-    0x0002D3, // WeapReloadSpeedMult
-    0x0002D8, // ActionPointsRate
-    0x0002DB, // RadsRate
-    0x0002DE, // MeleeDamage
-    0x000312, // weaponSpeedMult
-    0x00032E, // PowerGenerated
-    0x000330, // PowerRequired
-    0x000331, // Food
-    0x000332, // Water
-    0x00034F, // Fatigue
-    0x000359, // ActionPointsRateMult
-    0x00035A, // ConditionRateMult
-    0x00035C, // PowerArmorBattery
-    0x00035F, // ReflectDamage
-    0x00037F, // Sneak
-    // Below: attested by vanilla Fallout4.esm, which references these ids from
-    // MGEF.DATA.actor_value even though no AVIF record defines them. Left out of
-    // the list above, they were treated as dangling and nulled — which strands a
-    // Value Modifier effect with no actor value and hard-crashes FO4 on apply.
-    // Names are deliberately omitted: nothing in the data files names them.
-    0x0002BC, 0x0002BD, 0x0002D9, 0x0002EE, 0x0002F4, 0x0002F7, 0x000310, 0x000311, 0x00032D,
-    0x000355, 0x000360, 0x000361, 0x000362, 0x000363, 0x000365, 0x000366, 0x000367, 0x000389,
-    // Attested by vanilla Fallout4.esm workshop PRPS rows (ACTI/FURN/STAT).
-    0x00033E,
-];
+// ActorValue::RegisterActorValues creates these forms even without ESM rows.
+// See mods/B21_ConversionRuntime/src/re/EngineActorValues.md for registration proof.
+pub(crate) const FO4_HARDCODED_AVIF_LOCAL_IDS: &[u32] = &{
+    let mut forms = [0; 204];
+    let mut index = 0;
+    let mut legacy_index = 0;
+    while legacy_index <= 205 {
+        if legacy_index != 4 && legacy_index != 144 {
+            forms[index] = legacy_index + 700;
+            index += 1;
+        }
+        legacy_index += 1;
+    }
+    forms
+};
 const MAGIC_TARGET_SELF: u32 = 0;
 const MAGIC_TARGET_AIMED: u32 = 2;
 const NULL_REQUIRED_PARAM1_CONDITION_FUNCTIONS: &[u16] = &[
@@ -3674,6 +3662,41 @@ mod tests {
             &encoded_sigs,
             &FxHashMap::default(),
         ));
+    }
+
+    #[test]
+    fn engine_actor_values_survive_mgef_cleanup_without_plugin_rows() {
+        let interner = StringInterner::new();
+        let schema = AuthoringSchema::for_game("fo4").unwrap();
+        let actor_value =
+            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "actor_value").unwrap();
+        let archetype =
+            struct_field_offset(&schema, "MGEF", "DATA", Some(131), "archetype").unwrap();
+        let masters = vec!["Other.esm".to_string(), "Fallout4.esm".to_string()];
+        let none = FxHashMap::default();
+        for local in 0x2BB..=0x38A {
+            let registered = (0x2BC..=0x389).contains(&local) && local != 0x2C0 && local != 0x34C;
+            let raw = 0x01000000 | local;
+            let mut data = vec![0; 96];
+            set_u32(&mut data, actor_value, raw);
+            let mut record = make_record("MGEF", vec![bytes_field("DATA", data)], &interner);
+            null_invalid_mgef_actor_values(&mut record, &schema, Some(131), &none, &none, &masters);
+            let data = field_bytes(&record, "DATA");
+            assert_eq!(
+                read_u32_le(&data, actor_value),
+                Some(if registered { raw } else { 0 }),
+                "{local:06X}"
+            );
+            assert_eq!(
+                read_u32_le(&data, archetype),
+                Some(if registered {
+                    0
+                } else {
+                    FO4_MGEF_ARCHETYPE_SCRIPT
+                })
+            );
+            assert!(!is_fo4_hardcoded_actor_value_raw(local, &masters));
+        }
     }
 
     #[test]

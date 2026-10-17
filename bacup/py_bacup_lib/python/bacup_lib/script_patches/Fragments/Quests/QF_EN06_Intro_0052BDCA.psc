@@ -7,3 +7,8 @@ Function Fragment_Stage_0020_Item_00()
         EN06_Intro_0020_MODUSIntro.Start()
     EndIf
 EndFunction
+
+Function Fragment_Stage_0100_Item_00()
+    CompleteAllObjectives()
+    Stop()
+EndFunction

@@ -7,7 +7,9 @@ from pathlib import Path
 
 from bacup_lib.daily_ops_ui import empty_hud_timeline, replace_classes
 from bacup_lib.legendary_perks_ui import imports, remap_menu_fonts, swf_tags
-from bacup_lib.translations import TRANSLATIONS, merge_ui_translations, translation_path
+from bacup_lib.plugin_catalog import write_document
+from bacup_lib.translations import (TRANSLATIONS, merge_into, merge_ui_translations, packaged_overlay_languages,
+                                    translation_path)
 
 MENU = "examinemenu.swf"
 MOVIE = "inspectcard.swf"
@@ -28,18 +30,38 @@ CONDITION_BRIDGE = BRIDGE.with_name("ConditionMeter.as")
 BUTTON_HINTS = BRIDGE.parent.parent / "shared/B21ButtonHints.as"
 # The card needs only fonts and the caps icon; the perk and button-hint libraries serve FO76's workbench.
 LIBRARIES = ("fonts_en.swf", "currencyiconlibrary.swf")
+# FO76 shows FO4's displayed weapon accuracy (same formula, same settings) as "V.A.T.S. Accuracy".
+# The key also labels FO4's own Pip-Boy, barter and container cards, so every language takes FO76's
+# text for it; an English-only override would replace FO4's localized label.
+ACCURACY_KEY = "$acc"
 TRANSLATION_KEYS = ("$APCost", "$CAPACITY", "$ATTACKMODE", "$Automatic", "$ItemInfo_CND",
-                    "$ITEM STATS", "$CURRENT MODS", "$INSPECT", "$StackWeight")
+                    "$ITEM STATS", "$CURRENT MODS", "$INSPECT", "$StackWeight", ACCURACY_KEY,
+                    "$UniqueModGlyph", "$SetBonusGlyph", "$SetBonusGlyph_Active")
+# FO4 sLanguage -> FO76 translate_<code>.txt; FO4's Chinese is Traditional.
+FO76_LANGUAGE = {"cn": "zhhant"}
+
+
+def source_table(path: Path) -> dict[str, str]:
+    data = path.read_bytes()
+    encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    return {line.split("\t", 1)[0]: line for line in data.decode(encoding).splitlines() if "\t" in line}
 
 
 def card_translations(interface: Path) -> list[str]:
-    data = (interface / "translate_en.txt").read_bytes()
-    encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
-    lines = {line.split("\t", 1)[0]: line for line in data.decode(encoding).splitlines() if "\t" in line}
+    lines = source_table(interface / "translate_en.txt")
     missing = [key for key in TRANSLATION_KEYS if key not in lines]
     if missing:
         raise ValueError(f"Source item card translations are missing: {', '.join(missing)}")
     return [lines[key] for key in TRANSLATION_KEYS]
+
+
+def localized_accuracy(interface: Path) -> dict[str, str]:
+    found = {}
+    for language in packaged_overlay_languages():
+        path = interface / f"translate_{FO76_LANGUAGE.get(language, language)}.txt"
+        if path.is_file() and (line := source_table(path).get(ACCURACY_KEY)):
+            found[language] = line
+    return found
 
 
 def rebuild(data: bytes, tags: list[tuple[int, bytes]]) -> bytes:
@@ -193,8 +215,24 @@ def convert_inspect_ui(source_root: Path, output_data: Path) -> dict:
     tags.insert(first_script, (82, compile_as3_do_abc([BUTTON_HINTS.read_text(encoding="utf-8")])))
     movie = replace_classes(rebuild(movie, tags), {BRIDGE_CLASS: BRIDGE,
         "ItemCard_ItemHealthEntry": HEALTH_ENTRY}, closure.values())
+    from creation_lib.swf.native_runtime import patch_as3_method
+    # Charge time follows AP cost's lower-is-better arrows without changing its visible label.
+    movie = patch_as3_method(movie, "ItemCard_Entry", "PopulateDifferenceValue",
+        [["getlocal", 1], ["getproperty", "text"]],
+        [["keep", 0], ["getproperty", "comparisonLabel"]])
     movie = fo4_stage(rename_classes(movie))
     inspect_fonts = rename_classes(closure["fonts_en.swf"], "B21TFA_InspectFonts")
+    from bacup_lib.equipment_bonus_icons import bonus_icons
+    table = source_table(interface / "translate_en.txt")
+    icons = bonus_icons(closure["fonts_en.swf"], {
+        name: table[key].split("\t", 1)[1] for name, key in
+        (("unique", "$UniqueModGlyph"), ("set", "$SetBonusGlyph"), ("setActive", "$SetBonusGlyph_Active"))})
+    icons_path = Path(output_data).parent / "F4SE/Plugins/B21_TalesFromAppalachia/EquipmentBonusIcons.json"
+    icons_path.parent.mkdir(parents=True, exist_ok=True)
+    icons_path.write_text(json.dumps({"schema_version": 1, "icons": icons}) + "\n", encoding="utf-8")
+    curve_path = Path(source_root) / "misc/curvetables/json/Armor/ArmorMods/Unique/Armor_LastBastion_AccuracyBonus.json"
+    curves = {"lastBastion": {"points": json.loads(curve_path.read_text(encoding="utf-8"))["curve"]}} if curve_path.is_file() else {}
+    write_document("EquipmentBonuses", "SeventySix.esm", {"version": 1, "curves": curves}, Path(output_data).parent)
 
     output = Path(output_data) / OUTPUT
     output.mkdir(parents=True, exist_ok=True)
@@ -215,6 +253,8 @@ def convert_inspect_ui(source_root: Path, output_data: Path) -> dict:
                                   "sha256": hashlib.sha256(converted).hexdigest()})
     (output / "conversion.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     merge_ui_translations(output_data, translations)
+    for language, line in localized_accuracy(interface).items():
+        merge_into(translation_path(output_data, language), [line])
     return manifest
 
 

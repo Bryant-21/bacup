@@ -1,5 +1,6 @@
 Function Fragment_Begin(ObjectReference akSpeakerRef)
-    If REPlayerEnemy != None
-        akSpeakerRef.AddToFaction(REPlayerEnemy)
+    Actor speaker = akSpeakerRef as Actor
+    If REPlayerEnemy != None && speaker != None
+        speaker.AddToFaction(REPlayerEnemy)
     EndIf
 EndFunction

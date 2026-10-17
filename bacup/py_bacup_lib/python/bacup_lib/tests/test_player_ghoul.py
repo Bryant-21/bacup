@@ -1,4 +1,5 @@
 import copy
+import json
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from bacup_lib import player_ghoul as ghoul
+from bacup_lib.plugin_catalog import write_document
+from bacup_lib.tests.catalog_schema_validation import validate_catalog
 
 
 def ref(value):
@@ -107,7 +110,17 @@ def test_missing_form_disables_controller_and_no_appearance_assets_are_required(
     assert not result["available"]
     assert result["appearance"] == []
     assert result["appearance_status"].endswith("asset-preflight")
-    assert ghoul.OUTPUT.as_posix().startswith("F4SE/Plugins/")
+
+
+def test_document_splits_sections_from_settings_with_formkey_identities(tmp_path):
+    document = ghoul.to_document(ghoul.build_catalog(Source(), Resolver(), "Source.esm", "digest"))
+    assert document["version"] == 1 and "schema_version" not in document["settings"]
+    assert {"cards", "chems", "appearance"}.isdisjoint(document["settings"])
+    assert all(row["source"].startswith("Source.esm:") for row in document["cards"])
+    assert all(rank["source"].startswith("Source.esm:") for row in document["cards"] for rank in row["ranks"])
+    assert all(key.startswith("Source.esm:") for key in document["settings"]["native_rules"]["cards"])
+    path = write_document("PlayerGhoul", "SeventySix.esm", document, tmp_path)
+    validate_catalog("PlayerGhoul", json.loads(path.read_text(encoding="utf-8")))
 
 
 def test_evasion_rules_use_source_magnitudes_and_reject_changed_predicates():
@@ -196,13 +209,28 @@ def test_raw_and_decoded_threshold_conditions_select_same_tier():
 def test_conversion_phase_uses_loose_xse_root_and_is_pair_gated(monkeypatch, tmp_path):
     from bacup_lib.workflows.unified import _convert_fo76_player_ghoul
     calls = []
-    monkeypatch.setattr(ghoul, "emit_player_ghoul", lambda *args: calls.append(args) or {"cards": [], "chems": []})
+    monkeypatch.setattr(ghoul, "emit_player_ghoul", lambda *args, **kwargs: calls.append((args, kwargs)) or {"cards": [], "chems": []})
     request = SimpleNamespace(source_game="fo76", target_game="fo4", target_data_dir=str(tmp_path / "target"))
     ctx = SimpleNamespace(mod_path=str(tmp_path / "SeventySix"), output_plugin_name="SeventySix.esm",
                           source_plugin_path=str(tmp_path / "source.esm"))
     assert _convert_fo76_player_ghoul(request, ctx) == 1
-    assert calls[0] == (Path(ctx.source_plugin_path), Path(ctx.mod_path) / ctx.output_plugin_name,
-                        Path(ctx.mod_path), Path(request.target_data_dir))
+    assert calls[0][0] == (Path(ctx.source_plugin_path), Path(ctx.mod_path) / ctx.output_plugin_name,
+                           Path(ctx.mod_path), Path(request.target_data_dir))
+    assert calls[0][1] == {"source_root": Path(ctx.source_plugin_path).parent}
     request.source_game = "skyrimse"
     assert _convert_fo76_player_ghoul(request, ctx) == 0
     assert len(calls) == 1
+
+
+def test_conversion_phase_uses_context_asset_root_for_food_curves(monkeypatch, tmp_path):
+    from bacup_lib.workflows.unified import _convert_fo76_player_ghoul
+
+    calls = []
+    monkeypatch.setattr(ghoul, "emit_player_ghoul", lambda *args, **kwargs: calls.append(kwargs) or {"cards": [], "chems": []})
+    request = SimpleNamespace(source_game="fo76", target_game="fo4", target_data_dir=tmp_path / "target")
+    ctx = SimpleNamespace(mod_path=tmp_path / "converted", output_plugin_name="SeventySix.esm",
+                          source_plugin_path=tmp_path / "game/Data/SeventySix.esm",
+                          source_data_dir=tmp_path / "extracted/fo76")
+
+    assert _convert_fo76_player_ghoul(request, ctx) == 1
+    assert calls == [{"source_root": ctx.source_data_dir}]

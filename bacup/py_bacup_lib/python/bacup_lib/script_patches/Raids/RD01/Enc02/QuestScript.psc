@@ -101,7 +101,12 @@ Function BeginEncounter()
 EndFunction
 
 Function BeginActivePhase()
+	If Phase != 1 || !IsRunning() || IsStageDone(iQuestCompletionStage) || IsStageDone(9999)
+		Return
+	EndIf
 	Phase = 2
+	SetCaveDoorsAccessible(True)
+	Debug.Trace("[B21 Raids] Drill active; fuel doors=" + Alias_CaveDoors.GetCount())
 	IntroTrack.Remove()
 	CombatTrack.Add()
 	SpawnWave()
@@ -109,6 +114,24 @@ Function BeginActivePhase()
 	If fDifficultyTimers != None && fDifficultyTimers.Length > 0
 		StartTimer(fDifficultyTimers[0], iDifficultyIncrementTimerID)
 	EndIf
+EndFunction
+
+Function SetCaveDoorsAccessible(Bool abAccessible)
+	Int index = 0
+	While index < Alias_CaveDoors.GetCount()
+		ObjectReference caveDoor = Alias_CaveDoors.GetAt(index)
+		If caveDoor != None
+			If abAccessible
+				caveDoor.SetLockLevel(0)
+				caveDoor.Lock(False)
+			Else
+				caveDoor.SetOpen(False)
+				caveDoor.SetLockLevel(254)
+				caveDoor.Lock(True)
+			EndIf
+		EndIf
+		index += 1
+	EndWhile
 EndFunction
 
 Function SpawnWave()
@@ -262,6 +285,7 @@ EndFunction
 Function CleanupSpawned()
 	Phase = 0
 	CancelEncounterTimers()
+	SetCaveDoorsAccessible(False)
 	UnregisterForRemoteEvent(Alias_Activators_Fuel, "OnActivate")
 	UnregisterForRemoteEvent(Alias_Activator_FuelDepositPoint, "OnActivate")
 	DeleteSpawnedEnemies(Alias_Actors_Enemies_Regular)

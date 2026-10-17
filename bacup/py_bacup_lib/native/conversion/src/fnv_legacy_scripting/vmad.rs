@@ -132,7 +132,9 @@ pub fn property_payload(prop: &ScriptProperty) -> Result<Value, VmadSynthError> 
         }
         "objectreference" | "object" | "form" | "actor" | "quest" | "message" | "faction"
         | "package" | "topic" | "keyword" | "spell" | "perk" | "actorvalue" | "globalvariable"
-        | "musictype" | "explosion" => Ok(json!({
+        | "musictype" | "explosion" | "sound" | "combatstyle" | "magiceffect" | "actorbase" | "weapon" | "armor"
+        | "ammo" | "potion" | "miscobject" | "effectshader" | "imagespacemodifier" | "idle"
+        | "formlist" => Ok(json!({
             "propertyName": prop.name,
             "Type": "Object",
             "Flags": 0,
@@ -763,6 +765,16 @@ fn validate_compiled_evidence(
 mod tests {
     use super::*;
 
+    #[test]
+    fn creature_script_form_subclasses_keep_object_property_identity() {
+        for class in ["Idle", "FormList", "MagicEffect", "ActorBase", "Weapon", "Armor", "Ammo", "Potion", "MiscObject", "EffectShader", "ImageSpaceModifier"] {
+            let payload = property_payload(&ScriptProperty { name: "SourceDependency".into(), prop_type: class.into(), value: Some(json!("001234:Output.esm")) }).unwrap();
+            assert_eq!(payload["Type"], "Object");
+            assert_eq!(payload["Value"]["FormID"]["reference"]["plugin"], "Output.esm");
+            assert_eq!(payload["Value"]["FormID"]["reference"]["object_id"], "001234");
+        }
+    }
+
     fn compiled(class_name: &str) -> CompiledScriptEvidence {
         CompiledScriptEvidence {
             class_name: class_name.into(),
@@ -1070,6 +1082,7 @@ mod tests {
             properties: Vec::new(),
             package_data_aliases: Vec::new(),
             dedicated_topics: Vec::new(),
+            deferred_creature_quest: None,
             compile_status: super::super::script_synthesizer::ScriptCompileStatus::SourceGeneratedPendingCompile,
             terminal_status: super::super::script_synthesizer::ScriptTerminalStatus::SourceGeneratedPendingCompile,
         }

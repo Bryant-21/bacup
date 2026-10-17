@@ -1,5 +1,5 @@
 Function Fragment_Stage_0010_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(300)
     D01C_StingsAndThingsScript stingsQuest = D01C_StingsAndThings as D01C_StingsAndThingsScript
     If stingsQuest != None
@@ -8,7 +8,7 @@ Function Fragment_Stage_0010_Item_00()
 EndFunction
 
 Function Fragment_Stage_0020_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(400)
     D01C_StingsAndThingsScript stingsQuest = D01C_StingsAndThings as D01C_StingsAndThingsScript
     If stingsQuest != None
@@ -17,7 +17,7 @@ Function Fragment_Stage_0020_Item_00()
 EndFunction
 
 Function Fragment_Stage_0030_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(500)
     D01C_StingsAndThingsScript stingsQuest = D01C_StingsAndThings as D01C_StingsAndThingsScript
     If stingsQuest != None
@@ -26,7 +26,7 @@ Function Fragment_Stage_0030_Item_00()
 EndFunction
 
 Function Fragment_Stage_0040_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(600)
     D01C_StingsAndThingsScript stingsQuest = D01C_StingsAndThings as D01C_StingsAndThingsScript
     If stingsQuest != None
@@ -35,7 +35,7 @@ Function Fragment_Stage_0040_Item_00()
 EndFunction
 
 Function Fragment_Stage_0050_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(700)
     D01C_StingsAndThingsScript stingsQuest = D01C_StingsAndThings as D01C_StingsAndThingsScript
     If stingsQuest != None
@@ -44,11 +44,11 @@ Function Fragment_Stage_0050_Item_00()
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(100)
+    SetObjectiveDisplayed(100)
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(100)
     owningQuest.SetObjectiveDisplayed(300)
     owningQuest.SetObjectiveDisplayed(400)
@@ -67,7 +67,7 @@ Function Fragment_Stage_0200_Item_00()
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(300)
     owningQuest.SetObjectiveCompleted(400)
     owningQuest.SetObjectiveCompleted(500)
@@ -77,9 +77,12 @@ Function Fragment_Stage_0800_Item_00()
 EndFunction
 
 Function Fragment_Stage_0900_Item_00()
+    FailAllObjectives()
+    Stop()
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()
+    ; TODO(recipes): FO76 teaches co_D01C_InsectRepellent_WorkbenchChemLab at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     Actor playerRef = Alias_Player.GetActorReference()
     If playerRef != None
         playerRef.RemoveItem(BloatflyGland, 1, true)
@@ -96,13 +99,16 @@ Function Fragment_Stage_1000_Item_00()
         EndIf
     EndIf
 
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self as Quest
     owningQuest.SetObjectiveCompleted(800)
 
     P01C_TadpoleQuest tadpole = TadpoleQuest as P01C_TadpoleQuest
     If tadpole != None
         tadpole.OnActivityCompleted(1)
     EndIf
+    ; B21:QuestRewards / CurrencyQuestRewards pay on OnStageSet; let it dispatch before shutdown.
+    Utility.Wait(1.0)
+    Stop()
 EndFunction
 
 Function Fragment_Stage_10000_Item_00()

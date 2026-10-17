@@ -1,0 +1,596 @@
+[
+  {
+    "keyword": "dn_PowerArmor_V94_Ultracite",
+    "piece": "Helmet",
+    "name": "Strangler Heart Helm",
+    "source_form": "53AF1F:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_Helmet.nif",
+    "eyes": [
+      [[0.742,0.332],[0.738,0.33],[0.702,0.346],[0.693,0.344],[0.693,0.349],[0.682,0.356],[0.675,0.354],[0.675,0.349],[0.68,0.346],[0.675,0.344],[0.668,0.346],[0.673,0.349],[0.671,0.356],[0.666,0.356],[0.664,0.349],[0.664,0.354],[0.657,0.356],[0.664,0.358],[0.662,0.365],[0.651,0.363],[0.648,0.356],[0.648,0.361],[0.642,0.363],[0.648,0.365],[0.646,0.373],[0.637,0.37],[0.626,0.382],[0.617,0.38],[0.617,0.385],[0.611,0.389],[0.606,0.389],[0.604,0.385],[0.599,0.394],[0.566,0.408],[0.552,0.411],[0.559,0.423],[0.561,0.42],[0.599,0.42],[0.602,0.418],[0.624,0.418],[0.626,0.415],[0.682,0.411],[0.684,0.408],[0.698,0.408],[0.7,0.406],[0.713,0.406],[0.727,0.401],[0.749,0.399]],
+      [[0.258,0.332],[0.251,0.399],[0.273,0.401],[0.287,0.406],[0.3,0.406],[0.302,0.408],[0.316,0.408],[0.318,0.411],[0.374,0.415],[0.376,0.418],[0.398,0.418],[0.401,0.42],[0.439,0.42],[0.441,0.423],[0.448,0.411],[0.434,0.408],[0.401,0.394],[0.396,0.385],[0.394,0.389],[0.39,0.389],[0.383,0.385],[0.383,0.38],[0.374,0.382],[0.363,0.37],[0.354,0.373],[0.352,0.365],[0.358,0.363],[0.354,0.363],[0.352,0.356],[0.349,0.363],[0.338,0.365],[0.336,0.358],[0.343,0.356],[0.338,0.356],[0.336,0.349],[0.336,0.354],[0.329,0.356],[0.327,0.349],[0.332,0.346],[0.325,0.344],[0.32,0.346],[0.325,0.349],[0.325,0.354],[0.318,0.356],[0.309,0.351],[0.307,0.344],[0.298,0.346],[0.262,0.33]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_V94_Ultracite",
+    "piece": "Torso",
+    "name": "Strangler Heart Chest Piece",
+    "source_form": "53AF22:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_Body.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_V94_Ultracite",
+    "piece": "LeftArm",
+    "name": "Strangler Heart Left Arm",
+    "source_form": "53AF1D:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LArm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_V94_Ultracite",
+    "piece": "RightArm",
+    "name": "Strangler Heart Right Arm",
+    "source_form": "53AF1E:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LArm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_V94_Ultracite",
+    "piece": "LeftLeg",
+    "name": "Strangler Heart Left Leg",
+    "source_form": "53AF20:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LLeg.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_V94_Ultracite",
+    "piece": "RightLeg",
+    "name": "Strangler Heart Right Leg",
+    "source_form": "53AF21:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LLeg.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_Union",
+    "piece": "Helmet",
+    "name": "Union Helm",
+    "source_form": "64B91C:SeventySix.esm",
+    "model": "Actors/PowerArmor/UnionPA/UnionPA_Helmet_GO.nif",
+    "eyes": [
+      [[0.726,0.347],[0.716,0.347],[0.716,0.517],[0.726,0.514],[0.74,0.501],[0.747,0.474],[0.747,0.381],[0.74,0.356]],
+      [[0.27,0.347],[0.258,0.356],[0.251,0.376],[0.251,0.479],[0.258,0.503],[0.27,0.514],[0.281,0.517],[0.281,0.347]],
+      [[0.59,0.338],[0.59,0.519],[0.669,0.519],[0.669,0.34]],
+      [[0.457,0.338],[0.457,0.517],[0.469,0.517],[0.471,0.519],[0.541,0.517],[0.541,0.338]],
+      [[0.328,0.34],[0.328,0.519],[0.405,0.519],[0.405,0.338]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_Union",
+    "piece": "Torso",
+    "name": "Union Chest Piece",
+    "source_form": "64B91B:SeventySix.esm",
+    "model": "Actors/PowerArmor/UnionPA/UnionPA_Torso_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Union",
+    "piece": "LeftArm",
+    "name": "Union Left Arm",
+    "source_form": "64B91F:SeventySix.esm",
+    "model": "Actors/PowerArmor/UnionPA/UnionPA_Arm_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Union",
+    "piece": "RightArm",
+    "name": "Union Right Arm",
+    "source_form": "64B91E:SeventySix.esm",
+    "model": "Actors/PowerArmor/UnionPA/UnionPA_Arm_GO.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_Union",
+    "piece": "LeftLeg",
+    "name": "Union Left Leg",
+    "source_form": "64B920:SeventySix.esm",
+    "model": "Actors/PowerArmor/UnionPA/UnionPA_Leg_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Union",
+    "piece": "RightLeg",
+    "name": "Union Right Leg",
+    "source_form": "64B91D:SeventySix.esm",
+    "model": "Actors/PowerArmor/UnionPA/UnionPA_Leg_GO.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_STORM",
+    "piece": "Helmet",
+    "name": "Storm Armor Helm",
+    "source_form": "732E55:SeventySix.esm",
+    "model": "Actors/PowerArmor/VaultPA/VaultPA_Helmet_GO.nif",
+    "eyes": [
+      [[0.296,0.078],[0.291,0.086],[0.291,0.107],[0.287,0.11],[0.285,0.118],[0.285,0.155],[0.282,0.157],[0.282,0.192],[0.287,0.194],[0.287,0.2],[0.282,0.205],[0.285,0.271],[0.287,0.282],[0.291,0.284],[0.287,0.29],[0.287,0.308],[0.291,0.311],[0.296,0.356],[0.302,0.361],[0.302,0.38],[0.311,0.385],[0.311,0.398],[0.318,0.401],[0.32,0.409],[0.332,0.414],[0.332,0.425],[0.343,0.432],[0.345,0.441],[0.352,0.441],[0.354,0.446],[0.365,0.446],[0.367,0.454],[0.381,0.454],[0.385,0.462],[0.398,0.462],[0.407,0.467],[0.432,0.464],[0.434,0.472],[0.445,0.472],[0.45,0.467],[0.452,0.472],[0.508,0.475],[0.51,0.472],[0.541,0.472],[0.543,0.467],[0.595,0.467],[0.611,0.462],[0.613,0.454],[0.615,0.456],[0.628,0.456],[0.631,0.451],[0.642,0.451],[0.644,0.446],[0.657,0.441],[0.657,0.435],[0.666,0.43],[0.668,0.417],[0.682,0.409],[0.691,0.398],[0.695,0.385],[0.7,0.382],[0.704,0.337],[0.709,0.335],[0.709,0.311],[0.711,0.308],[0.711,0.284],[0.713,0.282],[0.713,0.234],[0.718,0.232],[0.718,0.213],[0.713,0.21],[0.718,0.208],[0.718,0.131],[0.713,0.128],[0.711,0.086],[0.702,0.075],[0.698,0.075],[0.693,0.068],[0.68,0.062],[0.677,0.057],[0.666,0.052],[0.664,0.046],[0.648,0.036],[0.626,0.03],[0.615,0.022],[0.597,0.02],[0.586,0.012],[0.546,0.009],[0.539,0.004],[0.49,0.001],[0.488,0.004],[0.461,0.004],[0.454,0.009],[0.425,0.009],[0.407,0.015],[0.405,0.02],[0.385,0.022],[0.374,0.03],[0.352,0.036],[0.345,0.044],[0.34,0.044],[0.336,0.052],[0.323,0.057],[0.32,0.062]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_STORM",
+    "piece": "Torso",
+    "name": "Storm Armor Chest Piece",
+    "source_form": "732E54:SeventySix.esm",
+    "model": "Actors/PowerArmor/VaultPA/VaultPA_Torso_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_STORM",
+    "piece": "LeftArm",
+    "name": "Storm Armor Left Arm",
+    "source_form": "732E57:SeventySix.esm",
+    "model": "Actors/PowerArmor/VaultPA/VaultPA_Arm_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_STORM",
+    "piece": "RightArm",
+    "name": "Storm Armor Right Arm",
+    "source_form": "732E59:SeventySix.esm",
+    "model": "Actors/PowerArmor/VaultPA/VaultPA_Arm_GO.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_STORM",
+    "piece": "LeftLeg",
+    "name": "Storm Armor Left Leg",
+    "source_form": "732E56:SeventySix.esm",
+    "model": "Actors/PowerArmor/VaultPA/VaultPA_Leg_GO.nif",
+    "yaw": 180,
+    "pitch": 180,
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_STORM",
+    "piece": "RightLeg",
+    "name": "Storm Armor Right Leg",
+    "source_form": "732E58:SeventySix.esm",
+    "model": "Actors/PowerArmor/VaultPA/VaultPA_Leg_GO.nif",
+    "yaw": 180,
+    "pitch": 180
+  },
+  {
+    "keyword": "dn_PowerArmor_Hellcat",
+    "piece": "Helmet",
+    "name": "Hellcat Helm",
+    "source_form": "60D5B5:SeventySix.esm",
+    "model": "Actors/PowerArmor/characterassets/Mods/Hellcats/GO_HellcatsMercenaryPA_Helmet.nif",
+    "eyes": [
+      [[0.671,0.285],[0.642,0.267],[0.631,0.264],[0.579,0.304],[0.555,0.344],[0.595,0.332],[0.631,0.307]],
+      [[0.329,0.285],[0.369,0.307],[0.405,0.332],[0.445,0.344],[0.421,0.304],[0.369,0.264],[0.358,0.267]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_Hellcat",
+    "piece": "Torso",
+    "name": "Hellcat Chest Piece",
+    "source_form": "60D5B8:SeventySix.esm",
+    "model": "Actors/PowerArmor/characterassets/Mods/Hellcats/GO_HellcatsMercenaryPA_Body.nif",
+    "yaw": 90,
+    "pitch": 90
+  },
+  {
+    "keyword": "dn_PowerArmor_Hellcat",
+    "piece": "LeftArm",
+    "name": "Hellcat Left Arm",
+    "source_form": "60D5B9:SeventySix.esm",
+    "model": "Actors/PowerArmor/characterassets/Mods/Hellcats/GO_HellcatsMercenaryPA_RArm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_Hellcat",
+    "piece": "RightArm",
+    "name": "Hellcat Right Arm",
+    "source_form": "60D5BA:SeventySix.esm",
+    "model": "Actors/PowerArmor/characterassets/Mods/Hellcats/GO_HellcatsMercenaryPA_RArm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Hellcat",
+    "piece": "LeftLeg",
+    "name": "Hellcat Left Leg",
+    "source_form": "60D5B7:SeventySix.esm",
+    "model": "Actors/PowerArmor/characterassets/Mods/Hellcats/GO_HellcatsMercenaryPA_LLeg.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Hellcat",
+    "piece": "RightLeg",
+    "name": "Hellcat Right Leg",
+    "source_form": "60D5B6:SeventySix.esm",
+    "model": "Actors/PowerArmor/characterassets/Mods/Hellcats/GO_HellcatsMercenaryPA_LLeg.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_T65",
+    "piece": "Helmet",
+    "name": "T-65 Helm",
+    "source_form": "5485B4:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_SS_Helmet.nif",
+    "eyes": [
+      [[0.573,0.477],[0.573,0.492],[0.57,0.494],[0.577,0.513],[0.593,0.53],[0.624,0.551],[0.637,0.556],[0.66,0.556],[0.662,0.558],[0.671,0.551],[0.698,0.549],[0.7,0.544],[0.707,0.544],[0.711,0.539],[0.711,0.53],[0.715,0.525],[0.713,0.522],[0.715,0.52],[0.713,0.511],[0.715,0.504],[0.713,0.482],[0.715,0.477],[0.711,0.47],[0.711,0.461],[0.7,0.447],[0.689,0.442],[0.637,0.442],[0.615,0.447],[0.588,0.459]],
+      [[0.289,0.461],[0.289,0.47],[0.285,0.477],[0.287,0.482],[0.285,0.487],[0.285,0.504],[0.287,0.506],[0.285,0.52],[0.287,0.522],[0.285,0.525],[0.289,0.53],[0.289,0.539],[0.293,0.544],[0.3,0.544],[0.302,0.549],[0.329,0.551],[0.338,0.558],[0.34,0.556],[0.363,0.556],[0.39,0.544],[0.423,0.513],[0.43,0.494],[0.425,0.473],[0.412,0.459],[0.385,0.447],[0.363,0.442],[0.311,0.442],[0.3,0.447]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_T65",
+    "piece": "Torso",
+    "name": "T-65 Chest Piece",
+    "source_form": "5485BF:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_SS_Body.nif",
+    "yaw": 180,
+    "pitch": 270
+  },
+  {
+    "keyword": "dn_PowerArmor_T65",
+    "piece": "LeftArm",
+    "name": "T-65 Left Arm",
+    "source_form": "5485AB:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_SS_LArm.nif",
+    "pitch": 180
+  },
+  {
+    "keyword": "dn_PowerArmor_T65",
+    "piece": "RightArm",
+    "name": "T-65 Right Arm",
+    "source_form": "5485AF:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_SS_LArm.nif",
+    "mirror": true,
+    "pitch": 180
+  },
+  {
+    "keyword": "dn_PowerArmor_T65",
+    "piece": "LeftLeg",
+    "name": "T-65 Left Leg",
+    "source_form": "5485B8:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_SS_LLeg.nif",
+    "pitch": 180
+  },
+  {
+    "keyword": "dn_PowerArmor_T65",
+    "piece": "RightLeg",
+    "name": "T-65 Right Leg",
+    "source_form": "5485BB:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_SS_LLeg.nif",
+    "mirror": true,
+    "pitch": 180
+  },
+  {
+    "keyword": "dn_PowerArmor_Ultracite",
+    "piece": "Helmet",
+    "name": "Ultracite Helm",
+    "source_form": "32E197:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_Helmet.nif",
+    "eyes": [
+      [[0.742,0.332],[0.738,0.33],[0.702,0.346],[0.693,0.344],[0.693,0.349],[0.682,0.356],[0.675,0.354],[0.675,0.349],[0.68,0.346],[0.675,0.344],[0.668,0.346],[0.673,0.349],[0.671,0.356],[0.666,0.356],[0.664,0.349],[0.664,0.354],[0.657,0.356],[0.664,0.358],[0.662,0.365],[0.651,0.363],[0.648,0.356],[0.648,0.361],[0.642,0.363],[0.648,0.365],[0.646,0.373],[0.637,0.37],[0.626,0.382],[0.617,0.38],[0.617,0.385],[0.611,0.389],[0.606,0.389],[0.604,0.385],[0.599,0.394],[0.566,0.408],[0.552,0.411],[0.559,0.423],[0.561,0.42],[0.599,0.42],[0.602,0.418],[0.624,0.418],[0.626,0.415],[0.682,0.411],[0.684,0.408],[0.698,0.408],[0.7,0.406],[0.713,0.406],[0.727,0.401],[0.749,0.399]],
+      [[0.258,0.332],[0.251,0.399],[0.273,0.401],[0.287,0.406],[0.3,0.406],[0.302,0.408],[0.316,0.408],[0.318,0.411],[0.374,0.415],[0.376,0.418],[0.398,0.418],[0.401,0.42],[0.439,0.42],[0.441,0.423],[0.448,0.411],[0.434,0.408],[0.401,0.394],[0.396,0.385],[0.394,0.389],[0.39,0.389],[0.383,0.385],[0.383,0.38],[0.374,0.382],[0.363,0.37],[0.354,0.373],[0.352,0.365],[0.358,0.363],[0.354,0.363],[0.352,0.356],[0.349,0.363],[0.338,0.365],[0.336,0.358],[0.343,0.356],[0.338,0.356],[0.336,0.349],[0.336,0.354],[0.329,0.356],[0.327,0.349],[0.332,0.346],[0.325,0.344],[0.32,0.346],[0.325,0.349],[0.325,0.354],[0.318,0.356],[0.309,0.351],[0.307,0.344],[0.298,0.346],[0.262,0.33]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_Ultracite",
+    "piece": "Torso",
+    "name": "Ultracite Chest Piece",
+    "source_form": "32E19D:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_Body.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Ultracite",
+    "piece": "LeftArm",
+    "name": "Ultracite Left Arm",
+    "source_form": "32E192:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LArm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Ultracite",
+    "piece": "RightArm",
+    "name": "Ultracite Right Arm",
+    "source_form": "32E195:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LArm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_Ultracite",
+    "piece": "LeftLeg",
+    "name": "Ultracite Left Leg",
+    "source_form": "32E199:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LLeg.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Ultracite",
+    "piece": "RightLeg",
+    "name": "Ultracite Right Leg",
+    "source_form": "32E19B:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Ultra_LLeg.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_Excavator",
+    "piece": "Helmet",
+    "name": "Excavator Helmet",
+    "source_form": "32E180:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Excavator_Helmet.nif",
+    "eyes": [
+      [[0.588,0.508],[0.67,0.528],[0.67,0.508]],
+      [[0.33,0.528],[0.412,0.508],[0.33,0.508]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_Excavator",
+    "piece": "Torso",
+    "name": "Excavator Torso",
+    "source_form": "32E18A:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Excavator_Torso.nif",
+    "pitch": 90
+  },
+  {
+    "keyword": "dn_PowerArmor_Excavator",
+    "piece": "LeftArm",
+    "name": "Excavator Left Arm",
+    "source_form": "32E182:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Excavator_Arm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Excavator",
+    "piece": "RightArm",
+    "name": "Excavator Right Arm",
+    "source_form": "32E188:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Excavator_Arm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_Excavator",
+    "piece": "LeftLeg",
+    "name": "Excavator Left Leg",
+    "source_form": "32E185:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Excavator_Leg.nif",
+    "yaw": 180,
+    "pitch": 180
+  },
+  {
+    "keyword": "dn_PowerArmor_Excavator",
+    "piece": "RightLeg",
+    "name": "Excavator Right Leg",
+    "source_form": "32E187:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/GO_Excavator_Leg.nif",
+    "yaw": 180,
+    "pitch": 180,
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_Raider",
+    "piece": "Helmet",
+    "name": "Raider Power Helm",
+    "source_form": "140C54:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Raider_Helmet_GO.nif",
+    "eyes": [
+      [[0.291,0.311],[0.291,0.541],[0.674,0.541],[0.674,0.311]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_Raider",
+    "piece": "Torso",
+    "name": "Raider Power Chest Piece",
+    "source_form": "140C57:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Raider_Body_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Raider",
+    "piece": "LeftArm",
+    "name": "Raider Power Left Arm",
+    "source_form": "140C52:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Raider_LArm_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Raider",
+    "piece": "RightArm",
+    "name": "Raider Power Right Arm",
+    "source_form": "140C53:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Raider_RArm_GO.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_Raider",
+    "piece": "LeftLeg",
+    "name": "Raider Power Left Leg",
+    "source_form": "140C55:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Raider_LLeg_GO.nif",
+    "pitch": -90
+  },
+  {
+    "keyword": "dn_PowerArmor_Raider",
+    "piece": "RightLeg",
+    "name": "Raider Power Right Leg",
+    "source_form": "140C56:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Raider_RLeg_GO.nif",
+    "pitch": -90
+  },
+  {
+    "keyword": "dn_PowerArmor_T45",
+    "piece": "Helmet",
+    "name": "T-45 Helm",
+    "source_form": "154ABF:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T45_Helmet.nif",
+    "eyes": [
+      [[0.579,0.354],[0.622,0.381],[0.66,0.399],[0.7,0.399],[0.693,0.36],[0.682,0.342],[0.631,0.342],[0.628,0.345],[0.615,0.345]],
+      [[0.3,0.399],[0.34,0.399],[0.378,0.381],[0.421,0.354],[0.385,0.345],[0.372,0.345],[0.369,0.342],[0.318,0.342],[0.307,0.36]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_T45",
+    "piece": "Torso",
+    "name": "T-45 Chest Piece",
+    "source_form": "154AC2:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T45_Body.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T45",
+    "piece": "LeftArm",
+    "name": "T-45 Left Arm",
+    "source_form": "154ABD:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T45_LArm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T45",
+    "piece": "RightArm",
+    "name": "T-45 Right Arm",
+    "source_form": "154ABE:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T45_LArm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_T45",
+    "piece": "LeftLeg",
+    "name": "T-45 Left Leg",
+    "source_form": "154AC0:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T45_LLeg.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T45",
+    "piece": "RightLeg",
+    "name": "T-45 Right Leg",
+    "source_form": "154AC1:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T45_LLeg.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_T51",
+    "piece": "Helmet",
+    "name": "T-51b Helm",
+    "source_form": "140C4E:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/go_t51_helmet.nif",
+    "eyes": [
+      [[0.613,0.538],[0.611,0.541],[0.611,0.564],[0.617,0.585],[0.628,0.601],[0.639,0.603],[0.642,0.593],[0.637,0.569],[0.626,0.546],[0.617,0.538]],
+      [[0.387,0.538],[0.378,0.541],[0.363,0.567],[0.358,0.59],[0.36,0.603],[0.374,0.598],[0.385,0.577],[0.39,0.561],[0.39,0.541]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_T51",
+    "piece": "Torso",
+    "name": "T-51b Chest Piece",
+    "source_form": "140C51:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/go_t51_body.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T51",
+    "piece": "LeftArm",
+    "name": "T-51b Left Arm",
+    "source_form": "140C4C:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/go_t51_larm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T51",
+    "piece": "RightArm",
+    "name": "T-51b Right Arm",
+    "source_form": "140C4D:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/go_t51_larm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_T51",
+    "piece": "LeftLeg",
+    "name": "T-51b Left Leg",
+    "source_form": "140C4F:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/go_t51_lleg.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T51",
+    "piece": "RightLeg",
+    "name": "T-51b Right Leg",
+    "source_form": "140C50:SeventySix.esm",
+    "model": "actors/powerarmor/characterassets/mods/go_t51_lleg.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_T60",
+    "piece": "Helmet",
+    "name": "T-60 Helm",
+    "source_form": "140C4A:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T60_Helmet.nif",
+    "eyes": [
+      [[0.695,0.357],[0.684,0.319],[0.66,0.287],[0.599,0.296],[0.597,0.3],[0.579,0.3],[0.577,0.303],[0.53,0.303],[0.53,0.312],[0.57,0.332],[0.577,0.332],[0.639,0.364],[0.642,0.361]],
+      [[0.302,0.357],[0.356,0.361],[0.358,0.364],[0.401,0.341],[0.407,0.341],[0.45,0.319],[0.468,0.312],[0.468,0.303],[0.421,0.303],[0.418,0.3],[0.363,0.293],[0.34,0.287],[0.314,0.319]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_T60",
+    "piece": "Torso",
+    "name": "T-60 Chest Piece",
+    "source_form": "140C42:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T60_Body.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T60",
+    "piece": "LeftArm",
+    "name": "T-60 Left Arm",
+    "source_form": "140C3D:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T60_LArm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T60",
+    "piece": "RightArm",
+    "name": "T-60 Right Arm",
+    "source_form": "140C45:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T60_LArm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_T60",
+    "piece": "LeftLeg",
+    "name": "T-60 Left Leg",
+    "source_form": "140C49:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T60_LLeg.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_T60",
+    "piece": "RightLeg",
+    "name": "T-60 Right Leg",
+    "source_form": "140C3F:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_T60_LLeg.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_X01",
+    "piece": "Helmet",
+    "name": "X-01 Helm",
+    "source_form": "154AC5:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_X1_Helmet.nif",
+    "eyes": [
+      [[0.722,0.302],[0.713,0.299],[0.695,0.302],[0.693,0.311],[0.677,0.313],[0.675,0.32],[0.662,0.323],[0.655,0.339],[0.644,0.339],[0.642,0.349],[0.655,0.349],[0.662,0.344],[0.666,0.349],[0.66,0.351],[0.657,0.356],[0.644,0.36],[0.642,0.37],[0.639,0.365],[0.635,0.365],[0.631,0.37],[0.631,0.386],[0.635,0.389],[0.635,0.393],[0.646,0.393],[0.648,0.391],[0.657,0.396],[0.664,0.396],[0.666,0.386],[0.668,0.389],[0.668,0.403],[0.675,0.405],[0.684,0.403],[0.693,0.405],[0.695,0.4],[0.698,0.403],[0.704,0.4],[0.707,0.405],[0.713,0.405],[0.727,0.4],[0.731,0.393],[0.731,0.386],[0.736,0.384],[0.738,0.358],[0.74,0.356],[0.74,0.332],[0.736,0.328],[0.736,0.32],[0.731,0.318],[0.731,0.313],[0.722,0.309]],
+      [[0.269,0.302],[0.267,0.328],[0.265,0.33],[0.265,0.335],[0.269,0.337],[0.265,0.339],[0.267,0.377],[0.276,0.386],[0.276,0.393],[0.282,0.398],[0.278,0.41],[0.285,0.412],[0.287,0.419],[0.291,0.419],[0.296,0.428],[0.302,0.428],[0.305,0.424],[0.325,0.421],[0.327,0.412],[0.345,0.4],[0.356,0.4],[0.358,0.393],[0.369,0.393],[0.372,0.384],[0.381,0.386],[0.383,0.391],[0.387,0.391],[0.392,0.384],[0.398,0.384],[0.401,0.37],[0.39,0.358],[0.385,0.358],[0.383,0.351],[0.374,0.349],[0.372,0.342],[0.367,0.342],[0.36,0.332],[0.354,0.332],[0.354,0.337],[0.349,0.339],[0.347,0.332],[0.332,0.33],[0.329,0.32],[0.32,0.318],[0.318,0.311],[0.311,0.304],[0.291,0.299],[0.289,0.295],[0.276,0.295]]
+    ]
+  },
+  {
+    "keyword": "dn_PowerArmor_X01",
+    "piece": "Torso",
+    "name": "X-01 Torso",
+    "source_form": "154AC8:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_X1_Body.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_X01",
+    "piece": "LeftArm",
+    "name": "X-01 Left Arm",
+    "source_form": "154AC3:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_X1_LArm.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_X01",
+    "piece": "RightArm",
+    "name": "X-01 Right Arm",
+    "source_form": "154AC4:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_X1_LArm.nif",
+    "mirror": true
+  },
+  {
+    "keyword": "dn_PowerArmor_X01",
+    "piece": "LeftLeg",
+    "name": "X-01 Left Leg",
+    "source_form": "154AC6:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_X1_LLeg.nif"
+  },
+  {
+    "keyword": "dn_PowerArmor_X01",
+    "piece": "RightLeg",
+    "name": "X-01 Right Leg",
+    "source_form": "154AC7:SeventySix.esm",
+    "model": "Actors/PowerArmor/CharacterAssets/Mods/GO_X1_LLeg.nif",
+    "mirror": true
+  }
+]

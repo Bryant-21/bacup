@@ -155,11 +155,12 @@ def test_final_plugin_batch_uses_one_session_and_preserves_operation_flags(
         "emit_modt_manifest",
         "finalize_plugin_records",
     ]
-    params = phases[1][2]["params"]
+    params = phases[-1][2]["params"]
     assert params["manifest_entries"] == 12
     assert params["repair_term_markers"] is expected_term
     assert params["rebuild_cell_offsets"] is offsets
     assert params["fail_on_duplicate_form_ids"] is False
+    assert params["convert_legacy_landscape_specular"] is False
     assert params["source_plugin_path"] == (str(source) if expected_term else None)
     assert len([call for call in calls if call[0] == "save"]) == 1
     assert output.read_bytes() == b"final plugin"
@@ -171,6 +172,21 @@ def test_final_plugin_batch_uses_one_session_and_preserves_operation_flags(
         "INFO",
         "final plugin records published atomically: records_changed=5 warnings=1",
     )
+
+
+@pytest.mark.parametrize("source_game", ["fnv", "fo3", "skyrimse", "fo76"])
+def test_final_plugin_landscape_specular_runs_after_texture_conversion(tmp_path, monkeypatch, source_game):
+    (tmp_path / "Output.esm").write_bytes(b"built plugin")
+    calls = []
+    _fake_run(monkeypatch, calls)
+    driver = _driver(tmp_path, source_game=source_game)
+    driver._req.options.convert_textures = True
+    unified._finalize_plugin_records_after_asset_waves(
+        driver, _Runner(), tmp_path, tmp_path / "Source.esm"
+    )
+    final = next(call for call in calls if call[:2] == ("phase", "finalize_plugin_records"))
+    assert final[2]["params"]["convert_legacy_landscape_specular"] is (source_game != "fo76")
+    assert (tmp_path / "Output.esm").read_bytes() == b"final plugin"
 
 
 @pytest.mark.parametrize("fail_at", ["offset", "save", "replace"])

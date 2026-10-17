@@ -6,6 +6,9 @@ use std::time::SystemTime;
 
 use nif_core_native::model::{NifFile, ReferencedAssetPaths};
 
+mod texture_sets;
+pub(crate) use texture_sets::namespace_legacy_texture_set_paths;
+
 #[derive(Clone, Debug)]
 struct NifDependencyEntry {
     len: u64,
@@ -94,7 +97,7 @@ pub fn normalize_rel(path: &str) -> String {
     }
 }
 
-fn normalize_texture_member(path: &str) -> String {
+pub(crate) fn normalize_texture_member(path: &str) -> String {
     let n = normalize_rel(path);
     if n.is_empty() || n.starts_with("textures/") {
         n
@@ -340,6 +343,9 @@ fn build_relocation_member_set_from_loaders_with_related_nifs(
         load_nif_deps,
         load_material_textures,
     );
+    // Materials never namespace a shared cubemap slot, so a relocated cubemap would land where
+    // nothing samples it; FO76-only ones must ship at their own path.
+    members.retain(|member| !is_target_cubemap_path(member));
     members
 }
 
@@ -671,6 +677,176 @@ pub fn extend_with_changed_decal_assets_from_target_store(
     extend_with_changed_decal_assets_inner(members, decal_materials, source_dir, |member| {
         target_store.materialize(member)
     })
+}
+
+/// Source textures that the target game also ships at the same path but with different bytes.
+/// The texture phase skips such a path as base-owned, so a record naming it would load the
+/// target game's file instead (FO76's `Effects\LUTs\ColorLUT.dds` is an S-curve grade, FO4's
+/// is an identity ramp). Relocating keeps both files.
+pub fn extend_with_changed_textures(
+    members: &mut HashSet<String>,
+    textures: &[String],
+    source_dir: &Path,
+    target_dir: &Path,
+) -> Vec<String> {
+    extend_with_changed_textures_inner(members, textures, source_dir, |member| {
+        let path = target_dir.join(member.replace('/', std::path::MAIN_SEPARATOR_STR));
+        Ok(path.is_file().then_some(path))
+    })
+}
+
+pub fn extend_with_changed_textures_from_target_store(
+    members: &mut HashSet<String>,
+    textures: &[String],
+    source_dir: &Path,
+    target_store: &crate::target_assets::TargetAssetStore,
+) -> Vec<String> {
+    extend_with_changed_textures_inner(members, textures, source_dir, |member| {
+        target_store.materialize(member)
+    })
+}
+
+fn extend_with_changed_textures_inner(
+    members: &mut HashSet<String>,
+    textures: &[String],
+    source_dir: &Path,
+    mut target_path: impl FnMut(&str) -> Result<Option<std::path::PathBuf>, String>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for texture in textures {
+        let texture = normalize_texture_member(texture);
+        if texture.is_empty() {
+            continue;
+        }
+        let source_texture = source_dir.join(texture.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !source_texture.is_file() {
+            continue;
+        }
+        match target_path(&texture) {
+            Ok(Some(target_texture)) if !files_are_identical(&source_texture, &target_texture) => {
+                members.insert(texture);
+            }
+            Ok(_) => {}
+            Err(error) => warnings.push(format!("relocation: compare {texture}: {error}")),
+        }
+    }
+    warnings
+}
+
+/// The target game's shared environment cubemaps. Every vanilla metal samples one, so a
+/// source cube written over it changes how every vanilla item in the game reflects.
+pub fn is_target_cubemap_path(path: &str) -> bool {
+    path.replace('\\', "/")
+        .to_ascii_lowercase()
+        .starts_with("textures/shared/cubemaps/")
+}
+
+/// FO76 native assets, "replace FO4's matching materials": every FO76 material and texture FO4
+/// also ships is written over FO4's file, except the textures of FO4-era leftover materials.
+/// Relocation members stay in the FO76 namespace and paths under `overwrite_prefixes` are
+/// overwritten anyway, so neither joins the set. Target cubemaps never join it.
+///
+/// An FO4 mesh that carries inline texture slots (`BSShaderTextureSet`) keeps feeding its own
+/// FO4 textures to a replaced material (characters, hair), so such a mesh joins the set when any
+/// material or inline texture it names does, and the converted FO76 mesh replaces it.
+pub fn build_native_overwrite_set(
+    source_dir: &Path,
+    members: &HashSet<String>,
+    target_has: &dyn Fn(&str) -> bool,
+    target_nif_refs: &dyn Fn(&str) -> Option<ReferencedAssetPaths>,
+    overwrite_prefixes: &[String],
+) -> HashSet<String> {
+    let eligible = |key: &str| {
+        !key.is_empty()
+            && !is_target_cubemap_path(key)
+            && !members.contains(key)
+            && !materials_native::convert::path_is_base_overwrite_allowed(key, overwrite_prefixes)
+            && target_has(key)
+    };
+    let mut set = HashSet::new();
+    let mut leftover_textures = HashSet::new();
+    let mut stack = vec![source_dir.join("Materials")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for path in entries.flatten().map(|entry| entry.path()) {
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let is_material = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("bgsm") || ext.eq_ignore_ascii_case("bgem")
+                });
+            let Ok(rel) = path.strip_prefix(source_dir) else {
+                continue;
+            };
+            let material = normalize_material_member(&rel.to_string_lossy());
+            if !is_material || !eligible(&material) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            // An FO4-era leftover stays FO4's own, for the BGSM v22+ upgrade to make PBR.
+            if materials_native::bgsm::parse(&bytes)
+                .is_ok_and(|data| materials_native::bgsm::has_legacy_smoothspec(&data))
+            {
+                leftover_textures.extend(
+                    materials_native::convert::authored_material_texture_paths(&bytes)
+                        .iter()
+                        .map(|texture| normalize_texture_member(texture)),
+                );
+                continue;
+            }
+            for texture in materials_native::convert::authored_material_texture_paths(&bytes) {
+                let texture = normalize_texture_member(&texture);
+                if eligible(&texture) {
+                    set.insert(texture);
+                }
+            }
+            set.insert(material);
+        }
+    }
+    // Records (TXST, EYES, HDPT) and runtime-composited heads name textures no FO76 material
+    // does: the eye colours, brows, mouths and base heads.
+    for path in walkdir(&source_dir.join("Textures")) {
+        let Ok(rel) = path.strip_prefix(source_dir) else {
+            continue;
+        };
+        let texture = normalize_rel(&rel.to_string_lossy());
+        if texture.ends_with(".dds") && !leftover_textures.contains(&texture) && eligible(&texture) {
+            set.insert(texture);
+        }
+    }
+    let mut meshes = Vec::new();
+    for path in walkdir(&source_dir.join("Meshes")) {
+        let is_nif = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("nif"));
+        let Ok(rel) = path.strip_prefix(source_dir) else {
+            continue;
+        };
+        let mesh = normalize_rel(&rel.to_string_lossy());
+        if !is_nif || !eligible(&mesh) {
+            continue;
+        }
+        let Some(refs) = target_nif_refs(&mesh) else {
+            continue;
+        };
+        if !refs.textures.is_empty()
+            && (refs.materials.iter().any(|path| set.contains(&normalize_material_member(path)))
+                || refs.textures.iter().any(|path| set.contains(&normalize_texture_member(path))))
+        {
+            meshes.push(mesh);
+        }
+    }
+    set.extend(meshes);
+    set
 }
 
 fn extend_with_changed_decal_assets_inner(
@@ -1190,6 +1366,44 @@ mod tests {
     }
 
     #[test]
+    fn imagespace_luts_relocate_only_when_the_target_ships_different_bytes() {
+        let tmp = std::env::temp_dir().join("reloc_imagespace_luts");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        let target = tmp.join("target");
+        let write = |root: &Path, rel: &str, bytes: &[u8]| {
+            let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        write(&source, "textures/effects/luts/colorlut.dds", b"s-curve");
+        write(&target, "textures/effects/luts/colorlut.dds", b"identity");
+        write(&source, "textures/effects/luts/same.dds", b"same");
+        write(&target, "textures/effects/luts/same.dds", b"same");
+        write(&source, "textures/effects/luts/newlut_clear_day.dds", b"only source");
+
+        let mut members = HashSet::new();
+        let warnings = extend_with_changed_textures(
+            &mut members,
+            &[
+                "Data\\Textures\\Effects\\LUTs\\ColorLUT.dds".to_string(),
+                "Effects\\LUTs\\Same.dds".to_string(),
+                "Effects\\LUTs\\newlut_clear_day.dds".to_string(),
+                "Effects\\LUTs\\missing.dds".to_string(),
+            ],
+            &source,
+            &target,
+        );
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            members,
+            HashSet::from(["textures/effects/luts/colorlut.dds".to_string()])
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn relocation_paths_normalize_data_prefixes_and_insert_namespace_after_root() {
         assert_eq!(
             insert_namespace_after_root("textures/landscape/rock01_d.dds", "FO76"),
@@ -1240,6 +1454,7 @@ mod tests {
                     vec!["textures/landscape/rock01_n.dds".to_string()]
                 }
                 "materials/interiors/redrocket/redrpumps01.bgsm" => vec![
+                    "Shared/Cubemaps/EyeCubeMap_MoreDots.dds".to_string(),
                     "Interiors/RedRocket/RedR_09_Pumps_01_d.dds".to_string(),
                     "Interiors/RedRocket/RedR_09_Pumps_01_n.dds".to_string(),
                     "Interiors/RedRocket/RedR_09_Pumps_01_r.dds".to_string(),
@@ -1469,5 +1684,198 @@ mod tests {
                 .contains("materials/interiors/hightech/flatmetalsupports01a.bgsm"),
             "a collision-only mesh must not drag its material into the FO76 namespace"
         );
+    }
+
+    fn write_material(fo76: &Path, rel: &str, textures: &[&str]) {
+        use materials_native::bgsm;
+        let path = fo76.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut data = bgsm::BgsmData::default();
+        data.header.signature = bgsm::BGSM_SIGNATURE;
+        data.header.version = 22;
+        data.DiffuseTexture = textures.first().copied().unwrap_or("").to_string();
+        data.NormalTexture = textures.get(1).copied().unwrap_or("").to_string();
+        data.WrinklesTexture = textures.get(2).map(|t| t.to_string());
+        data.GreyscaleTexture = textures.get(3).copied().unwrap_or("").to_string();
+        std::fs::write(path, bgsm::write(&data)).unwrap();
+    }
+
+    #[test]
+    fn native_overwrite_set_takes_colliding_materials_and_their_colliding_textures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fo76 = tmp.path();
+        write_material(
+            fo76,
+            "Materials/Rocks/Shared.bgsm",
+            &[
+                "Rocks\\Shared_d.dds\0",
+                "Rocks\\Shared_n.dds\0",
+                "Rocks\\Shared_w.dds\0",
+                "Rocks\\Member_d.dds\0",
+            ],
+        );
+        write_material(fo76, "Materials/Rocks/Member.bgsm", &["Rocks\\Member_d.dds\0"]);
+        write_material(fo76, "Materials/Rocks/Leftover.bgsm", &["Rocks\\Leftover_d.dds\0"]);
+        let leftover = fo76.join("Materials/Rocks/Leftover.bgsm");
+        let mut data = materials_native::bgsm::parse(&std::fs::read(&leftover).unwrap()).unwrap();
+        data.SmoothSpecTexture = "Rocks\\Leftover_s.dds\0".to_string();
+        std::fs::write(&leftover, materials_native::bgsm::write(&data)).unwrap();
+        write_material(fo76, "Materials/Rocks/New.bgsm", &["Rocks\\New_d.dds\0"]);
+        write_material(fo76, "Materials/Weapons/Handmade/Pipe.bgsm", &["Weapons\\Pipe_d.dds\0"]);
+        let fo4: HashSet<String> = [
+            "materials/rocks/shared.bgsm",
+            "materials/rocks/member.bgsm",
+            "materials/weapons/handmade/pipe.bgsm",
+            "textures/rocks/shared_d.dds",
+            "textures/rocks/shared_w.dds",
+            "textures/rocks/member_d.dds",
+            "textures/rocks/new_d.dds",
+            "textures/weapons/pipe_d.dds",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let members: HashSet<String> = [
+            "materials/rocks/member.bgsm".to_owned(),
+            "textures/rocks/member_d.dds".to_owned(),
+            "meshes/rocks/member.nif".to_owned(),
+        ]
+        .into();
+        // FO4 mesh -> (materials, inline textures).
+        let fo4_meshes: HashMap<&str, (&[&str], &[&str])> = [
+            ("meshes/actors/hair.nif", (&["Materials\\Rocks\\Shared.BGSM"][..], &["textures\\Actors\\Hair_d.dds"][..])),
+            ("meshes/rocks/bgsmonly.nif", (&["materials/rocks/shared.bgsm"][..], &[][..])),
+            ("meshes/rocks/inlinetexture.nif", (&[][..], &["textures/rocks/shared_w.dds"][..])),
+            ("meshes/rocks/member.nif", (&["materials/rocks/shared.bgsm"][..], &["textures/rocks/x_d.dds"][..])),
+            ("meshes/rocks/untouched.nif", (&["materials/rocks/new.bgsm"][..], &["textures/rocks/new_d.dds"][..])),
+        ]
+        .into();
+        for mesh in fo4_meshes.keys() {
+            let path = fo76.join(mesh.replace("meshes/", "Meshes/"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"nif").unwrap();
+        }
+        let target_has = |path: &str| fo4.contains(path) || fo4_meshes.contains_key(path);
+        let target_nif_refs = |path: &str| {
+            fo4_meshes.get(path).map(|(materials, textures)| ReferencedAssetPaths {
+                materials: materials.iter().map(|m| m.to_string()).collect(),
+                textures: textures.iter().map(|t| t.to_string()).collect(),
+            })
+        };
+
+        let set = build_native_overwrite_set(
+            fo76,
+            &members,
+            &target_has,
+            &target_nif_refs,
+            &[materials_native::convert::normalize_base_overwrite_prefix(
+                "materials/weapons/handmade/",
+            )],
+        );
+
+        let mut set: Vec<String> = set.into_iter().collect();
+        set.sort();
+        assert_eq!(
+            set,
+            [
+                "materials/rocks/shared.bgsm",
+                "meshes/actors/hair.nif",
+                "meshes/rocks/inlinetexture.nif",
+                "textures/rocks/shared_d.dds",
+                "textures/rocks/shared_w.dds"
+            ]
+        );
+    }
+
+    #[test]
+    fn native_overwrite_set_takes_colliding_textures_no_material_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fo76 = tmp.path();
+        let leftover = fo76.join("Materials/Rocks/Leftover.bgsm");
+        write_material(fo76, "Materials/Rocks/Leftover.bgsm", &["Rocks\\Leftover_d.dds\0"]);
+        let mut data = materials_native::bgsm::parse(&std::fs::read(&leftover).unwrap()).unwrap();
+        data.SmoothSpecTexture = "Rocks\\Leftover_s.dds\0".to_string();
+        std::fs::write(&leftover, materials_native::bgsm::write(&data)).unwrap();
+        for texture in [
+            "Textures/Actors/Character/Eyes/EyeBlue.dds",
+            "Textures/Actors/Character/BaseHumanFemale/BaseFemaleHead_d.dds",
+            "Textures/Actors/Character/BaseHumanFemale/Fo76Only_d.dds",
+            "Textures/Rocks/Leftover_d.dds",
+            "Textures/Rocks/Member_d.dds",
+        ] {
+            let path = fo76.join(texture);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"dds").unwrap();
+        }
+        let fo4: HashSet<String> = [
+            "materials/rocks/leftover.bgsm",
+            "textures/actors/character/eyes/eyeblue.dds",
+            "textures/actors/character/basehumanfemale/basefemalehead_d.dds",
+            "textures/rocks/leftover_d.dds",
+            "textures/rocks/member_d.dds",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let members: HashSet<String> = ["textures/rocks/member_d.dds".to_owned()].into();
+
+        let set = build_native_overwrite_set(fo76, &members, &|path| fo4.contains(path), &|_| None, &[]);
+
+        let mut set: Vec<String> = set.into_iter().collect();
+        set.sort();
+        assert_eq!(
+            set,
+            [
+                "textures/actors/character/basehumanfemale/basefemalehead_d.dds",
+                "textures/actors/character/eyes/eyeblue.dds",
+            ]
+        );
+    }
+
+    #[test]
+    fn native_overwrite_set_never_takes_a_target_cubemap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fo76 = tmp.path();
+        write_material(
+            fo76,
+            "Materials/Weapons/Gun.bgsm",
+            &[
+                "Weapons\\Gun_d.dds\0",
+                "Shared\\Cubemaps\\mipblur_DefaultOutside1.dds\0",
+                "shared/cubemaps/MetalChrome01Cube_e.dds\0",
+            ],
+        );
+        let fo4: HashSet<String> = [
+            "materials/weapons/gun.bgsm",
+            "textures/weapons/gun_d.dds",
+            "textures/shared/cubemaps/mipblur_defaultoutside1.dds",
+            "textures/shared/cubemaps/metalchrome01cube_e.dds",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        let set = build_native_overwrite_set(
+            fo76,
+            &HashSet::new(),
+            &|path| fo4.contains(path),
+            &|_| None,
+            &[],
+        );
+
+        let mut set: Vec<String> = set.into_iter().collect();
+        set.sort();
+        assert_eq!(set, ["materials/weapons/gun.bgsm", "textures/weapons/gun_d.dds"]);
+        assert!(set.iter().all(|path| !is_target_cubemap_path(path)));
+    }
+
+    #[test]
+    fn target_cubemap_paths_are_recognised_in_any_spelling() {
+        assert!(is_target_cubemap_path("textures/shared/cubemaps/mipblur_defaultoutside1.dds"));
+        assert!(is_target_cubemap_path("Textures\\Shared\\Cubemaps\\EyeCubeMap.dds"));
+        assert!(!is_target_cubemap_path(
+            "textures/fo4cs/cubemaps/advancedlighting/mipblur_defaultoutside1.dds"
+        ));
+        assert!(!is_target_cubemap_path("textures/weapons/gun_d.dds"));
     }
 }

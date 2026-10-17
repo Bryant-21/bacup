@@ -187,6 +187,10 @@ Function Fragment_Stage_0600_Item_00()
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()
+	Actor playerRef = Alias_FS02Player.GetActorReference()
+	If playerRef != None && FS02_MQ_Overdue_QuestCompletedValue != None
+		playerRef.SetValue(FS02_MQ_Overdue_QuestCompletedValue, 1.0)
+	EndIf
 	SetObjectiveCompleted(500, True)
 	CompleteQuest()
 	Stop()

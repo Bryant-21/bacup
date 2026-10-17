@@ -2,8 +2,8 @@ use super::*;
 use havok_native::animation::{
     clip::extract_clip,
     expand::expand,
-    parsers::{parse_skeleton_xml, SkeletonRecord},
-    pose::{quat_conjugate, quat_mul, quat_normalize, quat_rotate, QsTransform},
+    parsers::{SkeletonRecord, parse_skeleton_xml},
+    pose::{QsTransform, quat_conjugate, quat_mul, quat_normalize, quat_rotate},
 };
 use havok_native::hkx::tagxml::write_tagxml_string;
 
@@ -61,14 +61,17 @@ impl Retargeter {
         target_root: &Path,
         project: &str,
     ) -> Result<Self, String> {
-        let load = |root: &Path, dir: &str| {
-            let file = super::assets::project_rig(root, dir)?;
+        let parse = |file: HkxFile| {
             parse_skeleton_xml(&write_tagxml_string(&file).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())
         };
         Self::new(
-            load(source_root, &project.replace("powerarmor", "character"))?,
-            load(target_root, project)?,
+            parse(super::assets::project_rig(
+                source_root,
+                &project.replace("powerarmor", "character"),
+            )?)?,
+            // The shipped rig, so retargeted clips carry FO76's AimSource track too.
+            parse(super::assets::shipped_rig(source_root, target_root, project)?.0)?,
         )
     }
 

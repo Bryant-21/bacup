@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use materials_native::convert::{
-    ConvertMaterialsReport, ConvertMaterialsRequest, Game, MaterialEntry, downgrade_bgem,
-    downgrade_bgsm, repair_missing_fo76_smoothspec_from_specular,
+    ConvertMaterialsReport, ConvertMaterialsRequest, Game, MaterialEntry, RootMaterialRelocation,
+    downgrade_bgem, downgrade_bgsm, repair_missing_fo76_smoothspec_from_specular,
     run_convert_materials_with_inventory,
 };
 
@@ -32,6 +32,10 @@ pub struct MaterialsEngineParams {
     /// Data-relative prefixes whose materials deliberately overwrite the target
     /// game's at the same path instead of being skipped as base-owned.
     pub base_overwrite_prefixes: Vec<String>,
+    /// Exact paths that overwrite the target game's (`ConversionRun::native_overwrite_paths`).
+    pub base_overwrite_paths: HashSet<String>,
+    /// Native assets mode: FO76 materials ship byte for byte (FO4CS reads them).
+    pub copy_as_authored: bool,
 }
 
 pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsReport {
@@ -43,6 +47,7 @@ pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsRe
                     inventory,
                     &params.source_extracted,
                     &["Materials"],
+                    params.source_game == Game::Starfield && params.target_game == Game::Fo4,
                 )
             })
         })
@@ -61,6 +66,9 @@ pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsRe
             .clone(),
         target_asset_paths: params.target_asset_paths,
         base_overwrite_prefixes: params.base_overwrite_prefixes,
+        base_overwrite_paths: params.base_overwrite_paths,
+        copy_as_authored: params.copy_as_authored,
+        root_material_relocation: None,
     };
 
     apply_relocation_to_material_request(
@@ -70,6 +78,7 @@ pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsRe
         &params.namespace,
         params.source_inventory.as_deref(),
     );
+    relocate_authored_templates(&mut request, &params.source_extracted, &params.namespace);
 
     // Source-path overrides are applied inside run_convert_materials so the
     // convert_all enumeration honors them too (request.source_path_overrides).
@@ -94,6 +103,53 @@ pub fn run_materials_engine(params: MaterialsEngineParams) -> ConvertMaterialsRe
     )
 }
 
+/// Materials copied as authored keep their RootMaterialPath, and a source template written at
+/// its own path (`Materials/Template/...`) would replace the target game's same-named template
+/// for every target material that roots on it. The source's templates move under the
+/// namespace, and every copied material rooted on one is pointed at the moved copy.
+fn relocate_authored_templates(
+    request: &mut ConvertMaterialsRequest,
+    source_dir: &Path,
+    namespace: &str,
+) {
+    if !request.copy_as_authored || namespace.trim().is_empty() {
+        return;
+    }
+    let mut templates = Vec::new();
+    for root in ["Materials", "materials"] {
+        let dir = source_dir.join(root).join("Template");
+        if dir.is_dir() {
+            collect_source_materials_for_relocation(&dir, source_dir, false, &mut templates);
+        }
+    }
+    let mut relocated = HashSet::new();
+    for template in templates {
+        let Some(key) = material_member_key(&template.source_path, source_dir) else {
+            continue;
+        };
+        if !key.ends_with(".bgsm") || !relocated.insert(key["materials/".len()..].to_owned()) {
+            continue;
+        }
+        let output_subpath =
+            crate::relocation::insert_namespace_after_root(&template.source_path, namespace);
+        match request.materials.iter_mut().find(|entry| {
+            material_member_key(&entry.source_path, source_dir).as_deref() == Some(key.as_str())
+        }) {
+            Some(entry) => entry.output_subpath = Some(output_subpath),
+            None => request.materials.push(MaterialEntry {
+                output_subpath: Some(output_subpath),
+                ..template
+            }),
+        }
+    }
+    if !relocated.is_empty() {
+        request.root_material_relocation = Some(RootMaterialRelocation {
+            namespace: namespace.trim().to_owned(),
+            relocated,
+        });
+    }
+}
+
 pub(crate) fn apply_relocation_to_material_request(
     request: &mut ConvertMaterialsRequest,
     source_dir: &Path,
@@ -106,6 +162,15 @@ pub(crate) fn apply_relocation_to_material_request(
     }
 
     let overrides = crate::material_source_overrides::material_source_overrides();
+    let copy_as_authored = request.copy_as_authored;
+    let starfield_to_fo4 =
+        request.source_game == Some(Game::Starfield) && request.target_game == Some(Game::Fo4);
+    let source_materialsdb = starfield_to_fo4.then(|| {
+        request
+            .source_materialsdb
+            .clone()
+            .unwrap_or_else(|| source_dir.join("Materials/materialsbeta.cdb"))
+    });
     let mut existing: HashSet<String> = request
         .materials
         .iter()
@@ -115,7 +180,9 @@ pub(crate) fn apply_relocation_to_material_request(
     // Material members themselves move into the namespace so they cannot clobber
     // FO4 base materials.
     for member in relocation_members.iter() {
-        if (!member.ends_with(".bgsm") && !member.ends_with(".bgem")) || existing.contains(member) {
+        if (!member.ends_with(".bgsm") && !member.ends_with(".bgem") && !member.ends_with(".mat"))
+            || existing.contains(member)
+        {
             continue;
         }
         let abs = source_dir.join(member.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -132,8 +199,14 @@ pub(crate) fn apply_relocation_to_material_request(
             texture_namespace: None,
             texture_namespace_paths: HashSet::new(),
         };
-        entry.texture_namespace_paths =
-            relocated_output_texture_paths(&entry, source_dir, relocation_members, overrides);
+        entry.texture_namespace_paths = relocated_output_texture_paths(
+            &entry,
+            source_dir,
+            relocation_members,
+            overrides,
+            copy_as_authored,
+            source_materialsdb.as_deref(),
+        );
         if !entry.texture_namespace_paths.is_empty() {
             entry.texture_namespace = Some(namespace.to_string());
         }
@@ -149,14 +222,26 @@ pub(crate) fn apply_relocation_to_material_request(
             entry.output_subpath = Some(crate::relocation::insert_namespace_after_root(
                 &key, namespace,
             ));
-            entry.texture_namespace_paths =
-                relocated_output_texture_paths(entry, source_dir, relocation_members, overrides);
+            entry.texture_namespace_paths = relocated_output_texture_paths(
+                entry,
+                source_dir,
+                relocation_members,
+                overrides,
+                copy_as_authored,
+                source_materialsdb.as_deref(),
+            );
             entry.texture_namespace =
                 (!entry.texture_namespace_paths.is_empty()).then(|| namespace.to_string());
             continue;
         }
-        let texture_namespace_paths =
-            relocated_output_texture_paths(entry, source_dir, relocation_members, overrides);
+        let texture_namespace_paths = relocated_output_texture_paths(
+            entry,
+            source_dir,
+            relocation_members,
+            overrides,
+            copy_as_authored,
+            source_materialsdb.as_deref(),
+        );
         if !texture_namespace_paths.is_empty() {
             entry
                 .texture_namespace
@@ -178,10 +263,11 @@ pub(crate) fn apply_relocation_to_material_request(
             inventory,
             source_dir,
             &["Materials", "materials"],
+            request.source_game == Some(Game::Starfield) && request.target_game == Some(Game::Fo4),
         )
     });
-    for mut entry in
-        inventory_entries.unwrap_or_else(|| enumerate_source_materials_for_relocation(source_dir))
+    for mut entry in inventory_entries
+        .unwrap_or_else(|| enumerate_source_materials_for_relocation(source_dir, starfield_to_fo4))
     {
         let Some(key) = material_member_key(&entry.source_path, source_dir) else {
             continue;
@@ -189,8 +275,14 @@ pub(crate) fn apply_relocation_to_material_request(
         if existing.contains(&key) || relocation_members.contains(&key) {
             continue;
         }
-        let texture_namespace_paths =
-            relocated_output_texture_paths(&entry, source_dir, relocation_members, overrides);
+        let texture_namespace_paths = relocated_output_texture_paths(
+            &entry,
+            source_dir,
+            relocation_members,
+            overrides,
+            copy_as_authored,
+            source_materialsdb.as_deref(),
+        );
         if texture_namespace_paths.is_empty() {
             continue;
         }
@@ -206,11 +298,17 @@ fn enumerate_source_materials_from_inventory(
     inventory: &crate::source_inventory::SourceAssetInventory,
     source_dir: &Path,
     root_names: &[&str],
+    include_mat: bool,
 ) -> Option<Vec<MaterialEntry>> {
     let mut out = Vec::new();
     for root_name in root_names {
         let root = source_dir.join(root_name);
-        let files = inventory.files_if_compatible(&root, &[".bgsm", ".bgem"])?;
+        let extensions: &[&str] = if include_mat {
+            &[".bgsm", ".bgem", ".mat"]
+        } else {
+            &[".bgsm", ".bgem"]
+        };
+        let files = inventory.files_if_compatible(&root, extensions)?;
         for path in files {
             let Ok(rel) = path.strip_prefix(source_dir) else {
                 continue;
@@ -233,13 +331,35 @@ fn relocated_output_texture_paths(
     source_dir: &Path,
     relocation_members: &HashSet<String>,
     overrides: &std::collections::HashMap<String, String>,
+    copy_as_authored: bool,
+    source_materialsdb: Option<&Path>,
 ) -> HashSet<String> {
+    if entry.source_path.to_ascii_lowercase().ends_with(".mat") {
+        let Some(cdb) = source_materialsdb else {
+            return HashSet::new();
+        };
+        let Ok(material) = materials_native::cdb_to_bgsm::project_material(cdb, &entry.source_path)
+        else {
+            return HashSet::new();
+        };
+        let mut paths = HashSet::new();
+        collect_ce2_texture_members(&material, relocation_members, &mut paths);
+        return paths;
+    }
     let Some(scan_path) = material_texture_scan_path(entry, source_dir, overrides) else {
         return HashSet::new();
     };
     let Ok(bytes) = std::fs::read(&scan_path) else {
         return HashSet::new();
     };
+    if copy_as_authored {
+        // Authored materials keep FO76's texture names, so the keys are the source paths.
+        return materials_native::convert::authored_material_texture_paths(&bytes)
+            .iter()
+            .filter_map(|path| texture_member_key(path))
+            .filter(|key| relocation_members.contains(key))
+            .collect();
+    }
     let ext = scan_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -249,6 +369,40 @@ fn relocated_output_texture_paths(
         return relocated_output_bgem_texture_paths(&bytes, &entry.source_path, relocation_members);
     }
     relocated_output_bgsm_texture_paths(&bytes, &entry.source_path, &scan_path, relocation_members)
+}
+
+fn collect_ce2_texture_members(
+    material: &materials_native::Ce2MaterialPayload,
+    relocation_members: &HashSet<String>,
+    paths: &mut HashSet<String>,
+) {
+    for layer in &material.layers {
+        for path in [
+            &layer.texture_set.diffuse,
+            &layer.texture_set.normal,
+            &layer.texture_set.rough,
+            &layer.texture_set.metal,
+            &layer.texture_set.ao,
+            &layer.texture_set.opacity,
+            &layer.texture_set.emissive,
+        ] {
+            if let Some(key) =
+                texture_member_key(path).filter(|key| relocation_members.contains(key))
+            {
+                paths.insert(key);
+            }
+        }
+    }
+    for blender in &material.blenders {
+        if let Some(key) =
+            texture_member_key(&blender.mask_texture).filter(|key| relocation_members.contains(key))
+        {
+            paths.insert(key);
+        }
+    }
+    for lod in &material.lod_materials {
+        collect_ce2_texture_members(lod, relocation_members, paths);
+    }
 }
 
 fn relocated_output_bgsm_texture_paths(
@@ -459,15 +613,18 @@ fn material_member_key(source_path: &str, source_dir: &Path) -> Option<String> {
     if !key.starts_with("materials/") {
         key = format!("materials/{key}");
     }
-    (key.ends_with(".bgsm") || key.ends_with(".bgem")).then_some(key)
+    (key.ends_with(".bgsm") || key.ends_with(".bgem") || key.ends_with(".mat")).then_some(key)
 }
 
-fn enumerate_source_materials_for_relocation(source_dir: &Path) -> Vec<MaterialEntry> {
+fn enumerate_source_materials_for_relocation(
+    source_dir: &Path,
+    include_mat: bool,
+) -> Vec<MaterialEntry> {
     let mut out = Vec::new();
     for root_name in ["Materials", "materials"] {
         let root = source_dir.join(root_name);
         if root.is_dir() {
-            collect_source_materials_for_relocation(&root, source_dir, &mut out);
+            collect_source_materials_for_relocation(&root, source_dir, include_mat, &mut out);
         }
     }
     out
@@ -476,6 +633,7 @@ fn enumerate_source_materials_for_relocation(source_dir: &Path) -> Vec<MaterialE
 fn collect_source_materials_for_relocation(
     dir: &Path,
     source_dir: &Path,
+    include_mat: bool,
     out: &mut Vec<MaterialEntry>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -484,7 +642,7 @@ fn collect_source_materials_for_relocation(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_source_materials_for_relocation(&path, source_dir, out);
+            collect_source_materials_for_relocation(&path, source_dir, include_mat, out);
             continue;
         }
         let is_material = path
@@ -492,7 +650,7 @@ fn collect_source_materials_for_relocation(
             .and_then(|ext| ext.to_str())
             .map(|ext| {
                 let ext = ext.to_ascii_lowercase();
-                ext == "bgsm" || ext == "bgem"
+                ext == "bgsm" || ext == "bgem" || (include_mat && ext == "mat")
             })
             .unwrap_or(false);
         if !is_material {
@@ -517,6 +675,46 @@ mod tests {
     use super::*;
     use materials_native::{bgem, bgsm};
     use std::path::Path;
+
+    #[test]
+    #[ignore = "requires extracted Starfield materialsbeta.cdb"]
+    fn starfield_cdb_relocation_follows_inherited_layers_and_blender_masks() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../extracted/starfield");
+        let cdb = source.join("Materials/materialsbeta.cdb");
+        let material_path =
+            "Materials/Clothes/Spacesuit_Constellation/Spacesuit_Constellation_UpperBody.mat";
+        let material =
+            materials_native::cdb_to_bgsm::project_material(&cdb, material_path).unwrap();
+        assert_eq!(material.layers.len(), 4);
+        assert_eq!(material.blenders.len(), 3);
+        let members = [
+            &material.layers[1].texture_set.diffuse,
+            &material.layers[1].texture_set.normal,
+            &material.layers[1].texture_set.rough,
+            &material.blenders[0].mask_texture,
+        ]
+        .into_iter()
+        .map(|path| texture_member_key(path).expect("source texture member"))
+        .collect::<HashSet<_>>();
+        assert_eq!(members.len(), 4);
+        let entry = MaterialEntry {
+            source_path: material_path.into(),
+            resolved_path: material_path.into(),
+            is_cdb_ref: true,
+            output_subpath: None,
+            texture_namespace: None,
+            texture_namespace_paths: HashSet::new(),
+        };
+        let actual = relocated_output_texture_paths(
+            &entry,
+            &source,
+            &members,
+            &std::collections::HashMap::new(),
+            false,
+            Some(&cdb),
+        );
+        assert_eq!(actual, members);
+    }
 
     fn write_fo76_bgsm(path: &Path, cast_shadows: bool, empty_spec_slot: bool) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -609,6 +807,8 @@ mod tests {
             overwrite_existing: true,
             target_asset_paths: HashSet::new(),
             base_overwrite_prefixes: Vec::new(),
+            base_overwrite_paths: HashSet::new(),
+            copy_as_authored: false,
         }
     }
 
@@ -672,6 +872,9 @@ mod tests {
                 source_path_overrides: std::collections::HashMap::new(),
                 target_asset_paths: HashSet::new(),
                 base_overwrite_prefixes: Vec::new(),
+                base_overwrite_paths: HashSet::new(),
+                copy_as_authored: false,
+                root_material_relocation: None,
             };
             materials_native::convert::run_convert_materials(
                 &tmp.join("mod_legacy"),
@@ -1066,11 +1269,12 @@ mod tests {
             std::fs::write(path, b"fixture").unwrap();
         }
         let inventory = crate::source_inventory::SourceAssetInventory::default();
-        let direct = enumerate_source_materials_for_relocation(&source);
+        let direct = enumerate_source_materials_for_relocation(&source, false);
         let from_inventory = enumerate_source_materials_from_inventory(
             &inventory,
             &source,
             &["Materials", "materials"],
+            false,
         )
         .unwrap();
         let project = |entries: Vec<MaterialEntry>| {
@@ -1080,5 +1284,191 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(project(from_inventory), project(direct));
+    }
+
+    fn write_fo76_v22_bgsm(path: &Path, diffuse: &str, normal: &str, specular: &str) -> Vec<u8> {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut data = bgsm::BgsmData::default();
+        data.header.signature = bgsm::BGSM_SIGNATURE;
+        data.header.version = 22;
+        data.DiffuseTexture = diffuse.to_string();
+        data.NormalTexture = normal.to_string();
+        data.SpecularTexture = Some(specular.to_string());
+        data.RootMaterialPath = "Materials\\Template\\Base.bgsm\0".to_string();
+        data.CastShadows = false;
+        let bytes = bgsm::write(&data);
+        std::fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
+    fn assert_only_textures_changed(
+        source: &[u8],
+        output: &[u8],
+        diffuse: &str,
+        normal: &str,
+        specular: &str,
+    ) {
+        let source = bgsm::parse(source).unwrap();
+        let mut output = bgsm::parse(output).unwrap();
+        assert_eq!(output.DiffuseTexture, diffuse);
+        assert_eq!(output.NormalTexture, normal);
+        assert_eq!(output.SpecularTexture.as_deref(), Some(specular));
+        output.DiffuseTexture = source.DiffuseTexture.clone();
+        output.NormalTexture = source.NormalTexture.clone();
+        output.SpecularTexture = source.SpecularTexture.clone();
+        assert_eq!(
+            serde_json::to_value(&output).unwrap(),
+            serde_json::to_value(&source).unwrap()
+        );
+    }
+
+    #[test]
+    fn native_copy_namespaces_relocated_texture_paths_in_authored_materials() {
+        let tmp = std::env::temp_dir().join("mat_engine_native_copy_relocated_textures");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        let shared = write_fo76_v22_bgsm(
+            &source
+                .join("Materials")
+                .join("SetDressing")
+                .join("acducts01.bgsm"),
+            "SetDressing\\ACducts01_d.dds\0",
+            "SetDressing\\ACducts01_n.dds\0",
+            "SetDressing\\ACducts01_r.dds\0",
+        );
+        let member = write_fo76_v22_bgsm(
+            &source.join("Materials").join("Vehicles").join("bus01.bgsm"),
+            "Vehicles\\Bus01_d.dds\0",
+            "Vehicles\\Bus01_n.dds\0",
+            "Vehicles\\Bus01_r.dds\0",
+        );
+
+        let mut params = engine_params(&source, &tmp.join("mod"));
+        params.copy_as_authored = true;
+        params.namespace = "FO76".to_string();
+        for member in [
+            "textures/setdressing/acducts01_d.dds",
+            "textures/setdressing/acducts01_r.dds",
+            "materials/vehicles/bus01.bgsm",
+            "textures/vehicles/bus01_d.dds",
+            "textures/vehicles/bus01_n.dds",
+            "textures/vehicles/bus01_r.dds",
+        ] {
+            params.relocation_members.insert(member.to_string());
+        }
+        run_materials_engine(params);
+
+        let data = tmp.join("mod").join("data").join("Materials");
+        assert_only_textures_changed(
+            &shared,
+            &std::fs::read(data.join("SetDressing").join("acducts01.bgsm")).unwrap(),
+            "FO76\\SetDressing\\ACducts01_d.dds\0",
+            "SetDressing\\ACducts01_n.dds\0",
+            "FO76\\SetDressing\\ACducts01_r.dds\0",
+        );
+        assert_only_textures_changed(
+            &member,
+            &std::fs::read(data.join("FO76").join("Vehicles").join("bus01.bgsm")).unwrap(),
+            "FO76\\Vehicles\\Bus01_d.dds\0",
+            "FO76\\Vehicles\\Bus01_n.dds\0",
+            "FO76\\Vehicles\\Bus01_r.dds\0",
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn write_fo76_v22_bgsm_rooted_on(path: &Path, root: &str) -> Vec<u8> {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut data = bgsm::BgsmData::default();
+        data.header.signature = bgsm::BGSM_SIGNATURE;
+        data.header.version = 22;
+        data.RootMaterialPath = root.to_string();
+        let bytes = bgsm::write(&data);
+        std::fs::write(path, &bytes).unwrap();
+        bytes
+    }
+
+    fn root_of(path: &Path) -> String {
+        bgsm::parse(&std::fs::read(path).unwrap())
+            .unwrap()
+            .RootMaterialPath
+    }
+
+    #[test]
+    fn native_copy_moves_templates_under_the_namespace_and_repoints_their_roots() {
+        let tmp = std::env::temp_dir().join("mat_engine_native_copy_relocated_templates");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        let templates = source.join("Materials").join("Template");
+        write_fo76_v22_bgsm_rooted_on(&templates.join("BasicRough.bgsm"), "\0");
+        write_fo76_v22_bgsm_rooted_on(&templates.join("WoodTemplate_Wet.bgsm"), "\0");
+        write_fo76_v22_bgsm_rooted_on(
+            &templates.join("WoodTemplate.bgsm"),
+            "Template/WoodTemplate_Wet.bgsm\0",
+        );
+        write_fo76_v22_bgsm_rooted_on(
+            &source
+                .join("Materials")
+                .join("Architecture")
+                .join("awning01.bgsm"),
+            "Template/basicrough.bgsm\0",
+        );
+        write_fo76_v22_bgsm_rooted_on(
+            &source
+                .join("Materials")
+                .join("Architecture")
+                .join("legacy01.bgsm"),
+            "template/defaultTemplate_wet.bgsm\0",
+        );
+
+        let mut params = engine_params(&source, &tmp.join("mod"));
+        params.copy_as_authored = true;
+        params.namespace = "FO76".to_string();
+        run_materials_engine(params);
+
+        let data = tmp.join("mod").join("data").join("Materials");
+        let moved = data.join("FO76").join("Template");
+        assert!(
+            !data.join("Template").exists(),
+            "a template left at its own path replaces the target game's"
+        );
+        assert_eq!(root_of(&moved.join("BasicRough.bgsm")), "\0");
+        assert_eq!(
+            root_of(&moved.join("WoodTemplate.bgsm")),
+            "FO76/Template/WoodTemplate_Wet.bgsm\0"
+        );
+        assert!(moved.join("WoodTemplate_Wet.bgsm").is_file());
+        let architecture = data.join("Architecture");
+        assert_eq!(
+            root_of(&architecture.join("awning01.bgsm")),
+            "FO76/Template/basicrough.bgsm\0"
+        );
+        assert_eq!(
+            root_of(&architecture.join("legacy01.bgsm")),
+            "template/defaultTemplate_wet.bgsm\0",
+            "a root the source does not ship stays on the target game's template"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn converted_materials_keep_templates_at_their_own_path() {
+        let tmp = std::env::temp_dir().join("mat_engine_converted_templates_unmoved");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let source = tmp.join("source");
+        write_fo76_v22_bgsm_rooted_on(
+            &source
+                .join("Materials")
+                .join("Template")
+                .join("BasicRough.bgsm"),
+            "\0",
+        );
+
+        let mut params = engine_params(&source, &tmp.join("mod"));
+        params.namespace = "FO76".to_string();
+        run_materials_engine(params);
+
+        let data = tmp.join("mod").join("data").join("Materials");
+        assert!(!data.join("FO76").join("Template").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

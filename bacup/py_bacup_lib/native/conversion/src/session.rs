@@ -33,7 +33,8 @@ use esp_authoring_core::plugin_runtime::{
     CoreSection, FormIdPathsSection, FormKey as IndexedFormKey, NativePluginSlot, ParsedGroup,
     ParsedItem, ParsedRecord, ParsedSubrecord, RecordPath, RecordsSection, WriteEffect,
     effective_subrecords_for_record, ensure_core_section, ensure_form_id_paths_section,
-    ensure_records_section, iter_referenced_form_ids_from_subrecords, normalize_form_key,
+    ensure_records_section, insert_topic_child_record_in_slot,
+    iter_referenced_form_ids_from_subrecords, normalize_form_key,
     plugin_handle_store_ref, record_index_entry_by_form_key,
 };
 
@@ -263,6 +264,17 @@ impl HandleRawScan<'_> {
                     .map(|entry| entry.raw_form_id)
             })
             .collect()
+    }
+
+    pub(crate) fn record_identities_of_sig(
+        &self,
+        sig: SigCode,
+    ) -> impl Iterator<Item = (&IndexedFormKey, u32)> {
+        self.core.by_signature_form_keys.get(sig.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|key| !key.plugin.is_empty())
+            .filter_map(|key| self.core.by_form_key.get(key).map(|entry| (key, entry.raw_form_id)))
     }
 
     /// EditorIDs of records whose raw FormID sits at mod index 0, keyed by
@@ -808,6 +820,16 @@ impl<'store> PluginSession<'store> {
         sig: SigCode,
         interner: &StringInterner,
     ) -> Result<Vec<FormKey>, SessionError> {
+        self.form_keys_of_sig_with_flags_in_handle(handle_id, sig, 0, interner)
+    }
+
+    pub fn form_keys_of_sig_with_flags_in_handle(
+        &mut self,
+        handle_id: u64,
+        sig: SigCode,
+        required_flags: u32,
+        interner: &StringInterner,
+    ) -> Result<Vec<FormKey>, SessionError> {
         let plugin_idx_keys = {
             let slot = self
                 .store_guard
@@ -822,6 +844,7 @@ impl<'store> PluginSession<'store> {
                         .filter_map(|key| {
                             core.by_form_key
                                 .get(key)
+                                .filter(|entry| entry.flags & required_flags == required_flags)
                                 .map(|entry| (key.clone(), entry.raw_form_id))
                         })
                         .collect::<Vec<_>>()
@@ -1216,6 +1239,32 @@ impl<'store> PluginSession<'store> {
         Ok(())
     }
 
+    /// Add an INFO to the topic-child group of the DIAL whose object id is
+    /// `parent_dialogue_object_id`; that DIAL must already sit in a quest-child group.
+    pub fn add_topic_child_record(
+        &mut self,
+        record: Record,
+        parent_dialogue_object_id: u32,
+        schema: &AuthoringSchema,
+        interner: &StringInterner,
+    ) -> Result<bool, SessionError> {
+        let inserted = {
+            let slot = self.target_slot_mut();
+            let Some(parsed) = encode_record_for_slot(slot, record, schema, interner)
+                .map_err(|err| SessionError::Other(err.to_string()))?
+            else {
+                return Ok(false);
+            };
+            insert_topic_child_record_in_slot(slot, parent_dialogue_object_id, parsed)
+                .map_err(SessionError::Other)?
+        };
+        if inserted {
+            self.invalidate_target_indexes_after_structural_write();
+            self.record_effect(WriteEffect::RecordsAddedOrRemoved);
+        }
+        Ok(inserted)
+    }
+
     pub fn add_records(
         &mut self,
         records: Vec<Record>,
@@ -1593,6 +1642,27 @@ impl<'store> PluginSession<'store> {
         Ok(raw_form_id)
     }
 
+    pub(crate) fn raw_form_id_of_signature(
+        &mut self,
+        fk: &FormKey,
+        signature: SigCode,
+        interner: &StringInterner,
+    ) -> Result<Option<u32>, SessionError> {
+        if fk.local > 0x00FF_FFFF {
+            return Ok(None);
+        }
+        match self.indexed_raw_form_id_and_signature(fk, interner) {
+            Ok((raw, actual)) if actual == signature => Ok(Some(raw)),
+            Err(SessionError::RecordNotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+            Ok((raw, _)) => {
+                // A malformed duplicate can leave the same identity in an older signature list.
+                let present = self.form_keys_of_sig(signature, interner)?.contains(fk);
+                Ok(present.then_some(raw))
+            }
+        }
+    }
+
     pub(crate) fn indexed_raw_form_id_and_signature(
         &mut self,
         fk: &FormKey,
@@ -1774,7 +1844,7 @@ fn walk_to_record_mut<'a>(
     path: &RecordPath,
 ) -> Result<&'a mut ParsedRecord, SessionError> {
     let mut current = items.as_mut_slice();
-    for &group_index in &path.group_indices {
+    for &group_index in path.group_indices.iter() {
         let item = current
             .get_mut(group_index as usize)
             .ok_or(SessionError::PathStale)?;
@@ -1795,7 +1865,7 @@ fn walk_to_record<'a>(
     path: &RecordPath,
 ) -> Result<&'a ParsedRecord, SessionError> {
     let mut current = items;
-    for &group_index in &path.group_indices {
+    for &group_index in path.group_indices.iter() {
         let item = current
             .get(group_index as usize)
             .ok_or(SessionError::PathStale)?;
@@ -1814,7 +1884,7 @@ fn walk_to_record<'a>(
 fn parent_cell_form_id_from_path(items: &[ParsedItem], path: &RecordPath) -> Option<u32> {
     let mut current = items;
     let mut parent_cell = None;
-    for &group_index in &path.group_indices {
+    for &group_index in path.group_indices.iter() {
         let ParsedItem::Group(group) = current.get(group_index as usize)? else {
             return None;
         };
@@ -2198,7 +2268,8 @@ mod tests {
     use crate::schema::AuthoringSchema;
     use esp_authoring_core::plugin_runtime::{
         ParsedGroup, ParsedSubrecord, build_vmad_bytes_from_payload, ensure_assets_section,
-        ensure_refs_section, plugin_handle_debug_section_loaded_native, plugin_handle_new_native,
+        ensure_refs_section, plugin_handle_close_native, plugin_handle_debug_section_loaded_native,
+        plugin_handle_new_native,
     };
     use smallvec::SmallVec;
 
@@ -2375,6 +2446,75 @@ mod tests {
         assert_eq!(viewed.sig, record.sig);
         assert_eq!(viewed.fields.len(), record.fields.len());
         assert_eq!(viewed.eid, record.eid);
+    }
+
+    #[test]
+    fn signature_flags_filter_matches_decoded_headers_and_preserves_order() {
+        let handle = load_fixture_with_weap_count(5, "Flags.esp").unwrap();
+        let interner = StringInterner::new();
+        let sig = SigCode::from_str("WEAP").unwrap();
+        let mask = crate::record::RecordFlags::PERSISTENT.bits();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            let ParsedItem::Group(group) = &mut slot.parsed.root_items[0] else {
+                panic!()
+            };
+            for (index, item) in group.children.iter_mut().enumerate() {
+                let ParsedItem::Record(record) = item else {
+                    panic!()
+                };
+                record.flags = if index % 2 == 0 { mask | 0x20 } else { 0x20 };
+            }
+            slot.invalidate_sections();
+        }
+        let mut session = open_session(handle, None).unwrap();
+        let schema = session.schema().unwrap();
+        let all = session
+            .form_keys_of_sig_in_handle(handle, sig, &interner)
+            .unwrap();
+        let expected: Vec<_> = all
+            .iter()
+            .copied()
+            .filter(|fk| {
+                session
+                    .record_decoded_in_handle(handle, fk, &schema, &interner)
+                    .unwrap()
+                    .flags
+                    .bits()
+                    & mask
+                    == mask
+            })
+            .collect();
+        assert_eq!(expected.len(), 3);
+        assert_eq!(
+            session
+                .form_keys_of_sig_with_flags_in_handle(handle, sig, mask, &interner)
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            session
+                .form_keys_of_sig_with_flags_in_handle(handle, sig, 0, &interner)
+                .unwrap(),
+            all
+        );
+        assert!(
+            session
+                .form_keys_of_sig_with_flags_in_handle(
+                    handle,
+                    SigCode::from_str("REFR").unwrap(),
+                    mask,
+                    &interner
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            session
+                .form_keys_of_sig_with_flags_in_handle(u64::MAX, sig, mask, &interner)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2831,6 +2971,66 @@ mod tests {
             session.record(0x0000_0800).unwrap().signature.as_str(),
             "WEAP"
         );
+    }
+
+    #[test]
+    fn single_identity_lookup_matches_enumeration_with_duplicates_and_master_collisions() {
+        let handle = load_fixture_with_weap().unwrap();
+        let interner = StringInterner::new();
+        {
+            let mut store = plugin_handle_store_ref().lock().unwrap();
+            let slot = store.get_mut(&handle).unwrap();
+            slot.parsed.header.masters = vec!["Master.esm".into()];
+            let make = |signature: &str, form_id| {
+                ParsedItem::Record(ParsedRecord {
+                    signature: SmolStr::new(signature),
+                    form_id,
+                    flags: 0,
+                    version_control: 0,
+                    form_version: None,
+                    version2: None,
+                    subrecords: Vec::new(),
+                    raw_payload: None,
+                    parse_error: None,
+                })
+            };
+            slot.parsed.root_items = vec![
+                make("REFR", 0x0100_0800),
+                make("REFR", 0x0100_0800),
+                make("WEAP", 0x0100_0801),
+                make("MISC", 0x0100_0801),
+                make("MISC", 0x0000_0800),
+            ];
+            slot.invalidate_sections();
+        }
+        let mut session = open_session(handle, None).unwrap();
+        let own = interner.intern(&session.target_slot().parsed.plugin_name);
+        let master = interner.intern("Master.esm");
+        let refr = SigCode::from_str("REFR").unwrap();
+        let own_fk = FormKey { local: 0x800, plugin: own };
+        assert_eq!(
+            session.raw_form_id_of_signature(&own_fk, refr, &interner).unwrap(),
+            Some(0x0100_0800),
+        );
+        assert!(session.target_cached_signatures.is_empty());
+        assert_eq!(session.target_form_id_cache.len(), 1);
+        for plugin in [own, master] {
+            for local in [0, 0x800, 0x801, 0x802, 0x0100_0800] {
+                let fk = FormKey { local, plugin };
+                for signature in ["REFR", "WEAP", "MISC", "CELL"] {
+                    let sig = SigCode::from_str(signature).unwrap();
+                    let keys = session.form_keys_of_sig(sig, &interner).unwrap();
+                    let expected = keys.contains(&fk)
+                        .then(|| session.raw_form_id_for_form_key(&fk).unwrap());
+                    assert_eq!(
+                        session.raw_form_id_of_signature(&fk, sig, &interner).unwrap(),
+                        expected,
+                    );
+                }
+            }
+        }
+        drop(session);
+        assert!(plugin_handle_close_native(handle));
     }
 
     #[test]

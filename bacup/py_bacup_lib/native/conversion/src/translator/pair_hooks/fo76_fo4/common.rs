@@ -287,15 +287,4 @@ impl Fo76Fo4Hook {
                 || actual.replace('_', "").eq_ignore_ascii_case(expected)
         })
     }
-
-    pub(super) fn positive_u32_struct_field(
-        interner: &crate::sym::StringInterner,
-        fields: &[(crate::sym::Sym, FieldValue)],
-        field_name: &str,
-    ) -> Option<u32> {
-        fields
-            .iter()
-            .find(|(name, _)| Self::struct_field_name_is(interner, *name, field_name))
-            .and_then(|(_, value)| Self::field_value_positive_u32(value))
-    }
 }

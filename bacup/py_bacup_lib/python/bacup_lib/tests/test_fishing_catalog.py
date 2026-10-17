@@ -7,6 +7,8 @@ import pytest
 
 from bacup_lib.run import ConversionRun
 
+from bacup_lib.tests.catalog_schema_validation import validate_catalog
+
 
 def _record(signature, form_id, fields, *, flags=0, version=209):
     body = b"".join(tag.encode() + struct.pack("<H", len(data)) + data for tag, data in fields)
@@ -68,17 +70,17 @@ def test_catalog_preserves_rules_and_resolves_translated_reward(tmp_path):
     catalog = json.loads(first)
     assert report["assets_written"] == 1
     assert report["records_added"] == report["records_changed"] == report["records_dropped"] == 0
-    assert catalog["fish_count"] == 1
-    assert catalog["mapping_available"] is True
+    validate_catalog("Fishing", catalog)
+    assert catalog["version"] == 1
+    assert catalog["settings"]["fish_count"] == 1
+    assert catalog["settings"]["mapping_available"] is True
     records = {record["source_form_id"]: record for record in catalog["records"]}
     assert set(records) == {"00000800", "00000802", "00000803", "00000804", "00000805"}
     exported = records["00000803"]
     assert exported["form_version"] == 209
     assert [(field["signature"], bytes.fromhex(field["hex"])) for field in exported["fields"]] == original_records[-3][2]
-    assert catalog["target_forms"]["000800:Source.esm"] is None
-    assert catalog["target_forms"]["000801:Source.esm"]["plugin"] == "Output.esm"
-    assert catalog["target_forms"]["000801:Source.esm"]["editor_id"] == "B21_CatchReward"
-    assert catalog["target_forms"]["000801:Source.esm"]["signature"] == "ALCH"
+    assert catalog["target_forms"]["Source.esm:000800"] is None
+    assert catalog["target_forms"]["Source.esm:000801"].startswith("Output.esm:")
     assert source.read_bytes() == original_bytes
 
 
@@ -89,8 +91,8 @@ def test_source_only_export_marks_mapping_unavailable_and_clears_stale_fish(tmp_
         with ConversionRun.create_new("fo76", "fo4", str(source), "Output.esm") as run:
             run.run_phase("emit_fishing_catalog", mod_path=str(tmp_path))
         catalog = json.loads(_catalog_path(tmp_path).read_bytes())
-        assert catalog["fish_count"] == int(fish)
-        assert catalog["mapping_available"] is False
+        assert catalog["settings"]["fish_count"] == int(fish)
+        assert catalog["settings"]["mapping_available"] is False
 
 
 def test_catalog_requires_source(tmp_path):
@@ -121,7 +123,7 @@ def test_catalog_preserves_weather_keywords_and_non_fishing_setting_names(tmp_pa
     assert next(field["hex"] for field in weather["fields"] if field["signature"] == "KWDA") == "07080000"
     assert "0000080A" not in records
     assert "0000080B" not in records
-    assert "000809:Source.esm" in catalog["target_forms"]
+    assert "Source.esm:000809" in catalog["target_forms"]
 
 
 @pytest.mark.parametrize("source_game,target_game", [("fo4", "fo4"), ("fo76", "starfield")])

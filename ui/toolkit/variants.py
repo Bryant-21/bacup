@@ -49,6 +49,16 @@ VARIANTS: dict[str, AppVariant] = {
         icon_path="resource/icon.ico",
         include_ai_panel=True,
     ),
+    "mod_manager": AppVariant(
+        id="mod_manager",
+        exe_name="ModBox21-ModManager",
+        window_title="ModBox21 - Modlist Manager",
+        workspace_ids=("mod_manager",),
+        default_workspace="mod_manager",
+        icon_path="resource/icon.ico",
+        include_index_settings=False,
+        minimum_window_size=(1024, 720),
+    ),
     "nif": AppVariant(
         id="nif",
         exe_name="ModBox21-NIF",
@@ -113,6 +123,16 @@ VARIANTS: dict[str, AppVariant] = {
         workspace_ids=("world_viewer",),
         default_workspace="world_viewer",
         icon_path="resource/icon.ico",
+    ),
+    "previs": AppVariant(
+        id="previs",
+        exe_name="ModBox21-Previs",
+        window_title="ModBox21 - Previs and Precombines",
+        workspace_ids=("previs",),
+        default_workspace="previs",
+        icon_path="resource/icon.ico",
+        include_index_settings=False,
+        minimum_window_size=(1024, 640),
     ),
     "playstation_converter": AppVariant(
         id="playstation_converter",

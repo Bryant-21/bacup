@@ -209,7 +209,7 @@ Use the tools and conflict checks to validate changes before saving.
             self._copy_as_override()
         if not has_selection:
             imgui.end_disabled()
-        imgui.set_item_tooltip("Copy selection as override into active plugin")
+        imgui.set_item_tooltip("Copy selection as override: choose a destination plugin")
 
         _sep()
 
@@ -289,16 +289,7 @@ Use the tools and conflict checks to validate changes before saving.
             imgui.end_menu()
 
     def _copy_as_override(self) -> None:
-        from creation_lib.esp.editor import copy_as_override
-
-        sel = self._app.selection
-        if sel.record is None:
-            return
-        try:
-            copy_as_override(self._app.session, sel.record.form_id, deep=False)
-            self._app._cached_root.pop(self._app.session.active.handle, None)
-        except Exception:
-            _log.exception("Copy as override failed")
+        self._app.open_copy_popup()
 
     def handle_file_drop(
         self,
@@ -315,6 +306,18 @@ Use the tools and conflict checks to validate changes before saving.
                 self._app.open_plugin(path)
                 return True
         return False
+
+    def confirm_exit(self) -> bool | None:
+        if self._app is None:
+            return True
+        return self._app.confirm_exit()
+
+    def exit_confirmation_state(self):
+        return self._app.exit_confirmation_state() if self._app else None
+
+    def reset_exit_confirmation(self):
+        if self._app:
+            self._app.reset_exit_confirmation()
 
     def cleanup(self) -> None:
         if self._app:

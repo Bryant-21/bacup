@@ -8,6 +8,7 @@ from creation_lib.swf import native_runtime
 
 from bacup_lib import inspect_ui as ui
 from bacup_lib.legendary_perks_ui import imports, swf_tags
+from bacup_lib.tests.catalog_schema_validation import validate_catalog
 
 FIELD = b"\x01\x00\x08\x00\x01\x08$ChowderHead\0\xc8\x00\0"
 # FO76's heading field and the sprite that holds it: the card's panel art.
@@ -48,8 +49,11 @@ def source(tmp_path, keys=ui.TRANSLATION_KEYS):
     # Never valid movies: the converter must not follow the workbench-only imports.
     (interface / "perkslibrary_small.swf").write_bytes(b"perks")
     (interface / "bsbuttonhintbar.swf").write_bytes(b"hints")
-    lines = "".join(f"{key}\t{key.strip('$').title()}\r\n" for key in keys) + "$acc\tV.A.T.S. Accuracy\r\n"
+    lines = "".join(f"{key}\t{key.strip('$').title()}\r\n" for key in keys if key != "$acc") + "$acc\tV.A.T.S. Accuracy\r\n"
     (interface / "translate_en.txt").write_bytes(b"\xff\xfe" + lines.encode("utf-16-le"))
+    for language, text in (("de", "V.A.T.S.-Präzision"), ("zhhant", "V.A.T.S.準度"), ("ko", "V.A.T.S. 명중률")):
+        (interface / f"translate_{language}.txt").write_bytes(
+            b"\xff\xfe" + f"$dmg\tx\r\n$acc\t{text}\r\n".encode("utf-16-le"))
     return interface
 
 
@@ -63,13 +67,24 @@ def compiler(monkeypatch):
 
     monkeypatch.setattr(native_runtime, "replace_as3_classes", replace)
     monkeypatch.setattr(native_runtime, "rename_as3_classes", lambda data, prefix, keep: data)
+    monkeypatch.setattr(native_runtime, "patch_as3_method", lambda data, *args: data)
     return calls
 
 
 def test_converts_movie_libraries_manifest_and_translations(tmp_path, compiler):
     interface = source(tmp_path)
+    curve_path = interface.parent / "misc/curvetables/json/Armor/ArmorMods/Unique/Armor_LastBastion_AccuracyBonus.json"
+    curve_path.parent.mkdir(parents=True)
+    curve = [{"x": 0, "y": 12}, {"x": 1, "y": 0}]
+    curve_path.write_text(json.dumps({"curve": curve}), encoding="utf-8")
     output = tmp_path / "data"
     manifest = ui.convert_inspect_ui(interface.parent, output)
+    generated = output.parent / "F4SE/Plugins/B21_TalesFromAppalachia"
+    bonuses = json.loads((generated / "EquipmentBonuses/SeventySix.esm.json").read_text(encoding="utf-8"))
+    assert bonuses == {"version": 1, "curves": {"lastBastion": {"points": curve}}}
+    validate_catalog("EquipmentBonuses", bonuses)
+    assert json.loads((generated / "EquipmentBonusIcons.json").read_text(encoding="utf-8")) == {
+        "schema_version": 1, "icons": {}}
 
     (_, meter_sources, _), (data, sources, dependencies) = compiler
     assert "SetCondition" in meter_sources["ExamineMenu"]
@@ -104,6 +119,12 @@ def test_converts_movie_libraries_manifest_and_translations(tmp_path, compiler):
     table = (ui.translation_path(output)).read_bytes().decode("utf-16")
     assert "$ATTACKMODE\tAttackmode" in table and "$CURRENT MODS\tCurrent Mods" in table
     assert "$StackWeight\tStackweight" in table
-    assert "$acc\t" not in table
+    # FO76 relabels FO4's own accuracy row, so each language keeps FO76's text for it.
+    assert "$acc\tV.A.T.S. Accuracy" in table
+    localized = {path.name: path.read_bytes().decode("utf-16") for path in ui.translation_path(output).parent.glob("*.txt")}
+    assert localized["B21_TalesFromAppalachia_de.txt"] == "$acc\tV.A.T.S.-Präzision\r\n"
+    assert localized["B21_TalesFromAppalachia_cn.txt"] == "$acc\tV.A.T.S.準度\r\n"
+    assert set(localized) == {"B21_TalesFromAppalachia_en.txt", "B21_TalesFromAppalachia_de.txt",
+                              "B21_TalesFromAppalachia_cn.txt"}
 
     assert ui.convert_inspect_ui(interface.parent, output) == manifest

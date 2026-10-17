@@ -12,7 +12,6 @@ use crate::source_rig::{
     OverlayClipRole, SourceCreatureIdentity, VariableDecl, VariableType, VariableValue,
     deterministic_standard_event,
 };
-#[cfg(test)]
 use crate::source_rig::{
     CapabilityGeneratorAnonymousSourceObject, CapabilityGeneratorBlenderChild,
     CapabilityGeneratorBlendingTransitionEffect, CapabilityGeneratorEventProperty,
@@ -24,6 +23,27 @@ use crate::source_rig::{
 };
 
 use super::creature_catalog::CreatureCorpusPlan;
+
+#[path = "creature_graph_selection.rs"]
+mod graph_selection;
+
+#[path = "creature_cast_nodes.rs"]
+mod cast_nodes;
+#[path = "creature_spell_graph.rs"]
+mod spell_graph;
+#[path = "creature_recovery_graph.rs"]
+mod recovery_graph;
+#[cfg(test)]
+pub(crate) use recovery_graph::extract as extract_source_recovery;
+pub(crate) use spell_graph::{source_clip_entry_events, source_clip_triggers};
+#[path = "creature_attack_selection.rs"]
+mod attack_selection;
+#[path = "creature_graph_variables.rs"]
+mod graph_variables;
+#[path = "creature_cast_graph.rs"]
+mod cast_graph;
+#[path = "creature_shout_graph.rs"]
+mod shout_graph;
 
 const SKYRIM_CONTENTS_VERSION: &str = "hk_2010.2.0-r1";
 const SKYRIM_CHARACTER_DATA_SIGNATURE: u32 = 0x300d_6808;
@@ -239,6 +259,7 @@ impl SkyrimRootMotion {
 pub struct SkyrimRaceAttackEvidence {
     pub event: String,
     pub has_attack_spell: bool,
+    pub attack_spell_delivery: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +342,7 @@ pub enum SkyrimBehaviorGeneratorNodeEvidence {
         source: SkyrimBehaviorObjectEvidence,
         animation_name: String,
         resolved_clip_path: Option<String>,
+        playback: Option<cast_nodes::ClipPlayback>,
     },
     ManualSelector {
         source: SkyrimBehaviorObjectEvidence,
@@ -345,6 +367,7 @@ pub enum SkyrimBehaviorGeneratorNodeEvidence {
         children: Vec<SkyrimBehaviorBlenderChildNodeEvidence>,
     },
     StateMachine(SkyrimBehaviorStateMachineEvidence),
+    CyclicBlendTransition(Box<cast_nodes::CyclicBlendTransition>),
     ModifierGenerator {
         source: SkyrimBehaviorObjectEvidence,
         user_data: Option<u64>,
@@ -354,6 +377,7 @@ pub enum SkyrimBehaviorGeneratorNodeEvidence {
     },
     Unsupported {
         source: SkyrimBehaviorObjectEvidence,
+        state_tag: Option<[i32; 2]>,
         child_members: Vec<SkyrimBehaviorNamedGeneratorChildrenEvidence>,
     },
     Cycle {
@@ -366,6 +390,7 @@ pub enum SkyrimBehaviorModifierNodeEvidence {
     Missing {
         object_index: usize,
     },
+    IsActive(cast_nodes::IsActive),
     ModifierList {
         source: SkyrimBehaviorObjectEvidence,
         user_data: Option<u64>,
@@ -447,7 +472,7 @@ pub struct SkyrimBehaviorBlenderChildNodeEvidence {
     pub generator: SkyrimBehaviorGeneratorNodeEvidence,
     pub weight_bits: Option<u32>,
     pub world_from_model_weight_bits: Option<u32>,
-    pub bone_weights: Option<SkyrimBehaviorObjectEvidence>,
+    pub bone_weights: Option<cast_nodes::BoneWeights>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,7 +499,7 @@ pub struct SkyrimBehaviorTransitionEvidence {
     pub initiate_interval: Option<SkyrimBehaviorTransitionIntervalEvidence>,
     pub transition_effect: Option<SkyrimBehaviorObjectEvidence>,
     pub blending_transition_effect: Option<SkyrimBehaviorBlendingTransitionEffectEvidence>,
-    pub condition: Option<SkyrimBehaviorObjectEvidence>,
+    pub condition: Option<cast_nodes::ExpressionCondition>,
     pub event_id: Option<i32>,
     pub event_name: Option<String>,
     pub to_state_id: Option<i32>,
@@ -614,6 +639,8 @@ pub struct SkyrimTimedEvent {
 pub struct SkyrimCreatureClipEvidence {
     pub clip_path: String,
     pub original_skeleton_name: Option<String>,
+    pub source_duration: Option<f32>,
+    pub source_frame_count: Option<usize>,
     pub blend_hint: i32,
     pub behavior: Vec<SkyrimBehaviorClipEvidence>,
     pub animation_data: Vec<SkyrimAnimationDataEvidence>,
@@ -738,8 +765,12 @@ pub struct SkyrimCreatureFamilyInventory {
     pub animation_skeleton_paths: Vec<String>,
     pub ragdoll_paths: Vec<String>,
     pub behavior_paths: Vec<String>,
+    pub behavior_event_names: BTreeMap<String, Vec<String>>,
+    pub behavior_event_references: BTreeMap<String, BTreeSet<String>>,
     pub behavior_groups: Vec<SkyrimBehaviorGeneratorGroupEvidence>,
+    pub recovery_graphs: Vec<Result<crate::source_rig::SourceRecoveryGraph, String>>,
     pub behavior_variables: Vec<SkyrimBehaviorVariableEvidence>,
+    pub mounted_rider_clip_paths: Vec<String>,
     pub controllers: Vec<SkyrimCharacterControllerEvidence>,
 }
 
@@ -787,6 +818,7 @@ pub struct SkyrimCatalogClip {
     pub clip_id: String,
     pub clip_path: String,
     pub original_skeleton_name: Option<String>,
+    pub source_duration: Option<f32>,
     pub family_ids: Vec<String>,
     pub disposition: SkyrimClipDisposition,
     pub root_motion: SkyrimRootMotion,
@@ -1046,6 +1078,10 @@ impl SkyrimCreatureMotionCatalog {
         build_motion_set(family, &clips)
     }
 
+    pub(crate) fn horse_rider_generators(&self, graph: &CapabilityGraphManifest) -> Result<Vec<(i32, CapabilityGeneratorNode)>, SkyrimCreatureMotionError> {
+        graph_selection::horse_rider_generators(self, graph)
+    }
+
     pub fn family_readiness(&self) -> Vec<SkyrimFamilyMotionReadiness> {
         self.families
             .iter()
@@ -1131,10 +1167,12 @@ pub fn build_skyrim_creature_motion_catalog(
                         .to_ascii_lowercase()
                         .cmp(&right.event.to_ascii_lowercase())
                         .then_with(|| left.has_attack_spell.cmp(&right.has_attack_spell))
+                        .then_with(|| left.attack_spell_delivery.cmp(&right.attack_spell_delivery))
                 });
                 attacks.dedup_by(|left, right| {
                     left.event.eq_ignore_ascii_case(&right.event)
                         && left.has_attack_spell == right.has_attack_spell
+                        && left.attack_spell_delivery == right.attack_spell_delivery
                 });
                 attacks
             },
@@ -1161,6 +1199,7 @@ pub fn build_skyrim_creature_motion_catalog(
             clip_id,
             clip_path: canonical_runtime_path(&merged_clip.clip.clip_path),
             original_skeleton_name: merged_clip.clip.original_skeleton_name.clone(),
+            source_duration: merged_clip.clip.source_duration,
             family_ids: merged_clip.family_ids.into_iter().collect(),
             disposition,
             root_motion: merged_clip.clip.root_motion,
@@ -1240,6 +1279,11 @@ pub fn race_motion_evidence_from_creature_plan(
     for race in &plan.races {
         let mut attacks = attack_evidence_from_contract(&race.attack_contract);
         for attack in &mut attacks {
+            attack.attack_spell_delivery = race
+                .attack_data
+                .iter()
+                .find(|source| source.event.eq_ignore_ascii_case(&attack.event))
+                .and_then(|source| source.attack_spell_delivery);
             if let Some(source_event) = race
                 .attack_events
                 .iter()
@@ -1286,6 +1330,7 @@ fn attack_evidence_from_contract(contract: &[String]) -> Vec<SkyrimRaceAttackEvi
             attacks.push(SkyrimRaceAttackEvidence {
                 event: event.to_string(),
                 has_attack_spell: pending_spell.take().unwrap_or(false),
+                attack_spell_delivery: None,
             });
         }
     }
@@ -1348,11 +1393,12 @@ impl MergedClipEvidence {
             &located_race_attacks(family),
             |located| {
                 format!(
-                    "{}:{:?}:{}:{}",
+                    "{}:{:?}:{}:{}:{:?}",
                     project_path_key(&located.project_path),
                     located.source_race,
                     located.attack.event.to_ascii_lowercase(),
-                    located.attack.has_attack_spell
+                    located.attack.has_attack_spell,
+                    located.attack.attack_spell_delivery
                 )
             },
         );
@@ -1784,7 +1830,9 @@ fn matching_race_attacks<'a>(
     linked_race_events(behavior_name, attacks)
         .into_iter()
         .map(|attack| {
-            let role = if attack.attack.has_attack_spell {
+            let role = if attack.attack.attack_spell_delivery == Some(1) {
+                SkyrimCreatureMotionRole::MeleeAttack
+            } else if attack.attack.has_attack_spell {
                 SkyrimCreatureMotionRole::SpellAttack
             } else {
                 role_from_text(behavior_name)
@@ -1849,7 +1897,7 @@ fn transition_event_matches_node(event: &str, node: &str) -> bool {
         .filter(|word| word.len() >= 2)
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
-    !discriminators.is_disjoint(&node_words)
+    discriminators.is_subset(&node_words)
 }
 
 fn linked_race_event<'a>(
@@ -1866,6 +1914,7 @@ fn linked_race_event<'a>(
                 .event
                 .eq_ignore_ascii_case(&first.attack.event)
                 && candidate.attack.has_attack_spell == first.attack.has_attack_spell
+                && candidate.attack.attack_spell_delivery == first.attack.attack_spell_delivery
         })
         .then_some(first)
 }
@@ -1951,10 +2000,13 @@ fn significant_words(words: &str) -> BTreeSet<String> {
 fn role_from_text(text: &str) -> Option<SkyrimCreatureMotionRole> {
     let words = normalized_words(text);
     let has = |values: &[&str]| values.iter().any(|word| contains_word(&words, word));
+    if has(&["getup", "reanimate", "revive"]) || words.contains("get up") {
+        return None;
+    }
     if has(&["death", "dead", "die", "dying", "ragdoll"]) {
         return Some(SkyrimCreatureMotionRole::Death);
     }
-    if has(&["hurt", "stagger", "recoil", "knockdown", "knockback"]) || words.contains("hit react")
+    if has(&["hurt", "stagger", "recoil", "knockdown", "knockback", "bleedout", "injure"]) || words.contains("hit react")
     {
         return Some(SkyrimCreatureMotionRole::Hurt);
     }
@@ -1974,6 +2026,8 @@ fn role_from_text(text: &str) -> Option<SkyrimCreatureMotionRole> {
         "spell",
         "projectile",
         "breath",
+        "fireball",
+        "shout",
     ]);
     if attack && has(&["cast", "spell", "magic", "fireball", "frost", "lightning"]) {
         return Some(SkyrimCreatureMotionRole::SpellAttack);
@@ -2887,6 +2941,16 @@ fn select_semantic_catalog_clip<'a>(
     if let [candidate] = candidates {
         return Some(*candidate);
     }
+    if role == SkyrimCreatureMotionRole::Idle {
+        return candidates.iter().copied().min_by_key(|clip| {
+            let leaf = clip.clip_path.rsplit(['/', '\\']).next().unwrap_or(&clip.clip_path);
+            let words = normalized_words(leaf);
+            let special = ["bleedout", "death", "injure", "furniture", "special", "perch", "enter", "exit", "sleep"]
+                .iter().any(|word| words.contains(word));
+            let idle = contains_word(&words, "idle");
+            (special, !idle, clip.clip_id.as_str())
+        });
+    }
     let living = candidates
         .iter()
         .filter_map(|clip| match &clip.disposition {
@@ -3063,7 +3127,6 @@ fn reconciled_attack_template(
     }
 }
 
-#[cfg(test)]
 fn capability_generator_source(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3099,7 +3162,6 @@ fn capability_generator_source(
     })
 }
 
-#[cfg(test)]
 fn capability_generator_anonymous_source(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3122,7 +3184,6 @@ fn capability_generator_anonymous_source(
     })
 }
 
-#[cfg(test)]
 fn capability_generator_binding(
     family: &SkyrimFamilyMotionSet,
     binding: &SkyrimBehaviorVariableBindingEvidence,
@@ -3189,7 +3250,6 @@ fn capability_generator_binding(
     })
 }
 
-#[cfg(test)]
 fn capability_generator_bindings(
     family: &SkyrimFamilyMotionSet,
     bindings: &[SkyrimBehaviorVariableBindingEvidence],
@@ -3200,7 +3260,6 @@ fn capability_generator_bindings(
         .collect()
 }
 
-#[cfg(test)]
 fn capability_event_ref(
     family: &SkyrimFamilyMotionSet,
     source_id: Option<i32>,
@@ -3232,7 +3291,6 @@ fn capability_event_ref(
     })
 }
 
-#[cfg(test)]
 fn capability_event_property(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3254,7 +3312,6 @@ fn capability_event_property(
     })
 }
 
-#[cfg(test)]
 fn capability_interval(
     family: &SkyrimFamilyMotionSet,
     interval: &SkyrimBehaviorTransitionIntervalEvidence,
@@ -3290,7 +3347,6 @@ fn capability_interval(
     })
 }
 
-#[cfg(test)]
 fn capability_blending_transition_effect(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3350,7 +3406,6 @@ fn capability_blending_transition_effect(
     })
 }
 
-#[cfg(test)]
 fn capability_transition_array(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
@@ -3434,7 +3489,7 @@ fn capability_transition_array(
             condition: transition
                 .condition
                 .as_ref()
-                .map(|source| capability_generator_source(family, behavior_path, source))
+                .map(|source| cast_nodes::lower_condition(family, behavior_path, source))
                 .transpose()?,
             event: capability_event_ref(
                 family,
@@ -3467,14 +3522,13 @@ fn capability_transition_array(
         });
     }
     Ok(CapabilityGeneratorTransitionArray {
-        source: capability_generator_source(family, behavior_path, &array.source)?,
+        source: capability_generator_anonymous_source(family, behavior_path, &array.source)?,
         has_eventless_transitions: array.has_eventless_transitions,
         has_time_bounded_transitions: array.has_time_bounded_transitions,
         transitions,
     })
 }
 
-#[cfg(test)]
 fn required_i32(
     family: &SkyrimFamilyMotionSet,
     value: Option<i32>,
@@ -3487,7 +3541,6 @@ fn required_i32(
     })
 }
 
-#[cfg(test)]
 fn required_capability_value<T>(
     family: &SkyrimFamilyMotionSet,
     value: Option<T>,
@@ -3500,7 +3553,6 @@ fn required_capability_value<T>(
     })
 }
 
-#[cfg(test)]
 fn capability_expression_variable_reference(
     family: &SkyrimFamilyMotionSet,
     reference: &SkyrimBehaviorExpressionVariableReferenceEvidence,
@@ -3540,13 +3592,13 @@ fn capability_expression_variable_reference(
     })
 }
 
-#[cfg(test)]
 fn capability_modifier_node(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
     evidence: &SkyrimBehaviorModifierNodeEvidence,
 ) -> Result<CapabilityModifierNode, SkyrimCreatureMotionError> {
     match evidence {
+        SkyrimBehaviorModifierNodeEvidence::IsActive(modifier) => cast_nodes::lower_is_active(family, behavior_path, modifier),
         SkyrimBehaviorModifierNodeEvidence::ModifierList {
             source,
             user_data,
@@ -3735,8 +3787,7 @@ fn capability_modifier_node(
     }
 }
 
-#[cfg(test)]
-fn capability_generator_node(
+pub(crate) fn capability_generator_node(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
     evidence: &SkyrimBehaviorGeneratorNodeEvidence,
@@ -3746,6 +3797,7 @@ fn capability_generator_node(
         SkyrimBehaviorGeneratorNodeEvidence::Clip {
             source,
             resolved_clip_path,
+            playback,
             ..
         } => {
             let resolved_clip_path = resolved_clip_path.as_deref().ok_or_else(|| {
@@ -3775,6 +3827,9 @@ fn capability_generator_node(
                     ),
                 );
             };
+            if let Some(playback) = playback {
+                return cast_nodes::lower_clip(family, behavior_path, source, &clip.clip_id, playback);
+            }
             Ok(CapabilityGeneratorNode::Clip {
                 source: capability_generator_source(family, behavior_path, source)?,
                 clip_name: clip.clip_id.clone(),
@@ -3847,7 +3902,7 @@ fn capability_generator_node(
                             .bone_weights
                             .as_ref()
                             .map(|source| {
-                                capability_generator_source(family, behavior_path, source)
+                                cast_nodes::lower_bone_weights(family, behavior_path, source)
                             })
                             .transpose()?,
                         weight_bits: child.weight_bits.ok_or_else(|| {
@@ -3942,6 +3997,7 @@ fn capability_generator_node(
         SkyrimBehaviorGeneratorNodeEvidence::StateMachine(machine) => {
             capability_state_machine_node(family, behavior_path, machine, clips)
         }
+        SkyrimBehaviorGeneratorNodeEvidence::CyclicBlendTransition(node) => cast_nodes::lower_cyclic(family, behavior_path, node, clips),
         SkyrimBehaviorGeneratorNodeEvidence::ModifierGenerator {
             source,
             user_data,
@@ -3987,6 +4043,15 @@ fn capability_generator_node(
                 )?),
             })
         }
+        SkyrimBehaviorGeneratorNodeEvidence::Unsupported { source, child_members, state_tag: Some([0, 0]) }
+            if family.family_id == "horse" && source.class_name == "BSiStateTaggingGenerator" => {
+            let children = child_members.iter().filter(|member| member.member_name == "pDefaultGenerator")
+                .flat_map(|member| &member.children).collect::<Vec<_>>();
+            let [child] = children.as_slice() else {
+                return adapter_unavailable(family, "CapabilityGraphManifest", "state tagging generator has no unique child".into());
+            };
+            capability_generator_node(family, behavior_path, child, clips)
+        }
         SkyrimBehaviorGeneratorNodeEvidence::Unsupported { source, .. } => adapter_unavailable(
             family,
             "CapabilityGraphManifest",
@@ -4011,8 +4076,7 @@ fn capability_generator_node(
     }
 }
 
-#[cfg(test)]
-fn capability_state_machine_node(
+pub(crate) fn capability_state_machine_node(
     family: &SkyrimFamilyMotionSet,
     behavior_path: &str,
     machine: &SkyrimBehaviorStateMachineEvidence,
@@ -4108,13 +4172,9 @@ fn capability_state_machine_node(
                     target: "CapabilityGraphManifest",
                     detail: format!("{label} has no decoded enable flag"),
                 })?,
-            has_eventless_transitions: state.has_eventless_transitions.ok_or_else(|| {
-                SkyrimCreatureMotionError::AdapterUnavailable {
-                    family_id: family.family_id.clone(),
-                    target: "CapabilityGraphManifest",
-                    detail: format!("{label} has no decoded eventless-transition flag"),
-                }
-            })?,
+            has_eventless_transitions: state.has_eventless_transitions.unwrap_or_else(|| {
+                state.transitions.as_ref().is_some_and(|array| array.transitions.iter().any(|transition| transition.event_id == Some(-1)))
+            }),
         });
     }
     Ok(CapabilityGeneratorNode::StateMachine {
@@ -4188,178 +4248,6 @@ fn capability_state_machine_node(
             .map(|array| capability_transition_array(family, behavior_path, array))
             .transpose()?,
     })
-}
-
-fn capability_generator_variables(
-    family: &SkyrimFamilyMotionSet,
-    inventory: &SkyrimCreatureFamilyInventory,
-    generators: &[&CapabilityRoleGenerator],
-) -> Result<Vec<VariableDecl>, SkyrimCreatureMotionError> {
-    let mut path_max_indices = BTreeMap::<String, usize>::new();
-    for generator in generators {
-        if let CapabilityRoleGenerator::Tree { root } = generator {
-            collect_generator_binding_indices(root, &mut path_max_indices);
-        }
-    }
-    let Some(global_max_index) = path_max_indices.values().copied().max() else {
-        return Ok(Vec::new());
-    };
-    let mut declarations = Vec::with_capacity(global_max_index + 1);
-    for variable_index in 0..=global_max_index {
-        let mut evidence = Vec::new();
-        for (behavior_path, max_index) in &path_max_indices {
-            if variable_index > *max_index {
-                continue;
-            }
-            let matching = inventory
-                .behavior_variables
-                .iter()
-                .filter(|variable| {
-                    variable.variable_index == variable_index
-                        && path_key(&variable.behavior_path) == path_key(behavior_path)
-                })
-                .collect::<Vec<_>>();
-            let [variable] = matching.as_slice() else {
-                return adapter_unavailable(
-                    family,
-                    "CapabilityGraphManifest",
-                    format!(
-                        "{} variable index {} has {} exact source receipts",
-                        behavior_path,
-                        variable_index,
-                        matching.len()
-                    ),
-                );
-            };
-            evidence.push(*variable);
-        }
-        let [first, rest @ ..] = evidence.as_slice() else {
-            return adapter_unavailable(
-                family,
-                "CapabilityGraphManifest",
-                format!("variable index {variable_index} has no owning behavior table"),
-            );
-        };
-        if rest.iter().any(|candidate| {
-            candidate.variable_name != first.variable_name
-                || candidate.variable_type != first.variable_type
-                || candidate.initial_word_value != first.initial_word_value
-        }) {
-            return adapter_unavailable(
-                family,
-                "CapabilityGraphManifest",
-                format!("variable index {variable_index} differs across source behavior tables"),
-            );
-        }
-        declarations.push(capability_variable_declaration(family, first)?);
-    }
-    Ok(declarations)
-}
-
-fn collect_generator_binding_indices(
-    node: &CapabilityGeneratorNode,
-    path_max_indices: &mut BTreeMap<String, usize>,
-) {
-    let (source, bindings) = match node {
-        CapabilityGeneratorNode::Clip { source, .. } => (source, &[][..]),
-        CapabilityGeneratorNode::ManualSelector {
-            source, bindings, ..
-        }
-        | CapabilityGeneratorNode::Blender {
-            source, bindings, ..
-        }
-        | CapabilityGeneratorNode::StateMachine {
-            source, bindings, ..
-        }
-        | CapabilityGeneratorNode::ModifierGenerator {
-            source, bindings, ..
-        } => (source, bindings.as_slice()),
-    };
-    for binding in bindings {
-        if let Ok(variable_index) = usize::try_from(binding.variable_index) {
-            collect_variable_index(&source.behavior_path, variable_index, path_max_indices);
-        }
-    }
-    match node {
-        CapabilityGeneratorNode::Clip { .. } => {}
-        CapabilityGeneratorNode::ManualSelector { children, .. } => {
-            for child in children {
-                collect_generator_binding_indices(child, path_max_indices);
-            }
-        }
-        CapabilityGeneratorNode::Blender { children, .. } => {
-            for child in children {
-                collect_generator_binding_indices(&child.generator, path_max_indices);
-            }
-        }
-        CapabilityGeneratorNode::StateMachine { states, .. } => {
-            for state in states {
-                collect_generator_binding_indices(&state.generator, path_max_indices);
-            }
-        }
-        CapabilityGeneratorNode::ModifierGenerator {
-            modifier,
-            generator,
-            ..
-        } => {
-            collect_modifier_binding_indices(modifier, path_max_indices);
-            collect_generator_binding_indices(generator, path_max_indices);
-        }
-    }
-}
-
-fn collect_modifier_binding_indices(
-    modifier: &CapabilityModifierNode,
-    path_max_indices: &mut BTreeMap<String, usize>,
-) {
-    let (source, bindings) = match modifier {
-        CapabilityModifierNode::List {
-            source, bindings, ..
-        }
-        | CapabilityModifierNode::Damping {
-            source, bindings, ..
-        }
-        | CapabilityModifierNode::EvaluateExpression {
-            source, bindings, ..
-        } => (source, bindings),
-    };
-    for binding in bindings {
-        if let Ok(variable_index) = usize::try_from(binding.variable_index) {
-            collect_variable_index(&source.behavior_path, variable_index, path_max_indices);
-        }
-    }
-    match modifier {
-        CapabilityModifierNode::List { modifiers, .. } => {
-            for child in modifiers {
-                collect_modifier_binding_indices(child, path_max_indices);
-            }
-        }
-        CapabilityModifierNode::Damping { .. } => {}
-        CapabilityModifierNode::EvaluateExpression { expressions, .. } => {
-            for expression in &expressions.expressions {
-                for reference in &expression.referenced_variables {
-                    if let Ok(variable_index) = usize::try_from(reference.variable_index) {
-                        collect_variable_index(
-                            &expressions.source.behavior_path,
-                            variable_index,
-                            path_max_indices,
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn collect_variable_index(
-    behavior_path: &str,
-    variable_index: usize,
-    path_max_indices: &mut BTreeMap<String, usize>,
-) {
-    path_max_indices
-        .entry(path_key(behavior_path))
-        .and_modify(|current| *current = (*current).max(variable_index))
-        .or_insert(variable_index);
 }
 
 fn capability_variable_declaration(
@@ -4440,6 +4328,28 @@ fn build_capability_manifest(
     clips: &[&SkyrimCatalogClip],
 ) -> Result<(CapabilityGraphManifest, Vec<VariableDecl>), SkyrimCreatureMotionError> {
     let mut candidate_attack_bindings = candidate_attack_bindings(family, clips);
+    let mut source_inert_attack_receipts = Vec::new();
+    if let Some(inventory) = inventory.filter(|inventory| !inventory.behavior_event_names.is_empty()) {
+        let source_events = inventory.behavior_event_names.values().flatten().map(|event| event.to_ascii_lowercase()).collect::<BTreeSet<_>>();
+        let referenced_events = inventory.behavior_event_references.values().flatten().cloned().collect::<BTreeSet<_>>();
+        let references_complete = inventory.behavior_event_names.keys().all(|path| inventory.behavior_event_references.contains_key(path));
+        candidate_attack_bindings.retain(|binding| {
+            let event = binding.event.to_ascii_lowercase();
+            if source_events.contains(&event) && (!references_complete || referenced_events.contains(&event)) {
+                return true;
+            }
+            source_inert_attack_receipts.push(crate::source_rig::CapabilitySourceInertAttack {
+                source_identity: binding.source_identity.clone(),
+                event: binding.event.clone(),
+                inspected_behavior_paths: inventory.behavior_event_names.keys().cloned().collect(),
+                inspected_event_name_count: source_events.len(),
+                source_event_declared: source_events.contains(&event),
+                inspected_event_reference_count: referenced_events.len(),
+            });
+            false
+        });
+    }
+    let exact_attack_clips = attack_selection::exact_clip_bindings(inventory, clips, &candidate_attack_bindings);
     let role_clips = indexed_role_clips(clips);
     let mut template = expected_family_template(family, &role_clips, clips);
     let mut role_mapping = Vec::<(SkyrimCreatureMotionRole, CreatureClipRole)>::new();
@@ -4570,6 +4480,22 @@ fn build_capability_manifest(
         }
     }
 
+    for (source, target) in [
+        (SkyrimCreatureMotionRole::Hurt, CreatureClipRole::Hurt),
+        (SkyrimCreatureMotionRole::Death, CreatureClipRole::Death),
+    ] {
+        if role_clips.get(&source).is_some_and(|clips| {
+            clips.iter().any(|clip| {
+                matches!(
+                    clip.root_motion,
+                    SkyrimRootMotion::Stationary { .. } | SkyrimRootMotion::Sampled { .. }
+                )
+            })
+        }) {
+            role_mapping.push((source, target));
+        }
+    }
+
     let mut roles = Vec::new();
     let mut explicit_events = BTreeMap::<String, EventDecl>::new();
     let primary_idle_role = adapter_primary_idle_role(template);
@@ -4608,6 +4534,15 @@ fn build_capability_manifest(
             .iter()
             .copied()
             .filter(|clip| !claimed_clips.contains(&clip.clip_id.to_ascii_lowercase()))
+            .filter(|clip| {
+                !matches!(
+                    target_role,
+                    CreatureClipRole::Hurt | CreatureClipRole::Death
+                ) || matches!(
+                    clip.root_motion,
+                    SkyrimRootMotion::Stationary { .. } | SkyrimRootMotion::Sampled { .. }
+                )
+            })
             .collect::<Vec<_>>();
         if available.is_empty() {
             let candidate_bound = candidate_attack_bindings
@@ -4620,7 +4555,10 @@ fn build_capability_manifest(
                 )
                 || matches!(
                     target_role,
-                    CreatureClipRole::TurnLeft90 | CreatureClipRole::TurnRight90
+                    CreatureClipRole::TurnLeft90
+                        | CreatureClipRole::TurnRight90
+                        | CreatureClipRole::Hurt
+                        | CreatureClipRole::Death
                 )
             {
                 continue;
@@ -4645,8 +4583,7 @@ fn build_capability_manifest(
                     .expect("a mapped role has candidates"),
             ]
         };
-        let selected_count = selected.len();
-        for (selected_index, clip) in selected.into_iter().enumerate() {
+        for clip in selected {
             claimed_clips.insert(clip.clip_id.to_ascii_lowercase());
             let ordinal = role_ordinals.entry(target_role).or_default();
             *ordinal += 1;
@@ -4668,14 +4605,10 @@ fn build_capability_manifest(
                 target_role,
                 CreatureClipRole::MeleeAttack | CreatureClipRole::ProjectileAttack
             ) {
-                triggers.extend(
-                    candidate_attack_bindings
-                        .iter()
-                        .filter(|binding| binding.role == target_role)
-                        .enumerate()
-                        .filter(|(index, _)| index % selected_count == selected_index)
-                        .map(|(_, binding)| binding.event.as_str()),
-                );
+                if inventory.is_some() {
+                    triggers.retain(|event| !candidate_attack_bindings.iter().any(|binding| binding.event.eq_ignore_ascii_case(event)));
+                    triggers.extend(exact_attack_clips.get(&clip.clip_id).into_iter().flatten().map(String::as_str));
+                }
             }
             triggers.sort_by_key(|event| event.to_ascii_lowercase());
             triggers.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
@@ -4771,6 +4704,7 @@ fn build_capability_manifest(
                 claimed_clips.insert(tree_clip.clip_id.to_ascii_lowercase());
             }
             roles.push(CapabilityClipRole {
+                equipment_index: None,
                 role: target_role,
                 state_name: format!("{target_role:?}{ordinal}"),
                 clip_name: clip.clip_id.clone(),
@@ -4781,17 +4715,6 @@ fn build_capability_manifest(
             });
         }
     }
-    candidate_attack_bindings.retain(|binding| {
-        roles.iter().any(|role| {
-            role.role == binding.role
-                && role
-                    .trigger_event
-                    .iter()
-                    .chain(&role.trigger_aliases)
-                    .any(|event| event.eq_ignore_ascii_case(&binding.event))
-        })
-    });
-    template = reconciled_attack_template(template, &roles, &candidate_attack_bindings);
     let _idle = roles
         .iter()
         .find(|role| {
@@ -4854,12 +4777,15 @@ fn build_capability_manifest(
         });
     }
 
-    let variables = match inventory {
-        Some(inventory) => capability_generator_variables(
-            family,
-            inventory,
-            &roles.iter().map(|role| &role.generator).collect::<Vec<_>>(),
-        )?,
+    if let Some(inventory) = inventory {
+        graph_selection::horse_locomotion(family, inventory, clips, &mut roles, &mut explicit_events)?;
+        cast_graph::dragon_shouts(family, inventory, clips, &mut roles, &mut explicit_events)?;
+        shout_graph::creature_shouts(family, inventory, clips, &mut roles, &mut explicit_events)?;
+        spell_graph::ordinary_casts(family, inventory, clips, &mut roles, &mut explicit_events)?;
+        recovery_graph::roles(family, inventory, clips, &mut roles, &mut explicit_events)?;
+    }
+    let mut variables = match inventory {
+        Some(inventory) => graph_variables::declarations(family, inventory, &mut roles)?,
         None if roles
             .iter()
             .any(|role| matches!(role.generator, CapabilityRoleGenerator::Tree { .. })) =>
@@ -4872,11 +4798,59 @@ fn build_capability_manifest(
         }
         None => Vec::new(),
     };
+    if roles
+        .iter()
+        .any(|role| role.role == CreatureClipRole::Death)
+    {
+        explicit_events.insert(
+            "b21_deathanimationcomplete".to_string(),
+            EventDecl {
+                name: "B21_DeathAnimationComplete".to_string(),
+                usage: EventUsage::Generic,
+                flags: 0,
+            },
+        );
+        if let Some(variable) = variables
+            .iter_mut()
+            .find(|variable| variable.name == "bSupportedDeathAnim")
+        {
+            variable.variable_type = VariableType::Bool;
+            variable.initial_value = VariableValue::Bool(true);
+        } else {
+            variables.push(VariableDecl {
+                name: "bSupportedDeathAnim".to_string(),
+                variable_type: VariableType::Bool,
+                initial_value: VariableValue::Bool(true),
+            });
+        }
+    }
+    if let Some(inventory) = inventory {
+        graph_selection::horse_synchronization(family, inventory, clips, &mut roles, &mut variables)?;
+    }
+    graph_selection::horse_interactions(family, clips, &mut roles, &mut explicit_events)?;
+    let missing_attacks = candidate_attack_bindings.iter().filter(|binding| {
+        !roles.iter().any(|role| {
+            role.role == binding.role
+                && role
+                    .trigger_event
+                    .iter()
+                    .chain(&role.trigger_aliases)
+                    .any(|event| event.eq_ignore_ascii_case(&binding.event))
+        })
+    }).map(|binding| format!("{}:{} ({:?})", binding.source_identity.stable_key(), binding.event, binding.role))
+        .collect::<Vec<_>>();
+    if !missing_attacks.is_empty() {
+        return adapter_unavailable(family, "source attack binding", format!("source ATKD has no exact executable clip: {}", missing_attacks.join(", ")));
+    }
+    template = reconciled_attack_template(template, &roles, &candidate_attack_bindings);
+
     Ok((
         CapabilityGraphManifest {
+            source_channels: Vec::new(),
             template,
             roles,
             candidate_attack_bindings,
+            source_inert_attack_receipts,
             idle_event,
             explicit_events: explicit_events.into_values().collect(),
             overlays,
@@ -5095,6 +5069,12 @@ fn candidate_attack_role(
     attack: &SkyrimRaceAttackEvidence,
     clips: &[&SkyrimCatalogClip],
 ) -> CreatureClipRole {
+    if !attack.has_attack_spell {
+        return CreatureClipRole::MeleeAttack;
+    }
+    if attack.attack_spell_delivery == Some(1) {
+        return CreatureClipRole::MeleeAttack;
+    }
     let executable_roles = clips
         .iter()
         .filter_map(|clip| match &clip.disposition {
@@ -5166,6 +5146,7 @@ mod candidate_attack_binding_tests {
                 race_attacks: vec![SkyrimRaceAttackEvidence {
                     event: "attackStart_ForwardPower".to_string(),
                     has_attack_spell: false,
+                    attack_spell_delivery: None,
                 }],
                 race_attack_sources: vec![SkyrimRaceAttackSourceEvidence {
                     source_race,
@@ -5173,6 +5154,7 @@ mod candidate_attack_binding_tests {
                     attack: SkyrimRaceAttackEvidence {
                         event: "attackStart_ForwardPower".to_string(),
                         has_attack_spell: false,
+                        attack_spell_delivery: None,
                     },
                 }],
                 clip_ids: vec!["AttackForwardPower".to_string()],
@@ -5199,6 +5181,7 @@ mod candidate_attack_binding_tests {
                     attack: SkyrimRaceAttackEvidence {
                         event: "attackPowerStart_Stomp".to_string(),
                         has_attack_spell: true,
+                        attack_spell_delivery: None,
                     },
                 }],
                 clip_ids: vec!["Stomp".to_string()],
@@ -5207,6 +5190,7 @@ mod candidate_attack_binding_tests {
                 clip_id: "Stomp".to_string(),
                 clip_path: "Animations\\Stomp.hkx".to_string(),
                 original_skeleton_name: None,
+                source_duration: None,
                 family_ids: vec!["giant".to_string()],
                 disposition: SkyrimClipDisposition::Role {
                     role: SkyrimCreatureMotionRole::MeleeAttack,
@@ -5231,11 +5215,13 @@ mod candidate_attack_binding_tests {
             let attack = SkyrimRaceAttackEvidence {
                 event: "attackPowerStart_Stomp".to_string(),
                 has_attack_spell: true,
+                attack_spell_delivery: None,
             };
             let melee_clip = SkyrimCatalogClip {
                 clip_id: "Stomp".to_string(),
                 clip_path: "Animations\\Stomp.hkx".to_string(),
                 original_skeleton_name: None,
+                source_duration: None,
                 family_ids: vec!["giant".to_string()],
                 disposition: SkyrimClipDisposition::Role {
                     role: SkyrimCreatureMotionRole::MeleeAttack,
@@ -5335,6 +5321,14 @@ fn load_family_evidence(
         }
         if has_class(&hkx, "hkbBehaviorGraph") {
             inventory.behavior_paths.push(runtime_path.clone());
+            if let Some(recovery) = recovery_graph::extract(&hkx, actors, &family_root, &canonical) {
+                inventory.recovery_graphs.push(recovery);
+            }
+            let event_names = hkx.objects().iter()
+                .find(|object| object.class_name == "hkbBehaviorGraphStringData")
+                .map(|object| string_array(object, "eventNames")).unwrap_or_default();
+            inventory.behavior_event_references.insert(runtime_path.clone(), attack_selection::event_references(&hkx, &event_names));
+            inventory.behavior_event_names.insert(runtime_path.clone(), event_names);
             let mut extracted = extract_behavior_clip_evidence(&hkx, actors, &canonical);
             resolve_behavior_group_clip_paths(
                 &mut extracted.groups,
@@ -5362,6 +5356,7 @@ fn load_family_evidence(
         if has_class(&hkx, "hkaSplineCompressedAnimation") {
             let mut clip = extract_clip_evidence(&hkx, &runtime_path);
             clip.animation_data = animation_data_for_clip(&clip, animation_data);
+            set_bound_motion_frame_count(&mut clip);
             if matches!(clip.root_motion, SkyrimRootMotion::Unknown) {
                 if let Some(root) = clip.animation_data.iter().find_map(|entry| {
                     (!matches!(entry.root_motion, SkyrimRootMotion::Unknown))
@@ -5376,10 +5371,14 @@ fn load_family_evidence(
 
     let nested_behavior_edges = nested_behavior_references
         .into_iter()
-        .filter_map(|(parent_path, reference)| {
+        .map(|(parent_path, reference)| {
             let child_path =
-                resolve_reference(actors, &family_root, &parent_path, &reference.behavior_name)?;
-            Some(ResolvedNestedBehaviorEdge {
+                resolve_reference(actors, &family_root, &parent_path, &reference.behavior_name)
+                    .ok_or_else(|| SkyrimCreatureMotionError::ReadAsset {
+                        path: reference.behavior_name.clone(),
+                        detail: format!("source behavior closure is incomplete; referenced by {}", parent_path.display()),
+                    })?;
+            Ok(ResolvedNestedBehaviorEdge {
                 parent_key: path_key(&parent_path.display().to_string()),
                 child_key: path_key(&child_path.display().to_string()),
                 behavior_path: reference.behavior_path,
@@ -5387,7 +5386,7 @@ fn load_family_evidence(
                 incoming_events: reference.incoming_events,
             })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, SkyrimCreatureMotionError>>()?;
     if std::env::var("SKYRIMSE_CREATURE_DIAGNOSTIC_FAMILY")
         .ok()
         .is_some_and(|requested| requested == family_id)
@@ -5442,6 +5441,7 @@ fn load_family_evidence(
         if let Some(clip) = clips.get_mut(&key) {
             clip.behavior.push(reference);
             clip.animation_data = animation_data_for_clip(clip, animation_data);
+            set_bound_motion_frame_count(clip);
             if matches!(clip.root_motion, SkyrimRootMotion::Unknown) {
                 if let Some(root) = clip.animation_data.iter().find_map(|entry| {
                     (!matches!(entry.root_motion, SkyrimRootMotion::Unknown))
@@ -5463,6 +5463,18 @@ fn load_family_evidence(
     inventory.behavior_groups.dedup();
     inventory.behavior_variables.sort();
     inventory.behavior_variables.dedup();
+    if family_id == "horse" {
+        let rider_path = actors.join("character/behaviors/horsebehavior.hkx");
+        let bytes = std::fs::read(&rider_path).map_err(|error| SkyrimCreatureMotionError::ReadAsset {
+            path: rider_path.display().to_string(), detail: error.to_string(),
+        })?;
+        let rider = HkxFile::read(&bytes).map_err(|error| SkyrimCreatureMotionError::ReadAsset {
+            path: rider_path.display().to_string(), detail: error.to_string(),
+        })?;
+        inventory.mounted_rider_clip_paths = extract_behavior_clip_evidence(&rider, actors, &rider_path)
+            .clips.into_iter().map(|clip| clip.animation_name).collect();
+        sort_dedup_paths(&mut inventory.mounted_rider_clip_paths);
+    }
     inventory
         .controllers
         .sort_by(|left, right| left.character_path.cmp(&right.character_path));
@@ -5880,11 +5892,11 @@ fn has_class(file: &HkxFile, class_name: &str) -> bool {
         .any(|object| object.class_name == class_name)
 }
 
-struct ExtractedSkyrimBehaviorEvidence {
-    clips: Vec<SkyrimBehaviorClipEvidence>,
+pub(crate) struct ExtractedSkyrimBehaviorEvidence {
+    pub(crate) clips: Vec<SkyrimBehaviorClipEvidence>,
     nested_behaviors: Vec<SkyrimNestedBehaviorEvidence>,
-    groups: Vec<SkyrimBehaviorGeneratorGroupEvidence>,
-    variables: Vec<SkyrimBehaviorVariableEvidence>,
+    pub(crate) groups: Vec<SkyrimBehaviorGeneratorGroupEvidence>,
+    pub(crate) variables: Vec<SkyrimBehaviorVariableEvidence>,
 }
 
 struct SkyrimNestedBehaviorEvidence {
@@ -5894,7 +5906,7 @@ struct SkyrimNestedBehaviorEvidence {
     incoming_events: Vec<String>,
 }
 
-fn extract_behavior_clip_evidence(
+pub(crate) fn extract_behavior_clip_evidence(
     file: &HkxFile,
     actors: &Path,
     behavior_path: &Path,
@@ -6410,10 +6422,24 @@ fn behavior_generator_tree(
                     source,
                     animation_name,
                     resolved_clip_path: None,
+                    playback: int_member(object, "mode").map(|_| cast_nodes::ClipPlayback {
+                        bindings: behavior_variable_bindings(file, object, variable_names, variable_types, variable_initial_words),
+                        user_data: uint64_member(object, "userData"),
+                        mode: int_member(object, "mode"),
+                        flags: int_member(object, "flags"),
+                        crop_start_bits: float_member(object, "cropStartAmountLocalTime").map(f32::to_bits),
+                        crop_end_bits: float_member(object, "cropEndAmountLocalTime").map(f32::to_bits),
+                        start_time_bits: float_member(object, "startTime").map(f32::to_bits),
+                        playback_speed_bits: float_member(object, "playbackSpeed").map(f32::to_bits),
+                        enforced_duration_bits: float_member(object, "enforcedDuration").map(f32::to_bits),
+                        user_controlled_time_fraction_bits: float_member(object, "userControlledTimeFraction").map(f32::to_bits),
+                        triggers: cast_nodes::clip_triggers(file, object, event_names),
+                    }),
                 }
             } else {
                 SkyrimBehaviorGeneratorNodeEvidence::Unsupported {
                     source,
+                    state_tag: None,
                     child_members: Vec::new(),
                 }
             }
@@ -6490,7 +6516,7 @@ fn behavior_generator_tree(
                         world_from_model_weight_bits: float_member(child, "worldFromModelWeight")
                             .map(f32::to_bits),
                         bone_weights: pointer_member(child, "boneWeights")
-                            .and_then(|index| behavior_object_evidence(file, index)),
+                            .and_then(|index| cast_nodes::bone_weights(file, index, variable_names, variable_types, variable_initial_words)),
                     })
                 })
                 .collect();
@@ -6530,6 +6556,17 @@ fn behavior_generator_tree(
                 stack,
             ))
         }
+        "BSCyclicBlendTransitionGenerator" => SkyrimBehaviorGeneratorNodeEvidence::CyclicBlendTransition(Box::new(cast_nodes::CyclicBlendTransition {
+            source,
+            bindings: behavior_variable_bindings(file, object, variable_names, variable_types, variable_initial_words),
+            user_data: uint64_member(object, "userData"),
+            generator: pointer_member(object, "pBlenderGenerator").map(|index| Box::new(behavior_generator_tree(file, index, event_names, variable_names, variable_types, variable_initial_words, stack))),
+            freeze: member_object(&object.members, "EventToFreezeBlendValue").map(|members| behavior_event_property(file, members, event_names)),
+            cross_blend: member_object(&object.members, "EventToCrossBlend").map(|members| behavior_event_property(file, members, event_names)),
+            blend_parameter_bits: float_member(object, "fBlendParameter").map(f32::to_bits),
+            transition_duration_bits: float_member(object, "fTransitionDuration").map(f32::to_bits),
+            blend_curve: int_member(object, "eBlendCurve"),
+        })),
         "hkbModifierGenerator" => SkyrimBehaviorGeneratorNodeEvidence::ModifierGenerator {
             source,
             user_data: uint64_member(object, "userData"),
@@ -6564,6 +6601,7 @@ fn behavior_generator_tree(
         },
         _ => SkyrimBehaviorGeneratorNodeEvidence::Unsupported {
             source,
+            state_tag: int_member(object, "iStateToSetAs").zip(int_member(object, "iPriority")).map(|(state, priority)| [state, priority]),
             child_members: object
                 .members
                 .iter()
@@ -6619,6 +6657,14 @@ fn behavior_modifier_tree(
         variable_initial_words,
     );
     let node = match object.class_name.as_str() {
+        "BSIsActiveModifier" => SkyrimBehaviorModifierNodeEvidence::IsActive(cast_nodes::IsActive {
+            source,
+            bindings: variable_bindings,
+            user_data: uint64_member(object, "userData"),
+            enable: bool_member(object, "enable"),
+            active: std::array::from_fn(|i| bool_member(object, &format!("bIsActive{i}"))),
+            invert: std::array::from_fn(|i| bool_member(object, &format!("bInvertActive{i}"))),
+        }),
         "hkbModifierList" => {
             let mut modifier_indices = Vec::new();
             for value in array_member(object, "modifiers").into_iter().flatten() {
@@ -6951,7 +6997,7 @@ fn behavior_transition_array(
                     },
                 ),
                 condition: pointer_members(members, "condition")
-                    .and_then(|index| behavior_object_evidence(file, index)),
+                    .and_then(|index| cast_nodes::expression_condition(file, index, variable_names, variable_types, variable_initial_words)),
                 event_id,
                 event_name: event_id.and_then(|id| behavior_event_name(event_names, id)),
                 to_state_id: int_members(members, "toStateId"),
@@ -7241,6 +7287,11 @@ fn resolve_behavior_generator_tree_clip_paths(
                     family_root,
                     behavior_path,
                 );
+            }
+        }
+        SkyrimBehaviorGeneratorNodeEvidence::CyclicBlendTransition(node) => {
+            if let Some(generator) = &mut node.generator {
+                resolve_behavior_generator_tree_clip_paths(generator, actors, family_root, behavior_path);
             }
         }
         SkyrimBehaviorGeneratorNodeEvidence::Unsupported { child_members, .. } => {
@@ -7535,9 +7586,32 @@ fn extract_clip_evidence(file: &HkxFile, clip_path: &str) -> SkyrimCreatureClipE
         .unwrap_or(0);
     let annotations = extract_annotations(file);
     let root_motion = extract_havok_root_motion(file);
+    let source_frame_count = file
+        .objects()
+        .iter()
+        .find(|object| object.class_name == "hkaSplineCompressedAnimation")
+        .and_then(|object| int_member(object, "numFrames"))
+        .and_then(|count| usize::try_from(count).ok());
+    let source_duration = file
+        .objects()
+        .iter()
+        .find(|object| {
+            matches!(
+                object.class_name.as_str(),
+                "hkaSplineCompressedAnimation"
+                    | "hkaInterleavedUncompressedAnimation"
+                    | "hkaDeltaCompressedAnimation"
+                    | "hkaQuantizedAnimation"
+                    | "hkaPredictiveCompressedAnimation"
+            )
+        })
+        .and_then(|object| float_member(object, "duration"))
+        .filter(|duration| duration.is_finite() && *duration > 0.0);
     SkyrimCreatureClipEvidence {
         clip_path: canonical_runtime_path(clip_path),
         original_skeleton_name,
+        source_duration,
+        source_frame_count,
         blend_hint,
         behavior: Vec::new(),
         animation_data: Vec::new(),
@@ -7546,14 +7620,49 @@ fn extract_clip_evidence(file: &HkxFile, clip_path: &str) -> SkyrimCreatureClipE
     }
 }
 
+fn set_bound_motion_frame_count(clip: &mut SkyrimCreatureClipEvidence) {
+    let Some(frame_count) = clip.source_frame_count.filter(|count| *count > 0) else {
+        return;
+    };
+    for entry in &mut clip.animation_data {
+        if let SkyrimRootMotion::Sampled {
+            source: SkyrimRootMotionSource::BoundAnims,
+            sample_count,
+            ..
+        } = &mut entry.root_motion
+        {
+            *sample_count = frame_count;
+        }
+    }
+    if let SkyrimRootMotion::Sampled {
+        source: SkyrimRootMotionSource::BoundAnims,
+        sample_count,
+        ..
+    } = &mut clip.root_motion
+    {
+        *sample_count = frame_count;
+    }
+}
+
 fn extract_annotations(file: &HkxFile) -> Vec<SkyrimTimedEvent> {
     let mut events = Vec::new();
-    for track in file
+    let tracks = file
         .objects()
         .iter()
         .filter(|object| object.class_name == "hkaAnnotationTrack")
-    {
-        let Some(annotations) = array_member(track, "annotations") else {
+        .map(|object| object.members.as_slice())
+        .chain(
+            file.objects()
+                .iter()
+                .flat_map(|object| array_member(object, "annotationTracks").unwrap_or_default())
+                .filter_map(HkxValue::as_object_members),
+        );
+    for track in tracks {
+        let Some(HkxValue::Array(annotations)) = track
+            .iter()
+            .find(|member| member.name == "annotations")
+            .map(|member| &member.value)
+        else {
             continue;
         };
         for annotation in annotations {
@@ -7588,7 +7697,18 @@ fn extract_havok_root_motion(file: &HkxFile) -> SkyrimRootMotion {
     let samples = array_member(frames, "referenceFrameSamples")
         .map(|values| values.iter().filter_map(vector4).collect::<Vec<_>>())
         .unwrap_or_default();
-    root_motion_from_samples(SkyrimRootMotionSource::HavokReferenceFrame, &samples, &[])
+    let rotations = samples
+        .iter()
+        .map(|sample| {
+            let (sin, cos) = (sample[3] * 0.5).sin_cos();
+            [0.0, 0.0, sin, cos]
+        })
+        .collect::<Vec<_>>();
+    root_motion_from_samples(
+        SkyrimRootMotionSource::HavokReferenceFrame,
+        &samples,
+        &rotations,
+    )
 }
 
 fn root_motion_from_samples(
@@ -7599,23 +7719,44 @@ fn root_motion_from_samples(
     if translations.is_empty() && rotations.is_empty() {
         return SkyrimRootMotion::Unknown;
     }
+    if translations
+        .iter()
+        .chain(rotations)
+        .flatten()
+        .any(|value| !value.is_finite())
+    {
+        return SkyrimRootMotion::Unsupported {
+            detail: "root motion contains a non-finite sample".to_string(),
+        };
+    }
     let translation_delta = translations
         .first()
         .zip(translations.last())
         .map(|(first, last)| [last[0] - first[0], last[1] - first[1], last[2] - first[2]])
         .unwrap_or([0.0; 3]);
-    let moved = translation_delta
-        .iter()
-        .any(|component| component.abs() > 1.0e-5);
-    let rotated = rotations
-        .first()
-        .zip(rotations.last())
-        .is_some_and(|(first, last)| {
-            first
+    let moved = translations.first().is_some_and(|first| {
+        translations.iter().any(|sample| {
+            first[..3]
                 .iter()
-                .zip(last)
+                .zip(&sample[..3])
                 .any(|(left, right)| (left - right).abs() > 1.0e-5)
-        });
+                || (source == SkyrimRootMotionSource::HavokReferenceFrame
+                    && (first[3] - sample[3]).abs() > 1.0e-5)
+        })
+    });
+    let rotated = rotations.first().is_some_and(|first| {
+        rotations.iter().any(|sample| {
+            let same = first
+                .iter()
+                .zip(sample)
+                .all(|(left, right)| (left - right).abs() <= 1.0e-5);
+            let negated = first
+                .iter()
+                .zip(sample)
+                .all(|(left, right)| (left + right).abs() <= 1.0e-5);
+            !same && !negated
+        })
+    });
     let sample_count = translations.len().max(rotations.len());
     if !moved && !rotated {
         SkyrimRootMotion::Stationary {
@@ -8072,13 +8213,28 @@ fn parse_bound_motion_samples_lines(
             .ok_or_else(|| invalid_animation_data(path, "translation count is missing"))
             .and_then(|value| parse_usize(path, value, "translation count"))?;
         cursor += 1;
-        let translations = parse_bound_samples(path, &lines, &mut cursor, translation_count, 3)?;
+        let mut translations =
+            parse_bound_samples(path, &lines, &mut cursor, translation_count, 3)?;
         let rotation_count = lines
             .get(cursor)
             .ok_or_else(|| invalid_animation_data(path, "rotation count is missing"))
             .and_then(|value| parse_usize(path, value, "rotation count"))?;
         cursor += 1;
-        let rotations = parse_bound_samples(path, &lines, &mut cursor, rotation_count, 4)?;
+        let mut rotations = parse_bound_samples(path, &lines, &mut cursor, rotation_count, 4)?;
+        for (track, origin) in [
+            (&mut translations, [0.0; 4]),
+            (&mut rotations, [0.0, 0.0, 0.0, 1.0]),
+        ] {
+            if track.first().is_some_and(|sample| sample.time > 0.0) {
+                track.insert(
+                    0,
+                    SkyrimTimedMotionSample {
+                        time: 0.0,
+                        value: origin,
+                    },
+                );
+            }
+        }
         entries.insert(
             index,
             SkyrimBoundMotionSamples {
@@ -8510,6 +8666,8 @@ mod tests {
         SkyrimCreatureClipEvidence {
             clip_path: path.to_string(),
             original_skeleton_name: Some(skeleton.to_string()),
+            source_duration: None,
+            source_frame_count: None,
             blend_hint: 0,
             behavior: vec![SkyrimBehaviorClipEvidence {
                 behavior_path: "behaviors\\root.hkx".to_string(),
@@ -9097,6 +9255,7 @@ mod tests {
                 clip_id: "forward".to_string(),
                 clip_path: "Animations\\Forward.hkx".to_string(),
                 original_skeleton_name: None,
+                source_duration: None,
                 family_ids: vec!["fixture".to_string()],
                 disposition: SkyrimClipDisposition::Unsupported {
                     reason: SkyrimUnsupportedMotionReason::NoSemanticRoleEvidence,
@@ -9296,10 +9455,12 @@ mod tests {
                 SkyrimRaceAttackEvidence {
                     event: "attackStart_Attack1".to_string(),
                     has_attack_spell: false,
+                    attack_spell_delivery: None,
                 },
                 SkyrimRaceAttackEvidence {
                     event: "attackStart_Attack2".to_string(),
                     has_attack_spell: false,
+                    attack_spell_delivery: None,
                 },
             ],
             race_attack_sources: Vec::new(),
@@ -9947,6 +10108,8 @@ mod tests {
                 clips: vec![SkyrimCreatureClipEvidence {
                     clip_path: "animations\\obvious_attack_and_death.hkx".to_string(),
                     original_skeleton_name: Some("NPC Root [Root]".to_string()),
+                    source_duration: None,
+                    source_frame_count: None,
                     blend_hint: 0,
                     behavior: Vec::new(),
                     animation_data: Vec::new(),
@@ -9972,10 +10135,12 @@ mod tests {
         let spell = SkyrimRaceAttackEvidence {
             event: "attackStart_Attack1".to_string(),
             has_attack_spell: true,
+            attack_spell_delivery: None,
         };
         let melee = SkyrimRaceAttackEvidence {
             event: "attackStart_Attack1".to_string(),
             has_attack_spell: false,
+            attack_spell_delivery: None,
         };
         let spell_race = FormKey {
             local: 0x013209,
@@ -9988,6 +10153,8 @@ mod tests {
         let evidence_clip = SkyrimCreatureClipEvidence {
             clip_path: "Actors\\Witchlight\\Animations\\Attack1.hkx".to_string(),
             original_skeleton_name: Some("NPC Root [Root]".to_string()),
+            source_duration: None,
+            source_frame_count: None,
             blend_hint: 0,
             behavior: Vec::new(),
             animation_data: vec![SkyrimAnimationDataEvidence {
@@ -10147,6 +10314,7 @@ mod tests {
                     attack: SkyrimRaceAttackEvidence {
                         event: "attackStart_ForwardPower".to_string(),
                         has_attack_spell: false,
+                        attack_spell_delivery: None,
                     },
                 },
                 LocatedRaceAttack {
@@ -10155,6 +10323,7 @@ mod tests {
                     attack: SkyrimRaceAttackEvidence {
                         event: "attackStart_StandingPower".to_string(),
                         has_attack_spell: false,
+                        attack_spell_delivery: None,
                     },
                 },
             ];
@@ -10184,13 +10353,19 @@ mod tests {
                     SkyrimRaceAttackEvidence {
                         event: "AttackStartSpell".to_string(),
                         has_attack_spell: true,
+                        attack_spell_delivery: None,
                     },
                     SkyrimRaceAttackEvidence {
                         event: "attackStartBite".to_string(),
                         has_attack_spell: false,
+                        attack_spell_delivery: None,
                     },
                 ]
             );
         }
     }
 }
+
+#[cfg(test)]
+#[path = "creature_motion_regression_tests.rs"]
+mod motion_regression_tests;

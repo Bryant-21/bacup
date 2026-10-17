@@ -27,12 +27,21 @@ const FO76_RANDOM_ENCOUNTER_TRIGGER_ALIAS_NAME: &str = "TRIGGER";
 pub(super) const FO76_VMAD_VERSION: u16 = 6;
 pub(super) const FO76_VMAD_OBJECT_FORMAT: u16 = 2;
 pub(super) const FO76_VMAD_ALIAS_VERSION: u16 = 6;
-const FO76_W05_MQS_205_FORM_ID: u32 = 0x0041_CB6D;
+// FO4's vanilla DefaultQuestShutdownScript stops the quest 0.2 game hours after stage 10.
+// FO76's same-named script is a server QuestInstance script, and none of the quests that bind
+// it wants that stop (Reclamation Day, misc pointers, W05 mains died mid-quest), so strip it from all.
 const FO76_DEFAULT_QUEST_SHUTDOWN_SCRIPT: &[u8] = b"DefaultQuestShutdownScript";
 pub(super) const FO76_RD01_ENC02_FORM_ID: u32 = 0x0078_F7A1;
 const FO76_RD01_ENC02_SCRIPT: &[u8] = b"Raids:RD01:Enc02:QuestScript";
 pub(super) const FO76_EN07_NUKE_MASTER_FORM_ID: u32 = 0x002D_0F67;
-const FO76_COMPANION_EVENT_ALIAS_QUESTS: [(u32, &str, &[u32]); 20] = [
+const FO76_COMPANION_EVENT_ALIAS_QUESTS: [(u32, &str, &[u32]); 25] = [
+    // Lite-ally hire conversations: `Ally` (3) is the roadside actor that cast
+    // `CompanionLiteAllyEffectScript`, which sends the start event with itself as Reference1.
+    (0x0058_2172, "comp_quest_intro_lite_beggar", &[3]),
+    (0x0058_2153, "comp_quest_intro_lite_hunter", &[3]),
+    (0x0056_8CB2, "comp_quest_intro_lite_raiderpunk", &[3]),
+    (0x0058_5BD2, "comp_quest_intro_lite_scavenger", &[3]),
+    (0x0058_2173, "comp_quest_intro_lite_wanderer", &[3]),
     (0x0054_F1A4, "comp_rq_fetch", &[1, 13]),
     (0x0056_FB76, "comp_rq_kill", &[1, 18]),
     (0x0057_27AD, "comp_rq_rescue", &[1, 18]),
@@ -138,12 +147,11 @@ struct QustVmadProperty<'a> {
     raw: &'a [u8],
 }
 
-pub(super) fn strip_w05_mqs_205_shutdown_script_binding(
+pub(super) fn strip_fo4_shutdown_script_bindings(
     interner: &crate::sym::StringInterner,
     record: &mut Record,
 ) {
     if record.sig.0 != *b"QUST"
-        || record.form_key.local & 0x00FF_FFFF != FO76_W05_MQS_205_FORM_ID
         || !interner
             .resolve(record.form_key.plugin)
             .is_some_and(|plugin| plugin.eq_ignore_ascii_case(FO76_MASTER_NAME))

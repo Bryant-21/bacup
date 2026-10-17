@@ -29,6 +29,7 @@ package {
         private var lastNative:uint = 0;
         private var lastQuest:String = "";
         private var leasedQuest:String = "";
+        private var leasedNotice:Object;
         private var art:Loader;
         private var generation:uint = 0;
 
@@ -40,14 +41,17 @@ package {
         private function onClearModel(event:Event):void { model = false; }
         private function onArtError(event:IOErrorEvent):void {}
         private function onArtLoaded(event:Event):void {
-            if (art == null || clip == null || active == null || active.kind != "quest") return;
+            if (art == null || clip == null || active == null || (active.kind != "quest" && active.kind != "active")) return;
             var movie:MovieClip = art.content as MovieClip;
             if (movie == null) return;
-            var sizing:Object = B21_StatusRewardSource.data.loader;
-            movie.graphics.clear();
-            movie.graphics.beginFill(0,0);
-            movie.graphics.drawRect(0,0,sizing.questAnimStageWidth,sizing.questAnimStageHeight);
-            movie.graphics.endFill();
+            // FO76's VaultBoyImageLoader.SetQuestMovieClip with each banner's inspectables, centred.
+            var sizing:Object = B21_StatusRewardSource.data.loader[String(active.kind)];
+            if (Boolean(sizing.bUseFixedQuestStageSize)) {
+                movie.graphics.clear();
+                movie.graphics.beginFill(0,0);
+                movie.graphics.drawRect(0,0,sizing.questAnimStageWidth,sizing.questAnimStageHeight);
+                movie.graphics.endFill();
+            }
             var ratio:Number = Number(sizing.maxClipHeight)/movie.height;
             movie.scaleX = movie.scaleY = ratio;
             movie.x = -Number(sizing.questAnimStageWidth)*0.5*ratio;
@@ -96,6 +100,8 @@ package {
             leaving = false;
             if (row.kind == "item") clip = new B21_StatusRewardItem();
             else if (row.kind == "list") clip = new B21_StatusRewardList();
+            else if (row.kind == "active") clip = new B21_StatusRewardActive();
+            else if (row.kind == "location") clip = new B21_StatusRewardLocation();
             else clip = new B21_StatusRewardQuest();
             addChild(clip);
             if (row.kind == "item") {
@@ -110,21 +116,45 @@ package {
                 var rows:Array = row.rows as Array;
                 for (var i:int = 1; i <= 6; ++i) {
                     clip["BonusFanfareName_mc"+i].visible = false;
-                    text(clip["FanfareName_mc"+i],rows != null && i <= rows.length ? String(rows[i-1]) : "");
+                    B21RewardStars.setText(field(clip["FanfareName_mc"+i]),rows != null && i <= rows.length ? String(rows[i-1]) : "");
                 }
+            } else if (row.kind == "active") {
+                // FO76's FANFARE_TYPE_QUESTACTIVE (events too). Fallout 4 has no event mutations or opt-in
+                // tracking, so the mutation band, its name and the TRACK prompt stay off.
+                text(clip.Title_mc,"$QUESTSTARTED");
+                text(clip.Name_mc,String(row.title));
+                clip.MutatedName_mc.visible = false;
+                clip.EventMutationsBG_mc.B21Goto("off",false);
+                clip.Prompt_mc.visible = false;
+                var description:String = row.description == null ? "" : String(row.description);
+                clip.Desc_mc.visible = description.length > 0;
+                text(clip.Desc_mc,description);
+                loadArt(row,clip.QuestVaultBoy_mc.VaultBoyImageInternal_mc);
+            } else if (row.kind == "location") {
+                text(clip.Title_mc,"$Discovered");
+                text(clip.Area_mc,String(row.title));
             } else {
                 text(clip.FanfareType_mc,String(row.header));
                 text(clip.FanfareName_mc,String(row.title));
                 text(clip.FanfareDescription_mc,"");
-                if (row.swf != null && String(row.swf).length > 0) {
-                    art = new Loader();
-                    art.contentLoaderInfo.addEventListener(IOErrorEvent.IO_ERROR,onArtError);
-                    art.contentLoaderInfo.addEventListener(Event.COMPLETE,onArtLoaded);
-                    clip.FanfareQuestCompleted_mc.QuestAnimCatcher_mc.ClipContainer_mc.VaultBoyImageInternal_mc.addChild(art);
-                    art.load(new URLRequest(String(row.swf)));
-                }
+                loadArt(row,clip.FanfareQuestCompleted_mc.QuestAnimCatcher_mc.ClipContainer_mc.VaultBoyImageInternal_mc);
             }
             clip.B21Goto("rollOn",true);
+            // FO76 lets the discovery clip run straight through its roll-off.
+            leaving = row.kind == "location";
+        }
+        private function loadArt(row:Object,holder:DisplayObjectContainer):void {
+            if (row.swf == null || String(row.swf).length == 0) return;
+            art = new Loader();
+            art.contentLoaderInfo.addEventListener(IOErrorEvent.IO_ERROR,onArtError);
+            art.contentLoaderInfo.addEventListener(Event.COMPLETE,onArtLoaded);
+            holder.addChild(art);
+            art.load(new URLRequest(String(row.swf)));
+        }
+        private static function allowed(row:Object,data:Object):Boolean {
+            var kind:String = String(row.kind);
+            return kind == "item" ? Boolean(data.items) : kind == "active" ? Boolean(data.starts) :
+                kind == "location" ? Boolean(data.locations) : Boolean(data.quests);
         }
         // quest: FO4's quest-update text as captured from HUDMenu ({visible,alpha,name,type}), origin: the
         // stage point of HUDMenu's top-centre group, viewport: the stage rect the model's screen fractions use.
@@ -136,13 +166,18 @@ package {
                 generation = uint(data.generation);
             }
             var key:String = "";
-            if (Boolean(data.quests) && quest != null && Boolean(quest.visible) && Number(quest.alpha) > 0) {
+            if (quest != null && Boolean(quest.visible) && Number(quest.alpha) > 0) {
                 key = String(quest.name)+"|"+String(quest.type);
-                questLease = key == leasedQuest;
+                questLease = key == leasedQuest && leasedNotice != null && allowed(leasedNotice,data);
                 for each (var notice:Object in data.notices) {
-                    if (String(notice.title) != String(quest.name)) continue;
+                    if (String(notice.title) != String(quest.name) || !allowed(notice,data)) continue;
+                    // FO4's prefix for this notice type ("Started", "Completed", "Discovered"...): a quest's start and
+                    // its completion share the title.
+                    var stock:String = notice.stock == null ? "" : String(notice.stock).toLowerCase();
+                    if (stock.length > 0 && String(quest.type).toLowerCase().indexOf(stock) < 0) continue;
                     questLease = true;
                     leasedQuest = key;
+                    leasedNotice = notice;
                     noticeSeen = uint(notice.token);
                     if (key != lastQuest) pending.push(notice);
                     break;
@@ -155,11 +190,9 @@ package {
                 pending.push(next);
                 lastNative = uint(next.id);
             }
-            if (active != null && ((active.kind == "item" && !Boolean(data.items)) ||
-                (active.kind != "item" && !Boolean(data.quests)))) close();
+            if (active != null && !allowed(active,data)) close();
             for (var p:int = pending.length-1; p >= 0; --p) {
-                if ((pending[p].kind == "item" && !Boolean(data.items)) ||
-                    (pending[p].kind != "item" && !Boolean(data.quests))) pending.splice(p,1);
+                if (!allowed(pending[p],data)) pending.splice(p,1);
             }
             if (active == null && pending.length > 0 && Boolean(data.advance)) begin(pending.shift());
             if (active == null) { visible = false; return; }
@@ -175,7 +208,10 @@ package {
                     clip.B21Tick(); ++frames;
                 }
             }
-            if (!leaving && clock >= (active.kind == "list" ? 234 : active.kind == "item" ? 119 : 120)) {
+            // FO76 holds each banner for a native timer; the started banner's rollOn span already stops on its
+            // final frame, so it rolls off from there.
+            if (!leaving && (active.kind == "active" ? !clip.B21Running :
+                clock >= (active.kind == "list" ? 234 : active.kind == "item" ? 119 : 120))) {
                 leaving = true;
                 clip.B21Goto("rollOff",true);
             }

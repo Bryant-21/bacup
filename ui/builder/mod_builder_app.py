@@ -33,7 +33,7 @@ from creation_lib.ui.theme.window_chrome import AsyncWorker
 from creation_lib.ui.widgets import pick_folder
 from creation_lib.ui.widgets.forms import (
     begin_form, end_form, draw_path_row, draw_text_field, draw_combo_field, draw_float_field,
-    draw_int_field,
+    draw_int_field, form_row_label,
 )
 
 PROJECT_ROOT = _get_app_root()
@@ -471,6 +471,9 @@ _MOD_SETTINGS_FILE = ".builder.json"
 # Deploy- and Release-tab options remembered per mod.
 # Keys map to `self._<key>` on ModBuilderApp.
 _MOD_SETTING_DEFAULTS: dict[str, object] = {
+    "deploy_to_mo2": False,
+    "mo2_deploy_dir": "",
+    "additional_deploy_dirs": [],
     "skip_build": False,
     "skip_pack": False,
     "skip_papyrus_compile": False,
@@ -889,8 +892,9 @@ class ModBuilderApp:
         self._fo4_install_idx = 0  # 0 = primary install; >0 = an extra deploy target
         self._fo4_install_choices: list[dict] = []
         workspace_settings = self._mod_builder_settings()
-        self._deploy_to_mo2 = bool(workspace_settings.get("deploy_to_mo2", False))
-        self._mo2_deploy_dir = str(workspace_settings.get("mo2_deploy_dir", "") or "")
+        self._deploy_to_mo2 = False
+        self._mo2_deploy_dir = ""
+        self._additional_deploy_dirs = []
         self._move_archives = bool(workspace_settings.get("move_archives", False))
         self._import_src_idx = 0
         self._mod_filter_text = ""
@@ -1078,7 +1082,7 @@ class ModBuilderApp:
             self._set_asset_workers(asset_workers)
 
     def _game_data_path_for_game(self, game: str) -> Path | None:
-        if game == "fo4" and self._deploy_to_mo2:
+        if self._deploy_to_mo2:
             mo2_dir = self._mo2_deploy_dir.strip()
             return Path(mo2_dir) if mo2_dir else None
         if game == "fo4":
@@ -1094,12 +1098,18 @@ class ModBuilderApp:
         return Path(root) / "Data"
 
     def _resolve_deploy_data_path(self, game: str) -> "Path":
-        if game == "fo4" and self._deploy_to_mo2:
+        if self._deploy_to_mo2:
             mo2_dir = self._mo2_deploy_dir.strip()
             if not mo2_dir:
-                raise RuntimeError("MO2 deploy folder is not set")
+                raise RuntimeError("Deploy folder is not set")
             return Path(mo2_dir)
         return self._resolve_game_data_path(game)
+
+    def _resolve_deploy_data_paths(self, game: str) -> list[Path]:
+        paths = [self._resolve_deploy_data_path(game)]
+        if self._deploy_to_mo2:
+            paths.extend(Path(path.strip()) for path in self._additional_deploy_dirs if path.strip())
+        return list(dict.fromkeys(path.resolve() for path in paths))
 
     # ── Public entry point ──────────────────────────────────────────────────
 
@@ -1621,7 +1631,7 @@ class ModBuilderApp:
             if imgui.is_item_hovered():
                 imgui.set_tooltip(
                     "Which Fallout 4 install to use for build-time game data.\n"
-                    "When MO2 deploy is off, this is also the deploy target.\n"
+                    "When Deploy to Folder is off, this is also the deploy target.\n"
                     "Add more installs in Settings → Paths → Fallout 4."
                 )
             end_form()
@@ -1631,33 +1641,48 @@ class ModBuilderApp:
         imgui.spacing()
 
     def _draw_mo2_deploy_option(self):
-        if self._get_mod_game() != "fo4":
-            return
         changed, self._deploy_to_mo2 = imgui.checkbox(
-            "Deploy to MO2 virtual Data folder##deploy_mo2",
+            "Deploy to Folders##deploy_mo2",
             self._deploy_to_mo2,
         )
-        if imgui.is_item_hovered():
-            imgui.set_tooltip(
-                "Copy deploy outputs to an MO2 mod folder treated as the Data root.\n"
-                "Build steps still use the selected Fallout 4 install."
-            )
         if changed:
-            self._set_mod_builder_settings({"deploy_to_mo2": self._deploy_to_mo2})
+            self._save_mod_settings()
             self._refresh_deployed_state()
 
-        if self._deploy_to_mo2:
-            if begin_form("##deploy_mo2_path"):
-                _, clicked = draw_path_row("MO2 Folder", self._mo2_deploy_dir)
-                end_form()
-                if clicked:
-                    path = pick_folder("Select MO2 Mod Folder", self._mo2_deploy_dir)
-                    if path:
-                        self._mo2_deploy_dir = os.path.normpath(path)
-                        self._set_mod_builder_settings(
-                            {"mo2_deploy_dir": self._mo2_deploy_dir}
-                        )
-                        self._refresh_deployed_state()
+        if self._deploy_to_mo2 and begin_form("##deploy_folders"):
+            folders = [self._mo2_deploy_dir, *self._additional_deploy_dirs]
+            edited = False
+            add_folder = False
+            remove_index = None
+            for index, folder in enumerate(folders):
+                imgui.push_id(f"deploy_folder_{index}")
+                form_row_label("Folder" if index == 0 else f"Folder {index + 1}")
+                button_width = imgui.calc_text_size("+").x + imgui.get_style().frame_padding.x * 2
+                gap = imgui.get_style().item_spacing.x
+                imgui.set_next_item_width(-2 * (button_width + gap))
+                path_changed, folders[index] = imgui.input_text("##path", folder)
+                edited |= path_changed
+                imgui.same_line()
+                if imgui.small_button("+"):
+                    add_folder = True
+                imgui.same_line()
+                imgui.begin_disabled(len(folders) == 1)
+                if imgui.small_button("-"):
+                    remove_index = index
+                imgui.end_disabled()
+                imgui.pop_id()
+            end_form()
+            if remove_index is not None:
+                del folders[remove_index]
+                edited = True
+            if add_folder:
+                folders.append("")
+                edited = True
+            if edited:
+                self._mo2_deploy_dir = folders[0]
+                self._additional_deploy_dirs = folders[1:]
+                self._save_mod_settings()
+                self._refresh_deployed_state()
 
     def _draw_deploy_tab(self):
         _btn = imgui.ImVec2(-1, 0)
@@ -1687,8 +1712,9 @@ class ModBuilderApp:
             imgui.spacing()
 
         _split_flags = imgui.TableFlags_.sizing_stretch_prop.value
-        if not is_xse_only and imgui.begin_table("##deploy_split", 2, _split_flags):
-            imgui.table_setup_column("Flags", imgui.TableColumnFlags_.width_stretch.value)
+        if not is_xse_only and imgui.begin_table("##deploy_split", 3, _split_flags):
+            imgui.table_setup_column("Build", imgui.TableColumnFlags_.width_stretch.value)
+            imgui.table_setup_column("Archives", imgui.TableColumnFlags_.width_stretch.value)
             imgui.table_setup_column("Tex", imgui.TableColumnFlags_.width_fixed.value, TEX_OPTIONS_COL_W)
             imgui.table_next_row()
 
@@ -1705,6 +1731,24 @@ class ModBuilderApp:
             _, self._esp_only = imgui.checkbox("ESP Only", self._esp_only)
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Deploy only the .esp (no BA2 packing)")
+            _, self._skip_validation = imgui.checkbox("Skip Validation", self._skip_validation)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Skip the validation pass before building the .esp")
+            changed, self._verified_creation = imgui.checkbox(
+                "Verified Creation",
+                self._verified_creation,
+            )
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Mark this mod as a verified Bethesda Creation.\n"
+                    "Only verified Creations may use game DLCs or base Creation Club\n"
+                    "plugins as masters — unverified mods that do are warned on build."
+                )
+            if changed:
+                self._save_mod_settings()
+                self._refresh_mod_display(selected_only=True)
+
+            imgui.table_set_column_index(1)
             _, self._xbox = imgui.checkbox("Xbox BA2s", self._xbox)
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Also create Xbox-format BA2 archives (_xbox suffix)")
@@ -1741,25 +1785,8 @@ class ModBuilderApp:
             _, self._deploy_patches = imgui.checkbox("Include Patches", self._deploy_patches)
             if imgui.is_item_hovered():
                 imgui.set_tooltip("Also build and deploy all patch plugins from patches/")
-            _, self._skip_validation = imgui.checkbox("Skip Validation", self._skip_validation)
-            if imgui.is_item_hovered():
-                imgui.set_tooltip("Skip the validation pass before building the .esp")
-            changed, self._verified_creation = imgui.checkbox(
-                "Verified Creation",
-                self._verified_creation,
-            )
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "Mark this mod as a verified Bethesda Creation.\n"
-                    "Only verified Creations may use game DLCs or base Creation Club\n"
-                    "plugins as masters — unverified mods that do are warned on build."
-                )
-            if changed:
-                self._save_mod_settings()
-                self._refresh_mod_display(selected_only=True)
-            self._draw_mo2_deploy_option()
 
-            imgui.table_set_column_index(1)
+            imgui.table_set_column_index(2)
             if begin_form("##deploy_tex"):
                 _, self._pc_max_res_idx = draw_combo_field("PC Max", _PC_RES_OPTIONS, self._pc_max_res_idx)
                 if imgui.is_item_hovered():
@@ -1812,10 +1839,16 @@ class ModBuilderApp:
 
             imgui.end_table()
 
+        if not is_xse_only:
+            self._draw_mo2_deploy_option()
+
         imgui.separator()
 
         disabled = self._running or not self._mod_list
         git_disabled = disabled or not self._selected_mod_has_git_repo()
+        style = imgui.get_style()
+        imgui.push_style_var(imgui.StyleVar_.cell_padding, imgui.ImVec2(style.cell_padding.x, style.cell_padding.y * 0.5))
+        imgui.push_style_var(imgui.StyleVar_.item_spacing, imgui.ImVec2(style.item_spacing.x, style.item_spacing.y * 0.75))
         if disabled:
             imgui.begin_disabled()
         if imgui.begin_table("##deploy_btns", 2, imgui.TableFlags_.sizing_stretch_same.value):
@@ -1847,7 +1880,6 @@ class ModBuilderApp:
             imgui.end_table()
 
         if not is_xse_only:
-            imgui.spacing()
             if imgui.begin_table("##deploy_loose_btns", 2, imgui.TableFlags_.sizing_stretch_same.value):
                 imgui.table_setup_column("L0", imgui.TableColumnFlags_.width_stretch.value)
                 imgui.table_setup_column("L1", imgui.TableColumnFlags_.width_stretch.value)
@@ -1876,11 +1908,9 @@ class ModBuilderApp:
                 imgui.end_table()
 
         if has_xse:
-            imgui.spacing()
             imgui.separator()
             self._draw_xse_action_row(_btn, suffix=kind)
 
-        imgui.spacing()
         if imgui.begin_table("##deploy_git_btns", 3, imgui.TableFlags_.sizing_stretch_same.value):
             for i in range(3):
                 imgui.table_setup_column(f"G{i}", imgui.TableColumnFlags_.width_stretch.value)
@@ -1931,6 +1961,7 @@ class ModBuilderApp:
             imgui.end_table()
         if disabled:
             imgui.end_disabled()
+        imgui.pop_style_var(2)
 
         if self._mod_settings_snapshot() != settings_before:
             self._save_mod_settings()
@@ -2394,9 +2425,9 @@ class ModBuilderApp:
         _btn = imgui.ImVec2(-1, 0)
 
         if begin_form("##migrate_form"):
-            _, clicked = draw_path_row("Source Dir", self._migrate_src_dir)
+            self._migrate_src_dir, clicked = draw_path_row("Source Dir", self._migrate_src_dir)
             if clicked:
-                path = pick_folder("Select Mod Folder to Migrate")
+                path = pick_folder("Select Mod Folder to Migrate", self._migrate_src_dir)
                 if path:
                     self._migrate_src_dir = path
             if imgui.is_item_hovered():
@@ -2980,6 +3011,8 @@ class ModBuilderApp:
         stored = _read_mod_settings(self._selected_mod_dir())
         for key, default in _MOD_SETTING_DEFAULTS.items():
             value = stored.get(key, default)
+            if isinstance(default, list):
+                value = list(value) if isinstance(value, list) else []
             setattr(self, f"_{key}", bool(value) if isinstance(default, bool) else value)
 
     def _save_mod_settings(self):
@@ -3421,22 +3454,24 @@ class ModBuilderApp:
             from app.paths import get_app_root, get_resource_dir
             from creation_lib.build.deployer import deploy_mod
             game_data = self._resolve_game_data_path(game)
-            deploy_data = self._resolve_deploy_data_path(game)
-            deploy_mod(
-                mod, game=game, game_data_dir=game_data,
-                deploy_data_dir=deploy_data,
-                skip_build=True, skip_pack=True,
-                esp_only=False, no_esp=True, xbox=False, ps=False,
-                skip_papyrus_compile=skip_papyrus_compile,
-                preserve_xse_inis=preserve_xse_inis,
-                pc_max_res=0, pc_effects_max_res=0,
-                xbox_max_res=0, xbox_effects_max_res=0,
-                ps_max_res=0, ps_effects_max_res=0,
-                patches=None,
-                project_root=get_app_root(),
-                resource_dir=get_resource_dir(),
-                on_progress=on_progress,
-            )
+            targets = self._resolve_deploy_data_paths(game)
+            for index, deploy_data in enumerate(targets):
+                on_progress(f"Destination {index + 1}/{len(targets)}: {deploy_data}")
+                deploy_mod(
+                    mod, game=game, game_data_dir=game_data,
+                    deploy_data_dir=deploy_data,
+                    skip_build=True, skip_pack=True,
+                    esp_only=False, no_esp=True, xbox=False, ps=False,
+                    skip_papyrus_compile=skip_papyrus_compile or index > 0,
+                    preserve_xse_inis=preserve_xse_inis,
+                    pc_max_res=0, pc_effects_max_res=0,
+                    xbox_max_res=0, xbox_effects_max_res=0,
+                    ps_max_res=0, ps_effects_max_res=0,
+                    patches=None,
+                    project_root=get_app_root(),
+                    resource_dir=get_resource_dir(),
+                    on_progress=on_progress,
+                )
 
         self._run_fn(_do, description=f"Deploying {xse_name} plugin {mod}")
 
@@ -3451,13 +3486,15 @@ class ModBuilderApp:
         def _do(on_progress):
             from app.paths import get_app_root
             from creation_lib.build.deployer import undeploy_mod
-            game_data = self._resolve_deploy_data_path(game)
-            undeploy_mod(
-                mod, game=game, game_data_dir=game_data,
-                no_esp=True, patches=None,
-                project_root=get_app_root(),
-                on_progress=on_progress,
-            )
+            targets = self._resolve_deploy_data_paths(game)
+            for index, game_data in enumerate(targets):
+                on_progress(f"Destination {index + 1}/{len(targets)}: {game_data}")
+                undeploy_mod(
+                    mod, game=game, game_data_dir=game_data,
+                    no_esp=True, patches=None,
+                    project_root=get_app_root(),
+                    on_progress=on_progress,
+                )
 
         self._run_fn(_do, description=f"Undeploying {xse_name} plugin {mod}")
 
@@ -3503,38 +3540,40 @@ class ModBuilderApp:
             from app.paths import get_app_root, get_resource_dir
             from creation_lib.build.deployer import deploy_mod
             game_data = self._resolve_game_data_path(game)
-            deploy_data = self._resolve_deploy_data_path(game)
-            result = deploy_mod(
-                mod, game=game, game_data_dir=game_data,
-                deploy_data_dir=deploy_data,
-                skip_build=skip_build, skip_pack=skip_pack,
-                skip_papyrus_compile=skip_papyrus_compile,
-                esp_only=esp_only, no_esp=is_xse_only, xbox=xbox, ps=ps,
-                preserve_xse_inis=preserve_xse_inis,
-                pc_max_res=pc_res, pc_effects_max_res=pc_effects_res,
-                xbox_max_res=xbox_res, xbox_effects_max_res=xbox_effects_res,
-                ps_max_res=ps_res, ps_effects_max_res=ps_effects_res,
-                skip_validation=skip_validation,
-                patches=None if is_xse_only else (["all"] if include_patches else None),
-                project_root=get_app_root(),
-                resource_dir=get_resource_dir(),
-                archive_max_bytes=archive_max_bytes,
-                expanded_archives=expanded_archives,
-                archive_workers=archive_workers,
-                archive_transfer_mode=archive_transfer_mode,
-                pack_archives_to_deploy_target=pack_archives_to_deploy_target,
-                on_progress=on_progress,
-            )
-            if update_fo4_archive_ini and game == "fo4" and not is_xse_only:
-                archive_names = list(getattr(result, "archives_deployed", []) or [])
-                registered = _register_fo4_runtime_archive_ini_entries(archive_names)
-                if registered:
-                    on_progress(
-                        "Updated Fallout4Custom.ini archive entries: "
-                        + ", ".join(registered)
-                    )
-                elif archive_names:
-                    on_progress("Fallout4Custom.ini archive entries already current")
+            targets = self._resolve_deploy_data_paths(game)
+            for index, deploy_data in enumerate(targets):
+                on_progress(f"Destination {index + 1}/{len(targets)}: {deploy_data}")
+                result = deploy_mod(
+                    mod, game=game, game_data_dir=game_data,
+                    deploy_data_dir=deploy_data,
+                    skip_build=skip_build or index > 0, skip_pack=skip_pack or index > 0,
+                    skip_papyrus_compile=skip_papyrus_compile or index > 0,
+                    esp_only=esp_only, no_esp=is_xse_only, xbox=xbox, ps=ps,
+                    preserve_xse_inis=preserve_xse_inis,
+                    pc_max_res=pc_res, pc_effects_max_res=pc_effects_res,
+                    xbox_max_res=xbox_res, xbox_effects_max_res=xbox_effects_res,
+                    ps_max_res=ps_res, ps_effects_max_res=ps_effects_res,
+                    skip_validation=skip_validation,
+                    patches=None if is_xse_only else (["all"] if include_patches else None),
+                    project_root=get_app_root(),
+                    resource_dir=get_resource_dir(),
+                    archive_max_bytes=archive_max_bytes,
+                    expanded_archives=expanded_archives,
+                    archive_workers=archive_workers,
+                    archive_transfer_mode=archive_transfer_mode if len(targets) == 1 else "copy",
+                    pack_archives_to_deploy_target=pack_archives_to_deploy_target and len(targets) == 1,
+                    on_progress=on_progress,
+                )
+                if update_fo4_archive_ini and game == "fo4" and not is_xse_only:
+                    archive_names = list(getattr(result, "archives_deployed", []) or [])
+                    registered = _register_fo4_runtime_archive_ini_entries(archive_names)
+                    if registered:
+                        on_progress(
+                            "Updated Fallout4Custom.ini archive entries: "
+                            + ", ".join(registered)
+                        )
+                    elif archive_names:
+                        on_progress("Fallout4Custom.ini archive entries already current")
 
         self._run_fn(_do, description=f"Deploying {mod}")
 
@@ -3595,32 +3634,34 @@ class ModBuilderApp:
         def _do(on_progress):
             from app.paths import get_app_root
             from creation_lib.build.deployer import undeploy_mod
-            game_data = self._resolve_deploy_data_path(game)
-            removed_files = undeploy_mod(
-                mod, game=game, game_data_dir=game_data,
-                no_esp=is_xse_only,
-                patches=None if is_xse_only else (["all"] if include_patches else None),
-                project_root=get_app_root(),
-                on_progress=on_progress,
-            )
-            if cleanup_fo4_archive_ini:
-                removed_archives = [
-                    Path(name).name
-                    for name in (removed_files or [])
-                    if Path(name).suffix.lower() == ".ba2"
-                ]
-                archive_names = _unique_archive_names(
-                    [
-                        *removed_archives,
-                        *_fo4_ini_archive_names_for_mod(mod),
-                    ]
+            targets = self._resolve_deploy_data_paths(game)
+            for index, game_data in enumerate(targets):
+                on_progress(f"Destination {index + 1}/{len(targets)}: {game_data}")
+                removed_files = undeploy_mod(
+                    mod, game=game, game_data_dir=game_data,
+                    no_esp=is_xse_only,
+                    patches=None if is_xse_only else (["all"] if include_patches else None),
+                    project_root=get_app_root(),
+                    on_progress=on_progress,
                 )
-                removed_ini_entries = _remove_fo4_archive_ini_entries(archive_names)
-                if removed_ini_entries:
-                    on_progress(
-                        "Removed Fallout4Custom.ini archive entries: "
-                        + ", ".join(removed_ini_entries)
+                if cleanup_fo4_archive_ini:
+                    removed_archives = [
+                        Path(name).name
+                        for name in (removed_files or [])
+                        if Path(name).suffix.lower() == ".ba2"
+                    ]
+                    archive_names = _unique_archive_names(
+                        [
+                            *removed_archives,
+                            *_fo4_ini_archive_names_for_mod(mod),
+                        ]
                     )
+                    removed_ini_entries = _remove_fo4_archive_ini_entries(archive_names)
+                    if removed_ini_entries:
+                        on_progress(
+                            "Removed Fallout4Custom.ini archive entries: "
+                            + ", ".join(removed_ini_entries)
+                        )
 
         self._run_fn(_do, description=f"Undeploying {mod}")
 
@@ -3647,20 +3688,22 @@ class ModBuilderApp:
             from app.paths import get_app_root
             from creation_lib.build.loose_deploy import deploy_loose_assets
             game_data = self._resolve_game_data_path(game)
-            deploy_data = self._resolve_deploy_data_path(game)
-            deploy_loose_assets(
-                mod, game=game, game_data_dir=game_data,
-                deploy_data_dir=deploy_data,
-                skip_build=skip_build,
-                preserve_xse_inis=preserve_xse_inis,
-                skip_papyrus_compile=skip_papyrus_compile,
-                pc_max_res=pc_res,
-                pc_effects_max_res=pc_effects_res,
-                skip_validation=skip_validation,
-                workers=asset_workers,
-                project_root=get_app_root(),
-                on_progress=on_progress,
-            )
+            targets = self._resolve_deploy_data_paths(game)
+            for index, deploy_data in enumerate(targets):
+                on_progress(f"Destination {index + 1}/{len(targets)}: {deploy_data}")
+                deploy_loose_assets(
+                    mod, game=game, game_data_dir=game_data,
+                    deploy_data_dir=deploy_data,
+                    skip_build=skip_build or index > 0,
+                    preserve_xse_inis=preserve_xse_inis,
+                    skip_papyrus_compile=skip_papyrus_compile or index > 0,
+                    pc_max_res=pc_res,
+                    pc_effects_max_res=pc_effects_res,
+                    skip_validation=skip_validation,
+                    workers=asset_workers,
+                    project_root=get_app_root(),
+                    on_progress=on_progress,
+                )
 
         self._run_fn(_do, description=f"Deploying {mod} (loose)")
 
@@ -3673,13 +3716,16 @@ class ModBuilderApp:
         def _do(on_progress):
             from app.paths import get_app_root
             from creation_lib.build.loose_deploy import undeploy_loose_assets
-            game_data = self._resolve_deploy_data_path(game)
-            undeploy_loose_assets(
-                mod,
-                game_data_dir=game_data,
-                project_root=get_app_root(),
-                on_progress=on_progress,
-            )
+            targets = self._resolve_deploy_data_paths(game)
+            for index, game_data in enumerate(targets):
+                on_progress(f"Destination {index + 1}/{len(targets)}: {game_data}")
+                undeploy_loose_assets(
+                    mod,
+                    game_data_dir=game_data,
+                    project_root=get_app_root(),
+                    preserve_manifest=index < len(targets) - 1,
+                    on_progress=on_progress,
+                )
 
         self._run_fn(_do, description=f"Undeploying {mod} (loose)")
 

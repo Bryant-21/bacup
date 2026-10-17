@@ -166,3 +166,43 @@ def test_new_ui_wrappers_ignore_other_conversion_pairs(tmp_path):
     assert unified._convert_fo76_photo_gallery_ui(other, ctx) == 0
     assert unified._convert_fo76_xp_ui(other, ctx) == 0
     assert unified._convert_fo76_combat_perks(other, ctx) == 0
+
+
+def test_death_screen_wrapper_is_guarded_and_merges_packaged_translations(tmp_path, monkeypatch):
+    from bacup_lib import death_screen_ui
+
+    ctx = context(tmp_path)
+    merged = []
+    calls = []
+    monkeypatch.setattr(unified, "_merge_packaged_tales_translations", lambda value, runner=None: merged.append(value))
+    monkeypatch.setattr(death_screen_ui, "convert_death_screen_ui",
+                        lambda *args: calls.append(args) or {"files": [1, 2]})
+
+    assert unified._convert_fo76_death_screen_ui(request(), ctx) == 0
+    assert unified._convert_fo76_death_screen_ui(request("skyrimse", "fo4"), ctx) == 0
+    assert calls == [] and merged == []
+
+    (ctx.source_data_dir / "interface" / death_screen_ui.MENU).write_bytes(b"menu")
+    assert unified._convert_fo76_death_screen_ui(request(), ctx) == 2
+    assert calls == [(ctx.source_data_dir, ctx.mod_path / "data")]
+    assert merged == [ctx]
+
+
+def test_revive_prompt_wrapper_is_guarded_and_merges_packaged_translations(tmp_path, monkeypatch):
+    from bacup_lib import revive_prompt_ui
+
+    ctx = context(tmp_path)
+    merged = []
+    calls = []
+    monkeypatch.setattr(unified, "_merge_packaged_tales_translations", lambda value, runner=None: merged.append(value))
+    monkeypatch.setattr(revive_prompt_ui, "convert_revive_prompt_ui",
+                        lambda *args: calls.append(args) or {"files": [1]})
+
+    assert unified._convert_fo76_revive_prompt_ui(request(), ctx) == 0
+    assert unified._convert_fo76_revive_prompt_ui(request("skyrimse", "fo4"), ctx) == 0
+    assert calls == [] and merged == []
+
+    (ctx.source_data_dir / "interface" / revive_prompt_ui.SOURCE).write_bytes(b"hud")
+    assert unified._convert_fo76_revive_prompt_ui(request(), ctx) == 1
+    assert calls == [(ctx.source_data_dir, ctx.mod_path / "data")]
+    assert merged == [ctx]

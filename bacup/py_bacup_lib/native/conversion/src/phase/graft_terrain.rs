@@ -47,8 +47,12 @@ impl Phase for GraftTerrainPhase {
             ));
         }
         let prior_plugin_path = required_prior_plugin_path(ctx)?;
-        let prior = OwnedPluginHandle::load(&prior_plugin_path, ctx.run.target.as_str(), None)
-            .map_err(|error| PhaseError::BadParams(format!("graft_terrain: {error}")))?;
+        let prior = OwnedPluginHandle::load_compact_placed_records(
+            &prior_plugin_path,
+            ctx.run.target.as_str(),
+            None,
+        )
+        .map_err(|error| PhaseError::BadParams(format!("graft_terrain: {error}")))?;
         let stats = ctx
             .run
             .graft_terrain_navmesh(prior.id())

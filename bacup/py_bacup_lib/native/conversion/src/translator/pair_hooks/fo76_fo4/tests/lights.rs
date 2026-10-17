@@ -73,7 +73,7 @@
             let mut data = vec![0_u8; len];
             data[FO4_LIGH_DATA_RADIUS_OFFSET..FO4_LIGH_DATA_RADIUS_OFFSET + 4]
                 .copy_from_slice(&radius.to_le_bytes());
-            data[FO76_LIGH_DATA_VALUE_OFFSET..FO76_LIGH_DATA_VALUE_OFFSET + 4]
+            data[FO4_LIGH_DATA_VALUE_OFFSET..FO4_LIGH_DATA_VALUE_OFFSET + 4]
                 .copy_from_slice(&value.to_le_bytes());
             data[FO4_LIGH_DATA_NEAR_CLIP_OFFSET..FO4_LIGH_DATA_NEAR_CLIP_OFFSET + 4]
                 .copy_from_slice(&near_clip.to_le_bytes());
@@ -85,59 +85,31 @@
         };
         for (name, eid, gobo, data, expected_radius, expected_near_clip) in [
             ("keeps_existing_radius", None, None, raw(64, 128, 400, 0.0), 128, None),
-            ("derives_missing_radius_from_value", None, None, raw(68, 0, 400, 0.0), 400, None),
+            // Lumens are not a distance: a missing radius only gets the floor; the
+            // post-copy pass writes FO76's runtime radius.
+            ("floors_missing_radius", None, None, raw(68, 0, 400, 0.0), FO4_LIGH_MIN_RADIUS, None),
+            ("floors_missing_radius_large_value", None, None, raw(68, 0, 250_000, 0.0), FO4_LIGH_MIN_RADIUS, None),
             (
-                "clamps_missing_radius_from_large_value",
-                None,
-                None,
-                raw(68, 0, 250_000, 0.0),
-                FO4_LIGH_MAX_SYNTHETIC_RADIUS,
-                None,
-            ),
-            (
-                "caps_cage_bulb_gobo",
+                "keeps_cage_bulb_gobo_radius_and_raises_near_clip",
                 None,
                 Some(cage_bulb),
                 raw(68, 1200, 0, 1.0),
-                FO4_CAGE_BULB_GOBO_MAX_RADIUS,
+                1200,
                 Some(FO4_CAGE_BULB_GOBO_MIN_NEAR_CLIP),
             ),
+            ("keeps_small_cage_bulb_gobo_near_clip", None, Some(cage_bulb), raw(68, 200, 0, 1.0), 200, Some(FO4_LIGH_MIN_NEAR_CLIP)),
+            ("keeps_omni_sunlight_radius", Some("LGT_SunlightNS_Dim"), None, raw(64, 882, 0, 0.0), 882, None),
             (
-                "caps_omni_sunlight",
-                Some("LGT_SunlightNS_Dim"),
-                None,
-                raw(64, 882, 0, 0.0),
-                FO4_SUNLIGHT_MAX_RADIUS,
-                None,
-            ),
-            ("skips_spot_sunlight", Some("LGT_SunlightSpotNS"), None, raw(64, 882, 0, 0.0), 882, None),
-            (
-                "skips_fake_sunlight",
-                Some("LGT_SMI_FakeSunlight_red_NS"),
-                None,
-                raw(64, 882, 0, 0.0),
-                882,
-                None,
-            ),
-            (
-                "skips_storm_sunlight",
-                Some("Storm_LGT_SunlightNS_Dim_BrownHouse"),
-                None,
-                raw(64, 882, 0, 0.0),
-                882,
-                None,
-            ),
-            (
-                "caps_shadow_caster",
+                "keeps_shadow_caster_radius",
                 None,
                 None,
                 shadow_ligh_data(FO4_LIGH_FLAGS_SHADOW_SPOTLIGHT, 1631),
-                FO4_LIGH_SHADOW_CASTER_MAX_RADIUS,
+                1631,
                 None,
             ),
         ] {
             let derives_radius = ligh_u32(&data, FO4_LIGH_DATA_RADIUS_OFFSET) == 0;
-            let value = ligh_u32(&data, FO76_LIGH_DATA_VALUE_OFFSET);
+            let value = ligh_u32(&data, FO4_LIGH_DATA_VALUE_OFFSET);
             let mut record = ligh_with_data(&interner, data, gobo);
             record.eid = eid.map(|eid| interner.intern(eid));
 
@@ -180,7 +152,7 @@
                     FO4_LIGH_DEFAULT_WEIGHT,
                     "{name}"
                 );
-                // Lumens survive translate for the post-copy `normalize_light_radii` pass.
+                // Lumens survive translate for FO4CS and the post-copy radii pass.
                 assert_eq!(ligh_u32(&bytes, FO4_LIGH_DATA_VALUE_OFFSET), value, "{name}");
             }
         }
@@ -207,13 +179,17 @@
             .unwrap();
         assert_eq!(
             ligh_struct_field(&interner, &record, "Radius"),
-            Some(&FieldValue::Uint(400))
+            Some(&FieldValue::Uint(u64::from(FO4_LIGH_MIN_RADIUS)))
         );
-        // `Value` holds FO76's lumens and is kept for the post-copy radii pass;
-        // `Bytes19` is FO76-only padding with no FO4 meaning.
+        // `Value` holds FO76's lumens and is kept for FO4CS; `Weight` carries the
+        // FO76 high-flag contract; `Bytes19` is FO76-only padding.
         assert_eq!(
             ligh_struct_field(&interner, &record, "Value"),
             Some(&FieldValue::Uint(400))
+        );
+        assert_eq!(
+            ligh_struct_field(&interner, &record, "Weight"),
+            Some(&FieldValue::Float(0.0))
         );
         assert_eq!(ligh_struct_field(&interner, &record, "Bytes19"), None);
         assert_eq!(
@@ -227,14 +203,14 @@
 
         for (name, eid, gobo, data, expected_radius) in [
             (
-                "clamps_missing_radius_from_large_value",
+                "floors_missing_radius_large_value",
                 None,
                 None,
                 vec![("Value", FieldValue::Uint(250_000))],
-                FO4_LIGH_MAX_SYNTHETIC_RADIUS,
+                FO4_LIGH_MIN_RADIUS,
             ),
             (
-                "caps_cage_bulb_gobo",
+                "keeps_cage_bulb_gobo_radius",
                 None,
                 Some("Textures\\Effects\\Gobos\\CageBulbGobo01_d.DDS"),
                 vec![
@@ -242,17 +218,17 @@
                     ("NearClip", FieldValue::Float(1.0)),
                     ("Value", FieldValue::Uint(1200)),
                 ],
-                FO4_CAGE_BULB_GOBO_MAX_RADIUS,
+                1200,
             ),
             (
-                "caps_omni_sunlight",
+                "keeps_omni_sunlight_radius",
                 Some("LGT_SunlightS_NoAtten"),
                 None,
                 vec![("Radius", FieldValue::Uint(882))],
-                FO4_SUNLIGHT_MAX_RADIUS,
+                882,
             ),
             (
-                "caps_shadow_caster",
+                "keeps_shadow_caster_radius",
                 None,
                 None,
                 vec![
@@ -262,7 +238,7 @@
                     ),
                     ("Radius", FieldValue::Uint(1631)),
                 ],
-                FO4_LIGH_SHADOW_CASTER_MAX_RADIUS,
+                1631,
             ),
             (
                 "keeps_non_shadow_radius",
@@ -430,22 +406,123 @@
     }
 
     #[test]
-    fn shadow_caster_radius_cap_table() {
+    fn light_photometric_contract_keeps_lumens_and_moves_fo76_flags_to_weight() {
         let interner = StringInterner::new();
-        for (name, flags, radius, expected) in [
-            ("spot_over_budget", FO4_LIGH_FLAGS_SHADOW_SPOTLIGHT, 20000, FO4_LIGH_SHADOW_CASTER_MAX_RADIUS),
-            ("spot_within_budget", FO4_LIGH_FLAGS_SHADOW_SPOTLIGHT, 700, 700),
-            ("hemisphere", FO4_LIGH_FLAGS_SHADOW_HEMISPHERE, 20000, FO4_LIGH_SHADOW_CASTER_MAX_RADIUS),
-            ("omnidirectional", FO4_LIGH_FLAGS_SHADOW_OMNIDIRECTIONAL, 20000, FO4_LIGH_SHADOW_CASTER_MAX_RADIUS),
-            // NonShadowSpotlight renders no shadow map, so its radius costs nothing.
-            ("non_shadow_spot", 0x0000_4000, 3000, 3000),
+        // (name, FO76 flags, FO4 flag word after masking, Value kept, Weight)
+        for (name, flags, fo4_flags, value, weight) in [
+            ("plain", 0x0000_0009_u32, 0x0000_0009_u32, 1000_u32, 0.0_f32),
+            ("auto_radius", 0x0040_4001, 0x0000_4001, 1000, 1.0),
+            ("cone_normalised", 0x0080_4001, 0x0000_4001, 1000, 2.0),
+            ("bit_24", 0x0100_C001, 0x0000_4001, 1000, 4.0),
+            ("bit_25", 0x0200_0001, 0x0000_0001, 1000, 8.0),
+            ("all_four", 0x03C0_4001, 0x0000_4001, 1000, 15.0),
+            ("carryable_resets_item_stats", 0x0040_0003, 0x0000_0003, 0, FO4_LIGH_DEFAULT_WEIGHT),
         ] {
-            let mut record = ligh_with_data(&interner, shadow_ligh_data(flags, radius), None);
-            Fo76Fo4Hook::clamp_shadow_caster_radius_for_fo4(&interner, &mut record);
+            let mut data = fo76_ligh_data(flags, 10.0, 0.0);
+            data[FO4_LIGH_DATA_VALUE_OFFSET..FO4_LIGH_DATA_VALUE_OFFSET + 4]
+                .copy_from_slice(&1000_u32.to_le_bytes());
+            // FO76's own slot @ +60 is replaced, not merged.
+            data[FO4_LIGH_DATA_WEIGHT_OFFSET..FO4_LIGH_DATA_WEIGHT_OFFSET + 4]
+                .copy_from_slice(&123.5_f32.to_le_bytes());
+            let mut record = ligh_with_data(&interner, data, None);
+
+            Fo76Fo4Hook::normalize_light_data_for_fo4(&interner, &mut record);
+
+            let data = ligh_data_bytes(&record);
+            assert_eq!(ligh_u32(&data, FO4_LIGH_DATA_FLAGS_OFFSET), fo4_flags, "{name}");
+            assert_eq!(ligh_u32(&data, FO4_LIGH_DATA_VALUE_OFFSET), value, "{name}");
             assert_eq!(
-                ligh_u32(&ligh_data_bytes(&record), FO4_LIGH_DATA_RADIUS_OFFSET),
-                expected,
+                ligh_f32(&data, FO4_LIGH_DATA_WEIGHT_OFFSET).to_bits(),
+                weight.to_bits(),
                 "{name}"
             );
+        }
+
+        let mut record = make_record("LIGH", &interner);
+        push_field(
+            &mut record,
+            "DATA",
+            FieldValue::Struct(vec![
+                (interner.intern("Flags"), FieldValue::Uint(0x00C0_4001)),
+                (interner.intern("Value"), FieldValue::Uint(1000)),
+                (interner.intern("Weight"), FieldValue::Float(123.5)),
+            ]),
+        );
+        Fo76Fo4Hook::normalize_light_data_for_fo4(&interner, &mut record);
+        assert_eq!(
+            ligh_struct_field(&interner, &record, "Flags"),
+            Some(&FieldValue::Uint(0x0000_4001))
+        );
+        assert_eq!(
+            ligh_struct_field(&interner, &record, "Value"),
+            Some(&FieldValue::Uint(1000))
+        );
+        assert_eq!(
+            ligh_struct_field(&interner, &record, "Weight"),
+            Some(&FieldValue::Float(3.0))
+        );
+    }
+
+    #[test]
+    fn light_radius_has_no_shadow_or_sunlight_cap() {
+        let interner = StringInterner::new();
+        for (name, eid, flags, radius) in [
+            ("shadow_spot", None, FO4_LIGH_FLAGS_SHADOW_SPOTLIGHT, 20000),
+            ("shadow_hemisphere", None, 0x0000_0800, 1631),
+            ("shadow_omni", None, 0x0000_1000, 1631),
+            ("omni_sunlight", Some("LGT_SunlightNS_Dim"), 0, 882),
+        ] {
+            let mut record = ligh_with_data(&interner, shadow_ligh_data(flags, radius), None);
+            record.eid = eid.map(|eid| interner.intern(eid));
+            Fo76Fo4Hook
+                .post_translate(&mut make_ctx(&interner), &mut record)
+                .unwrap();
+            assert_eq!(
+                ligh_u32(&ligh_data_bytes(&record), FO4_LIGH_DATA_RADIUS_OFFSET),
+                radius,
+                "{name}"
+            );
+        }
+    }
+
+    /// SeventySix.esm DATA, byte for byte. A stored-radius fill authored well past its
+    /// 5-lux edge must keep that radius with a dimmer under 1; an auto-radius lamp gets
+    /// its 5-lux radius at dimmer 1.
+    #[test]
+    fn real_fo76_lights_keep_their_photometric_radius_and_dimmer() {
+        use crate::fixups::fo76_light_model::{clamp_radius, fo76_flags_from_contract_weight, Fo76Light};
+        let interner = StringInterner::new();
+        for (name, hex, radius, dimmer) in [
+            (
+                "LGT_76_DinerFillWarm01NS",
+                "FFFFFFFF49020000FFF5D900018000000000803F0000B4420000803F000000000000000000000000000000000000000000000000581B00004C040000000000000000000000000000",
+                585_u32,
+                0.250_6_f32,
+            ),
+            (
+                "New_0900lm_2700K_60w_WarmIncandescent01_NS",
+                "FFFFFFFF08010000FFA65700018040000000803F0000B4420000803F0000000000000000000000000000000000000000000000008C0A000084030000000000000000000000000000",
+                265,
+                1.0,
+            ),
+        ] {
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            let mut record = ligh_with_data(&interner, bytes, None);
+            Fo76Fo4Hook::normalize_light_data_for_fo4(&interner, &mut record);
+            let data = ligh_data_bytes(&record);
+
+            let light = Fo76Light {
+                lumens: ligh_u32(&data, FO4_LIGH_DATA_VALUE_OFFSET),
+                flags: ligh_u32(&data, FO4_LIGH_DATA_FLAGS_OFFSET)
+                    | fo76_flags_from_contract_weight(ligh_f32(&data, FO4_LIGH_DATA_WEIGHT_OFFSET)),
+                fov_degrees: ligh_f32(&data, 20),
+            };
+            let written = clamp_radius(light.runtime_radius(ligh_u32(&data, FO4_LIGH_DATA_RADIUS_OFFSET)));
+            assert_eq!(written, radius, "{name}: radius");
+            let got = light.base_dimmer(written);
+            assert!((got - dimmer).abs() < 1e-3, "{name}: FNAM {got}");
         }
     }

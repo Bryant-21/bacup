@@ -54,6 +54,7 @@ Function Fragment_Stage_0070_Item_00()
 EndFunction
 
 Function Fragment_Stage_0080_Item_00()
+    ; TODO(recipes): FO76 teaches co_MoM_VoiceofSet_44 at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveCompleted(70)
     SetObjectiveDisplayed(80)
 EndFunction

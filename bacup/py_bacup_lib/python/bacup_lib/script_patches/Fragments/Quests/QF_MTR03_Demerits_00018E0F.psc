@@ -1,0 +1,16 @@
+Function Fragment_Stage_0010_Item_00()
+    SetObjectiveDisplayed(10, True)
+EndFunction
+
+Function Fragment_Stage_0020_Item_00()
+    SetObjectiveDisplayed(20, True)
+EndFunction
+
+Function Fragment_Stage_0090_Item_00()
+    SetObjectiveCompleted(10, True)
+EndFunction
+
+Function Fragment_Stage_0100_Item_00()
+    CompleteAllObjectives()
+    Stop()
+EndFunction

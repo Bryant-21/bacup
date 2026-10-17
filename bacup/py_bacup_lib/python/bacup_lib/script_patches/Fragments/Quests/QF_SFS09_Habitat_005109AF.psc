@@ -373,6 +373,7 @@ EndFunction
 
 ; Success: the alpha fell or the final wave's objective timer ran out with a friendly creature alive.
 Function Fragment_Stage_9000_Item_00()
+    ; TODO(recipes): FO76 teaches ArktosBackpackRecipe at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     If IsStageDone(9990) || IsStageDone(9991) || IsStageDone(9992)
         Return
     EndIf

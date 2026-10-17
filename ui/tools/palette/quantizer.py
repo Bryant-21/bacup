@@ -40,7 +40,7 @@ class ImageQuantizerTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##quantizer"):
-            _, clicked = draw_path_row("Image", self._image_path)
+            self._image_path, clicked = draw_path_row("Image", self._image_path)
             if clicked:
                 path = pick_file(
                     "Select image",
@@ -49,7 +49,7 @@ class ImageQuantizerTool(BaseTool):
                 if path:
                     self._image_path = path
 
-            _, clicked = draw_path_row("Output", self._output_path)
+            self._output_path, clicked = draw_path_row("Output", self._output_path)
             if clicked:
                 path = pick_save_file(
                     "Save quantized image",

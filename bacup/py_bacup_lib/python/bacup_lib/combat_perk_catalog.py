@@ -7,10 +7,13 @@ from pathlib import Path
 from typing import Protocol
 
 from bacup_lib.esp_native_runtime import load_esp_native
+from bacup_lib.plugin_catalog import write_document
 from bacup_lib.reputation_catalog import NativeReader, NativeResolver, plugin_masters
 
 SCHEMA_VERSION = 1
-OUTPUT = Path("F4SE/Plugins/B21_TalesFromAppalachia/combat_perks.json")
+FEATURE = "CombatPerks"
+SETTING_KEYS = ("source", "output_plugin", "available", "damage_ownership", "runtime_supported", "stack_contract",
+                "missing_converted", "missing_source")
 
 CARDS = (
     ("bullet_storm_1", "HeavyGunner01", 1),
@@ -142,6 +145,11 @@ def build_catalog(reader: Reader, resolver: Resolver, output_plugin: str,
     }
 
 
+def to_document(catalog: dict) -> dict:
+    settings = {key: catalog[key] for key in SETTING_KEYS}
+    return {"version": catalog["schema_version"], "settings": settings, "cards": catalog["cards"], "items": catalog["items"]}
+
+
 def emit_combat_perk_catalog(source_plugin: Path, converted_plugin: Path, output_mod: Path,
                              *, source_sha256: str | None = None) -> dict:
     source_plugin, converted_plugin, output_mod = map(Path, (source_plugin, converted_plugin, output_mod))
@@ -165,7 +173,5 @@ def emit_combat_perk_catalog(source_plugin: Path, converted_plugin: Path, output
     finally:
         for handle in reversed(handles):
             native.plugin_handle_close(handle)
-    destination = output_mod / OUTPUT
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    write_document(FEATURE, converted_plugin.name, to_document(catalog), output_mod)
     return catalog

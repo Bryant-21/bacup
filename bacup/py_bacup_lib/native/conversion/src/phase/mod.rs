@@ -22,6 +22,7 @@ pub mod challenges;
 pub mod copy_materialized_facegen;
 pub mod copy_textures;
 pub mod creature_corpus;
+pub(crate) mod creature_rider;
 pub mod creatures;
 pub mod drivers;
 pub mod emit_modt_manifest;
@@ -32,12 +33,15 @@ pub mod final_plugin;
 pub mod fishing_catalog;
 pub mod fixups_v2;
 pub mod fnv_legacy;
+pub mod fnv_radiation_runtime;
 pub mod gamebryo_nifs;
 pub mod gold_bullion;
 pub mod graft_terrain;
 pub mod havok;
 pub mod havok_postprocess;
+pub mod imagespace_data;
 pub mod interior_cells;
+pub mod leveled_catalog;
 pub mod lod_assets;
 pub mod lod_paths;
 pub mod materials;
@@ -47,18 +51,22 @@ pub mod mswp_material_paths;
 pub mod mvp_creatures;
 pub mod mvp_melee;
 pub mod nifs;
+pub mod npc_stats_catalog;
 pub mod objective_areas;
 pub mod perk_cards;
 pub mod pipboy2000_nifs;
+pub mod pipboy_map;
 pub mod progress;
 pub mod projected_navi;
 pub mod projected_navmeshes;
 pub mod rebuild_cell_offsets;
 pub mod record_translation;
+pub mod reflection_volume_data;
 pub mod regenerate_modt;
 pub mod relocated_base_material_swaps;
 pub mod scaffold;
 pub mod skeleton;
+pub mod skyrim_magic_runtime;
 pub mod sounds;
 pub mod starfield_cells;
 pub mod starfield_materials;
@@ -74,6 +82,7 @@ pub mod textures_v2;
 pub mod translate;
 pub mod translate_v2;
 pub mod walk;
+pub mod weapon_model_swaps;
 pub mod wwise_audio;
 
 // ---------------------------------------------------------------------------
@@ -263,12 +272,21 @@ impl PhaseRegistry {
 
 fn build_registry() -> PhaseRegistry {
     let mut inner: HashMap<&'static str, Box<dyn Phase>> = HashMap::new();
+    inner.insert("finalize_fo76_maps", Box::new(pipboy_map::PipboyMapPhase));
 
     inner.insert("translate", Box::new(translate::TranslatePhase));
     inner.insert("translate_v2", Box::new(translate_v2::TranslateV2Phase));
     inner.insert(
         "emit_fishing_catalog",
         Box::new(fishing_catalog::FishingCatalogPhase),
+    );
+    inner.insert(
+        "emit_leveled_catalog",
+        Box::new(leveled_catalog::LeveledCatalogPhase),
+    );
+    inner.insert(
+        "emit_npc_stats_catalog",
+        Box::new(npc_stats_catalog::NpcStatsCatalogPhase),
     );
     inner.insert(
         "emit_challenge_catalog",
@@ -280,8 +298,20 @@ fn build_registry() -> PhaseRegistry {
     );
     inner.insert("emit_perk_cards", Box::new(perk_cards::PerkCardsPhase));
     inner.insert(
+        "emit_weapon_model_swaps",
+        Box::new(weapon_model_swaps::WeaponModelSwapsPhase),
+    );
+    inner.insert(
         "emit_gold_bullion",
         Box::new(gold_bullion::GoldBullionPhase),
+    );
+    inner.insert(
+        "emit_imagespace_data",
+        Box::new(imagespace_data::ImagespaceDataPhase),
+    );
+    inner.insert(
+        "emit_reflection_volume_data",
+        Box::new(reflection_volume_data::ReflectionVolumeDataPhase),
     );
     inner.insert(
         "emit_objective_areas",
@@ -292,7 +322,7 @@ fn build_registry() -> PhaseRegistry {
         Box::new(story_manager::EmitStoryManagerSubsetPhase),
     );
     inner.insert("fixups_v2", Box::new(fixups_v2::FixupsV2Phase));
-    inner.insert("fnv_legacy", source_free(fnv_legacy::FnvLegacyPhase));
+    inner.insert("fnv_legacy", Box::new(fnv_legacy::FnvLegacyPhase));
     inner.insert(
         "apply_registry_mappings",
         source_free(apply_registry_mappings::ApplyRegistryMappingsPhase),
@@ -368,6 +398,10 @@ fn build_registry() -> PhaseRegistry {
         Box::new(creature_corpus::PlanCreatureDependenciesPhase),
     );
     inner.insert(
+        "plan_starfield_weapons",
+        Box::new(animations::starfield_weapons::PlanStarfieldWeaponsPhase),
+    );
+    inner.insert(
         "execute_creature_corpus",
         Box::new(creature_corpus::ExecuteCreatureCorpusPhase),
     );
@@ -416,6 +450,10 @@ fn build_registry() -> PhaseRegistry {
     );
     inner.insert("convert_havok", source_free(havok::ConvertHavokPhase));
     inner.insert(
+        "convert_scripts",
+        source_free(crate::script_conversion::ConvertScriptsPhase),
+    );
+    inner.insert(
         "postprocess_havok_assets",
         source_free(havok_postprocess::PostprocessHavokAssetsPhase),
     );
@@ -455,6 +493,18 @@ fn build_registry() -> PhaseRegistry {
         "convert_animations",
         source_free(animations::ConvertAnimationsPhase),
     );
+    inner.insert(
+        "convert_legacy_weapon_animations",
+        Box::new(animations::legacy_weapons::ConvertLegacyWeaponAnimationsPhase),
+    );
+    inner.insert(
+        "convert_skyrim_weapon_animations",
+        Box::new(animations::skyrim_weapons::phase::ConvertSkyrimWeaponAnimationsPhase),
+    );
+    inner.insert(
+        "convert_legacy_weapon_parts",
+        Box::new(animations::weapon_parts::ConvertLegacyWeaponPartsPhase),
+    );
 
     inner.insert(
         "convert_skeleton",
@@ -463,6 +513,14 @@ fn build_registry() -> PhaseRegistry {
 
     inner.insert("scaffold", source_free(scaffold::ScaffoldPhase));
     inner.insert("build_esp", source_free(build_esp::BuildEspPhase));
+    inner.insert(
+        "prepare_skyrim_magic_runtime",
+        Box::new(skyrim_magic_runtime::PrepareSkyrimMagicRuntimePhase),
+    );
+    inner.insert(
+        "prepare_fnv_radiation_runtime",
+        Box::new(fnv_radiation_runtime::PrepareFnvRadiationRuntimePhase),
+    );
 
     // Post-asset MODT (re)population. Runs after build_esp.
     inner.insert(
@@ -740,6 +798,7 @@ pub(crate) mod dispatcher_tests {
             "wwise_audio",
             "audio_rewire",
             "starfield_worldspace_gate",
+            "plan_starfield_weapons",
         ] {
             assert!(names.contains(&name), "{name} not registered");
         }
@@ -748,6 +807,7 @@ pub(crate) mod dispatcher_tests {
             "starfield_cells",
             "wwise_audio",
             "audio_rewire",
+            "plan_starfield_weapons",
         ] {
             assert!(
                 registry().get(name).unwrap().requires_source_plugin(),
@@ -769,7 +829,13 @@ pub(crate) mod dispatcher_tests {
         assert!(!names.contains(&"fixups"));
         assert!(names.contains(&"fixups_v2"));
 
-        for name in ["translate_v2", "walk", "convert_terrain"] {
+        for name in [
+            "translate_v2",
+            "walk",
+            "convert_terrain",
+            "fnv_legacy",
+            "starfield_worldspace_gate",
+        ] {
             assert!(
                 registry().get(name).unwrap().requires_source_plugin(),
                 "{name}"

@@ -19,6 +19,8 @@ pub struct CreatureManifest {
     pub controller: CreatureControllerDecl,
     pub ragdoll: RagdollDisposition,
     pub clips: Vec<ClipDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub property_sequences: Vec<CreaturePropertySequence>,
     pub idle_clip: String,
     pub capsule: Capsule,
     pub paths: ScaffoldPaths,
@@ -229,6 +231,17 @@ pub struct ClipDecl {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CreaturePropertySequence {
+    pub clip_name: String,
+    pub crop_start_bits: u32,
+    pub crop_end_bits: u32,
+    pub looping: bool,
+    // Each name is instantiated per graph clock so active uses never share a NIF timer.
+    pub sequence_names: Vec<String>,
+    pub source_float_slots: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ClipBinding {
     pub skeleton_path: String,
     /// Exact source-format `hkaAnimationBinding.originalSkeletonName`.
@@ -334,9 +347,17 @@ pub enum CreatureGraphTemplate {
 #[serde(rename_all = "snake_case")]
 pub enum CreatureClipRole {
     Idle,
+    WeaponAim,
     GroundForward,
     TurnLeft90,
     TurnRight90,
+    TurnLeft,
+    TurnRight,
+    Hurt,
+    Death,
+    GetUp,
+    ScriptedAction,
+    ScriptedLoop,
     MeleeAttack,
     ProjectileAttack,
     SwimIdle,
@@ -351,13 +372,14 @@ pub enum CreatureClipRole {
 
 impl CreatureClipRole {
     fn allows_multiple(self) -> bool {
-        matches!(self, Self::MeleeAttack | Self::ProjectileAttack)
+        matches!(self, Self::MeleeAttack | Self::ProjectileAttack | Self::ScriptedAction | Self::ScriptedLoop | Self::WeaponAim)
     }
 
     fn expects_looping(self) -> bool {
         matches!(
             self,
             Self::Idle
+                | Self::WeaponAim
                 | Self::GroundForward
                 | Self::SwimIdle
                 | Self::SwimForward
@@ -365,12 +387,17 @@ impl CreatureClipRole {
                 | Self::FlyForward
                 | Self::StationaryIdle
                 | Self::ContinuousAttackLoop
+                | Self::TurnLeft
+                | Self::TurnRight
+                | Self::ScriptedLoop
         )
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CapabilityClipRole {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equipment_index: Option<u8>,
     pub role: CreatureClipRole,
     pub state_name: String,
     pub clip_name: String,
@@ -387,6 +414,50 @@ pub struct CapabilityClipRole {
 pub enum CapabilityRoleGenerator {
     #[default]
     Single,
+    SourceAim {
+        bank_index: i32,
+        attack_events: Vec<String>,
+        aim_children: Vec<CapabilityBlenderChild>,
+    },
+    SourceAttack {
+        contract: SourceAttackContract,
+        generator: Box<CapabilityRoleGenerator>,
+    },
+    SourceMovement {
+        clips: Vec<SourceMovementClip>,
+        generator: Box<CapabilityRoleGenerator>,
+    },
+    SourceIdle {
+        source_group: u8,
+        #[serde(default)]
+        overlay: Option<SourceIdleOverlay>,
+        duration_bits: u32,
+        loop_start_bits: u32,
+        loop_end_bits: u32,
+        #[serde(default)]
+        has_loop_markers: bool,
+        looping_min: u8,
+        looping_max: u8,
+        complete_event: String,
+    },
+    ThrownAttack,
+    MountInteraction,
+    MountSynchronization {
+        state_index: i32,
+        generator: Box<CapabilityRoleGenerator>,
+        speed_sampler_source: CapabilityGeneratorSourceObject,
+        speed_sampler_bindings: Vec<CapabilityGeneratorVariableBinding>,
+        turn_damping: CapabilityModifierNode,
+    },
+    ContinuousAttackPhase {
+        phase: ContinuousAttackPhase,
+        start_state: Option<String>,
+        loop_state: String,
+        stop_state: Option<String>,
+    },
+    Locomotion {
+        directions: Vec<CapabilityLocomotionDirection>,
+    },
     ManualSelector {
         children: Vec<String>,
         selected_generator_index: i16,
@@ -409,20 +480,145 @@ pub enum CapabilityRoleGenerator {
     Tree {
         root: CapabilityGeneratorNode,
     },
+    SourceCasting {
+        root: CapabilityGeneratorNode,
+        stop_events: Vec<String>,
+        #[serde(default)]
+        observations: Vec<SourceCastingObservation>,
+        #[serde(default)]
+        enter_events: Vec<CapabilityGeneratorEventProperty>,
+        #[serde(default)]
+        exit_events: Vec<CapabilityGeneratorEventProperty>,
+    },
+    SourceRecovery {
+        graph: super::recovery::SourceRecoveryGraph,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SourceCastingObservation {
+    pub source_behavior_path: String,
+    pub source_state_object_index: u32,
+    pub target_event_name: String,
+    pub release_clip_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SourceIdleOverlay {
+    pub source_group: u8,
+    pub transform_priorities: BTreeMap<String, u8>,
+    pub base_priorities: BTreeMap<String, BTreeMap<String, u8>>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SourceAttackContract {
+    pub gate_variable: String,
+    pub group: i32,
+    pub opening_group: i32,
+    #[serde(default)]
+    pub opening_variable: Option<String>,
+    pub window: Option<SourceAttackWindow>,
+    #[serde(default)]
+    pub aim_children: Vec<CapabilityBlenderChild>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SourceAttackWindow {
+    pub start_bits: u32,
+    pub end_bits: u32,
+    pub next_group: i32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SourceMovementClip {
+    pub clip_name: String,
+    pub source_order: u32,
+    pub keys: Vec<SourceMovementKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SourceMovementKey {
+    pub time_bits: u32,
+    pub group: i32,
+}
+
+impl SourceAttackContract {
+    pub(crate) fn window_events(state: &str) -> [String; 2] {
+        [format!("B21_{state}_ComboOpen"), format!("B21_{state}_ComboClose")]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuousAttackPhase {
+    Start,
+    Loop,
+    Stop,
 }
 
 impl CapabilityRoleGenerator {
+    pub(crate) fn base_generator(&self) -> &Self {
+        match self {
+            Self::SourceAttack { generator, .. } | Self::SourceMovement { generator, .. } => generator.base_generator(),
+            _ => self,
+        }
+    }
+
+    pub(crate) fn source_attack(&self) -> Option<&SourceAttackContract> {
+        match self {
+            Self::SourceAttack { contract, .. } => Some(contract),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn source_movement(&self) -> &[SourceMovementClip] {
+        match self {
+            Self::SourceMovement { clips, .. } => clips,
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn is_attack_entry(&self) -> bool {
+        match self.base_generator() {
+            Self::ContinuousAttackPhase { phase, start_state, .. } => {
+                *phase == ContinuousAttackPhase::Start
+                    || (*phase == ContinuousAttackPhase::Loop && start_state.is_none())
+            }
+            _ => true,
+        }
+    }
+
     pub(crate) fn clip_names<'a>(&'a self, anchor: &'a str) -> Vec<&'a str> {
         match self {
-            Self::Single => vec![anchor],
+            Self::SourceAim { aim_children, .. } => aim_children.iter().map(|child| child.clip_name.as_str()).collect(),
+            Self::SourceMovement { generator, .. } => generator.clip_names(anchor),
+            Self::SourceAttack { contract, generator } => if contract.aim_children.is_empty() { generator.clip_names(anchor) } else { contract.aim_children.iter().map(|child| child.clip_name.as_str()).collect() },
+            Self::MountSynchronization { generator, .. } => generator.clip_names(anchor),
+            Self::Single | Self::ThrownAttack | Self::MountInteraction | Self::ContinuousAttackPhase { .. } | Self::SourceIdle { .. } => vec![anchor],
+            Self::Locomotion { directions } => directions
+                .iter()
+                .flat_map(|direction| {
+                    direction
+                        .speeds
+                        .iter()
+                        .map(|speed| speed.clip_name.as_str())
+                })
+                .collect(),
             Self::ManualSelector { children, .. } => children.iter().map(String::as_str).collect(),
             Self::Blender { children, .. } => children
                 .iter()
                 .map(|child| child.clip_name.as_str())
                 .collect(),
-            Self::Tree { root } => root.clip_names(),
+            Self::Tree { root } | Self::SourceCasting { root, .. } => root.clip_names(),
+            Self::SourceRecovery { graph } => graph.clip_names(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CapabilityLocomotionDirection {
+    pub direction_bits: u32,
+    pub speeds: Vec<CapabilityBlenderChild>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -507,7 +703,7 @@ pub struct CapabilityGeneratorTransition {
     pub trigger_interval: CapabilityGeneratorInterval,
     pub initiate_interval: CapabilityGeneratorInterval,
     pub transition_effect: Option<CapabilityGeneratorBlendingTransitionEffect>,
-    pub condition: Option<CapabilityGeneratorSourceObject>,
+    pub condition: Option<CapabilityGeneratorExpressionCondition>,
     pub event: CapabilityGeneratorEventRef,
     pub to_state_id: i32,
     pub from_nested_state_id: i32,
@@ -518,7 +714,7 @@ pub struct CapabilityGeneratorTransition {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CapabilityGeneratorTransitionArray {
-    pub source: CapabilityGeneratorSourceObject,
+    pub source: CapabilityGeneratorAnonymousSourceObject,
     pub has_eventless_transitions: Option<bool>,
     pub has_time_bounded_transitions: Option<bool>,
     pub transitions: Vec<CapabilityGeneratorTransition>,
@@ -542,9 +738,32 @@ pub struct CapabilityGeneratorState {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CapabilityGeneratorBlenderChild {
     pub generator: CapabilityGeneratorNode,
-    pub bone_weights: Option<CapabilityGeneratorSourceObject>,
+    pub bone_weights: Option<CapabilityGeneratorBoneWeights>,
     pub weight_bits: u32,
     pub world_from_model_weight_bits: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CapabilityGeneratorBoneWeights {
+    pub source: CapabilityGeneratorAnonymousSourceObject,
+    pub bindings: Vec<CapabilityGeneratorVariableBinding>,
+    pub weights_bits: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CapabilityGeneratorExpressionCondition {
+    pub source: CapabilityGeneratorAnonymousSourceObject,
+    pub expression: String,
+    pub referenced_variables: Vec<CapabilityGeneratorExpressionVariableReference>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CapabilityGeneratorClipTrigger {
+    pub local_time_bits: u32,
+    pub event: CapabilityGeneratorEventProperty,
+    pub relative_to_end_of_clip: bool,
+    pub acyclic: bool,
+    pub is_annotation: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -573,6 +792,14 @@ pub struct CapabilityGeneratorExpressionArray {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CapabilityModifierNode {
+    IsActive {
+        source: CapabilityGeneratorSourceObject,
+        bindings: Vec<CapabilityGeneratorVariableBinding>,
+        user_data: u64,
+        enable: bool,
+        active: [bool; 5],
+        invert: [bool; 5],
+    },
     List {
         source: CapabilityGeneratorSourceObject,
         bindings: Vec<CapabilityGeneratorVariableBinding>,
@@ -611,6 +838,34 @@ pub enum CapabilityModifierNode {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CapabilityGeneratorNode {
+    SourceClip {
+        source: CapabilityGeneratorSourceObject,
+        clip_name: String,
+        user_data: u64,
+        bindings: Vec<CapabilityGeneratorVariableBinding>,
+        triggers: Vec<CapabilityGeneratorClipTrigger>,
+        mode: i32,
+        flags: u32,
+        crop_start_bits: u32,
+        crop_end_bits: u32,
+        start_time_bits: u32,
+        playback_speed_bits: u32,
+        enforced_duration_bits: u32,
+        user_controlled_time_fraction_bits: u32,
+    },
+    CyclicBlendTransition {
+        source: CapabilityGeneratorSourceObject,
+        bindings: Vec<CapabilityGeneratorVariableBinding>,
+        user_data: u64,
+        generator: Box<CapabilityGeneratorNode>,
+        event_to_freeze_blend_value: CapabilityGeneratorEventProperty,
+        event_to_cross_blend: CapabilityGeneratorEventProperty,
+        transition_out_event: CapabilityGeneratorEventProperty,
+        transition_in_event: CapabilityGeneratorEventProperty,
+        f_blend_parameter_bits: u32,
+        f_transition_duration_bits: u32,
+        e_blend_curve: i32,
+    },
     Clip {
         source: CapabilityGeneratorSourceObject,
         clip_name: String,
@@ -664,7 +919,7 @@ pub enum CapabilityGeneratorNode {
 }
 
 impl CapabilityGeneratorNode {
-    fn clip_names<'a>(&'a self) -> Vec<&'a str> {
+    pub(crate) fn clip_names<'a>(&'a self) -> Vec<&'a str> {
         let mut names = Vec::new();
         self.collect_clip_names(&mut names);
         names
@@ -672,7 +927,7 @@ impl CapabilityGeneratorNode {
 
     fn collect_clip_names<'a>(&'a self, names: &mut Vec<&'a str>) {
         match self {
-            Self::Clip { clip_name, .. } => names.push(clip_name),
+            Self::Clip { clip_name, .. } | Self::SourceClip { clip_name, .. } => names.push(clip_name),
             Self::ManualSelector { children, .. } => {
                 for child in children {
                     child.collect_clip_names(names);
@@ -688,7 +943,7 @@ impl CapabilityGeneratorNode {
                     state.generator.collect_clip_names(names);
                 }
             }
-            Self::ModifierGenerator { generator, .. } => {
+            Self::ModifierGenerator { generator, .. } | Self::CyclicBlendTransition { generator, .. } => {
                 generator.collect_clip_names(names);
             }
         }
@@ -710,6 +965,18 @@ pub struct CapabilityCandidateAttackBinding {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CapabilitySourceInertAttack {
+    pub source_identity: SourceCreatureIdentity,
+    pub event: String,
+    pub inspected_behavior_paths: Vec<String>,
+    pub inspected_event_name_count: usize,
+    #[serde(default)]
+    pub source_event_declared: bool,
+    #[serde(default)]
+    pub inspected_event_reference_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct OverlayClipRole {
     pub name: String,
     pub clip_name: String,
@@ -720,13 +987,26 @@ pub struct OverlayClipRole {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CapabilityGraphManifest {
+    #[serde(default)]
+    pub source_channels: Vec<SourceAnimationClip>,
     pub template: CreatureGraphTemplate,
     pub roles: Vec<CapabilityClipRole>,
     #[serde(default)]
     pub candidate_attack_bindings: Vec<CapabilityCandidateAttackBinding>,
+    #[serde(default)]
+    pub source_inert_attack_receipts: Vec<CapabilitySourceInertAttack>,
     pub idle_event: String,
     pub explicit_events: Vec<EventDecl>,
     pub overlays: Vec<OverlayClipRole>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SourceAnimationClip {
+    pub clip_name: String,
+    pub channel: u8,
+    #[serde(default)]
+    pub accumulation_root: Option<String>,
+    pub transform_priorities: BTreeMap<String, u8>,
 }
 
 impl CapabilityGraphManifest {
@@ -734,6 +1014,7 @@ impl CapabilityGraphManifest {
         let role =
             |role, state_name: &str, clip_name: &str, trigger_event: Option<&str>, motion| {
                 CapabilityClipRole {
+                    equipment_index: None,
                     role,
                     state_name: state_name.to_string(),
                     clip_name: clip_name.to_string(),
@@ -744,6 +1025,7 @@ impl CapabilityGraphManifest {
                 }
             };
         Self {
+            source_channels: Vec::new(),
             template: CreatureGraphTemplate::GroundMelee,
             roles: vec![
                 role(
@@ -783,6 +1065,7 @@ impl CapabilityGraphManifest {
                 ),
             ],
             candidate_attack_bindings: Vec::new(),
+            source_inert_attack_receipts: Vec::new(),
             idle_event: "Idle".to_string(),
             explicit_events: vec![
                 EventDecl {
@@ -955,6 +1238,7 @@ impl Error for ValidationErrors {}
 impl CreatureManifest {
     pub fn validate(&self) -> Result<(), ValidationErrors> {
         let mut errors = ValidationErrors::default();
+        super::property_sequences::validate(self, &mut errors);
 
         validate_identifier("creature_name", &self.creature_name, &mut errors);
         validate_path(
@@ -1259,13 +1543,6 @@ impl CreatureManifest {
             errors.0.extend(manifest_errors.0);
         }
 
-        if graph.roles.len() > 100 {
-            errors.push(
-                "graph_role_capacity",
-                "the deterministic scaffold currently represents at most 100 core states",
-            );
-        }
-
         let mut explicit_events = BTreeMap::new();
         for event in &graph.explicit_events {
             validate_name("capability.explicit_event", &event.name, &mut errors);
@@ -1316,6 +1593,18 @@ impl CreatureManifest {
 
         let mut candidate_attack_events: BTreeMap<String, BTreeSet<CreatureClipRole>> =
             BTreeMap::new();
+        let mut source_inert_keys = BTreeSet::new();
+        for receipt in &graph.source_inert_attack_receipts {
+            let key = (receipt.source_identity.stable_key(), receipt.event.to_ascii_lowercase());
+            if !receipt.source_identity.is_valid() || receipt.event.is_empty()
+                || receipt.inspected_behavior_paths.is_empty() || receipt.inspected_event_name_count == 0
+                || !source_inert_keys.insert(key.clone())
+                || graph.candidate_attack_bindings.iter().any(|binding| {
+                    binding.source_identity.stable_key() == key.0 && binding.event.eq_ignore_ascii_case(&receipt.event)
+                }) {
+                errors.push("source_inert_attack_receipt", "source-inert attacks require unique source identity, event-table inspection proof, and no executable binding");
+            }
+        }
         let mut candidate_attack_keys = BTreeSet::new();
         let mut previous_binding_key: Option<(String, String, CreatureClipRole)> = None;
         for binding in &graph.candidate_attack_bindings {
@@ -1392,11 +1681,15 @@ impl CreatureManifest {
         }
 
         let mut state_names = BTreeSet::new();
+        validate_continuous_attack_phases(graph, &mut errors);
         let mut clip_names = BTreeSet::new();
         let mut trigger_events = BTreeSet::from([graph.idle_event.to_ascii_lowercase()]);
         let mut role_event_roles = BTreeMap::new();
         let mut singleton_roles = BTreeSet::new();
         for role in &graph.roles {
+            if role.equipment_index.is_some_and(|index| index > 4) {
+                errors.push("equipment_index", "ranged equipment indexes must be in 0..=4");
+            }
             validate_identifier("capability.state_name", &role.state_name, &mut errors);
             validate_identifier("capability.clip_name", &role.clip_name, &mut errors);
             if !state_names.insert(role.state_name.to_ascii_lowercase()) {
@@ -1406,6 +1699,16 @@ impl CreatureManifest {
                 );
             }
             validate_role_generator(self, role, &mut clip_names, &mut errors);
+            if matches!(role.generator.base_generator(), CapabilityRoleGenerator::ThrownAttack) {
+                if role.role != CreatureClipRole::ProjectileAttack || role.equipment_index.is_none() {
+                    errors.push("thrown_attack_equipment", "thrown attacks require a projectile role and exact equipment index");
+                }
+                if let Some(index) = role.equipment_index {
+                    for event in ["weaponAttach".to_string(), "weaponDetach".to_string(), "weaponFire".to_string(), format!("attackState{index}")] {
+                        validate_capability_event("thrown attack", &event, EventUsage::Generic, &explicit_events, &mut errors);
+                    }
+                }
+            }
             validate_motion_policy(
                 &format!("capability role {:?}", role.role),
                 role.motion,
@@ -1556,6 +1859,18 @@ impl CreatureManifest {
         }
 
         validate_template_roles(graph, &mut errors);
+        if let Some(death) = graph.roles.iter().find(|role| role.role == CreatureClipRole::Death)
+            && matches!(self.ragdoll, RagdollDisposition::SourceOwned { .. })
+        {
+            validate_capability_event("death animation completion", "B21_DeathAnimationComplete", EventUsage::Generic, &explicit_events, &mut errors);
+            let generator = match &death.generator {
+                CapabilityRoleGenerator::MountSynchronization { generator, .. } => generator.as_ref(),
+                generator => generator,
+            };
+            if !matches!(generator, CapabilityRoleGenerator::Single) {
+                errors.push("death_completion_generator", "ragdoll handoff requires a single source death clip");
+            }
+        }
 
         for overlay in &graph.overlays {
             validate_identifier("capability.overlay.name", &overlay.name, &mut errors);
@@ -2009,6 +2324,35 @@ fn validate_controller(controller: CreatureControllerDecl, errors: &mut Validati
     }
 }
 
+fn validate_continuous_attack_phases(graph: &CapabilityGraphManifest, errors: &mut ValidationErrors) {
+    for role in &graph.roles {
+        let CapabilityRoleGenerator::ContinuousAttackPhase { phase: _, start_state, loop_state, stop_state } = role.generator.base_generator() else { continue; };
+        for name in ["attackStop", "attackRelease"] {
+            if !graph.explicit_events.iter().any(|event| event.name == name && event.usage == EventUsage::Generic) {
+                errors.push("continuous_attack_stop", format!("continuous weapon phases require an explicit generic {name} event"));
+            }
+        }
+        for (phase, state) in [
+            (ContinuousAttackPhase::Start, start_state.as_deref()),
+            (ContinuousAttackPhase::Loop, Some(loop_state.as_str())),
+            (ContinuousAttackPhase::Stop, stop_state.as_deref()),
+        ] {
+            let Some(state) = state else { continue; };
+            let expected = CapabilityRoleGenerator::ContinuousAttackPhase {
+                phase, start_state: start_state.clone(), loop_state: loop_state.clone(), stop_state: stop_state.clone(),
+            };
+            if graph.roles.iter().filter(|candidate| candidate.state_name == state && candidate.generator.base_generator() == &expected).count() != 1 {
+                errors.push("continuous_attack_phase_link", format!("automatic attack state {:?} has no unique matching {phase:?} phase {state:?}", role.state_name));
+            }
+        }
+        if !role.generator.is_attack_entry() && graph.candidate_attack_bindings.iter().any(|binding| {
+            role.trigger_event.as_deref() == Some(binding.event.as_str()) || role.trigger_aliases.contains(&binding.event)
+        }) {
+            errors.push("continuous_attack_helper_binding", "candidate attacks must enter the startup or loop-only entry phase");
+        }
+    }
+}
+
 fn validate_motion_policy(label: &str, policy: ClipMotionPolicy, errors: &mut ValidationErrors) {
     if policy.animation_driven && policy.extracted_planar_reference_frames == 0 {
         errors.push(
@@ -2067,7 +2411,210 @@ fn validate_role_generator(
         );
     }
     match &role.generator {
-        CapabilityRoleGenerator::Single => {}
+        CapabilityRoleGenerator::SourceAim { bank_index, attack_events, aim_children } => {
+            if role.role != CreatureClipRole::WeaponAim || !(1..=11).contains(bank_index)
+                || attack_events.is_empty() || attack_events.iter().any(String::is_empty)
+                || aim_children.is_empty()
+                || aim_children.iter().any(|child| !f32::from_bits(child.weight_bits).is_finite())
+                || aim_children.windows(2).any(|pair| f32::from_bits(pair[0].weight_bits) >= f32::from_bits(pair[1].weight_bits))
+                || !aim_children.iter().any(|child| child.clip_name == role.clip_name && f32::from_bits(child.weight_bits) == 0.0)
+            {
+                errors.push("source_aim_contract", "source aim requires an exact weapon bank and ordered pitch samples including its center");
+            }
+            validate_generator_variable(manifest, "B21SourceWeaponBank", VariableType::Int32, "source weapon bank", errors);
+            validate_generator_variable(manifest, "B21SourceWeaponPitch", VariableType::Real, "source weapon aim", errors);
+            for child in aim_children {
+                let mut inner = role.clone();
+                inner.generator = CapabilityRoleGenerator::Single;
+                inner.clip_name = child.clip_name.clone();
+                validate_role_generator(manifest, &inner, graph_clip_names, errors);
+            }
+            return;
+        }
+        CapabilityRoleGenerator::SourceMovement { clips, generator } => {
+            let mut names = BTreeSet::new();
+            if clips.is_empty() || clips.iter().any(|clip| {
+                !clip_names.contains(&clip.clip_name.as_str()) || !names.insert(&clip.clip_name)
+                    || clip.keys.iter().any(|key| !f32::from_bits(key.time_bits).is_finite() || !matches!(key.group, 26 | 32))
+            }) || matches!(generator.as_ref(), CapabilityRoleGenerator::SourceMovement { .. }) {
+                errors.push("source_movement_contract", "movement phase requires exact source clips and finite ordered-source key records");
+            }
+            validate_generator_variable(manifest, "B21SourceMovementAttackGroup", VariableType::Int32, "source movement phase", errors);
+            let mut inner = role.clone();
+            inner.generator = *generator.clone();
+            validate_role_generator(manifest, &inner, graph_clip_names, errors);
+            return;
+        }
+        CapabilityRoleGenerator::SourceAttack { contract, generator } => {
+            if !matches!(role.role, CreatureClipRole::MeleeAttack | CreatureClipRole::ProjectileAttack)
+                || matches!(generator.as_ref(), CapabilityRoleGenerator::SourceAttack { .. })
+                || contract.group < 0 || contract.opening_group < 0
+            {
+                errors.push("source_attack_contract", "source attack gate requires one weapon attack generator and valid source groups");
+            }
+            validate_generator_variable(manifest, &contract.gate_variable, VariableType::Int32, "source attack gate", errors);
+            if let Some(variable) = &contract.opening_variable {
+                validate_generator_variable(manifest, variable, VariableType::Int32, "source movement opening", errors);
+                for activity in ["B21SourceAttackActive", "B21SourceMovementActive"] {
+                    validate_generator_variable(manifest, activity, VariableType::Int32, "source movement gate refresh", errors);
+                }
+            }
+            if let Some(window) = &contract.window {
+                let start = f32::from_bits(window.start_bits);
+                let end = f32::from_bits(window.end_bits);
+                if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start || window.next_group < 0 {
+                    errors.push("source_attack_window", "source attack continuation requires exact ordered source key times and a valid next group");
+                }
+                for event in SourceAttackContract::window_events(&role.state_name) {
+                    if !manifest.core.events.iter().any(|candidate| candidate.name == event && candidate.usage == EventUsage::Generic) {
+                        errors.push("source_attack_window_event", format!("source continuation window requires explicit generic event {event:?}"));
+                    }
+                }
+            }
+            let mut inner = role.clone();
+            inner.generator = *generator.clone();
+            validate_role_generator(manifest, &inner, graph_clip_names, errors);
+            if !contract.aim_children.is_empty() {
+                validate_generator_variable(manifest, "B21SourceWeaponPitch", VariableType::Real, "source weapon aim", errors);
+                if contract.aim_children.iter().any(|child| !f32::from_bits(child.weight_bits).is_finite())
+                    || contract.aim_children.windows(2).any(|pair| f32::from_bits(pair[0].weight_bits) >= f32::from_bits(pair[1].weight_bits)) {
+                    errors.push("source_attack_aim_order", "source weapon pitch samples must be strictly ordered");
+                }
+                for child in &contract.aim_children {
+                    if child.clip_name == role.clip_name { continue; }
+                    let mut child_role = inner.clone();
+                    child_role.clip_name = child.clip_name.clone();
+                    validate_role_generator(manifest, &child_role, graph_clip_names, errors);
+                }
+            }
+            return;
+        }
+        CapabilityRoleGenerator::MountSynchronization {
+            state_index, generator, speed_sampler_source, speed_sampler_bindings, turn_damping,
+        } => {
+            if *state_index < -1 || matches!(generator.as_ref(), CapabilityRoleGenerator::MountSynchronization { .. }) {
+                errors.push("mount_sync_state", "mount synchronization requires a nonnegative state or the dismount sentinel -1, and a single wrapper");
+            }
+            if speed_sampler_source.class_name != "BSSpeedSamplerModifier" {
+                errors.push("mount_speed_sampler", "mount synchronization requires a source BSSpeedSamplerModifier");
+            }
+            let mut owned_objects = BTreeSet::new();
+            validate_generator_source_object(speed_sampler_source, &mut owned_objects, errors);
+            validate_capability_modifier_node(manifest, turn_damping, 0, &mut owned_objects, errors);
+            for binding in speed_sampler_bindings {
+                validate_generator_variable(manifest, &binding.variable_name,
+                    if binding.member_path == "state" { VariableType::Int32 } else { VariableType::Real },
+                    &binding.member_path, errors);
+            }
+            validate_generator_variable(manifest, "SyncLocomotionState", VariableType::Int32, "mount state", errors);
+            validate_generator_variable(manifest, "B21MountRequiresDismount", VariableType::Bool, "mount compatibility", errors);
+            let mut inner = role.clone();
+            inner.generator = *generator.clone();
+            validate_role_generator(manifest, &inner, graph_clip_names, errors);
+            return;
+        }
+        CapabilityRoleGenerator::Single | CapabilityRoleGenerator::ThrownAttack => {}
+        CapabilityRoleGenerator::MountInteraction => {
+            if role.role != CreatureClipRole::ScriptedAction {
+                errors.push("mount_interaction_role", "paired mount interactions require a scripted action role");
+            }
+            validate_generator_variable(manifest, "B21MountRequiresDismount", VariableType::Bool, "mount interaction", errors);
+        }
+        CapabilityRoleGenerator::SourceIdle { duration_bits, loop_start_bits, loop_end_bits, complete_event, overlay, .. } => {
+            if let Some(overlay) = overlay {
+                if !matches!(overlay.source_group, 4 | 21) || overlay.transform_priorities.is_empty()
+                    || overlay.base_priorities.is_empty()
+                    || overlay.transform_priorities.values().any(|priority| *priority == 255)
+                {
+                    errors.push("source_idle_overlay_priorities", "partial-body source IDLE requires explicit source group and transform priorities");
+                }
+                for bone in overlay.transform_priorities.keys() {
+                    if !manifest.animation_skeleton.bones.iter().any(|candidate| &candidate.name == bone) {
+                        errors.push("source_idle_overlay_bone", format!("partial-body source IDLE bone {bone:?} is absent from its source rig"));
+                    }
+                }
+            }
+            let duration = f32::from_bits(*duration_bits);
+            let start = f32::from_bits(*loop_start_bits);
+            let end = f32::from_bits(*loop_end_bits);
+            if !matches!(role.role, CreatureClipRole::ScriptedAction | CreatureClipRole::ScriptedLoop)
+                || !duration.is_finite() || !start.is_finite() || !end.is_finite()
+                || !(0.0 <= start && start < end && end <= duration)
+            {
+                errors.push("source_idle_loop_contract", "source IDLE requires a valid exact loop window inside its source clip");
+            }
+            for event in [complete_event.as_str(), "IdleStop"] {
+                if !manifest.core.events.iter().any(|candidate| candidate.name == event) {
+                    errors.push("source_idle_event", format!("source IDLE requires graph event {event:?}"));
+                }
+            }
+        }
+        CapabilityRoleGenerator::ContinuousAttackPhase { phase, start_state, loop_state, stop_state } => {
+            if role.role != CreatureClipRole::ProjectileAttack {
+                errors.push("continuous_attack_role", "continuous weapon phases require projectile attack roles");
+            }
+            let current_state = match phase {
+                ContinuousAttackPhase::Start => start_state.as_deref(),
+                ContinuousAttackPhase::Loop => Some(loop_state.as_str()),
+                ContinuousAttackPhase::Stop => stop_state.as_deref(),
+            };
+            if current_state != Some(role.state_name.as_str()) {
+                errors.push("continuous_attack_state", "continuous phase does not identify its own state");
+            }
+        }
+        CapabilityRoleGenerator::Locomotion { directions } => {
+            if directions.is_empty() || directions.len() > 8 {
+                errors.push(
+                    "locomotion_directions",
+                    "locomotion requires one to eight source directions",
+                );
+            }
+            for direction in directions {
+                let value = f32::from_bits(direction.direction_bits);
+                if !value.is_finite() || !(0.0..1.0).contains(&value) || direction.speeds.is_empty()
+                {
+                    errors.push(
+                        "locomotion_direction",
+                        "locomotion direction must lie in [0,1) and contain source speeds",
+                    );
+                }
+                for speed in &direction.speeds {
+                    if !f32::from_bits(speed.weight_bits).is_finite()
+                        || f32::from_bits(speed.weight_bits) < 0.0
+                    {
+                        errors.push(
+                            "locomotion_speed",
+                            "source speed must be finite and nonnegative",
+                        );
+                    }
+                }
+                if direction.speeds.windows(2).any(|pair| {
+                    f32::from_bits(pair[0].weight_bits) >= f32::from_bits(pair[1].weight_bits)
+                }) {
+                    errors.push(
+                        "locomotion_speed_order",
+                        "source speeds must be strictly increasing",
+                    );
+                }
+            }
+            if directions.windows(2).any(|pair| {
+                f32::from_bits(pair[0].direction_bits) >= f32::from_bits(pair[1].direction_bits)
+            }) {
+                errors.push(
+                    "locomotion_direction_order",
+                    "source directions must be strictly increasing",
+                );
+            }
+            for name in ["Speed", "Direction"] {
+                validate_generator_variable(
+                    manifest,
+                    name,
+                    VariableType::Real,
+                    "blendParameter",
+                    errors,
+                );
+            }
+        }
         CapabilityRoleGenerator::ManualSelector {
             children,
             selected_generator_index,
@@ -2186,7 +2733,28 @@ fn validate_role_generator(
                 );
             }
         }
-        CapabilityRoleGenerator::Tree { root } => {
+        CapabilityRoleGenerator::SourceRecovery { graph } => {
+            graph.validate(manifest, errors);
+            if role.role != CreatureClipRole::GetUp {
+                errors.push("source_recovery_role", "source recovery graph requires the GetUp role");
+            }
+        }
+        CapabilityRoleGenerator::Tree { root } | CapabilityRoleGenerator::SourceCasting { root, .. } => {
+            validate_shared_source_receipts(root, errors);
+            if let CapabilityRoleGenerator::SourceCasting { stop_events, observations, enter_events, exit_events, .. } = &role.generator {
+                validate_cast_observations(manifest, root, observations, errors);
+                for event in enter_events.iter().chain(exit_events) {
+                    validate_generator_event_property(manifest, event, errors);
+                }
+                if stop_events.is_empty() {
+                    errors.push("casting_stop_events", "source casting requires explicit source stop or interrupt events");
+                }
+                for event in stop_events {
+                    if !manifest.core.events.iter().any(|decl| decl.name == *event) {
+                        errors.push("casting_stop_events", format!("source casting stop event {event:?} is undeclared"));
+                    }
+                }
+            }
             let mut owned_objects = BTreeSet::new();
             let mut transition_effects = BTreeMap::new();
             validate_capability_generator_node(
@@ -2200,7 +2768,7 @@ fn validate_role_generator(
         }
     }
 
-    let allow_repeated_tree_clip = matches!(&role.generator, CapabilityRoleGenerator::Tree { .. });
+    let allow_repeated_tree_clip = matches!(&role.generator, CapabilityRoleGenerator::Tree { .. } | CapabilityRoleGenerator::SourceCasting { .. } | CapabilityRoleGenerator::SourceRecovery { .. });
     let mut role_clip_names = BTreeSet::new();
     for clip_name in clip_names {
         validate_identifier("capability.generator.clip_name", clip_name, errors);
@@ -2209,7 +2777,7 @@ fn validate_role_generator(
         if !first_role_reference && allow_repeated_tree_clip {
             continue;
         }
-        if !graph_clip_names.insert(canonical_clip_name) {
+        if !graph_clip_names.insert(canonical_clip_name) && !allow_repeated_tree_clip {
             errors.push(
                 "duplicate_capability_clip",
                 format!("capability graph repeats generator clip {clip_name:?}"),
@@ -2225,13 +2793,17 @@ fn validate_role_generator(
             );
             continue;
         };
-        if clip.looping != role.role.expects_looping() {
+        let expected_looping = match &role.generator {
+            CapabilityRoleGenerator::ContinuousAttackPhase { phase, .. } => *phase == ContinuousAttackPhase::Loop,
+            _ => role.role.expects_looping(),
+        };
+        if clip.looping != expected_looping && !matches!(&role.generator, CapabilityRoleGenerator::SourceCasting { .. } | CapabilityRoleGenerator::SourceRecovery { .. }) {
             errors.push(
                 "capability_clip_mode",
                 format!(
                     "capability role {:?} expects clip {clip_name:?} looping={}",
                     role.role,
-                    role.role.expects_looping()
+                    expected_looping
                 ),
             );
         }
@@ -2255,14 +2827,38 @@ fn validate_capability_generator_node(
     }
     let source = match node {
         CapabilityGeneratorNode::Clip { source, .. }
+        | CapabilityGeneratorNode::SourceClip { source, .. }
+        | CapabilityGeneratorNode::CyclicBlendTransition { source, .. }
         | CapabilityGeneratorNode::ManualSelector { source, .. }
         | CapabilityGeneratorNode::Blender { source, .. }
         | CapabilityGeneratorNode::StateMachine { source, .. }
         | CapabilityGeneratorNode::ModifierGenerator { source, .. } => source,
     };
+    if owned_objects.contains(&(source.behavior_path.to_ascii_lowercase(), source.object_index)) {
+        return;
+    }
     validate_generator_source_object(source, owned_objects, errors);
 
     match node {
+        CapabilityGeneratorNode::SourceClip { .. } => validate_source_clip_node(manifest, node, errors),
+        CapabilityGeneratorNode::CyclicBlendTransition { source, bindings, generator, event_to_freeze_blend_value, event_to_cross_blend, transition_out_event, transition_in_event, f_blend_parameter_bits, f_transition_duration_bits, e_blend_curve, .. } => {
+            if source.class_name != "BSCyclicBlendTransitionGenerator" || !matches!(generator.as_ref(), CapabilityGeneratorNode::Blender { .. }) {
+                errors.push("cyclic_blend_generator", "source cyclic blend must retain its exact directional blender");
+            }
+            for binding in bindings {
+                if !matches!(binding.member_path.as_str(), "fBlendParameter" | "fTransitionDuration") {
+                    errors.push("cyclic_blend_binding", "cyclic blend binding requires an exact target scalar field");
+                }
+            }
+            validate_generator_bindings(manifest, bindings, None, errors);
+            for event in [event_to_freeze_blend_value, event_to_cross_blend, transition_out_event, transition_in_event] {
+                validate_generator_event_property(manifest, event, errors);
+            }
+            if !f32::from_bits(*f_blend_parameter_bits).is_finite() || !f32::from_bits(*f_transition_duration_bits).is_finite() || f32::from_bits(*f_transition_duration_bits) < 0.0 || !(0..=1).contains(e_blend_curve) {
+                errors.push("cyclic_blend_numeric_contract", "cyclic blend requires finite parameters, nonnegative duration, and a target blend curve");
+            }
+            validate_capability_generator_node(manifest, generator, depth + 1, owned_objects, transition_effects, errors);
+        }
         CapabilityGeneratorNode::Clip { source, clip_name } => {
             if source.class_name != "hkbClipGenerator" {
                 errors.push(
@@ -2399,11 +2995,8 @@ fn validate_capability_generator_node(
             }
             validate_generator_bindings(manifest, bindings, Some("blendParameter"), errors);
             for child in children {
-                if child.bone_weights.is_some() {
-                    errors.push(
-                        "blender_bone_weights_unlowered",
-                        "recursive blender bone-weight objects require an exact target lowerer",
-                    );
+                if let Some(weights) = &child.bone_weights {
+                    validate_source_bone_weights(manifest, weights, owned_objects, errors);
                 }
                 if !f32::from_bits(child.weight_bits).is_finite()
                     || !f32::from_bits(child.world_from_model_weight_bits).is_finite()
@@ -2474,12 +3067,12 @@ fn validate_capability_generator_node(
                 );
             }
             if *max_simultaneous_transitions <= 0
-                || *start_state_mode != 0
-                || *self_transition_mode != 0
+                || !(0..=2).contains(start_state_mode)
+                || !(0..=2).contains(self_transition_mode)
             {
                 errors.push(
                     "state_machine_mode_unlowered",
-                    "recursive state machine currently requires positive max transitions and exact default start/self-transition modes",
+                    "recursive state machine requires positive max transitions and valid Havok start/self-transition modes",
                 );
             }
             for event in [
@@ -2505,7 +3098,9 @@ fn validate_capability_generator_node(
                 errors,
             );
             for state in states {
-                validate_generator_source_object(&state.source, owned_objects, errors);
+                if !owned_objects.contains(&(state.source.behavior_path.to_ascii_lowercase(), state.source.object_index)) {
+                    validate_generator_source_object(&state.source, owned_objects, errors);
+                }
                 validate_identifier("capability.generator.tree.state", &state.name, errors);
                 if !state.listeners.is_empty() {
                     errors.push(
@@ -2607,12 +3202,30 @@ fn validate_capability_modifier_node(
     }
     let source = match modifier {
         CapabilityModifierNode::List { source, .. }
+        | CapabilityModifierNode::IsActive { source, .. }
         | CapabilityModifierNode::Damping { source, .. }
         | CapabilityModifierNode::EvaluateExpression { source, .. } => source,
     };
+    if owned_objects.contains(&(source.behavior_path.to_ascii_lowercase(), source.object_index)) {
+        return;
+    }
     validate_generator_source_object(source, owned_objects, errors);
 
     match modifier {
+        CapabilityModifierNode::IsActive { source, bindings, .. } => {
+            if source.class_name != "BSIsActiveModifier" {
+                errors.push("capability_modifier_class", "active modifier requires its exact source class");
+            }
+            for binding in bindings {
+                if !(0..5).any(|index| binding.member_path == format!("bIsActive{index}") || binding.member_path == format!("bInvertActive{index}")) {
+                    errors.push("is_active_binding", "active modifier binding requires an exact target boolean field");
+                }
+                if binding.source_variable_type != CapabilitySourceVariableType::Bool {
+                    errors.push("is_active_binding_type", "active modifier fields require boolean source variables");
+                }
+            }
+            validate_generator_bindings(manifest, bindings, None, errors);
+        }
         CapabilityModifierNode::List {
             source,
             bindings,
@@ -2840,6 +3453,9 @@ fn contains_identifier(expression: &str, identifier: &str) -> bool {
             && expression[end..].chars().next().is_none_or(boundary)
     })
 }
+
+include!("source_cast_validation.rs");
+include!("source_cast_observations.rs");
 
 fn validate_generator_source_object(
     source: &CapabilityGeneratorSourceObject,
@@ -3074,7 +3690,12 @@ fn validate_generator_transition_array(
     transition_effects: &mut BTreeMap<(String, u32), CapabilityGeneratorBlendingTransitionEffect>,
     errors: &mut ValidationErrors,
 ) {
-    validate_generator_source_object(&transitions.source, owned_objects, errors);
+    if !owned_objects.contains(&(transitions.source.behavior_path.to_ascii_lowercase(), transitions.source.object_index)) {
+        validate_generator_anonymous_source_object(&transitions.source, owned_objects, errors);
+    }
+    if transitions.source.class_name != "hkbStateMachineTransitionInfoArray" {
+        errors.push("capability_generator_transition_class", "transition array requires its exact anonymous source class");
+    }
     for transition in &transitions.transitions {
         for interval in [&transition.trigger_interval, &transition.initiate_interval] {
             validate_generator_event_ref(manifest, &interval.enter_event, errors);
@@ -3148,11 +3769,8 @@ fn validate_generator_transition_array(
                 }
             }
         }
-        if transition.condition.is_some() {
-            errors.push(
-                "capability_generator_transition_object_unlowered",
-                "recursive transition condition objects require an exact target lowerer",
-            );
+        if let Some(condition) = &transition.condition {
+            validate_source_expression_condition(manifest, condition, owned_objects, errors);
         }
         if !state_ids.contains(&transition.to_state_id) {
             errors.push(
@@ -3325,7 +3943,19 @@ fn validate_template_roles(graph: &CapabilityGraphManifest, errors: &mut Validat
     };
 
     for role in &graph.roles {
-        if !allowed.contains(&role.role) {
+        if !allowed.contains(&role.role)
+            && !matches!(
+                role.role,
+                CreatureClipRole::Hurt
+                    | CreatureClipRole::WeaponAim
+                    | CreatureClipRole::Death
+                    | CreatureClipRole::GetUp
+                    | CreatureClipRole::ScriptedAction
+                    | CreatureClipRole::ScriptedLoop
+                    | CreatureClipRole::TurnLeft
+                    | CreatureClipRole::TurnRight
+            )
+        {
             errors.push(
                 "capability_role_not_allowed",
                 format!(

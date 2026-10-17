@@ -38,6 +38,10 @@ pub const FNV_FO3_SOURCE_RIG_BRIDGE_SCHEMA: &str = "fnv_fo3_creature_recipe_v4";
 
 #[derive(Serialize)]
 struct SelectedPairLedgerEvidence<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_race_data: Option<&'a super::creature_profile_race_data::CreatureProfileRaceData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_branch: Option<&'a super::creature_templates::LegacyTemplateBranchReceipt>,
     schema_version: u32,
     ledger_blake3: &'a str,
     accounting: &'a CreatureRecipeAccounting,
@@ -47,6 +51,8 @@ struct SelectedPairLedgerEvidence<'a> {
 
 #[derive(Clone, Debug)]
 pub struct FnvFo3SourceRigAdapterInput {
+    pub profile_race_data: Option<super::creature_profile_race_data::CreatureProfileRaceData>,
+    pub template_branch: Option<super::creature_templates::LegacyTemplateBranchReceipt>,
     pub ledger: Arc<CreatureFamilyRecipeLedger>,
     pub family: RigFamilyKey,
     pub creature_closure: CreatureClosureReceipt,
@@ -132,16 +138,21 @@ fn build_fnv_fo3_source_rig_bridge_input_impl(
     validate_field_decisions(&input.field_receipts, source_game)?;
 
     let source_identity = input.projection.source_primary_identity.clone();
+    let source_root_identity = input.template_branch.as_ref().map(|branch| {
+        let root = &branch.profile().expect("validated template branch").root;
+        crate::source_rig::SourceCreatureIdentity { namespace: source_game.into(), plugin: root.plugin.clone(), local_form_id: root.local }
+    });
+    let record_identity = source_root_identity.as_ref().unwrap_or(&source_identity);
     let record = input
         .ledger
         .records
         .iter()
         .find(|record| {
-            record.source.local == source_identity.local_form_id
+            record.source.local == record_identity.local_form_id
                 && record
                     .source
                     .plugin
-                    .eq_ignore_ascii_case(&source_identity.plugin)
+                    .eq_ignore_ascii_case(&record_identity.plugin)
         })
         .ok_or_else(|| {
             invalid(
@@ -150,7 +161,7 @@ fn build_fnv_fo3_source_rig_bridge_input_impl(
             )
         })?;
     let canonical_json =
-        selected_pair_ledger_canonical_json(&input.ledger, record, family, &ledger_blake3)?;
+        selected_pair_ledger_canonical_json(&input.ledger, record, family, &ledger_blake3, input.template_branch.as_ref(), input.profile_race_data.as_ref())?;
     let canonical_json_blake3 = blake3::hash(canonical_json.as_bytes()).to_hex().to_string();
     let family_id = canonical_fnv_fo3_family_id(&family.rig);
     if input.batch_intent.family_id != family_id {
@@ -167,7 +178,7 @@ fn build_fnv_fo3_source_rig_bridge_input_impl(
         .actual_root_node
         .clone()
         .ok_or_else(|| invalid("actual_root_missing", "Ready family has no actual root"))?;
-    let race_data = mapped_race_data(family)?.clone();
+    let race_data = input.projection.race_data.clone();
     let selected_family = SourceRigSelectedFamilyEvidence {
         source_games: vec![source_game.to_string()],
         actual_root_bone,
@@ -183,6 +194,7 @@ fn build_fnv_fo3_source_rig_bridge_input_impl(
 
     Ok(SourceRigRecipeBridgeInput {
         pair_ledger: SourceRigPairLedgerEvidence {
+            source_root_identity,
             schema: FNV_FO3_SOURCE_RIG_BRIDGE_SCHEMA.to_string(),
             canonical_json,
             ledger_blake3,
@@ -210,8 +222,12 @@ fn selected_pair_ledger_canonical_json(
     record: &CreatureRecordRecipeEntry,
     family: &CreatureFamilyRecipeJob,
     ledger_blake3: &str,
+    template_branch: Option<&super::creature_templates::LegacyTemplateBranchReceipt>,
+    profile_race_data: Option<&super::creature_profile_race_data::CreatureProfileRaceData>,
 ) -> Result<String, FnvFo3SourceRigBridgeError> {
     serde_json::to_string(&SelectedPairLedgerEvidence {
+        profile_race_data,
+        template_branch,
         schema_version: ledger.schema_version,
         ledger_blake3,
         accounting: &ledger.accounting,
@@ -254,6 +270,9 @@ fn validate_source_identity(
     source_game: &str,
 ) -> Result<(), FnvFo3SourceRigBridgeError> {
     let identity = &input.projection.source_primary_identity;
+    if let Some(branch) = &input.template_branch {
+        return validate_template_branch_identity(input, family, branch);
+    }
     if !identity.namespace.eq_ignore_ascii_case(source_game) {
         return Err(invalid(
             "source_game_mismatch",
@@ -301,6 +320,48 @@ fn validate_source_identity(
             "source_plugin_mismatch",
             "primary source plugin differs from record provenance",
         ));
+    }
+    Ok(())
+}
+
+fn validate_template_branch_identity(
+    input: &FnvFo3SourceRigAdapterInput,
+    family: &CreatureFamilyRecipeJob,
+    branch: &super::creature_templates::LegacyTemplateBranchReceipt,
+) -> Result<(), FnvFo3SourceRigBridgeError> {
+    branch.validate(family.rig.game).map_err(|error| invalid("template_branch_identity", error))?;
+    let profile = branch.profile().map_err(|error| invalid("template_branch_path", error))?;
+    let lookup = |key: &super::creature_catalog::StableFormKey| input.ledger.records.iter()
+        .find(|record| record.source.local == key.local && record.source.plugin.eq_ignore_ascii_case(&key.plugin));
+    let root = lookup(&profile.root).ok_or_else(|| invalid("template_root_missing", "template root is absent from source ledger"))?;
+    let model_owner = &profile.owners[6];
+    let owner = lookup(model_owner).ok_or_else(|| invalid("template_model_owner_missing", "template model owner is absent from source ledger"))?;
+    if root.provenance.game != family.rig.game || owner.provenance.game != family.rig.game
+        || !matches!(&owner.disposition, CreatureRecordRecipeDisposition::VisualOwner { rig, .. } if rig == &family.rig)
+        || !family.members.contains(&owner.source) {
+        return Err(invalid("template_model_owner_family", "template branch does not use its proven source visual family"));
+    }
+    let allowed = match &root.disposition {
+        CreatureRecordRecipeDisposition::VisualOwner { .. } => root.source == owner.source,
+        CreatureRecordRecipeDisposition::Proxy { terminal_visual_owners, .. } => terminal_visual_owners.contains(&owner.source),
+        CreatureRecordRecipeDisposition::RejectedProxy { blockers } => !blockers.is_empty() && blockers.iter().all(|blocker| match blocker {
+            super::creature_recipe::RecordRecipeBlocker::RequiresLeveledTemplateProjection(owners) => owners.contains(&owner.source),
+            super::creature_recipe::RecordRecipeBlocker::AmbiguousFamilies(families) => families.contains(&family.rig),
+            _ => false,
+        }),
+        CreatureRecordRecipeDisposition::Special { .. } => false,
+    };
+    if !allowed || profile.owners.iter().any(|key| lookup(key).is_none_or(|record| record.provenance.game != root.provenance.game)) {
+        return Err(invalid("template_source_boundary", "template branch crosses a source boundary or bypasses an unrelated catalog blocker"));
+    }
+    let expected = if branch.wrapper {
+        crate::source_rig::SourceCreatureIdentity { namespace: game_name(family.rig.game).into(), plugin: profile.root.plugin.clone(), local_form_id: profile.root.local }
+    } else { branch.generated_identity.clone() };
+    if input.projection.source_primary_identity != expected
+        || branch.wrapper != input.projection.templates.is_some()
+        || !input.projection.variants.iter().any(|variant| variant.source_identity == branch.generated_identity)
+        || (branch.wrapper && branch.plan.branch_paths().first() != Some(&branch.entry_indices)) {
+        return Err(invalid("template_projection_identity", "template primary, generated branch NPC or canonical wrapper ownership differs from source proof"));
     }
     Ok(())
 }
@@ -378,6 +439,7 @@ fn validate_family_contract(
         ));
     }
     match &input.projection.body_parts {
+        CreatureBodyPartProjection::SourceParts { root_node, .. } if root_node == actual_root => {}
         CreatureBodyPartProjection::RootOnly32 {
             node, vats_target, ..
         } if node == actual_root && vats_target == actual_root => {}
@@ -388,29 +450,48 @@ fn validate_family_contract(
             ));
         }
     }
-    let target = mapped_race_data(family)?;
+    let target = if let Some(profile) = &input.profile_race_data {
+        super::creature_profile_race_data::validate(profile, family)
+            .map_err(|error| invalid("profile_race_data_invalid", error))?;
+        if let Some(branch) = &input.template_branch {
+            let expected_owner = &branch.profile().map_err(|error| invalid("profile_race_data_invalid", error))?.owners[1];
+            if profile.stats_owner != *expected_owner {
+                return Err(invalid("profile_race_data_owner_mismatch", "RACE Stats owner differs from the selected template branch"));
+            }
+        }
+        match &profile.derivation.mapping {
+            RaceDataMapping::Mapped { target } => target,
+            _ => return Err(invalid("profile_race_data_invalid", "profile RACE is unmapped")),
+        }
+    } else {
+        mapped_race_data(family)?
+    };
     if &input.projection.race_data != target {
         return Err(invalid(
             "race_data_mismatch",
             "record projection RACE.DATA differs from measured derivation",
         ));
     }
-    let scale = family
+    // FO4 scales this shared model-space shape through ScaleCustomCharacterController.
+    if !input.projection.race_keywords.contains(&super::creature_profile_race_data::controller_scale_keyword()) {
+        return Err(invalid("controller_scale_keyword_missing", "source controller capsules require the target ScaleCustomCharacterController keyword"));
+    }
+    let capsule = family
         .race_data
         .as_ref()
-        .and_then(|race| race.derivation.scale_audit.as_ref())
+        .and_then(|race| race.measured_evidence.capsule.as_ref())
         .ok_or_else(|| {
             invalid(
                 "capsule_missing",
-                "Ready family lacks a measured scale audit",
+                "Ready family lacks a source controller capsule",
             )
         })?;
-    if input.rig.capsule.height.to_bits() != scale.scaled_capsule_height.to_bits()
-        || input.rig.capsule.radius.to_bits() != scale.scaled_capsule_radius.to_bits()
+    if input.rig.capsule.height.to_bits() != capsule.total_height.to_bits()
+        || input.rig.capsule.radius.to_bits() != capsule.radius.to_bits()
     {
         return Err(invalid(
             "capsule_mismatch",
-            "runtime capsule differs from measured RACE.DATA evidence",
+            "runtime capsule differs from the shared family artifact evidence",
         ));
     }
     let controller_values = input
@@ -531,6 +612,12 @@ fn validate_nif_closure(
         let kind = match disposition.role {
             CreatureNifRole::Skeleton => IndexedAssetKind::Skeleton,
             CreatureNifRole::Body => IndexedAssetKind::Body,
+            CreatureNifRole::BodyPartReplacement | CreatureNifRole::DependencyModel => {
+                if disposition.source_byte_len == 0 || !is_lower_blake3(&disposition.source_blake3) || !input.creature_closure.artifacts.iter().any(|artifact| artifact.target_data_relative_path == disposition.target_data_relative_path && artifact.byte_len > 0 && is_lower_blake3(&artifact.fingerprint)) {
+                    return Err(invalid("nif_closure_source_hash", "replacement NIF lacks source and output byte evidence"));
+                }
+                continue;
+            }
         };
         let claim = asset(family, &disposition.source_data_relative_path, kind)?;
         if disposition.source_byte_len == 0
@@ -554,6 +641,13 @@ fn validate_nif_closure(
             "body_projection_mismatch",
             "record body NIF is absent from the validated converted closure",
         ));
+    }
+    if let CreatureBodyPartProjection::SourceParts { parts, .. } = &input.projection.body_parts {
+        for part in parts.iter().filter(|part| !part.limb_replacement.is_empty()) {
+            if !input.creature_closure.inputs.iter().any(|entry| entry.role == CreatureNifRole::BodyPartReplacement && canonical_mesh_path(&entry.target_data_relative_path) == canonical_mesh_path(&part.limb_replacement)) {
+                return Err(invalid("replacement_projection_mismatch", "BPTD replacement NIF is absent from converted closure"));
+            }
+        }
     }
     Ok(())
 }
@@ -594,7 +688,8 @@ fn validate_converted_evidence(
         )
     })?;
     if input.rig.animation_skeleton.runtime_name != skeleton_runtime_name
-        || input.rig.animation_skeleton.float_slots != skeleton.skeleton_float_slots
+        || (!input.rig.animation_skeleton.float_slots.is_empty()
+            && input.rig.animation_skeleton.float_slots != skeleton.skeleton_float_slots)
     {
         return Err(invalid(
             "skeleton_identity_mismatch",
@@ -613,22 +708,27 @@ fn validate_converted_evidence(
         ));
     }
     for role in &input.graph.roles {
+        for clip_name in role.generator.clip_names(&role.clip_name) {
         let clip = input
             .rig
             .clips
             .iter()
-            .find(|clip| clip.name == role.clip_name)
-            .ok_or_else(|| invalid("clip_missing", format!("missing clip {:?}", role.clip_name)))?;
+            .find(|clip| clip.name == clip_name)
+            .ok_or_else(|| invalid("clip_missing", format!("missing clip {clip_name:?}")))?;
         let artifact_role = SourceRigArtifactRole::AnimationClip {
             clip_name: clip.name.clone(),
         };
         let artifact_request = request(input, &artifact_role, &clip.path)?;
         let motion_roles = pair_motion_roles(input.graph.template, role.role);
+        let aim_candidates = if let crate::source_rig::CapabilityRoleGenerator::SourceAim { bank_index, .. } = &role.generator {
+            super::creature_live_preparations::source_aim_candidates(family, *bank_index)
+        } else { Vec::new() };
         let candidate = family
             .required_motion
             .iter()
             .filter(|required| motion_roles.contains(&required.role))
             .flat_map(|required| &required.candidates)
+            .chain(aim_candidates.iter())
             .find(|candidate| candidate_hash(candidate) == artifact_request.source_evidence_blake3)
             .ok_or_else(|| {
                 invalid(
@@ -640,6 +740,7 @@ fn validate_converted_evidence(
                 )
             })?;
         validate_candidate(input, family, role, clip, candidate)?;
+        }
     }
     for overlay in &input.graph.overlays {
         let clip = input
@@ -756,13 +857,16 @@ fn validate_candidate(
         && role.role == CreatureClipRole::ProjectileAttack
         && candidate.looping
         && !clip.looping;
+    let projects_automatic_phase = super::creature_live_preparations::validate_automatic_phase_projection(
+        family, candidate, role, clip,
+    ).map_err(|detail| invalid("automatic_attack_phase_mismatch", detail))?;
     validate_candidate_binding(
         input,
         family,
         clip,
         candidate,
         role.motion,
-        projects_stationary_turret_cycle,
+        projects_stationary_turret_cycle || projects_automatic_phase,
     )?;
     if role.role == CreatureClipRole::MeleeAttack
         && let Some(event) = &role.trigger_event
@@ -797,18 +901,38 @@ fn validate_candidate_binding(
     motion: crate::source_rig::ClipMotionPolicy,
     allow_looping_source_projection: bool,
 ) -> Result<(), FnvFo3SourceRigBridgeError> {
+    let accumulator_added = matches!(&candidate.root_motion,
+        RootMotionEvidence::Stationary { accum_root: Some(root) }
+        | RootMotionEvidence::Planar { accum_root: root, .. }
+        if exact_accumulator_track_augmentation(
+            &candidate.binding.ordered_transform_targets,
+            candidate.binding.transform_track_count,
+            root,
+            &input.rig.animation_skeleton.bones,
+            &clip.binding.transform_track_to_bone_indices,
+        )
+    );
+    let expected_track_count = candidate.binding.transform_track_count + usize::from(accumulator_added);
+    let property_sequences = input.rig.property_sequences.iter().filter(|sequence| sequence.clip_name == clip.name).collect::<Vec<_>>();
+    let migrated_property_tracks = !property_sequences.is_empty()
+        && input.rig.animation_skeleton.float_slots.is_empty()
+        && property_sequences.iter().all(|sequence| sequence.source_float_slots == candidate.binding.required_float_slots)
+        && candidate.binding.required_float_slots.len() == candidate.binding.float_track_count;
+    if !property_sequences.is_empty() && !migrated_property_tracks {
+        return Err(invalid("clip_property_binding_mismatch", format!("clip {:?} property sequences differ from exact source controller evidence", clip.name)));
+    }
+    let expected_float_count = if migrated_property_tracks { 0 } else { candidate.binding.float_track_count };
     if candidate.source_game != family.rig.game
         || candidate.binding.compatibility != BindingCompatibility::Verified
         || canonical_mesh_path(&candidate.binding.source_skeleton_path)
             != canonical_mesh_path(&family.rig.skeleton_path)
-        || candidate.binding.transform_track_count != clip.binding.declared_transform_tracks
-        || candidate.binding.transform_track_count
-            != clip.binding.transform_track_to_bone_indices.len()
+        || expected_track_count != clip.binding.declared_transform_tracks
+        || expected_track_count != clip.binding.transform_track_to_bone_indices.len()
         || clip.binding.skeleton_path != input.rig.animation_skeleton.path
         || clip.binding.original_skeleton_name != input.rig.animation_skeleton.runtime_name
-        || clip.binding.declared_float_tracks != candidate.binding.float_track_count
+        || clip.binding.declared_float_tracks != expected_float_count
         || clip.binding.float_track_to_float_slot_indices.len()
-            != candidate.binding.float_track_count
+            != expected_float_count
         || (candidate.looping != clip.looping && !allow_looping_source_projection)
     {
         return Err(invalid(
@@ -831,7 +955,7 @@ fn validate_candidate_binding(
                 ),
             )
         })?;
-    if mapped_float_slots
+    if !migrated_property_tracks && mapped_float_slots
         != candidate
             .binding
             .required_float_slots
@@ -865,6 +989,26 @@ fn validate_candidate_binding(
         ));
     }
     Ok(())
+}
+
+fn exact_accumulator_track_augmentation(
+    source_targets: &[String],
+    source_count: usize,
+    accumulator: &str,
+    bones: &[crate::source_rig::BoneDecl],
+    mapping: &[usize],
+) -> bool {
+    let normalize = |name: &str| name.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    let accumulator = normalize(accumulator);
+    if source_targets.len() != source_count || mapping.len() != source_count + 1
+        || source_targets.iter().any(|name| normalize(name) == accumulator)
+    {
+        return false;
+    }
+    source_targets.iter().zip(mapping).all(|(source, &index)| {
+        bones.get(index).is_some_and(|bone| normalize(&bone.name) == normalize(source))
+    }) && mapping.last().and_then(|index| bones.get(*index))
+        .is_some_and(|bone| normalize(&bone.name) == accumulator)
 }
 
 fn validate_field_decisions(
@@ -919,6 +1063,7 @@ fn pair_motion_roles(
     role: CreatureClipRole,
 ) -> &'static [MotionRole] {
     match role {
+        CreatureClipRole::WeaponAim => &[],
         CreatureClipRole::Idle => &[MotionRole::Idle],
         CreatureClipRole::SwimIdle if template == CreatureGraphTemplate::GroundSwim => {
             &[MotionRole::Idle, MotionRole::Swim]
@@ -929,7 +1074,11 @@ fn pair_motion_roles(
         CreatureClipRole::SwimIdle | CreatureClipRole::FlyIdle => &[MotionRole::Idle],
         CreatureClipRole::StationaryIdle => &[MotionRole::StationaryOrTurret, MotionRole::Idle],
         CreatureClipRole::GroundForward => &[MotionRole::GroundLocomotion],
-        CreatureClipRole::TurnLeft90 | CreatureClipRole::TurnRight90 => &[MotionRole::Turn],
+        CreatureClipRole::TurnLeft90 | CreatureClipRole::TurnRight90 | CreatureClipRole::TurnLeft | CreatureClipRole::TurnRight => &[MotionRole::Turn],
+        CreatureClipRole::Hurt => &[MotionRole::Hurt],
+        CreatureClipRole::Death => &[MotionRole::Death],
+        CreatureClipRole::GetUp => &[MotionRole::ScriptedIdle],
+        CreatureClipRole::ScriptedAction | CreatureClipRole::ScriptedLoop => &[MotionRole::ScriptedIdle],
         CreatureClipRole::MeleeAttack => &[MotionRole::MeleeAttack],
         CreatureClipRole::ProjectileAttack => match template {
             CreatureGraphTemplate::StationaryTurret => &[
@@ -1103,6 +1252,23 @@ mod tests {
     use crate::ids::{FormKey, SigCode};
     use crate::record::Record;
     use crate::sym::StringInterner;
+
+    include!("creature_scale_tests.rs");
+
+    #[test]
+    fn accumulator_track_augmentation_requires_exact_original_tracks_and_missing_root() {
+        let bones = vec![
+            BoneDecl { name: "Bip01".into(), parent_index: None },
+            BoneDecl { name: "Bip01 NonAccum".into(), parent_index: Some(0) },
+            BoneDecl { name: "Bip01 Head".into(), parent_index: Some(1) },
+        ];
+        let source = vec!["Bip01 NonAccum".into(), "Bip01 Head".into()];
+        assert!(exact_accumulator_track_augmentation(&source, 2, "Bip01", &bones, &[1, 2, 0]));
+        assert!(!exact_accumulator_track_augmentation(&source, 2, "Bip01", &bones, &[2, 1, 0]));
+        assert!(!exact_accumulator_track_augmentation(&source, 2, "Bip01", &bones, &[1, 2, 2]));
+        assert!(!exact_accumulator_track_augmentation(&source, 2, "Bip01", &bones, &[1, 2, 0, 0]));
+        assert!(!exact_accumulator_track_augmentation(&["Bip01".into()], 1, "Bip01", &bones, &[0, 0]));
+    }
 
     fn adapter_fixture(game: LegacyCreatureGame, ranged: bool) -> FnvFo3SourceRigAdapterInput {
         let interner = StringInterner::new();
@@ -1299,15 +1465,16 @@ mod tests {
             }],
             character_properties: Vec::new(),
         };
-        let scale = family
+        let capsule = family
             .race_data
             .as_ref()
             .unwrap()
-            .derivation
-            .scale_audit
+            .measured_evidence
+            .capsule
             .as_ref()
             .unwrap();
         let rig = CreatureManifest {
+            property_sequences: Vec::new(),
             creature_name: "creatures".to_string(),
             visual_skeleton_nif: visual_nif,
             animation_skeleton: crate::source_rig::SkeletonDecl {
@@ -1339,8 +1506,8 @@ mod tests {
             clips,
             idle_clip: "idle".to_string(),
             capsule: Capsule {
-                height: scale.scaled_capsule_height,
-                radius: scale.scaled_capsule_radius,
+                height: capsule.total_height,
+                radius: capsule.radius,
             },
             paths: ScaffoldPaths {
                 project: "Actors\\creatures\\GeckoProject.hkx".to_string(),
@@ -1352,6 +1519,7 @@ mod tests {
             core: declarations,
         };
         let graph = CapabilityGraphManifest {
+            source_channels: Vec::new(),
             template: if ranged {
                 CreatureGraphTemplate::GroundRangedProjectile
             } else {
@@ -1360,6 +1528,7 @@ mod tests {
             roles: clip_specs
                 .iter()
                 .map(|(_, name, role, trigger, _)| CapabilityClipRole {
+                    equipment_index: None,
                     role: *role,
                     state_name: format!("State_{name}"),
                     clip_name: (*name).to_string(),
@@ -1372,6 +1541,7 @@ mod tests {
             idle_event: "Idle".to_string(),
             explicit_events: events,
             candidate_attack_bindings: Vec::new(),
+            source_inert_attack_receipts: Vec::new(),
             overlays: Vec::new(),
         };
         let source_record = ledger
@@ -1449,32 +1619,33 @@ mod tests {
                 target_data: crate::source_rig::CreatureAttackTargetData::default(),
             }]
         };
-        let projection = CreatureRecordProjectionManifest {
-            base: base.clone(),
-            source_primary_identity: source.clone(),
-            race_data: mapped_race_data(&family).unwrap().clone(),
-            body_parts: CreatureBodyPartProjection::root_only_32("Bip01"),
-            body_nif_parts: Vec::new(),
-            npc_inventory: Vec::new(),
-            npc_spells: Vec::new(),
+        let projection = CreatureRecordProjectionManifest { templates: None, equipment_slots: Vec::new(), base: base.clone(),
+        race_keywords: vec![super::super::creature_profile_race_data::controller_scale_keyword()],
+        source_primary_identity: source.clone(),
+        race_data: mapped_race_data(&family).unwrap().clone(),
+        body_parts: CreatureBodyPartProjection::root_only_32("Bip01"),
+        body_nif_parts: Vec::new(),
+        npc_inventory: Vec::new(),
+        npc_spells: Vec::new(),
+        npc_death_item: None,
+        npc_equipment: Vec::new(),
+        variants: vec![CreatureNpcRecordVariant {
+            actor_data: None,
+            source_identity: source.clone(),
+            form_key: base.form_keys.npc.clone(),
+            editor_id: base.editor_ids.npc.clone(),
+            display_name: "Gecko".to_string(),
+            primary: true,
+            level: 8,
+            health: 100,
+            action_points: 50,
+            npc_inventory: None,
+            npc_equipment: None,
+            npc_spells: None,
+            npc_perks: Vec::new(),
             npc_death_item: None,
-            npc_equipment: Vec::new(),
-            variants: vec![CreatureNpcRecordVariant {
-                source_identity: source.clone(),
-                form_key: base.form_keys.npc.clone(),
-                editor_id: base.editor_ids.npc.clone(),
-                display_name: "Gecko".to_string(),
-                primary: true,
-                level: 8,
-                health: 100,
-                action_points: 50,
-                npc_inventory: None,
-                npc_equipment: None,
-                npc_spells: None,
-                npc_death_item: None,
-            }],
-            attacks,
-        };
+        }],
+        attacks, };
         let key_plan = CreatureRecordKeyPlan {
             planned_source_identity: source.clone(),
             base: base.form_keys.clone(),
@@ -1501,9 +1672,9 @@ mod tests {
                 target: base.form_keys.npc.clone(),
             },
             required_target_records: if ranged {
-                vec![ranged_spell]
+                vec![super::super::creature_profile_race_data::controller_scale_keyword(), ranged_spell]
             } else {
-                Vec::new()
+                vec![super::super::creature_profile_race_data::controller_scale_keyword()]
             },
         };
         let skeleton_claim = asset(
@@ -1565,8 +1736,9 @@ mod tests {
             })
             .unwrap();
         let canonical_json =
-            selected_pair_ledger_canonical_json(&ledger, record, &family, &ledger_blake3).unwrap();
+            selected_pair_ledger_canonical_json(&ledger, record, &family, &ledger_blake3, None, None).unwrap();
         let pair_ledger = SourceRigPairLedgerEvidence {
+            source_root_identity: None,
             schema: FNV_FO3_SOURCE_RIG_BRIDGE_SCHEMA.to_string(),
             canonical_json: canonical_json.clone(),
             ledger_blake3,
@@ -1619,6 +1791,8 @@ mod tests {
                 source_game,
             );
         FnvFo3SourceRigAdapterInput {
+            profile_race_data: None,
+            template_branch: None,
             ledger: Arc::new(ledger),
             family: family.rig.clone(),
             creature_closure: closure,
@@ -1634,6 +1808,74 @@ mod tests {
             batch_intent,
             field_receipts,
         }
+    }
+
+    #[test]
+    fn template_branch_identity_requires_exact_path_and_source_game() {
+        use super::super::creature_templates::{LegacyTemplateBranchReceipt, LegacyTemplatePlan, LegacyTemplateProfile};
+        let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
+        let family = input.ledger.families[0].clone();
+        let root = input.ledger.records.iter().find(|record| record.source.local == input.projection.source_primary_identity.local_form_id).unwrap().source.clone();
+        let profile = LegacyTemplateProfile { root: root.clone(), owners: std::array::from_fn(|_| root.clone()), actor_flags: 0 };
+        let plan = LegacyTemplatePlan::Leveled {
+            source: super::super::creature_catalog::StableFormKey { local: 0xA00, plugin: root.plugin.clone() },
+            entries: vec![LegacyTemplatePlan::Creature(profile.clone()), LegacyTemplatePlan::Creature(profile)],
+        };
+        let branch = LegacyTemplateBranchReceipt::new(&plan, vec![1], LegacyCreatureGame::Fnv, false).unwrap();
+        input.projection.source_primary_identity = branch.generated_identity.clone();
+        input.projection.variants[0].source_identity = branch.generated_identity.clone();
+        validate_template_branch_identity(&input, &family, &branch).unwrap();
+        let mut changed_path = branch.clone();
+        changed_path.entry_indices = vec![0];
+        assert!(validate_template_branch_identity(&input, &family, &changed_path).is_err());
+        let foreign = LegacyTemplateBranchReceipt::new(&plan, vec![1], LegacyCreatureGame::Fo3, false).unwrap();
+        input.projection.source_primary_identity = foreign.generated_identity.clone();
+        input.projection.variants[0].source_identity = foreign.generated_identity.clone();
+        assert!(validate_template_branch_identity(&input, &family, &foreign).is_err());
+        input.projection.source_primary_identity = branch.generated_identity.clone();
+        input.projection.variants[0].source_identity = branch.generated_identity.clone();
+        let mut forbidden = input.clone();
+        Arc::make_mut(&mut forbidden.ledger).records.iter_mut().find(|record| record.source == root).unwrap().provenance.game = LegacyCreatureGame::Fo3;
+        assert!(validate_template_branch_identity(&forbidden, &family, &branch).is_err());
+    }
+
+    #[test]
+    fn profile_race_stats_change_records_without_mutating_shared_capsule_artifacts() {
+        use crate::ids::SubrecordSig;
+        use crate::record::{FieldEntry, FieldValue};
+        let interner = StringInterner::new();
+        let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
+        let family = input.ledger.families[0].clone();
+        let owner = family.race_data.as_ref().unwrap().selection.source_creature.clone();
+        let mut source = Record::new(SigCode(*b"CREA"),FormKey { local:owner.local,plugin:interner.intern(&owner.plugin) });
+        let mut acbs = [0_u8;24];
+        acbs[8..10].copy_from_slice(&12_u16.to_le_bytes());
+        acbs[14..16].copy_from_slice(&100_u16.to_le_bytes());
+        source.fields = vec![
+            FieldEntry {sig:SubrecordSig(*b"ACBS"),value:FieldValue::Bytes(acbs.to_vec().into())},
+            FieldEntry {sig:SubrecordSig(*b"BNAM"),value:FieldValue::Float(1.0)},
+            FieldEntry {sig:SubrecordSig(*b"TNAM"),value:FieldValue::Float(90.0)},
+        ].into();
+        let first = super::super::creature_profile_race_data::prepare(&family,&owner,&source,&interner).unwrap();
+        source.fields[1].value = FieldValue::Float(1.5);
+        acbs[14..16].copy_from_slice(&150_u16.to_le_bytes());
+        source.fields[0].value = FieldValue::Bytes(acbs.to_vec().into());
+        let second = super::super::creature_profile_race_data::prepare(&family,&owner,&source,&interner).unwrap();
+        let RaceDataMapping::Mapped {target:first_target} = &first.derivation.mapping else {panic!("mapped first profile")};
+        let RaceDataMapping::Mapped {target:second_target} = &second.derivation.mapping else {panic!("mapped second profile")};
+        assert_eq!(second_target.male_height,first_target.male_height*1.5);
+        assert_eq!(second_target.acceleration_rate,first_target.acceleration_rate*1.5);
+        let capsule = input.rig.capsule.clone();
+        input.projection.race_data = second_target.clone();
+        input.profile_race_data = Some(second.clone());
+        validate_family_contract(&input,&family,"fnv").unwrap();
+        assert_eq!(input.rig.capsule,capsule);
+        let json = serde_json::to_string(&second).unwrap();
+        let restored = serde_json::from_str(&json).unwrap();
+        super::super::creature_profile_race_data::validate(&restored,&family).unwrap();
+        let mut forged = second;
+        forged.speed_multiplier = 200;
+        assert!(super::super::creature_profile_race_data::validate(&forged,&family).is_err());
     }
 
     #[test]
@@ -1714,9 +1956,10 @@ mod tests {
             })
             .unwrap();
         let canonical_json =
-            selected_pair_ledger_canonical_json(&input.ledger, record, family, &ledger_blake3)
+            selected_pair_ledger_canonical_json(&input.ledger, record, family, &ledger_blake3, None, None)
                 .unwrap();
         let receipt = SourceRigRecipeBridgeReceipt {
+            source_root_identity: None,
             version: crate::source_rig::SOURCE_RIG_BRIDGE_VERSION,
             ledger_schema: FNV_FO3_SOURCE_RIG_BRIDGE_SCHEMA.to_string(),
             ledger_blake3,
@@ -1887,6 +2130,26 @@ mod tests {
             FnvFo3MvpCandidateDisposition::Ready { .. }
         ));
         assert_eq!(ledger.content_hash_blake3.len(), 64);
+    }
+
+    #[test]
+    fn property_sequence_migration_requires_exact_source_controller_evidence() {
+        let mut input = adapter_fixture(LegacyCreatureGame::Fnv, false);
+        let family = input.ledger.families[0].clone();
+        let mut candidate = family.required_motion.iter().find(|motion| motion.role == MotionRole::Idle).unwrap().candidates[0].clone();
+        candidate.binding.float_track_count = 2;
+        candidate.binding.required_float_slots = vec!["screen-u".into(), "screen-v".into()];
+        let clip = input.rig.clips[0].clone();
+        let motion = input.graph.roles[0].motion;
+        assert!(validate_candidate_binding(&input, &family, &clip, &candidate, motion, false).is_err());
+        input.rig.property_sequences.push(crate::source_rig::CreaturePropertySequence {
+            clip_name: clip.name.clone(), crop_start_bits: 0, crop_end_bits: 0,
+            looping: clip.looping, sequence_names: vec!["BodyScreenIdle".into()],
+            source_float_slots: candidate.binding.required_float_slots.clone(),
+        });
+        validate_candidate_binding(&input, &family, &clip, &candidate, motion, false).unwrap();
+        input.rig.property_sequences[0].source_float_slots.swap(0, 1);
+        assert!(matches!(validate_candidate_binding(&input, &family, &clip, &candidate, motion, false), Err(FnvFo3SourceRigBridgeError::Invalid { code: "clip_property_binding_mismatch", .. })));
     }
 
     #[test]

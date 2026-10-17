@@ -44,7 +44,7 @@ def test_workspace_nif_menu_switches_to_standalone_validation_tool(monkeypatch):
     )
     monkeypatch.setattr(
         "ui.toolkit.app.imgui.menu_item",
-        lambda label, *args, **kwargs: (label == workspace.name, False),
+        lambda label, *args, **kwargs: (label.split("##", 1)[0] == workspace.name, False),
     )
     monkeypatch.setattr("ui.toolkit.app.imgui.separator", lambda: None)
     monkeypatch.setattr("ui.toolkit.app.imgui.end_menu", lambda: None)

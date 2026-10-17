@@ -119,6 +119,8 @@ Function Fragment_Stage_0460_Item_00()
 EndFunction
 
 Function Fragment_Stage_0500_Item_00()
+	; The vertibot sub-quest sets 500 directly, skipping 460, which is what completes objective 450.
+	CompleteObjective(450)
 	ShowObjective(500)
 EndFunction
 
@@ -132,6 +134,9 @@ Function Fragment_Stage_0600_Item_00()
 EndFunction
 
 Function Fragment_Stage_0800_Item_00()
+	If IsObjectiveDisplayed(600) && !IsObjectiveCompleted(600)
+		SetObjectiveCompleted(600, True)
+	EndIf
 	CompleteObjective(700)
 	ShowObjective(800)
 	If SFL02_Track_Radio_QuestStartKeyword != None && SFL02_Track_RadioQuest != None && !SFL02_Track_RadioQuest.IsRunning()

@@ -35,18 +35,32 @@ def setup_source(tmp_path):
     return interface
 
 
-def test_converter_replaces_only_document_code_and_preserves_import_closure(tmp_path, monkeypatch):
+def test_converter_repairs_reward_labels_and_preserves_import_closure(tmp_path, monkeypatch):
     interface = setup_source(tmp_path)
     source = (interface / ui.MENU).read_bytes()
 
     def compile_bridge(data, sources, dependencies):
+        assert b"B21RewardStars" in data
         assert set(sources) == {"UniversalRewardsMenu"}
         assert len(dependencies) == 4
         assert '"$RAIDS REWARDS":"$RAIDS REWARDS text"' in sources["UniversalRewardsMenu"]
         assert "__RAID_TRANSLATIONS__" not in sources["UniversalRewardsMenu"]
         return movie(IMPORTS, b"bridge")
 
+    def augment_entry(data, sources):
+        assert set(sources) == {"ItemRewardListEntry"}
+        assert "B21RewardStars.setText(RewardName_mc.Name_tf,value)" in sources["ItemRewardListEntry"]
+        return data
+
+    def patch_entry(data, class_name, method, pattern, replacement):
+        assert (class_name, method) == ("ItemRewardListEntry", "SetEntryText")
+        assert pattern[-1] == ["setproperty", "text"]
+        assert replacement[-1] == ["callpropvoid", "B21SetRewardName", 1]
+        return data
+
     monkeypatch.setattr(native_runtime, "replace_as3_classes", compile_bridge)
+    monkeypatch.setattr(native_runtime, "augment_as3_classes", augment_entry)
+    monkeypatch.setattr(native_runtime, "patch_as3_method", patch_entry)
     output = tmp_path / "converted/data"
     result = ui.convert_raid_rewards_ui(interface.parent, output)
     assert (interface / ui.MENU).read_bytes() == source

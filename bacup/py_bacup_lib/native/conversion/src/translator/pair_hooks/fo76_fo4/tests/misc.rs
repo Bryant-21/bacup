@@ -190,6 +190,36 @@ fn post_translate_rewrites_fo76_font_aliases_in_localized_text() {
     );
 }
 
+#[test]
+fn fo76_text_tokens_take_fo4_name_form_and_candy_counts_split_into_digits() {
+    assert_eq!(
+        rewritten_fo76_text_markup_for_fo4(
+            "Key: <Token=GeneratedKeyDigit1><Token=GeneratedKeyDigit2>"
+        ),
+        Some("Key: <Token.Name=GeneratedKeyDigit1><Token.Name=GeneratedKeyDigit2>".into())
+    );
+    assert_eq!(
+        rewritten_fo76_text_markup_for_fo4("Candy Credit: <Token=StoredCandy>"),
+        Some(
+            "Candy Credit: <Token.Name=StoredCandy1><Token.Name=StoredCandy2><Token.Name=StoredCandy3><Token.Name=StoredCandy4><Token.Name=StoredCandy5>"
+                .into()
+        )
+    );
+    assert_eq!(
+        rewritten_fo76_text_markup_for_fo4(
+            "<font face='$Typewriter_Font'><Token=PlayerCandy></font>"
+        )
+        .unwrap()
+        .matches("<Token.Name=PlayerCandy")
+        .count(),
+        5
+    );
+    assert_eq!(
+        rewritten_fo76_text_markup_for_fo4("Vault Status: <Token.Name=StatusBar>"),
+        None
+    );
+}
+
 fn none_fields<'a>(sigs: &[&'a str]) -> Vec<(&'a str, FieldValue)> {
     sigs.iter().map(|sig| (*sig, FieldValue::None)).collect()
 }

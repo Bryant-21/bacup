@@ -14,6 +14,9 @@ use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseRepor
 use crate::run::OwnedPluginHandle;
 use crate::translator::Game;
 
+pub(crate) mod face_texture_sets;
+mod legacy_landscape;
+
 #[derive(Clone, Copy)]
 struct Selection {
     regenerate_modt: bool,
@@ -124,10 +127,10 @@ fn repair_term_markers(ctx: &mut PhaseCtx<'_>) -> Result<TermReport, PhaseError>
                     "finalize_plugin_records: TERM repair requires source_plugin_path".into(),
                 )
             })?;
-        opened_source = OwnedPluginHandle::load(
+        opened_source = OwnedPluginHandle::load_projection(
             std::path::Path::new(source_path),
             ctx.run.source.as_str(),
-            None,
+            &[*b"TERM"],
         )
         .map_err(|error| PhaseError::BadParams(format!("TERM source plugin: {error}")))?;
         opened_source.id()
@@ -229,6 +232,8 @@ impl Phase for FinalizePluginRecordsPhase {
     }
 
     fn run(&self, ctx: &mut PhaseCtx<'_>) -> Result<PhaseReport, PhaseError> {
+        let convert_landscape = selected(ctx.params, "convert_legacy_landscape_specular", false);
+        let repair_faces = selected(ctx.params, "repair_face_texture_sets", true);
         let selection = Selection {
             regenerate_modt: selected(ctx.params, "regenerate_modt", true),
             repair_term_markers: selected(ctx.params, "repair_term_markers", false),
@@ -237,6 +242,8 @@ impl Phase for FinalizePluginRecordsPhase {
         if !selection.regenerate_modt
             && !selection.repair_term_markers
             && !selection.rebuild_cell_offsets
+            && !convert_landscape
+            && !repair_faces
         {
             return Err(PhaseError::BadParams(
                 "finalize_plugin_records: no operations selected".into(),
@@ -261,6 +268,16 @@ impl Phase for FinalizePluginRecordsPhase {
             ));
         }
 
+        let landscape = if convert_landscape {
+            legacy_landscape::convert(ctx)?
+        } else {
+            PhaseReport::default()
+        };
+        let faces = if repair_faces {
+            face_texture_sets::repair(ctx)?
+        } else {
+            PhaseReport::default()
+        };
         let reports = run_selected(
             ctx,
             selection,
@@ -312,16 +329,24 @@ impl Phase for FinalizePluginRecordsPhase {
         }
 
         Ok(PhaseReport {
-            assets_written: reports.modt.assets_written,
+            assets_written: reports
+                .modt
+                .assets_written
+                .saturating_add(landscape.assets_written)
+                .saturating_add(faces.assets_written),
+            records_added: landscape.records_added,
             records_changed: reports
                 .modt
                 .records_changed
                 .saturating_add(reports.term.modified)
+                .saturating_add(landscape.records_changed)
+                .saturating_add(faces.records_changed)
                 .saturating_add(reports.offsets.records_changed),
             warnings: reports
                 .modt
                 .warnings
-                .saturating_add(reports.offsets.warnings),
+                .saturating_add(reports.offsets.warnings)
+                .saturating_add(faces.warnings),
             ..Default::default()
         })
     }

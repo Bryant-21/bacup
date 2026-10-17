@@ -73,7 +73,7 @@ Function Fragment_Stage_0150_Item_00()
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
-	EnableLocalAlias(AmbientNPCEnableMarker)
+	EnableLocalAlias(((Self as Quest) as XPD_AC02_Mission_QuestScript).AmbientNPCEnableMarker)
 EndFunction
 
 Function Fragment_Stage_0215_Item_00()

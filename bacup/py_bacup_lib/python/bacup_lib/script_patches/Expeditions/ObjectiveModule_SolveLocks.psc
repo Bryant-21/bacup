@@ -27,7 +27,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		ReconcileLocalLocks()
 	EndIf
 EndEvent
@@ -63,20 +63,17 @@ Event Terminal.OnMenuItemRun(Terminal akSender, Int auiMenuItemID, ObjectReferen
 EndEvent
 
 Function InitializeLocalLockStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 EndFunction
 
 Function ReconcileLocalLocks()
-	If IsStageDone(CompleteStage) || LockedObjectSets == None
+	If IsStageDone(GetCompleteStage()) || LockedObjectSets == None
 		Return
 	EndIf
 	LinearProg_i = 0
@@ -91,7 +88,7 @@ Function ReconcileLocalLocks()
 		setIndex += 1
 	EndWhile
 	If CountCompletedLocalLocks() >= CountValidLocalLocks() && CountValidLocalLocks() > 0
-		SetStage(CompleteStage)
+		SetStage(GetCompleteStage())
 	EndIf
 EndFunction
 
@@ -152,7 +149,7 @@ Function CompleteLocalLockForReference(ObjectReference lockedRef)
 EndFunction
 
 Function CompleteLocalLockSet(Int setIndex)
-	If IsStageDone(CompleteStage) || LockedObjectSets == None || setIndex < 0 || setIndex >= LockedObjectSets.Length
+	If IsStageDone(GetCompleteStage()) || LockedObjectSets == None || setIndex < 0 || setIndex >= LockedObjectSets.Length
 		Return
 	EndIf
 	LockedObjectSetData setData = LockedObjectSets[setIndex]

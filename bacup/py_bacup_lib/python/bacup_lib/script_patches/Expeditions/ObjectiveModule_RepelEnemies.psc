@@ -28,7 +28,7 @@ Event OnQuestShutdown()
 EndEvent
 
 Event Actor.OnPlayerLoadGame(Actor akSender)
-	If akSender == Game.GetPlayer() && !IsStageDone(CompleteStage)
+	If akSender == Game.GetPlayer() && !IsStageDone(GetCompleteStage())
 		RegisterLocalRepelReferences()
 		If IsStageDone(StageToSetOnStart) && !SecureComplete
 			StartTimer(PROGRESS_INTERVAL, PROGRESS_TIMER)
@@ -65,7 +65,7 @@ Event Actor.OnDeath(Actor akSender, Actor akKiller)
 EndEvent
 
 Event OnTimer(Int aiTimerID)
-	If aiTimerID != PROGRESS_TIMER || SecureComplete || IsStageDone(CompleteStage) || !IsStageDone(StageToSetOnStart)
+	If aiTimerID != PROGRESS_TIMER || SecureComplete || IsStageDone(GetCompleteStage()) || !IsStageDone(StageToSetOnStart)
 		Return
 	EndIf
 	ReconcileLocalSecureAreaEnemies()
@@ -92,14 +92,11 @@ Event OnTimer(Int aiTimerID)
 EndEvent
 
 Function InitializeLocalRepelStages()
-	WaitingStage = XPD_ObjectiveModule_WaitingStage_Global.GetValue() as Int
-	ActiveStage = XPD_ObjectiveModule_ActiveStage_Global.GetValue() as Int
-	CompleteStage = XPD_ObjectiveModule_CompleteStage_Global.GetValue() as Int
-	If !IsStageDone(WaitingStage)
-		SetStage(WaitingStage)
+	If !IsStageDone(GetWaitingStage())
+		SetStage(GetWaitingStage())
 	EndIf
-	If !IsStageDone(ActiveStage)
-		SetStage(ActiveStage)
+	If !IsStageDone(GetActiveStage())
+		SetStage(GetActiveStage())
 	EndIf
 	SetObjectiveCompleted(200, True)
 	SetObjectiveDisplayed(300, True)
@@ -144,7 +141,7 @@ Function RegisterLocalRepelReferences()
 EndFunction
 
 Function StartLocalSecureArea()
-	If SecureComplete || IsStageDone(CompleteStage) || IsStageDone(StageToSetOnStart)
+	If SecureComplete || IsStageDone(GetCompleteStage()) || IsStageDone(StageToSetOnStart)
 		Return
 	EndIf
 	SetStage(StageToSetOnStart)
@@ -197,7 +194,7 @@ Function ApplyLocalRepelThresholds(Float oldProgressPercent, Float newProgressPe
 EndFunction
 
 Function CompleteLocalSecureArea()
-	If SecureComplete || IsStageDone(CompleteStage)
+	If SecureComplete || IsStageDone(GetCompleteStage())
 		Return
 	EndIf
 	SecureComplete = True
@@ -206,5 +203,5 @@ Function CompleteLocalSecureArea()
 	If XPD_ObjMod_RepelEnemies_AreaSecured_Message != None
 		XPD_ObjMod_RepelEnemies_AreaSecured_Message.Show()
 	EndIf
-	SetStage(CompleteStage)
+	SetStage(GetCompleteStage())
 EndFunction

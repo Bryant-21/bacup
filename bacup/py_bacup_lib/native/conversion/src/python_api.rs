@@ -603,6 +603,8 @@ fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
     let use_base_game_assets = bool_from_value(&config, "use_base_game_assets", false);
     let preserve_source_ids = bool_from_value(&config, "preserve_source_ids", false);
     let overwrite_existing = bool_from_value(&config, "overwrite_existing", false);
+    let native_assets = bool_from_value(&config, "native_assets", false);
+    let replace_fo4_materials = bool_from_value(&config, "replace_fo4_materials", false);
     let output_plugin_name = config
         .get("output_plugin_name")
         .and_then(Value::as_str)
@@ -621,6 +623,8 @@ fn config_from_json(config_json: &str) -> PyResult<RunConfig> {
         use_base_game_assets,
         preserve_source_ids,
         overwrite_existing,
+        native_assets,
+        replace_fo4_materials,
         generated_object_id_floor: optional_u32(&config, "generated_object_id_floor").unwrap_or(0),
         output_plugin_name,
         is_whole_plugin,
@@ -758,6 +762,22 @@ pub fn merge_sources_py(py: Python<'_>, opts_json: &str) -> PyResult<String> {
     })
 }
 
+#[pyfunction(name = "conversion_starfield_texture_sets")]
+pub fn starfield_texture_sets_py(
+    py: Python<'_>,
+    materials: Vec<(String, String)>,
+    resolved_textures: std::collections::HashMap<String, String>,
+) -> PyResult<String> {
+    run_with_panic_catch("conversion_starfield_texture_sets", || {
+        py.detach(move || {
+            let result = crate::phase::starfield_textures::texture_sets_from_materials(
+                &materials, &resolved_textures,
+            );
+            serde_json::to_string(&result).map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        })
+    })
+}
+
 /// Enumerate the FO76 LOD-by-convention closures for every LOD-capable base
 /// record in `handle_id` (STAT/SCOL/MSTT/TREE/FLOR/ACTI). Returns the
 /// `(asset_type, source_path, resolved_path)` rows for each existing `_lod[_N].nif`
@@ -811,7 +831,7 @@ fn normalize_fo76_font_aliases_for_fo4(
     for table in strings.by_language.values_mut() {
         for text in table.values_mut() {
             if let Some(rewritten) =
-                crate::translator::pair_hooks::fo76_fo4::rewritten_fo76_font_aliases_for_fo4(text)
+                crate::translator::pair_hooks::fo76_fo4::rewritten_fo76_text_markup_for_fo4(text)
             {
                 *text = rewritten;
             }
@@ -890,7 +910,7 @@ pub fn create_run_from_paths_py(
                 let source_handle = source_plugin_path
                     .as_deref()
                     .map(|path| {
-                        OwnedPluginHandle::load(
+                        OwnedPluginHandle::load_source(
                             Path::new(path),
                             source.as_str(),
                             source_strings_dir.as_deref().map(Path::new),
@@ -1475,6 +1495,21 @@ pub fn drain_warnings_py<'py>(py: Python<'py>, run_id: u64) -> PyResult<Bound<'p
             list.append(s)?;
         }
         Ok(list)
+    })
+}
+
+/// Sorted data-relative keys (`materials/...`, `textures/...`) the run writes over FO4's files.
+#[pyfunction(name = "conversion_run_native_overwrite_paths")]
+pub fn native_overwrite_paths_py(py: Python<'_>, run_id: u64) -> PyResult<Vec<String>> {
+    run_with_panic_catch("conversion_run_native_overwrite_paths", || {
+        py.detach(move || {
+            with_run(run_id, |run| {
+                let mut paths: Vec<String> = run.native_overwrite_paths.iter().cloned().collect();
+                paths.sort();
+                Ok::<_, RunError>(paths)
+            })
+            .map_err(run_error_to_py)
+        })
     })
 }
 
@@ -2966,12 +3001,14 @@ fn load_anim_text_data_plugins(
     game: &str,
     base_race_plugin_paths: &[String],
 ) -> Result<(OwnedPluginHandle, Vec<OwnedPluginHandle>), String> {
-    let target_handle = OwnedPluginHandle::load(Path::new(target_plugin_path), game, None)
-        .map_err(|error| error.to_string())?;
+    let target_handle = OwnedPluginHandle::load_projection(
+        Path::new(target_plugin_path), game, &[*b"RACE", *b"IDLE"],
+    ).map_err(|error| error.to_string())?;
     let base_race_handles = base_race_plugin_paths
         .iter()
         .map(|path| {
-            OwnedPluginHandle::load(Path::new(path), game, None).map_err(|error| error.to_string())
+            OwnedPluginHandle::load_projection(Path::new(path), game, &[*b"RACE"])
+                .map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok((target_handle, base_race_handles))
@@ -3404,7 +3441,281 @@ pub fn synthesize_vendor_dialogue_py<'py>(py: Python<'py>, run_id: u64) -> PyRes
     })
 }
 
+#[pyfunction]
+#[pyo3(signature = (data, bones, expected_tracks))]
+fn convert_ui_animation<'py>(py: Python<'py>, data: &[u8], bones: Option<Vec<String>>, expected_tracks: usize) -> PyResult<(Bound<'py, pyo3::types::PyBytes>, String)> {
+    let (bytes, metadata) = py.detach(|| crate::ui_animation::convert(data, bones.as_deref(), expected_tracks)).map_err(PyValueError::new_err)?;
+    Ok((pyo3::types::PyBytes::new(py, &bytes), serde_json::to_string(&metadata).map_err(|error| PyValueError::new_err(error.to_string()))?))
+}
+
+#[pyfunction]
+fn collect_map_marker_types(py: Python<'_>, source_path: String) -> PyResult<Vec<(u32, u16)>> {
+    py.detach(move || crate::map_markers::collect(Path::new(&source_path))).map_err(PyValueError::new_err)
+}
+
+/// Returns `(head materials repointed, base head textures re-encoded, warnings)`.
+#[pyfunction]
+fn repair_face_head_files(py: Python<'_>, data_root: String, source_root: String) -> PyResult<(u32, u32, Vec<String>)> {
+    py.detach(move || {
+        let mut warnings = Vec::new();
+        crate::phase::final_plugin::face_texture_sets::repair_head_files(Path::new(&data_root), Path::new(&source_root), &mut warnings)
+            .map(|(heads, base_heads)| (heads, base_heads, warnings))
+    })
+    .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn render_icon_front<'py>(py: Python<'py>, triangles: &[u8]) -> PyResult<(Bound<'py, pyo3::types::PyBytes>, Bound<'py, pyo3::types::PyBytes>, Bound<'py, pyo3::types::PyBytes>)> {
+    let (covered, depth, normals) = py.detach(|| crate::ui_icon::front_view(triangles)).map_err(PyValueError::new_err)?;
+    Ok((pyo3::types::PyBytes::new(py, &covered), pyo3::types::PyBytes::new(py, &depth), pyo3::types::PyBytes::new(py, &normals)))
+}
+
+#[pyfunction]
+fn generate_item_icons(py: Python<'_>, request_json: &str) -> PyResult<String> {
+    let request =
+        serde_json::from_str(request_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    py.detach(|| {
+        crate::item_icons::generate(request)
+            .and_then(|value| serde_json::to_string(&value).map_err(|e| e.to_string()))
+    })
+    .map_err(PyValueError::new_err)
+}
+
+fn icon_triangles(data: &[u8]) -> PyResult<Vec<crate::item_icons::render::Triangle>> {
+    if data.len() % 72 != 0 {
+        return Err(PyValueError::new_err(
+            "Expected float64 triangles with shape (n,3,3)",
+        ));
+    }
+    Ok(data
+        .chunks_exact(72)
+        .map(|triangle| {
+            std::array::from_fn(|point| {
+                std::array::from_fn(|axis| {
+                    let offset = point * 24 + axis * 8;
+                    f64::from_le_bytes(triangle[offset..offset + 8].try_into().unwrap())
+                })
+            })
+        })
+        .collect())
+}
+
+#[pyfunction]
+fn item_icon_view(py: Python<'_>, triangles: &[u8], signature: &str) -> PyResult<String> {
+    let triangles = icon_triangles(triangles)?;
+    py.detach(|| {
+        serde_json::to_string(&crate::item_icons::render::view_basis(
+            &triangles, signature,
+        ))
+    })
+    .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn render_item_icon<'py>(
+    py: Python<'py>,
+    triangles: &[u8],
+    signature: &str,
+) -> PyResult<(String, Bound<'py, pyo3::types::PyBytes>)> {
+    let triangles = icon_triangles(triangles)?;
+    let (view, alpha) = py
+        .detach(|| crate::item_icons::render::item_icon(&triangles, signature))
+        .map_err(PyValueError::new_err)?;
+    Ok((view, pyo3::types::PyBytes::new(py, &alpha)))
+}
+
+#[pyfunction]
+fn item_icon_flags(py: Python<'_>, alpha: &[u8]) -> PyResult<Vec<String>> {
+    if alpha.len() != 128 * 128 {
+        return Err(PyValueError::new_err("Expected 128x128 alpha bytes"));
+    }
+    Ok(py.detach(|| {
+        crate::item_icons::icon_flags(alpha)
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }))
+}
+
+#[pyfunction]
+fn item_icon_record(
+    py: Python<'_>,
+    raw: u32,
+    record_json: &str,
+    signature: &str,
+    plugin: &str,
+    masters: Vec<String>,
+) -> PyResult<String> {
+    let record =
+        serde_json::from_str(record_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    py.detach(|| {
+        serde_json::to_string(&crate::item_icons::records::item(
+            raw, &record, signature, plugin, &masters,
+        ))
+    })
+    .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn item_icon_model(py: Python<'_>, item_json: &str) -> PyResult<Option<String>> {
+    let item = serde_json::from_str(item_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(py.detach(|| crate::item_icons::records::icon_model(&item)))
+}
+
+#[pyfunction]
+fn item_icon_worn(py: Python<'_>, items_json: &str, addons_json: &str) -> PyResult<String> {
+    let mut items: Vec<crate::item_icons::records::Item> =
+        serde_json::from_str(items_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let addons =
+        serde_json::from_str(addons_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    py.detach(|| {
+        crate::item_icons::records::worn_items(&mut items, &addons);
+        serde_json::to_string(&items)
+    })
+    .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+fn item_icon_geometry<'py>(
+    py: Python<'py>,
+    blocks: Vec<(String, Py<PyAny>)>,
+    data_json: &str,
+) -> PyResult<(Bound<'py, pyo3::types::PyBytes>, String)> {
+    let mut nif = nif_core_native::model::NifFile::new("fo4");
+    nif.blocks.clear();
+    for (name, fields) in blocks {
+        let nif_core_native::model::NifValue::Struct(fields) =
+            nif_core_native::python::value::py_to_nif(fields.bind(py))
+        else {
+            return Err(PyValueError::new_err("Expected NIF block fields"));
+        };
+        nif.add_block(&name, Some(fields));
+    }
+    let data = serde_json::from_str(data_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let (triangles, skipped) = py
+        .detach(|| -> Result<_, String> {
+            let assets = crate::item_icons::assets::Assets::new(&data)?;
+            crate::item_icons::geometry::visible_triangles(&nif, &assets)
+        })
+        .map_err(PyValueError::new_err)?;
+    let bytes: Vec<_> = triangles
+        .iter()
+        .flatten()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    Ok((
+        pyo3::types::PyBytes::new(py, &bytes),
+        serde_json::to_string(&skipped).map_err(|e| PyValueError::new_err(e.to_string()))?,
+    ))
+}
+
+#[pyfunction]
+fn item_icon_texture_alpha<'py>(
+    py: Python<'py>,
+    name: &str,
+    data_json: &str,
+) -> PyResult<Option<(usize, usize, Bound<'py, pyo3::types::PyBytes>)>> {
+    let data = serde_json::from_str(data_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let alpha = py
+        .detach(|| crate::item_icons::assets::Assets::new(&data)?.alpha(name))
+        .map_err(PyValueError::new_err)?;
+    Ok(alpha.map(|a| (a.width, a.height, pyo3::types::PyBytes::new(py, &a.values))))
+}
+
+#[pyfunction]
+fn item_icon_model_file(py: Python<'_>, model: &str, data_json: &str) -> PyResult<Option<String>> {
+    let data = serde_json::from_str(data_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    py.detach(|| crate::item_icons::assets::Assets::new(&data).map(|assets| assets.model(model)))
+        .map_err(PyValueError::new_err)
+}
+
+#[pyfunction]
+fn item_icon_alpha_cut<'py>(
+    py: Python<'py>,
+    points: Vec<[f64; 3]>,
+    uvs: Vec<[f64; 2]>,
+    faces: Vec<[usize; 3]>,
+    alpha: &[u8],
+    width: usize,
+    height: usize,
+    vertex_alpha: Vec<f64>,
+    threshold: f64,
+    pixel: f64,
+) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+    if width * height != alpha.len()
+        || width == 0
+        || height == 0
+        || points.len() != uvs.len()
+        || points.len() != vertex_alpha.len()
+        || faces.iter().flatten().any(|&i| i >= points.len())
+    {
+        return Err(PyValueError::new_err(
+            "Invalid alpha-cut dimensions or indices",
+        ));
+    }
+    let texture = crate::item_icons::assets::Alpha {
+        width,
+        height,
+        values: alpha.to_vec(),
+    };
+    let triangles = py.detach(|| {
+        crate::item_icons::geometry::alpha_tested_triangles(
+            &points,
+            &uvs,
+            &faces,
+            &texture,
+            &vertex_alpha,
+            threshold,
+            pixel,
+        )
+    });
+    let bytes: Vec<_> = triangles
+        .iter()
+        .flatten()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    Ok(pyo3::types::PyBytes::new(py, &bytes))
+}
+
+#[pyfunction]
+fn build_pipboy_quest_catalog(py: Python<'_>, source_path: String, converted_path: String, presentation_json: String) -> PyResult<String> {
+    py.detach(move || {
+        let presentation = serde_json::from_str(&presentation_json).map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let result = crate::pipboy_quest_catalog::build(Path::new(&source_path), Path::new(&converted_path), presentation)
+            .map_err(PyValueError::new_err)?;
+        serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
+    })
+}
+
+#[pyfunction]
+fn build_infestation_catalog(py: Python<'_>, source_path: String, converted_path: String, data_version: String) -> PyResult<String> {
+    py.detach(move || {
+        let result = crate::infestations::build(Path::new(&source_path), Path::new(&converted_path), &data_version)
+            .map_err(PyValueError::new_err)?;
+        serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
+    })
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(generate_item_icons, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_view, m)?)?;
+    m.add_function(wrap_pyfunction!(render_item_icon, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_flags, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_record, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_model, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_worn, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_geometry, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_alpha_cut, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_texture_alpha, m)?)?;
+    m.add_function(wrap_pyfunction!(item_icon_model_file, m)?)?;
+    m.add_function(wrap_pyfunction!(convert_ui_animation, m)?)?;
+    m.add_function(wrap_pyfunction!(render_icon_front, m)?)?;
+    m.add_function(wrap_pyfunction!(collect_map_marker_types, m)?)?;
+    m.add_function(wrap_pyfunction!(repair_face_head_files, m)?)?;
+    m.add_function(wrap_pyfunction!(build_pipboy_quest_catalog, m)?)?;
+    m.add_function(wrap_pyfunction!(build_infestation_catalog, m)?)?;
     m.add_class::<crate::source_inventory::PySourceAssetInventory>()?;
     m.add_class::<crate::target_assets::PyTargetAssetStore>()?;
     m.add_function(wrap_pyfunction!(configure_drop_trace_py, m)?)?;
@@ -3416,6 +3727,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(diagnose_navmesh_links_py, m)?)?;
     m.add_function(wrap_pyfunction!(crate::filesystem::remove_path_py, m)?)?;
     m.add_function(wrap_pyfunction!(merge_sources_py, m)?)?;
+    m.add_function(wrap_pyfunction!(starfield_texture_sets_py, m)?)?;
     m.add_function(wrap_pyfunction!(collect_lod_closures_py, m)?)?;
     m.add_function(wrap_pyfunction!(create_run_from_paths_py, m)?)?;
     m.add_function(wrap_pyfunction!(set_target_description_py, m)?)?;
@@ -3431,6 +3743,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(drop_run_py, m)?)?;
     m.add_function(wrap_pyfunction!(drain_decisions_py, m)?)?;
     m.add_function(wrap_pyfunction!(drain_warnings_py, m)?)?;
+    m.add_function(wrap_pyfunction!(native_overwrite_paths_py, m)?)?;
     m.add_function(wrap_pyfunction!(release_remap_state_py, m)?)?;
     m.add_function(wrap_pyfunction!(set_progress_callback_py, m)?)?;
     m.add_function(wrap_pyfunction!(preflight_legacy_packs_py, m)?)?;
@@ -4139,6 +4452,22 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn config_from_json_reads_native_assets_and_defaults_it_off() {
+        assert!(!config_from_json("{}").unwrap().native_assets);
+        assert!(config_from_json(r#"{"native_assets": true}"#).unwrap().native_assets);
+    }
+
+    #[test]
+    fn config_from_json_reads_replace_fo4_materials_and_defaults_it_off() {
+        assert!(!config_from_json("{}").unwrap().replace_fo4_materials);
+        assert!(
+            config_from_json(r#"{"replace_fo4_materials": true}"#)
+                .unwrap()
+                .replace_fo4_materials
+        );
     }
 
     #[test]

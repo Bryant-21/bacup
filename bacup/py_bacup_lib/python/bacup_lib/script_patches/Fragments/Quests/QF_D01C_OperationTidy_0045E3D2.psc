@@ -1,29 +1,29 @@
 Function Fragment_Stage_0010_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(200, true, true)
+    Self.SetObjectiveDisplayed(200, true, true)
 EndFunction
 
 Function Fragment_Stage_0020_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(200, true, true)
+    Self.SetObjectiveDisplayed(200, true, true)
 EndFunction
 
 Function Fragment_Stage_0030_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(200, true, true)
+    Self.SetObjectiveDisplayed(200, true, true)
 EndFunction
 
 Function Fragment_Stage_0040_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(200, true, true)
+    Self.SetObjectiveDisplayed(200, true, true)
 EndFunction
 
 Function Fragment_Stage_0050_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(200, true, true)
+    Self.SetObjectiveDisplayed(200, true, true)
 EndFunction
 
 Function Fragment_Stage_0100_Item_00()
-    GetOwningQuest().SetObjectiveDisplayed(100)
+    Self.SetObjectiveDisplayed(100)
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self
     owningQuest.SetObjectiveCompleted(100)
     owningQuest.SetObjectiveDisplayed(200)
 
@@ -37,7 +37,7 @@ Function Fragment_Stage_0200_Item_00()
 EndFunction
 
 Function Fragment_Stage_0300_Item_00()
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self
     owningQuest.SetObjectiveCompleted(200)
     owningQuest.SetObjectiveDisplayed(300)
 EndFunction
@@ -70,7 +70,7 @@ Function Fragment_Stage_1000_Item_00()
         EndIf
     EndIf
 
-    Quest owningQuest = GetOwningQuest()
+    Quest owningQuest = Self
     owningQuest.SetObjectiveCompleted(300)
 
     D01C_OperationTidyScript tidyQuest = D01C_OperationTidy as D01C_OperationTidyScript

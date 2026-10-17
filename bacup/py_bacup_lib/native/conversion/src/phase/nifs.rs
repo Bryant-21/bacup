@@ -11,7 +11,6 @@
 //       "resolved_path": "/abs/path/to/Gun.nif",      // absolute disk path
 //       "weapon_role":   "gun" | "melee" | null,      // optional
 //       "workshop_wire_point": [x, y, z]               // optional FO76 snap-template point
-//       "workshop_snap_points": [{name, translation, rotation, scale}]
 //     },
 //     ...
 //   ],
@@ -29,6 +28,9 @@
 // Phase output: writes NIF files under mod_path/data/Meshes/...
 // PhaseReport.assets_written = count of successfully converted NIFs.
 
+mod memory;
+mod attached_behaviors;
+
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -41,6 +43,7 @@ use indexmap::IndexMap;
 use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 
+use crate::native_nifs::{existing_nifs_match_mode, mark_nif_mode_mixed, record_nif_mode};
 use crate::phase::progress::ProgressReporter;
 use crate::phase::{LogLevel, Phase, PhaseCtx, PhaseError, PhaseEvent, PhaseReport};
 use nif_core_native::convert_file::{
@@ -50,10 +53,7 @@ use nif_core_native::model::{NifFile, NifValue, ReferencedAssetPaths};
 use nif_core_native::skeleton_repose::{
     BindMatrix, collect_bind_matrices_by_name, repose_skeleton_to_inverse_bind,
 };
-use nif_core_native::weapon_attachment::{
-    ParentConnectPoint, replace_parent_connect_points_with_prefix,
-    upsert_parent_connect_point_translation,
-};
+use nif_core_native::weapon_attachment::upsert_parent_connect_point_translation;
 
 pub struct ConvertNifsV2Phase;
 
@@ -132,14 +132,14 @@ fn run_convert_nifs(
         });
     }
     let dependency_counts = ctx.run.nif_dependencies.counts();
-    apply_nif_relocation_with_dependencies(
+    crate::worker_pool::install(conversion_workers, || apply_nif_relocation_with_dependencies(
         &mut nif_entries,
         &ctx.run.relocation_members,
         &ctx.run.relocation_mesh_only_members,
         &relocation_namespace,
         relocation_source_dir,
         &ctx.run.nif_dependencies,
-    );
+    )).map_err(|err| PhaseError::Internal(format!("rayon pool error: {err}")))?;
     if relocation_enabled {
         let (requests, loads) = ctx.run.nif_dependencies.counts();
         let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
@@ -244,6 +244,17 @@ fn run_convert_nifs(
             ),
         });
     }
+    let native_mode = crate::run::native_assets_active(ctx.run);
+    let native_material_pair = matches!(source_game.as_str(), "fo76" | "starfield") && target_game == "fo4";
+    let native_starfield = native_mode && source_game == "starfield";
+    let starfield_namespace = crate::native_starfield::material_namespace(ctx.run);
+    let other_mode_outputs = native_material_pair && !existing_nifs_match_mode(mod_path, native_mode);
+    if other_mode_outputs {
+        mark_nif_mode_mixed(mod_path).map_err(|error| {
+            PhaseError::Internal(format!("could not record the NIF material mode: {error}"))
+        })?;
+    }
+    let keep_existing = skip_existing && !other_mode_outputs;
     let mut skipped_existing: u32 = 0;
     let mut sink_failures: u32 = 0;
     let mut foreign_existing_artifacts: u32 = 0;
@@ -251,7 +262,7 @@ fn run_convert_nifs(
     let mut work_entries = Vec::with_capacity(reserved_entries.len());
     for reserved in reserved_entries {
         let dst = nif_output_path(mod_path, &reserved.entry);
-        if skip_existing && dst.is_file() {
+        if keep_existing && dst.is_file() && reserved.artifacts.attached_behaviors.is_none() {
             if let Some(point) = reserved.entry.workshop_wire_point {
                 match apply_workshop_wire_point(&dst, point) {
                     Ok(_) => {}
@@ -261,23 +272,6 @@ fn run_convert_nifs(
                             level: LogLevel::Warn,
                             message: format!(
                                 "{phase_name}: could not update workshop wire point on existing NIF {}: {message}; reconverting",
-                                dst.display()
-                            ),
-                        });
-                        work_entries.push(reserved);
-                        continue;
-                    }
-                }
-            }
-            if !reserved.entry.workshop_snap_points.is_empty() {
-                match apply_workshop_snap_points(&dst, &reserved.entry.workshop_snap_points) {
-                    Ok(_) => {}
-                    Err(message) => {
-                        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
-                            phase: phase_name,
-                            level: LogLevel::Warn,
-                            message: format!(
-                                "{phase_name}: could not update workshop snap points on existing NIF {}: {message}; reconverting",
                                 dst.display()
                             ),
                         });
@@ -325,6 +319,15 @@ fn run_convert_nifs(
         }
     }
     let work_count = work_entries.len();
+    if skip_existing && other_mode_outputs {
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: phase_name,
+            level: LogLevel::Info,
+            message: format!(
+                "{phase_name}: reconverting existing NIF(s): the native assets setting changed since they were written"
+            ),
+        });
+    }
     if skipped_existing > 0 {
         let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
             phase: phase_name,
@@ -349,6 +352,7 @@ fn run_convert_nifs(
             ),
         });
 
+    let overwrites = crate::native_overwrites::begin_phase(ctx, phase_name);
     // Build per-entry results in parallel via rayon.
     let reporter = Arc::new(ProgressReporter::new(
         phase_name,
@@ -361,29 +365,56 @@ fn run_convert_nifs(
     let output_dependencies = ctx.run.output_nif_dependencies.clone();
     // Fold directly into NifAgg to avoid retaining all NifResult objects.
     let convert_work = || {
-        work_entries
+        let planning_started = Instant::now();
+        let (available_bytes, budget_bytes) = memory::budget();
+        let jobs: Vec<_> = work_entries
             .into_par_iter()
-            .fold(NifAgg::default, |mut agg, reserved| {
+            .map(|reserved| {
+                let source_bytes = std::fs::metadata(&reserved.entry.resolved_path)
+                    .map_or(0, |metadata| metadata.len());
+                (memory::estimate(source_bytes), reserved)
+            })
+            .collect();
+        let queue = memory::MemoryQueue::new(jobs, budget_bytes);
+        let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+            phase: phase_name,
+            level: LogLevel::Info,
+            message: format!("[nif_memory] available_bytes={available_bytes:?} budget_bytes={budget_bytes} workers={} planning_ms={}",
+                rayon::current_num_threads(), planning_started.elapsed().as_millis()),
+        });
+        (0..rayon::current_num_threads())
+            .into_par_iter()
+            .map(|_| std::iter::from_fn(|| queue.pop()).fold(NifAgg::default(), |mut agg, (reserved, _permit)| {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     agg.cancelled = true;
                     return agg;
                 }
                 let entry = &reserved.entry;
+                let entry_started = Instant::now();
+                let entry_publication_lock = Mutex::new(());
+                // Primary destinations are reserved before dispatch. Only sidecar
+                // transactions can touch paths shared with another entry.
+                let publication_lock = if !emit_first_person && reserved.artifacts.material_relative.is_none() {
+                    &entry_publication_lock
+                } else {
+                    publication_lock.as_ref()
+                };
                 let source_path = entry.source_path.clone();
                 reporter.set_item(source_path.clone());
                 let options = ConvertFileOptions {
                     asset_prefix: entry.asset_namespace.clone(),
-                    material_namespace: entry.material_namespace.clone(),
+                    material_namespace: if native_starfield { Some(starfield_namespace.clone()) } else { entry.material_namespace.clone() },
                     asset_namespace_paths: entry.asset_namespace_paths.iter().cloned().collect(),
-                    material_namespace_paths: entry
+                    material_namespace_paths: if native_starfield { Default::default() } else { entry
                         .material_namespace_paths
                         .iter()
                         .cloned()
-                        .collect(),
+                        .collect() },
                     addon_index_map: addon_index_map.clone(),
                     translation_maps_dir: translation_maps_dir.clone(),
                     skin_policy,
-                    target_skeleton: target_skeleton.clone(),
+                    target_skeleton: entry.target_skeleton.clone().or_else(|| target_skeleton.clone()),
+                    cloth_companions: entry.cloth_companions.clone(),
                     auto_skin_reference_body: auto_skin_reference_body.clone(),
                     emit_first_person,
                     first_person_reference: first_person_reference.clone(),
@@ -392,6 +423,8 @@ fn run_convert_nifs(
                     strip_cloth: entry.strip_cloth,
                     source_material_dir: Some(nif_source_material_dir.clone()),
                     material_source_overrides: material_source_overrides.clone(),
+                    keep_fo76_materials: native_mode && source_game == "fo76",
+                    keep_starfield_materials: native_starfield,
                 };
 
                 let dst = nif_output_path(mod_path, &entry);
@@ -401,7 +434,12 @@ fn run_convert_nifs(
                     &reserved.artifacts,
                     &destination_ownership,
                     &publication_lock,
-                    StagedNifDestination::new,
+                    |destination| {
+                        let started = Instant::now();
+                        let staged = StagedNifDestination::new(destination);
+                        agg.staging_us += started.elapsed().as_micros();
+                        staged
+                    },
                 ) {
                     Ok(mut staged) => {
                         let stage_skyrim_materials =
@@ -438,7 +476,18 @@ fn run_convert_nifs(
                             apply_workshop_edits(report, &staged.path, entry)
                                 .map_err(|error| format!("{source_path}: {error}"))
                         });
-                        publish_staged_result(
+                        let raw_result = raw_result.and_then(|mut report| {
+                            if let Some(plan) = &reserved.artifacts.attached_behaviors {
+                                let plan = plan.as_ref().map_err(Clone::clone)?;
+                                plan.stage(&mut staged)?;
+                                let nif = NifFile::load(&staged.path).map_err(|error| error.to_string())?;
+                                let bytes = std::fs::read(&staged.path).map_err(|error| error.to_string())?;
+                                report.final_dependencies = Some(nif_core_native::convert_file::FinalNifDependencies::capture(&nif, &bytes));
+                            }
+                            Ok(report)
+                        });
+                        let publication_started = Instant::now();
+                        let published = publish_staged_result(
                             classify_convert_result(raw_result, staged.path.is_file()),
                             &mut staged,
                             &dst,
@@ -450,7 +499,9 @@ fn run_convert_nifs(
                             &reserved.artifacts,
                             &destination_ownership,
                             &publication_lock,
-                        )
+                        );
+                        agg.publication_us += publication_started.elapsed().as_micros();
+                        published
                     }
                     Err(message) => NifConversionResult::Failed {
                         message,
@@ -458,6 +509,7 @@ fn run_convert_nifs(
                     },
                 };
 
+                let sink_started = Instant::now();
                 if let NifConversionResult::Written(report) = &result {
                     if let Some(dependencies) = &report.final_dependencies {
                         output_dependencies.insert(&dst, dependencies.clone());
@@ -475,21 +527,43 @@ fn run_convert_nifs(
                             agg.sink_failures += 1;
                         }
                     }
+                    for emitted_behavior in &report.emitted_behaviors {
+                        if !register_with_sink(Path::new(emitted_behavior)) {
+                            agg.sink_failures += 1;
+                        }
+                    }
                     if let Some(emitted_first_person) = &report.emitted_first_person
                         && !register_with_sink(Path::new(emitted_first_person))
                     {
                         agg.sink_failures += 1;
                     }
                 }
+                agg.sink_us += sink_started.elapsed().as_micros();
+                agg.entry_us += entry_started.elapsed().as_micros();
                 reporter.inc(1);
                 agg.add(source_path, result);
                 agg
-            })
+            }))
             .reduce(NifAgg::default, NifAgg::merge)
     };
+    let work_started = Instant::now();
     let agg: NifAgg = crate::worker_pool::install(conversion_workers, convert_work)
         .map_err(|err| PhaseError::Internal(format!("rayon pool error: {err}")))?;
     reporter.finish();
+    crate::native_overwrites::finish_phase(ctx, phase_name, &overwrites);
+    let _ = ctx.run.event_tx.try_send(PhaseEvent::Log {
+        phase: phase_name,
+        level: LogLevel::Info,
+        message: format!("[nif_dispatch_timing] wall_ms={} entry_worker_ms={} staging_worker_ms={} publication_worker_ms={} sink_worker_ms={}",
+            work_started.elapsed().as_millis(), agg.entry_us / 1000, agg.staging_us / 1000,
+            agg.publication_us / 1000, agg.sink_us / 1000),
+    });
+    // A cancelled or failed run leaves the mixed marker, so the next run reconverts everything.
+    if native_material_pair && !agg.cancelled && agg.error_messages.is_empty() {
+        record_nif_mode(mod_path, native_mode).map_err(|error| {
+            PhaseError::Internal(format!("could not record the NIF material mode: {error}"))
+        })?;
+    }
 
     // Repose creature skeleton.nif files into the FO4 inverse-bind rest pose.
     // FO76 skeletons keep raw FO76 bone locals; for an undeformed skin each
@@ -666,9 +740,10 @@ struct NifEntry {
     asset_namespace_paths: Vec<String>,
     material_namespace_paths: Vec<String>,
     weapon_role: Option<String>,
+    target_skeleton: Option<PathBuf>,
+    cloth_companions: Vec<PathBuf>,
     strip_cloth: bool,
     workshop_wire_point: Option<[f32; 3]>,
-    workshop_snap_points: Vec<ParentConnectPoint>,
 }
 
 struct ReservedNifEntry {
@@ -680,6 +755,7 @@ struct EntryArtifactContext {
     owner: usize,
     material_relative: Option<PathBuf>,
     cleanup_first_person: bool,
+    attached_behaviors: Option<Result<attached_behaviors::AttachedBehaviorPlan, String>>,
 }
 
 #[derive(Hash, PartialEq, Eq)]
@@ -691,18 +767,10 @@ struct NifEntryIdentity {
     asset_namespace_paths: Vec<String>,
     material_namespace_paths: Vec<String>,
     weapon_role: Option<String>,
+    target_skeleton: Option<String>,
+    cloth_companions: Vec<String>,
     strip_cloth: bool,
     workshop_wire_point: Option<[u32; 3]>,
-    workshop_snap_points: Vec<ParentConnectPointIdentity>,
-}
-
-#[derive(Hash, PartialEq, Eq)]
-struct ParentConnectPointIdentity {
-    parent: String,
-    name: String,
-    rotation: [u32; 4],
-    translation: [u32; 3],
-    scale: u32,
 }
 
 fn nif_entry_identity(mod_path: &Path, entry: &NifEntry) -> NifEntryIdentity {
@@ -723,21 +791,21 @@ fn nif_entry_identity(mod_path: &Path, entry: &NifEntry) -> NifEntryIdentity {
             .map(|value| normalized_path(value))
             .collect(),
         weapon_role: entry.weapon_role.as_ref().map(|value| value.to_lowercase()),
+        target_skeleton: entry.target_skeleton.as_deref().map(windows_destination_key),
+        cloth_companions: {
+            let mut paths: Vec<_> = entry
+                .cloth_companions
+                .iter()
+                .map(|path| windows_destination_key(path))
+                .collect();
+            paths.sort();
+            paths.dedup();
+            paths
+        },
         strip_cloth: entry.strip_cloth,
         workshop_wire_point: entry
             .workshop_wire_point
             .map(|point| point.map(f32::to_bits)),
-        workshop_snap_points: entry
-            .workshop_snap_points
-            .iter()
-            .map(|point| ParentConnectPointIdentity {
-                parent: point.parent.clone(),
-                name: point.name.clone(),
-                rotation: point.rotation.map(f32::to_bits),
-                translation: point.translation.map(f32::to_bits),
-                scale: point.scale.to_bits(),
-            })
-            .collect(),
     }
 }
 
@@ -797,6 +865,12 @@ fn reserve_nif_entry_destinations(
         let material_relative = reserve_skyrim_materials
             .then(|| skyrim_material_relative_path(Path::new(&entry.resolved_path)));
         let mut destinations = vec![destination.clone()];
+        let attached_behaviors = (source_game.eq_ignore_ascii_case("skyrimse") && target_game.eq_ignore_ascii_case("fo4"))
+            .then(|| attached_behaviors::prepare(Path::new(&entry.resolved_path), &destination, mod_path))
+            .flatten();
+        if let Some(Ok(plan)) = &attached_behaviors {
+            destinations.extend(plan.destinations().cloned());
+        }
         if cleanup_first_person {
             destinations.push(first_person_destination_path(&destination));
         }
@@ -829,6 +903,7 @@ fn reserve_nif_entry_destinations(
                 owner,
                 material_relative,
                 cleanup_first_person,
+                attached_behaviors,
             },
         });
     }
@@ -1042,8 +1117,18 @@ fn apply_nif_relocation_with_dependencies(
                 entry.material_namespace = Some(namespace.to_string());
             }
             if !entry.strip_cloth {
+                let first_person_key = entry.output_subpath.as_deref().and_then(|output| {
+                    let output = crate::relocation::normalize_rel(output);
+                    let relative = output.strip_prefix("meshes/")?;
+                    let namespace_prefix = format!("{}/", namespace.to_ascii_lowercase());
+                    let relative = relative.strip_prefix(&namespace_prefix).unwrap_or(relative);
+                    let original = relative.strip_prefix("firstperson/")?;
+                    (format!("meshes/{original}") == key)
+                        .then(|| format!("meshes/{relative}"))
+                });
                 entry.output_subpath = Some(crate::relocation::insert_namespace_after_root(
-                    &key, namespace,
+                    first_person_key.as_deref().unwrap_or(&key),
+                    namespace,
                 ));
             }
         }
@@ -1074,9 +1159,10 @@ fn apply_nif_relocation_with_dependencies(
             asset_namespace_paths: Vec::new(),
             material_namespace_paths: Vec::new(),
             weapon_role: None,
+            target_skeleton: None,
+            cloth_companions: Vec::new(),
             strip_cloth: false,
             workshop_wire_point: None,
-            workshop_snap_points: Vec::new(),
         });
         existing.insert(member.clone());
     }
@@ -1153,6 +1239,10 @@ fn normalize_texture_member(path: &str) -> String {
 /// Replaces Vec<NifResult> so results are not retained after aggregation.
 #[derive(Default)]
 struct NifAgg {
+    entry_us: u128,
+    staging_us: u128,
+    publication_us: u128,
+    sink_us: u128,
     assets_written: u32,
     warnings: u32,
     report_warnings: u32,
@@ -1179,6 +1269,7 @@ struct StagedNifDestination {
     directory: tempfile::TempDir,
     path: PathBuf,
     materials_root: PathBuf,
+    attached_behaviors: Vec<ArtifactPublication>,
 }
 
 impl StagedNifDestination {
@@ -1201,6 +1292,7 @@ impl StagedNifDestination {
             directory,
             path,
             materials_root,
+            attached_behaviors: Vec::new(),
         })
     }
 }
@@ -1216,6 +1308,7 @@ struct ArtifactPlan {
     stale_removals: Vec<PathBuf>,
     material_destinations: Option<Vec<String>>,
     first_person_destination: Option<String>,
+    behavior_destinations: Vec<String>,
 }
 
 struct PublishedArtifact {
@@ -1354,6 +1447,7 @@ fn publish_staged_result(
         report.emitted_bgsms = material_destinations;
     }
     report.emitted_first_person = plan.first_person_destination;
+    report.emitted_behaviors = plan.behavior_destinations;
     NifConversionResult::Written(report)
 }
 
@@ -1380,6 +1474,11 @@ fn build_artifact_plan(
         destination,
         &mut publications,
     )?;
+    let behavior_destinations = staged.attached_behaviors.iter().map(|artifact| artifact.destination.to_string_lossy().into_owned()).collect();
+    publications.extend(staged.attached_behaviors.iter().map(|artifact| ArtifactPublication {
+        staged: artifact.staged.clone(),
+        destination: artifact.destination.clone(),
+    }));
     for publication in &publications {
         if !ownership.is_owned_by(artifacts.owner, &publication.destination) {
             return Err(format!(
@@ -1428,6 +1527,7 @@ fn build_artifact_plan(
         stale_removals,
         material_destinations,
         first_person_destination,
+        behavior_destinations,
     })
 }
 
@@ -1804,6 +1904,9 @@ fn remove_failed_outputs(
     ownership: &DestinationOwnership,
 ) -> Result<(), String> {
     let mut outputs = vec![destination.to_path_buf()];
+    if let Some(Ok(plan)) = &artifacts.attached_behaviors {
+        outputs.extend(plan.destinations().cloned());
+    }
     if artifacts.cleanup_first_person {
         outputs.push(first_person_destination_path(destination));
     }
@@ -1882,6 +1985,10 @@ impl NifAgg {
     }
 
     fn merge(mut self, other: NifAgg) -> NifAgg {
+        self.entry_us += other.entry_us;
+        self.staging_us += other.staging_us;
+        self.publication_us += other.publication_us;
+        self.sink_us += other.sink_us;
         self.assets_written += other.assets_written;
         self.warnings += other.warnings;
         self.report_warnings += other.report_warnings;
@@ -2031,6 +2138,11 @@ fn parse_nif_entries(p: &JsonValue) -> Result<Vec<NifEntry>, PhaseError> {
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            let target_skeleton = entry.get("target_skeleton").and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty()).map(PathBuf::from);
+            let cloth_companions = parse_string_list(
+                entry.get("cloth_companions"), &format!("nif_paths[{i}].cloth_companions"),
+            )?.into_iter().map(PathBuf::from).collect();
             let output_subpath = entry
                 .get("output_subpath")
                 .and_then(|v| v.as_str())
@@ -2071,12 +2183,10 @@ fn parse_nif_entries(p: &JsonValue) -> Result<Vec<NifEntry>, PhaseError> {
                 asset_namespace_paths,
                 material_namespace_paths,
                 weapon_role,
+                target_skeleton,
+                cloth_companions,
                 strip_cloth,
                 workshop_wire_point,
-                workshop_snap_points: parse_workshop_snap_points(
-                    entry.get("workshop_snap_points"),
-                    &format!("nif_paths[{i}].workshop_snap_points"),
-                )?,
             })
         })
         .collect()
@@ -2130,16 +2240,16 @@ fn apply_workshop_edits(
     if let Some(point) = entry.workshop_wire_point {
         apply_workshop_wire_point(path, point)?;
     }
-    if !entry.workshop_snap_points.is_empty() {
-        apply_workshop_snap_points(path, &entry.workshop_snap_points)?;
-    }
     Ok(report)
 }
 
 fn apply_workshop_wire_point(path: &Path, point: [f32; 3]) -> Result<bool, String> {
     let mut nif =
         NifFile::load(path).map_err(|error| format!("could not load converted NIF: {error}"))?;
-    let changed = upsert_parent_connect_point_translation(&mut nif, "P-WS-Snap", point);
+    if has_parent_connect_point(&nif, WORKSHOP_WIRE_POINT_NAME) {
+        return Ok(false);
+    }
+    let changed = upsert_parent_connect_point_translation(&mut nif, WORKSHOP_WIRE_POINT_NAME, point);
     if changed {
         nif.save(Some(path.to_path_buf()))
             .map_err(|error| format!("could not save workshop wire point: {error}"))?;
@@ -2147,104 +2257,28 @@ fn apply_workshop_wire_point(path: &Path, point: [f32; 3]) -> Result<bool, Strin
     Ok(changed)
 }
 
-fn parse_workshop_snap_points(
-    value: Option<&JsonValue>,
-    field: &str,
-) -> Result<Vec<ParentConnectPoint>, PhaseError> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    let Some(items) = value.as_array() else {
-        return Err(PhaseError::BadParams(format!("{field} must be an array")));
-    };
-    items
+const WORKSHOP_WIRE_POINT_NAME: &str = "P-WS-Snap";
+
+/// Some FO76 meshes author their own wire attach point; it must survive conversion untouched.
+fn has_parent_connect_point(nif: &NifFile, point_name: &str) -> bool {
+    nif.blocks
         .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let point_field = format!("{field}[{index}]");
-            let name = item
-                .get("name")
-                .and_then(JsonValue::as_str)
-                .filter(|name| is_generated_workshop_snap_name(name))
-                .ok_or_else(|| {
-                    PhaseError::BadParams(format!(
-                        "{point_field}.name is not a supported generated workshop snap name"
-                    ))
-                })?
-                .to_string();
-            let translation = parse_finite_float_array::<3>(
-                item.get("translation"),
-                &format!("{point_field}.translation"),
-            )?;
-            let rotation = parse_finite_float_array::<4>(
-                item.get("rotation"),
-                &format!("{point_field}.rotation"),
-            )?;
-            let scale = item.get("scale").and_then(JsonValue::as_f64).unwrap_or(1.0) as f32;
-            if !scale.is_finite() || scale <= 0.0 {
-                return Err(PhaseError::BadParams(format!(
-                    "{point_field}.scale must be a positive finite number"
-                )));
-            }
-            Ok(ParentConnectPoint {
-                parent: (!name.starts_with("P-WS-"))
-                    .then_some("WorkshopConnectPoints")
-                    .unwrap_or_default()
-                    .to_string(),
-                name,
-                rotation,
-                translation,
-                scale,
-            })
+        .filter(|block| block.type_name == "BSConnectPoint::Parents")
+        .filter_map(|block| match block.get_field("Connect Points") {
+            Some(NifValue::Array(points)) => Some(points),
+            _ => None,
         })
-        .collect()
-}
-
-fn is_generated_workshop_snap_name(name: &str) -> bool {
-    name.len() <= 96
-        && (name.starts_with("P-76-")
-            || esp_authoring_core::plugin_runtime::FO4_WORKSHOP_SNAP_ALIASES.contains(&name))
-}
-
-fn parse_finite_float_array<const N: usize>(
-    value: Option<&JsonValue>,
-    field: &str,
-) -> Result<[f32; N], PhaseError> {
-    let Some(items) = value.and_then(JsonValue::as_array) else {
-        return Err(PhaseError::BadParams(format!(
-            "{field} must be an array of {N} finite numbers"
-        )));
-    };
-    if items.len() != N {
-        return Err(PhaseError::BadParams(format!(
-            "{field} must contain exactly {N} numbers"
-        )));
-    }
-    let mut values = [0.0; N];
-    for (index, item) in items.iter().enumerate() {
-        let value = item
-            .as_f64()
-            .ok_or_else(|| PhaseError::BadParams(format!("{field}[{index}] must be a number")))?
-            as f32;
-        if !value.is_finite() {
-            return Err(PhaseError::BadParams(format!(
-                "{field}[{index}] must be finite"
-            )));
-        }
-        values[index] = value;
-    }
-    Ok(values)
-}
-
-fn apply_workshop_snap_points(path: &Path, points: &[ParentConnectPoint]) -> Result<bool, String> {
-    let mut nif =
-        NifFile::load(path).map_err(|error| format!("could not load converted NIF: {error}"))?;
-    let changed = replace_parent_connect_points_with_prefix(&mut nif, "P-76-", points);
-    if changed {
-        nif.save(Some(path.to_path_buf()))
-            .map_err(|error| format!("could not save workshop snap points: {error}"))?;
-    }
-    Ok(changed)
+        .flatten()
+        .any(|point| {
+            matches!(
+                point,
+                NifValue::Struct(fields)
+                    if matches!(
+                        fields.get("Name"),
+                        Some(NifValue::String(name)) if name.eq_ignore_ascii_case(point_name)
+                    )
+            )
+        })
 }
 
 fn parse_string_list(value: Option<&JsonValue>, field: &str) -> Result<Vec<String>, PhaseError> {
@@ -2582,7 +2616,11 @@ fn normalize_anim_object_roots(data_root: &Path) -> AnimObjectRootSummary {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            let is_dir = entry.file_type().map_or_else(
+                |_| path.is_dir(),
+                |kind| kind.is_dir() || (kind.is_symlink() && path.is_dir()),
+            );
+            if !is_dir {
                 continue;
             }
             if entry
@@ -2861,6 +2899,7 @@ mod tests {
             owner,
             material_relative: material_relative.map(PathBuf::from),
             cleanup_first_person,
+            attached_behaviors: None,
         }
     }
 
@@ -3201,18 +3240,14 @@ mod tests {
         material_paths.material_namespace_paths = vec!["Materials/Akila/Wall.mat".into()];
         let mut weapon_role = nif_entry(path);
         weapon_role.weapon_role = Some("gun".into());
+        let mut first_person_pose = nif_entry(path);
+        first_person_pose.target_skeleton = Some(PathBuf::from("C:/FO4/meshes/actors/character/_1stperson/characterassets/skeleton.nif"));
+        let mut cloth_companion = nif_entry(path);
+        cloth_companion.cloth_companions = vec![PathBuf::from("C:/Starfield/Sleeves.nif")];
         let mut strip_cloth = nif_entry(path);
         strip_cloth.strip_cloth = true;
         let mut wire_point = nif_entry(path);
         wire_point.workshop_wire_point = Some([1.0, 2.0, 3.0]);
-        let mut snap_points = nif_entry(path);
-        snap_points.workshop_snap_points = vec![ParentConnectPoint {
-            parent: "WorkshopRoot".into(),
-            name: "Snap01".into(),
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            translation: [4.0, 5.0, 6.0],
-            scale: 1.0,
-        }];
 
         let (kept, duplicates) = dedup_identical_nif_entries(
             mod_path,
@@ -3223,14 +3258,35 @@ mod tests {
                 asset_paths,
                 material_paths,
                 weapon_role,
+                first_person_pose,
+                cloth_companion,
                 strip_cloth,
                 wire_point,
-                snap_points,
             ],
         );
 
-        assert_eq!(kept.len(), 9);
+        assert_eq!(kept.len(), 10);
         assert_eq!(duplicates, 0);
+    }
+
+    #[test]
+    fn cloth_companion_identity_ignores_path_case_order_and_duplicates() {
+        let mut first = nif_entry("Meshes/Clothes/Torso.nif");
+        first.cloth_companions = vec![
+            PathBuf::from("C:/Starfield/Sleeves.nif"),
+            PathBuf::from("C:/Starfield/Pants.nif"),
+        ];
+        let mut second = nif_entry("Meshes/Clothes/Torso.nif");
+        second.cloth_companions = vec![
+            PathBuf::from("c:\\starfield\\pants.nif"),
+            PathBuf::from("c:\\starfield\\sleeves.nif"),
+            PathBuf::from("C:/STARFIELD/SLEEVES.NIF"),
+        ];
+        let (kept, duplicates) = dedup_identical_nif_entries(
+            Path::new("C:/mods/Starfield"), vec![first, second],
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(duplicates, 1);
     }
 
     #[test]
@@ -3741,9 +3797,10 @@ mod tests {
             asset_namespace_paths: Vec::new(),
             material_namespace_paths: Vec::new(),
             weapon_role: None,
+            target_skeleton: None,
+            cloth_companions: Vec::new(),
             strip_cloth: false,
             workshop_wire_point: None,
-            workshop_snap_points: Vec::new(),
         }
     }
 
@@ -4001,6 +4058,148 @@ mod tests {
         drop_run(id).unwrap();
     }
 
+    fn run_fo76_static_nif(native_assets: bool) -> (Vec<u8>, Vec<u8>, Vec<PhaseEvent>) {
+        let temp = tempfile::tempdir().unwrap();
+        run_fo76_static_nif_in(temp.path(), native_assets, false)
+    }
+
+    fn run_fo76_static_nif_in(
+        root: &Path,
+        native_assets: bool,
+        skip_existing: bool,
+    ) -> (Vec<u8>, Vec<u8>, Vec<PhaseEvent>) {
+        use crate::phase::{PhaseCtx, PhaseReport};
+        use crate::run::{RunConfig, RunError, RunParams, create_run, drop_run, with_run};
+        use crate::translator::Game;
+        use nif_core_native::model::{NifFile, NifValue};
+        use std::sync::atomic::AtomicBool;
+
+        let src = root.join("Rock01.nif");
+        let mod_dir = root.join("mod");
+        let mut nif = NifFile::new("fo76");
+        nif.blocks[0].set_field("Name", NifValue::String("Rock01".into()));
+        let mut textures = vec![NifValue::String(String::new()); 15];
+        textures[0] = NifValue::String("Rocks/Rock01_d.dds".into());
+        textures[9] = NifValue::String("Rocks/Rock01_r.dds".into());
+        textures[10] = NifValue::String("Rocks/Rock01_l.dds".into());
+        nif.add_block(
+            "BSShaderTextureSet",
+            Some(indexmap::IndexMap::from([
+                ("Num Textures".to_string(), NifValue::UInt(15)),
+                ("Textures".to_string(), NifValue::Array(textures)),
+            ])),
+        );
+        nif.save(Some(src.clone())).unwrap();
+        let source_bytes = std::fs::read(&src).unwrap();
+
+        let id = create_run(RunParams {
+            source: Game::Fo76,
+            target: Game::Fo4,
+            source_handle_id: 9999,
+            target_handle_id: 9998,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Output.esp".into(),
+                native_assets,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let events = with_run(id, |run| -> Result<Vec<PhaseEvent>, RunError> {
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let params = serde_json::json!({
+                "source_game": "fo76",
+                "target_game": "fo4",
+                "asset_prefix": "",
+                "skip_existing": skip_existing,
+                "nif_paths": [
+                    { "source_path": "Meshes/Rocks/Rock01.nif", "resolved_path": src.to_string_lossy() }
+                ]
+            });
+            let source_dir = root.join("source");
+            let mut ctx = PhaseCtx {
+                run,
+                mod_path: &mod_dir,
+                source_extracted_dir: &source_dir,
+                target_extracted_dir: None,
+                target_data_dir: None,
+                params: &params,
+                cancel: &cancel,
+            };
+            let report: PhaseReport = ConvertNifsV2Phase
+                .run(&mut ctx)
+                .map_err(|e| RunError::InvalidConfig(e.to_string()))?;
+            if !skip_existing {
+                assert_eq!(report.assets_written, 1);
+            }
+            Ok(run.event_rx.try_iter().collect())
+        })
+        .unwrap();
+        drop_run(id).unwrap();
+        let written = std::fs::read(mod_dir.join("data/Meshes/Rocks/Rock01.nif")).unwrap();
+        (source_bytes, written, events)
+    }
+
+    fn texture_slot(nif_bytes: &[u8], slot: usize) -> String {
+        use nif_core_native::model::{NifFile, NifValue};
+        let nif = NifFile::from_bytes(nif_bytes, None).unwrap();
+        let texset = nif
+            .blocks
+            .iter()
+            .find(|block| block.type_name == "BSShaderTextureSet")
+            .unwrap();
+        match texset.get_field("Textures") {
+            Some(NifValue::Array(items)) => match &items[slot] {
+                NifValue::String(path) => path.clone(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn native_assets_converts_an_fo76_mesh_but_keeps_its_texture_info() {
+        let (source, written, _) = run_fo76_static_nif(true);
+        assert_ne!(written, source);
+        assert_eq!(crate::native_nifs::nif_stream_version(&written), Some(130));
+        assert_eq!(texture_slot(&written, 9), "textures\\Rocks\\Rock01_r.dds");
+        assert_eq!(texture_slot(&written, 8), "textures\\Rocks\\Rock01_l.dds");
+    }
+
+    #[test]
+    fn without_native_assets_the_fo76_texture_info_is_converted() {
+        let (_, written, _) = run_fo76_static_nif(false);
+        assert_eq!(texture_slot(&written, 7), "textures\\Rocks\\Rock01_s.dds");
+        assert_eq!(texture_slot(&written, 9), "");
+    }
+
+    #[test]
+    fn a_rerun_that_keeps_existing_outputs_reconverts_meshes_the_other_mode_wrote() {
+        let temp = tempfile::tempdir().unwrap();
+        run_fo76_static_nif_in(temp.path(), true, false);
+
+        let (_, rerun, events) = run_fo76_static_nif_in(temp.path(), false, true);
+        assert_eq!(texture_slot(&rerun, 9), "");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhaseEvent::Log { message, .. } if message.contains("reconverting existing NIF(s)")
+        )));
+
+        let (_, rerun, _) = run_fo76_static_nif_in(temp.path(), true, true);
+        assert_eq!(texture_slot(&rerun, 9), "textures\\Rocks\\Rock01_r.dds");
+    }
+
+    #[test]
+    fn a_rerun_in_the_same_mode_keeps_existing_outputs() {
+        let temp = tempfile::tempdir().unwrap();
+        run_fo76_static_nif_in(temp.path(), true, false);
+        let (_, _, events) = run_fo76_static_nif_in(temp.path(), true, true);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            PhaseEvent::Log { message, .. } if message.contains("skipped 1 existing NIF(s)")
+        )));
+    }
+
     #[test]
     fn parse_addon_index_map_parses_string_keys() {
         let p = serde_json::json!({ "addon_index_map": { "20000": 20001 } });
@@ -4062,6 +4261,7 @@ mod tests {
                 "source_path": "Meshes/Foo.nif",
                 "resolved_path": "/source/Foo.nif",
                 "output_subpath": "Meshes/BACUP_Static/Foo.nif",
+                "cloth_companions": ["C:/Starfield/Sleeves.nif"],
                 "strip_cloth": true
             }]
         });
@@ -4070,6 +4270,11 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert!(entries[0].strip_cloth);
+        assert_eq!(entries[0].cloth_companions, vec![PathBuf::from("C:/Starfield/Sleeves.nif")]);
+
+        let mut invalid = p.clone();
+        invalid["nif_paths"][0]["cloth_companions"] = serde_json::json!([42]);
+        assert!(parse_nif_entries(&invalid).is_err());
 
         let p = serde_json::json!({
             "nif_paths": [{
@@ -4095,13 +4300,6 @@ mod tests {
         let staged = temp.path().join("WorkshopPlayerVendingMachine01.nif");
         let mut entry = nif_entry("Meshes/SetDressing/Workshop/VendingMachines/Machine.nif");
         entry.workshop_wire_point = Some([0.0, 0.0, 64.0]);
-        entry.workshop_snap_points = vec![ParentConnectPoint {
-            parent: "WorkshopConnectPoints".into(),
-            name: "P-76-0A7382".into(),
-            rotation: [1.0, 0.0, 0.0, 0.0],
-            translation: [0.0, 0.0, 0.0],
-            scale: 1.0,
-        }];
         let rejected = ConvertFileReport {
             errors: vec!["block types absent from the FO4 runtime would fail the whole file load: BSCollisionQueryProxyExtraData x1".into()],
             ..ConvertFileReport::default()
@@ -4121,67 +4319,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_workshop_wire_and_snap_points() {
-        use nif_core_native::model::NifValue;
-
-        let params = serde_json::json!({
-            "nif_paths": [{
-                "source_path": "Meshes/Workshop/Foundation.nif",
-                "resolved_path": "/source/Foundation.nif",
-                "workshop_snap_points": [{
-                    "name": "P-76-0A7382",
-                    "translation": [0.0, 128.0, -32.0],
-                    "rotation": [0.70710677, 0.0, 0.0, 0.70710677],
-                    "scale": 1.0
-                }, {
-                    "name": "P-Floor",
-                    "translation": [0.0, 128.0, 0.0],
-                    "rotation": [1.0, 0.0, 0.0, 0.0],
-                    "scale": 1.0
-                }]
-            }]
-        });
-        let entries = parse_nif_entries(&params).expect("parse NIF entries");
-        assert_eq!(entries[0].workshop_snap_points.len(), 2);
-        assert!(
-            entries[0]
-                .workshop_snap_points
-                .iter()
-                .all(|point| point.parent == "WorkshopConnectPoints")
-        );
-
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("Foundation.nif");
-        let mut nif = NifFile::new("fo4");
-        nif.save(Some(path.clone())).unwrap();
-        assert!(apply_workshop_snap_points(&path, &entries[0].workshop_snap_points).unwrap());
-        assert!(!apply_workshop_snap_points(&path, &entries[0].workshop_snap_points).unwrap());
-
-        let nif = NifFile::load(&path).unwrap();
-        assert!(nif.blocks.iter().any(|block| {
-            block.type_name == "BSConnectPoint::Parents"
-                && matches!(
-                    block.get_field("Connect Points"),
-                    Some(NifValue::Array(points)) if points.iter().any(|point| {
-                        matches!(
-                            point,
-                            NifValue::Struct(fields)
-                                if matches!(
-                                    fields.get("Name"),
-                                    Some(NifValue::String(name)) if name == "P-76-0A7382"
-                                )
-                        )
-                    })
-                )
-        }));
-        assert!(nif.blocks.iter().any(|block| {
-            block.type_name == "NiNode"
-                && matches!(
-                    block.get_field("Name"),
-                    Some(NifValue::String(name)) if name == "WorkshopConnectPoints"
-                )
-        }));
-
+    fn workshop_wire_point_is_added_to_nif_without_one() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("Generator.nif");
         let mut nif = NifFile::new("fo4");
@@ -4189,6 +4327,20 @@ mod tests {
 
         assert!(apply_workshop_wire_point(&path, [3.5, 15.0, 77.0]).unwrap());
         assert!(!apply_workshop_wire_point(&path, [3.5, 15.0, 77.0]).unwrap());
+        assert!(has_parent_connect_point(&NifFile::load(&path).unwrap(), "P-WS-Snap"));
+    }
+
+    #[test]
+    fn workshop_wire_point_keeps_source_authored_point() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Generator.nif");
+        let mut nif = NifFile::new("fo4");
+        upsert_parent_connect_point_translation(&mut nif, "p-ws-snap", [1.0, 2.0, 3.0]);
+        nif.save(Some(path.clone())).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(!apply_workshop_wire_point(&path, [3.5, 15.0, 77.0]).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]
@@ -4377,6 +4529,52 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn apply_nif_relocation_preserves_first_person_armor_variants() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = "meshes/armor/dragonbone/dragonbonegauntlets_1.nif";
+        let members: std::collections::HashSet<String> = [source.to_string()].into_iter().collect();
+        for output in [
+            "Meshes/FirstPerson/Armor/Dragonbone/DragonboneGauntlets_1.nif",
+            "Meshes/Skyrim/FirstPerson/Armor/Dragonbone/DragonboneGauntlets_1.nif",
+        ] {
+            for mesh_only in [false, true] {
+                let mut first_person = nif_entry(source);
+                first_person.output_subpath = Some(output.to_string());
+                first_person.target_skeleton = Some(PathBuf::from("first_person_skeleton.nif"));
+                let mut entries = vec![nif_entry(source), first_person];
+                let mesh_only_members = if mesh_only {
+                    members.clone()
+                } else {
+                    Default::default()
+                };
+                for _ in 0..2 {
+                    apply_nif_relocation_with_dependencies(
+                        &mut entries,
+                        &members,
+                        &mesh_only_members,
+                        "Skyrim",
+                        source_dir.path(),
+                        &Default::default(),
+                    );
+                }
+                assert_eq!(entries.len(), 2);
+                assert_eq!(
+                    entries[0].output_subpath.as_deref(),
+                    Some("meshes/Skyrim/armor/dragonbone/dragonbonegauntlets_1.nif")
+                );
+                assert_eq!(
+                    entries[1].output_subpath.as_deref(),
+                    Some("meshes/Skyrim/firstperson/armor/dragonbone/dragonbonegauntlets_1.nif")
+                );
+                assert_eq!(
+                    entries[1].target_skeleton.as_deref(),
+                    Some(Path::new("first_person_skeleton.nif"))
+                );
+            }
+        }
     }
 
     #[test]

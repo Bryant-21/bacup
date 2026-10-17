@@ -17,6 +17,8 @@
 //!   shaders) are skipped: their slot roles are unrecoverable, so
 //!   `regenerate_modt` drops MODT for them (slower load, never broken).
 //! - `addon_nodes = []` (static-mesh targets only).
+//! - Generated precombine geometry is indexed through CDX, not record MODT.
+//!   Only explicitly modeled files under `Meshes/PreCombined` are included.
 //! - A mesh whose NIF/material fails to load or parse, or that references a
 //!   material file missing on disk, is skipped whole — never a partial entry.
 //!
@@ -29,7 +31,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use rayon::prelude::*;
+use rustc_hash::FxHashSet;
 
+use esp_authoring_core::plugin_runtime::plugin_handle_store_ref;
 use materials_native::bgem::BgemData;
 use materials_native::bgsm::BgsmData;
 use nif_core_native::model::NifFile;
@@ -38,6 +42,7 @@ use crate::fixups::harvest_modt::normalize_model_path;
 use crate::modt_manifest::{
     ManifestTexture, MeshModtEntry, MeshModtManifest, OutputNifDependencies,
 };
+use crate::phase::regenerate_modt::referenced_precombined_models;
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
 
 // ---------------------------------------------------------------------------
@@ -211,8 +216,7 @@ fn find_child_ci(parent: &Path, name: &str) -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
-/// Recursively collect every `*.nif` (case-insensitive) under `root`.
-fn collect_nifs(root: &Path) -> Vec<PathBuf> {
+fn collect_nifs(root: &Path, precombined_models: &FxHashSet<String>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -221,7 +225,25 @@ fn collect_nifs(root: &Path) -> Vec<PathBuf> {
         };
         for entry in rd.flatten() {
             let p = entry.path();
-            if p.is_dir() {
+            let is_dir = entry.file_type().map_or_else(
+                |_| p.is_dir(),
+                |kind| {
+                    if kind.is_symlink() {
+                        p.is_dir()
+                    } else {
+                        kind.is_dir()
+                    }
+                },
+            );
+            if is_dir {
+                if dir == root
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("precombined")
+                {
+                    continue;
+                }
                 stack.push(p);
             } else if p
                 .extension()
@@ -230,6 +252,30 @@ fn collect_nifs(root: &Path) -> Vec<PathBuf> {
             {
                 out.push(p);
             }
+        }
+    }
+    for relative in precombined_models {
+        if !Path::new(relative)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("nif"))
+            || relative
+                .split('/')
+                .any(|part| matches!(part, "" | "." | ".."))
+        {
+            continue;
+        }
+        let direct = root.join(relative);
+        let path = if direct.is_file() {
+            Some(direct)
+        } else {
+            relative
+                .split('/')
+                .try_fold(root.to_path_buf(), |parent, name| {
+                    find_child_ci(&parent, name)
+                })
+        };
+        if let Some(path) = path.filter(|path| path.is_file()) {
+            out.push(path);
         }
     }
     out
@@ -388,6 +434,7 @@ fn emit_manifest(
     manifest_path: &Path,
     cancel: &AtomicBool,
     dependencies: &OutputNifDependencies,
+    precombined_models: &FxHashSet<String>,
 ) -> Result<u32, PhaseError> {
     let dependency_counts = dependencies.counts();
     let total_started = Instant::now();
@@ -396,7 +443,7 @@ fn emit_manifest(
     let collect_started = Instant::now();
     let nif_paths = meshes_root
         .as_ref()
-        .map(|d| collect_nifs(d))
+        .map(|d| collect_nifs(d, precombined_models))
         .unwrap_or_default();
     let collect_ns = collect_started.elapsed().as_nanos();
 
@@ -505,11 +552,24 @@ impl Phase for EmitModtManifestPhase {
                     .join("mesh_manifest.json")
             });
 
+        let precombined_models = {
+            let store = plugin_handle_store_ref()
+                .lock()
+                .map_err(|_| PhaseError::Internal("plugin handle store poisoned".into()))?;
+            let slot = store.get(&ctx.run.target_handle_id).ok_or_else(|| {
+                PhaseError::BadParams(format!(
+                    "unknown output_handle_id: {}",
+                    ctx.run.target_handle_id
+                ))
+            })?;
+            referenced_precombined_models(&slot.parsed.root_items)
+        };
         let count = emit_manifest(
             ctx.mod_path,
             &manifest_path,
             ctx.cancel,
             &ctx.run.output_nif_dependencies,
+            &precombined_models,
         )?;
         Ok(PhaseReport {
             records_changed: count,
@@ -527,6 +587,45 @@ mod tests {
     use super::*;
     use materials_native::bgem::{self, BgemData};
     use materials_native::bgsm::{self, BgsmData};
+
+    #[test]
+    fn discovery_excludes_generated_precombines_but_keeps_explicit_and_nested_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        for relative in [
+            "ordinary.nif",
+            "Custom/PreCombined/nested.NIF",
+            "PreCombined/Out.esp/Explicit.NIF",
+            "PreCombined/Out.esp/generated.nif",
+        ] {
+            let path = tmp.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let models = [
+            "precombined/out.esp/explicit.nif".to_string(),
+            "precombined/out.esp/missing.nif".to_string(),
+            "precombined/../ordinary.nif".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        let paths = collect_nifs(tmp.path(), &models)
+            .into_iter()
+            .map(|path| {
+                normalize_model_path(&path.strip_prefix(tmp.path()).unwrap().to_string_lossy())
+            })
+            .collect::<FxHashSet<_>>();
+        assert_eq!(
+            paths,
+            [
+                "ordinary.nif".to_string(),
+                "custom/precombined/nested.nif".to_string(),
+                "precombined/out.esp/explicit.nif".to_string(),
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(collect_nifs(tmp.path(), &FxHashSet::default()).len(), 2);
+    }
 
     #[test]
     fn captured_dependencies_fall_back_after_same_size_timestamp_overwrite() {
@@ -748,6 +847,7 @@ mod tests {
             &manifest_path,
             &cancel,
             &OutputNifDependencies::default(),
+            &FxHashSet::default(),
         )
         .unwrap();
         assert_eq!(count, 0);

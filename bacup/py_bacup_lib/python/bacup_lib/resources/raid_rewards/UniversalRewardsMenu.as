@@ -1,9 +1,12 @@
 package {
     import flash.display.MovieClip;
+    import flash.display.Sprite;
     import flash.events.Event;
     import flash.events.KeyboardEvent;
     import flash.events.MouseEvent;
+    import flash.geom.Rectangle;
     import flash.text.TextField;
+    import flash.text.TextFormat;
     import Shared.AS3.BCGridList;
     import Shared.AS3.BSButtonHintBar;
     import Shared.AS3.BSButtonHintData;
@@ -31,12 +34,14 @@ package {
         public var HeaderShadow_tf:TextField;
         public var BGSCodeObj:Object;
         public var NativeInput:Boolean = false;
-        public var RaidRewardsVersion:uint = 1;
+        public var RaidRewardsVersion:uint = 2;
         public var m_RewardScreenType:uint = 0;
 
         private var ready:Boolean = false;
         private var layoutReady:Boolean = false;
         private var closing:Boolean = false;
+        private var rolledOn:Boolean = false;
+        private var itemName:TextField;
         private var sourceStrings:Object = __RAID_TRANSLATIONS__;
 
         public function UniversalRewardsMenu() {
@@ -76,6 +81,28 @@ package {
             translateStatic(MenuLayout_mc, 2);
             if (Description_tf != null) Description_tf.text = "";
             if (RenderPreview_mc != null) RenderPreview_mc.visible = false;
+            // FO4 makes the SWF stage transparent; the authored red gradient needs a dark backing.
+            var backdrop:Sprite = new Sprite();
+            backdrop.name = "B21RaidRewardsBackdrop";
+            var bounds:Rectangle = MenuLayout_mc.getBounds(this);
+            backdrop.graphics.beginFill(0x131313, 0.97);
+            backdrop.graphics.drawRect(bounds.x, bounds.y, bounds.width, bounds.height);
+            backdrop.graphics.endFill();
+            backdrop.mouseEnabled = false;
+            addChildAt(backdrop, 0);
+            if (RenderPreview_mc != null) {
+                bounds = RenderPreview_mc.getBounds(MenuLayout_mc);
+                itemName = new TextField();
+                itemName.name = "B21RaidRewardItemName";
+                itemName.defaultTextFormat = new TextFormat("$MAIN_Font", 32, 0xFFFFCC, false, false, false, null, null, "center");
+                itemName.x = bounds.x;
+                itemName.y = bounds.y + bounds.height * 0.75;
+                itemName.width = bounds.width;
+                itemName.height = 48;
+                itemName.selectable = false;
+                itemName.mouseEnabled = false;
+                MenuLayout_mc.addChild(itemName);
+            }
             if (ButtonHintBar_mc != null) {
                 var hints:Vector.<BSButtonHintData> = new Vector.<BSButtonHintData>();
                 hints.push(new BSButtonHintData(sourceText("$CLOSE"), "TAB", "PSN_B", "Xenon_B", 1, close));
@@ -109,8 +136,10 @@ package {
                     rarityTierIndex: 0, desc: "", itemHandle: index, card: cardRows(reward.card as Array)});
             }
             ItemList_mc.entryData = entries;
+            rolledOn = false;
             if (MenuLayout_mc != null) MenuLayout_mc.gotoAndPlay("rollOn");
             if (entries.length > 0) ItemList_mc.selectedIndex = 0;
+            selectionChange(null);
             return true;
         }
 
@@ -131,14 +160,25 @@ package {
         }
 
         private function rollOnComplete(event:Event):void {
+            rolledOn = true;
             if (ItemList_mc != null && ItemList_mc.entryCount > 0) ItemList_mc.selectedIndex = 0;
+            selectionChange(null);
         }
 
         private function selectionChange(event:Event):void {
             var entry:Object = ItemList_mc.selectedEntry;
+            if (itemName != null) B21RewardStars.setText(itemName,entry == null ? "" : String(entry.name));
+            if (ItemCard_mc != null) ItemCard_mc.visible = entry != null;
             if (entry == null || ItemCard_mc == null) return;
             ItemCard_mc.InfoObj = entry.card as Array;
             ItemCard_mc.onDataChange();
+        }
+
+        public function B21GetPreview():Object {
+            if (!layoutReady || closing || ItemList_mc.selectedEntry == null || RenderPreview_mc == null ||
+                    !rolledOn) return null;
+            var bounds:Rectangle = RenderPreview_mc.getBounds(stage);
+            return {index:ItemList_mc.selectedIndex, x:bounds.x + bounds.width * 0.5, y:bounds.y + bounds.height * 0.4};
         }
 
         private function itemCardUpdated(event:Event):void {

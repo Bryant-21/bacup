@@ -89,12 +89,23 @@ pub fn validate_struct_fk_fields(
 ) -> StructFkValidateReport {
     let mut report = StructFkValidateReport::default();
     let record_sig = record.sig.as_str();
+    let Some(definition) = schema.compiled_record_def(record_sig) else {
+        return report;
+    };
 
     for entry in record.fields.iter_mut() {
         let FieldValue::Bytes(bytes) = &mut entry.value else {
             continue;
         };
         let sub_sig = entry.sig.as_str();
+        if !definition
+            .subrecords
+            .iter()
+            .find(|sub| sub.id == sub_sig)
+            .is_some_and(has_struct_formlinks)
+        {
+            continue;
+        }
         let layout = schema.struct_field_layout_versioned(record_sig, sub_sig, form_version);
         if layout.is_empty() {
             continue;
@@ -132,6 +143,13 @@ pub fn validate_struct_fk_fields(
     }
 
     report
+}
+
+fn has_struct_formlinks(sub: &esp_authoring_core::plugin_runtime::SchemaSubrecordJson) -> bool {
+    sub.fields
+        .iter()
+        .chain(sub.union_variants.iter().flat_map(|variant| &variant.fields))
+        .any(|field| !field.formlink_targets.is_empty())
 }
 
 /// Outcome of a struct-internal FK remap pass over one record.
@@ -349,6 +367,24 @@ mod tests {
     use super::*;
     use crate::sym::StringInterner;
 
+    #[test]
+    fn raw_formlink_filter_covers_all_versioned_schema_layouts() {
+        for game in ["fo4", "fo76", "skyrimse", "fnv", "fo3", "starfield", "oblivion"] {
+            let schema = AuthoringSchema::for_game(game).unwrap();
+            for sig in schema.record_signatures() {
+                let Some(record) = schema.compiled_record_def(sig) else { continue };
+                for sub in &record.subrecords {
+                    let first = record.subrecords.iter().find(|first| first.id == sub.id).unwrap();
+                    for version in [None, Some(0), Some(131), Some(152), Some(188)] {
+                        let layout = schema.struct_field_layout_versioned(sig, &sub.id, version);
+                        if layout.iter().any(|field| !field.formlink_targets.is_empty()) {
+                            assert!(has_struct_formlinks(first), "{game} {sig}.{} {version:?}", sub.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
     fn fk(local: u32, plugin: &str, interner: &StringInterner) -> FormKey {
         FormKey {
             local,

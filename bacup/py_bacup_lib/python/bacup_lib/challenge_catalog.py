@@ -3,10 +3,28 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from bacup_lib.plugin_catalog import form_key, write_document
 from bacup_lib.run.run_handle import ConversionRun
 
-OUTPUT = Path("F4SE/Plugins/B21_TalesFromAppalachia/challenges.json")
+FEATURE = "Challenges"
+RAW_CATALOG = Path("debug/challenges_native.json")
 REPORT = Path("debug/challenges_report.json")
+
+
+def to_document(raw: dict, output_plugin: str) -> dict:
+    """The native phase's catalog (bare hex ids relative to the output plugin) as a Challenges document."""
+
+    def link(value):
+        return form_key(output_plugin, int(value, 16)) if value else value
+
+    challenges = []
+    for row in raw["challenges"]:
+        row = dict(row, id=link(row["id"]), parent=link(row.get("parent")),
+                   prerequisites=[link(v) for v in row.get("prerequisites", [])],
+                   sub_challenges=[link(v) for v in row.get("sub_challenges", [])])
+        challenges.append(row)
+    return {"version": 1, "settings": {"source": raw.get("source", {}), "output_plugin": output_plugin},
+            "categories": raw.get("categories", []), "challenges": challenges}
 
 
 def emit_challenge_catalog(source_plugin: Path, converted_mod: Path, target_data_dir: Path | None,
@@ -18,7 +36,9 @@ def emit_challenge_catalog(source_plugin: Path, converted_mod: Path, target_data
             raise FileNotFoundError(f"Challenge catalog input is missing: {path}")
     if target_data_dir is not None and not Path(target_data_dir).is_dir():
         raise FileNotFoundError(f"Challenge catalog target data directory is missing: {target_data_dir}")
-    catalog_path = converted_mod / OUTPUT
+    catalog_path = converted_mod / RAW_CATALOG
+    catalog_path.unlink(missing_ok=True)
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
     with ConversionRun.create_new("fo76", "fo4", None, output_plugin_name) as run:
         run.run_phase(
             "emit_challenge_catalog", mod_path=str(converted_mod),
@@ -29,7 +49,9 @@ def emit_challenge_catalog(source_plugin: Path, converted_mod: Path, target_data
                 "source_sha256": source_sha256,
             },
         )
-    return json.loads(catalog_path.read_text(encoding="utf-8"))
+    document = to_document(json.loads(catalog_path.read_text(encoding="utf-8")), output_plugin_name)
+    write_document(FEATURE, output_plugin_name, document, converted_mod)
+    return document
 
 
 if __name__ == "__main__":
@@ -42,4 +64,4 @@ if __name__ == "__main__":
     parser.add_argument("--output-plugin", default="SeventySix.esm")
     args = parser.parse_args()
     result = emit_challenge_catalog(args.source, args.converted, args.target_data, args.output_plugin)
-    print(f"Wrote {len(result['challenges'])} challenges to {args.converted / OUTPUT}; report at {args.converted / REPORT}")
+    print(f"Wrote {len(result['challenges'])} challenges to {args.converted}; report at {args.converted / REPORT}")

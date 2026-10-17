@@ -66,6 +66,7 @@ class TalesConfigDialog:
         self._edits: dict[str, str] = {}
         self._drafts: dict[str, str] = {}
         self._page = 0
+        self._search = ""
         self._capturing: str | None = None
         self._source = ""
         self._error = ""
@@ -84,6 +85,7 @@ class TalesConfigDialog:
         self._edits = dict(edits)
         self._drafts.clear()
         self._capturing = None
+        self._search = ""
         self._source = (
             f"Starting from the installed {tc.INI_RELATIVE_PATH.name}."
             if deployed is not None else "No installed Tales settings found; starting from the defaults."
@@ -106,21 +108,40 @@ class TalesConfigDialog:
         self._draw_footer()
         imgui.end_popup()
 
+    def _groups(self) -> list[tuple[str, list[tc.Setting]]]:
+        """The content pane: the selected page's groups, or every match as "Page › Group" while searching."""
+        pages = self._schema.pages
+        if self._search.strip():
+            found = [(f"{page.title} › {group.title}",
+                      [s for s in group.settings if s.kind != "action" and tc.matches_search(page, group, s, self._search)])
+                     for page in pages for group in page.groups]
+        else:
+            found = [(group.title, [s for s in group.settings if s.kind != "action"])
+                     for group in pages[self._page].groups]
+        return [(title, settings) for title, settings in found if settings]
+
     def _draw_body(self, height: float) -> None:
         pages = self._schema.pages
         imgui.begin_child("##tc_pages", imgui.ImVec2(scaled(210), height))
+        imgui.set_next_item_width(-1)
+        changed, self._search = imgui.input_text_with_hint(
+            "##tc_search", f"{fa.ICON_FA_MAGNIFYING_GLASS}  Search settings", self._search)
+        if changed:
+            self._capturing = None
+        imgui.dummy(imgui.ImVec2(0, scaled(4)))
+        searching = bool(self._search.strip())
         for index, page in enumerate(pages):
             if navigation_item(f"tc_page{index}", page.title, icon=page.icon,
-                               selected=index == self._page, state=self._nav_state):
-                self._page, self._capturing = index, None
+                               selected=not searching and index == self._page, state=self._nav_state):
+                self._page, self._capturing, self._search = index, None, ""
         imgui.end_child()
         imgui.same_line(0, scaled(14))
         imgui.begin_child("##tc_content", imgui.ImVec2(0, height))
-        for group_index, group in enumerate(pages[self._page].groups):
-            settings = [s for s in group.settings if s.kind != "action"]
-            if not settings:
-                continue
-            with section(f"##tc_group{self._page}_{group_index}", group.title):
+        groups = self._groups()
+        if searching and not groups:
+            imgui.text_disabled(f'No settings match "{self._search.strip()}".')
+        for title, settings in groups:
+            with section(f"##tc_group_{title}", title):
                 if imgui.begin_table("##rows", 3, imgui.TableFlags_.sizing_stretch_prop):
                     imgui.table_setup_column("label", imgui.TableColumnFlags_.width_stretch)
                     imgui.table_setup_column("control", imgui.TableColumnFlags_.width_fixed, scaled(_CONTROL_WIDTH))
@@ -191,6 +212,26 @@ class TalesConfigDialog:
                 self._write(s, draft)
         elif s.kind == "key":
             self._draw_key(s)
+        elif s.kind == "color":
+            self._draw_color(s)
+
+    def _draw_color(self, s: tc.Setting) -> None:
+        rgb = tc.parse_color(self._drafts[s.id]) if s.id in self._drafts else tc.read_color(self._ini, s)
+        channels = [(rgb >> shift & 0xFF) / 255 for shift in (16, 8, 0)]
+        flags = imgui.ColorEditFlags_.display_hex | imgui.ColorEditFlags_.picker_hue_wheel
+        changed, channels = imgui.color_edit3("##color", channels, flags)
+        if changed:
+            self._drafts[s.id] = tc.format_color(_pack(channels))
+        swatch = imgui.get_frame_height() * 0.8
+        for index, (name, preset) in enumerate(_COLOR_PRESETS):
+            if index:
+                imgui.same_line(0, scaled(6))
+            shown = imgui.ImVec4(*((preset >> shift & 0xFF) / 255 for shift in (16, 8, 0)), 1.0)
+            if imgui.color_button(f"{name}##preset{index}", shown, 0, imgui.ImVec2(swatch, swatch)):
+                self._drafts[s.id] = tc.format_color(preset)
+        # Picker drags save when the mouse is released rather than on every frame.
+        if s.id in self._drafts and not imgui.is_mouse_down(imgui.MouseButton_.left):
+            self._write(s, self._drafts.pop(s.id), picked=True)
 
     def _draw_key(self, s: tc.Setting) -> None:
         # Keys are read before the button so Enter/Space bind instead of re-pressing it.
@@ -233,11 +274,24 @@ class TalesConfigDialog:
             self._capturing = None
             imgui.close_current_popup()
 
-    def _write(self, s: tc.Setting, value: str) -> None:
-        self._text = tc.set_value(self._text, s.section, s.key, value)
-        self._ini = tc.parse_ini(self._text)
+    def _write(self, s: tc.Setting, value: str, picked: bool = False) -> None:
+        """``picked`` is a user's own edit, which also writes the row's ``selects``; Reset does not."""
+        self._text = tc.write_setting(self._text, s, value)
         self._edits[s.id] = value
+        if picked and s.selects:
+            key, selected = s.selects.split("=", 1)
+            self._text = tc.set_value(self._text, s.section, key, selected)
+            self._edits[f"{s.section}/{key}"] = selected
+        self._ini = tc.parse_ini(self._text)
         self._save_edits(dict(self._edits))
+
+
+_COLOR_PRESETS = (("FO76 Quick-Boy blue", 0x7BAAD9), ("FO76 Pip-Boy blue", 0x1A80FF), ("FO4 Pip-Boy green", 0x12FF15),
+                  ("Amber", 0xFFB542), ("White", 0xDBEBFF), ("Red", 0xFF4F4F))
+
+
+def _pack(channels) -> int:
+    return sum(round(min(max(float(value), 0.0), 1.0) * 255) << shift for value, shift in zip(channels, (16, 8, 0)))
 
 
 def _icon_button(identifier: str, glyph: str, tooltip: str) -> bool:

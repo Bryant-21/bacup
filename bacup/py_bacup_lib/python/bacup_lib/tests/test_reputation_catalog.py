@@ -82,6 +82,16 @@ def test_catalog_is_source_derived_and_complete():
     json.dumps(catalog, allow_nan=False)
 
 
+def test_document_validates_against_its_schema():
+    from bacup_lib.tests.catalog_schema_validation import validate_catalog
+
+    document = cat.to_document(cat.build_catalog(source_reader(), Resolver(), "SeventySix.esm", "SeventySix.esm", "abc"))
+    assert [row["code"] for row in document["factions"]] == ["Crater", "Foundation"]
+    assert set(document["settings"]["sounds"]) == {"increase", "decrease", "level_up"}
+    assert "sounds" not in document and document["version"] == 1
+    validate_catalog("Reputation", document)
+
+
 def test_catalog_rejects_invented_or_unsorted_thresholds():
     reader = source_reader()
     _, _, fields = reader.records[0x55C5B5]

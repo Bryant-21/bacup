@@ -45,3 +45,10 @@ Function Fragment_Stage_1350_Item_00()
         Scene_NN.Start()
     EndIf
 EndFunction
+
+Function Fragment_Stage_9000_Item_00()
+    CompleteAllObjectives()
+    ; B21:QuestRewards / CurrencyQuestRewards pay on OnStageSet; let it dispatch before shutdown.
+    Utility.Wait(1.0)
+    Stop()
+EndFunction

@@ -210,6 +210,7 @@ Function Fragment_Stage_0150_Item_00()
 EndFunction
 
 Function Fragment_Stage_0200_Item_00()
+    ; TODO(recipes): FO76 teaches co_mod_PipeSyringer_Barrel_Ammo_Karma at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveDisplayed(200, True)
     MTNM01_SayRoseTopic(MTNM01_Mayhem_EBSTopic_Chemdart)
 EndFunction
@@ -274,6 +275,7 @@ Function Fragment_Stage_0352_Item_00()
 EndFunction
 
 Function Fragment_Stage_0400_Item_00()
+    ; TODO(recipes): FO76 teaches co_Tinkers_MTNM01_ExplosiveBait at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     MTNM01_SetCheckpoint(3.0)
     SetObjectiveDisplayed(400, True)
     MTNM01_SeedBaitMaterials()
@@ -440,6 +442,9 @@ Function Fragment_Stage_0960_Item_00()
         controller.GhoulCorpse.Clear()
     EndIf
     MTNM01_SayRoseTopic(MTNM01_Mayhem_EBSTopic_Returning)
+    If !IsStageDone(1000)
+        SetStage(1000)
+    EndIf
 EndFunction
 
 Function Fragment_Stage_1000_Item_00()

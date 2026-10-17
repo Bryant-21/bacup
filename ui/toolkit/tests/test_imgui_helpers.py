@@ -156,3 +156,17 @@ def test_draw_path_row_calls_table_row():
     path, clicked = h.draw_path_row("Input", "/some/path")
     imgui_mock.table_next_row.assert_called_once()
     assert path == "/some/path"  # unchanged since input_text returns unchanged
+
+
+def test_draw_path_row_accepts_edited_path():
+    imgui_mock = _mock_imgui()
+    imgui_mock.input_text.return_value = (True, "C:/Mods/Pasted Folder")
+    imgui_mock.button.return_value = False
+    from creation_lib.ui.widgets import forms
+
+    with patch.object(forms, "imgui", imgui_mock):
+        path, clicked = forms.draw_path_row("Folder", "")
+
+    imgui_mock.input_text.assert_called_once_with("##Folder_path", "")
+    assert path == "C:/Mods/Pasted Folder"
+    assert clicked is False

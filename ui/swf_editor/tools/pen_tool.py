@@ -7,9 +7,9 @@ from imgui_bundle import imgui
 
 from ui.swf_editor.tools import BaseTool
 from ui.swf_editor.swf_scene import (
-    EditorDisplayEntry, AffineTransform, Keyframe,
+    EditorDisplayEntry, Keyframe,
 )
-from creation_lib.swf.shapes import ShapeDef, CurvedEdge, StraightEdge, StyleChange, EndShape
+from creation_lib.swf.shapes import ShapeDef, StraightEdge, StyleChange, EndShape
 from creation_lib.swf.types import FillStyle, RGBA
 
 
@@ -27,6 +27,8 @@ class PenTool(BaseTool):
 
     def on_mouse_down(self, x: float, y: float, button: int) -> bool:
         if button != 0:
+            return False
+        if self.app.scene.layers[self.app.scene.active_layer_index].locked:
             return False
 
         cx, cy = self.app.camera.screen_to_canvas(x, y)
@@ -99,29 +101,17 @@ class PenTool(BaseTool):
                 # Cubic bezier: use handle_out of p0 and handle_in of p1
                 # Convert cubic to quadratic approximation (midpoint method)
                 # For SWF we need quadratic control point
-                cx_ctrl = (p0[4] * 3 + p1[2] * 3 - p0[0] - p1[0]) / 4.0
-                cy_ctrl = (p0[5] * 3 + p1[3] * 3 - p0[1] - p1[1]) / 4.0
-                cdx = (cx_ctrl - p0[0]) * 20
-                cdy = (cy_ctrl - p0[1]) * 20
-                adx = (p1[0] - cx_ctrl) * 20
-                ady = (p1[1] - cy_ctrl) * 20
-                records.append(CurvedEdge(
-                    cx=cdx, cy=cdy,
-                    ax=adx, ay=ady,
-                ))
+                from ui.swf_editor.geometry import cubic_to_quadratic_records
+                records.extend(cubic_to_quadratic_records(p0[:2], p0[4:6], p1[2:4], p1[:2]))
 
         records.append(EndShape())
 
         # Create ShapeDef
         shape_id = max(scene.library_symbols.keys(), default=0) + 1
+        from creation_lib.swf.svg_io import _compute_bounds
         shape = ShapeDef(
             shape_id=shape_id,
-            bounds=(
-                min(p[0] for p in self._points) * 20,
-                min(p[1] for p in self._points) * 20,
-                max(p[0] for p in self._points) * 20,
-                max(p[1] for p in self._points) * 20,
-            ),
+            bounds=_compute_bounds(records),
             fill_styles=[FillStyle(fill_type=0, color=RGBA(255, 255, 255, 255))],
             line_styles=[],
             records=records,

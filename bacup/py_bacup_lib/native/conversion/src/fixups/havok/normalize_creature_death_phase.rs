@@ -504,12 +504,16 @@ fn mesh_roots_for_mod_path(mod_path: &Path) -> Vec<PathBuf> {
 }
 
 fn walk_behavior_dirs(dir: &Path, visit: &mut impl FnMut(&Path)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    walk_behavior_dirs_in_root(dir, visit, dir);
+}
+
+fn walk_behavior_dirs_in_root(dir: &Path, visit: &mut impl FnMut(&Path), scan_root: &Path) {
+    let Ok(entries) = super::postprocess_scan::read_asset_dir(dir, scan_root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        if !super::postprocess_scan::entry_is_dir(&entry) {
             continue;
         }
         if path
@@ -519,7 +523,7 @@ fn walk_behavior_dirs(dir: &Path, visit: &mut impl FnMut(&Path)) {
         {
             visit(&path);
         } else {
-            walk_behavior_dirs(&path, visit);
+            walk_behavior_dirs_in_root(&path, visit, scan_root);
         }
     }
 }

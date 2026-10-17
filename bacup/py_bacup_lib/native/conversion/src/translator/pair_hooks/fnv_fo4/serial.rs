@@ -22,6 +22,7 @@ pub(crate) enum LegacySerialNormalizeReport {
     Wrld(WrldNormalizationReport),
     Perk(PerkNormalizeReport),
     PerkAlreadyNormalized,
+    SourceIdle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +51,17 @@ impl LegacySerialNormalizeReport {
         match self {
             Self::Mgef(report) => {
                 for decision in &report.references {
-                    if let MgefReferenceOutcome::ResolvedTarget { target, .. } = decision.outcome {
+                    let target = match decision.outcome {
+                        MgefReferenceOutcome::ResolvedTarget { target, .. } => Some(target),
+                        MgefReferenceOutcome::PreservedHardcoded { target_raw, .. } => {
+                            Some(crate::ids::FormKey {
+                                local: target_raw,
+                                plugin: mapper.interner.intern("Fallout4.esm"),
+                            })
+                        }
+                        _ => None,
+                    };
+                    if let Some(target) = target {
                         mapper.add_mapping(target, target);
                     }
                 }
@@ -69,7 +80,7 @@ impl LegacySerialNormalizeReport {
                     }
                 }
             }
-            Self::Wrld(_) | Self::PerkAlreadyNormalized => {}
+            Self::Wrld(_) | Self::PerkAlreadyNormalized | Self::SourceIdle => {}
         }
     }
 
@@ -253,6 +264,7 @@ impl LegacySerialNormalizeReport {
                 warning: false,
                 message: format!("{prefix}:perk_already_normalized"),
             }],
+            Self::SourceIdle => Vec::new(),
         }
     }
 }
@@ -284,6 +296,14 @@ pub(crate) fn normalize_legacy_serial_record_once(
         _ => return None,
     };
     match record.sig.0 {
+        sig if sig == *b"IDLE" => Some(
+            super::creature_idle_projection::normalize_source_idle_conditions(
+                record,
+                if source == Game::Fnv { super::creature_catalog::LegacyCreatureGame::Fnv } else { super::creature_catalog::LegacyCreatureGame::Fo3 },
+                mapper,
+            ).map(|()| LegacySerialNormalizeReport::SourceIdle)
+                .map_err(|message| LegacySerialDiagnostic { warning: false, message }),
+        ),
         sig if sig == *b"MGEF" => Some(Ok(LegacySerialNormalizeReport::Mgef(
             normalize_legacy_mgef_data(record, mgef_family, mapper),
         ))),

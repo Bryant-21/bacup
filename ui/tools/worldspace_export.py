@@ -73,24 +73,24 @@ class WorldspaceExportTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##worldspace_export_form"):
-            _, clicked = draw_path_row("Plugin", self._plugin_path)
+            path, clicked = draw_path_row("Plugin", self._plugin_path)
             if clicked:
                 path = pick_file(
                     "Select plugin",
                     [("Bethesda plugins", "*.esp *.esm *.esl"), ("All files", "*.*")],
                 )
-                if path:
-                    self._plugin_path = path
-                    if not self._output_path:
-                        self._output_path = str(Path(path).with_suffix(".fbx"))
+            if path is not None and path != self._plugin_path:
+                self._plugin_path = path
+                if path and Path(path).is_file() and not self._output_path:
+                    self._output_path = str(Path(path).with_suffix(".fbx"))
 
-            _, clicked = draw_path_row("Meshes", self._mesh_root)
+            self._mesh_root, clicked = draw_path_row("Meshes", self._mesh_root)
             if clicked:
-                path = pick_folder("Select extracted Meshes folder or Data folder")
+                path = pick_folder("Select extracted Meshes folder or Data folder", self._mesh_root)
                 if path:
                     self._mesh_root = path
 
-            _, clicked = draw_path_row("Output", self._output_path)
+            self._output_path, clicked = draw_path_row("Output", self._output_path)
             if clicked:
                 path = pick_save_file(
                     "Export FBX",

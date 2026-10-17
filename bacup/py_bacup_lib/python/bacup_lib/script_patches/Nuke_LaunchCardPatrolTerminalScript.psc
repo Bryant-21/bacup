@@ -29,13 +29,25 @@ ObjectReference Function CreateLocalTarget(ObjectReference akTerminalRef, Form a
     If akTerminalRef == None || akItem == None
         Return None
     EndIf
+    ; Track the launch-card vertibot patrol when it runs; the crate at the terminal is only the
+    ; fallback for a master or save where the patrol cannot start.
+    Nuke_LaunchCardPatrolScript patrol = Nuke_LaunchCardPatrol as Nuke_LaunchCardPatrolScript
+    If patrol != None && patrol.RequestLocalPatrol()
+        ObjectReference holder = patrol.CurrentLaunchCardHolder()
+        If holder != None
+            Return holder
+        EndIf
+    EndIf
     Form containerBase = Game.GetFormFromFile(0x003E25D9, "SeventySix.esm")
     ObjectReference targetRef
     If containerBase != None
         targetRef = akTerminalRef.PlaceAtMe(containerBase, 1, False, False, True)
     EndIf
     If targetRef != None
-        targetRef.AddItem(akItem, 1, True)
+        ; Nuke_LaunchCardContainer's leveled list already holds the card.
+        If targetRef.GetItemCount(akItem) == 0
+            targetRef.AddItem(akItem, 1, True)
+        EndIf
         targetRef.Lock(False, False)
     EndIf
     Return targetRef

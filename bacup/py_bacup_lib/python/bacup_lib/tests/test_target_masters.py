@@ -3,6 +3,21 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.mark.parametrize("game", ["fo3", "fnv", "fo76", "skyrim", "skyrimse", "starfield", "unknown"])
+def test_official_master_names_use_native_metadata_fallbacks(monkeypatch, game):
+    from bacup_lib import target_masters
+    from creation_lib.esp.schema import corpus
+
+    configured = ["Second.esm", "First.esm"]
+    monkeypatch.setitem(corpus.OFFICIAL_PLUGIN_ALLOWLISTS, game, configured)
+    monkeypatch.setattr(target_masters, "_target_base_master_name", lambda _game: "Base.esm")
+    assert target_masters.official_target_master_names(game.upper()) == configured
+    monkeypatch.setitem(corpus.OFFICIAL_PLUGIN_ALLOWLISTS, game, [])
+    assert target_masters.official_target_master_names(game) == ["Base.esm"]
+    monkeypatch.setattr(target_masters, "_target_base_master_name", lambda _game: "")
+    assert target_masters.official_target_master_names(game) == []
+
+
 def test_resolve_official_target_master_paths_includes_fo4_dlc_in_order(tmp_path):
     from bacup_lib.target_masters import (
         resolve_official_target_master_paths,

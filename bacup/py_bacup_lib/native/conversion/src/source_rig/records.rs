@@ -18,6 +18,10 @@ use crate::schema::AuthoringSchema;
 use crate::sym::StringInterner;
 use crate::target_normalize::{TargetRecordNormalization, TargetRecordNormalizer};
 
+#[path = "npc_actor_data.rs"]
+mod npc_actor_data;
+pub use npc_actor_data::{CreatureNpcActorData, CreatureNpcFaction, CreatureNpcScriptAttachment};
+
 const FALLOUT4_MASTER: &str = "Fallout4.esm";
 const BOTH_HANDS: u32 = 0x013F45;
 const ANIMS_UNARMED: u32 = 0x02405E;
@@ -25,7 +29,6 @@ const WEAPON_TYPE_UNARMED: u32 = 0x05240E;
 const BODY_SLOT_33: u32 = 1 << (33 - 30);
 const ROOT_GEOMETRY_SEGMENT: u8 = 32;
 
-pub const ATTACK_TYPE_RUNTIME_INERT_PROOF_SCHEMA: &str = "source-rig-attack-type-runtime-inert-v1";
 pub const ATTACK_SHOUT_TO_SPELL_PROOF_SCHEMA: &str = "source-rig-attack-shout-to-spell-v1";
 pub const ATTACK_STAMINA_TO_ACTION_POINTS_PROOF_SCHEMA: &str =
     "source-rig-attack-stamina-to-action-points-v1";
@@ -46,7 +49,7 @@ impl TargetFormKey {
         }
     }
 
-    fn intern(&self, interner: &StringInterner) -> FormKey {
+    pub(super) fn intern(&self, interner: &StringInterner) -> FormKey {
         FormKey {
             local: self.local,
             plugin: interner.intern(&self.plugin),
@@ -205,13 +208,23 @@ pub struct CreatureNpcRecordVariant {
     pub health: u16,
     pub action_points: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_data: Option<CreatureNpcActorData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npc_inventory: Option<Vec<CreatureNpcInventoryEntry>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npc_equipment: Option<Vec<CreatureTargetRecordReference>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npc_spells: Option<Vec<CreatureTargetRecordReference>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub npc_perks: Vec<CreatureNpcPerk>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npc_death_item: Option<Option<CreatureTargetRecordReference>>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct CreatureNpcPerk {
+    pub perk: CreatureTargetRecordReference,
+    pub rank: u8,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -232,7 +245,12 @@ pub struct CreatureAttackRecordVariant {
 pub struct CreatureAttackTargetData {
     pub attack_flags: u32,
     pub attack_angle: f32,
-    pub stagger: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attack_type: Option<CreatureTargetRecordReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_spell: Option<CreatureTargetRecordReference>,
+    #[serde(default)]
+    pub animation_cast: bool,
     pub knockdown: f32,
     pub recovery_time: f32,
     pub action_points_multiplier: f32,
@@ -246,7 +264,9 @@ impl Default for CreatureAttackTargetData {
         Self {
             attack_flags: 0,
             attack_angle: 0.0,
-            stagger: 0.0,
+            attack_type: None,
+            contact_spell: None,
+            animation_cast: false,
             knockdown: 0.0,
             recovery_time: 0.0,
             action_points_multiplier: 1.0,
@@ -288,7 +308,12 @@ pub struct CreatureAttackSourceDataReceipt {
 #[serde(rename_all = "snake_case")]
 pub enum CreatureAttackTypePolicy {
     NullOmitted,
-    RuntimeInertKeyword { proof: CreatureSemanticProofReceipt },
+    DirectKeyword,
+}
+
+pub fn skyrim_attack_flags_to_fo4(flags: u32) -> u32 {
+    // Skyrim's left-hand flag is carried by the source event/clip; FO4 bit 3 means charge.
+    flags & !0x8
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -467,6 +492,10 @@ impl CreatureAttackRecordProjection {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CreatureBodyPartProjection {
+    SourceParts {
+        root_node: String,
+        parts: Vec<super::body_parts::CreatureSourceBodyPart>,
+    },
     RootOnly32 {
         name: String,
         node: String,
@@ -484,8 +513,14 @@ impl CreatureBodyPartProjection {
         }
     }
 
-    fn profile(&self) -> RootBodyPartProfile {
+    pub(crate) fn profile(&self) -> RootBodyPartProfile {
         match self {
+            Self::SourceParts { root_node, .. } => RootBodyPartProfile {
+                name: "Root".to_string(),
+                node: root_node.clone(),
+                vats_target: root_node.clone(),
+                geometry_segment_index: ROOT_GEOMETRY_SEGMENT,
+            },
             Self::RootOnly32 {
                 name,
                 node,
@@ -498,10 +533,34 @@ impl CreatureBodyPartProjection {
             },
         }
     }
+
+    pub fn dependencies(&self) -> Vec<CreatureTargetRecordReference> {
+        match self {
+            Self::RootOnly32 { .. } => Vec::new(),
+            Self::SourceParts { parts, .. } => parts.iter().flat_map(|part| part.references.values().cloned()).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CreatureEquipmentSlotBinding {
+    pub equip_slot: CreatureTargetRecordReference,
+    pub node: String,
+    pub weapon_types: u16,
+    #[serde(default)]
+    pub preserve_weapon_slots: bool,
+    #[serde(default)]
+    pub weapons: Vec<CreatureTargetRecordReference>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CreatureRecordProjectionManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub templates: Option<super::CreatureTemplateProjection>,
+    #[serde(default)]
+    pub equipment_slots: Vec<CreatureEquipmentSlotBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub race_keywords: Vec<CreatureTargetRecordReference>,
     pub base: CreatureRecordManifest,
     pub source_primary_identity: SourceCreatureIdentity,
     pub race_data: Fo4RaceDataTarget,
@@ -550,6 +609,8 @@ pub struct ProjectedRecordIdentity {
 
 #[derive(Clone, Debug)]
 pub struct CreatureRecordProjectionClosure {
+    pub equipment_slots: Vec<CreatureEquipmentSlotBinding>,
+    pub npc_scripts: Vec<(TargetFormKey, CreatureNpcScriptAttachment)>,
     pub source_primary_identity: SourceCreatureIdentity,
     pub projected_identities: Vec<ProjectedRecordIdentity>,
     pub required_target_records: Vec<CreatureTargetRecordReference>,
@@ -723,6 +784,22 @@ pub fn append_creature_actor_action_records(
             &mut seen_form_keys,
         )?;
         validate_editor_id("IDLE", &plan.editor_id, "", &mut seen_editor_ids)?;
+        if let Some(condition) = &plan.weapon_condition {
+            if condition.weapon.local == 0 || condition.weapon.plugin.is_empty()
+                || condition.equipment_index.is_some_and(|index| index > 4)
+                || !matches!(plan.requirement.kind, super::ActorActionKind::Melee | super::ActorActionKind::FireSingle | super::ActorActionKind::FireAuto | super::ActorActionKind::Throw)
+            {
+                return Err(invalid("actor_action_weapon_condition", format!("invalid weapon condition for {}", plan.editor_id)));
+            }
+        }
+        if plan.weapon_exclusions.iter().any(|weapon| weapon.local == 0 || weapon.plugin.is_empty()) {
+            return Err(invalid("actor_action_weapon_condition", format!("invalid excluded weapon for {}", plan.editor_id)));
+        }
+        if let Some(condition) = &plan.graph_condition
+            && (condition.name.is_empty() || condition.name.contains('\0') || condition.value as f32 as i32 != condition.value)
+        {
+            return Err(invalid("actor_action_graph_condition", format!("invalid graph condition for {}", plan.editor_id)));
+        }
     }
 
     let mut previous_by_parent = std::collections::BTreeMap::<u32, FormKey>::new();
@@ -735,34 +812,38 @@ pub fn append_creature_actor_action_records(
             .map(FieldValue::FormKey)
             .unwrap_or(FieldValue::Uint(0));
         let form_key = plan.form_key.intern(interner);
+        let mut conditions = Vec::new();
+        conditions.extend(plan.weapon_exclusions.iter().map(|weapon|
+            actor_action_condition(182, 0.0, FieldValue::FormKey(weapon.intern(interner)), interner)));
+        if let Some(condition) = &plan.weapon_condition {
+            conditions.push(actor_action_condition(182, 1.0, FieldValue::FormKey(condition.weapon.intern(interner)), interner));
+            if let Some(index) = condition.equipment_index {
+                conditions.push(actor_action_condition(771, f32::from(index), FieldValue::Uint(0), interner));
+            }
+        }
+        if let Some(condition) = &plan.graph_condition {
+            conditions.push(actor_action_condition(675, condition.value as f32, FieldValue::Uint(0), interner));
+            conditions.push(string_field("CIS1", &condition.name, interner));
+        }
+        let mut fields = vec![string_field("EDID", &plan.editor_id, interner)];
+        fields.extend(conditions);
+        fields.extend(vec![
+                string_field("DNAM", &plan.requirement.behavior_path, interner),
+                string_field("ENAM", &plan.requirement.animation_event, interner),
+                struct_field("ANAM", vec![("parent", FieldValue::FormKey(parent)), ("previous", previous)], interner),
+                struct_field("DATA", vec![
+                    ("looping_seconds_both_255_forever_min", FieldValue::Uint(0)),
+                    ("looping_seconds_both_255_forever_max", FieldValue::Uint(0)),
+                    ("flags", FieldValue::Uint(0)),
+                    ("animation_group_section", FieldValue::Uint(0)),
+                    ("replay_delay", FieldValue::Uint(0)),
+                ], interner),
+        ]);
         records.push(make_record(
             "IDLE",
             form_key,
             &plan.editor_id,
-            vec![
-                string_field("EDID", &plan.editor_id, interner),
-                string_field("DNAM", &plan.requirement.behavior_path, interner),
-                string_field("ENAM", &plan.requirement.animation_event, interner),
-                struct_field(
-                    "ANAM",
-                    vec![
-                        ("parent", FieldValue::FormKey(parent)),
-                        ("previous", previous),
-                    ],
-                    interner,
-                ),
-                struct_field(
-                    "DATA",
-                    vec![
-                        ("looping_seconds_both_255_forever_min", FieldValue::Uint(0)),
-                        ("looping_seconds_both_255_forever_max", FieldValue::Uint(0)),
-                        ("flags", FieldValue::Uint(0)),
-                        ("animation_group_section", FieldValue::Uint(0)),
-                        ("replay_delay", FieldValue::Uint(0)),
-                    ],
-                    interner,
-                ),
-            ],
+            fields,
             interner,
         ));
         previous_by_parent.insert(plan.requirement.parent_form_id, form_key);
@@ -776,6 +857,13 @@ pub fn append_creature_actor_action_records(
             signature: "AACT".to_string(),
             form_key: plan.requirement.parent_form_key(),
         }));
+    closure.required_target_records.extend(plans.iter().filter_map(|plan| plan.weapon_condition.as_ref()).map(|condition| CreatureTargetRecordReference {
+        signature: "WEAP".to_string(),
+        form_key: condition.weapon.clone(),
+    }));
+    closure.required_target_records.extend(plans.iter().flat_map(|plan| &plan.weapon_exclusions).map(|weapon| CreatureTargetRecordReference {
+        signature: "WEAP".to_string(), form_key: weapon.clone(),
+    }));
     closure.required_target_records.sort_by_key(|reference| {
         (
             reference.form_key.plugin.to_ascii_lowercase(),
@@ -801,6 +889,24 @@ pub fn append_creature_actor_action_records(
         interner,
         &closure.required_target_records,
     )
+}
+
+fn actor_action_condition(function: u32, comparison: f32, parameter: FieldValue, interner: &StringInterner) -> FieldEntry {
+    struct_field("CTDA", vec![
+        ("type", FieldValue::Uint(0)),
+        ("unknown_u8_1", FieldValue::Uint(0)),
+        ("unknown_u8_2", FieldValue::Uint(0)),
+        ("unknown_u8_3", FieldValue::Uint(0)),
+        ("comparison_value", FieldValue::Float(comparison)),
+        ("function", FieldValue::Uint(u64::from(function))),
+        ("unknown_u8_6", FieldValue::Uint(0)),
+        ("unknown_u8_7", FieldValue::Uint(0)),
+        ("parameter_1", parameter),
+        ("parameter_2", FieldValue::Uint(0)),
+        ("run_on", FieldValue::Uint(0)),
+        ("reference", FieldValue::Uint(0)),
+        ("parameter_3", FieldValue::Int(-1)),
+    ], interner)
 }
 
 fn emit_creature_record_projection_inner(
@@ -888,13 +994,35 @@ fn emit_creature_record_projection_inner(
             .iter()
             .map(|part| emit_armor_addon_part(custom.race, part, interner)),
     );
-    records.push(emit_body_part_data(
+    let mut body_part_data = emit_body_part_data(
         rig,
         &projection.base,
         &primary_profile,
         &custom,
         interner,
-    ));
+    );
+    if let CreatureBodyPartProjection::SourceParts { parts, .. } = &projection.body_parts {
+        if let Some(FieldValue::Struct(fields)) = body_part_data.fields.iter_mut().find(|field| field.sig.as_str() == "BPND").map(|field| &mut field.value) {
+            if let Some((_, chance)) = fields.iter_mut().find(|(name, _)| interner.resolve(*name) == Some("to_hit_chance")) {
+                *chance = FieldValue::Uint(0);
+            }
+        }
+        for part in parts {
+            body_part_data.fields.extend([
+                string_field("BPTN", &part.name, interner),
+                string_field("BPNN", &part.node, interner),
+                string_field("BPNT", &part.vats_target, interner),
+                FieldEntry { sig: SubrecordSig::from_str("BPND").unwrap(), value: super::body_parts::body_part_data_value(part, interner).map_err(|error| invalid("body_part_data", error))? },
+                string_field("NAM1", &part.limb_replacement, interner),
+                string_field("NAM4", &part.gore_target, interner),
+                bytes_field("NAM5", Vec::new()),
+                string_field("ENAM", &part.node, interner),
+                string_field("FNAM", &part.vats_target, interner),
+                string_field("DNAM", "", interner),
+            ]);
+        }
+    }
+    records.push(body_part_data);
     for attack in &attacks {
         if matches!(
             attack.projection,
@@ -904,6 +1032,10 @@ fn emit_creature_record_projection_inner(
         }
     }
 
+    if let Some(templates) = &projection.templates {
+        templates.validate(projection).map_err(|error| invalid("template_projection", error))?;
+        templates.apply(&mut records, interner).map_err(|error| invalid("template_projection", error))?;
+    }
     let schema = AuthoringSchema::for_game("fo4").map_err(CreatureRecordError::Schema)?;
     normalize_records(&mut records, &schema, interner)?;
     let closure = CreatureRecordClosure {
@@ -922,6 +1054,10 @@ fn emit_creature_record_projection_inner(
     )?;
 
     Ok(CreatureRecordProjectionClosure {
+        equipment_slots: projection.equipment_slots.clone(),
+        npc_scripts: projection.variants.iter().filter_map(|variant| {
+            variant.actor_data.as_ref()?.script.as_ref().map(|script| (variant.form_key.clone(), script.clone()))
+        }).collect(),
         source_primary_identity: projection.source_primary_identity.clone(),
         projected_identities: variants
             .into_iter()
@@ -950,12 +1086,13 @@ fn normalize_records(
             .iter()
             .map(|field| field.sig.as_str().to_string())
             .collect::<Vec<_>>();
-        let inventory_ownership_pattern = (signature == "NPC_").then(|| {
+        let ownership_row = match signature.as_str() { "NPC_" => Some("CNTO"), "LVLN" => Some("LVLO"), _ => None };
+        let inventory_ownership_pattern = ownership_row.map(|row| {
             record
                 .fields
                 .iter()
                 .enumerate()
-                .filter(|(_, field)| field.sig.as_str() == "CNTO")
+                .filter(|(_, field)| field.sig.as_str() == row)
                 .map(|(index, _)| {
                     record
                         .fields
@@ -971,7 +1108,7 @@ fn normalize_records(
             }
         };
         if let Some(pattern) = inventory_ownership_pattern {
-            restore_npc_inventory_associations(&mut normalized, &pattern)?;
+            restore_entry_ownership_associations(&mut normalized, ownership_row.unwrap(), &pattern)?;
         }
         let after = normalized
             .fields
@@ -990,32 +1127,33 @@ fn normalize_records(
     Ok(())
 }
 
-fn restore_npc_inventory_associations(
+pub(super) fn restore_entry_ownership_associations(
     record: &mut Record,
+    row: &str,
     ownership_pattern: &[bool],
 ) -> Result<(), CreatureRecordError> {
     let first_inventory_index = record
         .fields
         .iter()
-        .position(|field| matches!(field.sig.as_str(), "CNTO" | "COED"));
+        .position(|field| field.sig.as_str() == row || field.sig.as_str() == "COED");
     let Some(first_inventory_index) = first_inventory_index else {
         return if ownership_pattern.is_empty() {
             Ok(())
         } else {
             Err(invalid(
                 "npc_inventory_normalization",
-                "target normalization removed every NPC_ inventory row",
+                "target normalization removed every owned-entry row",
             ))
         };
     };
     let insertion_index = record.fields[..first_inventory_index]
         .iter()
-        .filter(|field| !matches!(field.sig.as_str(), "CNTO" | "COED"))
+        .filter(|field| field.sig.as_str() != row && field.sig.as_str() != "COED")
         .count();
     let mut inventory = Vec::new();
     let mut other = SmallVec::<[FieldEntry; 8]>::new();
     for field in record.fields.drain(..) {
-        if matches!(field.sig.as_str(), "CNTO" | "COED") {
+        if field.sig.as_str() == row || field.sig.as_str() == "COED" {
             inventory.push(field);
         } else {
             other.push(field);
@@ -1023,7 +1161,7 @@ fn restore_npc_inventory_associations(
     }
     let mut cnto = inventory
         .iter()
-        .filter(|field| field.sig.as_str() == "CNTO")
+        .filter(|field| field.sig.as_str() == row)
         .cloned();
     let mut coed = inventory
         .iter()
@@ -1034,14 +1172,14 @@ fn restore_npc_inventory_associations(
         restored.push(cnto.next().ok_or_else(|| {
             invalid(
                 "npc_inventory_normalization",
-                "target normalization changed the NPC_ CNTO row count",
+                "target normalization changed the owned-entry row count",
             )
         })?);
         if *has_ownership {
             restored.push(coed.next().ok_or_else(|| {
                 invalid(
                     "npc_inventory_normalization",
-                    "target normalization changed the NPC_ COED row count",
+                    "target normalization changed the COED row count",
                 )
             })?);
         }
@@ -1049,7 +1187,7 @@ fn restore_npc_inventory_associations(
     if cnto.next().is_some() || coed.next().is_some() {
         return Err(invalid(
             "npc_inventory_normalization",
-            "target normalization introduced an NPC_ CNTO or COED row",
+            "target normalization introduced an owned-entry or COED row",
         ));
     }
     for (offset, field) in restored.into_iter().enumerate() {
@@ -1318,6 +1456,25 @@ fn validate_projection_inputs<'a>(
             "the source primary identity is incomplete",
         ));
     }
+    for keyword in &projection.race_keywords {
+        validate_target_record_reference_at(keyword, "KYWD", &projection.base, "RACE", "KWDA")?;
+    }
+    let mut equipment_slots = BTreeSet::new();
+    for binding in &projection.equipment_slots {
+        if binding.equip_slot.signature != "EQUP"
+            || (binding.node.is_empty() && !(binding.preserve_weapon_slots && binding.weapons.is_empty()))
+            || binding.node.contains('\0')
+            || !equipment_slots.insert(binding.equip_slot.form_key.clone())
+        {
+            return Err(invalid("equipment_slots", "equipment slots require unique EQUP references and nonempty skeleton node names"));
+        }
+        if binding.weapons.iter().any(|weapon| weapon.signature != "WEAP") {
+            return Err(invalid("equipment_slots", "equipment bindings require WEAP references"));
+        }
+        if binding.weapon_types & !0x7fff != 0 || (!binding.weapons.is_empty() && binding.weapon_types == 0) {
+            return Err(invalid("equipment_slots", "equipment bindings require supported target weapon types"));
+        }
+    }
 
     let primary_variants = projection
         .variants
@@ -1449,7 +1606,6 @@ fn validate_projection_inputs<'a>(
         }
         for (field, value) in [
             ("attack_angle", attack.target_data.attack_angle),
-            ("stagger", attack.target_data.stagger),
             ("knockdown", attack.target_data.knockdown),
             ("recovery_time", attack.target_data.recovery_time),
             (
@@ -1467,7 +1623,32 @@ fn validate_projection_inputs<'a>(
         if let Some(source) = &attack.target_data.source_atkd {
             validate_attack_source_data(attack, source)?;
         }
+        if let Some(attack_type) = &attack.target_data.attack_type {
+            validate_target_record_reference_at(
+                attack_type, "KYWD", &projection.base, "RACE", "ATKD.attack_type",
+            )?;
+        }
+        if attack.target_data.animation_cast && (attack.target_data.contact_spell.is_some()
+            || !matches!(attack.projection, CreatureAttackRecordProjection::SpellAbility { .. })) {
+            return Err(invalid("animation_cast_projection", "animation casts require a spell ability without a contact payload"));
+        }
+        if let Some(spell) = &attack.target_data.contact_spell {
+            if !matches!(attack.projection,
+                CreatureAttackRecordProjection::MeleeUnarmed { .. }
+                    | CreatureAttackRecordProjection::MeleeEquipment { .. })
+            {
+                return Err(invalid("contact_spell_projection", "contact spells require a melee attack"));
+            }
+            validate_target_record_reference(spell, "SPEL", &projection.base)?;
+        }
         validate_attack_projection(attack, &projection.base)?;
+        let equipment = attack.projection.equipment();
+        let attack_slots = projection.equipment_slots.iter().filter(|slot| {
+            slot.weapons.iter().any(|weapon| equipment.contains(&weapon))
+        }).count();
+        if attack_slots > 1 {
+            return Err(invalid("attack_equipment_slot", format!("{} spans multiple weapon slots", attack.id)));
+        }
     }
     if !projection.npc_inventory.is_empty() && !projection.npc_equipment.is_empty() {
         return Err(invalid(
@@ -1480,7 +1661,7 @@ fn validate_projection_inputs<'a>(
     }
     let mut spell_keys = HashSet::new();
     for spell in &projection.npc_spells {
-        validate_target_record_reference_at(spell, "SPEL", &projection.base, "NPC_", "SPLO")?;
+        validate_actor_spell_reference(spell, &projection.base)?;
         if !spell_keys.insert((
             spell.form_key.plugin.to_ascii_lowercase(),
             spell.form_key.local,
@@ -1520,6 +1701,16 @@ fn validate_projection_inputs<'a>(
         }
     }
     for variant in &projection.variants {
+        if let Some(actor_data) = &variant.actor_data {
+            actor_data.validate(&projection.base)?;
+        }
+        let mut perk_keys = HashSet::new();
+        for entry in &variant.npc_perks {
+            validate_target_record_reference_at(&entry.perk, "PERK", &projection.base, "NPC_", "PRKR.perk")?;
+            if !perk_keys.insert((entry.perk.form_key.plugin.to_ascii_lowercase(), entry.perk.form_key.local)) {
+                return Err(invalid("duplicate_npc_perk", "NPC perk list repeats a perk"));
+            }
+        }
         if let Some(inventory) = &variant.npc_inventory {
             if !projection.npc_inventory.is_empty() && inventory != &projection.npc_inventory {
                 return Err(invalid(
@@ -1592,13 +1783,7 @@ fn validate_projection_inputs<'a>(
             }
             let mut keys = HashSet::new();
             for reference in spells {
-                validate_target_record_reference_at(
-                    reference,
-                    "SPEL",
-                    &projection.base,
-                    "NPC_",
-                    "SPLO",
-                )?;
+                validate_actor_spell_reference(reference, &projection.base)?;
                 if !keys.insert((
                     reference.form_key.plugin.to_ascii_lowercase(),
                     reference.form_key.local,
@@ -1808,11 +1993,6 @@ fn validate_attack_source_data(
             attack.strike_angle.to_bits(),
         ),
         (
-            "stagger",
-            source.stagger_bits,
-            attack.target_data.stagger.to_bits(),
-        ),
-        (
             "knockdown",
             source.knockdown_bits,
             attack.target_data.knockdown.to_bits(),
@@ -1833,11 +2013,11 @@ fn validate_attack_source_data(
             ));
         }
     }
-    if source.attack_flags != attack.target_data.attack_flags {
+    if skyrim_attack_flags_to_fo4(source.attack_flags) != attack.target_data.attack_flags {
         return Err(invalid(
             "attack_source_flags",
             format!(
-                "{} source flags do not match the target projection",
+                "{} source flags do not match the FO4 semantic projection",
                 attack.id
             ),
         ));
@@ -1857,20 +2037,15 @@ fn validate_attack_source_data(
         CreatureAttackRecordProjection::SpellAbility { spell } => Some(spell),
         CreatureAttackRecordProjection::MeleeUnarmed { .. }
         | CreatureAttackRecordProjection::MeleeEquipment { .. }
-        | CreatureAttackRecordProjection::RangedEquipment { .. } => None,
+        | CreatureAttackRecordProjection::RangedEquipment { .. } => attack.target_data.contact_spell.as_ref(),
     };
-    let valid_attack_type_policy = match (&source.attack_type_policy, source.attack_type.as_ref()) {
-        (CreatureAttackTypePolicy::NullOmitted, None) => true,
-        (CreatureAttackTypePolicy::RuntimeInertKeyword { proof }, Some(_)) => {
-            validate_semantic_proof(
-                proof,
-                attack,
-                "attack_type",
-                ATTACK_TYPE_RUNTIME_INERT_PROOF_SCHEMA,
-                "runtime_inert_keyword",
-            )?;
-            true
-        }
+    let valid_attack_type_policy = match (
+        &source.attack_type_policy,
+        source.attack_type.as_ref(),
+        attack.target_data.attack_type.as_ref(),
+    ) {
+        (CreatureAttackTypePolicy::NullOmitted, None, None) => true,
+        (CreatureAttackTypePolicy::DirectKeyword, Some(_), Some(target)) => target.signature == "KYWD",
         _ => false,
     };
     if !valid_attack_type_policy {
@@ -2005,14 +2180,6 @@ fn validate_semantic_proof(
         ));
     }
     let valid_document = match expected_schema {
-        ATTACK_TYPE_RUNTIME_INERT_PROOF_SCHEMA => {
-            document.as_object().is_some_and(|object| object.len() == 4)
-                && document
-                    .get("source_signature")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("KYWD")
-                && valid_proof_evidence_hash(&document, "evidence_blake3")
-        }
         ATTACK_SHOUT_TO_SPELL_PROOF_SCHEMA => {
             document.as_object().is_some_and(|object| object.len() == 5)
                 && document
@@ -2288,6 +2455,17 @@ fn validate_npc_inventory_entry(
         }
     }
     Ok(())
+}
+
+fn validate_actor_spell_reference(
+    reference: &CreatureTargetRecordReference,
+    manifest: &CreatureRecordManifest,
+) -> Result<(), CreatureRecordError> {
+    let signature = match reference.signature.as_str() {
+        "LVSP" => "LVSP",
+        _ => "SPEL",
+    };
+    validate_target_record_reference_at(reference, signature, manifest, "NPC_", "SPLO")
 }
 
 fn validate_target_record_reference_at(
@@ -2680,11 +2858,15 @@ fn validate_projection_closure(
         .count();
     validate_record_set(
         closure,
-        3 + projection.variants.len() + body_nif_parts.len() + melee_count,
+        3 + projection.variants.len() + body_nif_parts.len() + melee_count
+            + projection.templates.as_ref().map_or(0, |templates| templates.leveled_lists.len()),
         schema,
         interner,
         &projection_target_dependencies(projection),
     )?;
+    if let Some(templates) = &projection.templates {
+        templates.verify(&closure.records, interner).map_err(|error| invalid("template_projection", error))?;
+    }
     assert_form_link(
         closure.record("RACE"),
         "WNAM",
@@ -2762,6 +2944,7 @@ fn validate_projection_closure(
         assert_form_link(record, "RNAM", &projection.base.form_keys.race, interner)?;
         assert_form_link(record, "WNAM", &projection.base.form_keys.skin, interner)?;
         assert_form_link(record, "ATKR", &projection.base.form_keys.race, interner)?;
+        npc_actor_data::verify_actor_data(variant, record, schema, interner)?;
         let mut attacks = projection.attacks.iter().collect::<Vec<_>>();
         attacks.sort_by_key(|attack| {
             (
@@ -2811,6 +2994,19 @@ fn validate_projection_closure(
                     variant.source_identity.stable_key(),
                 ),
             ));
+        }
+        let expected_perks = variant.npc_perks.iter()
+            .map(|entry| (entry.perk.form_key.intern(interner), u64::from(entry.rank))).collect::<Vec<_>>();
+        let actual_perks = record.into_iter().flat_map(|record| record.fields.iter())
+            .filter(|field| field.sig.as_str() == "PRKR").map(|field| {
+                let FieldValue::Struct(fields) = &field.value else { return None };
+                let perk = fields.iter().find(|(name, _)| interner.resolve(*name) == Some("perk"))?;
+                let FieldValue::FormKey(perk) = &perk.1 else { return None };
+                let rank = fields.iter().find(|(name, _)| interner.resolve(*name) == Some("rank"))?;
+                Some((*perk, uint_value(&rank.1)?))
+            }).collect::<Option<Vec<_>>>();
+        if actual_perks.as_ref() != Some(&expected_perks) {
+            return Err(invalid("npc_perk_closure", "projected NPC perk ranks differ from source"));
         }
         let expected_spells = variant_npc_spells(projection, variant)
             .iter()
@@ -2914,7 +3110,22 @@ fn validate_projection_closure(
         assert_string_value(armor_addon, "MOD2", &part.body_nif, interner)?;
         assert_string_value(armor_addon, "MOD3", &part.body_nif, interner)?;
     }
-    validate_root_body_part_array(closure, &projection.body_parts.profile(), interner)?;
+    if let CreatureBodyPartProjection::SourceParts { parts, .. } = &projection.body_parts {
+        let bptd = closure.record("BPTD").ok_or_else(|| invalid("bptd_contract", "missing BPTD"))?;
+        let nodes = bptd.fields.iter().filter(|field| field.sig.as_str() == "BPNN").collect::<Vec<_>>();
+        let data = bptd.fields.iter().filter(|field| field.sig.as_str() == "BPND").collect::<Vec<_>>();
+        if nodes.len() != parts.len() + 1 || data.len() != parts.len() + 1 {
+            return Err(invalid("bptd_contract", "source body-part row count changed"));
+        }
+        for (index, part) in parts.iter().enumerate() {
+            if !matches!(&nodes[index + 1].value, FieldValue::String(value) if interner.resolve(*value).as_deref() == Some(part.node.as_str()))
+                || struct_member(&data[index + 1].value, "geometry_segment_index", interner).and_then(uint_value) != Some(u64::from(part.geometry_segment_index)) {
+                return Err(invalid("bptd_contract", "source body-part node or geometry segment changed"));
+            }
+        }
+    } else {
+        validate_root_body_part_array(closure, &projection.body_parts.profile(), interner)?;
+    }
     Ok(())
 }
 
@@ -3132,7 +3343,7 @@ fn emit_race(
                         "strike_angle",
                         FieldValue::Float(profile.attack_strike_angle),
                     ),
-                    ("stagger", FieldValue::Float(0.0)),
+                    ("attack_type", FieldValue::Uint(0)),
                     ("knockdown", FieldValue::Float(0.0)),
                     ("recovery_time", FieldValue::Float(0.0)),
                     ("action_points_mult", FieldValue::Float(1.0)),
@@ -3437,6 +3648,11 @@ fn projection_target_dependencies(
     projection: &CreatureRecordProjectionManifest,
 ) -> Vec<CreatureTargetRecordReference> {
     let mut dependencies = attack_target_dependencies_from_projection(projection);
+    dependencies.extend(projection.race_keywords.iter().cloned());
+    dependencies.extend(projection.templates.iter().flat_map(|templates| templates.dependencies()));
+    dependencies.extend(projection.equipment_slots.iter().map(|binding| binding.equip_slot.clone()));
+    dependencies.extend(projection.equipment_slots.iter().flat_map(|binding| binding.weapons.iter().cloned()));
+    dependencies.extend(projection.body_parts.dependencies());
     for entry in projection.npc_inventory.iter().chain(
         projection
             .variants
@@ -3458,6 +3674,8 @@ fn projection_target_dependencies(
     }
     dependencies.extend(projection.npc_equipment.iter().cloned());
     dependencies.extend(projection.npc_spells.iter().cloned());
+    dependencies.extend(projection.variants.iter().flat_map(|variant| variant.actor_data.iter().flat_map(CreatureNpcActorData::dependencies)));
+    dependencies.extend(projection.variants.iter().flat_map(|variant| variant.npc_perks.iter().map(|entry| entry.perk.clone())));
     dependencies.extend(projection.npc_death_item.iter().cloned());
     dependencies.extend(
         projection
@@ -3493,7 +3711,11 @@ fn collect_attack_target_dependencies<'a>(
 ) -> Vec<CreatureTargetRecordReference> {
     let mut dependencies = attacks
         .into_iter()
-        .flat_map(|attack| attack.projection.target_dependencies())
+        .flat_map(|attack| {
+            attack.projection.target_dependencies().into_iter()
+                .chain(attack.target_data.attack_type.iter())
+                .chain(attack.target_data.contact_spell.iter())
+        })
         .cloned()
         .collect::<Vec<_>>();
     dependencies.sort_by_key(|reference| {
@@ -3525,6 +3747,9 @@ fn apply_race_projection(
     for mut entry in std::mem::take(&mut race.fields) {
         match entry.sig.as_str() {
             "DATA" | "ATKD" | "ATKE" => continue,
+            "KSIZ" => entry.value = FieldValue::Uint(projection.race_keywords.len() as u64),
+            "KWDA" => entry.value = FieldValue::List(projection.race_keywords.iter()
+                .map(|keyword| FieldValue::FormKey(keyword.form_key.intern(interner))).collect()),
             "MNAM" if !data_inserted => {
                 fields.push(race_data_field(&projection.race_data, interner));
                 data_inserted = true;
@@ -3540,6 +3765,14 @@ fn apply_race_projection(
                 });
                 for attack in attacks {
                     fields.extend(race_attack_fields(attack, interner));
+                    let equipment = attack.projection.equipment();
+                    if let Some(slot) = projection.equipment_slots.iter().find(|slot| {
+                        slot.weapons.iter().any(|weapon| equipment.contains(&weapon))
+                    }) {
+                        fields.push(form_field("ATKW", slot.equip_slot.form_key.intern(interner)));
+                    } else if matches!(attack.projection, CreatureAttackRecordProjection::MeleeUnarmed { .. }) {
+                        fields.push(form_field("ATKW", FormKey { local: 0x013F42, plugin: interner.intern("Fallout4.esm") }));
+                    }
                 }
                 attacks_inserted = true;
             }
@@ -3551,6 +3784,25 @@ fn apply_race_projection(
         }
         fields.push(entry);
     }
+    let unarmed = unarmed_weapon.is_some();
+    if !projection.equipment_slots.is_empty() || unarmed {
+        let weapon_types = projection.equipment_slots.iter().fold(u16::from(unarmed), |types, slot| types | slot.weapon_types);
+        fields.push(FieldEntry { sig: SubrecordSig(*b"VNAM"), value: FieldValue::Uint(u64::from(weapon_types)) });
+    }
+    for binding in &projection.equipment_slots {
+        fields.push(form_field("QNAM", binding.equip_slot.form_key.intern(interner)));
+        fields.push(string_field("ZNAM", &binding.node, interner));
+    }
+    if unarmed {
+        for local in [0x013F42, 0x013F43] {
+            if !projection.equipment_slots.iter().any(|slot| {
+                slot.equip_slot.form_key.local == local && slot.equip_slot.form_key.plugin.eq_ignore_ascii_case("Fallout4.esm")
+            }) {
+                fields.push(form_field("QNAM", FormKey { local, plugin: interner.intern("Fallout4.esm") }));
+                fields.push(string_field("ZNAM", "", interner));
+            }
+        }
+    }
     race.fields = fields;
 }
 
@@ -3561,6 +3813,8 @@ fn race_attack_fields(
     let attack_spell = attack
         .projection
         .attack_spell()
+        .or(attack.target_data.contact_spell.as_ref())
+        .filter(|_| !attack.target_data.animation_cast)
         .map(|reference| FieldValue::FormKey(reference.form_key.intern(interner)))
         .unwrap_or(FieldValue::Uint(0));
     [
@@ -3579,7 +3833,12 @@ fn race_attack_fields(
                     FieldValue::Float(attack.target_data.attack_angle),
                 ),
                 ("strike_angle", FieldValue::Float(attack.strike_angle)),
-                ("stagger", FieldValue::Float(attack.target_data.stagger)),
+                (
+                    "attack_type",
+                    attack.target_data.attack_type.as_ref()
+                        .map(|reference| FieldValue::FormKey(reference.form_key.intern(interner)))
+                        .unwrap_or(FieldValue::Uint(0)),
+                ),
                 ("knockdown", FieldValue::Float(attack.target_data.knockdown)),
                 (
                     "recovery_time",
@@ -3754,6 +4013,13 @@ fn race_data_field(target: &Fo4RaceDataTarget, interner: &StringInterner) -> Fie
     )
 }
 
+fn npc_perk_field(entry: &CreatureNpcPerk, interner: &StringInterner) -> FieldEntry {
+    struct_field("PRKR", vec![
+        ("perk", FieldValue::FormKey(entry.perk.form_key.intern(interner))),
+        ("rank", FieldValue::Uint(u64::from(entry.rank))),
+    ], interner)
+}
+
 fn emit_npc_record_variant(
     variant: &CreatureNpcRecordVariant,
     race: FormKey,
@@ -3768,12 +4034,12 @@ fn emit_npc_record_variant(
         struct_field(
             "ACBS",
             vec![
-                ("flags", FieldValue::Uint(0)),
+                ("flags", FieldValue::Uint(u64::from(variant.actor_data.as_ref().map_or(0, |data| data.flags)))),
                 ("xp_value_offset", FieldValue::Int(0)),
                 ("level", FieldValue::Uint(u64::from(variant.level))),
                 ("calc_min_level", FieldValue::Uint(u64::from(variant.level))),
                 ("calc_max_level", FieldValue::Uint(u64::from(variant.level))),
-                ("disposition_base", FieldValue::Int(35)),
+                ("disposition_base", FieldValue::Int(i64::from(variant.actor_data.as_ref().map_or(35, |data| data.disposition_base)))),
                 ("template_flags", FieldValue::Uint(0)),
                 ("bleedout_override", FieldValue::Uint(0)),
                 ("unknown_u8_8", FieldValue::Uint(0)),
@@ -3782,6 +4048,9 @@ fn emit_npc_record_variant(
             interner,
         ),
     ];
+    if let Some(actor_data) = &variant.actor_data {
+        fields.extend(actor_data.fields(interner));
+    }
     if let Some(death_item) = death_item {
         fields.push(form_field("INAM", death_item.form_key.intern(interner)));
     }
@@ -3792,6 +4061,10 @@ fn emit_npc_record_variant(
             .map(|spell| form_field("SPLO", spell.form_key.intern(interner))),
     );
     fields.extend([form_field("WNAM", skin), form_field("ATKR", race)]);
+    if !variant.npc_perks.is_empty() {
+        fields.push(uint_field("PRKZ", variant.npc_perks.len() as u64));
+        fields.extend(variant.npc_perks.iter().map(|entry| npc_perk_field(entry, interner)));
+    }
     if !inventory.is_empty() {
         fields.push(uint_field("COCT", inventory.len() as u64));
         for entry in inventory {

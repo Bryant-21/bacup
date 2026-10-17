@@ -1,4 +1,5 @@
 Function Fragment_Stage_0010_Item_00()
+    ; TODO(recipes): FO76 teaches co_MoM_MistressOfMysteryOutfit at this stage (Server76 2026-10-09). Tales leaves quest-only recipes ungated today; teach them here once recipes are learn-gated.
     SetObjectiveDisplayed(10)
 EndFunction
 

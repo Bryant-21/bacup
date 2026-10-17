@@ -17,6 +17,8 @@ mod perk_identity_tests;
 #[cfg(test)]
 #[path = "run/quest_namesake_tests.rs"]
 mod quest_namesake_tests;
+#[path = "run/fnv_creature_scripts.rs"]
+mod fnv_creature_scripts;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -279,6 +281,12 @@ pub struct RunConfig {
     /// Explicit authoritative FO4 PACK donor for the audited Renolds dialogue
     /// package. The library resolves this only from already-open target masters.
     pub fnv_force_greet_donor_form_key: Option<String>,
+    /// FO76/Starfield native assets require FO4CS; converted meshes retain source materials
+    /// and PBR texture channels instead of the FO4 material bake.
+    pub native_assets: bool,
+    /// With `native_assets`: FO76 materials FO4 also ships, and the textures they name, are
+    /// written over FO4's files (`ConversionRun::native_overwrite_paths`).
+    pub replace_fo4_materials: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -1161,6 +1169,8 @@ pub struct ConversionRun {
     generated_object_id_reservations: FxHashSet<u32>,
     pub(crate) legacy_serial_normalization:
         crate::translator::pair_hooks::fnv_fo4::LegacySerialNormalizationState,
+    pub(crate) starfield_weapon_source_contracts:
+        Option<crate::phase::animations::starfield_weapons::SourceWeaponContracts>,
     pub legacy_pack_preflight_report: Option<LegacyPackPreflightReport>,
     pub(crate) legacy_creature_race_coverage:
         crate::translator::pair_hooks::fnv_creature_race::CreatureRaceCoverageReport,
@@ -1212,6 +1222,10 @@ pub struct ConversionRun {
     skyrim_minimal_quest_compiler_evidence:
         Vec<crate::skyrimse_fo4_runtime::papyrus::SkyrimPscCompilerEvidence>,
     skyrim_minimal_quest_receipts_finalized: bool,
+    pub(crate) skyrim_skill_modifier_records: Option<[FormKey; 11]>,
+    pub(crate) skyrim_magic_resource_records: Option<[FormKey; 7]>,
+    pub(crate) skyrim_bow_stagger_races: Vec<crate::skyrimse_fo4_runtime::bow_stagger::ProjectedRaceStagger>,
+    legacy_embedded_weapon_slots: BTreeMap<String, FormKey>,
     bulk_melee_v1_receipts: Vec<crate::phase::mvp_melee::MvpMeleeReceipt>,
     creature_dependency_plan_installed: bool,
     creature_dependency_admissions: FxHashMap<FormKey, CreatureDependencyAdmission>,
@@ -1253,6 +1267,9 @@ pub struct ConversionRun {
     /// copier. Carry their exact FormKeys into the post-copy leveled-base repair
     /// so it never has to rediscover them by walking the finished plugin.
     interior_placed_ref_candidates: Vec<FormKey>,
+    /// FO76 579 location of each placed ACHR (output ref object id, source LCTN
+    /// object id), collected in placed-ref repair for `emit_leveled_catalog`.
+    pub(crate) ess_placed_locations: Vec<(u32, u32)>,
     /// Offsets `emit_interior_cells` applied to interiors past FO4's coordinate
     /// limit; the later NAVI and door repairs move data that points into them.
     pub(crate) interior_recentre: crate::fixups::recentre_far_interiors::InteriorRecentre,
@@ -1263,6 +1280,9 @@ pub struct ConversionRun {
     /// Subset of `relocation_members` relocated for geometry + collision only;
     /// the NIF phase leaves their material/texture slots un-namespaced.
     pub relocation_mesh_only_members: std::collections::HashSet<String>,
+    /// Data-relative keys (`materials/...`, `textures/...`) written over FO4's own file; empty
+    /// unless `RunConfig::replace_fo4_materials` is active. See `build_native_overwrite_set`.
+    pub native_overwrite_paths: std::collections::HashSet<String>,
     pub nif_dependencies: Arc<crate::relocation::NifDependencyCache>,
     // Keep the weakly cached preparation alive for other runs to reuse.
     _relocation_preparation: Option<Arc<crate::relocation::RelocationPreparation>>,
@@ -1285,6 +1305,7 @@ pub(crate) struct CreatureDependencyAdmission {
     pub source_form_key: FormKey,
     pub source_signature: SigCode,
     pub owner_family_ids: Vec<String>,
+    pub legacy_idle: Option<crate::translator::pair_hooks::fnv_fo4::creature_idle_projection::LegacyCreatureIdleBinding>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1389,6 +1410,9 @@ impl CreatureActorActionReservationReceipt {
             requirement: self.requirement.clone(),
             form_key: crate::source_rig::TargetFormKey::new(self.target.local, plugin),
             editor_id: self.editor_id.clone(),
+            weapon_condition: None,
+            weapon_exclusions: Vec::new(),
+            graph_condition: None,
         })
     }
 }
@@ -1438,11 +1462,57 @@ impl OwnedPluginHandle {
     }
 
     pub fn load_index(plugin_path: &Path, game: &str) -> Result<Self, RunError> {
+        Self::load_index_with_strings(plugin_path, game, None, None)
+    }
+
+    pub(crate) fn load_source(
+        plugin_path: &Path,
+        game: &str,
+        strings_dir: Option<&Path>,
+    ) -> Result<Self, RunError> {
+        if game != "fo76" {
+            return Self::load(plugin_path, game, strings_dir);
+        }
+        Self::load_compact_placed_records(plugin_path, game, strings_dir)
+    }
+
+    pub(crate) fn load_compact_placed_records(
+        plugin_path: &Path,
+        game: &str,
+        strings_dir: Option<&Path>,
+    ) -> Result<Self, RunError> {
+        let id = esp_authoring_core::plugin_runtime::plugin_handle_load_lazy_records_no_py(
+            &plugin_path.to_string_lossy(),
+            game,
+            strings_dir.map(|path| path.to_string_lossy()).as_deref(),
+            &[*b"REFR", *b"ACHR", *b"PGRE", *b"PHZD"],
+        )
+        .map_err(RunError::InvalidConfig)?;
+        Ok(Self { id: Some(id) })
+    }
+
+    pub(crate) fn load_projection(
+        plugin_path: &Path,
+        game: &str,
+        signatures: &[[u8; 4]],
+    ) -> Result<Self, RunError> {
+        let id = esp_authoring_core::plugin_runtime::plugin_handle_load_projection_no_py(
+            &plugin_path.to_string_lossy(), game, signatures,
+        ).map_err(RunError::InvalidConfig)?;
+        Ok(Self { id: Some(id) })
+    }
+
+    pub fn load_index_with_strings(
+        plugin_path: &Path,
+        game: &str,
+        strings_dir: Option<&str>,
+        language: Option<&str>,
+    ) -> Result<Self, RunError> {
         let id = esp_authoring_core::plugin_runtime::plugin_handle_load_index_no_py(
             &plugin_path.to_string_lossy(),
             Some(game),
-            None,
-            None,
+            strings_dir,
+            language,
         )
         .map_err(RunError::InvalidConfig)?;
         Ok(Self { id: Some(id) })
@@ -2305,7 +2375,9 @@ pub(crate) fn target_collision_donor_form_key(
     editor_id: &str,
     sig: crate::ids::SigCode,
 ) -> Option<FormKey> {
-    if sig.as_str() == "PERK" || requires_shared_dna_for_remap(shared_dna_remap_signatures, sig) {
+    if sig.as_str() == "PERK"
+        || crate::phase::perk_cards::abilities::preserves_magic_name(sig.as_str(), editor_id)
+        || requires_shared_dna_for_remap(shared_dna_remap_signatures, sig) {
         return None;
     }
     let normalized = interner.intern(&normalized_editor_id(editor_id));
@@ -2586,6 +2658,7 @@ fn editor_id_vanilla_remap_blocked_source_form_keys(
         .iter()
         .chain(FO76_FO4_RE_TRIGGER_BASE_FORM_IDS)
         .chain(FO76_CHARACTER_PRESET_FORM_IDS)
+        .chain(crate::phase::perk_cards::abilities::PRESERVED_MAGIC.iter().map(|(id, _, _)| id))
         .map(|&local| FormKey {
             local,
             plugin: source_plugin,
@@ -2626,6 +2699,45 @@ pub(crate) fn base_asset_namespace<'a>(
 
 /// Resolved relocation namespace for a run (`""` when relocation is inactive).
 /// Shared accessor for the asset phases (textures/materials/NIFs).
+/// Native source materials and textures rendered by FO4CS.
+pub fn native_assets_active(run: &ConversionRun) -> bool {
+    run.config.native_assets && matches!(run.source, Game::Fo76 | Game::Starfield) && run.target == Game::Fo4
+}
+
+#[cfg(test)]
+mod native_assets_active_tests {
+    use super::*;
+
+    fn active(source: Game, target: Game, native_assets: bool) -> bool {
+        let id = create_run(RunParams {
+            source,
+            target,
+            source_handle_id: 9999,
+            target_handle_id: 9998,
+            master_handle_ids: vec![],
+            config: RunConfig {
+                output_plugin_name: "Output.esp".into(),
+                native_assets,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        let active = with_run(id, |run| -> Result<bool, RunError> { Ok(native_assets_active(run)) }).unwrap();
+        drop_run(id).unwrap();
+        active
+    }
+
+    #[test]
+    fn only_supported_pairs_with_the_option_are_native() {
+        assert!(active(Game::Fo76, Game::Fo4, true));
+        assert!(!active(Game::Fo76, Game::Fo4, false));
+        assert!(active(Game::Starfield, Game::Fo4, true));
+        assert!(!active(Game::Starfield, Game::Fo4, false));
+        assert!(!active(Game::Starfield, Game::Fo76, true));
+        assert!(!active(Game::SkyrimSe, Game::Fo4, true));
+    }
+}
+
 pub fn base_asset_namespace_for_run(run: &ConversionRun) -> String {
     base_asset_namespace(&run.config, run.source, run.target)
         .unwrap_or("")
@@ -2636,10 +2748,14 @@ pub fn base_asset_namespace_for_run(run: &ConversionRun) -> String {
 /// pair default. Shared by the material and texture base-owned gates so the two
 /// can never disagree about which kits overwrite.
 pub fn base_overwrite_prefixes_for_run(run: &ConversionRun) -> Vec<String> {
-    let configured = &run.config.base_overwrite_prefixes;
+    base_overwrite_prefixes(&run.config, run.source, run.target)
+}
+
+fn base_overwrite_prefixes(config: &RunConfig, source: Game, target: Game) -> Vec<String> {
+    let configured = &config.base_overwrite_prefixes;
     let source: Vec<String> = if !configured.is_empty() {
         configured.clone()
-    } else if run.source == Game::Fo76 && run.target == Game::Fo4 {
+    } else if source == Game::Fo76 && target == Game::Fo4 {
         crate::relocation::FO76_FO4_DEFAULT_BASE_OVERWRITE_PREFIXES
             .iter()
             .map(|s| (*s).to_string())
@@ -2667,6 +2783,12 @@ fn relocation_modl_key(path: &str) -> String {
     } else {
         format!("meshes/{rel}")
     }
+}
+
+fn is_relocated_mesh_variant(path: &str, members: &std::collections::HashSet<String>) -> bool {
+    let key = relocation_modl_key(path);
+    members.contains(&key) || key.strip_prefix("meshes/firstperson/")
+        .is_some_and(|original| members.contains(&format!("meshes/{original}")))
 }
 
 /// Relocate model paths that point at a collision-detected mesh into the
@@ -2709,7 +2831,7 @@ fn namespace_mesh_path_value(
             let Some(current) = interner.resolve(*sym) else {
                 return 0;
             };
-            if !relocation_members.contains(&relocation_modl_key(current)) {
+            if !is_relocated_mesh_variant(current, relocation_members) {
                 return 0;
             }
             let Some(namespaced) = namespaced_mesh_model_path(current, namespace) else {
@@ -2725,7 +2847,7 @@ fn namespace_mesh_path_value(
             let had_nul = bytes.last().is_some_and(|byte| *byte == 0);
             let current = String::from_utf8_lossy(bytes.as_slice());
             let current = current.trim_end_matches('\0');
-            if !relocation_members.contains(&relocation_modl_key(current)) {
+            if !is_relocated_mesh_variant(current, relocation_members) {
                 return 0;
             }
             let Some(namespaced) = namespaced_mesh_model_path(current, namespace) else {
@@ -2895,6 +3017,42 @@ fn namespaced_material_path(path: &str, namespace: &str) -> Option<String> {
     Some(parts.join("\\"))
 }
 
+/// Point an IMGS colour LUT at its relocated copy. TX00 is relative to `Textures\`.
+pub(crate) fn namespace_imagespace_lut_path(
+    record: &mut Record,
+    relocation_members: &std::collections::HashSet<String>,
+    namespace: &str,
+    interner: &StringInterner,
+) -> usize {
+    let namespace = namespace.trim().trim_matches(|c| c == '/' || c == '\\');
+    if record.sig.as_str() != "IMGS" || relocation_members.is_empty() || namespace.is_empty() {
+        return 0;
+    }
+    let mut updated = 0;
+    for field in record
+        .fields
+        .iter_mut()
+        .filter(|field| field.sig.as_str() == "TX00")
+    {
+        let FieldValue::String(sym) = field.value else {
+            continue;
+        };
+        let Some(current) = interner.resolve(sym) else {
+            continue;
+        };
+        if !relocation_members.contains(&crate::relocation::normalize_texture_member(current)) {
+            continue;
+        }
+        let relative = strip_ascii_prefix(
+            strip_ascii_prefix(current.trim_matches('\0').replace('/', "\\"), "data\\"),
+            "textures\\",
+        );
+        field.value = FieldValue::String(interner.intern(&format!("{namespace}\\{relative}")));
+        updated += 1;
+    }
+    updated
+}
+
 fn strip_ascii_prefix(value: String, prefix: &str) -> String {
     if value.len() >= prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix) {
         value[prefix.len()..].to_owned()
@@ -3010,7 +3168,7 @@ fn fo76_fo4_collision_layer_alias(editor_id: &str) -> Option<&'static str> {
 ///
 /// FO76's generic armor-paint and power-armor associations resolve to the FO4
 /// keywords carried by the corresponding FO4 armor records.
-const FO76_FO4_FORCED_KEYWORD_SUBSTITUTIONS: &[(u32, &str, u32)] = &[
+pub(crate) const FO76_FO4_FORCED_KEYWORD_SUBSTITUTIONS: &[(u32, &str, u32)] = &[
     (0x0011_4364, "Fallout4.esm", 0x0024_A0D8), // ap_gun_Appearance   -> ap_WeaponMaterial
     (0x0037_D0B2, "Fallout4.esm", 0x0024_A0D7), // ma_Gun_Appearance   -> ma_WeaponMaterialSwaps
     (0x001A_001E, "Fallout4.esm", 0x001A_001E), // ap_melee_Appearance -> ap_melee_Material
@@ -3775,6 +3933,30 @@ fn collect_fo76_decal_material_members(source_handle_id: u64) -> Result<Vec<Stri
     Ok(members.into_iter().collect())
 }
 
+fn collect_fo76_imagespace_lut_members(source_handle_id: u64) -> Result<Vec<String>, String> {
+    let form_keys =
+        esp_authoring_core::plugin_runtime::plugin_handle_record_form_keys_by_signature_no_py(
+            source_handle_id,
+            "IMGS",
+        )?;
+    let mut members = BTreeSet::new();
+    for form_key in form_keys {
+        let values = esp_authoring_core::plugin_runtime::plugin_handle_read_raw_subrecords_no_py(
+            source_handle_id,
+            &form_key,
+            "TX00",
+        )?;
+        for value in values {
+            let member =
+                crate::relocation::normalize_texture_member(&String::from_utf8_lossy(&value));
+            if member.ends_with(".dds") {
+                members.insert(member);
+            }
+        }
+    }
+    Ok(members.into_iter().collect())
+}
+
 fn needs_fo4_placed_ref_target_repair(source: Game, target: Game) -> bool {
     target == Game::Fo4 && matches!(source, Game::Fo76 | Game::Starfield)
 }
@@ -3957,10 +4139,83 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
             Vec::new()
         };
         relocation.warnings.extend(warnings);
+
+        match collect_fo76_imagespace_lut_members(params.source_handle_id) {
+            Ok(luts) => {
+                let warnings = if let Some(store) = target_assets.as_deref() {
+                    crate::relocation::extend_with_changed_textures_from_target_store(
+                        &mut relocation.members,
+                        &luts,
+                        source_dir,
+                        store,
+                    )
+                } else if let Some(target_dir) = config.target_extracted_dir.as_deref() {
+                    crate::relocation::extend_with_changed_textures(
+                        &mut relocation.members,
+                        &luts,
+                        source_dir,
+                        target_dir,
+                    )
+                } else {
+                    Vec::new()
+                };
+                relocation.warnings.extend(warnings);
+            }
+            Err(error) => relocation
+                .warnings
+                .push(format!("relocation: IMGS LUT scan failed: {error}")),
+        }
     }
     if let Some(warning) = decal_material_scan_warning {
         relocation.warnings.push(warning);
     }
+
+    let native_overwrite_paths = match config.source_extracted_dir.as_deref() {
+        Some(source_dir)
+            if config.native_assets
+                && config.replace_fo4_materials
+                && params.source == Game::Fo76
+                && params.target == Game::Fo4 =>
+        {
+            let target_has = |path: &str| {
+                target_assets.as_deref().is_some_and(|store| store.has_asset(path))
+                    || config.target_extracted_dir.as_deref().is_some_and(|dir| {
+                        dir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR)).is_file()
+                    })
+            };
+            let target_nif_refs = |path: &str| {
+                if let Some(store) = target_assets.as_deref() {
+                    if !store.has_asset(path) {
+                        return None;
+                    }
+                    let (materials, textures) = store
+                        .dependencies_for(path)
+                        .iter()
+                        .cloned()
+                        .partition(|dependency| dependency.starts_with("materials/"));
+                    return Some(nif_core_native::model::ReferencedAssetPaths {
+                        materials,
+                        textures: textures
+                            .into_iter()
+                            .filter(|dependency: &String| dependency.starts_with("textures/"))
+                            .collect(),
+                    });
+                }
+                let dir = config.target_extracted_dir.as_deref()?;
+                relocation
+                    .nif_dependencies
+                    .get(&dir.join(path.replace('/', std::path::MAIN_SEPARATOR_STR)))
+            };
+            crate::relocation::build_native_overwrite_set(
+                source_dir,
+                &relocation.members,
+                &target_has,
+                &target_nif_refs,
+                &base_overwrite_prefixes(&config, params.source, params.target),
+            )
+        }
+        _ => std::collections::HashSet::new(),
+    };
 
     let target_master_record_contexts = params
         .master_handle_ids
@@ -3992,6 +4247,7 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         script_reference_state: None,
         generated_object_id_reservations: FxHashSet::default(),
         legacy_serial_normalization: Default::default(),
+        starfield_weapon_source_contracts: None,
         legacy_pack_preflight_report: None,
         legacy_creature_race_coverage: Default::default(),
         decisions: Vec::new(),
@@ -4026,6 +4282,10 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         skyrim_quest_runtime_asset_copy_receipt: None,
         skyrim_minimal_quest_compiler_evidence: Vec::new(),
         skyrim_minimal_quest_receipts_finalized: false,
+        skyrim_skill_modifier_records: None,
+        skyrim_magic_resource_records: None,
+        skyrim_bow_stagger_races: Vec::new(),
+        legacy_embedded_weapon_slots: BTreeMap::new(),
         bulk_melee_v1_receipts: Vec::new(),
         creature_dependency_plan_installed: false,
         creature_dependency_admissions: FxHashMap::default(),
@@ -4052,9 +4312,11 @@ fn create_run_in_mode(params: RunParams, target_mode: TargetMode) -> Result<u64,
         ),
         projected_seed_cache: std::collections::HashMap::new(),
         interior_placed_ref_candidates: Vec::new(),
+        ess_placed_locations: Vec::new(),
         interior_recentre: Default::default(),
         relocation_members: relocation.members,
         relocation_mesh_only_members: relocation.mesh_only_members,
+        native_overwrite_paths,
         nif_dependencies: relocation.nif_dependencies,
         _relocation_preparation: relocation.preparation,
         output_nif_dependencies: Arc::default(),
@@ -4479,6 +4741,19 @@ impl ConversionRun {
             .is_some_and(|admission| admission.source_signature == signature)
     }
 
+    pub(crate) fn lower_admitted_creature_idle(
+        &self,
+        record: &mut Record,
+        ctx: &crate::translator::pair_hook::PairCtx<'_>,
+    ) -> Result<(), String> {
+        if let Some(binding) = self.creature_dependency_admissions.get(&record.form_key)
+            .and_then(|admission| admission.legacy_idle.as_ref())
+        {
+            crate::translator::pair_hooks::fnv_fo4::creature_idle_projection::lower_source_idle(record, binding, ctx)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn creature_dependency_failure(
         &self,
         form_key: FormKey,
@@ -4504,6 +4779,32 @@ impl ConversionRun {
         }
     }
 
+    pub(crate) fn is_deferred_creature_script_dependency(&self, form_key: FormKey, signature: SigCode) -> bool {
+        self.source == Game::Fnv && self.target == Game::Fo4
+            && self.is_admitted_creature_dependency(form_key, signature)
+            && (signature.as_str() == "SCPT" || (signature.as_str() == "QUST"
+                && matches!(form_key.local, 0x0FED44 | 0x1083DE)
+                && self.interner.resolve(form_key.plugin).is_some_and(|plugin| plugin.eq_ignore_ascii_case("FalloutNV.esm"))))
+    }
+
+    pub(crate) fn validate_creature_dependency_publication(&self) -> Result<(), RunError> {
+        for admission in self.creature_dependency_admissions.values() {
+            if !self.creature_dependency_terminals.contains(&admission.source_form_key) {
+                return Err(self.creature_dependency_failure(admission.source_form_key, admission.source_signature, "missing_publication_evidence"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_fnv_creature_script_publication(&self, mod_path: &std::path::Path, receipt_path: &std::path::Path) -> Result<(), RunError> {
+        let scripts = self.fnv_pending_vmad_scripts.iter().filter(|script| {
+            parse_legacy_form_key_text(&script.source_form_key, &self.interner).is_ok_and(|source|
+                self.is_admitted_creature_dependency(source, SigCode::from_str("SCPT").unwrap()))
+        }).collect::<Vec<_>>();
+        crate::fnv_legacy_scripting::creature_publication::write(mod_path, receipt_path, &scripts, &self.fnv_quest_runtime_compiler_evidence)
+            .map_err(RunError::InvalidConfig)
+    }
+
     pub(crate) fn validate_creature_dependency_accounting(&self) -> Result<(), RunError> {
         let mut missing = self
             .creature_dependency_admissions
@@ -4512,6 +4813,8 @@ impl ConversionRun {
                 !self
                     .creature_dependency_terminals
                     .contains(&admission.source_form_key)
+                    && !(self.is_deferred_creature_script_dependency(admission.source_form_key, admission.source_signature)
+                        && self.deferred.iter().any(|(key, kind)| *key == admission.source_form_key && matches!(kind, DeferredKind::FnvLegacyScripting)))
             })
             .collect::<Vec<_>>();
         missing.sort_by_key(|admission| {
@@ -4990,7 +5293,7 @@ impl ConversionRun {
         &mut self,
         form_keys: &[FormKey],
     ) -> Result<(), RunError> {
-        if !matches!(self.source, Game::Fnv | Game::Fo3) || self.target != Game::Fo4 {
+        if !matches!(self.source, Game::Fnv | Game::Fo3 | Game::SkyrimSe) || self.target != Game::Fo4 {
             return Ok(());
         }
         self.emit_phase_status(format!(
@@ -5006,7 +5309,7 @@ impl ConversionRun {
             target_schema: &relayout_target_schema,
             target_form_version:
                 crate::fixups::remap_struct_internal_formids::FO4_TARGET_FORM_VERSION,
-            legacy_bptd_only: true,
+            legacy_bptd_only: matches!(self.source, Game::Fnv | Game::Fo3),
         };
         let mut total = LegacyFormKeyPreallocationCoverage::default();
         let mut intents = Vec::with_capacity(crate::store2::translate_v2::CHUNK);
@@ -5024,6 +5327,7 @@ impl ConversionRun {
                 continue;
             };
             let admitted_mvp_weapon_record = self.is_admitted_mvp_weapon_record(&source_record);
+            let admitted_creature_dependency = self.is_admitted_creature_dependency(source_fk, source_record.sig);
             {
                 let mut ctx = PairCtx::new(&self.interner);
                 let _ = self.translator.pre_translate(&mut ctx, &mut source_record);
@@ -5040,7 +5344,9 @@ impl ConversionRun {
                 crate::translator::pair_hooks::fnv_fo4::lower_acre_signature(&mut source_record)
                     .map_err(|error| RunError::InvalidConfig(format!("legacy_acre:{error}")))?;
             }
-            let translated = if admitted_mvp_weapon_record {
+            let translated = if admitted_mvp_weapon_record || admitted_creature_dependency
+                || is_mandatory_skyrim_actor_record(self.source, self.target, source_record.sig)
+                || self.is_skyrim_runtime_planned_record(source_fk, source_record.sig) {
                 self.translator.translate_ignoring_skip(
                     &source_record,
                     &self.interner,
@@ -9807,7 +10113,11 @@ impl ConversionRun {
             return Ok(0);
         }
 
-        let handle = OwnedPluginHandle::load(prior_plugin_path, self.target.as_str(), None)?;
+        let handle = OwnedPluginHandle::load_compact_placed_records(
+            prior_plugin_path,
+            self.target.as_str(),
+            None,
+        )?;
         let object_ids =
             esp_authoring_core::plugin_runtime::graft_terrain_navmesh_object_ids_from_handle(
                 handle.id(),
@@ -10944,6 +11254,11 @@ impl ConversionRun {
                                 &source_entries,
                                 &self.interner,
                             )
+                            .into_iter()
+                            .chain(crate::skyrimse_fo4_runtime::equipment_slots::native_slot_mappings(
+                                &source_entries,
+                                &self.interner,
+                            ))
                         {
                             mapper_state
                                 .source_to_target
@@ -11031,6 +11346,107 @@ impl ConversionRun {
                 mapper_state
                     .source_to_target
                     .insert(source_form_key, target_form_key);
+            }
+        }
+        if matches!(self.source, Game::Fnv | Game::Fo3) && self.target == Game::Fo4 {
+            use crate::translator::pair_hooks::fnv_fo4::creature_muzzle::{
+                allocate_embedded_weapon_slots, embedded_weapon_node,
+            };
+            let mut weapons = BTreeSet::new();
+            for key in iter_form_keys_of_sig(self.source_handle_id, SigCode(*b"WEAP"), &self.interner)? {
+                let record = read_record_relayout_by_form_key(
+                    self.source_handle_id, &key, &self.schema_source, &self.interner, None,
+                )?;
+                if embedded_weapon_node(&record, &self.interner).is_some() {
+                    weapons.insert(format!("{:06X}:{}", key.local, self.interner.resolve(key.plugin).unwrap()));
+                }
+            }
+            let records = allocate_embedded_weapon_slots(
+                &mut FormKeyMapper::from_state(&mut mapper_state, &self.interner),
+                &mut self.legacy_embedded_weapon_slots,
+                weapons,
+                &self.interner,
+            );
+            for record in records {
+                crate::target_write::add_record_native(
+                    self.target_handle_id, record, &self.schema_target, &self.interner,
+                ).map_err(|error| RunError::InvalidConfig(format!("legacy embedded weapon slots: {error}")))?;
+            }
+        }
+        if self.source == Game::SkyrimSe && self.target == Game::Fo4 {
+            use crate::skyrimse_fo4_runtime::magic_resources::allocate_magic_resource_records;
+            use crate::skyrimse_fo4_runtime::skill_modifiers::{
+                allocate_skill_modifier_records, record_uses_skill_modifiers,
+            };
+            let mut needed = self.skyrim_skill_modifier_records.is_some();
+            if !needed {
+                for key in iter_form_keys_of_sig(
+                    self.source_handle_id,
+                    SigCode(*b"MGEF"),
+                    &mut self.interner,
+                )? {
+                    let source = read_record_relayout_by_form_key(
+                        self.source_handle_id,
+                        &key,
+                        &self.schema_source,
+                        &self.interner,
+                        None,
+                    )?;
+                    if record_uses_skill_modifiers(&source, &self.interner) {
+                        needed = true;
+                        break;
+                    }
+                }
+            }
+            if needed {
+                let (targets, records) = allocate_skill_modifier_records(
+                    &mut FormKeyMapper::from_state(&mut mapper_state, &self.interner),
+                    self.skyrim_skill_modifier_records,
+                    &self.interner,
+                );
+                for record in records {
+                    crate::target_write::add_record_native(
+                        self.target_handle_id,
+                        record,
+                        &self.schema_target,
+                        &self.interner,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!("Skyrim skill modifier records: {error}"))
+                    })?;
+                }
+                self.skyrim_skill_modifier_records = Some(targets);
+            }
+            let mut resource_records_needed = self.skyrim_magic_resource_records.is_some();
+            for sig in [*b"NPC_", *b"RACE", *b"MGEF"] {
+                if resource_records_needed {
+                    break;
+                }
+                resource_records_needed = !iter_form_keys_of_sig(
+                    self.source_handle_id,
+                    SigCode(sig),
+                    &self.interner,
+                )?
+                .is_empty();
+            }
+            if resource_records_needed {
+                let (targets, records) = allocate_magic_resource_records(
+                    &mut FormKeyMapper::from_state(&mut mapper_state, &self.interner),
+                    self.skyrim_magic_resource_records,
+                    &self.interner,
+                );
+                for record in records {
+                    crate::target_write::add_record_native(
+                        self.target_handle_id,
+                        record,
+                        &self.schema_target,
+                        &self.interner,
+                    )
+                    .map_err(|error| {
+                        RunError::InvalidConfig(format!("Skyrim magic resource records: {error}"))
+                    })?;
+                }
+                self.skyrim_magic_resource_records = Some(targets);
             }
         }
         self.mapper_state = Some(mapper_state);
@@ -11417,9 +11833,35 @@ impl ConversionRun {
                 } else {
                     None
                 };
+                let starfield_weapon_instance_metadata = if self.source == Game::Starfield
+                    && self.target == Game::Fo4
+                    && !self.translator.maps.skip_records.contains(source_sig.as_str())
+                {
+                    match self.starfield_weapon_source_contracts.as_ref() {
+                        Some(contracts) => {
+                            let metadata = contracts.capture_instance_metadata(fk, &src_record)
+                                .map_err(|error| RunError::InvalidConfig(format!("starfield_weapon_instance:{error}")))?;
+                            contracts.strip_instance_fields(fk, &mut src_record)
+                                .map_err(|error| RunError::InvalidConfig(format!("starfield_weapon_instance:{error}")))?;
+                            metadata
+                        }
+                        None if matches!(source_sig.as_str(), "WEAP" | "AMMO" | "PROJ") => return Err(RunError::InvalidConfig("Starfield weapon/ballistic source contracts were not planned".into())),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
                 // ── PairHook::pre_translate ────────────────────────────
                 {
-                    let mut ctx = PairCtx::new(&mut self.interner);
+                    let source_options = &self.mapper_state.as_ref().unwrap().options;
+                    let mut ctx = PairCtx::with_source_and_target(
+                        &self.interner,
+                        &source_options.source_plugin_name,
+                        &source_options.source_master_names,
+                        &self.config.target_master_names,
+                    );
+                    self.lower_admitted_creature_idle(&mut src_record, &ctx)
+                        .map_err(RunError::InvalidConfig)?;
                     if let Err(e) = self.translator.pre_translate(&mut ctx, &mut src_record) {
                         let w = self.interner.intern(&format!("pre_translate:{e}"));
                         self.warnings.push(w);
@@ -11526,7 +11968,8 @@ impl ConversionRun {
                             break 'record;
                         }
                         TranslateResult::Deferred(kind) => {
-                            if admitted_creature_dependency {
+                            if admitted_creature_dependency && !(matches!(kind, DeferredKind::FnvLegacyScripting)
+                                && self.is_deferred_creature_script_dependency(fk, source_sig)) {
                                 return Err(
                                     self.creature_dependency_failure(fk, source_sig, "deferred")
                                 );
@@ -11737,6 +12180,16 @@ impl ConversionRun {
                             let w = mapper.interner.intern(&format!("rewrite_record:{e}"));
                             self.warnings.push(w);
                         }
+                        if self.source == Game::Starfield && self.target == Game::Fo4
+                            && let Some(contracts) = self.starfield_weapon_source_contracts.as_ref()
+                        {
+                            contracts.restore_instance_fields(fk, &mut translated, &mut mapper, starfield_weapon_instance_metadata.as_ref())
+                                .map_err(|error| RunError::InvalidConfig(format!("starfield_weapon_instance:{error}")))?;
+                        }
+                        if self.source == Game::SkyrimSe && self.target == Game::Fo4 {
+                            crate::skyrimse_fo4_runtime::creature_attack_scripts::bind_attack_script_actor_values(&mut translated, &mapper, &self.interner)
+                                .map_err(|error| RunError::InvalidConfig(format!("skyrim_creature_script_actor_values:{error}")))?;
+                        }
                     }
                     target_fk
                 };
@@ -11929,6 +12382,14 @@ impl ConversionRun {
                     &mut translated,
                     &self.relocation_members,
                     base_asset_namespace(&self.config, self.source, self.target).unwrap_or(""),
+                    &self.interner,
+                );
+                crate::relocation::namespace_legacy_texture_set_paths(
+                    &mut translated,
+                    &self.relocation_members,
+                    base_asset_namespace(&self.config, self.source, self.target).unwrap_or(""),
+                    self.source,
+                    self.target,
                     &self.interner,
                 );
                 if let Some(player_info) = synthetic_player_info.as_mut() {
@@ -12722,12 +13183,22 @@ impl ConversionRun {
         let repair_error = |name: &str, err: FixupError| {
             FixupError::HandleError(format!("repair_placed_child_refs:{name}: {err}"))
         };
+        let log_memory = |name: &str| {
+            if let Some(memory) = memory_stats::memory_stats() {
+                eprintln!(
+                    "[repair_memory] {name} working_set_bytes={} virtual_bytes={}",
+                    memory.physical_mem, memory.virtual_mem
+                );
+            }
+        };
         let log_timing = |name: &str, started: std::time::Instant| {
             eprintln!(
                 "[repair_timing] {name} elapsed_ms={}",
                 started.elapsed().as_millis()
             );
+            log_memory(name);
         };
+        log_memory("begin");
         let repair_fo4_placed_ref_targets =
             needs_fo4_placed_ref_target_repair(self.source, self.target);
         let mut session =
@@ -13013,29 +13484,21 @@ impl ConversionRun {
             .saturating_add(door_shift.records_changed);
         log_timing("recentre_far_interiors", started);
         if self.source == Game::Fo76 && self.target == Game::Fo4 {
-            // Rederive FO4 light radii from FO76's lumens (FO76 is physically based:
-            // radius is only a cull distance, brightness is intensity; FO4 has no
-            // intensity field, so radius *is* the falloff scale) and rescale placed
-            // XRDS overrides in lockstep. Also converts the FO76 additive XRDS delta
-            // to an FO4 absolute radius — a negative absolute radius corrupts the
-            // cell's spatial partition, killing physics + sound for the whole cell.
+            // Write FO76's runtime light radii and the matching FNAM, and convert
+            // placed overrides whose meaning differs: the XRDS delta re-based on the
+            // written base radius, with base + XRDS clamped positive (a non-positive
+            // radius corrupts the cell's spatial partition, killing physics + sound)
+            // and the FO76 XLIG fade multiplier to FO4's additive fade.
             let started = std::time::Instant::now();
-            let light_radius = if let Some(discovery) = placed_refr_discovery
+            let refr_candidates = placed_refr_discovery
                 .as_ref()
                 .filter(|discovery| discovery.shared_candidates_available)
-            {
-                crate::fixups::normalize_light_radii::normalize_light_radii_for_refr_candidates(
-                    &mut session,
-                    &mut mapper,
-                    &discovery.light_radius_candidates,
-                )
-            } else {
-                crate::fixups::normalize_light_radii::normalize_light_radii(
-                    &mut session,
-                    &mut mapper,
-                    &config,
-                )
-            }
+                .map(|discovery| discovery.light_radius_candidates.as_slice());
+            let light_radius = crate::fixups::normalize_light_radii::normalize_light_radii_fo76(
+                &mut session,
+                &mut mapper,
+                refr_candidates,
+            )
             .map_err(|err| repair_error("normalize_light_radii", err))?;
             report.records_changed = report
                 .records_changed
@@ -13096,28 +13559,10 @@ impl ConversionRun {
         drop(placed_refr_discovery);
         if self.source == Game::Fo76 && self.target == Game::Fo4 {
             let started = std::time::Instant::now();
-            let ess_spawn =
-                crate::fixups::encounter_zones::specialize_placed_actor_templates_after_ref_repair(
-                    &mut session,
-                    &mut mapper,
-                    &config,
-                )
-                .map_err(|err| {
-                    repair_error("specialize_placed_actor_templates_after_ref_repair", err)
-                })?;
-            emit_fixup_report_log(
-                &event_tx,
-                "repair_placed_child_refs",
-                "specialize_placed_actor_templates",
-                &ess_spawn,
-                mapper.interner,
-            );
-            report.records_added = report.records_added.saturating_add(ess_spawn.records_added);
-            report.records_changed = report
-                .records_changed
-                .saturating_add(ess_spawn.records_changed);
-            report.warnings.extend(ess_spawn.warnings);
-            log_timing("specialize_placed_actor_templates", started);
+            self.ess_placed_locations =
+                crate::fixups::encounter_zones::placed_actor_fo76_locations(&mut session, &mut mapper, &config)
+                    .map_err(|err| repair_error("placed_actor_fo76_locations", err))?;
+            log_timing("placed_actor_fo76_locations", started);
         }
         // Final QUST alias-condition repair must remain after every placed-child
         // repair above: only now can output REFR persistence be proven from both
@@ -13136,6 +13581,22 @@ impl ConversionRun {
                 .saturating_add(quest_conditions.records_changed);
             report.warnings.extend(quest_conditions.warnings);
             log_timing("repair_final_quest_reference_conditions", started);
+
+            // Last, so no earlier dangling-reference pass re-nulls the
+            // Fallout4.esm hardcoded actor values this restores.
+            let started = std::time::Instant::now();
+            let record_dependencies =
+                crate::fixups::repair_fo76_record_dependencies::repair_fo76_record_dependencies(
+                    &mut session,
+                    &mut mapper,
+                    &config,
+                )
+                .map_err(|err| repair_error("repair_fo76_record_dependencies", err))?;
+            report.records_changed = report
+                .records_changed
+                .saturating_add(record_dependencies.records_changed);
+            report.warnings.extend(record_dependencies.warnings);
+            log_timing("repair_fo76_record_dependencies", started);
         }
         session.flush_pending_effects();
         self.warnings.extend(report.warnings.iter().copied());
@@ -14474,7 +14935,12 @@ impl ConversionRun {
                 attachments,
             ) {
                 Ok(translated) => ctx.translated_scripts.push(translated),
-                Err(error) => ctx.skipped_records.push((
+                Err(error) => {
+                    let source_key = parse_legacy_form_key_text(form_key, &self.interner).map_err(FnvScriptingError::Setup)?;
+                    if self.is_admitted_creature_dependency(source_key, SigCode::from_str("SCPT").unwrap()) {
+                        return Err(FnvScriptingError::Setup(format!("required creature script {form_key} failed source translation: {error}")));
+                    }
+                    ctx.skipped_records.push((
                     "SCPT".to_string(),
                     record
                         .get("eid")
@@ -14482,13 +14948,29 @@ impl ConversionRun {
                         .unwrap_or("<unknown>")
                         .to_string(),
                     error.to_string(),
-                )),
+                    ));
+                }
             }
         }
         if self.config.fnv_quest_slice {
             ensure_no_deferred_translation_failures(&ctx.skipped_records)?;
         }
-        translate_all_qust(&mut ctx, quest_records);
+        let mut ordinary_quests = Vec::new();
+        for (record, source_key) in quest_records {
+            let source = parse_legacy_form_key_text(source_key, &self.interner).map_err(FnvScriptingError::Setup)?;
+            let projected = if self.is_deferred_creature_script_dependency(source, SigCode::from_str("QUST").unwrap()) {
+                crate::fnv_legacy_scripting::creature_callbacks::nellis_callback_quest(record, source_key).map_err(FnvScriptingError::Setup)?
+            } else { None };
+            if let Some(translated_record) = projected {
+                ctx.translated_record_payloads.push(crate::fnv_legacy_scripting::TranslatedRecordPayload {
+                    source_form_key: source_key.clone(), signature: "QUST".into(), translated_record,
+                    warnings: vec!["creature_callback_projection: retained source quest storage and objective states; quest stages and dialogue are outside this creature callback projection".into()],
+                });
+            } else {
+                ordinary_quests.push((record.clone(), source_key.clone()));
+            }
+        }
+        translate_all_qust(&mut ctx, &ordinary_quests);
         translate_all_scen(&mut ctx, scene_records);
         translate_all_dial(&mut ctx, info_records);
         let alias_by_speaker = if self.config.fnv_quest_slice {
@@ -14668,6 +15150,7 @@ impl ConversionRun {
                 let symbol = self.interner.intern(warning);
                 self.warnings.push(symbol);
             }
+            self.record_creature_dependency_terminal(payload.identity.source_form_key);
         }
         let dedicated_runtime_records = typed_dialogue_plan.dedicated_runtime_records.clone();
         let expected_dedicated_records = dedicated_runtime_records.len();
@@ -14753,8 +15236,8 @@ impl ConversionRun {
                 dedicated_records_written += 1;
             }
         }
-        if expected_dedicated_records != 5
-            || dedicated_records_written != expected_dedicated_records
+        if self.config.fnv_quest_slice && (expected_dedicated_records != 5
+            || dedicated_records_written != expected_dedicated_records)
         {
             return Err(FnvScriptingError::Setup(format!(
                 "dedicated hostage greeting expected {expected_dedicated_records} manifested records and wrote {dedicated_records_written}; exact contract requires 5"
@@ -14869,6 +15352,18 @@ impl ConversionRun {
                 evidence,
             )
             .map_err(|error| FnvScriptingError::Setup(error.to_string()))?;
+        let mut required_creature_scripts = Vec::new();
+        for admission in self.creature_dependency_admissions.values().filter(|admission| admission.source_signature.as_str() == "SCPT") {
+            let source_text = form_key_to_legacy_str(admission.source_form_key, &self.interner).ok_or_else(|| FnvScriptingError::Setup("required creature script has no source plugin identity".into()))?;
+            let script = self.fnv_pending_vmad_scripts.iter().find(|script| script.source_form_key.eq_ignore_ascii_case(&source_text))
+                .ok_or_else(|| FnvScriptingError::Setup(format!("required creature script {source_text} has no translated source")))?;
+            let targets = self.fnv_pending_vmad_targets.iter().filter(|(_, source)| source.eq_ignore_ascii_case(&source_text)).collect::<Vec<_>>();
+            if targets.is_empty() || targets.iter().any(|(target, _)| !intents.iter().any(|intent|
+                intent.target_form_key.eq_ignore_ascii_case(target) && intent.script_class_name.eq_ignore_ascii_case(&script.script_class_name))) {
+                return Err(FnvScriptingError::Setup(format!("required creature script {source_text} has incomplete compiled PEX/VMAD attachment evidence")));
+            }
+            required_creature_scripts.push(admission.source_form_key);
+        }
         for pending in &self.fnv_pending_scpt_properties {
             let matching = intents
                 .iter()
@@ -15154,6 +15649,9 @@ impl ConversionRun {
         self.fnv_quest_runtime_component_plans = routed_plans;
         self.fnv_quest_runtime_compiler_evidence = evidence.to_vec();
         self.fnv_quest_runtime_receipts_finalized = false;
+        for source in required_creature_scripts {
+            self.record_creature_dependency_terminal(source);
+        }
         Ok((
             intents,
             standalone_attached || fragment_bindings_attached > 0,
@@ -18148,6 +18646,7 @@ mod tests {
                     properties: Vec::new(),
                     package_data_aliases: Vec::new(),
                     dedicated_topics: Vec::new(),
+            deferred_creature_quest: None,
                     compile_status: ScriptCompileStatus::SourceGeneratedPendingCompile,
                     terminal_status: ScriptTerminalStatus::SourceGeneratedPendingCompile,
                 })
@@ -19525,6 +20024,23 @@ mod tests {
     }
 
     #[test]
+    fn generated_first_person_armor_variant_uses_original_relocation_membership() {
+        let interner = StringInterner::new();
+        let mut record = Record::new(SigCode::from_str("ARMA").unwrap(), FormKey {
+            local: 0x800, plugin: interner.intern("Starfield.esm"),
+        });
+        record.fields.push(FieldEntry {
+            sig: SubrecordSig::from_str("MOD4").unwrap(),
+            value: FieldValue::String(interner.intern("FirstPerson\\Clothes\\Gloves.nif")),
+        });
+        let members = ["meshes/clothes/gloves.nif".to_string()].into_iter().collect();
+        assert_eq!(namespace_base_asset_model_paths(&mut record, &members, "Starfield", &interner), 1);
+        let FieldValue::String(path) = record.fields[0].value else { panic!() };
+        assert_eq!(interner.resolve(path), Some("Starfield\\FirstPerson\\Clothes\\Gloves.nif"));
+        assert!(!is_relocated_mesh_variant("FirstPerson\\Clothes\\Missing.nif", &members));
+    }
+
+    #[test]
     fn fo76_fo4_range_offset_placeholders_keep_source_records_and_weapon_references() {
         for (source_key, target_key, editor_id) in [
             (
@@ -20129,6 +20645,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn imagespace_lut_points_at_relocated_copy_only_for_members() {
+        let mut interner = StringInterner::new();
+        let imgs = |interner: &mut StringInterner, lut: &str| {
+            let form_key = FormKey::parse("52ED9A@SeventySix.esm", interner).unwrap();
+            let mut record = Record::new(SigCode::from_str("IMGS").unwrap(), form_key);
+            record.fields.push(FieldEntry {
+                sig: SubrecordSig::from_str("TX00").unwrap(),
+                value: FieldValue::String(interner.intern(lut)),
+            });
+            record
+        };
+        let lut = |record: &Record, interner: &StringInterner| {
+            let FieldValue::String(sym) = record.fields[0].value else {
+                panic!("expected string TX00");
+            };
+            interner.resolve(sym).unwrap().to_string()
+        };
+        let members = ["textures/effects/luts/colorlut.dds".to_string()]
+            .into_iter()
+            .collect();
+
+        let mut colliding = imgs(&mut interner, "Effects\\LUTs\\ColorLUT.dds");
+        assert_eq!(
+            namespace_imagespace_lut_path(&mut colliding, &members, "FO76", &interner),
+            1
+        );
+        assert_eq!(lut(&colliding, &interner), "FO76\\Effects\\LUTs\\ColorLUT.dds");
+        assert_eq!(
+            namespace_imagespace_lut_path(&mut colliding, &members, "FO76", &interner),
+            0
+        );
+
+        let mut unique = imgs(&mut interner, "Effects\\LUTs\\newlut_clear_day.dds");
+        assert_eq!(
+            namespace_imagespace_lut_path(&mut unique, &members, "FO76", &interner),
+            0
+        );
+        assert_eq!(lut(&unique, &interner), "Effects\\LUTs\\newlut_clear_day.dds");
+    }
+
     /// Starfield routes through the same BTD terrain-texture phase as FO76, so
     /// the generic writer must not also emit LTEX/GRAS when that phase runs.
     #[test]
@@ -20452,6 +21009,61 @@ mod tests {
 
         drop_run(id).unwrap();
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn create_run_builds_native_overwrite_paths_only_with_both_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fo76 = tmp.path().join("fo76");
+        let fo4 = tmp.path().join("fo4");
+        let mut material = materials_native::bgsm::BgsmData::default();
+        material.header.signature = materials_native::bgsm::BGSM_SIGNATURE;
+        material.header.version = 22;
+        material.DiffuseTexture = "Rocks\\Rock01_d.dds\0".into();
+        for dir in [&fo76, &fo4] {
+            std::fs::create_dir_all(dir.join("Materials/Rocks")).unwrap();
+            std::fs::write(
+                dir.join("Materials/Rocks/Rock01.bgsm"),
+                materials_native::bgsm::write(&material),
+            )
+            .unwrap();
+            std::fs::create_dir_all(dir.join("Textures/Rocks")).unwrap();
+            std::fs::write(dir.join("Textures/Rocks/Rock01_d.dds"), b"dds").unwrap();
+        }
+
+        let overwrite_paths = |native_assets: bool, replace_fo4_materials: bool| {
+            let id = create_run(RunParams {
+                source: Game::Fo76,
+                target: Game::Fo4,
+                source_handle_id: 9999,
+                target_handle_id: 9998,
+                master_handle_ids: vec![],
+                config: RunConfig {
+                    source_extracted_dir: Some(fo76.clone()),
+                    target_extracted_dir: Some(fo4.clone()),
+                    base_asset_relocation_mesh_roots: vec!["meshes/landscape".to_string()],
+                    base_asset_namespace: "FO76".to_string(),
+                    native_assets,
+                    replace_fo4_materials,
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+            let mut paths: Vec<String> = with_run(id, |run| {
+                Ok::<_, RunError>(run.native_overwrite_paths.iter().cloned().collect())
+            })
+            .unwrap();
+            drop_run(id).unwrap();
+            paths.sort();
+            paths
+        };
+
+        assert_eq!(
+            overwrite_paths(true, true),
+            ["materials/rocks/rock01.bgsm", "textures/rocks/rock01_d.dds"]
+        );
+        assert!(overwrite_paths(true, false).is_empty());
+        assert!(overwrite_paths(false, true).is_empty());
     }
 
     #[test]
@@ -21999,9 +22611,9 @@ mod tests {
         let teleport = body
             .rfind("repair_placed_teleport_doors::repair_placed_references")
             .unwrap();
-        let actor_specialization = body
-            .rfind("specialize_placed_actor_templates_after_ref_repair")
-            .unwrap();
+        // ESS species roll at runtime in Tales (leveled-lists catalog); the pass is retired.
+        assert!(!body.contains("specialize_placed_actor_templates_after_ref_repair"));
+        let ess_locations = body.rfind("placed_actor_fo76_locations(").unwrap();
         let final_conditions = body
             .rfind("repair_final_quest_reference_conditions(")
             .unwrap();
@@ -22010,7 +22622,7 @@ mod tests {
             .expect("session flush");
 
         assert!(final_conditions > teleport);
-        assert!(final_conditions > actor_specialization);
+        assert!(final_conditions > ess_locations);
         assert!(final_conditions < flush);
 
         let source = include_str!("run.rs");

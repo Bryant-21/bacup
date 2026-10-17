@@ -5,12 +5,36 @@ use super::manifest::{
     CapabilityGeneratorEventProperty, CapabilityGeneratorEventRef, CapabilityGeneratorNode,
     CapabilityGeneratorTransitionArray, CapabilityGraphManifest, CapabilityModifierNode,
     CapabilityRoleGenerator, CapabilityVariableBindingType, ClipDecl, CreatureClipRole,
-    CreatureGraphTemplate, CreatureManifest, EventDecl, EventUsage, GraphDeclarations,
+    ContinuousAttackPhase, CreatureGraphTemplate, CreatureManifest, EventDecl, EventUsage, GraphDeclarations,
     MvpGraphManifest, MvpMotionManifest, PropertyDecl, RAGDOLL_ENTER_EVENTS,
     RAGDOLL_TRANSITION_EVENTS, RagdollDisposition, SourceOwnedPoweredRagdollConfig,
     ValidationErrors, VariableDecl, VariableType, VariableValue,
 };
-use super::xml::{validate_fo4_havok_xml_signatures, validate_havok_xml};
+use super::xml::{number_generated_object_ids, validate_fo4_havok_xml_signatures, validate_havok_xml};
+
+#[path = "locomotion_emit.rs"]
+mod locomotion_emit;
+
+#[path = "source_idle_emit.rs"]
+mod source_idle_emit;
+
+#[path = "property_sequence_emit.rs"]
+mod property_sequence_emit;
+
+#[path = "source_attack_emit.rs"]
+mod source_attack_emit;
+
+#[path = "source_idle_overlay.rs"]
+mod source_idle_overlay;
+
+#[path = "mount_sync_emit.rs"]
+mod mount_sync_emit;
+#[path = "recovery_emit.rs"]
+mod recovery_emit;
+
+#[cfg(test)]
+#[path = "action_graph_tests.rs"]
+mod action_graph_tests;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScaffoldArtifact {
@@ -93,11 +117,17 @@ fn emit_capability_scaffold_validated(
             .iter()
             .map(|overlay| overlay.clip_name.as_str()),
     );
-    let root_declarations = declarations_with_capability(&manifest.root, graph);
-    let core_declarations = declarations_with_capability(&manifest.core, graph);
+    let mut root_declarations = declarations_with_capability(&manifest.root, graph);
+    let mut core_declarations = declarations_with_capability(&manifest.core, graph);
+    source_idle_overlay::add_declarations(manifest, &roles, &mut root_declarations);
+    source_idle_overlay::add_declarations(manifest, &roles, &mut core_declarations);
+    let recovery = roles.iter().find_map(|role| match &role.generator {
+        CapabilityRoleGenerator::SourceRecovery { graph } => Some(graph),
+        _ => None,
+    });
     emit_scaffold(
         manifest,
-        emit_root_behavior(manifest, &root_declarations),
+        recovery.map_or_else(|| emit_root_behavior(manifest, &root_declarations), |graph| recovery_emit::emit(manifest, &root_declarations, graph)),
         emit_capability_core_behavior(manifest, graph, &roles, &core_declarations),
         &clip_names,
     )
@@ -122,12 +152,12 @@ fn emit_scaffold(
     let root = ScaffoldArtifact {
         runtime_path: manifest.paths.root_behavior.clone(),
         source_xml_path: xml_source_path(&manifest.paths.root_behavior),
-        xml: root_xml,
+        xml: number_generated_object_ids(&root_xml)?,
     };
     let core = ScaffoldArtifact {
         runtime_path: manifest.paths.core_behavior.clone(),
         source_xml_path: xml_source_path(&manifest.paths.core_behavior),
-        xml: core_xml,
+        xml: number_generated_object_ids(&core_xml)?,
     };
 
     let scaffold = SourceRigScaffold {
@@ -190,6 +220,7 @@ fn validate_scaffold(
         );
         return errors.finish();
     };
+    property_sequence_emit::validate(manifest, &core.xml, &mut errors);
 
     for (label, path) in [
         ("character", &manifest.paths.character),
@@ -441,17 +472,22 @@ fn emit_powered_ragdoll_root(
     let initialize_instant = event_index(RAGDOLL_TRANSITION_EVENTS[3]);
     let add_to_world = event_index(RAGDOLL_ENTER_EVENTS[0]);
     let remove_controller = event_index(RAGDOLL_ENTER_EVENTS[1]);
-    let root_transitions = emit_root_transition_array(
-        "#0202",
-        &[(ragdoll, 1, "#0209"), (ragdoll_instant, 1, "null")],
-    );
+    let mut living_transitions = vec![(ragdoll, 1, "#0209"), (ragdoll_instant, 1, "null")];
+    if let Some(death_complete) = declarations
+        .events
+        .iter()
+        .position(|event| event.name == "B21_DeathAnimationComplete")
+    {
+        living_transitions.push((death_complete, 1, "#0209"));
+    }
+    let root_transitions = emit_root_transition_array("#0202", &living_transitions);
     let death_transitions = emit_root_transition_array(
         "#0203",
         &[(initialize, 0, "#0209"), (initialize_instant, 0, "null")],
     );
-    let root_state = emit_state_info("#0200", "RootState", 0, "#0202", "#0204", None);
+    let root_state = emit_state_info("#0200", "RootState", 0, "#0202", "#0204", None, None);
     let ragdoll_state =
-        emit_state_info("#0201", "RagdollState", 1, "#0203", "#0207", Some("#0208"));
+        emit_state_info("#0201", "RagdollState", 1, "#0203", "#0207", Some("#0208"), None);
     let (bones_ref, bones_object, pose_matching_bones) = config.map_or_else(
         || ("null", String::new(), [-1_i32; 3]),
         |config| {
@@ -548,6 +584,7 @@ fn emit_core_behavior(manifest: &CreatureManifest) -> String {
         name = escape_xml(&idle.name),
         animation = escape_xml(internal_path(manifest, &idle.path)),
     );
+    let generator = property_sequence_emit::wrap(manifest, idle, "#0093", 0.0, 0.0, generator);
     emit_behavior_graph(
         &format!("{}CoreBehavior", manifest.creature_name),
         &manifest.core,
@@ -604,6 +641,9 @@ fn capability_role_order(template: CreatureGraphTemplate, role: CreatureClipRole
             CreatureClipRole::GroundForward => 1,
             CreatureClipRole::TurnLeft90 => 2,
             CreatureClipRole::TurnRight90 => 3,
+            CreatureClipRole::TurnLeft | CreatureClipRole::TurnRight => 3,
+            CreatureClipRole::Hurt | CreatureClipRole::Death | CreatureClipRole::GetUp | CreatureClipRole::WeaponAim => 9,
+            CreatureClipRole::ScriptedAction | CreatureClipRole::ScriptedLoop => 9,
             CreatureClipRole::MeleeAttack => 4,
             CreatureClipRole::ProjectileAttack => 5,
             CreatureClipRole::ContinuousAttackStart => 6,
@@ -625,13 +665,69 @@ fn emit_capability_role_generator(
 ) -> String {
     let root_id = format!("#010{state_index}");
     match &role.generator {
-        CapabilityRoleGenerator::Single => {
+        CapabilityRoleGenerator::SourceAim { aim_children, .. } => {
+            let mut inner = role.clone();
+            inner.generator = CapabilityRoleGenerator::Blender {
+                children:aim_children.clone(),reference_pose_weight_threshold_bits:0.0_f32.to_bits(),
+                blend_parameter_bits:0.0_f32.to_bits(),min_cyclic_blend_parameter_bits:0.0_f32.to_bits(),
+                max_cyclic_blend_parameter_bits:0.0_f32.to_bits(),index_of_sync_master_child:aim_children.iter().position(|child|child.clip_name==role.clip_name).unwrap() as i16,
+                flags:25,subtract_last_child:false,blend_parameter_variable:Some("B21SourceWeaponPitch".into()),
+            };
+            emit_capability_role_generator(manifest,&inner,state_index,declarations)
+        }
+        CapabilityRoleGenerator::SourceMovement { generator, .. } => {
+            let mut inner = role.clone();
+            inner.generator = *generator.clone();
+            emit_capability_role_generator(manifest, &inner, state_index, declarations)
+        }
+        CapabilityRoleGenerator::SourceAttack { contract, generator } => {
+            let mut inner = role.clone();
+            inner.generator = if contract.aim_children.is_empty() { *generator.clone() } else {
+                CapabilityRoleGenerator::Blender {
+                    children: contract.aim_children.clone(), reference_pose_weight_threshold_bits: 0.0_f32.to_bits(),
+                    blend_parameter_bits: 0.0_f32.to_bits(), min_cyclic_blend_parameter_bits: 0.0_f32.to_bits(),
+                    max_cyclic_blend_parameter_bits: 0.0_f32.to_bits(), index_of_sync_master_child: contract.aim_children.iter().position(|child| child.clip_name == role.clip_name).unwrap() as i16,
+                    flags: 25, subtract_last_child: false, blend_parameter_variable: Some("B21SourceWeaponPitch".to_string()),
+                }
+            };
+            let xml = emit_capability_role_generator(manifest, &inner, state_index, declarations);
+            source_attack_emit::suppress_aim_annotations(xml, role, state_index)
+        }
+        CapabilityRoleGenerator::SourceIdle { .. } => {
+            source_idle_emit::emit(manifest, role, state_index, declarations)
+        }
+        CapabilityRoleGenerator::MountSynchronization { .. } => {
+            mount_sync_emit::emit(manifest, role, state_index, declarations)
+        }
+        CapabilityRoleGenerator::MountInteraction => {
+            mount_sync_emit::emit_interaction(manifest, role, state_index, declarations)
+        }
+        CapabilityRoleGenerator::Locomotion { directions } => {
+            locomotion_emit::emit(manifest, role, state_index, declarations, directions)
+        }
+        CapabilityRoleGenerator::Single | CapabilityRoleGenerator::ThrownAttack | CapabilityRoleGenerator::ContinuousAttackPhase { .. } => {
             let clip = manifest
                 .clips
                 .iter()
                 .find(|clip| clip.name == role.clip_name)
                 .expect("capability validation guarantees every role clip");
-            emit_clip_generator(manifest, &root_id, &role.state_name, clip)
+            let mut xml = emit_clip_generator(manifest, &root_id, &role.state_name, clip);
+            if role.role == CreatureClipRole::Death
+                && matches!(manifest.ragdoll, RagdollDisposition::SourceOwned { .. })
+            {
+                let trigger_id = format!("#94{state_index:02}");
+                let event_id = declarations
+                    .events
+                    .iter()
+                    .position(|event| event.name == "B21_DeathAnimationComplete")
+                    .expect("death animation declares its ragdoll handoff");
+                xml = xml.replace(
+                    "<hkparam name=\"triggers\">null</hkparam>",
+                    &format!("<hkparam name=\"triggers\">{trigger_id}</hkparam>"),
+                );
+                xml.push_str(&format!("<hkobject name=\"{trigger_id}\" class=\"hkbClipTriggerArray\" signature=\"0xf757cd66\"><hkparam name=\"triggers\" numelements=\"1\"><hkobject><hkparam name=\"localTime\">0.0</hkparam><hkparam name=\"event\"><hkobject><hkparam name=\"id\">{event_id}</hkparam><hkparam name=\"payload\">null</hkparam></hkobject></hkparam><hkparam name=\"relativeToEndOfClip\">true</hkparam><hkparam name=\"acyclic\">true</hkparam><hkparam name=\"isAnnotation\">false</hkparam></hkobject></hkparam></hkobject>\n"));
+            }
+            xml
         }
         CapabilityRoleGenerator::ManualSelector {
             children,
@@ -763,20 +859,38 @@ fn emit_capability_role_generator(
             ));
             output
         }
-        CapabilityRoleGenerator::Tree { root } => {
+        CapabilityRoleGenerator::SourceRecovery { .. } => unreachable!("source recovery is emitted in the root graph"),
+        CapabilityRoleGenerator::Tree { root } | CapabilityRoleGenerator::SourceCasting { root, .. } => {
             let mut emitter = CapabilityTreeEmitter::new(manifest, declarations, state_index);
+            if let CapabilityRoleGenerator::SourceCasting { observations, .. } = role.generator.base_generator() {
+                emitter.cast_observations = observations;
+            }
             emitter.emit_node(root, Some(root_id));
             emitter.output
         }
     }
 }
 
+pub(crate) fn emit_generator_fragment(
+    manifest: &CreatureManifest,
+    declarations: &GraphDeclarations,
+    root: &CapabilityGeneratorNode,
+    root_id: String,
+    seed: usize,
+) -> String {
+    let mut emitter = CapabilityTreeEmitter::new(manifest, declarations, seed);
+    emitter.emit_node(root, Some(root_id));
+    emitter.output
+}
+
 struct CapabilityTreeEmitter<'a> {
     manifest: &'a CreatureManifest,
     declarations: &'a GraphDeclarations,
     state_index: usize,
+    namespace: &'static str,
     next_object: usize,
     transition_effect_ids: BTreeMap<(String, u32), String>,
+    cast_observations: &'a [super::manifest::SourceCastingObservation],
     output: String,
 }
 
@@ -786,18 +900,29 @@ impl<'a> CapabilityTreeEmitter<'a> {
         declarations: &'a GraphDeclarations,
         state_index: usize,
     ) -> Self {
+        Self::in_namespace(manifest, declarations, state_index, "tree")
+    }
+
+    fn in_namespace(
+        manifest: &'a CreatureManifest,
+        declarations: &'a GraphDeclarations,
+        state_index: usize,
+        namespace: &'static str,
+    ) -> Self {
         Self {
             manifest,
             declarations,
             state_index,
+            namespace,
             next_object: 0,
             transition_effect_ids: BTreeMap::new(),
+            cast_observations: &[],
             output: String::new(),
         }
     }
 
     fn allocate_id(&mut self) -> String {
-        let id = format!("#8{:02}{:04}", self.state_index, self.next_object);
+        let id = format!("#{}_{}_{}", self.namespace, self.state_index, self.next_object);
         self.next_object += 1;
         id
     }
@@ -809,6 +934,8 @@ impl<'a> CapabilityTreeEmitter<'a> {
     ) -> String {
         let id = preferred_id.unwrap_or_else(|| self.allocate_id());
         match node {
+            CapabilityGeneratorNode::SourceClip { .. } => self.emit_source_clip(&id, node),
+            CapabilityGeneratorNode::CyclicBlendTransition { .. } => self.emit_source_cyclic_blend(&id, node),
             CapabilityGeneratorNode::Clip { source, clip_name } => {
                 let clip = self
                     .manifest
@@ -858,10 +985,11 @@ impl<'a> CapabilityTreeEmitter<'a> {
                     .iter()
                     .map(|child| {
                         let generator_id = self.emit_node(&child.generator, None);
+                        let bone_weights = child.bone_weights.as_ref().map(|weights| self.emit_source_bone_weights(weights)).unwrap_or_else(|| "null".to_string());
                         let child_id = self.allocate_id();
                         self.output.push_str(&format!(
                             "    <hkobject name=\"{child_id}\" class=\"hkbBlenderGeneratorChild\" signature=\"0xb35bbfd3\">\n\
-      <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"generator\">{generator_id}</hkparam><hkparam name=\"boneWeights\">null</hkparam><hkparam name=\"weight\">{weight}</hkparam><hkparam name=\"worldFromModelWeight\">{world_weight}</hkparam>\n\
+      <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"generator\">{generator_id}</hkparam><hkparam name=\"boneWeights\">{bone_weights}</hkparam><hkparam name=\"weight\">{weight}</hkparam><hkparam name=\"worldFromModelWeight\">{world_weight}</hkparam>\n\
     </hkobject>\n",
                             weight = f32::from_bits(child.weight_bits),
                             world_weight = f32::from_bits(child.world_from_model_weight_bits),
@@ -895,6 +1023,8 @@ impl<'a> CapabilityTreeEmitter<'a> {
                 sync_variable_index,
                 wrap_around_state_id,
                 max_simultaneous_transitions,
+                start_state_mode,
+                self_transition_mode,
                 states,
                 wildcard_transitions,
                 ..
@@ -908,7 +1038,7 @@ impl<'a> CapabilityTreeEmitter<'a> {
                             .as_ref()
                             .map(|transitions| self.emit_transition_array(transitions))
                             .unwrap_or_else(|| "null".to_string());
-                        let enter_ref = self.emit_event_properties(&state.enter_notify_events);
+                        let enter_ref = self.emit_cast_state_enter(state);
                         let exit_ref = self.emit_event_properties(&state.exit_notify_events);
                         let state_id = self.allocate_id();
                         self.output.push_str(&format!(
@@ -930,7 +1060,7 @@ impl<'a> CapabilityTreeEmitter<'a> {
                 let binding_ref = self.emit_bindings(bindings);
                 self.output.push_str(&format!(
                     "    <hkobject name=\"{id}\" class=\"hkbStateMachine\" signature=\"0xa5896bcf\">\n\
-      <hkparam name=\"variableBindingSet\">{binding_ref}</hkparam><hkparam name=\"userData\">0</hkparam><hkparam name=\"name\">{name}</hkparam><hkparam name=\"eventToSendWhenStateOrTransitionChanges\">{state_event}</hkparam><hkparam name=\"startStateIdSelector\">null</hkparam><hkparam name=\"startStateId\">{start_state_id}</hkparam><hkparam name=\"returnToPreviousStateEventId\">{return_event}</hkparam><hkparam name=\"randomTransitionEventId\">{random_event}</hkparam><hkparam name=\"transitionToNextHigherStateEventId\">{higher_event}</hkparam><hkparam name=\"transitionToNextLowerStateEventId\">{lower_event}</hkparam><hkparam name=\"syncVariableIndex\">{sync_variable_index}</hkparam><hkparam name=\"wrapAroundStateId\">{wrap_around_state_id}</hkparam><hkparam name=\"maxSimultaneousTransitions\">{max_simultaneous_transitions}</hkparam><hkparam name=\"startStateMode\">START_STATE_MODE_DEFAULT</hkparam><hkparam name=\"selfTransitionMode\">SELF_TRANSITION_MODE_NO_TRANSITION</hkparam><hkparam name=\"states\" numelements=\"{state_count}\">{state_refs}</hkparam><hkparam name=\"wildcardTransitions\">{wildcard_ref}</hkparam>\n\
+      <hkparam name=\"variableBindingSet\">{binding_ref}</hkparam><hkparam name=\"userData\">0</hkparam><hkparam name=\"name\">{name}</hkparam><hkparam name=\"eventToSendWhenStateOrTransitionChanges\">{state_event}</hkparam><hkparam name=\"startStateIdSelector\">null</hkparam><hkparam name=\"startStateId\">{start_state_id}</hkparam><hkparam name=\"returnToPreviousStateEventId\">{return_event}</hkparam><hkparam name=\"randomTransitionEventId\">{random_event}</hkparam><hkparam name=\"transitionToNextHigherStateEventId\">{higher_event}</hkparam><hkparam name=\"transitionToNextLowerStateEventId\">{lower_event}</hkparam><hkparam name=\"syncVariableIndex\">{sync_variable_index}</hkparam><hkparam name=\"wrapAroundStateId\">{wrap_around_state_id}</hkparam><hkparam name=\"maxSimultaneousTransitions\">{max_simultaneous_transitions}</hkparam><hkparam name=\"startStateMode\">{start_state_mode}</hkparam><hkparam name=\"selfTransitionMode\">{self_transition_mode}</hkparam><hkparam name=\"states\" numelements=\"{state_count}\">{state_refs}</hkparam><hkparam name=\"wildcardTransitions\">{wildcard_ref}</hkparam>\n\
     </hkobject>\n",
                     name = escape_xml(&source.name),
                     state_event = self.emit_inline_event_property(
@@ -966,6 +1096,11 @@ impl<'a> CapabilityTreeEmitter<'a> {
     fn emit_modifier(&mut self, modifier: &CapabilityModifierNode) -> String {
         let id = self.allocate_id();
         match modifier {
+            CapabilityModifierNode::IsActive { source, bindings, user_data, enable, active, invert } => {
+                let binding_ref = self.emit_bindings(bindings);
+                let values = (0..5).map(|index| format!("<hkparam name=\"bIsActive{index}\">{}</hkparam><hkparam name=\"bInvertActive{index}\">{}</hkparam>", active[index], invert[index])).collect::<String>();
+                self.output.push_str(&format!("    <hkobject name=\"{id}\" class=\"BSIsActiveModifier\" signature=\"0x5bf1f5cf\"><hkparam name=\"variableBindingSet\">{binding_ref}</hkparam><hkparam name=\"userData\">{user_data}</hkparam><hkparam name=\"name\">{}</hkparam><hkparam name=\"enable\">{enable}</hkparam>{values}</hkobject>\n", escape_xml(&source.name)));
+            }
             CapabilityModifierNode::List {
                 source,
                 bindings,
@@ -1144,6 +1279,7 @@ impl<'a> CapabilityTreeEmitter<'a> {
         let id = self.allocate_id();
         let mut rows = String::new();
         for transition in &array.transitions {
+            let condition_ref = transition.condition.as_ref().map(|condition| self.emit_source_expression_condition(condition)).unwrap_or_else(|| "null".to_string());
             let transition_ref = transition
                 .transition_effect
                 .as_ref()
@@ -1159,7 +1295,7 @@ impl<'a> CapabilityTreeEmitter<'a> {
                 )
             };
             rows.push_str(&format!(
-                "        <hkobject><hkparam name=\"triggerInterval\">{}</hkparam><hkparam name=\"initiateInterval\">{}</hkparam><hkparam name=\"transition\">{transition_ref}</hkparam><hkparam name=\"condition\">null</hkparam><hkparam name=\"eventId\">{}</hkparam><hkparam name=\"toStateId\">{}</hkparam><hkparam name=\"fromNestedStateId\">{}</hkparam><hkparam name=\"toNestedStateId\">{}</hkparam><hkparam name=\"priority\">{}</hkparam><hkparam name=\"flags\">{}</hkparam></hkobject>\n",
+                "        <hkobject><hkparam name=\"triggerInterval\">{}</hkparam><hkparam name=\"initiateInterval\">{}</hkparam><hkparam name=\"transition\">{transition_ref}</hkparam><hkparam name=\"condition\">{condition_ref}</hkparam><hkparam name=\"eventId\">{}</hkparam><hkparam name=\"toStateId\">{}</hkparam><hkparam name=\"fromNestedStateId\">{}</hkparam><hkparam name=\"toNestedStateId\">{}</hkparam><hkparam name=\"priority\">{}</hkparam><hkparam name=\"flags\">{}</hkparam></hkobject>\n",
                 interval(&transition.trigger_interval),
                 interval(&transition.initiate_interval),
                 self.event_id(&transition.event),
@@ -1208,11 +1344,14 @@ impl<'a> CapabilityTreeEmitter<'a> {
 }
 
 fn capability_child_id(prefix: u8, state_index: usize, child_index: usize) -> String {
-    format!("#{prefix}{state_index:02}{child_index:02}")
+    format!("#child_{prefix}_{state_index}_{child_index}")
 }
 
+include!("source_cast_emit.rs");
+include!("source_cast_observation_emit.rs");
+
 fn capability_binding_id(state_index: usize) -> String {
-    format!("#5{state_index:02}00")
+    format!("#binding_{state_index}")
 }
 
 fn emit_capability_core_behavior(
@@ -1221,14 +1360,19 @@ fn emit_capability_core_behavior(
     roles: &[&CapabilityClipRole],
     declarations: &GraphDeclarations,
 ) -> String {
+    let all_roles = roles;
+    let base_roles = roles.iter().copied().filter(|role| !source_idle_overlay::is_overlay(role) && !matches!(role.generator, CapabilityRoleGenerator::SourceRecovery { .. })).collect::<Vec<_>>();
+    let roles = base_roles.as_slice();
+    let has_source_overlays = all_roles.iter().any(|role| source_idle_overlay::is_overlay(role));
     let mut generator = String::new();
     for (index, role) in roles.iter().enumerate() {
-        generator.push_str(&emit_capability_role_generator(
+        let role_xml = emit_capability_role_generator(
             manifest,
             role,
             index,
             declarations,
-        ));
+        );
+        generator.push_str(&source_attack_emit::wrap_scope(role_xml, graph, role, index, declarations));
     }
     for (index, overlay) in graph.overlays.iter().enumerate() {
         let clip = manifest
@@ -1267,11 +1411,60 @@ fn emit_capability_core_behavior(
 
     let transitions = capability_state_transitions(graph, roles, declarations);
     for (index, transitions) in transitions.iter().enumerate() {
-        generator.push_str(&emit_transition_array(&format!("#011{index}"), transitions));
+        generator.push_str(&source_attack_emit::transitions(&format!("#011{index}"), transitions, roles));
     }
 
     for (index, role) in roles.iter().enumerate() {
-        let enter_notify_events = role.motion.animation_driven.then(|| format!("#013{index}"));
+        let mut enter_notify_events = role.motion.animation_driven.then(|| format!("#013{index}"));
+        let mut exit_notify_events = None;
+        let ranged = matches!(role.role, CreatureClipRole::ProjectileAttack
+            | CreatureClipRole::ContinuousAttackStart | CreatureClipRole::ContinuousAttackLoop
+            | CreatureClipRole::ContinuousAttackStop);
+        let attack_state_handler = role.equipment_index.map(|slot| format!("attackState{slot}"))
+            .unwrap_or_else(|| "attackState".to_string());
+        let (source_enter, source_exit) = source_cast_outer_events(role, declarations);
+        if let Some(event_index) = ranged.then(|| declarations.events.iter()
+            .position(|event| event.name == attack_state_handler)).flatten()
+        {
+            let enter_id = format!("#6{index:04}0");
+            let exit_id = format!("#6{index:04}1");
+            let thrown_events = matches!(role.generator.base_generator(), CapabilityRoleGenerator::ThrownAttack)
+                .then(|| {
+                    Some((
+                        declarations.events.iter().position(|event| event.name == "weaponAttach")?,
+                        declarations.events.iter().position(|event| event.name == "weaponDetach")?,
+                        role.equipment_index?,
+                    ))
+                }).flatten();
+            generator.push_str(&emit_attack_state_notifications(
+                &enter_id, &exit_id, event_index,
+                role.motion.animation_driven.then_some(animation_driven_event_index).flatten(),
+                thrown_events,
+                (&source_enter, &source_exit),
+            ));
+            enter_notify_events = Some(enter_id);
+            exit_notify_events = Some(exit_id);
+        } else if matches!(role.generator.base_generator(), CapabilityRoleGenerator::SourceCasting { .. }) {
+            let mut enter = source_enter;
+            if let Some(event) = role.motion.animation_driven.then_some(animation_driven_event_index).flatten() {
+                enter.push(format!("<hkobject><hkparam name=\"id\">{event}</hkparam><hkparam name=\"payload\">null</hkparam></hkobject>"));
+            }
+            for (suffix, rows, reference) in [("enter", &enter, &mut enter_notify_events), ("exit", &source_exit, &mut exit_notify_events)] {
+                if !rows.is_empty() {
+                    let id = format!("#cast_outer_{index}_{suffix}");
+                    generator.push_str(&format!("    <hkobject name=\"{id}\" class=\"hkbStateMachineEventPropertyArray\" signature=\"0x71957c2d\"><hkparam name=\"events\" numelements=\"{}\">{}</hkparam></hkobject>\n", rows.len(), rows.join("")));
+                    *reference = Some(id);
+                }
+            }
+        } else if role.role == CreatureClipRole::MeleeAttack {
+            if let Some(event_index) = declarations.events.iter().position(|event| event.name == "attackStop") {
+                let exit_id = format!("#6{index:04}1");
+                generator.push_str(&format!(
+                    "    <hkobject name=\"{exit_id}\" class=\"hkbStateMachineEventPropertyArray\" signature=\"0x71957c2d\"><hkparam name=\"events\" numelements=\"1\"><hkobject><hkparam name=\"id\">{event_index}</hkparam><hkparam name=\"payload\">null</hkparam></hkobject></hkparam></hkobject>\n"
+                ));
+                exit_notify_events = Some(exit_id);
+            }
+        }
         let state_generator = role
             .motion
             .animation_driven
@@ -1284,6 +1477,7 @@ fn emit_capability_core_behavior(
             &format!("#011{index}"),
             &state_generator,
             enter_notify_events.as_deref(),
+            exit_notify_events.as_deref(),
         ));
     }
     let state_references = (0..roles.len())
@@ -1291,7 +1485,7 @@ fn emit_capability_core_behavior(
         .collect::<Vec<_>>()
         .join(" ");
     let wrapped_root =
-        graph.template == CreatureGraphTemplate::StationaryTurret || !graph.overlays.is_empty();
+        graph.template == CreatureGraphTemplate::StationaryTurret || !graph.overlays.is_empty() || has_source_overlays;
     let state_machine_id = if wrapped_root { "#0190" } else { "#0093" };
     let machine_name = match graph.template {
         CreatureGraphTemplate::GroundMelee
@@ -1309,16 +1503,17 @@ fn emit_capability_core_behavior(
         "    <hkobject name=\"{state_machine_id}\" class=\"hkbStateMachine\" signature=\"0xa5896bcf\">\n\
       <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"userData\">0</hkparam><hkparam name=\"name\">{machine_name}</hkparam>\n\
       <hkparam name=\"eventToSendWhenStateOrTransitionChanges\"><hkobject><hkparam name=\"id\">-1</hkparam><hkparam name=\"payload\">null</hkparam></hkobject></hkparam>\n\
-      <hkparam name=\"startStateIdSelector\">null</hkparam><hkparam name=\"startStateId\">0</hkparam><hkparam name=\"returnToPreviousStateEventId\">-1</hkparam><hkparam name=\"randomTransitionEventId\">-1</hkparam><hkparam name=\"transitionToNextHigherStateEventId\">-1</hkparam><hkparam name=\"transitionToNextLowerStateEventId\">-1</hkparam><hkparam name=\"syncVariableIndex\">-1</hkparam>\n\
+      <hkparam name=\"startStateIdSelector\">null</hkparam><hkparam name=\"startStateId\">0</hkparam><hkparam name=\"returnToPreviousStateEventId\">-1</hkparam><hkparam name=\"randomTransitionEventId\">-1</hkparam><hkparam name=\"transitionToNextHigherStateEventId\">-1</hkparam><hkparam name=\"transitionToNextLowerStateEventId\">-1</hkparam><hkparam name=\"syncVariableIndex\">{sync_variable_index}</hkparam>\n\
       <hkparam name=\"wrapAroundStateId\">false</hkparam><hkparam name=\"maxSimultaneousTransitions\">1</hkparam><hkparam name=\"startStateMode\">START_STATE_MODE_DEFAULT</hkparam><hkparam name=\"selfTransitionMode\">SELF_TRANSITION_MODE_NO_TRANSITION</hkparam>\n\
       <hkparam name=\"states\" numelements=\"{state_count}\">{state_references}</hkparam><hkparam name=\"wildcardTransitions\">null</hkparam>\n\
     </hkobject>\n",
         state_count = roles.len(),
+        sync_variable_index = if has_source_overlays { declarations.variables.iter().position(|variable| variable.name == source_idle_overlay::BASE_STATE).unwrap() as i32 } else { -1 },
     ));
 
     let mut base_generator = state_machine_id;
     if graph.template == CreatureGraphTemplate::StationaryTurret {
-        let wrapper_id = if graph.overlays.is_empty() {
+        let wrapper_id = if graph.overlays.is_empty() && !has_source_overlays {
             "#0093"
         } else {
             "#0193"
@@ -1331,7 +1526,12 @@ fn emit_capability_core_behavior(
         base_generator = wrapper_id;
     }
     if !graph.overlays.is_empty() {
-        generator.push_str(&emit_overlay_layers(graph, declarations, base_generator));
+        let root_id = if has_source_overlays { "#source_idle_base_overlays" } else { "#0093" };
+        generator.push_str(&emit_overlay_layers(graph, declarations, base_generator, root_id));
+        base_generator = root_id;
+    }
+    if has_source_overlays {
+        generator.push_str(&source_idle_overlay::emit(manifest, all_roles, declarations, base_generator));
     }
 
     emit_behavior_graph(
@@ -1369,7 +1569,7 @@ fn capability_state_transitions(
         .map(|event| (event_index(event), 0, false))
         .collect::<Vec<_>>();
 
-    match graph.template {
+    let mut transitions: Vec<Vec<(usize, i32, bool)>> = match graph.template {
         CreatureGraphTemplate::GroundMelee
         | CreatureGraphTemplate::PassiveGround
         | CreatureGraphTemplate::GroundRangedProjectile
@@ -1379,7 +1579,12 @@ fn capability_state_transitions(
             .map(|(index, role)| {
                 if index == 0 {
                     non_idle_targets.clone()
-                } else if role.role == CreatureClipRole::GroundForward {
+                } else if matches!(
+                    role.role,
+                    CreatureClipRole::GroundForward
+                        | CreatureClipRole::TurnLeft
+                        | CreatureClipRole::TurnRight
+                ) {
                     let mut transitions = idle_transitions.clone();
                     transitions.extend(
                         non_idle_targets
@@ -1524,7 +1729,90 @@ fn capability_state_transitions(
                 })
                 .collect()
         }
+    };
+    for (index, role) in roles.iter().enumerate() {
+        if let CapabilityRoleGenerator::ContinuousAttackPhase { phase, loop_state, stop_state, .. } = role.generator.base_generator() {
+            let state_index = |state: &str| roles.iter().position(|candidate| candidate.state_name == state)
+                .expect("continuous phase validation guarantees linked states") as i32;
+            transitions[index] = match phase {
+                ContinuousAttackPhase::Start => vec![(0, state_index(loop_state), true)],
+                ContinuousAttackPhase::Loop => Vec::new(),
+                ContinuousAttackPhase::Stop => completion(),
+            };
+            if *phase != ContinuousAttackPhase::Stop {
+                let stop = stop_state.as_deref().map(state_index).unwrap_or(0);
+                for release in ["attackStop", "attackRelease"] {
+                    push_unique_transition(&mut transitions[index], (event_index(release), stop, false));
+                }
+                for (event, _, _) in &idle_transitions {
+                    push_unique_transition(&mut transitions[index], (*event, stop, false));
+                }
+            }
+        }
+        if let CapabilityRoleGenerator::SourceCasting { stop_events, .. } = role.generator.base_generator() {
+            transitions[index] = stop_events.iter().map(|event| (event_index(event), 0, false)).collect();
+        }
+        if role.role == CreatureClipRole::Death {
+            transitions[index].clear();
+            continue;
+        }
+        if let Some(source) = role.generator.source_attack() {
+            for (target, _) in roles.iter().enumerate().filter(|(_, candidate)| {
+                candidate.generator.is_attack_entry()
+                    && candidate.generator.source_attack().is_some_and(|contract| contract.gate_variable == source.gate_variable)
+            }) {
+                for transition in role_transitions(target) {
+                    push_unique_transition(&mut transitions[index], transition);
+                }
+            }
+        }
+        {
+            for (target, _) in roles.iter().enumerate().filter(|(target, candidate)| *target != index && matches!(candidate.role, CreatureClipRole::ScriptedAction | CreatureClipRole::ScriptedLoop)) {
+                for transition in role_transitions(target) {
+                    push_unique_transition(&mut transitions[index], transition);
+                }
+            }
+        }
+        if matches!(role.role, CreatureClipRole::ScriptedAction | CreatureClipRole::ScriptedLoop) {
+            transitions[index] = if role.role == CreatureClipRole::ScriptedLoop { Vec::new() } else { completion() };
+            transitions[index].extend(idle_transitions.iter().copied());
+            if let Some(stop) = declarations.events.iter().position(|event| event.name == "IdleStop") {
+                push_unique_transition(&mut transitions[index], (stop, 0, false));
+            }
+            transitions[index].extend(non_idle_targets.iter().copied().filter(|(_, target, _)| *target != index as i32));
+            if let CapabilityRoleGenerator::SourceIdle { duration_bits, loop_end_bits, complete_event, .. } = &role.generator {
+                let stop = event_index("IdleStop");
+                let has_outro = f32::from_bits(*loop_end_bits) < f32::from_bits(*duration_bits);
+                transitions[index].retain(|(event, _, completion)| !completion && !(has_outro && *event == stop));
+                push_unique_transition(&mut transitions[index], (event_index(complete_event), 0, false));
+            }
+        }
+        if matches!(
+            role.role,
+            CreatureClipRole::TurnLeft | CreatureClipRole::TurnRight
+        ) {
+            transitions[index] = idle_transitions.clone();
+            transitions[index].extend(
+                non_idle_targets
+                    .iter()
+                    .copied()
+                    .filter(|(_, target, _)| *target != index as i32),
+            );
+        }
+        for (target, candidate) in roles.iter().enumerate() {
+            if target != index
+                && matches!(
+                    candidate.role,
+                    CreatureClipRole::Hurt | CreatureClipRole::Death
+                )
+            {
+                for transition in role_transitions(target) {
+                    push_unique_transition(&mut transitions[index], transition);
+                }
+            }
+        }
     }
+    transitions
 }
 
 fn push_unique_transition(
@@ -1533,7 +1821,7 @@ fn push_unique_transition(
 ) {
     if !transitions
         .iter()
-        .any(|existing| existing.0 == transition.0)
+        .any(|existing| existing.0 == transition.0 && existing.2 == transition.2)
     {
         transitions.push(transition);
     }
@@ -1621,6 +1909,7 @@ fn emit_overlay_layers(
     graph: &CapabilityGraphManifest,
     declarations: &GraphDeclarations,
     base_generator: &str,
+    root_id: &str,
 ) -> String {
     let event_index = |name: &str| {
         declarations
@@ -1652,7 +1941,7 @@ fn emit_overlay_layers(
         .collect::<Vec<_>>()
         .join(" ");
     output.push_str(&format!(
-        "    <hkobject name=\"#0093\" class=\"hkbLayerGenerator\" signature=\"0xb4e0c52f\">\n\
+        "    <hkobject name=\"{root_id}\" class=\"hkbLayerGenerator\" signature=\"0xb4e0c52f\">\n\
       <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"userData\">0</hkparam><hkparam name=\"name\">CapabilityOverlayLayerGenerator</hkparam><hkparam name=\"layers\" numelements=\"{layer_count}\">{layer_references}</hkparam><hkparam name=\"indexOfSyncMasterChild\">0</hkparam><hkparam name=\"flags\">1</hkparam>\n\
     </hkobject>\n",
         layer_count = graph.overlays.len() + 1,
@@ -1718,25 +2007,43 @@ fn emit_clip_generator(
     state_name: &str,
     clip: &ClipDecl,
 ) -> String {
+    emit_clip_generator_cropped(manifest, id, state_name, clip, 0.0, 0.0)
+}
+
+fn emit_clip_generator_cropped(
+    manifest: &CreatureManifest,
+    id: &str,
+    state_name: &str,
+    clip: &ClipDecl,
+    crop_start: f32,
+    crop_end: f32,
+) -> String {
     let mode = if clip.looping {
         "MODE_LOOPING"
     } else {
         "MODE_SINGLE_PLAY"
     };
-    format!(
+    let xml = format!(
         "    <hkobject name=\"{id}\" class=\"hkbClipGenerator\" signature=\"0xd4cc9f6\">\n\
       <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"userData\">0</hkparam><hkparam name=\"name\">{state_name}</hkparam><hkparam name=\"animationBundleName\"/><hkparam name=\"animationName\">{animation}</hkparam><hkparam name=\"triggers\">null</hkparam><hkparam name=\"userPartitionMask\">0</hkparam><hkparam name=\"cropStartAmountLocalTime\">0.0</hkparam><hkparam name=\"cropEndAmountLocalTime\">0.0</hkparam><hkparam name=\"startTime\">0.0</hkparam><hkparam name=\"playbackSpeed\">1.0</hkparam><hkparam name=\"enforcedDuration\">0.0</hkparam><hkparam name=\"userControlledTimeFraction\">0.0</hkparam><hkparam name=\"animationBindingIndex\">-1</hkparam><hkparam name=\"mode\">{mode}</hkparam><hkparam name=\"flags\">0</hkparam>\n\
     </hkobject>\n",
         animation = escape_xml(internal_path(manifest, &clip.path)),
-    )
+    ).replace("<hkparam name=\"cropStartAmountLocalTime\">0.0</hkparam>", &format!("<hkparam name=\"cropStartAmountLocalTime\">{crop_start}</hkparam>"))
+        .replace("<hkparam name=\"cropEndAmountLocalTime\">0.0</hkparam>", &format!("<hkparam name=\"cropEndAmountLocalTime\">{crop_end}</hkparam>"));
+    property_sequence_emit::wrap(manifest, clip, id, crop_start, crop_end, xml)
 }
 
 fn emit_transition_array(id: &str, transitions: &[(usize, i32, bool)]) -> String {
+    emit_transition_array_conditions(id, transitions, &[])
+}
+
+fn emit_transition_array_conditions(id: &str, transitions: &[(usize, i32, bool)], conditions: &[Option<String>]) -> String {
     let mut output = format!(
         "    <hkobject name=\"{id}\" class=\"hkbStateMachineTransitionInfoArray\" signature=\"0x704a19af\">\n      <hkparam name=\"transitions\" numelements=\"{}\">\n",
         transitions.len()
     );
-    for (event_index, to_state_id, abut_at_end) in transitions {
+    for (index, (event_index, to_state_id, abut_at_end)) in transitions.iter().enumerate() {
+        let condition = conditions.get(index).and_then(Option::as_deref).unwrap_or("null");
         let event_id = if *abut_at_end {
             -1
         } else {
@@ -1744,7 +2051,7 @@ fn emit_transition_array(id: &str, transitions: &[(usize, i32, bool)]) -> String
         };
         let flags = if *abut_at_end { 16_384 } else { 0 };
         output.push_str(&format!(
-            "        <hkobject><hkparam name=\"triggerInterval\"><hkobject><hkparam name=\"enterEventId\">-1</hkparam><hkparam name=\"exitEventId\">-1</hkparam><hkparam name=\"enterTime\">0.0</hkparam><hkparam name=\"exitTime\">0.0</hkparam></hkobject></hkparam><hkparam name=\"initiateInterval\"><hkobject><hkparam name=\"enterEventId\">-1</hkparam><hkparam name=\"exitEventId\">-1</hkparam><hkparam name=\"enterTime\">0.0</hkparam><hkparam name=\"exitTime\">0.0</hkparam></hkobject></hkparam><hkparam name=\"transition\">null</hkparam><hkparam name=\"condition\">null</hkparam><hkparam name=\"eventId\">{event_id}</hkparam><hkparam name=\"toStateId\">{to_state_id}</hkparam><hkparam name=\"fromNestedStateId\">0</hkparam><hkparam name=\"toNestedStateId\">0</hkparam><hkparam name=\"priority\">0</hkparam><hkparam name=\"flags\">{flags}</hkparam></hkobject>\n"
+            "        <hkobject><hkparam name=\"triggerInterval\"><hkobject><hkparam name=\"enterEventId\">-1</hkparam><hkparam name=\"exitEventId\">-1</hkparam><hkparam name=\"enterTime\">0.0</hkparam><hkparam name=\"exitTime\">0.0</hkparam></hkobject></hkparam><hkparam name=\"initiateInterval\"><hkobject><hkparam name=\"enterEventId\">-1</hkparam><hkparam name=\"exitEventId\">-1</hkparam><hkparam name=\"enterTime\">0.0</hkparam><hkparam name=\"exitTime\">0.0</hkparam></hkobject></hkparam><hkparam name=\"transition\">null</hkparam><hkparam name=\"condition\">{condition}</hkparam><hkparam name=\"eventId\">{event_id}</hkparam><hkparam name=\"toStateId\">{to_state_id}</hkparam><hkparam name=\"fromNestedStateId\">0</hkparam><hkparam name=\"toNestedStateId\">0</hkparam><hkparam name=\"priority\">0</hkparam><hkparam name=\"flags\">{flags}</hkparam></hkobject>\n"
         ));
     }
     output.push_str("      </hkparam>\n    </hkobject>\n");
@@ -1774,6 +2081,39 @@ fn emit_animation_driven_state_support(
     )
 }
 
+fn emit_attack_state_notifications(
+    enter_id: &str,
+    exit_id: &str,
+    event_index: usize,
+    animation_driven_event: Option<usize>,
+    thrown_events: Option<(usize, usize, u8)>,
+    source_events: (&[String], &[String]),
+) -> String {
+    let enter_payload = format!("{enter_id}2");
+    let exit_payload = format!("{exit_id}2");
+    let motion = animation_driven_event.map(|event| format!(
+        "<hkobject><hkparam name=\"id\">{event}</hkparam><hkparam name=\"payload\">null</hkparam></hkobject>"
+    )).unwrap_or_default();
+    let (slot_payload, attach, detach) = thrown_events.map(|(attach, detach, slot)| {
+        let payload = format!("{enter_id}3");
+        (
+            format!("    <hkobject name=\"{payload}\" class=\"hkbStringEventPayload\" signature=\"0xdf5fe694\"><hkparam name=\"data\">{slot}</hkparam></hkobject>\n"),
+            format!("<hkobject><hkparam name=\"id\">{attach}</hkparam><hkparam name=\"payload\">{payload}</hkparam></hkobject>"),
+            format!("<hkobject><hkparam name=\"id\">{detach}</hkparam><hkparam name=\"payload\">{payload}</hkparam></hkobject>"),
+        )
+    }).unwrap_or_default();
+    let count = 1 + usize::from(animation_driven_event.is_some()) + usize::from(thrown_events.is_some()) + source_events.0.len();
+    let exit_count = 1 + usize::from(thrown_events.is_some()) + source_events.1.len();
+    let source_enter = source_events.0.join("");
+    let source_exit = source_events.1.join("");
+    format!(
+        "{slot_payload}    <hkobject name=\"{enter_payload}\" class=\"hkbStringEventPayload\" signature=\"0xdf5fe694\"><hkparam name=\"data\">Enter</hkparam></hkobject>\n\
+    <hkobject name=\"{exit_payload}\" class=\"hkbStringEventPayload\" signature=\"0xdf5fe694\"><hkparam name=\"data\">Exit</hkparam></hkobject>\n\
+    <hkobject name=\"{enter_id}\" class=\"hkbStateMachineEventPropertyArray\" signature=\"0x71957c2d\"><hkparam name=\"events\" numelements=\"{count}\"><hkobject><hkparam name=\"id\">{event_index}</hkparam><hkparam name=\"payload\">{enter_payload}</hkparam></hkobject>{attach}{motion}{source_enter}</hkparam></hkobject>\n\
+    <hkobject name=\"{exit_id}\" class=\"hkbStateMachineEventPropertyArray\" signature=\"0x71957c2d\"><hkparam name=\"events\" numelements=\"{exit_count}\">{detach}<hkobject><hkparam name=\"id\">{event_index}</hkparam><hkparam name=\"payload\">{exit_payload}</hkparam></hkobject>{source_exit}</hkparam></hkobject>\n"
+    )
+}
+
 fn emit_state_info(
     id: &str,
     state_name: &str,
@@ -1781,11 +2121,13 @@ fn emit_state_info(
     transitions: &str,
     generator: &str,
     enter_notify_events: Option<&str>,
+    exit_notify_events: Option<&str>,
 ) -> String {
     let enter_notify_events = enter_notify_events.unwrap_or("null");
+    let exit_notify_events = exit_notify_events.unwrap_or("null");
     format!(
         "    <hkobject name=\"{id}\" class=\"hkbStateMachineStateInfo\" signature=\"0x39d76713\">\n\
-      <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"listeners\" numelements=\"0\"/><hkparam name=\"enterNotifyEvents\">{enter_notify_events}</hkparam><hkparam name=\"exitNotifyEvents\">null</hkparam><hkparam name=\"transitions\">{transitions}</hkparam><hkparam name=\"generator\">{generator}</hkparam><hkparam name=\"name\">{state_name}</hkparam><hkparam name=\"stateId\">{state_id}</hkparam><hkparam name=\"probability\">1.0</hkparam><hkparam name=\"enable\">true</hkparam>\n\
+      <hkparam name=\"variableBindingSet\">null</hkparam><hkparam name=\"listeners\" numelements=\"0\"/><hkparam name=\"enterNotifyEvents\">{enter_notify_events}</hkparam><hkparam name=\"exitNotifyEvents\">{exit_notify_events}</hkparam><hkparam name=\"transitions\">{transitions}</hkparam><hkparam name=\"generator\">{generator}</hkparam><hkparam name=\"name\">{state_name}</hkparam><hkparam name=\"stateId\">{state_id}</hkparam><hkparam name=\"probability\">1.0</hkparam><hkparam name=\"enable\">true</hkparam>\n\
     </hkobject>\n"
     )
 }

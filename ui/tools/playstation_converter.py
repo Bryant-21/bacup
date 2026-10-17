@@ -158,7 +158,11 @@ class PlayStationConverterTool(BaseTool):
         )
         imgui.spacing()
         if begin_form("##playstation_converter_inputs"):
-            _, clicked = draw_path_row("Plugin", self._plugin_path, "Select...")
+            path, clicked = draw_path_row("Plugin", self._plugin_path, "Select...")
+            if path != self._plugin_path and not self._running:
+                self._plugin_path = path
+                if Path(path).is_file() and Path(path).suffix.lower() in PLUGIN_SUFFIXES:
+                    self._set_plugin(path)
             if clicked and not self._running:
                 selected = pick_file(
                     "Select Fallout 4 plugin",
@@ -167,7 +171,7 @@ class PlayStationConverterTool(BaseTool):
                 )
                 if selected:
                     self._set_plugin(selected)
-            _, clicked = draw_path_row("Output folder", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output folder", self._output_dir)
             if clicked and not self._running:
                 selected = pick_folder("Select PlayStation BA2 output folder", self._output_dir)
                 if selected:

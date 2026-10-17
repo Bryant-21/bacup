@@ -88,7 +88,7 @@ fn legacy_bptd_part_type(value: u8) -> u8 {
 
 fn legacy_bptd_flags(value: u8) -> u8 {
     // Other legacy bits are IK/to-hit flags that collide with FO4 meanings.
-    value & 0x09
+    value & 0x49
 }
 
 /// Relayout `src_bytes` from the source struct layout for `record_sig.sub_sig`
@@ -208,6 +208,39 @@ mod tests {
     }
     fn fo76() -> std::sync::Arc<AuthoringSchema> {
         AuthoringSchema::for_game("fo76").expect("fo76 schema")
+    }
+
+    #[test]
+    fn preserves_fo76_attack_type_keyword_without_treating_it_as_stagger() {
+        let source = fo76();
+        let target = fo4();
+        let ctx = StructRelayoutCtx {
+            target_schema: &target,
+            target_form_version: 131,
+            legacy_bptd_only: false,
+        };
+        for signature in ["RACE", "NPC_"] {
+            let mut payload = vec![0_u8; 48];
+            payload[8..12].copy_from_slice(&0x0100_0123_u32.to_le_bytes());
+            payload[24..28].copy_from_slice(&0x0100_0456_u32.to_le_bytes());
+            payload[40..44].copy_from_slice(&(-3_i32).to_le_bytes());
+            assert!(relayout_struct_bytes(signature, "ATKD", &payload, &source, Some(208), &ctx).is_none());
+            let entry = crate::record::FieldEntry {
+                sig: crate::ids::SubrecordSig::from_str("ATKD").unwrap(),
+                value: crate::record::FieldValue::Bytes(smallvec::SmallVec::from_slice(&payload)),
+            };
+            let interner = crate::sym::StringInterner::new();
+            let output = crate::target_write::encode_field_pub(
+                &entry,
+                target.record_def(signature),
+                &interner,
+            )
+            .unwrap();
+            assert_eq!(output.len(), 44);
+            assert_eq!(&output[8..12], &payload[8..12]);
+            assert_eq!(&output[24..28], &payload[24..28]);
+            assert_eq!(&output[40..44], &payload[40..44]);
+        }
     }
 
     /// RACE.DATA is the canonical divergent struct. A 216-byte FO76 row
@@ -444,7 +477,7 @@ mod tests {
             src[field.offset..field.offset + field.width].copy_from_slice(bytes);
         };
         set_source("damage_mult", &1.0f32.to_le_bytes());
-        set_source("flags", &[0x09]);
+        set_source("flags", &[0x49]);
         set_source("part_type", &[0x05]);
         set_source("health_percent", &[40]);
         set_source("actor_value", &[25]);
@@ -521,7 +554,7 @@ mod tests {
         );
         assert_eq!(target_bytes("severable_debris_scale"), 1.0f32.to_le_bytes());
         assert_eq!(target_bytes("actor_value"), 0x0000_036Cu32.to_le_bytes());
-        assert_eq!(target_bytes("flags"), [0x09]);
+        assert_eq!(target_bytes("flags"), [0x49]);
         assert_eq!(target_bytes("part_type"), [0x08]);
         assert_eq!(target_bytes("health_percent"), [40]);
         assert_eq!(target_bytes("to_hit_chance"), [20]);

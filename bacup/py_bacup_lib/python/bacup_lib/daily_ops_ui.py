@@ -9,6 +9,7 @@ from pathlib import Path
 from bacup_lib.legendary_perks_ui import imports, remap_menu_fonts, swf_tags, verify_script_only
 from bacup_lib.translations import TRANSLATIONS, merge_ui_translations, translation_path
 from bacup_lib.quest_area_ui import closure as widget_closure, symbol_ids, tag
+from bacup_lib.reward_hud_source import bitmap_dependencies
 from bacup_lib.status_hud_source import replace_tags, select_children, sprite_tags
 
 MENU = "dailyopshud.swf"
@@ -58,7 +59,9 @@ def build_radio_movie(source: bytes) -> bytes:
     root = symbol_ids(entries)["VOFlyoutManager"]
     entries = [(c, select_children(p, {"DOVOWaveForm_mc", "DOVOFlyoutGraphic_mc"}))
                if c == 39 and struct.unpack_from("<H", p)[0] == root else (c, p) for c, p in entries]
-    art = widget_closure(entries, root, "Daily Ops radio")
+    selected = set(widget_closure(entries, root, "Daily Ops radio"))
+    selected.update(bitmap_dependencies(entries, selected))
+    art = [entry for entry in entries if entry in selected]
     classes = {root: "B21_DailyOpsRadio"}
     scripts = [HUD_BRIDGE.read_text(encoding="utf-8"), VOICE_BRIDGE.read_text(encoding="utf-8")]
     for code, payload in art:

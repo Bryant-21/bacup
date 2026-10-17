@@ -31,21 +31,21 @@ class ImageUpscalerTool(BaseTool):
 
     def draw_content(self) -> None:
         if begin_form("##upscaler"):
-            _, clicked = draw_path_row("Input", self._input_path)
+            self._input_path, clicked = draw_path_row("Input", self._input_path)
             if clicked:
-                path = pick_folder("Select folder with images")
+                path = pick_folder("Select folder with images", self._input_path)
                 if not path:
                     path = pick_file("Select image file", [("Images", "*.png *.jpg *.dds"), ("All", "*.*")])
                 if path:
                     self._input_path = path
 
-            _, clicked = draw_path_row("Output", self._output_dir)
+            self._output_dir, clicked = draw_path_row("Output", self._output_dir)
             if clicked:
-                path = pick_folder("Select output folder")
+                path = pick_folder("Select output folder", self._output_dir)
                 if path:
                     self._output_dir = path
 
-            _, clicked = draw_path_row("chaiNNer", self._chainner_path)
+            self._chainner_path, clicked = draw_path_row("chaiNNer", self._chainner_path)
             if clicked:
                 path = pick_file("Select chaiNNer executable", [("Executable", "*.exe"), ("All", "*.*")])
                 if path:

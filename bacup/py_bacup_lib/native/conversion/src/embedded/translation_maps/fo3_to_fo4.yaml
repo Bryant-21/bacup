@@ -450,9 +450,13 @@ ACTI:
       target_esm: Fallout4.esm
 IDLE:
   fields:
+    EDID: EDID
+    DNAM: DNAM
+    ENAM: ENAM
     ANAM: ANAM
     DATA: DATA
     CTDA: CTDA
+    CTDT: CTDA
   transforms:
     CTDA:
       type: translate_conditions

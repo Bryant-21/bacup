@@ -56,6 +56,11 @@ package {
             draw();
         }
 
+        // The next SetHints rebuilds every field, even with unchanged hints.
+        public function Invalidate():void {
+            signature = "";
+        }
+
         public function ActionAt(x:Number, y:Number):String {
             for (var r:int = 0; r < numChildren; r++) {
                 var row:Sprite = getChildAt(r) as Sprite;

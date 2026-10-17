@@ -11,10 +11,14 @@ package {
     import flash.text.TextField;
     import flash.text.TextFormat;
     import flash.utils.getDefinitionByName;
+    import flash.utils.getTimer;
     import flash.utils.getQualifiedClassName;
 
     public class B21_StatusHUD extends MovieClip {
-        public var B21Version:uint = 8;
+        public var B21Version:uint = 9;
+        public var B21NameplatesVersion:uint = 2;
+        public var B21NameplatesActive:uint = 0;
+        public var nameplates:B21_StatusNameplates = new B21_StatusNameplates();
         // Two instances run: one inside HUDMenu (interaction, rewards) that captures the stock HUD
         // into B21Snapshot, and one in Tales' own HUD-depth menu that draws everything passive from
         // that snapshot. HUDMenu's glass renderer made translucent FO76 art opaque with black shadows.
@@ -31,9 +35,17 @@ package {
         public var B21RewardModelY:Number = 0.4;
         private var rewards:B21_StatusRewards = new B21_StatusRewards();
         public var B21HoldActive:uint = 0;
+        // Diagnostic (2026-10-05, the Daily Ops hold prompt has never drawn in game): the step that stopped it.
+        public var B21HoldIssue:String = "";
         public var B21QuickLootActive:uint = 0;
+        public var B21QuickLootIssue:String = "";
+        // Diagnostic (2026-10-05, stacked compass icons in game): set while a location clone's icons or frame
+        // differ from FO4's marker, or visible locations share a bearing.
+        public var B21CompassIssue:String = "";
         public var B21CrosshairActive:uint = 0;
         public var B21HitActive:uint = 0;
+        // 1 while the snapshot carries FO4's tagged in-world markers, so Tales hides them for FO76's.
+        public var B21FloatingActive:uint = 0;
         private var quickLoot:B21_StatusLoot = new B21_StatusLoot();
         private var reticle:B21_StatusReticle = new B21_StatusReticle();
         private var reticleHostile:Boolean = false;
@@ -42,14 +54,24 @@ package {
         private var hitCount:int = 0;
         private var hitState:Object = null;
         private var hitSeen:int = -1;
+        // FO76's game code keeps Optional_mc at the enemy's earlier health while hits land and then drains it;
+        // FO4 never feeds that bar, so the movie keeps the trail itself.
+        private static const TRAIL_HOLD_MS:int = 300;
+        private static const TRAIL_DRAIN_MS:int = 200;
+        private var trailTarget:Number = -1;
+        private var trailPercent:Number = 0;
+        private var trailLast:Number = 0;
+        private var trailHold:int = 0;
         private var crossState:Object = null;
+        private var lootState:Object = null;
         public var interaction:MovieClip = new B21_StatusInteraction();
         private var holdButton:MovieClip = new B21_StatusHoldButton();
         private var holdCompleteTime:Number = -1;
+        private var holdHint:Object = null;
         public var healthGroup:MovieClip = new B21_StatusLeft();
         public var rightGroup:MovieClip = new B21_StatusRight();
         public var compassGroup:MovieClip = new B21_StatusCompass();
-        public var questGroup:MovieClip = new MovieClip();
+        public var questGroup:B21_StatusQuestTracker = new B21_StatusQuestTracker();
         public var conditionGroup:MovieClip = new MovieClip();
         public var experienceGroup:MovieClip = new MovieClip();
         public var enemy:MovieClip = new B21_StatusEnemy();
@@ -58,8 +80,11 @@ package {
         public var encounters:MovieClip = new B21_StatusEncounter();
         public var core:MovieClip = new B21_StatusCore();
         public var explosives:MovieClip = new MovieClip();
+        public var floatingGroup:MovieClip = new MovieClip();
         public var damageGroup:MovieClip = new MovieClip();
+        public var companions:B21_StatusCompanions = new B21_StatusCompanions();
         private var enemyStars:MovieClip = new MovieClip();
+        private var targetReadout:B21_StatusReadout = new B21_StatusReadout();
         public var experienceDone:uint = 0;
         private var hp:MovieClip;
         private var ap:MovieClip;
@@ -68,6 +93,7 @@ package {
         private var conditionFrame:MovieClip;
         private var weaponIcon:MovieClip;
         private var weaponName:String = "";
+        private var weaponRuns:Array = null;
         private var keywordIcons:Object = {/* BACUP_ICON_KEYWORDS */};
         private var icons:MovieClip = new MovieClip();
         // Effect tiles live outside rightGroup: its group tint would also recolour red negative tiles.
@@ -76,19 +102,25 @@ package {
         private static const CREAM:uint = 0xFFFFCB;
         private static const GOLD:uint = 0xF5CB5B;
         private static const HOSTILE:uint = 0xF67259;
+        private static const NEUTRAL:uint = 0xF7CC5D;
+        private static const ALLY_LAYER:int = 1;
+        private static const NEUTRAL_LAYER:int = 2;
+        private static const HOSTILE_LAYER:int = 3;
         // FO76 CrosshairBase's _hostileColorMatrixFilter: AdjustColor(brightness -90, contrast 15,
         // saturation 25, hue -50), which takes the cream ticks to (255,161,121).
         private static const HOSTILE_RETICLE:Array = [1.5483,1.1191,-1.4874,0,-117.63, -0.3422,1.094,0.4282,0,-117.63,
             1.1289,-1.1429,1.194,0,-117.63, 0,0,0,1,0];
         private var xp:MovieClip = new B21_StatusXP();
         private var levelUp:MovieClip = new B21_StatusLevelUp();
-        private var lastQuests:String = "";
         private var xpSequence:uint = 0;
         private var xpElapsed:Number = 0;
         private var xpLevel:Boolean = false;
         private var xpFrom:Number = 0;
         private var xpTo:Number = 0;
         private var markerCount:int = 0;
+        private var compassIssues:Array = [];
+        private var compassLocations:Array = [];
+        private var compassBearings:Array = [];
         private var needStates:Object = {};
         private var feralShown:Boolean = false;
         private var glowShown:Boolean = false;
@@ -100,11 +132,17 @@ package {
         private var iconNames:Object = {49:"AdrenalineIcon",50:"DiseaseIcon",51:"SleepIcon",
             52:"HungerIcon",53:"ThristIcon",54:"ChemsIcon",55:"StimpakIcon",56:"FoodIcon",57:"AlcoholIcon",58:"StealthBoyIcon"};
         private var threatIcons:Array = ["GrenadeIcon_mc","MineIcon_mc","CarIcon_mc","Arrow_mc"];
+        // Parts hidden while a scope shows only the damage numbers; not every part is reset each update.
+        private var scopeHidden:Array = null;
 
         public function B21_StatusHUD() {
             stop();
             mouseEnabled = false;
             mouseChildren = false;
+            // In-world markers sit under every other part, as FO4's do.
+            addChild(floatingGroup);
+            floatingGroup.addChild(new MovieClip());
+            floatingGroup.addChild(new MovieClip());
             addChild(healthGroup);
             addChild(rightGroup);
             addChild(effectLayer);
@@ -119,6 +157,8 @@ package {
             addChild(core);
             addChild(explosives);
             addChild(damageGroup);
+            addChild(nameplates);
+            addChild(companions);
             addChild(rewards);
             addChild(interaction);
             for (var i:int = 0; i < numChildren; ++i) {
@@ -134,6 +174,9 @@ package {
             interaction.addChild(holdButton);
             interaction.gotoAndStop(6);
             enemy.addChild(enemyStars);
+            targetReadout.y = 14;
+            targetReadout.visible = false;
+            enemy.addChild(targetReadout);
             conditionGroup.addChild(conditionBox);
             conditionFrame = new MovieClip();
             // Filled edges retain AP's one-pixel black outline without GFx scaling a source stroke.
@@ -171,18 +214,17 @@ package {
             rightGroup.OverheatMeter_mc.ActionPointSegments_mc.visible = false;
             rightGroup.HUDActiveEffectsWidget_mc.ActiveEffectStatusLabel_mc.visible = false;
             effectLayer.addChild(icons);
-            // Each marker holder gets a tinted layer and one for FO76's baked-red enemy markers, both
-            // under the holder's compass mask.
+            // Each marker holder gets a HUD-tinted layer, ally and neutral layers, and on top one for FO76's
+            // baked-red enemy markers, all under the holder's compass mask.
             for each (var holder:MovieClip in [compassGroup.OtherMarkerHolder_mc,compassGroup.QuestMarkerHolder_mc]) {
                 while (holder.numChildren > 0) holder.removeChildAt(0);
-                holder.addChild(new MovieClip());
-                holder.addChild(new MovieClip());
+                for (var layer:int = 0; layer <= HOSTILE_LAYER; ++layer) holder.addChild(new MovieClip());
             }
             // In this menu a clip-depth mask only clips under a filtered ancestor; otherwise GFx draws
             // its red 20% shapes (the compass boxes, a square behind skulls). GFx skips an identity
             // matrix, so this one darkens by 1/255 (invisible). It never changes, so each group renders
             // through one long-lived texture.
-            for each (var masked:DisplayObject in [healthGroup,effectLayer,compassGroup,experienceGroup,enemy,encounters,conditionGroup])
+            for each (var masked:DisplayObject in [healthGroup,effectLayer,compassGroup,experienceGroup,enemy,encounters,conditionGroup,quickLoot])
                 masked.filters = [new ColorMatrixFilter([254/255,0,0,0,0,0,254/255,0,0,0,0,0,254/255,0,0,0,0,0,1,0])];
             enemyNameColor = uint(field(enemy.DisplayText_mc).defaultTextFormat.color);
             experienceGroup.visible = false;
@@ -192,19 +234,24 @@ package {
             B21QuickLootActive = B21CrosshairActive = B21HitActive = 0;
             quickLoot.visible = reticle.visible = hit.visible = false;
             var center:Object = host.CenterGroup_mc;
-            hitState = crossState = null;
-            if (center == null) { quickLoot.reset(); reticle.reset(); hitFrame = 0; return; }
+            hitState = crossState = lootState = null;
+            if (center == null) { reticle.reset(); hitFrame = 0; return; }
             try {
                 var stock:Object = center.QuickContainerWidget_mc;
                 if (Boolean(data.quickLoot) && stock != null) {
-                    inheritVisibility(stock,quickLoot,host);
-                    if (quickLoot.visible && quickLoot.alpha > 0 && quickLoot.update(stock,data)) {
-                        anchor(quickLoot,B21_StatusSource.layout.quickLoot,globalPoint(center),0,0,scale);
-                        tintLayer(quickLoot,uint(data.color));
-                        B21QuickLootActive = 1;
-                    } else { quickLoot.visible = false; quickLoot.reset(); }
-                } else quickLoot.reset();
-            } catch (error:Error) { quickLoot.visible = false; quickLoot.reset(); }
+                    // The menu draws FO76's widget: in HUDMenu the glass renderer blackened its panel and text.
+                    var lootShown:Object = chain(stock,host);
+                    if (lootShown.v && lootShown.a > 0) {
+                        lootState = quickLoot.capture(stock,data);
+                        B21QuickLootIssue = quickLoot.issue;
+                        if (lootState != null) {
+                            lootState.at = pointData(center);
+                            lootState.shown = lootShown;
+                            B21QuickLootActive = 1;
+                        }
+                    }
+                }
+            } catch (error:Error) { B21QuickLootIssue = "error: "+error.message; lootState = null; }
             try {
                 stock = center.HUDCrosshair_mc;
                 if (Boolean(data.crosshair) && stock != null && stock.hasOwnProperty("B21RequestedState") && stock.hasOwnProperty("B21RequestedRadius")) {
@@ -233,39 +280,44 @@ package {
                 } else hitFrame = 0;
             } catch (error:Error) { hitFrame = 0; hitState = null; }
         }
+        private function holdFailed(reason:String):Boolean {
+            B21HoldIssue = reason;
+            return false;
+        }
         private function updateHold(data:Object, host:Object, scale:Number):Boolean {
             B21HoldActive = 0;
             interaction.visible = false;
             var progress:Number = Number(data.holdProgress);
-            if (!Boolean(data.health) || !isFinite(progress) || progress < 0) { holdCompleteTime = -1; return true; }
+            if (!isFinite(progress) || progress < 0) { holdCompleteTime = -1; holdHint = null; B21HoldIssue = ""; return true; }
+            if (!Boolean(data.health)) { B21HoldIssue = "health HUD off"; return true; }
             var stock:Object = host.CenterGroup_mc.RolloverWidget_mc;
-            if (stock == null || stock.RolloverName_tf == null || stock.ButtonHintBar_mc == null) return false;
-            var buttons:DisplayObjectContainer = stock.ButtonHintBar_mc.ButtonHintBarInternal_mc as DisplayObjectContainer;
-            if (buttons == null) return false;
-            var hint:Object = null;
-            for (var i:int = 0; i < buttons.numChildren; ++i) {
-                var candidate:Object = buttons.getChildAt(i);
-                if (candidate.visible && candidate.hasOwnProperty("IconHolderInstance") && candidate.hasOwnProperty("textField_tf")) {
-                    hint = candidate;
-                    break;
-                }
+            if (stock == null || stock.RolloverName_tf == null) return holdFailed("no stock rollover");
+            var bar:DisplayObjectContainer = stock.ButtonHintBar_mc as DisplayObjectContainer;
+            if (bar == null) return holdFailed("rollover button bar is "+getQualifiedClassName(stock.ButtonHintBar_mc));
+            // The bar's ButtonPoolV and ButtonHintBarInternal_mc read as missing in game (quick loot found
+            // the same), so read the hints from the display list as quick loot does.
+            for each (var shown:DisplayObjectContainer in B21_StatusLoot.stockHints(bar)) {
+                var sourceGlyph:TextField = B21_StatusLoot.hintGlyph(shown);
+                if (!shown.visible || sourceGlyph == null) continue;
+                holdHint = {glyph:sourceGlyph.text,font:sourceGlyph.getTextFormat().font,pcKey:Boolean(Object(shown).UsePCKey),
+                    label:TextField(shown.getChildByName("textField_tf")).text.toUpperCase()};
+                break;
             }
-            if (hint == null || hint.IconHolderInstance.IconAnimInstance == null) return false;
-            var sourceGlyph:TextField = hint.IconHolderInstance.IconAnimInstance.Icon_tf as TextField;
+            // FO4 removes the displayed hints while its rollover bar redraws; the hold keeps the last one.
+            if (holdHint == null) return holdFailed("no visible rollover hint ("+B21_StatusLoot.stockHints(bar).length+" in bar)");
             var glyph:TextField = holdButton.IconHolderInstance.IconAnimInstance.Icon_tf;
-            if (sourceGlyph == null) return false;
             anchor(interaction,[1,0,0,1,0,0],globalPoint(host.CenterGroup_mc),960,540,scale);
             inheritVisibility(stock,interaction,host);
             fittedText(interaction.Internal_mc.Header_mc.Header_tf,stock.RolloverName_tf.text.toUpperCase());
             interaction.Internal_mc.Header_mc.TaggedForSearch_mc.visible = false;
-            glyph.text = sourceGlyph.text;
+            glyph.text = String(holdHint.glyph);
             var format:TextFormat = glyph.defaultTextFormat;
-            format.font = sourceGlyph.getTextFormat().font;
+            format.font = String(holdHint.font);
             glyph.setTextFormat(format);
             glyph.textColor = 0xffffff;
             glyph.autoSize = "left";
-            glyph.y = hint.UsePCKey ? 1.25 : 2.25;
-            holdButton.textField_tf.text = hint.textField_tf.text.toUpperCase();
+            glyph.y = holdHint.pcKey ? 1.25 : 2.25;
+            holdButton.textField_tf.text = String(holdHint.label);
             holdButton.textField_tf.textColor = 0xffffff;
             holdButton.textField_tf.autoSize = "left";
             holdButton.textField_tf.x = holdButton.IconHolderInstance.width+10;
@@ -278,7 +330,7 @@ package {
                 if (label.name == "buttonHold") start = label.frame;
                 if (label.name == "buttonHoldComplete") complete = label.frame;
             }
-            if (start == 0 || complete <= start) return false;
+            if (start == 0 || complete <= start) return holdFailed("hold ring labels missing");
             if (progress >= 1) {
                 holdCompleteTime = holdCompleteTime < 0 ? 0 : holdCompleteTime+Math.max(0,Number(data.delta));
                 ring.gotoAndStop(Math.min(ring.totalFrames,complete+Math.floor(holdCompleteTime*B21_StatusSource.layout.holdFPS)));
@@ -287,17 +339,42 @@ package {
                 ring.gotoAndStop(progress > 0 ? start+Math.floor((complete-start-1)*progress) : "idle");
             }
             ring.x = holdButton.IconHolderInstance.x+holdButton.IconHolderInstance.width/2;
-            ring.scaleX = ring.scaleY = hint.UsePCKey ? 1.25 : 1;
+            ring.scaleX = ring.scaleY = holdHint.pcKey ? 1.25 : 1;
             holdButton.x = B21_StatusSource.layout.holdButton[4] - (holdButton.textField_tf.x+holdButton.textField_tf.width)/2;
             holdButton.y = B21_StatusSource.layout.holdButton[5];
             tintLayer(interaction,uint(data.color));
             B21HoldActive = interaction.visible ? 1 : 0;
+            var box:Rectangle = interaction.getBounds(stage);
+            B21HoldIssue = interaction.visible && interaction.alpha > 0
+                ? "drawn "+holdHint.glyph+" "+holdHint.label+" at "+Math.round(box.x)+","+Math.round(box.y)+" "+Math.round(box.width)+"x"+Math.round(box.height)
+                : "rollover hidden (visible "+interaction.visible+", alpha "+interaction.alpha.toFixed(2)+")";
             return true;
         }
         private function freeze(node:DisplayObject):void {
             if (node is MovieClip) MovieClip(node).stop();
             var container:DisplayObjectContainer = node as DisplayObjectContainer;
             if (container != null) for (var i:int = 0; i < container.numChildren; ++i) freeze(container.getChildAt(i));
+        }
+        // Each hit restarts the hold, so the trail only drains once the damage stops.
+        private function enemyTrail(percent:Number, target:Number):Number {
+            var now:int = getTimer();
+            if (target != trailTarget || percent >= trailPercent) {
+                trailTarget = target;
+                trailPercent = percent;
+            } else if (percent < trailLast) trailHold = now+TRAIL_HOLD_MS;
+            trailLast = percent;
+            // A fixed drain time, so any chunk is gone about half a second after the last hit.
+            var drained:Number = (now-trailHold)/TRAIL_DRAIN_MS;
+            if (drained >= 1) trailPercent = percent;
+            return drained <= 0 ? trailPercent : trailPercent-(trailPercent-percent)*drained;
+        }
+        private function lighter(color:uint):uint {
+            var mixed:uint = 0;
+            for (var shift:int = 0; shift <= 16; shift += 8) {
+                var channel:uint = color >> shift & 0xFF;
+                mixed |= uint(channel+(0xFF-channel)*0.45) << shift;
+            }
+            return mixed;
         }
         // FO76 art is cream #FFFFCB and gold #F5CB5B with semantic colours baked in, and FO76's default HUD
         // colour draws it as authored. Scaling each channel so cream lands on the HUD colour keeps gold
@@ -311,6 +388,10 @@ package {
             cxform.greenMultiplier = Math.max(2,(color >> 8) & 255)/Math.max(2,(base >> 8) & 255);
             cxform.blueMultiplier = Math.max(2,color & 255)/Math.max(2,base & 255);
             clip.transform.colorTransform = cxform;
+        }
+        private function lighter(color:uint):uint {
+            var red:uint = (color >> 16) & 255, green:uint = (color >> 8) & 255, blue:uint = color & 255;
+            return ((red + (255-red)/2) << 16) | ((green + (255-green)/2) << 8) | (blue + (255-blue)/2);
         }
         private function hudColor(source:uint, color:uint):uint {
             var red:uint = Math.min(255,Math.round(((source >> 16) & 255)*((color >> 16) & 255)/255));
@@ -402,13 +483,23 @@ package {
         }
         /* BACUP_ICON_RESOLVER */
         private function updateWeaponIcon(data:Object):void {
-            var name:String = ResolveIcon(data);
-            if (B21_StatusSource.weapons[name] == null) name = "UnknownIcon";
-            if (name == weaponName) return;
+            // Tales sends the equipped model's rendered silhouette when Dynamic Weapon Icons is on.
+            var runs:Array = data.iconRuns as Array;
+            if (runs != null && runs.length == 0) runs = null;
+            var name:String = runs != null ? "DynamicIcon" : ResolveIcon(data);
+            if (runs == null && B21_StatusSource.weapons[name] == null) name = "UnknownIcon";
+            if (name == weaponName && runs == weaponRuns) return;
             if (weaponIcon != null) conditionGroup.removeChild(weaponIcon);
-            var type:Class = getDefinitionByName(B21_StatusSource.weapons[name]) as Class;
-            weaponIcon = new type() as MovieClip;
-            freeze(weaponIcon);
+            if (runs != null) {
+                // Cream, like the source glyphs, so the shared HUD tint lands it on HUD Color.
+                weaponIcon = new MovieClip();
+                B21InventoryIcon.draw(weaponIcon,{B21IconRuns:runs},0,0,B21InventoryIcon.GRID,B21InventoryIcon.GRID,CREAM);
+            } else {
+                var type:Class = getDefinitionByName(B21_StatusSource.weapons[name]) as Class;
+                weaponIcon = new type() as MovieClip;
+                freeze(weaponIcon);
+            }
+            weaponRuns = runs;
             var bounds:Rectangle = weaponIcon.getBounds(weaponIcon);
             weaponIcon.scaleX = weaponIcon.scaleY = 28 / Math.max(1,bounds.width,bounds.height);
             weaponIcon.x = -36 - bounds.x * weaponIcon.scaleX;
@@ -473,72 +564,11 @@ package {
             for each (var frame:Object in clip.currentLabels) if (frame.name == label) return true;
             return false;
         }
-        private function updateQuests(rows:Array):void {
-            if (rows == null) rows = [];
-            // FO76 lists event quests first and separates them from the rest with a divider.
-            var ordered:Array = [];
-            for each (var row:Object in rows) if (row.type == "event") ordered.push(row);
-            for each (var other:Object in rows) if (other.type != "event") ordered.push(other);
-            var key:String = "";
-            for each (var listed:Object in ordered) key += listed.type + ":" + listed.title + ":" + listed.objectives.join("|") + ":" + listed.progress + ":" + listed.time + ";";
-            if (key == lastQuests) return;
-            while (questGroup.numChildren > 0) questGroup.removeChildAt(0);
-            var y:Number = 0;
-            var events:Boolean = false;
-            for each (var item:Object in ordered) {
-                if (item.type == "event") events = true;
-                else if (events) {
-                    events = false;
-                    var divider:MovieClip = new B21_StatusQuestDivider();
-                    divider.gotoAndStop(6);
-                    freeze(divider);
-                    divider.y = y;
-                    questGroup.addChild(divider);
-                    y += divider.Sizer_mc == null ? 8 : divider.Sizer_mc.height;
-                }
-                var entry:MovieClip = new B21_StatusQuestEntry();
-                entry.gotoAndStop("Idle");
-                freeze(entry);
-                entry.y = y;
-                entry.Title_mc.textField.text = String(item.title).toUpperCase();
-                entry.Icon_mc.gotoAndStop(item.type == "main" && hasLabel(entry.Icon_mc,"MainQuestTracker") ? "MainQuestTracker" : "questTracker");
-                entry.Timer_mc.visible = item.time != null && String(item.time) != "";
-                if (entry.Timer_mc.visible) text(entry.Timer_mc,String(item.time));
-                entry.LinkedRewardsIcon_mc.visible = false;
-                entry.VertiibirdIcon_mc.visible = false;
-                questGroup.addChild(entry);
-                y += entry.Sizer_mc.height;
-                if (entry.Timer_mc.visible) y += entry.Timer_mc.height;
-                for each (var line:String in item.objectives) {
-                    var objective:MovieClip = new B21_StatusQuestObjective();
-                    objective.gotoAndStop("Idle");
-                    freeze(objective);
-                    objective.y = y;
-                    objective.TitleCompleted_mc.visible = false;
-                    objective.Alert_mc.visible = false;
-                    objective.MergedLeaderIcon_mc.visible = false;
-                    objective.VertiibirdIcon_mc.visible = false;
-                    var title:TextField = field(objective.Title_mc);
-                    if (title != null) {
-                        title.text = line;
-                        title.multiline = true;
-                        title.wordWrap = true;
-                        title.height = Math.max(title.height, title.textHeight + 4);
-                    }
-                    objective.Meter_mc.visible = item.progress != null && Number(item.progress) >= 0;
-                    if (objective.Meter_mc.visible) {
-                        objective.Meter_mc.gotoAndStop("plain");
-                        freeze(objective.Meter_mc);
-                        var meter:MovieClip = objective.Meter_mc.Internal_mc;
-                        meter.gotoAndStop(Math.max(1, Math.floor(Math.min(1, Number(item.progress))*meter.totalFrames)));
-                    }
-                    questGroup.addChild(objective);
-                    y += Math.max(objective.Sizer_mc.height, title == null ? 0 : title.height);
-                    if (objective.Meter_mc.visible) y += objective.Meter_mc.Internal_mc.Sizer_mc.height;
-                }
-                y += 16;
-            }
-            lastQuests = key;
+        private function markerSymbol(marker:DisplayObject):String {
+            var name:String = getQualifiedClassName(marker).split("::").pop();
+            if (marker.hasOwnProperty("B21SourceSymbol")) name = Object(marker).B21SourceSymbol;
+            var mapped:String = B21_StatusSource.markers[name];
+            return mapped == null ? B21_StatusSource.markers["LandmarkMarker"] : mapped;
         }
         private function state(node:DisplayObject):Object {
             if (node is TextField) return {n:node.name,t:TextField(node).text};
@@ -546,7 +576,14 @@ package {
             if (clip == null) return null;
             var children:Array = [];
             for (var i:int = 0; i < clip.numChildren; ++i) {
-                var child:Object = state(clip.getChildAt(i));
+                var part:DisplayObject = clip.getChildAt(i);
+                var child:Object = state(part);
+                // Location frames are blank; the engine attaches the icon at runtime.
+                if (child != null && clip.currentLabel == "Location" && part is MovieClip) {
+                    child.s = markerSymbol(part);
+                    child.x = part.x; child.y = part.y;
+                    child.sx = part.scaleX; child.sy = part.scaleY; child.r = part.rotation;
+                }
                 if (child != null) children.push(child);
             }
             return {n:clip.name,l:clip.currentLabel,f:clip.currentFrame,v:clip.visible,a:clip.alpha,c:children};
@@ -558,14 +595,38 @@ package {
             }
             var clip:MovieClip = target as MovieClip;
             if (clip == null) return;
+            // FO4 attaches a location icon with an empty instance name. GFx keeps it empty (Ruffle invents
+            // instanceN), so getChildByName never finds the clone's copy and one was added every frame.
+            // A Location clone pairs its icons with the source's by index instead; FO76's Location frame
+            // places nothing, so these icons are its only children.
+            var icons:Array = [];
+            if (source.l == "Location") for each (var entry:Object in source.c) if (entry.s != null) icons.push(entry);
+            if (clip.currentLabel == "Location")
+                while (clip.numChildren > icons.length) clip.removeChildAt(clip.numChildren-1);
             var found:Boolean = false;
             if (source.l != null) for each (var frame:Object in clip.currentLabels) if (frame.name == source.l) found = true;
             clip.gotoAndStop(found ? String(source.l) : Math.min(int(source.f),clip.totalFrames));
             clip.visible = Boolean(source.v);
             clip.alpha = Number(source.a);
+            for (var i:int = 0; i < icons.length; ++i) {
+                var wanted:Object = icons[i];
+                var icon:MovieClip = i < clip.numChildren ? clip.getChildAt(i) as MovieClip : null;
+                if (icon == null || getQualifiedClassName(icon) != wanted.s) {
+                    if (icon != null) clip.removeChildAt(i);
+                    var type:Class = getDefinitionByName(String(wanted.s)) as Class;
+                    icon = new type();
+                    clip.addChildAt(icon,i);
+                    freeze(icon);
+                }
+                icon.x = Number(wanted.x); icon.y = Number(wanted.y);
+                icon.scaleX = Number(wanted.sx); icon.scaleY = Number(wanted.sy); icon.rotation = Number(wanted.r);
+                applyState(wanted,icon);
+            }
             for each (var child:Object in source.c) {
-                var other:DisplayObject = clip.getChildByName(String(child.n));
-                if (other != null) applyState(child,other);
+                if (child.s == null) {
+                    var other:DisplayObject = clip.getChildByName(String(child.n));
+                    if (other != null) applyState(child,other);
+                }
             }
         }
         private function captureMarkers(source:DisplayObjectContainer):Array {
@@ -573,12 +634,9 @@ package {
             for (var i:int = 0; i < source.numChildren; ++i) {
                 var marker:DisplayObject = source.getChildAt(i);
                 if (!(marker is MovieClip)) continue;
-                var name:String = getQualifiedClassName(marker).split("::").pop();
-                if (marker.hasOwnProperty("B21SourceSymbol")) name = Object(marker).B21SourceSymbol;
-                var mapped:String = B21_StatusSource.markers[name];
                 // FO4 locations FO76 has no icon for (Nuka-World's, POIMarker) draw as FO76's landmark
                 // instead of dropping the whole HUD back to vanilla.
-                if (mapped == null) mapped = B21_StatusSource.markers["LandmarkMarker"];
+                var mapped:String = markerSymbol(marker);
                 if (mapped == null) {
                     if (marker.visible && marker.width > 0 && marker.height > 0) return null;
                     continue;
@@ -589,15 +647,17 @@ package {
         }
         private function updateMarkers(rows:Array, holder:MovieClip, color:uint):Boolean {
             if (rows == null) return false;
-            var tinted:MovieClip = holder.getChildAt(0) as MovieClip;
-            var hostile:MovieClip = holder.getChildAt(1) as MovieClip;
-            var tintedCount:int = 0;
-            var hostileCount:int = 0;
+            var counts:Array = [0,0,0,0];
             for each (var row:Object in rows) {
-                // FO76 bakes the Enemy/EnemyTargeted frames red; they skip the HUD colour.
-                var red:Boolean = row.state.l == "Enemy" || row.state.l == "EnemyTargeted";
-                var target:MovieClip = red ? hostile : tinted;
-                var count:int = red ? hostileCount : tintedCount;
+                // FO76 bakes the Enemy/EnemyTargeted frames red; they skip the HUD colour. Tales rides allies
+                // and neutrals on FO4's enemy markers, naming them; they draw FO76's plain Neutral dot, tinted.
+                var layer:int = 0;
+                if (row.state.l == "Enemy" && (row.state.n == "B21:Ally" || row.state.n == "B21:Neutral")) {
+                    layer = row.state.n == "B21:Ally" ? ALLY_LAYER : NEUTRAL_LAYER;
+                    row.state.l = "Neutral";
+                } else if (row.state.l == "Enemy" || row.state.l == "EnemyTargeted") layer = HOSTILE_LAYER;
+                var target:MovieClip = holder.getChildAt(layer) as MovieClip;
+                var count:int = counts[layer];
                 var clone:MovieClip = count < target.numChildren ? target.getChildAt(count) as MovieClip : null;
                 if (clone == null || getQualifiedClassName(clone) != row.symbol) {
                     if (clone != null) target.removeChildAt(count);
@@ -607,17 +667,48 @@ package {
                     freeze(clone);
                 }
                 applyState(row.state,clone);
+                if (row.state.l == "Location" || clone.currentLabel == "Location") noteCompass(row,clone);
                 // FO4's holders share one scale; FO76 scales the quest holder 1.66 and the other 1.33, so
                 // markers at one bearing line up only on the quest holder's scale (its ±252 matches the rule).
                 clone.x = Number(row.x)*compassGroup.QuestMarkerHolder_mc.scaleX/holder.scaleX;
                 clone.y = Number(row.y);
                 ++markerCount;
-                if (red) ++hostileCount; else ++tintedCount;
+                ++counts[layer];
             }
-            while (tinted.numChildren > tintedCount) tinted.removeChildAt(tinted.numChildren-1);
-            while (hostile.numChildren > hostileCount) hostile.removeChildAt(hostile.numChildren-1);
-            tint(tinted,color);
+            for (layer = 0; layer <= HOSTILE_LAYER; ++layer) {
+                var clips:MovieClip = holder.getChildAt(layer) as MovieClip;
+                while (clips.numChildren > counts[layer]) clips.removeChildAt(clips.numChildren-1);
+            }
+            tint(holder.getChildAt(0),color);
+            tint(holder.getChildAt(ALLY_LAYER),lighter(color));
+            tint(holder.getChildAt(NEUTRAL_LAYER),NEUTRAL);
             return true;
+        }
+        private function noteCompass(row:Object, clone:MovieClip):void {
+            var listed:Array = [];
+            for each (var entry:Object in row.state.c) listed.push(String(entry.n) + "=" + String(entry.s) + "/" + String(entry.l));
+            var held:Array = [];
+            for (var i:int = 0; i < clone.numChildren; ++i) {
+                var part:DisplayObject = clone.getChildAt(i);
+                var clip:MovieClip = part as MovieClip;
+                held.push(part.name + "=" + getQualifiedClassName(part) + "/" + (clip == null ? "" : String(clip.currentLabel)) +
+                          (part.visible ? "" : "(hidden)") + "@" + Math.round(part.alpha*100));
+            }
+            if (held.length != listed.length || clone.currentLabel != row.state.l)
+                compassIssues.push(String(row.state.l) + "#" + String(row.state.f) + "->" + String(clone.currentLabel) + "#" +
+                                   clone.currentFrame + " src[" + listed.join(",") + "] clone[" + held.join(",") + "]");
+            if (Boolean(row.state.v)) {
+                compassLocations.push(Math.round(Number(row.x)) + ":" + listed.join(","));
+                compassBearings.push(Number(row.x));
+            }
+        }
+        private function compassIssue():String {
+            var pile:Boolean = false;
+            for (var a:int = 0; a < compassBearings.length; ++a)
+                for (var b:int = 0; b < compassBearings.length; ++b)
+                    if (a != b && Math.abs(Number(compassBearings[a])-Number(compassBearings[b])) < 4) pile = true;
+            if (compassIssues.length == 0 && !pile) return "";
+            return (compassIssues.join(" | ") + " || visible " + compassLocations.join(" ")).substr(0,1500);
         }
         private function updateArea(within:Boolean, inArmor:Boolean):void {
             var normal:MovieClip = compassGroup.AreaQuest_WithinClip_mc;
@@ -633,7 +724,7 @@ package {
             insideArea = within;
             areaArmor = inArmor;
         }
-        private function updateNeed(clip:MovieClip, amount:Number, icon:String, delta:Number):void {
+        private function updateNeed(clip:MovieClip, amount:Number, icon:String, delta:Number, alwaysShow:Boolean):void {
             var state:Object = needStates[clip.name];
             if (state == null) needStates[clip.name] = state = {last:NaN,timer:0,alpha:0};
             if (!(isFinite(amount) && amount >= 0)) {
@@ -644,7 +735,7 @@ package {
             }
             // FO76: always up below 20%; otherwise a 3% change or any rise shows it for 10 s, then it
             // fades out over its 0.2 s rollOff.
-            if (amount < .2) state.timer = -1;
+            if (alwaysShow || amount < .2) state.timer = -1;
             else if (isNaN(state.last) || Math.abs(amount-state.last) >= .03 || amount > state.last || state.timer < 0) state.timer = 10;
             else state.timer = Math.max(0,state.timer-delta);
             state.last = amount;
@@ -767,6 +858,54 @@ package {
             while (explosives.numChildren > count) explosives.removeChildAt(explosives.numChildren-1);
             show(explosives,threats);
         }
+        // The engine attaches FO4's in-world markers to FloatingQuestMarkerBase. Tales names those FO76 has
+        // art for "B21:<FloatingTarget frame>[:<Internal_mc frame>]" (QuestAreaMarkerHooks); others stay FO4's.
+        private function captureFloating(host:Object):Array {
+            var base:DisplayObjectContainer = DisplayObjectContainer(host).getChildByName("FloatingQuestMarkerBase") as DisplayObjectContainer;
+            if (base == null) return null;
+            var rows:Array = [];
+            for (var i:int = 0; i < base.numChildren; ++i) {
+                var marker:DisplayObject = base.getChildAt(i);
+                var look:Array = marker.name.split(":");
+                if (look.length < 2 || look[0] != "B21") continue;
+                var shown:Object = chain(marker,host);
+                if (!shown.v || shown.a <= 0) continue;
+                var at:Point = globalPoint(marker);
+                rows.push({frame:look[1],type:look.length > 2 ? look[2] : null,x:at.x,y:at.y,a:shown.a});
+            }
+            return rows;
+        }
+        private function updateFloating(rows:Array, map:Object, scale:Number, color:uint):void {
+            var tinted:MovieClip = floatingGroup.getChildAt(0) as MovieClip;
+            var hostile:MovieClip = floatingGroup.getChildAt(1) as MovieClip;
+            var tintedCount:int = 0;
+            var hostileCount:int = 0;
+            if (rows == null) rows = [];
+            for each (var row:Object in rows) {
+                // FO76 bakes EnemyTargeted red; like the compass's enemy markers it skips the HUD colour.
+                var red:Boolean = row.frame == "EnemyTargeted";
+                var layer:MovieClip = red ? hostile : tinted;
+                var index:int = red ? hostileCount : tintedCount;
+                if (red) ++hostileCount; else ++tintedCount;
+                var clone:MovieClip = index < layer.numChildren ? layer.getChildAt(index) as MovieClip : null;
+                if (clone == null) {
+                    clone = new B21_StatusFloatingTarget();
+                    layer.addChild(clone);
+                    freeze(clone);
+                }
+                clone.gotoAndStop(hasLabel(clone,String(row.frame)) ? String(row.frame) : "ActiveQuest");
+                var inner:MovieClip = clone.getChildByName("Internal_mc") as MovieClip;
+                if (inner != null && row.type != null && hasLabel(inner,String(row.type))) inner.gotoAndStop(String(row.type));
+                var at:Point = floatingGroup.globalToLocal(place(row,map));
+                clone.x = at.x;
+                clone.y = at.y;
+                clone.scaleX = clone.scaleY = scale;
+                clone.alpha = Number(row.a);
+            }
+            while (tinted.numChildren > tintedCount) tinted.removeChildAt(tinted.numChildren-1);
+            while (hostile.numChildren > hostileCount) hostile.removeChildAt(hostile.numChildren-1);
+            tint(tinted,color);
+        }
         private function captureCombat(host:Object):Object {
             if (host.TopCenterGroup_mc == null || host.CenterGroup_mc == null) return null;
             var top:Object = host.TopCenterGroup_mc;
@@ -841,6 +980,9 @@ package {
             var target:Object = combat.enemy;
             show(enemy,target);
             var hostile:Boolean = !data.enemyFriendly && data.enemyHostile != false;
+            var targetDetails:Object = data.nameplates == null ? null : data.nameplates.target;
+            if (targetDetails != null && Number(targetDetails.id) != Number(data.enemyId)) targetDetails = null;
+            var teamColor:Boolean = !hostile && targetDetails != null && targetDetails.color != null;
             enemy.gotoAndStop(data.enemyFriendly ? "Friendly" : hostile ? "Hostile" : "Nonhostile");
             freeze(enemy);
             var percent:Number = Number(target.percent);
@@ -848,17 +990,24 @@ package {
             // The three bars share one spot. Showing only FO76's red one left enemies with no bar in game,
             // so all stay up as before and each is coloured: whichever draws reads red for a hostile target
             // and HUD colour otherwise.
-            var barColor:uint = hostile ? HOSTILE : uint(data.color);
+            var barColor:uint = teamColor ? uint(targetDetails.color) : hostile ? HOSTILE : uint(data.color);
             tint(enemy.MeterBar_mc,barColor);
             tint(enemy.MeterBarFriendly_mc,barColor);
             tint(enemy.MeterBarEnemy_mc,barColor,HOSTILE);
-            enemy.Optional_mc.visible = Boolean(target.optional);
-            if (enemy.Optional_mc.visible && !fill(enemy.Optional_mc,Number(target.optionalPercent))) return false;
+            var trail:Number = enemyTrail(isFinite(percent) ? percent : 0,Number(data.enemyId));
+            enemy.Optional_mc.visible = Boolean(target.optional) || trail > percent+0.002;
+            if (enemy.Optional_mc.visible) {
+                if (!fill(enemy.Optional_mc,Boolean(target.optional) ? Number(target.optionalPercent) : trail)) return false;
+                // FO76's pulse, at 30 fps; freeze stopped its timeline.
+                var pulse:MovieClip = enemy.Optional_mc.MeterBarInternal_mc;
+                pulse.gotoAndStop(1+int(getTimer()*30/1000)%pulse.totalFrames);
+                tint(enemy.Optional_mc,lighter(barColor));
+            }
             fittedText(enemy.DisplayText_mc,String(target.text));
             // The Hostile frame's own filter turns the cream name red; other standings take the HUD colour.
-            field(enemy.DisplayText_mc).textColor = hudColor(enemyNameColor,hostile ? CREAM : uint(data.color));
+            field(enemy.DisplayText_mc).textColor = hudColor(enemyNameColor,hostile ? CREAM : barColor);
             // FO76's frame scripts colour the level box per standing; the timeline only carries hostile red.
-            var standingColor:uint = data.enemyFriendly ? 0xF7CC5D : hostile ? 0xF5765E : uint(data.color);
+            var standingColor:uint = teamColor ? barColor : data.enemyFriendly ? 0xF7CC5D : hostile ? 0xF5765E : uint(data.color);
             tint(enemy.LevelText_mc,standingColor);
             enemy.LevelText_mc.visible = Number(data.enemyLevel) >= 0;
             if (enemy.LevelText_mc.visible) {
@@ -883,12 +1032,16 @@ package {
             if (skull.visible) {
                 skull.gotoAndStop("Skull");
                 skull.Encounter_mc.gotoAndStop("Easy");
+                tint(skull,teamColor ? barColor : CREAM);
                 skull.x = skull.y = 0;
                 var art:Rectangle = skull.getBounds(enemy);
                 skull.x = (rank > 0 ? enemyStars.getBounds(enemy).right : nameEnd)+6-art.x;
                 skull.y = enemyStars.y-(art.y+art.height/2);
             }
             var sneak:Object = combat.stealth;
+            targetReadout.update(targetDetails,standingColor);
+            var healthBounds:Rectangle = enemy.HealthBarFrame_mc.getBounds(enemy);
+            targetReadout.x = healthBounds.x+healthBounds.width/2;
             show(stealth,sneak);
             stealth.gotoAndStop(5);
             // FO76 rests on cream brackets for hidden/detected and red ones (own instances) for caution/danger.
@@ -906,6 +1059,7 @@ package {
             bracketLeft.x = -75-distance-bracketLeft.width;
             inner.getChildByName("BracketRightInstance").x = 75+distance;
             tint(stealth,mode >= 2 ? CREAM : uint(data.color));
+            targetReadout.y = Math.max(healthBounds.bottom+8,stealth.visible ? stealth.getBounds(enemy).bottom+14 : 0);
             var crit:Object = combat.critical;
             show(critical,crit);
             critical.gotoAndStop(Math.min(int(crit.frame),critical.totalFrames));
@@ -1051,12 +1205,20 @@ package {
         }
         private function updateHUD(data:Object, host:Object):Boolean {
             B21Snapshot = null;
+            B21FloatingActive = 0;
             for each (var passive:DisplayObject in [healthGroup,rightGroup,effectLayer,compassGroup,questGroup,conditionGroup,experienceGroup,
-                                                   enemy,stealth,critical,encounters,core,explosives,damageGroup]) passive.visible = false;
+                                                   enemy,stealth,critical,encounters,core,explosives,damageGroup,floatingGroup,nameplates]) passive.visible = false;
             var scale:Number = stage.stageHeight / 1080;
             if (host.RightMeters_mc == null || !isFinite(scale) || scale <= 0) return false;
             updateInteraction(data,host,scale);
-            if (!updateHold(data,host,scale)) return false;
+            var holdReady:Boolean = false;
+            try { holdReady = updateHold(data,host,scale); }
+            catch (error:Error) { holdReady = false; B21HoldIssue = "error: "+error.message; }
+            if (!holdReady) {
+                B21HoldActive = 0;
+                interaction.visible = false;
+                holdCompleteTime = -1;
+            }
             var snap:Object = capture(data,host);
             if (snap == null) return false;
             alpha = Number(data.opacity);
@@ -1073,8 +1235,12 @@ package {
                 inArmor:effects != null && Boolean(effects.bInPowerArmorMode),right:pointData(host.RightMeters_mc),
                 bottom:host.BottomCenterGroup_mc == null ? null : pointData(host.BottomCenterGroup_mc)};
             snap.stageWidth = stage.stageWidth;
+            snap.left = host.LeftMeters_mc == null ? null : pointData(host.LeftMeters_mc);
+            snap.location = snap.left == null || host.LeftMeters_mc.LocationText_mc == null ? null :
+                pointData(host.LeftMeters_mc.LocationText_mc);
             snap.hit = hitState;
             snap.crosshair = crossState;
+            snap.quickLoot = lootState;
             snap.topCenter = host.TopCenterGroup_mc == null ? null : pointData(host.TopCenterGroup_mc);
             var questUpdate:Object = host.HUDNotificationsGroup_mc == null ? null : host.HUDNotificationsGroup_mc.QuestUpdates_mc;
             snap.questUpdate = questUpdate == null || questUpdate.QuestName_tf == null ? null : {visible:questUpdate.visible,
@@ -1094,11 +1260,12 @@ package {
                 if (entry != null && entry.hasOwnProperty("IconFrame") && entry.visible) frames.push(int(entry.IconFrame));
             }
             snap.effects = frames;
-            snap.left = pointData(host.LeftMeters_mc);
             snap.topRight = pointData(host.TopRightGroup_mc);
             snap.combat = captureCombat(host);
             snap.otherMarkers = captureMarkers(stockCompass.OtherMarkerHolder_mc);
             snap.questMarkers = captureMarkers(stockCompass.QuestMarkerHolder_mc);
+            snap.floating = captureFloating(host);
+            B21FloatingActive = snap.floating != null ? 1 : 0;
             return snap.combat == null || snap.otherMarkers == null || snap.questMarkers == null ? null : snap;
         }
         private function updateMenu(data:Object):Boolean {
@@ -1110,9 +1277,39 @@ package {
             var hudScale:Number = Number(snap.stageHeight) / 1080;
             var scale:Number = hudScale * Number(map.ay);
             if (!isFinite(scale) || scale <= 0) return false;
+            if (Boolean(data.damageOnly)) {
+                if (scopeHidden == null) {
+                    scopeHidden = [];
+                    for (var child:int = 0; child < numChildren; ++child) {
+                        var scoped:DisplayObject = getChildAt(child);
+                        if (scoped != damageGroup && scoped.visible) { scoped.visible = false; scopeHidden.push(scoped); }
+                    }
+                }
+                alpha = Number(snap.alpha)*Number(data.opacity);
+                updateDamage(data,scale);
+                visible = Boolean(data.visible) && Boolean(snap.visible);
+                return true;
+            }
+            if (scopeHidden != null) {
+                for each (var hidden:DisplayObject in scopeHidden) hidden.visible = true;
+                scopeHidden = null;
+            }
             var inArmor:Boolean = Boolean(snap.inArmor);
             // The HUD instance leaves the health parts out of its first frames after a load.
             var health:Boolean = Boolean(data.health) && snap.combat != null;
+            companions.update(Boolean(data.companionHUD) && snap.left != null ? data.companions as Array : null,uint(data.color),
+                Number(data.companionPortraitScale),data.companionPortraitBorder == true,
+                data.companionPortraitShadow == true,data.companionPortraitShape != null ? String(data.companionPortraitShape)
+                    : data.companionPortraitCircle == true ? "circle" : "square",
+                String(data.companionPortraitBackground),data.companionCompact == true);
+            if (snap.left != null) {
+                var companionAt:Point = globalToLocal(place(snap.left,map));
+                companions.x = companionAt.x+(B21_StatusSource.layout.left[4]-96)*scale;
+                // The location name sits between the HP bar and the rows (LeftMeters_mc.LocationText_mc; its text
+                // starts just below the clip's origin). FO76 likewise keeps its team list above its location text.
+                companions.y = snap.location != null ? globalToLocal(place(snap.location,map)).y : companionAt.y-28*scale;
+                companions.scaleX = companions.scaleY = scale;
+            }
             rightGroup.gotoAndStop(inArmor ? "powerArmorHUD" : "defaultHUD");
             anchor(rightGroup,B21_StatusSource.layout.right,place(snap.right,map),1824,1026,scale);
             if (inArmor) anchor(conditionGroup,[1,0,0,1,1695,632],place(snap.right,map),1824,1026,scale);
@@ -1121,7 +1318,7 @@ package {
                 conditionGroup.transform.matrix = new Matrix(scale,0,0,scale,apBox.x,apBox.y-72*scale);
             }
             healthGroup.visible = health && !inArmor;
-            rightGroup.visible = compassGroup.visible = questGroup.visible = effectLayer.visible = health;
+            rightGroup.visible = compassGroup.visible = questGroup.visible = effectLayer.visible = floatingGroup.visible = health;
             enemy.visible = stealth.visible = critical.visible = encounters.visible = core.visible = explosives.visible = false;
             if (!updateCondition(data)) return false;
             if (health) {
@@ -1139,13 +1336,18 @@ package {
                 updateEffects(snap.effects as Array,inArmor,data);
                 var delta:Number = Number(data.delta);
                 if (!(delta > 0)) delta = 0;
-                updateNeed(rightGroup.HUDHungerMeter_mc,Number(data.hunger),"foodPositive",delta);
-                updateNeed(rightGroup.HUDThirstMeter_mc,Number(data.thirst),"thirstPositive",delta);
-                updateQuests(data.quests as Array);
+                updateNeed(rightGroup.HUDHungerMeter_mc,Number(data.hunger),"foodPositive",delta,Boolean(data.alwaysShowNeeds));
+                updateNeed(rightGroup.HUDThirstMeter_mc,Number(data.thirst),"thirstPositive",delta,Boolean(data.alwaysShowNeeds));
+                questGroup.update(data.quests == null ? [] : data.quests as Array, delta);
                 tint(questGroup,uint(data.color));
                 markerCount = 0;
+                compassIssues = [];
+                compassLocations = [];
+                compassBearings = [];
                 if (!updateMarkers(snap.otherMarkers as Array,compassGroup.OtherMarkerHolder_mc,uint(data.color)) ||
                     !updateMarkers(snap.questMarkers as Array,compassGroup.QuestMarkerHolder_mc,uint(data.color))) return false;
+                B21CompassIssue = compassIssue();
+                updateFloating(snap.floating as Array,map,scale,uint(data.color));
                 updateArea(Boolean(data.insideArea),inArmor);
                 // The Glow meter and the rads segment keep their green and red.
                 for (var i:int = 0; i < hp.numChildren; ++i) {
@@ -1189,6 +1391,13 @@ package {
                 anchor(hit,B21_StatusSource.layout.hit,place(hitData.at,map),0,0,scale);
                 show(hit,hitData.shown);
             } else { hit.gotoAndStop(1); hitSeen = -1; }
+            var lootData:Object = snap.quickLoot;
+            if (lootData != null && lootData.at != null && lootData.shown != null && quickLoot.update(lootData,data)) {
+                anchor(quickLoot,B21_StatusSource.layout.quickLoot,place(lootData.at,map),0,0,scale);
+                show(quickLoot,lootData.shown);
+                // Tinted like the meters, so the box matches them; its permanent filter keeps the masks.
+                tint(quickLoot,uint(data.color));
+            } else quickLoot.reset();
             if (snap.topCenter != null) {
                 rewards.update(data.rewards,snap.questUpdate,place(snap.topCenter,map),
                     Math.min(hudScale,Number(snap.stageWidth)/1920)*Number(map.ay),data.damageViewport);
@@ -1204,6 +1413,8 @@ package {
             B21RewardModelY = rewards.modelY;
             alpha = Number(snap.alpha)*Number(data.opacity);
             updateDamage(data,scale);
+            B21NameplatesActive = nameplates.update(data.nameplates,data.damageViewport,scale,uint(data.color)) ? 1 : 0;
+            if (B21NameplatesActive == 1) enemy.visible = false;
             visible = Boolean(data.visible) && Boolean(snap.visible);
             return true;
         }
@@ -1219,13 +1430,15 @@ package {
         // FO76's red inside the compass's filtered texture.
         private function hostileMarkerColor():Array {
             var scales:Array = [];
-            for each (var node:DisplayObject in [compassGroup,compassGroup.OtherMarkerHolder_mc,compassGroup.OtherMarkerHolder_mc.getChildAt(1)]) {
+            for each (var node:DisplayObject in [compassGroup,compassGroup.OtherMarkerHolder_mc,compassGroup.OtherMarkerHolder_mc.getChildAt(HOSTILE_LAYER)]) {
                 var cxform:ColorTransform = node.transform.colorTransform;
                 scales.push(cxform.redMultiplier,cxform.greenMultiplier,cxform.blueMultiplier);
             }
             return scales;
         }
         public function B21Diagnostics():Object {
+            var targetBarBounds:Rectangle = enemy.HealthBarFrame_mc.getBounds(stage);
+            var targetDetailsBounds:Rectangle = targetReadout.getBounds(stage);
             var damage:Array = [];
             for (var d:int = 0; d < damageGroup.numChildren; ++d) {
                 var number:MovieClip = damageGroup.getChildAt(d) as MovieClip;
@@ -1251,13 +1464,31 @@ package {
                 cards.push({icon:card.Icon_mc.currentLabel,tile:card.currentLabel,fill:cardFill == null ? null : cardFill.y,color:colorOf(card)});
             }
             var tracker:Array = [];
-            for (i = 0; i < questGroup.numChildren; ++i) {
-                var part:MovieClip = questGroup.getChildAt(i) as MovieClip;
-                tracker.push({kind:part is B21_StatusQuestDivider ? "divider" : part is B21_StatusQuestEntry ? "entry" : "objective",
-                    y:part.y,icon:part is B21_StatusQuestEntry ? part.Icon_mc.currentLabel : null,
-                    title:part is B21_StatusQuestEntry ? part.Title_mc.textField.text : null,color:colorOf(part)});
+            for each (var quest:MovieClip in questGroup.entries()) {
+                tracker.push({kind:"entry",y:quest.y,icon:quest.Icon_mc.currentLabel,title:quest.Title_mc.textField.text,
+                    label:quest.currentLabel,frame:quest.currentFrame,color:colorOf(quest)});
+                for each (var goal:MovieClip in quest.B21Objectives)
+                    tracker.push({kind:"objective",y:quest.y+goal.y,title:goal.Title_mc.TitleText_tf.text,
+                        completed:goal.TitleCompleted_mc.TitleText_tf.text,label:goal.currentLabel,frame:goal.currentFrame,meter:goal.Meter_mc.visible,
+                        color:colorOf(goal)});
             }
-            return {rewards:rewards.diagnostic(),quickLoot:quickLoot.diagnostics(),quickLootActive:B21QuickLootActive,quickLootVisible:quickLoot.visible,
+            if (questGroup.dividerVisible) tracker.push({kind:"divider",y:questGroup.divider.y,icon:null,title:null,
+                label:questGroup.divider.currentLabel,color:colorOf(questGroup.divider)});
+            tracker.sortOn("y", Array.NUMERIC);
+            var floating:Array = [];
+            for (var layerIndex:int = 0; layerIndex < 2; ++layerIndex) {
+                var floatingLayer:MovieClip = floatingGroup.getChildAt(layerIndex) as MovieClip;
+                for (i = 0; i < floatingLayer.numChildren; ++i) {
+                    var target:MovieClip = floatingLayer.getChildAt(i) as MovieClip;
+                    var targetInner:MovieClip = target.getChildByName("Internal_mc") as MovieClip;
+                    var targetAt:Point = floatingLayer.localToGlobal(new Point(target.x,target.y));
+                    floating.push({frame:target.currentLabel,type:targetInner == null ? null : targetInner.currentLabel,
+                        x:targetAt.x,y:targetAt.y,scale:target.scaleX,alpha:target.alpha,hostile:layerIndex == 1,
+                        color:colorOf(floatingLayer,GOLD)});
+                }
+            }
+            return {floating:floating,floatingActive:B21FloatingActive,floatingVisible:floatingGroup.visible,
+                rewards:rewards.diagnostic(),quickLoot:quickLoot.diagnostics(),quickLootActive:B21QuickLootActive,quickLootVisible:quickLoot.visible,
                 quickX:quickLoot.x,quickY:quickLoot.y,crossX:reticle.x,crossY:reticle.y,
                 crosshair:reticle.diagnostics(),crosshairActive:B21CrosshairActive,crosshairVisible:reticle.visible,
                 crosshairHostile:reticleHostile,hitActive:B21HitActive,hitFrame:hit.currentFrame,hitVisible:hit.visible,
@@ -1269,7 +1500,7 @@ package {
                 conditionOverrepair:cnd.MeterClip_mc.visible && cnd.MeterClip_mc.numChildren > 1,
                 iconCount:icons.numChildren,effectOffsetX:icons.x,effectOffsetY:icons.y,effectCards:cards,tracker:tracker,
                 trackerColor:colorOf(questGroup),hpColor:colorOf(hp.MeterBar_mc),radsBarColor:colorOf(hp.RadsBar_mc),
-                radsColor:colorOf(healthGroup.RadsMeter_mc),hostileMarkers:MovieClip(compassGroup.OtherMarkerHolder_mc.getChildAt(1)).numChildren,
+                radsColor:colorOf(healthGroup.RadsMeter_mc),hostileMarkers:MovieClip(compassGroup.OtherMarkerHolder_mc.getChildAt(HOSTILE_LAYER)).numChildren,
                 hostileMarkerColor:hostileMarkerColor(),markerColor:shownColor(compassGroup.OtherMarkerHolder_mc.getChildAt(0),CREAM),
                 compassColor:shownColor(compassGroup.getChildAt(0),CREAM),
 
@@ -1291,6 +1522,13 @@ package {
                 holdVisible:interaction.visible,holdFrame:holdButton.HoldMeter_mc.currentFrame,
                 holdKey:holdButton.IconHolderInstance.IconAnimInstance.Icon_tf.text,holdRingScale:holdButton.HoldMeter_mc.scaleX,
                 holdName:interaction.Internal_mc.Header_mc.Header_tf.text,holdLabel:holdButton.textField_tf.text,
+                nameplates:nameplates.diagnostic(),nameplatesActive:B21NameplatesActive,
+                targetReadout:targetReadout.text,targetIcons:targetReadout.icons,targetDetailsHeight:targetReadout.height,
+                targetDetailsColor:field(targetReadout) == null ? -1 : field(targetReadout).textColor,
+                targetDetailsTop:targetReadout.getBounds(stage).top,stealthBottom:stealth.getBounds(stage).bottom,
+                targetBarCenter:targetBarBounds.x+targetBarBounds.width/2,
+                targetBarBottom:targetBarBounds.bottom,
+                targetDetailsCenter:targetDetailsBounds.x+targetDetailsBounds.width/2,
                 enemyVisible:enemy.visible,enemyName:field(enemy.DisplayText_mc).text,enemyLabel:enemy.currentLabel,
                 enemyTextFits:field(enemy.DisplayText_mc).textWidth <= field(enemy.DisplayText_mc).width-4,
                 enemyHealthFrame:enemy.MeterBarEnemy_mc.MeterBarInternal_mc.Contents.Fill.currentFrame,enemyStars:enemyStars.numChildren,
@@ -1312,7 +1550,7 @@ package {
                 encounterVisible:encounters.visible,coreVisible:core.visible,coreFrame:core.Meter_mc.currentFrame,
                 coreText:field(core.CoreCount_mc).text,heatVisible:rightGroup.OverheatMeter_mc.visible,
                 heatFrame:rightGroup.OverheatMeter_mc.MeterBar_mc.MeterBarInternal_mc.Contents.Fill.currentFrame,
-                questCount:questGroup.numChildren,markerCount:markerCount,compassVisible:compassGroup.visible,
+                questCount:questGroup.entries().length,questBusy:questGroup.busy,markerCount:markerCount,compassVisible:compassGroup.visible,
                 xpVisible:experienceGroup.visible,experienceDone:experienceDone,levelTextAlpha:levelUp.LevelUpText.alpha,
                 xpBarFrame:xp.LevelUPBar.MeterBarInternal_mc.Contents.Fill.currentFrame,
                 xpGhostFrame:xp.Optional_mc.MeterBarInternal_mc.Contents.Fill.currentFrame,

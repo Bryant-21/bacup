@@ -17,10 +17,10 @@ _NS = "##voice_changer"
 _SUPPORTED_EXTS = {".wav", ".xwm", ".fuz"}
 
 
-def _open_folder_dialog(title: str) -> str | None:
+def _open_folder_dialog(title: str, initial_dir: str = "") -> str | None:
     try:
         from creation_lib.ui.widgets.pick_folder import pick_folder
-        return pick_folder(title)
+        return pick_folder(title, initial_dir)
     except Exception:
         return None
 
@@ -137,7 +137,7 @@ class BulkPanel:
         _, self._input_folder = imgui.input_text("##input_dir", self._input_folder, 1024)
         imgui.same_line()
         if imgui.button("Browse##in"):
-            folder = _open_folder_dialog("Select Input Folder")
+            folder = _open_folder_dialog("Select Input Folder", self._input_folder)
             if folder:
                 self._input_folder = folder
                 if not self._output_folder:
@@ -150,7 +150,7 @@ class BulkPanel:
         _, self._output_folder = imgui.input_text("##output_dir", self._output_folder, 1024)
         imgui.same_line()
         if imgui.button("Browse##out"):
-            folder = _open_folder_dialog("Select Output Folder")
+            folder = _open_folder_dialog("Select Output Folder", self._output_folder)
             if folder:
                 self._output_folder = folder
 

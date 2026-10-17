@@ -28,6 +28,7 @@ package {
             }
         }
         public function B21Stop():void { running = false; }
+        public function get B21Running():Boolean { return running; }
         public function B21Goto(frame:Object,play:Boolean):void {
             var value:int = frame is String ? int(source.labels[String(frame)]) : int(frame);
             gotoAndStop(value);

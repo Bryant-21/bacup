@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::fixups::rewrite_raw_object_template_formids::fo76_condition_references;
 use crate::ids::{FormKey, SigCode};
 use crate::phase::{Phase, PhaseCtx, PhaseError, PhaseReport};
+use crate::plugin_catalog;
 use crate::session::open_session;
 use crate::translator::Game;
 
@@ -73,7 +74,7 @@ fn source_key(raw: u32, masters: &[String], plugin: &str) -> Result<String, Stri
             .map(String::as_str)
             .ok_or_else(|| format!("fishing source FormID {raw:08X} has invalid master index"))?
     };
-    Ok(format!("{:06X}:{owner}", raw & 0xFFFFFF))
+    Ok(plugin_catalog::form_key(owner, raw & 0xFFFFFF))
 }
 
 impl Phase for FishingCatalogPhase {
@@ -224,7 +225,7 @@ impl Phase for FishingCatalogPhase {
                 raw,
                 json!({
                     "source_form_id": format!("{raw:08X}"),
-                    "form_key": source_key(raw, &masters, &plugin).map_err(PhaseError::Internal)?,
+                    "form": source_key(raw, &masters, &plugin).map_err(PhaseError::Internal)?,
                     "signature": signature,
                     "editor_id": eid,
                     "flags": flags,
@@ -238,7 +239,7 @@ impl Phase for FishingCatalogPhase {
         let mut target_forms = BTreeMap::new();
         for raw in references {
             let key = source_key(raw, &masters, &plugin).map_err(PhaseError::Internal)?;
-            let (_, owner) = key.split_once(':').unwrap();
+            let (owner, _) = key.split_once(':').unwrap();
             let source = FormKey {
                 local: raw & 0xFFFFFF,
                 plugin: ctx.run.interner.intern(owner),
@@ -258,16 +259,8 @@ impl Phase for FishingCatalogPhase {
                     let scan = session
                         .handle_raw_scan(handle)
                         .map_err(|error| PhaseError::Internal(error.to_string()))?;
-                    if let Some((raw, signature, _)) = scan.record_metadata_by_form_key(&target_key)
-                    {
-                        identity = scan.with_record(raw, |record| {
-                            json!({
-                                "plugin": owner,
-                                "object_id": format!("{:06X}", target.local),
-                                "signature": signature,
-                                "editor_id": editor_id(&effective_subrecords_for_record(record)),
-                            })
-                        });
+                    if scan.record_metadata_by_form_key(&target_key).is_some() {
+                        identity = Some(plugin_catalog::form_key(owner, target.local));
                         break;
                     }
                 }
@@ -280,23 +273,25 @@ impl Phase for FishingCatalogPhase {
         drop(session);
         let output_plugin = &ctx.run.config.output_plugin_name;
         let catalog = json!({
-            "schema_version": 1,
-            "source_plugin": plugin,
-            "source_masters": masters,
-            "output_plugin": output_plugin,
-            "fish_count": fish_count,
-            "mapping_available": ctx.run.mapper_state.is_some(),
-            "weather_keywords_preserved": true,
+            "version": 1,
+            "settings": {
+                "source_plugin": plugin,
+                "source_masters": masters,
+                "output_plugin": output_plugin,
+                "fish_count": fish_count,
+                "mapping_available": ctx.run.mapper_state.is_some(),
+                "weather_keywords_preserved": true,
+            },
             "records": records.into_values().collect::<Vec<_>>(),
             "target_forms": target_forms,
         });
-        let directory = ctx
-            .mod_path
-            .join("F4SE/Plugins/B21_TalesFromAppalachia/Fishing");
         let filename = std::path::Path::new(output_plugin)
             .file_name()
             .ok_or_else(|| PhaseError::BadParams("missing output plugin filename".into()))?;
-        let destination = directory.join(format!("{}.json", filename.to_string_lossy()));
+        let destination = ctx
+            .mod_path
+            .join(plugin_catalog::catalog_path("Fishing", &filename.to_string_lossy()));
+        let directory = destination.parent().unwrap().to_path_buf();
         let data = serde_json::to_vec(&catalog)
             .map_err(|error| PhaseError::Internal(error.to_string()))?;
         std::fs::create_dir_all(&directory)
@@ -325,15 +320,15 @@ mod tests {
         let masters = vec!["Base.esm".into()];
         assert_eq!(
             source_key(0x00000800, &masters, "Fish.esm").unwrap(),
-            "000800:Base.esm"
+            "Base.esm:000800"
         );
         assert_eq!(
             source_key(0x01000800, &masters, "Fish.esm").unwrap(),
-            "000800:Fish.esm"
+            "Fish.esm:000800"
         );
         assert_eq!(
             source_key(0xFF000800, &masters, "Fish.esm").unwrap(),
-            "000800:Fish.esm"
+            "Fish.esm:000800"
         );
         assert!(source_key(0x02000800, &masters, "Fish.esm").is_err());
     }

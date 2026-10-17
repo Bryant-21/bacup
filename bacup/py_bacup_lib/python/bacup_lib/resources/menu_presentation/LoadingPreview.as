@@ -15,6 +15,7 @@ package {
             removeEventListener(Event.ENTER_FRAME, B21PreviewStart);
             stage.scaleMode = StageScaleMode.NO_SCALE;
             stage.align = StageAlign.TOP_LEFT;
+            B21Layout();
             BGSCodeObj = {requestLoadingText:B21PreviewNothing};
             SetLoadingText(1, "", B21_PreviewStrings.tip);
             SetLevel(25, 0.6);
@@ -34,16 +35,22 @@ package {
         }
         public function B21PreviewTip(text:String):void { SetLoadingText(1, "", text); }
         private function B21TranslateLoading(event:Event):void {
-            if (b21Text) b21Text.LoadingArea_tf.text = B21_PreviewStrings.values["$Loading"];
+            LeftText_mc.LoadingArea_tf.text = B21_PreviewStrings.values["$LOADING"];
         }
         public function B21PreviewState():Object {
-            return {loaded:b21Text != null, stockAlpha:LeftText_mc.alpha, version:B21PhotoHostVersion,
-                spinnerAlpha:VaultTecLogo_mc.alpha,
+            var bounds:Object = b21Photo && b21Photo.content ? b21Photo.getBounds(stage) : null;
+            return {loaded:b21Photo != null && b21Photo.content != null,
+                photoBounds:bounds ? {x:bounds.x, y:bounds.y, width:bounds.width, height:bounds.height} : null,
+                photoInMenu:b21Photo != null && contains(b21Photo),
+                frameVisible:Box_mc.visible, textVisible:LeftText_mc.visible, version:B21PhotoHostVersion,
+                spinnerVisible:VaultTecLogo_mc.visible,
+                logoFrames:MovieClip(VaultTecLogo_mc.getChildAt(0)).totalFrames,
+                logoFrame:MovieClip(VaultTecLogo_mc.getChildAt(0)).currentFrame,
                 visible:b21Photo != null && b21Photo.visible,
                 photoWidth:b21Photo && b21Photo.content ? b21Photo.content.width : 0,
                 photoHeight:b21Photo && b21Photo.content ? b21Photo.content.height : 0,
-                text:b21Text ? b21Text.LoadScreenText_tf.text : "",
-                level:b21Text ? b21Text.PlayerLevelMeter_mc.currentFrame : 0, reports:b21PreviewReports};
+                text:LeftText_mc.LoadScreenText_tf.text,
+                level:LeftText_mc.PlayerLevelMeter_mc.currentFrame, reports:b21PreviewReports};
         }
     }
 }

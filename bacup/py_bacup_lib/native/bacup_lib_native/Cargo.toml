@@ -9,10 +9,11 @@ crate-type = ["cdylib"]
 
 [features]
 default = []
+packaged-creation = ["dep:creation_native"]
 dhat-heap = ["esp_authoring_core/dhat-heap"]
 
 [dependencies]
+creation_native = { package = "py_creation_lib_native", path = "../../../../py_creation_lib/native/creation_lib_native", features = ["embedded"], optional = true }
 conversion_native  = { path = "../conversion" }
 esp_authoring_core = { path = "../../../../py_creation_lib/native/esp" }
-previs_native      = { path = "../previs" }
 pyo3 = { workspace = true, features = ["extension-module", "abi3-py310"] }

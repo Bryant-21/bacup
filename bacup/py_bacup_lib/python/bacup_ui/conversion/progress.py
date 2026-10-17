@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import time
+from datetime import datetime, timedelta
 
 
 # Rounded phase seconds from SeventySix/20260910-131205-pid28856. These are
@@ -47,6 +49,8 @@ PHASE_SECONDS = {
     "generate_previs": 600,
     "pack": 300,
     "deploy": 120,
+    # Not measured yet; FO4's own materials, textures and meshes through the v22 upgrade.
+    "upgrade_fo4_materials": 900,
 }
 
 _PROJECTED_PHASES = (
@@ -81,6 +85,7 @@ _POST_PHASES = (
     "copy_vaultboy_swfs",
     "generate_anim_text_data",
     "lodgen",
+    "upgrade_fo4_materials",
     "pack",
     "deploy",
 )
@@ -94,6 +99,7 @@ def estimated_phase_weights(
     deploy: bool = True,
     build_precombines: bool = False,
     previs: bool = False,
+    upgrade_fo4_materials: bool = False,
     start_phase: str = "prepare",
 ) -> dict[str, float]:
     keys = [
@@ -129,10 +135,10 @@ def estimated_phase_weights(
             keys.append("convert_npc_faces")
     if lod_mode == "generate" or (
         pair_id in {"fnvfo3:fo4", "skyrimse:fo4"}
-        and lod_mode in {"hybrid", "hybrid-atlas"}
+        and lod_mode in {"hybrid", "hybrid-atlas", "hybrid-instanced"}
     ):
         keys.append("synthesize_object_lod")
-    if lod_mode not in {"generate", "hybrid", "hybrid-atlas"}:
+    if lod_mode not in {"generate", "hybrid", "hybrid-atlas", "hybrid-instanced"}:
         keys.remove("lodgen")
     if not packed:
         keys.remove("pack")
@@ -142,6 +148,8 @@ def estimated_phase_weights(
         keys.remove("build_precombines")
     if not previs:
         keys.remove("generate_previs")
+    if not upgrade_fo4_materials:
+        keys.remove("upgrade_fo4_materials")
 
     asset_starts = {
         "nifs": "convert_nifs",
@@ -199,6 +207,29 @@ class ProgressEstimate:
         self.phases[key] = dict(phase)
         self.weights.setdefault(key, PHASE_SECONDS.get(key, 10))
         self.started.setdefault(key, time.monotonic() if now is None else now)
+
+    def phase_eta(self, key: str, *, now: float | None = None, wall_time: datetime | None = None) -> str:
+        phase = self.phases.get(key, {})
+        if phase.get("status") != "running":
+            return ""
+        fraction = phase_fraction(phase)
+        if fraction >= 1.0:
+            return "Finalizing..."
+        now = time.monotonic() if now is None else now
+        elapsed = now - self.started[key]
+        if fraction <= 0 or elapsed < 5:
+            return "Estimating..."
+        remaining = elapsed * (1 - fraction) / fraction
+        minutes = math.ceil(remaining / 60)
+        duration = "Less than 1 min" if remaining < 60 else (
+            f"About {minutes} min" if minutes < 60 else f"About {minutes // 60} hr {minutes % 60} min"
+        )
+        wall_time = datetime.now() if wall_time is None else wall_time
+        finish = wall_time + timedelta(seconds=remaining)
+        finish_time = finish.strftime("%I:%M %p").lstrip("0")
+        if finish.date() != wall_time.date():
+            finish_time = f"{finish:%a %b %d} {finish_time}"
+        return f"{duration} left · finishes ~{finish_time}"
 
     def fraction(self, *, now: float | None = None, advance: bool = True) -> float:
         now = time.monotonic() if now is None else now
