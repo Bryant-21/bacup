@@ -1871,7 +1871,7 @@ wheels = [
 
 [[package]]
 name = "py-creation-lib"
-version = "1.9.0"
+version = "1.9.1"
 source = { editable = "py_creation_lib" }
 dependencies = [
     { name = "beautifulsoup4" },

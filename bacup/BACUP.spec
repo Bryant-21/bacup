@@ -104,7 +104,16 @@ ui_mods = collect_submodules(
     filter=lambda name: ".tests" not in name
     and not name.rsplit(".", 1)[-1].startswith("test"),
 )
-ui_datas = collect_data_files("ui")
+# collect_data_files ignores .gitignore, so per-machine settings (which can hold
+# credentials) and dev leftovers in the source tree would be packed into the exe.
+_UI_DEV_ONLY = (
+    "toolkit_settings", "settings_data", "editor_settings.json",
+    ".claude", "claude.md", "__pycache__", ".pyc", ".bak", "debug_frame.png",
+)
+ui_datas = [
+    (src, dest) for src, dest in collect_data_files("ui")
+    if not any(marker in src.replace("\\", "/").lower() for marker in _UI_DEV_ONLY)
+]
 
 # File watchers are imported by lazily loaded UI workspaces.
 watchdog_mods = collect_submodules("watchdog")

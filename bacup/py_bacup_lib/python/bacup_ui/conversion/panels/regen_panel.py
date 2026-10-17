@@ -1686,6 +1686,57 @@ class RegenPanel:
 
         self._start_runner(work)
 
+    def start_upgrade_to_pbr(self) -> None:
+        from bacup_lib import PhaseSelection, regen_pipeline
+
+        self._require_install_folder()
+        self._require_store_installs()
+
+        self.native_assets = True
+        self._set_workspace_settings({_NATIVE_ASSETS_KEY: True})
+        self._phases = []
+        self._reset_progress("nifs")
+        self._runner_status = "Preparing PBR material upgrade"
+        self._summary = None
+        self._completion = None
+        paths = self.build_paths()
+        self._prepare_run_diagnostics(paths)
+        options = self.build_options()
+
+        def work(runner: ConversionRunner) -> None:
+            started = time.perf_counter()
+            self._begin_conversion_music_session()
+            try:
+                with self._run_logging_scope(paths, runner) as active_runner:
+                    deferred = _DeferCompleteRunner(active_runner)
+                    result = regen_pipeline.run_assets_only(
+                        paths, options, phases=PhaseSelection(), runner=deferred, clear=True,
+                    )
+                    if not result.failures or options.continue_on_error:
+                        result = regen_pipeline.run_resume_from_phase(
+                            paths, options, start_phase="pack", phases=PhaseSelection(), runner=deferred,
+                        )
+                    if result.failures and not options.continue_on_error:
+                        raise RuntimeError("; ".join(result.failures))
+                    if result.deployed:
+                        self._end_conversion_music_session()
+                    finished = self._finish_deploy(
+                        paths, active_runner, result, continue_on_error=options.continue_on_error,
+                    )
+                    active_runner.emit_complete(
+                        str(result.output_root),
+                        {
+                            "deployed": result.deployed,
+                            "exit_code": result.exit_code,
+                            "elapsed_seconds": time.perf_counter() - started,
+                            **finished,
+                        },
+                    )
+            finally:
+                self._end_conversion_music_session()
+
+        self._start_runner(work)
+
     def handle_event(self, event: dict) -> None:
         etype = event.get("type", "")
         if etype == "status":
@@ -3322,6 +3373,16 @@ class RegenPanel:
                 imgui.text_disabled("LOD mode forced to Hybrid Instanced by Dense Land")
             if options_off:
                 imgui.end_disabled()
+            if action_button(f"Upgrade to PBR{_NS}", enabled=self.can_deploy_existing()):
+                self.start_upgrade_to_pbr()
+            if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                imgui.set_tooltip(
+                    f"Turns Native PBR Materials on and rebuilds the existing "
+                    f"{self._pair().output_plugin_name} mod's meshes, textures and materials "
+                    "with the options above, then packs and deploys it. Records, LOD and "
+                    "precombines are kept. Dense Land terrain still needs a full conversion. "
+                    "Available once the mod has been converted."
+                )
 
     def _draw_advanced(self) -> None:
         running = self._runner_running()

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use serde::Serialize;
 
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     #[ignore = "requires extracted Starfield source generated HumanRace table and clips"]
     fn real_eon_generated_subgraphs_resolve_motion_and_sync_clips() {
-        let meshes = PathBuf::from(std::env::var("B21_STARFIELD_MESHES").expect("B21_STARFIELD_MESHES"));
+        let meshes = std::path::PathBuf::from(std::env::var("B21_STARFIELD_MESHES").expect("B21_STARFIELD_MESHES"));
         let rows = parse_generated_subgraphs(
             &std::fs::read_to_string(
                 meshes.join("AnimTextData/GeneratedSubgraphData/HumanRace.txt"),
@@ -320,7 +320,7 @@ mod tests {
                 vec!["FireSingle", "Reload"]
             };
             for tag in tags {
-                let clip = resolve_source_clip(row, tag, meshes).unwrap();
+                let clip = resolve_source_clip(row, tag, &meshes).unwrap();
                 let af = std::fs::read(meshes.join(&clip.source_af)).unwrap();
                 let bones = u16::from_le_bytes(af[42..44].try_into().unwrap());
                 let frames = u16::from_le_bytes(af[44..46].try_into().unwrap());
