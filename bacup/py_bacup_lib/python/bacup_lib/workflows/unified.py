@@ -977,15 +977,37 @@ def _prepare_fo76_camp_scrap(request, ctx, runner=None) -> int:
     return result["objects"]
 
 
+@contextlib.contextmanager
+def _fo4_behavior_root(request, ctx):
+    """A Data-shaped root holding the FO4 behavior graphs emotes and photo mode read,
+    from the extracted overlay or the game's archives."""
+    from bacup_lib.emotes import HUMAN_GRAPH, POWER_ARMOR_GRAPH, POWER_ARMOR_SKELETON
+
+    store = getattr(ctx, "target_asset_store", None)
+    extracted = getattr(ctx, "target_extracted_dir", None) or request.target_extracted_dir
+    if store is None:
+        if not extracted:
+            raise ValueError("Fallout 4 behavior graphs need the Fallout 4 Data directory")
+        yield Path(extracted)
+        return
+    with tempfile.TemporaryDirectory(prefix="bacup_fo4_behaviors_") as root:
+        for asset in (HUMAN_GRAPH, POWER_ARMOR_GRAPH, POWER_ARMOR_SKELETON):
+            source = store.materialize(asset)
+            if source is None:
+                raise ValueError(f"Fallout 4 {asset} is missing from the game's Data and archives")
+            destination = Path(root) / asset
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        yield Path(root)
+
+
 def _convert_fo76_photo_mode_ui(request, ctx, runner=None) -> int:
     if (request.source_game.lower(), request.target_game.lower()) != ("fo76", "fo4"):
         return 0
     from bacup_lib.photo_mode_ui import convert_photo_mode_ui
-    target_root = getattr(ctx, "target_extracted_dir", None) or request.target_extracted_dir
-    if not target_root:
-        raise ValueError("Photo-mode conversion requires extracted Fallout 4 behavior graphs")
-    result = convert_photo_mode_ui(Path(ctx.source_data_dir), Path(ctx.mod_path) / "data",
-                                   source_plugin=Path(ctx.source_plugin_path), target_root=Path(target_root))
+    with _fo4_behavior_root(request, ctx) as target_root:
+        result = convert_photo_mode_ui(Path(ctx.source_data_dir), Path(ctx.mod_path) / "data",
+                                       source_plugin=Path(ctx.source_plugin_path), target_root=target_root)
     _merge_packaged_tales_translations(ctx, runner)
     return len(result["files"])
 
@@ -1185,7 +1207,10 @@ _UPGRADE_ORIGINALS = ".bacup/upgrade_originals"
 
 
 def _manifest_from_upgrade_report(
-    mod_root: Path, source_data_dir: Path | None, target_extracted_dir: Path | None
+    mod_root: Path,
+    source_data_dir: Path | None,
+    target_extracted_dir: Path | None,
+    target_data_dir: Path | None = None,
 ) -> dict:
     """Outputs predating the manifest: the upgrade's own report lists what it wrote and the
     native-overwrite marker is the exclude set. Leftovers upgraded in place lost their
@@ -1196,13 +1221,29 @@ def _manifest_from_upgrade_report(
     written = json.loads(report_path.read_text(encoding="utf-8"))["result"]["written"]
     marker = Path(mod_root) / "debug" / "fo4_overwrite_outputs.txt"
     exclude = marker.read_text(encoding="utf-8").split() if marker.is_file() else []
+    store = None
+
+    def fo4_ships(key: str) -> bool:
+        nonlocal store
+        if target_extracted_dir is not None:
+            return (Path(target_extracted_dir) / key).is_file()
+        if target_data_dir is None:
+            return False
+        if store is None:
+            from bacup_lib.target_assets import ensure_target_asset_catalog
+
+            store = build_target_asset_store(
+                target_data_dir=target_data_dir, catalog_path=ensure_target_asset_catalog(target_data_dir)
+            )
+        return store.has_asset(key)
+
     keep = {
         key
         for key in written
         if key.endswith(".bgsm")
         and source_data_dir is not None
         and _fo76_source_names_smoothspec(Path(source_data_dir), key)
-        and not (target_extracted_dir is not None and (Path(target_extracted_dir) / key).is_file())
+        and not fo4_ships(key)
     }
     return {"written": [key for key in written if key not in keep], "leftovers": [], "exclude_paths": exclude}
 
@@ -1223,7 +1264,7 @@ def rerun_fo4_material_upgrade(
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     else:
-        manifest = _manifest_from_upgrade_report(mod_root, source_data_dir, target_extracted_dir)
+        manifest = _manifest_from_upgrade_report(mod_root, source_data_dir, target_extracted_dir, target_data_dir)
     mod_data = Path(mod_root) / "data"
     leftovers = set(manifest["leftovers"])
     for key in manifest["written"]:
@@ -1373,11 +1414,9 @@ def _convert_fo76_emotes(
     if not (source_root / "interface/radialmenu.swf").is_file():
         _safe_emit_log(runner, "WARN", "Emotes skipped: source radial menu has not been extracted")
         return 0
-    target_root = getattr(ctx, "target_extracted_dir", None) or request.target_extracted_dir
-    if not target_root:
-        raise ValueError("Emote conversion requires the extracted Fallout 4 behavior graph")
-    manifest = convert_emotes(source_root, Path(ctx.mod_path), source_plugin=Path(ctx.source_plugin_path),
-                              target_root=Path(target_root))
+    with _fo4_behavior_root(request, ctx) as target_root:
+        manifest = convert_emotes(source_root, Path(ctx.mod_path), source_plugin=Path(ctx.source_plugin_path),
+                                  target_root=target_root)
     _safe_emit_log(runner, "INFO", f"Converted {len(manifest['entries'])} verified human emotes")
     return len(manifest["files"]) + 1
 
@@ -3768,8 +3807,14 @@ class _UnifiedRecordRuntime:
         source_extracted = (
             getattr(ctx, "source_data_dir", None) or self._req.source_data_dir
         )
-        target_extracted = (
-            getattr(ctx, "target_extracted_dir", None) or self._req.target_extracted_dir
+        from bacup_lib.workflows.asset_phases import fo4_behavior_contracts_root
+
+        target_extracted = fo4_behavior_contracts_root(
+            SimpleNamespace(
+                target_extracted_dir=getattr(ctx, "target_extracted_dir", None) or self._req.target_extracted_dir,
+                target_asset_store=getattr(ctx, "target_asset_store", None),
+            ),
+            runner,
         )
         target_data = getattr(ctx, "target_data_dir", None) or self._req.target_data_dir
         report = dict(
@@ -3826,8 +3871,14 @@ class _UnifiedRecordRuntime:
         source_extracted = (
             getattr(ctx, "source_data_dir", None) or self._req.source_data_dir
         )
-        target_extracted = (
-            getattr(ctx, "target_extracted_dir", None) or self._req.target_extracted_dir
+        from bacup_lib.workflows.asset_phases import fo4_behavior_contracts_root
+
+        target_extracted = fo4_behavior_contracts_root(
+            SimpleNamespace(
+                target_extracted_dir=getattr(ctx, "target_extracted_dir", None) or self._req.target_extracted_dir,
+                target_asset_store=getattr(ctx, "target_asset_store", None),
+            ),
+            runner,
         )
         target_data = getattr(ctx, "target_data_dir", None) or self._req.target_data_dir
         report = dict(
@@ -10237,13 +10288,15 @@ class AssetWaveBuilder:
             parts_run = self.runs.nifs or self.runs.havok
             if parts_run is None:
                 raise RuntimeError("FNV weapon profiles require a weapon asset run")
+            from bacup_lib.workflows.asset_phases import fo4_behavior_contracts_root
+
             return [
                 WaveStage(
                     phase="convert_legacy_weapon_parts",
                     run_id=parts_run.id,
                     mod_path=str(shim.mod_path),
                     source_extracted_dir=str(getattr(shim, "source_data_dir", "") or ""),
-                    target_extracted_dir=str(shim.target_extracted_dir or "") or None,
+                    target_extracted_dir=str(fo4_behavior_contracts_root(shim, self.runner) or "") or None,
                     params={},
                 )
             ]
@@ -10481,11 +10534,13 @@ def _run_fnv_weapon_animation_phase(request, ctx, native_run, summary, mvp_creat
             "FNV weapon animation conversion requires NIF conversion; "
             "enable convert_nifs or disable convert_animations"
         )
+    from bacup_lib.workflows.asset_phases import fo4_behavior_contracts_root
+
     report = native_run.run_phase(
         "convert_legacy_weapon_animations",
         mod_path=str(ctx.mod_path),
         source_extracted_dir=str(ctx.source_data_dir or ""),
-        target_extracted_dir=str(ctx.target_extracted_dir or "") or None,
+        target_extracted_dir=str(fo4_behavior_contracts_root(ctx) or "") or None,
         params={"mod_prefix": getattr(ctx, "mod_prefix", None) or "B21_FNV"},
     )
     ctx._fnv_weapon_animation_profiles = bool(
@@ -10507,11 +10562,13 @@ def _run_skyrim_weapon_animation_phase(request, ctx, native_run, summary, mvp_cr
         return
     if not opts.convert_nifs:
         raise ValueError("Skyrim weapon animation conversion requires NIF conversion")
+    from bacup_lib.workflows.asset_phases import fo4_behavior_contracts_root
+
     report = native_run.run_phase(
         "convert_skyrim_weapon_animations",
         mod_path=str(ctx.mod_path),
         source_extracted_dir=str(ctx.source_data_dir or ""),
-        target_extracted_dir=str(ctx.target_extracted_dir or "") or None,
+        target_extracted_dir=str(fo4_behavior_contracts_root(ctx) or "") or None,
         params={"mod_prefix": getattr(ctx, "mod_prefix", None) or "B21_Skyrim"},
     )
     ctx._skyrim_weapon_animation_profiles = bool(
@@ -11104,10 +11161,24 @@ def run_asset_track(
             f"asset wave {name}: {len(stages)} stage(s): "
             + ", ".join(s.phase for s in stages),
         )
+        if runner.is_cancelled():
+            raise RuntimeError(f"conversion cancelled before asset wave {name}")
         started = time.perf_counter()
+        wave_done = threading.Event()
+
+        def forward_cancellation() -> None:
+            while not wave_done.wait(0.1):
+                if runner.is_cancelled():
+                    runs.cancel_all()
+                    return
+
+        cancel_watcher = threading.Thread(target=forward_cancellation, daemon=True, name=f"asset-wave-{name}-cancel")
+        cancel_watcher.start()
         try:
             pipeline_report = native.conversion_pipeline_run(json.dumps(plan))
         except Exception as exc:
+            if runner.is_cancelled():
+                raise RuntimeError(f"conversion cancelled during asset wave {name}") from exc
             active_drainer._drain_once(native, exhaust=True)
             context = active_drainer.describe_active()
             error = (
@@ -11123,7 +11194,11 @@ def run_asset_track(
             runner.emit_log("ERROR", f"asset wave {name} failed; continuing: {error}")
             _merge_asset_failure_logs(driver.record_runtime, active_drainer)
             return
+        finally:
+            wave_done.set()
         active_drainer._drain_once(native, exhaust=True)
+        if runner.is_cancelled():
+            raise RuntimeError(f"conversion cancelled during asset wave {name}")
         active_drainer.reconcile_pipeline_report(pipeline_report)
         runner.emit_log(
             "INFO",
@@ -11250,6 +11325,10 @@ def _run_post_phase(
     only = getattr(getattr(request, "options", None), "post_phases_only", None)
     if only is not None and label not in only:
         return
+    if label in getattr(getattr(request, "options", None), "post_phases_skip", ()):
+        return
+    if getattr(runner, "is_cancelled", lambda: False)():
+        raise RuntimeError(f"conversion cancelled before {label}")
     progress = PhaseProgress(
         phase=0,
         phase_name=label,
@@ -12129,6 +12208,12 @@ def _build_precombines_after_build(
     plugin_path = mod_root / ctx.output_plugin_name
     if not plugin_path.is_file():
         raise FileNotFoundError(f"precombine generation requires the built plugin: {plugin_path}")
+    previous = getattr(options, "reuse_precombines_from", None)
+    driver._reused_precombines = bool(previous) and _reuse_previous_precombines(
+        driver, runner, mod_root, plugin_path, Path(previous)
+    )
+    if driver._reused_precombines:
+        return
     target_data = getattr(ctx, "target_data_dir", None) or driver._req.target_data_dir
     target_data = Path(target_data) if target_data else None
     target_extracted = getattr(ctx, "target_extracted_dir", None) or driver._req.target_extracted_dir
@@ -12170,6 +12255,53 @@ def _build_precombines_after_build(
         driver._precombine_index_resources = result.index_resources
 
 
+def _reuse_previous_precombines(
+    driver: "UnifiedDriver", runner: "ConversionRunner", mod_root: Path, plugin_path: Path, previous: Path
+) -> bool:
+    """Copies the previous build's precombine/previs stamps onto the rebuilt ESM
+    and keeps its files (precombined NIFs, Vis UVDs, CSG/CDX). Any missing piece
+    or mismatch returns False, and the caller regenerates."""
+    from creation_lib._native import previs_native
+    from bacup_lib.precombine_generation import precombine_sidecar_names
+
+    options = driver._req.options
+    data = mod_root / "data"
+
+    def plugin_dir(*parts: str) -> bool:
+        level = [data]
+        for part in (*parts, plugin_path.name.casefold()):
+            level = [child for parent in level if parent.is_dir() for child in parent.iterdir()
+                     if child.is_dir() and child.name.casefold() == part]
+        return bool(level)
+
+    csg, cdx, _exterior = precombine_sidecar_names(plugin_path.name)
+    missing = [
+        label
+        for label, present in (
+            ("precombined meshes", plugin_dir("meshes", "precombined")),
+            ("Vis UVDs", plugin_dir("vis") or not getattr(options, "generate_previs", False)),
+            (csg, (mod_root / csg).is_file() or (data / csg).is_file()),
+            (cdx, (mod_root / cdx).is_file() or (data / cdx).is_file()),
+            ("previous ESM", previous.is_file()),
+        )
+        if not present
+    ]
+    if missing:
+        runner.emit_log("INFO", f"precombine: regenerating; nothing to reuse for {', '.join(missing)}")
+        return False
+    grafted = plugin_path.with_name(plugin_path.name + ".grafted")
+    try:
+        cells = previs_native.graft_cell_stamps(str(previous), str(plugin_path), str(grafted))
+    except ValueError as exc:
+        grafted.unlink(missing_ok=True)
+        runner.emit_log("WARN", f"precombine: regenerating; previous stamps do not fit the new ESM ({exc})")
+        return False
+    os.replace(grafted, plugin_path)
+    runner.emit_log("INFO", f"precombine: reused the previous precombines and previs on {cells} CELL(s)")
+    _rebuild_cell_offsets_after_build(driver, runner, mod_root)
+    return True
+
+
 def _generate_previs_after_build(
     driver: "UnifiedDriver",
     runner: "ConversionRunner",
@@ -12186,6 +12318,8 @@ def _generate_previs_after_build(
 
     ctx = driver.ctx
     options = driver._req.options
+    if getattr(driver, "_reused_precombines", False):
+        return
     index_resources = getattr(driver, "_precombine_index_resources", None)
     driver._precombine_index_resources = None
     if (

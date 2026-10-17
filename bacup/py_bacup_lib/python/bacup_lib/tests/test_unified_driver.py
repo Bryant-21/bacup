@@ -1599,7 +1599,9 @@ def test_upgrade_materials_rerun_restores_leftovers_and_drops_old_outputs(tmp_pa
     assert calls[-1].overlay_upgrade_paths == [leftover]
 
 
-def test_upgrade_materials_rerun_without_manifest_uses_the_upgrade_report(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("extracted", [True, False])
+def test_upgrade_materials_rerun_without_manifest_uses_the_upgrade_report(tmp_path: Path, monkeypatch, extracted) -> None:
+    from bacup_lib import target_assets
     from creation_lib.material_tools import upgrade_v22
 
     mod, fo76, fo4 = tmp_path / "mod", tmp_path / "fo76", tmp_path / "fo4"
@@ -1625,7 +1627,11 @@ def test_upgrade_materials_rerun_without_manifest_uses_the_upgrade_report(tmp_pa
         return {"summary": {"upgrade": 0, "skipped": 0}, "result": {"errors": [], "written": []}}
 
     monkeypatch.setattr(upgrade_v22, "run", fake_run)
-    unified_mod.rerun_fo4_material_upgrade(mod, tmp_path / "Data", fo76, 2, target_extracted_dir=fo4)
+    # Without an extracted FO4, the game's archives say which materials FO4 ships.
+    monkeypatch.setattr(target_assets, "ensure_target_asset_catalog", lambda _data: tmp_path / "catalog")
+    monkeypatch.setattr(unified_mod, "build_target_asset_store",
+                        lambda **_kw: SimpleNamespace(has_asset=lambda key: (fo4 / key).is_file()))
+    unified_mod.rerun_fo4_material_upgrade(mod, tmp_path / "Data", fo76, 2, target_extracted_dir=fo4 if extracted else None)
     assert seen["exclude"] == ["meshes/x.nif"]
     # FO4 has its own copy of the shared leftover; the FO76-only one has no other source, so it stays.
     assert seen["present"] == [fo76_only]
@@ -1638,6 +1644,34 @@ def test_post_phases_only_runs_just_the_listed_phases() -> None:
     for label in ("Generate Item Icons", "Upgrade FO4 Materials"):
         unified_mod._run_post_phase(label, lambda _p, label=label: ran.append(label), runner, request=request)
     assert ran == ["Upgrade FO4 Materials"]
+
+
+def test_post_phases_skip_drops_just_the_listed_phases() -> None:
+    ran = []
+    runner = SimpleNamespace(emit_phase_start=lambda _p: None, emit_phase_complete=lambda _p: None, emit_log=lambda *_a: None)
+    request = SimpleNamespace(options=SimpleNamespace(post_phases_only=None, post_phases_skip=("Generate Item Icons",)),
+                              timing_report=None)
+    for label in ("Generate Item Icons", "Convert Emotes"):
+        unified_mod._run_post_phase(label, lambda _p, label=label: ran.append(label), runner, request=request)
+    assert ran == ["Convert Emotes"]
+
+
+def test_tales_features_only_runs_no_records_or_assets(monkeypatch, tmp_path: Path) -> None:
+    from bacup_lib import PhaseSelection, regen_pipeline
+
+    seen = {}
+    monkeypatch.setattr(regen_pipeline, "_require_existing_plugins", lambda *_a, **_k: None)
+    monkeypatch.setattr(regen_pipeline, "run_full_regen",
+                        lambda paths, options, *, pair, phases, runner: seen.update(options=options, phases=phases))
+    options = regen_pipeline.RegenOptions(deploy=True, upgrade_fo4_materials=True)
+    regen_pipeline.run_tales_features_only(SimpleNamespace(), options, phases=PhaseSelection(), runner=None)
+    phases = seen["phases"]
+    assert not any(getattr(phases, name) for name in (
+        "translate_records", "build_esp", "convert_nifs", "convert_textures", "convert_materials",
+        "convert_havok", "convert_animations", "copy_sounds", "build_precombines", "generate_previs"))
+    assert seen["options"].deploy is False and seen["options"].upgrade_fo4_materials is False
+    assert seen["options"].post_phases_skip == ("Generate Item Icons",)
+    assert options.deploy is True
 
 
 def test_face_head_repair_takes_the_source_data_dir_regen_hands_over(tmp_path: Path, monkeypatch) -> None:

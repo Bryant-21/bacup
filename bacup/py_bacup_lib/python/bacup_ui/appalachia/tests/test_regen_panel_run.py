@@ -310,6 +310,30 @@ def test_upgrade_to_pbr_rebuilds_assets_natively_then_packs_and_deploys():
     assert captured["complete"][1]["deployed"] is True
 
 
+def test_repair_tales_features_reruns_features_then_packs_and_deploys():
+    panel, _ = _panel()
+    captured = {"calls": []}
+
+    def fake_features(paths, options, *, runner, **kw):
+        captured["calls"].append("features")
+        return _regen_result(deployed=False)
+
+    def fake_resume(paths, options, *, start_phase, runner, **kw):
+        captured["calls"].append(start_phase)
+        return _regen_result(deployed=True)
+
+    with patch("bacup_ui.conversion.panels.regen_panel.ConversionRunner", _fake_runner(captured)), patch(
+        "bacup_lib.regen_pipeline.run_tales_features_only", fake_features
+    ), patch("bacup_lib.regen_pipeline.run_resume_from_phase", fake_resume), patch(
+        "bacup_ui.conversion.panels.regen_panel.RegenPanel._deploy_companion_mod",
+        lambda self, paths, runner: [],
+    ), patch("bacup_ui.conversion.panels.regen_panel.get_exe_dir", lambda: Path("X:/app")):
+        panel.start_repair_tales_features()
+
+    assert captured["calls"] == ["features", "pack"]
+    assert captured["complete"][1]["deployed"] is True
+
+
 def test_continue_on_error_defaults_on():
     panel, _ = _panel()
 

@@ -195,6 +195,29 @@ def test_workflow_registers_only_fo76_to_fo4(monkeypatch, tmp_path):
     assert unified._convert_fo76_emotes(request, ctx) == 0
 
 
+def test_workflow_reads_behavior_graphs_from_archives_without_extracted_fo4(monkeypatch, tmp_path):
+    (tmp_path / "source/interface").mkdir(parents=True)
+    (tmp_path / "source/interface/radialmenu.swf").write_bytes(b"fixture")
+    archived = tmp_path / "cache" / "graph.hkx"
+    archived.parent.mkdir()
+    archived.write_bytes(b"hkx")
+    seen = {}
+
+    def fake_convert(*_args, target_root, **_kwargs):
+        seen.update({asset: (target_root / asset).read_bytes()
+                     for asset in (emotes.HUMAN_GRAPH, emotes.POWER_ARMOR_GRAPH, emotes.POWER_ARMOR_SKELETON)})
+        return {"entries": [], "files": []}
+
+    monkeypatch.setattr(emotes, "convert_emotes", fake_convert)
+    store = SimpleNamespace(materialize=lambda _asset: archived)
+    ctx = SimpleNamespace(source_data_dir=tmp_path / "source", mod_path=tmp_path / "mod",
+                          source_plugin_path=tmp_path / "SeventySix.esm", target_extracted_dir=None,
+                          target_asset_store=store)
+    request = SimpleNamespace(source_game="fo76", target_game="fo4", target_extracted_dir=None)
+    assert unified._convert_fo76_emotes(request, ctx) == 1
+    assert set(seen.values()) == {b"hkx"} and len(seen) == 3
+
+
 def test_document_uses_formkeys_and_validates():
     manifest = {"event_name": "B21EmoteV1", "source_plugin": "SeventySix.esm", "source_plugin_sha256": "x",
                 "playback_route": {"event": "e"}, "ui": {"bridge_version": 3}, "power_armor_dropped_tracks": [], "files": [],

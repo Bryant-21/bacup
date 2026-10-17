@@ -527,12 +527,20 @@ pub(crate) fn retarget_player_info_tree_links(
     player_parent: u32,
     plan: &XdiDialoguePlan,
     generated_player_info_fks: &HashMap<FormKey, FormKey>,
+    generated_player_record: bool,
 ) -> Result<(), String> {
     for &(sig, source_target) in source_links {
-        let Some(split) = plan.combined_info_splits.get(&source_target.local) else {
-            continue;
-        };
-        if split.player_parent != player_parent {
+        if !plan
+            .combined_info_splits
+            .get(&source_target.local)
+            .is_some_and(|split| split.player_parent == player_parent)
+        {
+            // Every source INFO of a split topic moves to the NPC topic, so a generated player
+            // INFO's link to one without a player copy (an INFO group: it has no prompt) names
+            // an INFO of another topic. TESTopic::InitInfoTree reads garbage and CTDs on load.
+            if generated_player_record {
+                record.fields.retain(|field| field.sig != sig);
+            }
             continue;
         }
         let generated_target = generated_player_info_fks

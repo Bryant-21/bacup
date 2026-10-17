@@ -1,4 +1,4 @@
-current: alpha9
+current: alpha9.1
 # Global per-conversion known issues shown in BACUP under Help > Known Issues.
 # Not tied to a version; edit between releases.
 known_issues_by_conversion:
@@ -374,6 +374,24 @@ versions:
         - defensive items, power, and water all count in settlements
         - Scrapping should now work for Fo76 items in workshops
         - Fo76 perk cards shadow grant fo4 perks for crafting, skill checks, etc
+      "skyrimse:fo4":
+        - N/A
+      "fnvfo3:fo4":
+        - N/A
+      "starfield:fo4":
+        - N/A
+  - id: alpha9.1
+    families_by_conversion:
+      "fo76:fo4": [Scripts]
+      "fnvfo3:fo4": [NONE]
+      "skyrimse:fo4": [NONE]
+      "starfield:fo4": [NONE]
+    notes_by_conversion:
+      "fo76:fo4":
+        - Fixed Crash from UI
+        - Fixed Crash from bad Quest
+        - Fixed Terrain flicker
+        - Optimization changes
       "skyrimse:fo4":
         - N/A
       "fnvfo3:fo4":

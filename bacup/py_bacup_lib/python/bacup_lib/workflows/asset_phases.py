@@ -1926,8 +1926,6 @@ def phase_convert_havok_native(
 
 
 def _target_havok_contract_root(orchestrator, runner: ConversionRunner) -> Path | None:
-    extracted = getattr(orchestrator, "target_extracted_dir", None)
-    target_root = Path(extracted) if extracted else None
     store = getattr(orchestrator, "target_asset_store", None)
     if (
         str(getattr(orchestrator, "source_game", "")).lower() != "fo76"
@@ -1935,14 +1933,32 @@ def _target_havok_contract_root(orchestrator, runner: ConversionRunner) -> Path 
         or not (Path(orchestrator.mod_path) / "debug/fo76_behaviors/plan.json").is_file()
         or store is None
     ):
-        return target_root
+        return fo4_behavior_contracts_root(orchestrator, runner)
+    return _stage_fo4_havok_tree(store, runner)
 
+
+def fo4_behavior_contracts_root(holder, runner=None) -> Path | None:
+    """The extracted FO4 root when there is one, else the FO4 Havok tree staged from the
+    game's archives."""
+    extracted = getattr(holder, "target_extracted_dir", None)
+    if extracted:
+        return Path(extracted)
+    store = getattr(holder, "target_asset_store", None)
+    return _stage_fo4_havok_tree(store, runner) if store is not None else None
+
+
+def _is_fo4_havok_contract(path: str) -> bool:
+    lower = path.lower()
+    # Animation clips too: the weapon alias fixup reads vanilla clips (fire donors, clone sweep).
+    return any(
+        directory in lower
+        for directory in ("/behaviors/", "/characters/", "/characterassets/", "/uniquebehaviors/broadsiderfx/")
+    ) or (lower.startswith("meshes/actors/") and "/animations/" in lower)
+
+
+def _stage_fo4_havok_tree(store, runner=None) -> Path:
     contracts = [
-        path for path in store.list_assets(prefix="meshes/", suffix=".hkx")
-        if any(
-            directory in path.lower()
-            for directory in ("/behaviors/", "/characters/", "/characterassets/")
-        )
+        path for path in store.list_assets(prefix="meshes/", suffix=".hkx") if _is_fo4_havok_contract(path)
     ]
     if "meshes/actors/character/behaviors/weaponbehavior.hkx" not in contracts:
         raise RuntimeError("FO4 target asset index is missing the WeaponBehavior contract")
@@ -1952,9 +1968,10 @@ def _target_havok_contract_root(orchestrator, runner: ConversionRunner) -> Path 
             "FO4 target asset store did not materialize all behavior contracts: "
             f"{len(materialized)}/{len(contracts)}"
         )
-    runner.emit_log(
-        "INFO", f"[HKX] resolved {len(contracts)} FO4 behavior contract files from the target asset index"
-    )
+    if runner is not None:
+        runner.emit_log(
+            "INFO", f"[HKX] resolved {len(contracts)} FO4 behavior contract files from the target asset index"
+        )
     return Path(store.cache_data_root)
 
 

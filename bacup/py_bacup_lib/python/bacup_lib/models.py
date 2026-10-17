@@ -437,6 +437,8 @@ class PluginPortOptions:
     # Upgrade mode: source the terrain graft from this live deployed ESM instead
     # of the run-local ``.regen_land_cache.esm``. ``None`` = legacy cache path.
     terrain_graft_esm: Path | None = None
+    # Upgrade mode: copy this previous ESM's precombine/previs stamps instead of regenerating.
+    reuse_precombines_from: Path | None = None
     convert_nifs: bool = False
     convert_btos: bool = False
     # Synthesize FO4 DistantLOD (MNAM) on converted LOD-capable bases so native
@@ -480,6 +482,7 @@ class PluginPortOptions:
     upgrade_fo4_materials: bool = False
     # When set, only these post phases run (by label); None runs them all.
     post_phases_only: tuple[str, ...] | None = None
+    post_phases_skip: tuple[str, ...] = ()
     convert_precombined_nifs: bool = True
     base_asset_relocation_mesh_roots: tuple[str, ...] = ()
     base_asset_namespace: str = ""

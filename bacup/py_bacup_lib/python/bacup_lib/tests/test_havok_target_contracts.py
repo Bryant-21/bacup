@@ -77,8 +77,7 @@ def test_postprocess_materializes_indexed_contracts(tmp_path, partial_extraction
     store = orchestrator.target_asset_store
     assert orchestrator.calls[0][1]["target_extracted_dir"] == str(store.cache_data_root)
     assert orchestrator.calls[0][1]["params"]["source_archive_dirs"] == [str(tmp_path / "Fallout76/Data")]
-    assert set(store.requests) == set(CONTRACTS)
-    assert not (store.cache_data_root / ANIMATION).exists()
+    assert set(store.requests) == {*CONTRACTS, ANIMATION}
     assert orchestrator.target_extracted_dir == extracted
 
 
@@ -103,7 +102,7 @@ def test_havok_wave_supplies_materialized_contract_root(tmp_path, monkeypatch):
     postprocess = next(stage for stage in stages if stage.phase == "postprocess_havok_assets")
     assert postprocess.target_extracted_dir == str(orchestrator.target_asset_store.cache_data_root)
     assert postprocess.params["source_archive_dirs"] == [str(tmp_path / "Fallout76/Data")]
-    assert set(orchestrator.target_asset_store.requests) == set(CONTRACTS)
+    assert set(orchestrator.target_asset_store.requests) == {*CONTRACTS, ANIMATION}
 
 
 def test_missing_indexed_contract_fails_before_native_dispatch(tmp_path):
@@ -115,3 +114,22 @@ def test_missing_indexed_contract_fails_before_native_dispatch(tmp_path):
             orchestrator, SimpleNamespace(emit_log=lambda *_args: None), SimpleNamespace()
         )
     assert orchestrator.calls == []
+
+
+def test_skyrim_and_fnv_phases_stage_contracts_without_extracted_fo4(tmp_path):
+    from bacup_lib.workflows.asset_phases import fo4_behavior_contracts_root
+
+    store = IndexedAssets(tmp_path / "cache/Data")
+    extracted = tmp_path / "extracted"
+    assert fo4_behavior_contracts_root(SimpleNamespace(target_extracted_dir=extracted, target_asset_store=store)) == extracted
+    assert store.requests == []
+
+    holder = SimpleNamespace(target_extracted_dir=None, target_asset_store=store)
+    assert fo4_behavior_contracts_root(holder) == store.cache_data_root
+    assert set(store.requests) == {*CONTRACTS, ANIMATION}
+
+    skyrim = _orchestrator(tmp_path / "skyrim", None)
+    skyrim.source_game = "skyrimse"
+    phase_postprocess_havok_native(skyrim, SimpleNamespace(emit_log=lambda *_args: None), SimpleNamespace())
+    assert skyrim.calls[0][1]["target_extracted_dir"] == str(skyrim.target_asset_store.cache_data_root)
+    assert fo4_behavior_contracts_root(SimpleNamespace(target_extracted_dir=None, target_asset_store=None)) is None

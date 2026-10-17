@@ -99,6 +99,7 @@ class RegenOptions:
     upgrade_fo4_materials: bool = False
     # When set, only these post phases run (by label); None runs them all.
     post_phases_only: tuple[str, ...] | None = None
+    post_phases_skip: tuple[str, ...] = ()
     # fo4:starfield only (see PluginPortOptions/TerrainOptions).
     placeholder_audio: bool = False
     terrain_extent_cells: int | None = None
@@ -1099,6 +1100,7 @@ def _build_options(
     convert_lod: bool = True,
     reuse_terrain_navmesh: bool = False,
     terrain_graft_esm: Path | None = None,
+    reuse_precombines_from: Path | None = None,
     phases=None,
     overwrite_existing: bool = False,
     exclude_signatures: frozenset[str] = frozenset(),
@@ -1109,6 +1111,7 @@ def _build_options(
     replace_fo4_materials: bool = False,
     upgrade_fo4_materials: bool = False,
     post_phases_only: tuple[str, ...] | None = None,
+    post_phases_skip: tuple[str, ...] = (),
     convert_precombined_nifs: bool = False,
     disable_nif_collision_memo: bool = False,
     papyrus_compiler: str = "native",
@@ -1197,6 +1200,7 @@ def _build_options(
         convert_terrain=ps.convert_terrain,
         reuse_terrain_navmesh=reuse_terrain_navmesh,
         terrain_graft_esm=terrain_graft_esm,
+        reuse_precombines_from=reuse_precombines_from,
         convert_nifs=ps.convert_nifs,
         convert_btos=lod,
         synthesize_object_lod=synthesize_object_lod,
@@ -1226,6 +1230,7 @@ def _build_options(
         replace_fo4_materials=replace_fo4_materials,
         upgrade_fo4_materials=upgrade_fo4_materials,
         post_phases_only=post_phases_only,
+        post_phases_skip=post_phases_skip,
         convert_precombined_nifs=convert_precombined_nifs,
         disable_nif_collision_memo=disable_nif_collision_memo,
         papyrus_compiler=papyrus_compiler,
@@ -2372,22 +2377,37 @@ def _hydrate_upgrade_workspace_from_deployed(
             extensions=(".ba2",),
         ):
             archive_path.unlink()
+        # The local files are the source now; the redeploy writes fresh archives.
+        for name in _deployed_archive_names(deploy_data_dir, plugin_names):
+            (deploy_data_dir / name).unlink()
+        _restore_deployed_sidecars(deploy_data_dir, output_root, plugin_names, runner)
         return 0
+
+    archive_paths = [
+        deploy_data_dir / name
+        for name in _deployed_archive_names(deploy_data_dir, plugin_names)
+    ]
+    if not archive_paths:
+        runner.emit_log(
+            "INFO",
+            "upgrade: local loose assets are incomplete "
+            f"(missing: {', '.join(missing_roots)}); copying the loose deployment back",
+        )
+        restored = _restore_loose_deployment(deploy_data_dir, output_root, paths.mod_name, workers)
+        if not restored:
+            raise FileNotFoundError(
+                f"upgrade requires deployed BA2 archives or a loose deployment of "
+                f"{paths.mod_name} in {deploy_data_dir}; run a full conversion instead"
+            )
+        _restore_deployed_sidecars(deploy_data_dir, output_root, plugin_names, runner)
+        runner.emit_log("INFO", f"upgrade: restored {restored} loose file(s) from the deployment")
+        return restored
 
     runner.emit_log(
         "INFO",
         "upgrade: local loose assets are incomplete "
         f"(missing: {', '.join(missing_roots)}); extracting deployed BA2s",
     )
-    archive_paths = [
-        deploy_data_dir / name
-        for name in _deployed_archive_names(deploy_data_dir, plugin_names)
-    ]
-    if not archive_paths:
-        raise FileNotFoundError(
-            f"upgrade requires deployed BA2 archives for {paths.mod_name} in "
-            f"{deploy_data_dir}; run a full conversion instead"
-        )
 
     from creation_lib.ba2 import native_runtime
 
@@ -2453,11 +2473,72 @@ def _hydrate_upgrade_workspace_from_deployed(
     ):
         archive_path.unlink()
 
+    _restore_deployed_sidecars(deploy_data_dir, output_root, plugin_names, runner)
     runner.emit_log(
         "INFO",
         f"upgrade: restored {extracted_files} asset file(s) from deployed BA2s",
     )
     return extracted_files
+
+
+def _restore_loose_deployment(deploy_data_dir: Path, output_root: Path, mod_name: str, workers: int) -> int:
+    """Copies a loose deployment back into the workspace, file by file as its
+    deploy manifest recorded them. The plugin itself is skipped: the upgrade
+    already staged the previous one and rebuilds it."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    manifest_path = _deployed_loose_manifest_path(deploy_data_dir, mod_name)
+    if not manifest_path.is_file():
+        return 0
+    jobs: list[tuple[Path, Path]] = []
+    for entry in json.loads(manifest_path.read_text(encoding="utf-8")).get("files", []):
+        parts = [
+            Path(str(entry.get(key) or "").replace("\\", "/")).parts
+            for key in ("rel", "src_root", "src_rel")
+        ]
+        if not parts[0] or any(
+            part in {"", ".", ".."} or Path(part).is_absolute() for group in parts for part in group
+        ):
+            continue
+        source = deploy_data_dir.joinpath(*parts[0])
+        destination = output_root.joinpath(*parts[1], *(parts[2] or parts[0]))
+        if source.is_file() and source.suffix.casefold() not in {".esm", ".esp", ".esl"}:
+            jobs.append((source, destination))
+
+    def copy(job: tuple[Path, Path]) -> None:
+        job[1].parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(*job)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        list(pool.map(copy, jobs))
+    return len(jobs)
+
+
+def _restore_deployed_sidecars(deploy_data_dir: Path, output_root: Path, plugin_names: list[str], runner) -> int:
+    """Brings back the files that always deploy loose beside the plugin, never in
+    a BA2: dense-terrain ``Terrain/*.btd4`` and the precombine CSG/CDX. Local
+    copies win; only missing ones are copied."""
+    restored: list[Path] = []
+    local_terrain = [path for root in _casefold_child_dirs(output_root, "terrain") for path in root.glob("*.btd4")]
+    if not local_terrain:
+        # shortcut: takes every deployed .btd4 (only BACUP conversions write them); filter by world if another mod ships one.
+        for root in _casefold_child_dirs(deploy_data_dir, "terrain"):
+            for path in root.glob("*.btd4"):
+                destination = output_root / "Terrain" / path.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                _link_or_copy(path, destination)
+                restored.append(destination)
+    for name in _precombine_sidecar_names(plugin_names):
+        source = deploy_data_dir / name
+        if source.is_file() and not (output_root / name).is_file() and not (output_root / "data" / name).is_file():
+            shutil.copy2(source, output_root / name)
+            restored.append(output_root / name)
+    if restored:
+        runner.emit_log(
+            "INFO", f"upgrade: restored {len(restored)} loose sidecar(s) from the deployment: "
+            + ", ".join(path.name for path in restored)
+        )
+    return len(restored)
 
 
 def _deployed_loose_manifest_path(deploy_data_dir: Path, mod_name: str) -> Path:
@@ -3453,6 +3534,28 @@ class _UpgradeNoOp:
     already_current: bool
 
 
+_UPGRADE_PREVIOUS_ESM = ".upgrade_previous.esm"
+
+
+def previous_output_esm(paths: "RegenPaths", plugin_name: str) -> Path:
+    """The installed output plugin: the deployed copy, else the one left in the workspace."""
+    deployed = Path(paths.deploy_data_dir or paths.target_data_dir) / plugin_name
+    return deployed if deployed.is_file() else Path(paths.output_root) / plugin_name
+
+
+def _stage_previous_output_esm(paths: "RegenPaths", plugin_name: str, runner) -> Path | None:
+    """Copy the installed plugin into the workspace before anything rebuilds it, so the
+    terrain/precombine grafts read the old version even after the new ESM is written."""
+    source = previous_output_esm(paths, plugin_name)
+    if not source.is_file():
+        return None
+    staged = Path(paths.output_root) / _UPGRADE_PREVIOUS_ESM
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, staged)
+    runner.emit_log("INFO", f"upgrade: previous {plugin_name} copied from {source}")
+    return staged
+
+
 def _resolve_upgrade_plan(
     paths: "RegenPaths",
     options: "RegenOptions",
@@ -3492,10 +3595,7 @@ def _resolve_upgrade_plan(
     if options.upgrade_from is not None:
         from_version = options.upgrade_from
     else:
-        deployed_esm = (
-            paths.deploy_data_dir or paths.target_data_dir
-        ) / pair.output_plugin_name
-        from_version = read_plugin_snam(deployed_esm)
+        from_version = read_plugin_snam(previous_output_esm(paths, pair.output_plugin_name))
 
     target = options.mod_version or manifest.current
     family_union = resolve_family_union(
@@ -3958,6 +4058,11 @@ def run_full_regen(
     output_root.mkdir(parents=True, exist_ok=True)
     diagnostics_root.mkdir(parents=True, exist_ok=True)
 
+    previous_esm = (
+        _stage_previous_output_esm(paths, pair.output_plugin_name, runner)
+        if isinstance(upgrade_plan, UpgradePlan)
+        else None
+    )
     if (
         isinstance(upgrade_plan, UpgradePlan)
         and options.hydrate_upgrade_from_deployed
@@ -3999,14 +4104,16 @@ def run_full_regen(
     # deploy call and the direct-pack branch below behave byte-identically to
     # before. A selective upgrade sets it to the changed families' BA2 labels.
     swap_labels: tuple[str, ...] | None = None
+    reuse_precombines_from: Path | None = None
     if isinstance(upgrade_plan, UpgradePlan):
         phases = upgrade_plan.phases
         explicit_anim_text_data = options.generate_anim_text_data
         reuse_terrain = not upgrade_plan.regen_terrain and not upgrade_plan.full_build
-        deployed_esm = (
-            paths.deploy_data_dir or paths.target_data_dir
-        ) / pair.output_plugin_name
-        terrain_graft_esm = deployed_esm if reuse_terrain else None
+        graft_source = previous_esm or previous_output_esm(paths, pair.output_plugin_name)
+        terrain_graft_esm = graft_source if reuse_terrain else None
+        # Precombines only change with placed geometry (NIFs) or the land under it.
+        if previous_esm is not None and reuse_terrain and not phases.convert_nifs:
+            reuse_precombines_from = previous_esm
         # LOD reuse: unless the LOD family is being regenerated, skip lodgen
         # entirely and reuse the deployed LOD BA2. lod_mode gates BOTH
         # _prepare_lod_generation_settings (via options.lod_mode -> the lod_hook)
@@ -4108,6 +4215,7 @@ def run_full_regen(
         phases=phases,
         reuse_terrain_navmesh=graft_plan.reuse_terrain_navmesh,
         terrain_graft_esm=graft_plan.graft_esm,
+        reuse_precombines_from=reuse_precombines_from if graft_plan.graft_esm is not None else None,
         overwrite_existing=True,
         force_cpu_textures=options.cpu_textures,
         pbr_carry=options.pbr_carry,
@@ -4118,6 +4226,7 @@ def run_full_regen(
             options.native_assets and options.upgrade_fo4_materials
         ),
         post_phases_only=options.post_phases_only,
+        post_phases_skip=options.post_phases_skip,
         papyrus_compiler="native",
         emit_btd4=options.emit_btd4,
         generate_anim_text_data=options.generate_anim_text_data,
@@ -4926,6 +5035,25 @@ def run_assets_only(
     asset_options.write_land_cache = False
     asset_options.post_phases_only = ("Upgrade FO4 Materials", "Repair Face Heads")
     return run_full_regen(paths, asset_options, pair=pair, phases=selected, runner=runner)
+
+
+def run_tales_features_only(paths: RegenPaths, options: RegenOptions, *, phases, runner) -> RegenResult:
+    """Re-run the Tales UI and feature post phases on an existing output, as loose files.
+    No records or assets; the slow item icons and FO4 material upgrade are skipped."""
+    _require_existing_plugins(paths, list(get_pair(DEFAULT_PAIR_ID).source_plugins), start_phase="nifs")
+    selected = _resume_phase_selection("sounds", phases)
+    selected.copy_sounds = selected.convert_lod =selected.rebuild_cell_offsets = False
+    selected.build_precombines = selected.generate_previs = False
+    selected.lod_mode = "none"
+    feature_options = copy.copy(options)
+    feature_options.deploy = False
+    feature_options.lod_mode = "none"
+    feature_options.build_precombines = feature_options.generate_previs = False
+    feature_options.generate_anim_text_data = False
+    feature_options.write_land_cache = False
+    feature_options.upgrade_fo4_materials = False
+    feature_options.post_phases_skip = ("Generate Item Icons",)
+    return run_full_regen(paths, feature_options, pair=get_pair(DEFAULT_PAIR_ID), phases=selected, runner=runner)
 
 
 def run_resume_from_phase(

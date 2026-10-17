@@ -150,3 +150,31 @@ def test_runner_emits_actionable_error_popup_with_original_traceback(caplog):
     assert "stage postprocess_havok_assets failed" in event["details"]
     assert "Size: 0 bytes" in caplog.text
     assert runner.done and runner.error is not None
+
+
+@pytest.mark.parametrize("swallow", [True, False])
+def test_first_disk_full_error_cancels_and_names_the_drive(swallow):
+    from bacup_lib.runner import ConversionRunner
+
+    def work(runner: ConversionRunner):
+        runner.emit_log("ERROR", r"Copy failed C:\fo76\a.bgsm → D:\BACUP\mods\a.bgsm: There is not enough space on the disk. (os error 112)")
+        assert runner.is_cancelled()
+        if not swallow:
+            raise RuntimeError("conversion cancelled during asset wave A4")
+
+    runner = ConversionRunner(work)
+    runner.start()
+    for _ in range(100):
+        if runner.done:
+            break
+        time.sleep(0.01)
+    errors = [event for event in runner.drain() if event["type"] == "error"]
+    assert len(errors) == 1
+    assert errors[0]["message"].startswith("Drive D: is full, so the conversion stopped.")
+
+
+def test_disk_full_message_ignores_other_errors():
+    from bacup_lib.runner import disk_full_message
+
+    assert disk_full_message("Audio not found: Music/MUS_Combat_06.wav") is None
+    assert disk_full_message("write failed: No space left on device (os error 28)").startswith("The output drive is full")

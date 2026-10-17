@@ -70,7 +70,7 @@ def _panel(
     esm = tmp_path / "SeventySix.esm"
     esm.write_bytes(b"TES4")
     monkeypatch.setattr(
-        "bacup_ui.conversion.panels.regen_panel.RegenPanel._deployed_esm_path",
+        "bacup_ui.conversion.panels.regen_panel.RegenPanel._previous_esm_path",
         lambda self: esm,
     )
     monkeypatch.setattr(

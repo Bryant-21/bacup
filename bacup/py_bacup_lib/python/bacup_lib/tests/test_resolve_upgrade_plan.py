@@ -521,6 +521,7 @@ def test_run_full_regen_hydrated_upgrade_repacks_and_deploys_the_complete_mod(
         captures["convert_terrain"] = opts.convert_terrain
         captures["reuse_terrain_navmesh"] = opts.reuse_terrain_navmesh
         captures["terrain_graft_esm"] = opts.terrain_graft_esm
+        captures["reuse_precombines_from"] = opts.reuse_precombines_from
         captures["synthesize_object_lod"] = opts.synthesize_object_lod
         captures["terrain_lod_mode"] = opts.terrain.lod_mode
         captures["mod_version"] = getattr(request, "mod_version", "<unset>")
@@ -580,7 +581,9 @@ def test_run_full_regen_hydrated_upgrade_repacks_and_deploys_the_complete_mod(
     assert captures["convert_terrain"] is True  # graft rides this phase
     # Terrain reuse via the live deployed ESM.
     assert captures["reuse_terrain_navmesh"] is True
-    assert captures["terrain_graft_esm"] == paths.target_data_dir / "SeventySix.esm"
+    # The deployed ESM is copied into the workspace first; the graft reads that copy.
+    assert captures["terrain_graft_esm"] == paths.output_root / ".upgrade_previous.esm"
+    assert captures["reuse_precombines_from"] is None, "a NIF upgrade regenerates precombines"
     # LOD not regenerated -> lodgen fully skipped (no hook, no synth, lod_mode none).
     assert captures["lod_hook"] is None
     assert captures["synthesize_object_lod"] is False
@@ -643,3 +646,43 @@ versions:
     assert result.exit_code == 0
     assert result.deployed is False
     assert called == []  # neither conversion nor deploy ran
+
+
+def test_scripts_only_upgrade_reuses_the_previous_precombines_from_a_local_esm(monkeypatch, tmp_path):
+    paths = _paths(tmp_path)
+    paths.source_data_dir.mkdir(parents=True)
+    (paths.source_data_dir / "SeventySix.esm").write_bytes(b"TES4-source")
+    # Never deployed: only the workspace holds the previous build.
+    paths.output_root.mkdir(parents=True)
+    (paths.output_root / "SeventySix.esm").write_bytes(b"TES4-previous")
+    manifest = _write_manifest(tmp_path, _ALPHA1_ALPHA2.replace("[Meshes, Materials]", "[Scripts]"))
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(regen_pipeline, "_hydrate_upgrade_workspace_from_deployed", lambda *_a, **_k: None)
+    captures = {}
+
+    def fake_run_unified(request, _runner, **_kwargs):
+        opts = request.options
+        captures.update(nifs=opts.convert_nifs, graft=opts.terrain_graft_esm, reuse=opts.reuse_precombines_from)
+        staged = paths.output_root / ".upgrade_previous.esm"
+        captures["staged"] = staged.read_bytes()
+        (paths.output_root / "SeventySix.esm").write_bytes(b"TES4-built")
+        return SimpleNamespace(summary=SimpleNamespace(), run_result=SimpleNamespace(
+            decisions=[], translated_counts={}, skipped_counts={}, failed_nifs=[], failed_textures=[],
+            failed_bgsms=[], btos_failed=0, btos_total=0))
+
+    import bacup_lib.workflows.unified as unified
+
+    monkeypatch.setattr(unified, "run_unified", fake_run_unified)
+    monkeypatch.setattr(regen_pipeline, "_deploy_post_steps", lambda *_a, **_k: None)
+
+    result = regen_pipeline.run_full_regen(
+        paths,
+        RegenOptions(deploy=False, upgrade=True, hydrate_upgrade_from_deployed=True,
+                     upgrade_from="alpha1", upgrade_manifest_path=manifest),
+        phases=PhaseSelection(),
+        runner=SimpleNamespace(emit_log=lambda *_a, **_k: None),
+    )
+
+    assert result.exit_code == 0
+    staged = paths.output_root / ".upgrade_previous.esm"
+    assert captures == {"nifs": False, "graft": staged, "reuse": staged, "staged": b"TES4-previous"}

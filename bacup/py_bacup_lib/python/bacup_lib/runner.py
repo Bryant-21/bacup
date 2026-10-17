@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import queue
+import re
 import sys
 import threading
 import traceback
@@ -25,6 +26,27 @@ def emit_runner_status(runner: Any, message: str) -> None:
         emit_status(message)
 
 
+_DISK_FULL = re.compile(
+    r"os error (?:112|28)\b|not enough space on the disk|no space left on device|\[WinError 112\]|\[Errno 28\]",
+    re.IGNORECASE,
+)
+_DRIVE = re.compile(r"\b([A-Za-z]):[\\/]")
+
+
+def disk_full_message(log_message: str) -> str | None:
+    """The user-facing stop message when a log line reports a full disk, else None."""
+    if not _DISK_FULL.search(log_message):
+        return None
+    # Copy errors read "source → destination"; the last path is the one being written.
+    drives = _DRIVE.findall(log_message)
+    where = f"Drive {drives[-1].upper()}:" if drives else "The output drive"
+    return (
+        f"{where} is full, so the conversion stopped.\n"
+        f"Free up space on it, or choose a folder on a drive with more free space, then convert again.\n"
+        f"First error: {log_message}"
+    )
+
+
 def _ts() -> str:
     """Wall-clock HH:MM:SS for streamed log lines during long headless runs."""
     return datetime.now().strftime("%H:%M:%S")
@@ -40,6 +62,7 @@ class ConversionRunner:
         self._thread: threading.Thread | None = None
         self.done = False
         self.error: Exception | None = None
+        self.disk_full: str | None = None
 
     def start(self) -> None:
         """Start the background thread."""
@@ -49,7 +72,11 @@ class ConversionRunner:
     def _run(self) -> None:
         try:
             self._work_fn(self)
+            if self.disk_full:
+                raise RuntimeError(self.disk_full)
         except Exception as e:
+            if self.disk_full and str(e) != self.disk_full:
+                e = RuntimeError(self.disk_full)
             self.error = e
             self.emit_log("ERROR", f"Conversion failed: {e}")
             _log.exception("Conversion runner error")
@@ -99,6 +126,10 @@ class ConversionRunner:
 
     def emit_log(self, level: str, message: str) -> None:
         self._queue.put({"type": "log", "level": level, "message": message})
+        if self.disk_full is None and level in ("WARN", "WARNING", "ERROR"):
+            self.disk_full = disk_full_message(message)
+            if self.disk_full:
+                self.cancel()
 
     def emit_status(self, message: str) -> None:
         self._queue.put({"type": "status", "message": message})

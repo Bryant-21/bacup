@@ -679,14 +679,18 @@ def test_undeploy_bundled_mods_removes_every_bundled_file_and_nothing_else(
 
 
 def test_upgrade_fo4_materials_adds_its_space_and_progress_phase():
-    from bacup_ui.conversion.panels.regen_panel import _UPGRADE_FO4_MATERIALS_BYTES
+    from bacup_ui.conversion.panels.regen_panel import _NATIVE_ASSETS_BYTES, _UPGRADE_FO4_MATERIALS_BYTES
     from bacup_ui.conversion.progress import estimated_phase_weights
 
     panel = _panel(_ws("C:/FO4", "C:/FO76", "C:/x/fo76"))
+    panel.upgrade_fo4_materials = False
     base = panel._space_estimates()
     panel.upgrade_fo4_materials = True
     assert panel._space_estimates() == base, "only with Native Materials on"
     panel.native_assets = True
-    assert panel._space_estimates() == (base[0] + _UPGRADE_FO4_MATERIALS_BYTES, base[1] + _UPGRADE_FO4_MATERIALS_BYTES)
+    extra = _NATIVE_ASSETS_BYTES + _UPGRADE_FO4_MATERIALS_BYTES
+    assert panel._space_estimates() == (base[0] + extra, base[1] + extra)
+    panel.upgrade_fo4_materials = False
+    assert panel._space_estimates() == (base[0] + _NATIVE_ASSETS_BYTES, base[1] + _NATIVE_ASSETS_BYTES)
     assert "upgrade_fo4_materials" in estimated_phase_weights("fo76:fo4", upgrade_fo4_materials=True)
     assert "upgrade_fo4_materials" not in estimated_phase_weights("fo76:fo4")

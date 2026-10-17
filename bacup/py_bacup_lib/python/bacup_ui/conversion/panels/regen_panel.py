@@ -362,6 +362,9 @@ _LOOSE_WORKSPACE_PEAK_BYTES = 120 * _GIB
 _PACKED_MOD_PEAK_BYTES = 60 * _GIB
 # Upgraded FO4 materials, textures and meshes, loose and then packed.
 _UPGRADE_FO4_MATERIALS_BYTES = 20 * _GIB
+# Native PBR materials keep FO76's textures and add FO4CS cubemaps and dense-land sidecars;
+# shortcut: estimated from one local native output (2026-10-17), re-measure from a clean native run.
+_NATIVE_ASSETS_BYTES = 40 * _GIB
 # Reference measurements and headroom are recorded in bacup/docs/ui-modernization.md.
 _CONVERSION_SPACE_ESTIMATES = {
     "fo76:fo4": (_LOOSE_WORKSPACE_PEAK_BYTES, _PACKED_MOD_PEAK_BYTES),
@@ -990,6 +993,8 @@ class RegenPanel:
     def _space_estimates(self) -> tuple[int, int]:
         loose, packed = _CONVERSION_SPACE_ESTIMATES[self._pair().pair_id]
         extra = _UPGRADE_FO4_MATERIALS_BYTES if self._upgrade_fo4_materials_effective() else 0
+        if getattr(self, "native_assets", False) and self._pair().pair_id == "fo76:fo4":
+            extra += _NATIVE_ASSETS_BYTES
         return loose + extra, packed + extra
 
     def _effective_lod_mode(self) -> str:
@@ -1285,20 +1290,19 @@ class RegenPanel:
         self._upgrade_manifest_cache = (key, manifest)
         return manifest
 
-    def _deployed_esm_path(self) -> Path:
-        paths = self.build_paths()
-        return (
-            paths.deploy_data_dir or paths.target_data_dir
-        ) / self._pair().output_plugin_name
+    def _previous_esm_path(self) -> Path:
+        from bacup_lib.regen_pipeline import previous_output_esm
 
-    def _deployed_esm_exists(self) -> bool:
+        return previous_output_esm(self.build_paths(), self._pair().output_plugin_name)
+
+    def _previous_esm_exists(self) -> bool:
         try:
-            return self._deployed_esm_path().is_file()
+            return self._previous_esm_path().is_file()
         except Exception:
             return False
 
     def _detected_installed_version(self) -> str:
-        esm = self._deployed_esm_path()
+        esm = self._previous_esm_path()
         try:
             if not esm.is_file():
                 return "(not deployed)"
@@ -1687,16 +1691,35 @@ class RegenPanel:
         self._start_runner(work)
 
     def start_upgrade_to_pbr(self) -> None:
-        from bacup_lib import PhaseSelection, regen_pipeline
+        from bacup_lib import regen_pipeline
 
         self._require_install_folder()
         self._require_store_installs()
-
         self.native_assets = True
         self._set_workspace_settings({_NATIVE_ASSETS_KEY: True})
+        self._start_rebuild_then_deploy(
+            "Preparing PBR material upgrade", "nifs",
+            lambda paths, options, phases, runner: regen_pipeline.run_assets_only(
+                paths, options, phases=phases, runner=runner, clear=True),
+        )
+
+    def start_repair_tales_features(self) -> None:
+        from bacup_lib import regen_pipeline
+
+        self._require_install_folder()
+        self._require_store_installs()
+        self._start_rebuild_then_deploy(
+            "Preparing Tales feature repair", "pack",
+            lambda paths, options, phases, runner: regen_pipeline.run_tales_features_only(
+                paths, options, phases=phases, runner=runner),
+        )
+
+    def _start_rebuild_then_deploy(self, status: str, progress_start: str, rebuild) -> None:
+        from bacup_lib import PhaseSelection, regen_pipeline
+
         self._phases = []
-        self._reset_progress("nifs")
-        self._runner_status = "Preparing PBR material upgrade"
+        self._reset_progress(progress_start)
+        self._runner_status = status
         self._summary = None
         self._completion = None
         paths = self.build_paths()
@@ -1709,9 +1732,7 @@ class RegenPanel:
             try:
                 with self._run_logging_scope(paths, runner) as active_runner:
                     deferred = _DeferCompleteRunner(active_runner)
-                    result = regen_pipeline.run_assets_only(
-                        paths, options, phases=PhaseSelection(), runner=deferred, clear=True,
-                    )
+                    result = rebuild(paths, options, PhaseSelection(), deferred)
                     if not result.failures or options.continue_on_error:
                         result = regen_pipeline.run_resume_from_phase(
                             paths, options, start_phase="pack", phases=PhaseSelection(), runner=deferred,
@@ -3198,7 +3219,7 @@ class RegenPanel:
             manifest = self._load_upgrade_manifest_cached()
             requires_full_build = self._upgrade_requires_full_build(manifest)
             if not self._upgrade_user_toggled:
-                self.upgrade = self._deployed_esm_exists() and not requires_full_build
+                self.upgrade = self._previous_esm_exists() and not requires_full_build
             elif requires_full_build:
                 self.upgrade = False
             _form_row_label("Upgrade mode")
@@ -3214,10 +3235,13 @@ class RegenPanel:
                     imgui.set_tooltip("This upgrade requires a full conversion.")
                 else:
                     imgui.set_tooltip(
-                        "Reuses the BACUP workspace when all eight loose-asset folders "
-                        "are present; otherwise extracts the currently deployed BA2s. "
-                        "Then converts changed assets and redeploys the complete mod "
-                        "using the selected BA2 format."
+                        "Reads the previous ESM from the install, or from the BACUP "
+                        "workspace if it was never deployed. Reuses the workspace when "
+                        "all eight loose-asset folders are present (the deployed BA2s are "
+                        "removed); otherwise extracts the deployed BA2s or copies a loose "
+                        "install back. Keeps the installed terrain, dense terrain, LOD and, "
+                        "when no meshes changed, precombines and previs. Then converts "
+                        "changed assets and redeploys the complete mod."
                     )
             if changed:
                 self._upgrade_user_toggled = True
@@ -3581,6 +3605,20 @@ class RegenPanel:
                 else:
                     imgui.text_disabled(
                         "Resume overwrites outputs from the selected phase onward."
+                    )
+                can_repair = self._is_default_pair() and self.can_deploy_existing()
+                if not can_repair:
+                    imgui.begin_disabled()
+                if imgui.button(f"Repair Tales features{_NS}"):
+                    self.start_repair_tales_features()
+                if not can_repair:
+                    imgui.end_disabled()
+                if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled):
+                    imgui.set_tooltip(
+                        "Re-runs only the Tales UI and feature steps (Photo Mode, Emotes, "
+                        "menus, catalogs) on the existing mod, then packs and deploys it. "
+                        "Records, meshes, textures, LOD and precombines are kept; item "
+                        "icons are not redrawn."
                     )
                 imgui.separator()
                 self._draw_undeploy()

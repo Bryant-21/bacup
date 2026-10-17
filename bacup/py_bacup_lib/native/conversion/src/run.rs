@@ -12324,6 +12324,7 @@ impl ConversionRun {
                         .map(|split| split.player_parent)
                         .or_else(|| info_parent_index.get(&fk.local).copied());
                     if let Some(player_parent) = player_parent {
+                        let generated_player_record = synthetic_player_info.is_some();
                         let player_record =
                             synthetic_player_info.as_mut().unwrap_or(&mut translated);
                         crate::translator::pair_hooks::fo76_fo4::retarget_player_info_tree_links(
@@ -12332,6 +12333,7 @@ impl ConversionRun {
                             player_parent,
                             plan,
                             &generated_player_info_fks,
+                            generated_player_record,
                         )
                         .map_err(|error| {
                             RunError::InvalidConfig(format!("fo76_xdi_dialogue:{error}"))

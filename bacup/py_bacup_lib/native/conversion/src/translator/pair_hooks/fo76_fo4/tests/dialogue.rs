@@ -1418,6 +1418,7 @@
             0x42F3BE,
             &plan,
             &generated,
+            false,
         )
         .unwrap();
 
@@ -1427,6 +1428,30 @@
                 .iter()
                 .all(|field| field.value == FieldValue::FormKey(player_header))
         );
+    }
+
+    // 61E0BA/B024AF crash: the group INFO has no prompt, so it moves to the NPC topic unsplit.
+    #[test]
+    fn generated_player_info_drops_group_link_left_in_npc_topic() {
+        let interner = StringInterner::new();
+        let group = FormKey {
+            local: 0x61E184,
+            plugin: interner.intern("SeventySix.esm"),
+        };
+        let mut player_info = make_record("INFO", &interner);
+        push_field(&mut player_info, "GNAM", FieldValue::FormKey(group));
+        let source_links = info_tree_links(&player_info);
+        let mut kept = make_record("INFO", &interner);
+        push_field(&mut kept, "GNAM", FieldValue::FormKey(group));
+
+        let plan = XdiDialoguePlan::default();
+        retarget_player_info_tree_links(&mut player_info, &source_links, 0x61E0BA, &plan, &HashMap::new(), true)
+            .unwrap();
+        retarget_player_info_tree_links(&mut kept, &source_links, 0x61E0BB, &plan, &HashMap::new(), false)
+            .unwrap();
+
+        assert!(player_info.fields.iter().all(|field| field.sig.0 != *b"GNAM"));
+        assert!(kept.fields.iter().any(|field| field.sig.0 == *b"GNAM"));
     }
 
     #[test]
