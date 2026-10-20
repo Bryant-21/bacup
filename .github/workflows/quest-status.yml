@@ -61,7 +61,7 @@ jobs:
             await github.rest.issues.addLabels({ ...context.repo, issue_number: issue.number, labels: [command.label] });
 
             if (process.env.BOARD_TOKEN) {
-              const board = getOctokit(process.env.BOARD_TOKEN);
+              const board = new github.constructor({ auth: process.env.BOARD_TOKEN });
               const { user } = await board.graphql(`
                 query($owner: String!, $number: Int!) {
                   user(login: $owner) { projectV2(number: $number) {
